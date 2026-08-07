@@ -5986,6 +5986,31 @@
             },
             "type": "array",
             "title": "Bboxflags"
+          },
+          "imageMinDistance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imagemindistance"
+          },
+          "bboxMinDistances": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Bboxmindistances"
           }
         },
         "type": "object",

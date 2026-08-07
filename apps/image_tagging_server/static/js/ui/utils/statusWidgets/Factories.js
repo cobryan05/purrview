@@ -147,6 +147,68 @@ export const statusWidgets = {
     return wrap;
   },
 
+  // data: { bins: [{ label, count, marked }], total }
+  //
+  // Horizontal bars rather than vertical: bin labels are numeric distances that
+  // stay readable on one line, and the widget lives in a narrow task card where
+  // vertical bars would be a few pixels wide each. The `marked` bin is where the
+  // configured threshold currently cuts — everything at or left of it counts as
+  // a duplicate — so it's called out in both colour and text, never colour alone.
+  async histogram(config, data) {
+    const wrap = labelWrap(config.label);
+    const bins = Array.isArray(data?.bins) ? data.bins : [];
+    if (bins.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No measurements yet.';
+      empty.style.cssText = 'color:#bbb;';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    const max = Math.max(...bins.map(b => Number(b.count) || 0), 1);
+    const chart = document.createElement('div');
+    chart.style.cssText = 'display:flex; flex-direction:column; gap:1px; margin-bottom:0.3em;';
+
+    for (const bin of bins) {
+      const count = Number(bin.count) || 0;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:0.4em; font-size:0.85em;';
+
+      const tick = document.createElement('span');
+      tick.textContent = bin.marked ? `${bin.label} ◀` : String(bin.label);
+      tick.style.cssText = `min-width:4.5em; text-align:right; font-variant-numeric:tabular-nums; ${
+        bin.marked ? 'font-weight:bold;' : 'color:#888;'
+      }`;
+
+      const track = document.createElement('div');
+      track.className = 'status-histogram__track';
+      track.style.cssText = 'flex:1; min-width:0; height:0.9em; background:#f0f0f0; border-radius:2px;';
+      const fill = document.createElement('div');
+      fill.className = 'status-histogram__fill';
+      fill.style.cssText = `width:${(100 * count) / max}%; height:100%; border-radius:2px; background:${
+        bin.marked ? '#e8833a' : '#7aa6d6'
+      };`;
+      track.appendChild(fill);
+
+      const value = document.createElement('span');
+      value.textContent = String(count);
+      value.style.cssText = 'min-width:2.5em; color:#888; font-variant-numeric:tabular-nums;';
+
+      row.append(tick, track, value);
+      chart.appendChild(row);
+    }
+    wrap.appendChild(chart);
+
+    const caption = document.createElement('div');
+    const marked = bins.find(b => b.marked);
+    caption.textContent = marked
+      ? `${data.total} sample(s) · ◀ marks the current threshold (${marked.label})`
+      : `${data.total} sample(s)`;
+    caption.style.cssText = 'color:#888; font-size:0.75em;';
+    wrap.appendChild(caption);
+    return wrap;
+  },
+
   // config.columns: [{ key, label }, ...] / ["key", ...]
   // data: [ { key: value, ... }, ... ]
   async table(config, data) {

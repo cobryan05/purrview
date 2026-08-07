@@ -848,6 +848,11 @@ class CheckDedupBulkPayload(ApiPayload):
 class CheckDedupBulkResponse(StatusResponse):
     image_is_dup: bool = False
     bbox_flags: List[bool] = Field(default_factory=list)
+    # Threshold-independent nearest-neighbour distances, for threshold calibration.
+    # None = nothing to compare against (empty index / unlabelled bbox), which is
+    # distinct from "far away" and must not be treated as a large distance.
+    image_min_distance: Optional[int] = None
+    bbox_min_distances: List[Optional[int]] = Field(default_factory=list)
 
 
 class RecomputePhashPayload(ApiPayload):
@@ -2266,6 +2271,8 @@ class WebApp:
                     status=JsonValues.SUCCESS,
                     image_is_dup=result["image_is_dup"],
                     bbox_flags=result["bbox_flags"],
+                    image_min_distance=result.get("image_min_distance"),
+                    bbox_min_distances=result.get("bbox_min_distances", []),
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)

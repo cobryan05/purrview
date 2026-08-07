@@ -2116,21 +2116,48 @@ class TestBuildLabelAncestryMap:
 
 
 class TestStatusSchema:
-    """status_schema() must describe exactly the three Phase 4 widgets, with ids
-    matching the keys get_status_data() returns — a silent rename of one side
-    without the other would break the id <-> data pairing without any error."""
+    """status_schema() ids must match the keys get_status_data() returns — a
+    silent rename of one side without the other would break the id <-> data
+    pairing without any error.
 
-    def test_schema_widget_ids_match_status_data_keys(self):
-        schema = CollectTrainingImagesTask.status_schema()
-        schema_ids = {w["id"] for w in schema}
+    Some widgets are conditional: the dedup-calibration ones are only populated
+    when dedup is enabled (same rule the stat_grid already follows for its dedup
+    and filter-chain fields), so the invariant is "every emitted key is declared
+    in the schema", plus the unconditional ids are always emitted."""
 
+    _ALWAYS = {"last_capture", "stats", "sources"}
+    _DEDUP_ONLY = {
+        "dedup_hint",
+        "dedup_image_hist",
+        "dedup_bbox_hist",
+        "dedup_image_sweep",
+        "dedup_bbox_sweep",
+    }
+
+    def test_schema_declares_every_widget_id(self):
+        schema_ids = {w["id"] for w in CollectTrainingImagesTask.status_schema()}
+        assert schema_ids == self._ALWAYS | self._DEDUP_ONLY
+
+    def test_unconditional_keys_present_before_init(self):
         task = _make_task()
         # get_status_data() must be callable straight after construction (before
         # _init even runs) without raising — it's read by a poll handler that has
         # no idea whether the task has started yet.
         data_keys = set(task.get_status_data().keys())
+        assert data_keys == self._ALWAYS
 
-        assert schema_ids == data_keys == {"last_capture", "stats", "sources"}
+    async def test_every_emitted_key_is_declared_in_the_schema(self):
+        """Both with dedup off and on — no key may appear that no widget renders."""
+        schema_ids = {w["id"] for w in CollectTrainingImagesTask.status_schema()}
+        for enable_dedup in (False, True):
+            params = {**_PARAMS, "enable_dedup": enable_dedup}
+            task = _make_task(params=params)
+            await task._init(params, resume_data=None)
+            data_keys = set(task.get_status_data().keys())
+            assert data_keys <= schema_ids, f"undeclared keys with dedup={enable_dedup}"
+            assert self._ALWAYS <= data_keys
+            expected_dedup = self._DEDUP_ONLY if enable_dedup else set()
+            assert data_keys & self._DEDUP_ONLY == expected_dedup
 
     def test_schema_entries_are_status_sourced_with_expected_types(self):
         schema = {w["id"]: w for w in CollectTrainingImagesTask.status_schema()}
@@ -2745,3 +2772,272 @@ class TestConfidenceBandBoundaryInclusivity:
         task = await self._task_with_band(0.2, 0.8)
         matching, _det = await self._run(task, 0.8 + 1e-6)
         assert matching == []
+
+
+class TestDedupThresholdCalibration:
+    """The calibration widgets exist so the user can pick a duplicate threshold
+    from evidence instead of guessing. That only works if the sweep replays the
+    *same* discard rules _dedup_worker applies — so these tests pin the replay
+    to those rules, not merely to its own output."""
+
+    async def _task(self, action="discard", image_t=5, bbox_t=8, samples=()):
+        params = {
+            **_PARAMS,
+            "enable_dedup": True,
+            "duplicate_action": action,
+            "image_dup_threshold": image_t,
+            "bbox_dup_threshold": bbox_t,
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        for sample in samples:
+            task._dedup_samples.append(sample)
+        return task
+
+    # ── _would_discard mirrors _dedup_worker ────────────────────────────────
+
+    async def test_discard_image_action_uses_image_distance_only(self):
+        task = await self._task(action="discard_image")
+        assert task._would_discard(3, [40, 40], image_t=5, bbox_t=8) is True
+        assert task._would_discard(9, [0, 0], image_t=5, bbox_t=8) is False
+
+    async def test_discard_action_requires_image_dup_and_all_bboxes_dup(self):
+        """_dedup_worker gates 'keep if any unique' on image_is_dup too."""
+        task = await self._task(action="discard")
+        assert task._would_discard(3, [2, 4], image_t=5, bbox_t=8) is True
+        # One unique bbox keeps the frame.
+        assert task._would_discard(3, [2, 40], image_t=5, bbox_t=8) is False
+        # Every bbox duplicated but a different scene — kept, matching the worker.
+        assert task._would_discard(30, [2, 4], image_t=5, bbox_t=8) is False
+
+    async def test_measure_and_ignore_actions_never_discard(self):
+        for action in ("measure", "ignore"):
+            task = await self._task(action=action)
+            assert task._would_discard(0, [0], image_t=5, bbox_t=8) is False, action
+
+    async def test_none_distance_is_not_a_duplicate(self):
+        """None = nothing to compare against; it must not count as distance 0."""
+        task = await self._task(action="discard_image")
+        assert task._would_discard(None, [], image_t=64, bbox_t=64) is False
+
+    # ── sweep ───────────────────────────────────────────────────────────────
+
+    async def test_sweep_is_empty_without_samples(self):
+        task = await self._task()
+        assert task._dedup_sweep_rows(task._IMAGE_SWEEP_THRESHOLDS, "image") == []
+
+    async def test_sweep_discard_count_is_monotonic_in_threshold(self):
+        """A larger threshold can only ever discard more, never fewer."""
+        samples = [(d, [d]) for d in (0, 1, 2, 4, 7, 11, 20, 33)]
+        task = await self._task(action="discard_image", samples=samples)
+        rows = task._dedup_sweep_rows((0, 2, 5, 10, 20, 40), "image")
+        counts = [int(r["discarded"].split(" ")[0]) for r in rows]
+        assert counts == sorted(counts)
+        assert counts[0] == 1  # only the distance-0 frame
+        assert counts[-1] == len(samples)  # threshold 40 catches everything
+
+    async def test_sweep_marks_the_configured_threshold(self):
+        task = await self._task(image_t=5, samples=[(1, [1])])
+        rows = task._dedup_sweep_rows((4, 5, 6), "image")
+        assert [("←current" in r["threshold"]) for r in rows] == [False, True, False]
+
+    async def test_sweep_kept_and_discarded_sum_to_the_sample(self):
+        samples = [(d, [d]) for d in (0, 3, 9, 30)]
+        task = await self._task(action="discard_image", samples=samples)
+        for row in task._dedup_sweep_rows((0, 5, 40), "image"):
+            discarded = int(row["discarded"].split(" ")[0])
+            kept = int(row["kept"].split(" ")[0])
+            assert discarded + kept == len(samples)
+
+    async def test_bbox_sweep_holds_image_threshold_fixed(self):
+        """Varying the bbox threshold must not silently move the image one."""
+        samples = [(30, [0]), (0, [0])]
+        task = await self._task(action="discard", image_t=5, samples=samples)
+        rows = task._dedup_sweep_rows((0, 40), "bbox")
+        # The image-distance-30 frame is never discarded at image_t=5, whatever
+        # the bbox threshold does.
+        assert all(int(r["discarded"].split(" ")[0]) <= 1 for r in rows)
+
+    # ── histogram ───────────────────────────────────────────────────────────
+
+    async def test_histogram_counts_and_marks_threshold_bin(self):
+        task = await self._task(image_t=2)
+        hist = task._dedup_histogram([0, 0, 1, 2, 5], marker=2)
+        assert hist["total"] == 5
+        assert sum(b["count"] for b in hist["bins"]) == 5
+        marked = [b for b in hist["bins"] if b["marked"]]
+        assert len(marked) == 1 and marked[0]["label"] == "2"
+
+    async def test_histogram_marks_threshold_even_beyond_observed_range(self):
+        """A threshold set far above every measurement is exactly the case worth
+        seeing — the marker must not fall off the end of the chart."""
+        hist = (await self._task())._dedup_histogram([0, 1], marker=12)
+        assert any(b["marked"] for b in hist["bins"])
+
+    async def test_empty_histogram_reports_no_bins(self):
+        hist = (await self._task())._dedup_histogram([], marker=5)
+        assert hist == {"bins": [], "total": 0}
+
+    async def test_histogram_buckets_wider_than_one(self):
+        hist = (await self._task())._dedup_histogram([0, 1, 2, 3], marker=0, bucket=2)
+        assert hist["bins"][0] == {"label": "0–1", "count": 2, "marked": True}
+        assert hist["bins"][1] == {"label": "2–3", "count": 2, "marked": False}
+
+    # ── status payload wiring ───────────────────────────────────────────────
+
+    async def test_calibration_absent_when_dedup_disabled(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        data = task.get_status_data()
+        assert "dedup_image_hist" not in data
+        assert "dedup_image_sweep" not in data
+
+    async def test_calibration_present_when_dedup_enabled(self):
+        task = await self._task(samples=[(1, [3]), (9, [20])])
+        data = task.get_status_data()
+        assert data["dedup_image_hist"]["total"] == 2
+        assert data["dedup_bbox_hist"]["total"] == 2
+        assert len(data["dedup_image_sweep"]) == len(task._IMAGE_SWEEP_THRESHOLDS)
+        assert len(data["dedup_bbox_sweep"]) == len(task._BBOX_SWEEP_THRESHOLDS)
+        assert data["dedup_hint"]
+
+    async def test_status_data_reports_distance_percentiles(self):
+        task = await self._task(samples=[(0, [2]), (4, [6]), (8, [10])])
+        stats = task.get_status_data()["stats"]
+        assert stats["dedup_sample_size"] == 3
+        assert stats["dedup_image_dist_median"] == 4
+        assert stats["dedup_bbox_dist_median"] == 6
+
+    async def test_percentile_keys_omitted_when_nothing_measured(self):
+        """Absent beats a misleading 0 — the stat_grid renders absent as '—'."""
+        stats = (await self._task()).get_status_data()["stats"]
+        assert "dedup_image_dist_median" not in stats
+        assert stats["dedup_sample_size"] == 0
+
+    async def test_none_distances_are_excluded_from_stats(self):
+        """First frames of a run have an empty index; they aren't 'unique'."""
+        task = await self._task(samples=[(None, [None]), (4, [6])])
+        stats = task.get_status_data()["stats"]
+        assert stats["dedup_image_dist_median"] == 4
+        assert task.get_status_data()["dedup_image_hist"]["total"] == 1
+
+    async def test_sample_window_is_bounded(self):
+        task = await self._task()
+        for i in range(task._DEDUP_SAMPLE_SIZE + 50):
+            task._dedup_samples.append((i % 10, []))
+        assert len(task._dedup_samples) == task._DEDUP_SAMPLE_SIZE
+
+    # ── the hint explains the censoring caveat ──────────────────────────────
+
+    async def test_hint_warns_about_bias_while_discarding(self):
+        for action in ("discard", "discard_image"):
+            hint = (await self._task(action=action, samples=[(1, [1])]))._dedup_hint_text()
+            assert "Measure only (calibration)" in hint, action
+
+    async def test_hint_confirms_unbiased_sample_in_calibration_mode(self):
+        hint = (await self._task(action="measure", samples=[(1, [1])]))._dedup_hint_text()
+        assert "unbiased" in hint
+        assert "drift upward" not in hint
+
+
+class TestMeasureOnlyAction:
+    """'Measure only' must be offered in the schema and must never discard."""
+
+    async def test_measure_option_is_offered_with_an_explanation(self):
+        group = CollectTrainingImagesTask.params_schema()["dedup_group"]["fields"]
+        action = group["duplicate_action"]
+        assert "measure" in [o["value"] for o in action["options"]]
+        # The user has to be told what calibration mode is for, visibly — a
+        # tooltip-only `description` is not enough for a whole workflow.
+        assert "calibration" in action["help"].lower()
+
+    async def test_measure_mode_keeps_every_frame(self):
+        params = {**_PARAMS, "enable_dedup": True, "duplicate_action": "measure"}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        for image_dist in (0, 1, 50):
+            assert task._would_discard(image_dist, [0], image_t=64, bbox_t=256) is False
+
+
+class TestDedupWorkerRecordsDistances:
+    """_dedup_worker is the only place the measured distances enter the sample,
+    so the wiring from the API response through to _dedup_samples is tested for
+    real rather than assumed."""
+
+    async def _run_worker(self, action, response, bbox_count=1):
+        params = {
+            **_PARAMS,
+            "enable_dedup": True,
+            "duplicate_action": action,
+            "image_dup_threshold": 5,
+            "bbox_dup_threshold": 8,
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        # _init() reads hash sizes through a mocked settings API; pin them to the
+        # real defaults so the phash round-trip inside the worker actually runs.
+        task._image_hash_size = 8
+        task._bbox_hash_size = 16
+        task._dedup_queue = asyncio.Queue()
+        task._pending_saves = []
+
+        provided = MagicMock()
+        provided.image = np.zeros((32, 32, 3), dtype=np.uint8)
+        provided.metadata.source = "src"
+        provided.metadata.frame_idx = None
+        matching = [_detection(label_uuid=f"label-{i}") for i in range(bbox_count)]
+
+        images_api = MagicMock()
+        images_api.check_dedup_bulk.return_value = response
+
+        await task._dedup_queue.put((provided, matching, ImageProviderType.LIVE_STREAM))
+        await task._dedup_queue.put(None)
+        with patch.object(task, "_save_image", new=AsyncMock(return_value=None)) as save:
+            await task._dedup_worker(images_api, Path("/tmp"))
+        return task, save
+
+    @staticmethod
+    def _response(image_min, bbox_mins, image_is_dup=False, bbox_flags=None):
+        resp = MagicMock()
+        resp.image_min_distance = image_min
+        resp.bbox_min_distances = bbox_mins
+        resp.image_is_dup = image_is_dup
+        resp.bbox_flags = bbox_flags if bbox_flags is not None else [False] * len(bbox_mins)
+        return resp
+
+    async def test_distances_are_recorded_in_the_sample(self):
+        task, _ = await self._run_worker("measure", self._response(3, [7]))
+        assert list(task._dedup_samples) == [(3, [7])]
+
+    async def test_none_distances_are_preserved_not_coerced(self):
+        """An empty index must stay None all the way into the sample."""
+        task, _ = await self._run_worker("measure", self._response(None, [None]))
+        assert list(task._dedup_samples) == [(None, [None])]
+
+    async def test_measure_mode_saves_the_frame_despite_a_duplicate_hit(self):
+        task, save = await self._run_worker(
+            "measure",
+            self._response(0, [0], image_is_dup=True, bbox_flags=[True]),
+        )
+        assert save.await_count == 1
+        assert task._dup_frames_discarded == 0
+
+    async def test_discard_image_mode_still_discards(self):
+        """Calibration support must not have disarmed the real discard paths."""
+        task, save = await self._run_worker(
+            "discard_image",
+            self._response(0, [0], image_is_dup=True, bbox_flags=[True]),
+        )
+        assert save.await_count == 0
+        assert task._dup_frames_discarded == 1
+        # ...and the discarded frame is still measured, so the sweep sees it.
+        assert list(task._dedup_samples) == [(0, [0])]
+
+    async def test_ignore_mode_skips_measurement_entirely(self):
+        """'Ignore' exists to be cheap — it must not start paying for hashing."""
+        task, save = await self._run_worker("ignore", self._response(0, [0]))
+        # The ignore path dispatches the save without awaiting it (nothing depends
+        # on the index being updated first), so assert dispatch rather than await.
+        assert save.call_count == 1
+        assert list(task._dedup_samples) == []
+        assert task._dedup_frames_checked == 0

@@ -55,6 +55,110 @@ def _item_distance(a: Tuple[str, str], b: Tuple[str, str]) -> int:
     return hamming(a[0], b[0])
 
 
+class _FlatHashTable:
+    """Flat numpy mirror of one BK-tree, used only for *nearest-distance* queries.
+
+    The BK-tree answers "is anything within R?" quickly for small R, but the
+    calibration stats need the distance to the nearest neighbour whatever it is,
+    and a BK-tree search degenerates towards a full traversal as R grows — with
+    far worse constants than a straight vectorised scan.  So nearest-distance
+    queries run against a contiguous ``(n, byte_len)`` uint8 array: one XOR plus
+    one LUT popcount over every row, no Python-level loop, sub-millisecond for
+    100k rows.
+
+    Kept deliberately dumb: it mirrors the tree's *membership*, so every mutation
+    point on HashIndex must update both.  Deletions tombstone via ``_alive``
+    exactly like the tree's valid-set, so the two structures stay in agreement.
+
+    Re-adding a uuid with a different phash leaves the old row alive, which
+    matches the BK-tree's behaviour (it also keeps the superseded item, and the
+    uuid stays in the valid-set).  Both structures therefore report the stale
+    entry; they do not disagree with each other.
+    """
+
+    _INITIAL_CAPACITY = 256
+
+    def __init__(self, byte_len: int) -> None:
+        self._byte_len = byte_len
+        self._rows = np.zeros((self._INITIAL_CAPACITY, byte_len), dtype=np.uint8)
+        self._alive = np.zeros(self._INITIAL_CAPACITY, dtype=bool)
+        self._uuids: List[str] = []
+        self._rows_of: Dict[str, List[int]] = {}
+        self._n = 0
+
+    @classmethod
+    def from_items(cls, items: List[Tuple[str, str]], byte_len: int) -> "_FlatHashTable":
+        """Build from [(phash_hex, uuid)] in one shot — used by _build_structures.
+
+        Rows whose hash width doesn't match *byte_len* are skipped rather than
+        raising: a DB carrying phashes from a previous hash-size setting must not
+        take the whole index build down with it (the BK-tree tolerates them too,
+        comparing hex-as-int). Such rows simply don't participate in
+        nearest-distance queries until the phashes are recomputed.
+        """
+        table = cls(byte_len)
+        usable = [(phash, uuid) for phash, uuid in items if len(phash) == byte_len * 2]
+        if len(usable) != len(items):
+            logger.warning(
+                "HashIndex: skipping %d phash row(s) with unexpected width (expected %d hex chars) — "
+                "recompute phashes to include them in duplicate-distance queries",
+                len(items) - len(usable),
+                byte_len * 2,
+            )
+        items = usable
+        if not items:
+            return table
+        n = len(items)
+        table._rows = np.frombuffer(
+            b"".join(bytes.fromhex(phash) for phash, _ in items),
+            dtype=np.uint8,
+        ).reshape(n, byte_len)
+        # np.frombuffer returns a read-only view over the joined bytes; _grow()
+        # and per-row writes need a writable array.
+        table._rows = table._rows.copy()
+        table._alive = np.ones(n, dtype=bool)
+        table._uuids = [uuid for _, uuid in items]
+        for i, (_, uuid) in enumerate(items):
+            table._rows_of.setdefault(uuid, []).append(i)
+        table._n = n
+        return table
+
+    def _grow(self) -> None:
+        capacity = max(self._INITIAL_CAPACITY, self._rows.shape[0] * 2)
+        rows = np.zeros((capacity, self._byte_len), dtype=np.uint8)
+        rows[: self._n] = self._rows[: self._n]
+        alive = np.zeros(capacity, dtype=bool)
+        alive[: self._n] = self._alive[: self._n]
+        self._rows = rows
+        self._alive = alive
+
+    def add(self, uuid: str, phash_hex: str) -> None:
+        if self._n >= self._rows.shape[0]:
+            self._grow()
+        self._rows[self._n] = np.frombuffer(bytes.fromhex(phash_hex), dtype=np.uint8)
+        self._alive[self._n] = True
+        self._uuids.append(uuid)
+        self._rows_of.setdefault(uuid, []).append(self._n)
+        self._n += 1
+
+    def discard(self, uuid: str) -> None:
+        """Tombstone every row for *uuid* (mirrors valid-set ``discard``)."""
+        for row in self._rows_of.pop(uuid, ()):
+            self._alive[row] = False
+
+    def nearest(self, phash_hex: str) -> Optional[Tuple[int, str]]:
+        """Return ``(distance, uuid)`` for the closest live row, or None if empty."""
+        if self._n == 0 or not self._alive[: self._n].any():
+            return None
+        query = np.frombuffer(bytes.fromhex(phash_hex), dtype=np.uint8)
+        dist = _LUT8[self._rows[: self._n] ^ query].sum(axis=1).astype(np.int32)
+        # Dead rows must never win the argmin; push them past any achievable
+        # distance (byte_len * 8 bits is the maximum).
+        dist[~self._alive[: self._n]] = self._byte_len * 8 + 1
+        best = int(np.argmin(dist))
+        return int(dist[best]), self._uuids[best]
+
+
 @dataclass
 class BuildStats:
     image_count: int = 0
@@ -83,6 +187,8 @@ class _IndexData:
     bbox_tombstones: Dict[str, int]
     image_count: int
     bbox_count: int
+    image_flat: "_FlatHashTable"
+    bbox_flat: Dict[str, "_FlatHashTable"]
 
 
 class HashIndex:
@@ -111,6 +217,11 @@ class HashIndex:
         self._bbox_trees: Dict[str, pybktree.BKTree] = {}
         self._valid_bboxes: Dict[str, Set[str]] = {}  # label_uuid → set of bbox uuids
         self._bbox_tombstones: Dict[str, int] = {}
+
+        # Flat numpy mirrors of the trees above, for nearest-distance queries
+        # (see _FlatHashTable). Every mutation below updates tree and mirror.
+        self._image_flat = _FlatHashTable(self._image_byte_len)
+        self._bbox_flat: Dict[str, _FlatHashTable] = {}
 
         # Set to True when tombstone ratio crosses the threshold.  Callers should
         # invoke rebuild_if_needed() from a safe context rather than relying on
@@ -219,10 +330,12 @@ class HashIndex:
         bbox_trees: Dict[str, pybktree.BKTree] = {}
         valid_bboxes: Dict[str, Set[str]] = {}
         bbox_tombstones: Dict[str, int] = {}
+        bbox_flat: Dict[str, _FlatHashTable] = {}
         for label_uuid, items in by_label.items():
             bbox_trees[label_uuid] = pybktree.BKTree(_item_distance, items)
             valid_bboxes[label_uuid] = {item[1] for item in items}
             bbox_tombstones[label_uuid] = 0
+            bbox_flat[label_uuid] = _FlatHashTable.from_items(items, self._bbox_byte_len)
 
         return _IndexData(
             image_tree=image_tree,
@@ -232,6 +345,8 @@ class HashIndex:
             bbox_tombstones=bbox_tombstones,
             image_count=len(image_rows),
             bbox_count=len(bbox_rows),
+            image_flat=_FlatHashTable.from_items(image_items, self._image_byte_len),
+            bbox_flat=bbox_flat,
         )
 
     def _install(self, data: _IndexData) -> None:
@@ -248,6 +363,8 @@ class HashIndex:
         self._bbox_trees = data.bbox_trees
         self._valid_bboxes = data.valid_bboxes
         self._bbox_tombstones = data.bbox_tombstones
+        self._image_flat = data.image_flat
+        self._bbox_flat = data.bbox_flat
         self._needs_rebuild = False
 
     async def rebuild(self) -> RebuildStats:
@@ -295,6 +412,7 @@ class HashIndex:
         else:
             self._image_tree.add(item)
         self._valid_images.add(uuid)
+        self._image_flat.add(uuid, phash)
 
     def add_bbox(self, uuid: str, label_uuid: str, phash: str) -> None:
         """Insert a bbox entry into the per-label index."""
@@ -307,10 +425,12 @@ class HashIndex:
         else:
             self._bbox_trees[label_uuid].add(item)
             self._valid_bboxes[label_uuid].add(uuid)
+        self._bbox_flat.setdefault(label_uuid, _FlatHashTable(self._bbox_byte_len)).add(uuid, phash)
 
     def remove_image(self, uuid: str) -> None:
         """Tombstone an image entry (lazy eviction from the tree)."""
         self._valid_images.discard(uuid)
+        self._image_flat.discard(uuid)
         self._image_tombstones += 1
         self._check_image_tombstone_ratio()
 
@@ -319,6 +439,9 @@ class HashIndex:
         valid = self._valid_bboxes.get(label_uuid)
         if valid is not None:
             valid.discard(uuid)
+        flat = self._bbox_flat.get(label_uuid)
+        if flat is not None:
+            flat.discard(uuid)
         self._bbox_tombstones[label_uuid] = self._bbox_tombstones.get(label_uuid, 0) + 1
         self._check_bbox_tombstone_ratio(label_uuid)
 
@@ -393,6 +516,33 @@ class HashIndex:
                     results.append((item[1], dist, lbl))
         results.sort(key=lambda x: x[1])
         return results
+
+    def nearest_image_distance(self, phash: str) -> Optional[int]:
+        """Hamming distance to the closest stored image, or None if the index is empty.
+
+        Unbounded — unlike find_similar_images this has no threshold, which is
+        exactly what threshold calibration needs: the distance is a property of
+        the data, independent of whatever threshold happens to be configured.
+        """
+        self._validate_image_phash(phash)
+        result = self._image_flat.nearest(phash)
+        return result[0] if result else None
+
+    def nearest_bbox_distance(self, phash: str, label_uuid: Optional[str]) -> Optional[int]:
+        """Hamming distance to the closest stored bbox with the same label, or None.
+
+        A bbox crop is only meaningfully comparable to crops of the same label, so
+        unlike find_similar_bboxes this never falls back to scanning every label
+        tree — an unlabelled query has nothing to compare against and returns None.
+        """
+        self._validate_bbox_phash(phash)
+        if not label_uuid:
+            return None
+        flat = self._bbox_flat.get(label_uuid)
+        if flat is None:
+            return None
+        result = flat.nearest(phash)
+        return result[0] if result else None
 
     @staticmethod
     def _greedy_diversity_order(phash_hexes: List[str], seed_phash: str, count: int) -> List[int]:
@@ -518,15 +668,35 @@ class HashIndex:
             bboxes: list of dicts with keys {phash, label_uuid, threshold}
 
         Returns:
-            {image_is_dup: bool, bbox_flags: [bool]}
+            {image_is_dup: bool, bbox_flags: [bool],
+             image_min_distance: int|None, bbox_min_distances: [int|None]}
             image_is_dup: True when the image phash is within image_threshold of any stored image.
             bbox_flags[i]: True when bbox i's phash is within its threshold of any stored bbox with
             the same label — independently of image_is_dup.  Callers that need a combined signal
             (e.g. "tag only when both image and bbox are dups") should AND with image_is_dup themselves.
+            *_min_distance(s): threshold-independent nearest-neighbour distances, for threshold
+            calibration.  None means "nothing to compare against" (empty index, or an unlabelled
+            bbox), which is not the same as "far away" and must not be bucketed as a distance.
+
+        The flags are derived from the same distances rather than from a separate
+        BK-tree query, so "is_dup" and "min_distance" can never disagree.
         """
-        image_is_dup = bool(self.find_similar_images(image_phash, image_threshold))
-        bbox_flags = [bool(self.find_similar_bboxes(b["phash"], [b["label_uuid"]], b["threshold"])) for b in bboxes]
-        return {"image_is_dup": image_is_dup, "bbox_flags": bbox_flags}
+        image_min = self.nearest_image_distance(image_phash)
+        image_is_dup = image_min is not None and image_min <= image_threshold
+
+        bbox_flags: List[bool] = []
+        bbox_min_distances: List[Optional[int]] = []
+        for b in bboxes:
+            dist = self.nearest_bbox_distance(b["phash"], b.get("label_uuid"))
+            bbox_min_distances.append(dist)
+            bbox_flags.append(dist is not None and dist <= b["threshold"])
+
+        return {
+            "image_is_dup": image_is_dup,
+            "bbox_flags": bbox_flags,
+            "image_min_distance": image_min,
+            "bbox_min_distances": bbox_min_distances,
+        }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Stats & tombstone checks
@@ -550,6 +720,16 @@ class HashIndex:
     # ─────────────────────────────────────────────────────────────────────────
     # Hash-size validation
     # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def _image_byte_len(self) -> int:
+        """Byte width of an image phash — hex length halved."""
+        return self._expected_image_hex_len // 2
+
+    @property
+    def _bbox_byte_len(self) -> int:
+        """Byte width of a bbox phash — hex length halved."""
+        return self._expected_bbox_hex_len // 2
 
     @property
     def _expected_image_hex_len(self) -> int:

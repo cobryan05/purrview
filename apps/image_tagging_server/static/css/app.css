@@ -3331,6 +3331,25 @@ button.filter-active {
   text-overflow: ellipsis;
 }
 
+/* Visible explanatory prose under a field (schema `help`), as opposed to
+   `description`, which is only a tooltip on the label. Sized well below the
+   control so it reads as guidance rather than as another field. */
+.schema-field__help {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  max-width: 46rem;
+  margin-top: 2px;
+}
+
+.schema-field__help p {
+  margin: 0 0 0.35em;
+  line-height: 1.45;
+}
+
+.schema-field__help p:last-child {
+  margin-bottom: 0;
+}
+
 /* Controls inside a schema form: drop Pico's generous form-element spacing and
    its 100%-width + bottom-margin defaults, which are what made these forms tall. */
 .schema-form input,

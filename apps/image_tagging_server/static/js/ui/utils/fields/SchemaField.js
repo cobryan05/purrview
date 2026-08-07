@@ -130,6 +130,21 @@ export class SchemaField extends Field {
 
       const node = await fieldRenderCallback(fieldInstance);
       fieldContainer.appendChild(node);
+
+      // `help` is the visible counterpart to `description`'s tooltip: prose that
+      // has to be readable without hovering (e.g. "how do I choose this value?").
+      // Blank lines in the source string become paragraph breaks.
+      if (meta.help) {
+        const help = document.createElement('div');
+        help.className = 'schema-field__help';
+        for (const para of String(meta.help).split(/\n\s*\n/)) {
+          const p = document.createElement('p');
+          p.textContent = para.trim();
+          help.appendChild(p);
+        }
+        fieldContainer.appendChild(help);
+      }
+
       container.appendChild(fieldContainer);
     }
 

@@ -411,3 +411,149 @@ class TestOnPhaseCallback:
     async def test_build_without_on_phase_does_not_raise(self, idx):
         """on_phase is optional; omitting it must not raise."""
         await idx.build()  # no on_phase argument
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nearest-neighbour distance (threshold calibration)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNearestDistance:
+    def test_empty_index_returns_none(self, idx):
+        """None means 'nothing to compare against' — distinct from 'far away'."""
+        assert idx.nearest_image_distance(IMG_BLACK) is None
+
+    def test_identical_image_is_distance_zero(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        assert idx.nearest_image_distance(IMG_BLACK) == 0
+
+    def test_matches_hamming_of_closest_entry(self, idx):
+        idx.add_image("img-white", IMG_WHITE)
+        idx.add_image("img-grey", IMG_GREY)
+        expected = min(hamming(IMG_BLACK, IMG_WHITE), hamming(IMG_BLACK, IMG_GREY))
+        assert idx.nearest_image_distance(IMG_BLACK) == expected
+
+    def test_reports_distance_beyond_the_search_threshold(self, idx):
+        """The whole point: a distance is reported even when nothing is 'similar'.
+
+        find_similar_images can only ever answer "within R?"; the calibration
+        stats need the number itself, precisely for frames that fall outside R.
+        """
+        idx.add_image("img-checker", _checkerboard_phash(hash_size=8))
+        far = hamming(IMG_BLACK, _checkerboard_phash(hash_size=8))
+        assert far > 0, "test fixture must supply two genuinely different hashes"
+        assert idx.find_similar_images(IMG_BLACK, threshold=far - 1) == []
+        assert idx.nearest_image_distance(IMG_BLACK) == far
+
+    def test_removed_image_no_longer_counts(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        idx.add_image("img-white", IMG_WHITE)
+        idx.remove_image("img-1")
+        assert idx.nearest_image_distance(IMG_BLACK) == hamming(IMG_BLACK, IMG_WHITE)
+
+    def test_removing_every_image_returns_none_again(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        idx.remove_image("img-1")
+        assert idx.nearest_image_distance(IMG_BLACK) is None
+
+    def test_wrong_hash_size_raises(self, idx):
+        with pytest.raises(ValueError):
+            idx.nearest_image_distance("abcd")
+
+    def test_bbox_distance_is_per_label(self, idx):
+        idx.add_bbox("bb-1", "label-a", BBOX_CHECKER)
+        assert idx.nearest_bbox_distance(BBOX_CHECKER, "label-a") == 0
+        assert idx.nearest_bbox_distance(BBOX_CHECKER, "label-b") is None
+
+    def test_unlabelled_bbox_returns_none(self, idx):
+        """A crop is only comparable to crops of the same label."""
+        idx.add_bbox("bb-1", "label-a", BBOX_CHECKER)
+        assert idx.nearest_bbox_distance(BBOX_CHECKER, None) is None
+
+    def test_removed_bbox_no_longer_counts(self, idx):
+        idx.add_bbox("bb-1", "label-a", BBOX_CHECKER)
+        idx.add_bbox("bb-2", "label-a", BBOX_GRAD)
+        idx.remove_bbox("bb-1", "label-a")
+        assert idx.nearest_bbox_distance(BBOX_CHECKER, "label-a") == hamming(BBOX_CHECKER, BBOX_GRAD)
+
+    def test_moved_bbox_follows_its_new_label(self, idx):
+        idx.add_bbox("bb-1", "label-a", BBOX_CHECKER)
+        idx.move_bbox("bb-1", "label-a", "label-b", BBOX_CHECKER)
+        assert idx.nearest_bbox_distance(BBOX_CHECKER, "label-a") is None
+        assert idx.nearest_bbox_distance(BBOX_CHECKER, "label-b") == 0
+
+    async def test_survives_rebuild_from_db(self, idx, db_client):
+        """The flat mirror is rebuilt by _install, not only by incremental adds."""
+        idx.add_image("img-1", IMG_BLACK)
+        await idx.rebuild()
+        # rebuild() reloads from the DB, which has no phash rows in this fixture —
+        # the mirror must be reset in step with the tree, not left holding stale rows.
+        assert idx.nearest_image_distance(IMG_BLACK) is None
+
+    def test_grows_past_initial_capacity(self, idx):
+        """The flat table starts at a fixed capacity and must grow correctly."""
+        from apps.db_server.hash_index import _FlatHashTable
+
+        for i in range(_FlatHashTable._INITIAL_CAPACITY + 10):
+            idx.add_image(f"img-{i}", IMG_WHITE)
+        idx.add_image("needle", IMG_BLACK)
+        assert idx.nearest_image_distance(IMG_BLACK) == 0
+
+
+class TestCheckDedupBulkDistances:
+    def test_reports_distances_alongside_flags(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        idx.add_bbox("bb-1", "label-a", BBOX_CHECKER)
+        result = idx.check_dedup_bulk(
+            IMG_BLACK,
+            image_threshold=5,
+            bboxes=[{"phash": BBOX_CHECKER, "label_uuid": "label-a", "threshold": 8}],
+        )
+        assert result["image_is_dup"] is True
+        assert result["bbox_flags"] == [True]
+        assert result["image_min_distance"] == 0
+        assert result["bbox_min_distances"] == [0]
+
+    def test_empty_index_gives_none_distances_and_false_flags(self, idx):
+        result = idx.check_dedup_bulk(
+            IMG_BLACK,
+            image_threshold=5,
+            bboxes=[{"phash": BBOX_CHECKER, "label_uuid": "label-a", "threshold": 8}],
+        )
+        assert result["image_is_dup"] is False
+        assert result["bbox_flags"] == [False]
+        assert result["image_min_distance"] is None
+        assert result["bbox_min_distances"] == [None]
+
+    def test_flag_and_distance_never_disagree(self, idx):
+        """is_dup must be exactly 'min_distance <= threshold' at every threshold."""
+        idx.add_image("img-white", IMG_WHITE)
+        actual = hamming(IMG_BLACK, IMG_WHITE)
+        for threshold in range(0, 65):
+            result = idx.check_dedup_bulk(IMG_BLACK, image_threshold=threshold, bboxes=[])
+            assert result["image_min_distance"] == actual
+            assert result["image_is_dup"] is (actual <= threshold)
+
+
+class TestMixedWidthPhashesDoNotBreakBuild:
+    """A DB still holding phashes from a previous hash-size setting must not take
+    the index build down — the BK-tree tolerates them, so the flat mirror must too."""
+
+    def test_from_items_skips_wrong_width_rows(self):
+        from apps.db_server.hash_index import _FlatHashTable
+
+        items = [(IMG_BLACK, "ok-1"), ("dead", "stale-1"), (IMG_WHITE, "ok-2")]
+        table = _FlatHashTable.from_items(items, byte_len=len(IMG_BLACK) // 2)
+        assert table.nearest(IMG_BLACK) == (0, "ok-1")
+
+    async def test_build_survives_a_stale_width_row(self, idx, db_client):
+        from unittest.mock import patch
+
+        rows = ([{"uuid": "ok-1", "phash": IMG_BLACK}, {"uuid": "stale", "phash": "dead"}], [])
+
+        async def _load(*args, **kwargs):
+            return rows
+
+        with patch.object(idx, "_load_phashes", _load):
+            await idx.build()
+        assert idx.nearest_image_distance(IMG_BLACK) == 0

@@ -888,3 +888,55 @@ class TestDeleteTaskConfig:
         page.wait_for_timeout(500)
 
         assert not delete_calls, "API must NOT be called when the confirm modal is cancelled"
+
+
+class TestSchemaFieldHelpText:
+    """`help` is visible prose under a field, unlike `description`, which is only
+    a tooltip on the label. Some settings (the duplicate thresholds) need a whole
+    paragraph of guidance that a user cannot be expected to discover by hovering."""
+
+    _HELP = "Run once in calibration mode.\n\nNothing is discarded while calibrating."
+    _SCHEMA = {
+        "meta": {"order": ["mode", "plain"]},
+        "mode": {
+            "type": "select",
+            "label": "Mode",
+            "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}],
+            "default": "a",
+            "help": _HELP,
+        },
+        "plain": {
+            "type": "select",
+            "label": "Plain",
+            "description": "Tooltip only.",
+            "options": [{"value": "x", "label": "X"}],
+            "default": "x",
+        },
+    }
+
+    def _open_editor(self, page: Page, base_url: str):
+        _mock_task_types(page)
+        _mock_task_schema(page, self._SCHEMA)
+        _mock_task_configs(page, {})
+        _mock_active_tasks(page, {})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        _type_select(page).select_option(TASK_TYPE)
+        page.wait_for_timeout(1000)
+        return page.locator("#task-config-list .le-editor")
+
+    def test_help_text_is_visible_without_hovering(self, page: Page, base_url: str):
+        editor = self._open_editor(page, base_url)
+        help_el = editor.locator(".schema-field__help").first
+        expect(help_el).to_be_visible()
+        expect(help_el).to_contain_text("Run once in calibration mode.")
+
+    def test_blank_lines_become_separate_paragraphs(self, page: Page, base_url: str):
+        editor = self._open_editor(page, base_url)
+        expect(editor.locator(".schema-field__help").first.locator("p")).to_have_count(2)
+
+    def test_fields_without_help_render_none(self, page: Page, base_url: str):
+        """A `description` must not start rendering as a visible block."""
+        editor = self._open_editor(page, base_url)
+        expect(editor.locator(".schema-field__help")).to_have_count(1)
+        expect(editor).not_to_contain_text("Tooltip only.")

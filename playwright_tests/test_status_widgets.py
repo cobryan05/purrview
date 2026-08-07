@@ -508,3 +508,80 @@ class TestTaskCommandAction:
         assert payload.get("taskUuid") == task_id
         assert payload.get("command") == "capture_now"
         assert payload.get("params") == {"source": "cam1"}
+
+
+# ---------------------------------------------------------------------------
+# histogram widget (dedup threshold calibration)
+# ---------------------------------------------------------------------------
+
+
+class TestHistogramWidget:
+    """The histogram is how a user reads the duplicate-threshold distribution,
+    so the bar lengths and the threshold marker have to be right — a chart that
+    renders but misplaces the marker is worse than no chart."""
+
+    _SCHEMA = [{"id": "dist", "type": "histogram", "source": "status", "label": "Nearest distance"}]
+
+    def _open(self, page: Page, base_url: str, task_id: str, data: dict):
+        _mock_status_schema(page, self._SCHEMA)
+        _mock_status_data(page, {task_id: data})
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+
+    def test_renders_one_row_per_bin_with_counts(self, page: Page, base_url: str):
+        task_id = "task-hist-1"
+        bins = [
+            {"label": "0", "count": 4, "marked": False},
+            {"label": "1", "count": 8, "marked": True},
+            {"label": "2", "count": 2, "marked": False},
+        ]
+        self._open(page, base_url, task_id, {"dist": {"bins": bins, "total": 14}})
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("Nearest distance")
+        # Every bin's count is shown as text.
+        for label, count in (("0", "4"), ("1", "8"), ("2", "2")):
+            expect(card).to_contain_text(label)
+            expect(card).to_contain_text(count)
+        expect(card).to_contain_text("14 sample(s)")
+
+    def test_marks_the_current_threshold_in_text_not_colour_alone(self, page: Page, base_url: str):
+        """Colour alone would be inaccessible; the marked bin carries a glyph
+        and the caption names the threshold."""
+        task_id = "task-hist-2"
+        bins = [
+            {"label": "0", "count": 1, "marked": False},
+            {"label": "5", "count": 3, "marked": True},
+        ]
+        self._open(page, base_url, task_id, {"dist": {"bins": bins, "total": 4}})
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("5 ◀")
+        expect(card).to_contain_text("current threshold (5)")
+
+    def test_bar_widths_are_proportional_to_counts(self, page: Page, base_url: str):
+        task_id = "task-hist-3"
+        bins = [
+            {"label": "0", "count": 10, "marked": False},
+            {"label": "1", "count": 5, "marked": False},
+        ]
+        self._open(page, base_url, task_id, {"dist": {"bins": bins, "total": 15}})
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("10")
+        widths = card.locator(".status-histogram__fill")
+        wait_until(page, lambda: widths.count() >= 2, "Expected two histogram bars")
+        full = widths.nth(0).evaluate("el => el.style.width")
+        half = widths.nth(1).evaluate("el => el.style.width")
+        assert full == "100%", f"largest bin should fill the track, got {full}"
+        assert half == "50%", f"half-count bin should be half as long, got {half}"
+
+    def test_empty_measurements_show_an_empty_state(self, page: Page, base_url: str):
+        task_id = "task-hist-4"
+        self._open(page, base_url, task_id, {"dist": {"bins": [], "total": 0}})
+        expect(page.locator(f"[data-task-uuid='{task_id}']")).to_contain_text("No measurements yet.")
+
+    def test_missing_data_does_not_break_the_card(self, page: Page, base_url: str):
+        """Before the first status-data fetch lands the widget gets undefined."""
+        task_id = "task-hist-5"
+        self._open(page, base_url, task_id, {})
+        expect(page.locator(f"[data-task-uuid='{task_id}']")).to_contain_text("No measurements yet.")

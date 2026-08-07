@@ -162,6 +162,16 @@ class CollectTrainingImagesTask(Task):
     _STALE_NOTICE_INFO_MULTIPLE: float = 3.0
     _STALE_NOTICE_WARNING_MULTIPLE: float = 10.0
     _STALE_NOTICE_ERROR_MULTIPLE: float = 30.0
+    # Rolling window of per-frame nearest-neighbour distances used to build the
+    # threshold-calibration widgets. Deliberately in-memory only (not checkpointed):
+    # it's a "what is the stream doing right now" sample, and replaying distances
+    # measured before a long pause would describe a scene that no longer exists.
+    _DEDUP_SAMPLE_SIZE: int = 200
+    # Candidate thresholds shown in the sweep tables. Image phashes are hash_size²
+    # bits (64 at the default 8) and bbox phashes 256 at the default 16, so the two
+    # live on different scales and get their own ranges rather than a shared one.
+    _IMAGE_SWEEP_THRESHOLDS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20)
+    _BBOX_SWEEP_THRESHOLDS: tuple[int, ...] = (0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -175,6 +185,10 @@ class CollectTrainingImagesTask(Task):
         self._images_saved: int = 0
         self._images_processed: int = 0
         self._enable_dedup: bool = False
+        self._duplicate_action: str = "discard"
+        self._image_dup_threshold: int = 5
+        self._bbox_dup_threshold: int = 8
+        self._dedup_samples: deque = deque(maxlen=self._DEDUP_SAMPLE_SIZE)
         self._filter_chain_runner = None
         self._last_capture: Optional[dict[str, Any]] = None
         self._source_names: list[str] = []
@@ -307,6 +321,11 @@ class CollectTrainingImagesTask(Task):
         self._dedup_frames_checked: int = resume_data.get("dedup_frames_checked", 0) if resume_data else 0
         self._dedup_image_hits: int = resume_data.get("dedup_image_hits", 0) if resume_data else 0
         self._dedup_bbox_hits: int = resume_data.get("dedup_bbox_hits", 0) if resume_data else 0
+        # Rolling sample of (image_min_distance, [bbox_min_distance, ...]) per checked
+        # frame. These are threshold-*independent* measurements, which is what makes the
+        # sweep possible: they say how close frames actually are, so any candidate
+        # threshold can be evaluated after the fact against the same sample.
+        self._dedup_samples: deque = deque(maxlen=self._DEDUP_SAMPLE_SIZE)
         # Hash sizes are global settings (must match the index; changing them requires
         # recomputing all stored hashes). Read from DB settings, fall back to defaults.
         _settings_api = SettingsApi(self._manager.get_db_api_client())
@@ -959,6 +978,109 @@ class CollectTrainingImagesTask(Task):
         }
 
     @staticmethod
+    def _percentile(values: list[int], pct: float) -> Optional[int]:
+        """Nearest-rank percentile of an already-unsorted int list, or None if empty."""
+        if not values:
+            return None
+        ordered = sorted(values)
+        idx = min(len(ordered) - 1, max(0, int(round(pct / 100.0 * (len(ordered) - 1)))))
+        return ordered[idx]
+
+    def _would_discard(self, image_dist: Optional[int], bbox_dists: list, image_t: int, bbox_t: int) -> bool:
+        """Replay the configured duplicate action against one sampled frame.
+
+        Mirrors the branch structure in _dedup_worker exactly — including the fact
+        that the 'discard' (keep-if-any-unique) action gates on image_is_dup as well
+        as on every bbox being a duplicate. If those rules ever diverge the sweep
+        silently starts lying, so they are asserted together in the unit tests.
+        """
+        image_is_dup = image_dist is not None and image_dist <= image_t
+        if self._duplicate_action == "discard_image":
+            return image_is_dup
+        if self._duplicate_action == "discard":
+            # A frame with no detections can't have "all detections duplicated";
+            # _dedup_worker's all([]) == True would discard it, so match that.
+            all_bbox_dup = all(d is not None and d <= bbox_t for d in bbox_dists)
+            return image_is_dup and all_bbox_dup
+        # "ignore" and "measure" never discard.
+        return False
+
+    def _dedup_histogram(self, values: list[int], marker: int, bucket: int = 1) -> dict[str, Any]:
+        """Bucket nearest-neighbour distances into a histogram payload for the widget."""
+        if not values:
+            return {"bins": [], "total": 0}
+        top = max(max(values), marker) + 1
+        bins: list[dict[str, Any]] = []
+        for start in range(0, top, bucket):
+            end = start + bucket - 1
+            count = sum(1 for v in values if start <= v <= end)
+            bins.append(
+                {
+                    "label": str(start) if bucket == 1 else f"{start}–{end}",
+                    "count": count,
+                    # The marked bin is where the configured threshold currently cuts:
+                    # everything at or left of it is treated as a duplicate.
+                    "marked": start <= marker <= end,
+                }
+            )
+        return {"bins": bins, "total": len(values)}
+
+    def _dedup_sweep_rows(self, thresholds: tuple[int, ...], vary: str) -> list[dict[str, Any]]:
+        """Counterfactual: what each candidate threshold would have done to the sample.
+
+        *vary* is "image" or "bbox" — the other threshold is held at its configured
+        value, because the two hashes have different widths and sweeping them
+        together would compare distances that aren't on the same scale.
+        """
+        samples = list(self._dedup_samples)
+        if not samples:
+            return []
+        rows: list[dict[str, Any]] = []
+        for t in thresholds:
+            image_t = t if vary == "image" else self._image_dup_threshold
+            bbox_t = t if vary == "bbox" else self._bbox_dup_threshold
+            discarded = sum(1 for img, bbs in samples if self._would_discard(img, bbs, image_t, bbox_t))
+            if vary == "image":
+                matched = sum(1 for img, _ in samples if img is not None and img <= t)
+            else:
+                matched = sum(1 for _, bbs in samples for d in bbs if d is not None and d <= t)
+            current = (t == self._image_dup_threshold) if vary == "image" else (t == self._bbox_dup_threshold)
+            rows.append(
+                {
+                    "threshold": f"{t} ←current" if current else str(t),
+                    "matched": str(matched),
+                    "discarded": f"{discarded} ({100.0 * discarded / len(samples):.0f}%)",
+                    "kept": f"{len(samples) - discarded} ({100.0 * (len(samples) - discarded) / len(samples):.0f}%)",
+                }
+            )
+        return rows
+
+    def _dedup_hint_text(self) -> str:
+        """One-paragraph explanation of how to read the calibration widgets."""
+        sample_n = len(self._dedup_samples)
+        if sample_n == 0:
+            return (
+                "No frames measured yet. Once frames start arriving, the tables below show what "
+                "each candidate threshold would have done to them."
+            )
+        base = (
+            f"Based on the last {sample_n} checked frame(s). Distance is Hamming distance to the "
+            "closest already-stored image (or same-label bbox crop): 0 means pixel-identical after "
+            "hashing, larger means more different. A threshold treats everything at or below it as a "
+            "duplicate. Pick the value just below the gap in the histogram — that gap separates "
+            '"same scene again" from "genuinely new".'
+        )
+        if self._duplicate_action == "measure":
+            return base + " Calibration mode is on: nothing is being discarded, so this sample is unbiased."
+        if self._duplicate_action in ("discard", "discard_image"):
+            return (
+                base + " Note: frames are currently being discarded, so discarded frames never entered "
+                "the index and the measured distances drift upward. For an unbiased sample, re-run with "
+                'Action on Duplicate set to "Measure only (calibration)".'
+            )
+        return base
+
+    @staticmethod
     def _format_duration(seconds: float) -> str:
         """Human-readable elapsed duration for the stat-grid 'Uptime' cell."""
         total = max(0, int(seconds))
@@ -998,11 +1120,60 @@ class CollectTrainingImagesTask(Task):
                     "dedup_image_hits": "Dedup image hits",
                     "dedup_bbox_hits": "Dedup bbox hits",
                     "dedup_discarded": "Dedup discarded",
+                    "dedup_image_dist_median": "Image dist (median)",
+                    "dedup_image_dist_p10": "Image dist (p10)",
+                    "dedup_bbox_dist_median": "BBox dist (median)",
+                    "dedup_sample_size": "Calibration sample",
                     "filter_discarded": "Filter discarded",
                     "filter_relabeled": "Filter relabeled",
                     "filter_tagged": "Filter tagged",
                     "filter_stripped": "Filter stripped",
                 },
+            },
+            # ── Dedup threshold calibration ──────────────────────────────────
+            # Only populated when dedup is enabled; get_status_data() omits these
+            # keys otherwise and the widgets render their own empty state.
+            {
+                "id": "dedup_hint",
+                "type": "text",
+                "source": "status",
+                "label": "Duplicate threshold calibration",
+            },
+            {
+                "id": "dedup_image_hist",
+                "type": "histogram",
+                "source": "status",
+                "label": "Image: distance to nearest stored image",
+            },
+            {
+                "id": "dedup_image_sweep",
+                "type": "table",
+                "source": "status",
+                "label": "Image threshold sweep (what each value would have done)",
+                "columns": [
+                    {"key": "threshold", "label": "Image threshold"},
+                    {"key": "matched", "label": "Frames matching"},
+                    {"key": "discarded", "label": "Would discard"},
+                    {"key": "kept", "label": "Would keep"},
+                ],
+            },
+            {
+                "id": "dedup_bbox_hist",
+                "type": "histogram",
+                "source": "status",
+                "label": "BBox: distance to nearest same-label crop",
+            },
+            {
+                "id": "dedup_bbox_sweep",
+                "type": "table",
+                "source": "status",
+                "label": "BBox threshold sweep (what each value would have done)",
+                "columns": [
+                    {"key": "threshold", "label": "BBox threshold"},
+                    {"key": "matched", "label": "BBoxes matching"},
+                    {"key": "discarded", "label": "Would discard"},
+                    {"key": "kept", "label": "Would keep"},
+                ],
             },
             {
                 "id": "sources",
@@ -1036,11 +1207,32 @@ class CollectTrainingImagesTask(Task):
             "captures_per_min": round(self._images_saved / (elapsed / 60.0), 1) if elapsed > 0 else 0,
             "uptime": self._format_duration(elapsed),
         }
+        calibration: dict[str, Any] = {}
         if self._enable_dedup:
             stats["dedup_checked"] = self._dedup_frames_checked
             stats["dedup_image_hits"] = self._dedup_image_hits
             stats["dedup_bbox_hits"] = self._dedup_bbox_hits
             stats["dedup_discarded"] = self._dup_frames_discarded
+
+            samples = list(self._dedup_samples)
+            image_dists = [img for img, _ in samples if img is not None]
+            bbox_dists = [d for _, bbs in samples for d in bbs if d is not None]
+            stats["dedup_sample_size"] = len(samples)
+            for key, values, pct in (
+                ("dedup_image_dist_median", image_dists, 50),
+                ("dedup_image_dist_p10", image_dists, 10),
+                ("dedup_bbox_dist_median", bbox_dists, 50),
+            ):
+                value = self._percentile(values, pct)
+                if value is not None:
+                    stats[key] = value
+            calibration = {
+                "dedup_hint": self._dedup_hint_text(),
+                "dedup_image_hist": self._dedup_histogram(image_dists, self._image_dup_threshold),
+                "dedup_bbox_hist": self._dedup_histogram(bbox_dists, self._bbox_dup_threshold, bucket=2),
+                "dedup_image_sweep": self._dedup_sweep_rows(self._IMAGE_SWEEP_THRESHOLDS, "image"),
+                "dedup_bbox_sweep": self._dedup_sweep_rows(self._BBOX_SWEEP_THRESHOLDS, "bbox"),
+            }
         if getattr(self, "_filter_chain_runner", None) is not None:
             stats["filter_discarded"] = self._filtered_discarded
             stats["filter_relabeled"] = self._filtered_relabeled
@@ -1075,6 +1267,7 @@ class CollectTrainingImagesTask(Task):
             "last_capture": self._last_capture,
             "stats": stats,
             "sources": rows,
+            **calibration,
         }
 
     def _build_resume_data(self) -> dict[str, Any]:
@@ -1514,6 +1707,17 @@ class CollectTrainingImagesTask(Task):
                 # Raw bbox index hits (image-independent) — diagnostic only; not a count of
                 # bboxes that were tagged/discarded, which requires image_is_dup AND bbox_flag.
                 self._dedup_bbox_hits += sum(1 for f in bbox_flags if f)
+                # Threshold-independent distances feed the calibration widgets. `None`
+                # (empty index / unlabelled bbox) means "no comparison was possible" and
+                # is kept as None rather than coerced to a number — bucketing it as a
+                # large distance would fabricate "these frames are unique" evidence out
+                # of the first frames of a run, when the index simply had nothing in it.
+                self._dedup_samples.append(
+                    (
+                        resp.image_min_distance,
+                        list(resp.bbox_min_distances) if resp.bbox_min_distances else [],
+                    )
+                )
                 logger.debug(
                     "dedup result: image_is_dup=%s bbox_flags=%s (img_thresh=%d bbox_thresh=%d)",
                     resp.image_is_dup,
@@ -1522,6 +1726,12 @@ class CollectTrainingImagesTask(Task):
                     self._bbox_dup_threshold,
                 )
 
+                # The "measure" (calibration) action matches neither discard branch below,
+                # so it falls through to the save — by design. It pays the full hashing and
+                # index-query cost purely to populate the distance sample above, letting the
+                # sweep report what each threshold *would* have done without any frame
+                # actually being dropped on a guessed threshold.
+                #
                 # Image-level discard: skip the frame when the whole scene is a perceptual duplicate.
                 if self._duplicate_action == "discard_image" and resp.image_is_dup:
                     self._dup_frames_discarded += 1
@@ -1869,19 +2079,43 @@ class CollectTrainingImagesTask(Task):
                                 "value": "ignore",
                                 "label": "Ignore — save normally without any duplicate marking",
                             },
+                            {
+                                "value": "measure",
+                                "label": "Measure only (calibration) — keep every frame, but measure how duplicate it was",
+                            },
                         ],
                         "default": "discard",
+                        "help": (
+                            "Not sure what to set the thresholds below to? Run the task once with "
+                            "'Measure only (calibration)'. It discards nothing — every frame is saved as if "
+                            "deduplication were off — but it measures how close each frame was to what you "
+                            "already have, and the task's live status panel then shows a distance histogram "
+                            "plus a sweep table telling you how many frames each candidate threshold would "
+                            "have discarded. Let it run over a representative stretch of footage, read the "
+                            "threshold off the table, set it here, then switch back to a discard action.\n\n"
+                            "Calibrating this way matters because once frames are being discarded the "
+                            "measurement is biased: discarded frames never enter the index, so the remaining "
+                            "frames look more unique than they are. Calibration mode keeps the sample honest."
+                        ),
                     },
                     "image_dup_threshold": {
                         "type": "int",
                         "label": "Image Duplicate Threshold",
-                        "description": "Max Hamming distance for two whole-image phashes to be considered the same scene.",
+                        "description": (
+                            "Max Hamming distance for two whole-image phashes to be considered the same scene. "
+                            "0 = only near-identical frames; larger = more aggressive discarding. "
+                            "Run in 'Measure only (calibration)' mode to see what value suits your cameras."
+                        ),
                         "default": 5,
                     },
                     "bbox_dup_threshold": {
                         "type": "int",
                         "label": "BBox Duplicate Threshold",
-                        "description": "Max Hamming distance for two bbox crop phashes to be considered the same object appearance.",
+                        "description": (
+                            "Max Hamming distance for two bbox crop phashes to be considered the same object "
+                            "appearance. Crop hashes are wider than image hashes, so this scale runs higher — "
+                            "don't copy the image threshold across. Calibrate it the same way."
+                        ),
                         "default": 8,
                     },
                 },
