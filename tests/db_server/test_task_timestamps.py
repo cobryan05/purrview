@@ -135,3 +135,55 @@ async def test_log_json_roundtrip(http_client):
 
     r2 = await http_client.get("/api/task-instances", params={"uuids": [inst]})
     assert r2.json()["instances"][0]["logLines"] == logs
+
+
+# ── Persisted status-widget snapshot ────────────────────────────────────────────
+
+
+class TestStatusDataPersistence:
+    """A task's status widgets (histograms, stat grids, source tables) read from
+    get_status_data(), which lives on the task object and dies with the run. The
+    last snapshot is persisted alongside the logs so a finished card can still
+    render what the run produced."""
+
+    async def test_status_data_round_trips(self, http_client):
+        cfg = await _create_config(http_client, "sd-task")
+        inst = await _create_instance(http_client, cfg)
+
+        snapshot = {
+            "stats": {"images_saved": 306, "images_processed": 5672},
+            "dedup_image_hist": {"bins": [{"label": "0", "count": 12, "marked": True}], "total": 12},
+            "sources": [{"name": "CatCloset", "health": "ok", "last_error": "—"}],
+        }
+        r = await http_client.patch(
+            f"/api/task-instances/{inst}/timestamps",
+            json={"statusDataJson": snapshot},
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "success"
+
+        r2 = await http_client.get("/api/task-instances", params={"uuids": [inst]})
+        assert r2.json()["instances"][0]["statusData"] == snapshot
+
+    async def test_a_later_write_without_status_data_does_not_blank_it(self, http_client):
+        """Timestamps are written at points where the snapshot isn't being sent
+        (e.g. the started_at write at launch); those must leave it intact."""
+        cfg = await _create_config(http_client, "sd-task-keep")
+        inst = await _create_instance(http_client, cfg)
+        snapshot = {"stats": {"images_saved": 7}}
+
+        await http_client.patch(f"/api/task-instances/{inst}/timestamps", json={"statusDataJson": snapshot})
+        await http_client.patch(
+            f"/api/task-instances/{inst}/timestamps",
+            json={"endedAt": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()},
+        )
+
+        instance = (await http_client.get("/api/task-instances", params={"uuids": [inst]})).json()["instances"][0]
+        assert instance["statusData"] == snapshot
+        assert instance["endedAt"] is not None
+
+    async def test_absent_status_data_is_null(self, http_client):
+        cfg = await _create_config(http_client, "sd-task-none")
+        inst = await _create_instance(http_client, cfg)
+        instance = (await http_client.get("/api/task-instances", params={"uuids": [inst]})).json()["instances"][0]
+        assert instance["statusData"] is None

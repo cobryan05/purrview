@@ -1,4 +1,4 @@
-export { ActiveTaskField } from './ActiveTaskField.js';
+export { ActiveTaskField, TERMINAL_STATUSES } from './ActiveTaskField.js';
 export { ArrayField } from './ArrayField.js';
 export { DirBrowserField } from './DirBrowserField.js';
 export { BboxInfoField } from './BboxInfoField.js';

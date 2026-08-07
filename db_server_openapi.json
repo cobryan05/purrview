@@ -10261,6 +10261,17 @@
         "properties": {
           "status": {
             "$ref": "#/components/schemas/TaskStatus"
+          },
+          "errorMessage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errormessage"
           }
         },
         "type": "object",
@@ -10308,6 +10319,18 @@
               }
             ],
             "title": "Logjson"
+          },
+          "statusDataJson": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statusdatajson"
           }
         },
         "type": "object",
@@ -10740,6 +10763,18 @@
               }
             ],
             "title": "Loglines"
+          },
+          "statusData": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statusdata"
           }
         },
         "type": "object",

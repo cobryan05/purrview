@@ -632,6 +632,12 @@ class TaskInstanceBase(SQLModel):
     ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     heartbeat_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     log_json: Optional[List[str]] = Field(default=None, sa_column=Column(JSON))
+    # Last snapshot of the task's get_status_data() — the histograms, stat grids and
+    # source tables its status_schema() widgets render from. Persisted for the same
+    # reason as log_json: the live values live in the task object, which is gone once
+    # the run ends, so a finished card could previously only show empty widgets.
+    # Measured at ~13 KB for the heaviest task type; most are far smaller.
+    status_data_json: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
 
 
 class TaskInstance(TaskInstanceBase, TimestampModel, table=True):
@@ -663,6 +669,7 @@ class TaskInstanceRead(OrmModel):
     ended_at: Optional[datetime] = None
     heartbeat_at: Optional[datetime] = None
     log_lines: Optional[List[str]] = Field(default=None, validation_alias="log_json")
+    status_data: Optional[Dict[str, Any]] = Field(default=None, validation_alias="status_data_json")
 
 
 class TaskResult(BaseModel):

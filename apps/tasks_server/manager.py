@@ -12,6 +12,7 @@ import db_client.models as db_models
 import inference_client
 from db_client.api.tasks_api import TasksApi
 
+from apps import TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
 from apps.helpers.consts import TaskStatus
 from apps.tasks_server.types import TaskInfo
 
@@ -34,6 +35,14 @@ class Manager:
     # to a clean slate instead of being permanently barred.
     _CRASH_LOOP_MAX_RESTARTS: int = 5
     _CRASH_LOOP_WINDOW: timedelta = timedelta(hours=1)
+
+    # Retention bounds for finished instances (see apps/__init__.py). Read from the
+    # module-level config at class definition rather than per-call so tests can
+    # patch.object these directly, the same way they do the crash-loop knobs.
+    _RETENTION_DAYS: int = TASK_RETENTION_DAYS
+    _RETENTION_MAX_COMPLETED: int = TASK_RETENTION_MAX_COMPLETED
+    # Statuses a task never leaves on its own — only these are prunable.
+    _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.ERROR)
 
     def __init__(
         self,
@@ -240,6 +249,7 @@ class Manager:
             except asyncio.TimeoutError as e:
                 logger.warning(f"Timeout while waiting task pause: {e}")
                 task_info.instance.status = TaskStatus.ERROR
+                task_info.task.set_error_message("Timed out waiting for the task to reach a suspendable point.")
             except StopIteration as e:
                 task_info.instance.status = TaskStatus.COMPLETED
                 logger.info(f"Task finished while waiting for data ready: {e}")
@@ -402,20 +412,40 @@ class Manager:
         return schemas
 
     async def get_tasks_status_data(self, task_uuids: Union[List[str], str]) -> dict[str, dict]:
-        """Return live status_data for the given task instance uuids.
+        """Return status_data for the given task instance uuids.
 
-        Unknown or not-currently-running uuids are simply omitted, not an error —
-        the task may have completed, been deleted, or never existed.
+        Live values win for a running task; for one that has finished (or was
+        suspended) the last snapshot persisted at save time is served instead, so a
+        completed card still shows the histograms and stats the run produced.
+
+        Uuids with neither are simply omitted, not an error — the task may have been
+        deleted, or never existed.
         """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
         status_data = {}
+        not_running = []
         for uuid in task_uuids:
             task_info = self._running_tasks.get(uuid)
             if task_info is None or task_info.task is None:
+                not_running.append(uuid)
                 continue
             status_data[uuid] = task_info.task.get_status_data()
+
+        if not_running:
+            try:
+                resp = await asyncio.to_thread(
+                    TasksApi(self._db_api_client).list_task_instances,
+                    uuids=not_running,
+                )
+                for inst in resp.instances or []:
+                    if inst.status_data:
+                        status_data[inst.uuid] = inst.status_data
+            except Exception:
+                # A finished card losing its widgets is not worth failing the request
+                # for — the rest of the card (status, logs, error) still renders.
+                logger.exception("Failed to load persisted status data for %s", not_running)
         return status_data
 
     async def send_task_command(self, task_uuid: str, command: str, params: dict[str, Any]) -> None:
@@ -442,9 +472,13 @@ class Manager:
             await self._save_task_data(task_info, ended_at=datetime.now(timezone.utc))
             if task_info.config.params.get(Task.InternalKeys.ONESHOT_RESULT, False):
                 self._pending_oneshot_deletes.add(task_info.instance.uuid)
-        except Exception:
+        except Exception as e:
             logger.exception(f"Error completing task {task_info.instance.uuid}; forcing ERROR status")
             task_info.instance.status = TaskStatus.ERROR
+            # Don't clobber a message the task set itself — the original failure
+            # explains more than the bookkeeping error that followed it.
+            if task_info.task.get_error_message() is None:
+                task_info.task.set_error_message(f"Failed while finalising the task: {type(e).__name__}: {e}")
             try:
                 await self._save_task_data(task_info, ended_at=datetime.now(timezone.utc))
             except Exception:
@@ -458,6 +492,10 @@ class Manager:
                 db_models.SetTaskResumeDataPayload(resume_data=task_info.task.get_resume_data()),
             )
             task_info.task.clear_data_ready()
+        # Keep the in-memory copy in step with what we're about to persist: polls
+        # answered from _running_tasks would otherwise show "error" with no reason
+        # for the moment between the task failing and it being popped.
+        task_info.instance.error_message = task_info.task.get_error_message()
         # Status and result are critical — a failure here must propagate so the
         # caller's retry logic can attempt recovery.
         await asyncio.gather(
@@ -469,13 +507,25 @@ class Manager:
             asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_status,
                 task_info.instance.uuid,
-                db_models.SetTaskStatusPayload(status=task_info.instance.status),
+                db_models.SetTaskStatusPayload(
+                    status=task_info.instance.status,
+                    error_message=task_info.task.get_error_message(),
+                ),
             ),
         )
         # Timestamps and logs are best-effort: a failure must not block status/result
         # from being written, and must not prevent the task from being marked done.
         # ended_at is None for suspended tasks (they can be resumed) and set by
         # callers that know the task has truly terminated.
+        # The status widgets' data lives in the task object, which is discarded the
+        # moment the run ends — so snapshot it here, or a finished card shows empty
+        # histograms and stat grids. get_status_data() is contractually cheap and
+        # non-blocking, but a buggy one must not cost us the logs, hence its own try.
+        status_data = None
+        try:
+            status_data = task_info.task.get_status_data()
+        except Exception:
+            logger.exception(f"get_status_data() failed for task {task_info.instance.uuid} (non-fatal)")
         try:
             await asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_timestamps,
@@ -483,6 +533,7 @@ class Manager:
                 db_models.SetTaskTimestampsPayload(
                     ended_at=ended_at,
                     log_json=list(task_info.task.get_log_lines()),
+                    status_data_json=status_data,
                 ),
             )
         except Exception:
@@ -571,18 +622,22 @@ class Manager:
         if running_tasks:
             coros = []
             for inst in running_tasks:
+                recovery_message = None
                 if inst.resume_data:
                     recovered_status = db_models.TaskStatus.PAUSED
                     logger.info(f"Task {inst.uuid} interrupted with checkpoint — marking paused (resumable)")
                     resumable_instances.append(inst)
                 else:
                     recovered_status = db_models.TaskStatus.ERROR
+                    recovery_message = (
+                        "The server stopped while this task was running, and it had no checkpoint to resume from."
+                    )
                     logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
                 coros.append(
                     asyncio.to_thread(
                         TasksApi(self._db_api_client).set_task_instance_status,
                         inst.uuid,
-                        db_models.SetTaskStatusPayload(status=recovered_status),
+                        db_models.SetTaskStatusPayload(status=recovered_status, error_message=recovery_message),
                     )
                 )
             await asyncio.gather(*coros)
@@ -645,7 +700,13 @@ class Manager:
                         asyncio.to_thread(
                             TasksApi(self._db_api_client).set_task_instance_status,
                             inst.uuid,
-                            db_models.SetTaskStatusPayload(status=TaskStatus.ERROR),
+                            db_models.SetTaskStatusPayload(
+                                status=TaskStatus.ERROR,
+                                error_message=(
+                                    "No heartbeat from this task for over "
+                                    f"{stale_threshold}; assuming it died without reporting an error."
+                                ),
+                            ),
                         )
                     )
                 await asyncio.gather(*coros)
@@ -757,7 +818,13 @@ class Manager:
                 asyncio.to_thread(
                     TasksApi(self._db_api_client).set_task_instance_status,
                     inst.uuid,
-                    db_models.SetTaskStatusPayload(status=TaskStatus.ERROR),
+                    db_models.SetTaskStatusPayload(
+                        status=TaskStatus.ERROR,
+                        error_message=(
+                            f"Auto-restart stopped: this task restarted {count} times within "
+                            f"{self._CRASH_LOOP_WINDOW}, which trips the crash-loop guard."
+                        ),
+                    ),
                 ),
                 asyncio.to_thread(
                     TasksApi(self._db_api_client).update_task_config,
@@ -782,6 +849,68 @@ class Manager:
         restarted_config = config.model_copy(update={"params": new_params})
         await self._start_task(restarted_config, resume_instance=inst)
 
+    async def _prune_finished_task_instances(self) -> List[str]:
+        """Delete finished task instances past either retention bound.
+
+        Both bounds apply, whichever removes more: instances that ended longer ago
+        than _RETENTION_DAYS, plus anything beyond the _RETENTION_MAX_COMPLETED most
+        recent. Age alone doesn't bound storage (a persistent config can produce
+        instances far faster than they age out) and a count alone gives no sense of
+        how far back the history reaches.
+
+        Only COMPLETED/ERROR instances are candidates — a running, pending or
+        suspended task is live state, never history, regardless of its age.
+        Returns the uuids deleted, for logging and tests.
+        """
+        if self._RETENTION_DAYS <= 0 and self._RETENTION_MAX_COMPLETED <= 0:
+            return []
+        try:
+            resp = await asyncio.to_thread(TasksApi(self._db_api_client).list_task_instances)
+        except Exception:
+            logger.exception("Failed to list task instances for retention pruning")
+            return []
+
+        finished = [i for i in (resp.instances or []) if i.status in self._TERMINAL_STATUSES]
+        if not finished:
+            return []
+
+        def _finished_at(inst) -> datetime:
+            # ended_at is the real signal; created_at covers rows written before
+            # ended_at was persisted. The epoch fallback sorts undated rows oldest,
+            # so they are pruned first rather than pinned at the top forever.
+            stamp = inst.ended_at or inst.created_at
+            if stamp is None:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+        finished.sort(key=_finished_at, reverse=True)  # newest first
+
+        victims: set[str] = set()
+        if self._RETENTION_MAX_COMPLETED > 0:
+            victims.update(i.uuid for i in finished[self._RETENTION_MAX_COMPLETED :])
+        if self._RETENTION_DAYS > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=self._RETENTION_DAYS)
+            victims.update(i.uuid for i in finished if _finished_at(i) < cutoff)
+
+        if not victims:
+            return []
+        uuids = sorted(victims)
+        try:
+            await asyncio.to_thread(
+                TasksApi(self._db_api_client).delete_task_instances,
+                db_models.DeleteTaskInstancesPayload(task_uuids=uuids),
+            )
+        except Exception:
+            logger.exception("Failed to delete %d expired task instances", len(uuids))
+            return []
+        logger.info(
+            "Pruned %d finished task instance(s) (keeping %d days / %d most recent)",
+            len(uuids),
+            self._RETENTION_DAYS,
+            self._RETENTION_MAX_COMPLETED,
+        )
+        return uuids
+
     async def _worker_task(self):
         try:
             await self._init()
@@ -789,6 +918,7 @@ class Manager:
                 await asyncio.sleep(60)
                 await self._check_stale_tasks()
                 await self._checkpoint_running_tasks()
+                await self._prune_finished_task_instances()
         except asyncio.CancelledError:
             logger.info("Periodic task was cancelled.")
         except Exception as e:

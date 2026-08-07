@@ -83,3 +83,12 @@ CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/data/cache/"))
 FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 # Maximum thumbnail cache size in MB. Set to 0 to disable the limit.
 THUMB_CACHE_MAX_MB = int(os.environ.get("THUMB_CACHE_MAX_MB", "100"))
+
+# How long a finished (completed/error) task instance is kept before the tasks
+# server prunes it, and how many are kept regardless of age. Both bounds apply —
+# whichever is reached first — because they answer different questions: the age
+# limit is "how far back do I still care?", the count limit is what actually caps
+# storage when a persistent config churns out instances faster than they age out.
+# Set either to 0 to disable that bound.
+TASK_RETENTION_DAYS = int(os.environ.get("TASK_RETENTION_DAYS", "15"))
+TASK_RETENTION_MAX_COMPLETED = int(os.environ.get("TASK_RETENTION_MAX_COMPLETED", "200"))

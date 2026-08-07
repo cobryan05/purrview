@@ -2799,6 +2799,7 @@ class DbClient:
         started_at: Optional[datetime] = None,
         ended_at: Optional[datetime] = None,
         log_json: Optional[List[str]] = None,
+        status_data_json: Optional[Dict[str, Any]] = None,
     ) -> None:
         async with self._async_session_maker() as session:
             instance = await session.get(TaskInstance, task_uuid)
@@ -2809,6 +2810,10 @@ class DbClient:
                     instance.ended_at = ended_at
                 if log_json is not None:
                     instance.log_json = log_json
+                # Each field is written only when supplied, so a caller that sends just
+                # one (e.g. the start-of-run started_at write) can't blank the others.
+                if status_data_json is not None:
+                    instance.status_data_json = status_data_json
                 session.add(instance)
                 await session.commit()
 
@@ -2820,11 +2825,18 @@ class DbClient:
                 session.add(instance)
                 await session.commit()
 
-    async def set_task_status(self, task_uuid: str, new_status: str) -> None:
+    async def set_task_status(self, task_uuid: str, new_status: str, error_message: Optional[str] = None) -> None:
+        """Set an instance's status, and the message explaining an ERROR.
+
+        error_message is written on every call, not just when one is supplied:
+        leaving a previous failure's text behind on a task that has since been
+        resumed and is running again would misreport the live state.
+        """
         async with self._async_session_maker() as session:
             instance = await session.get(TaskInstance, task_uuid)
             if instance:
                 instance.status = new_status
+                instance.error_message = error_message if new_status == TaskStatus.ERROR else None
                 session.add(instance)
                 await session.commit()
 

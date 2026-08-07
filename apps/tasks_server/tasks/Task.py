@@ -53,6 +53,11 @@ class Task(ABC):
         # existing batch task would suddenly render as indeterminate.
         self._progress: Optional[float] = 0.0
         self._results: dict[str, Any] = {}
+        # Why this is separate from _results: results are one-shot (fetched once,
+        # then deleted), so the message explaining a failure used to vanish from
+        # the UI the first time anything read it. This is persisted to
+        # task_instances.error_message and survives for as long as the instance does.
+        self._error_message: Optional[str] = None
         self._resume_data: dict[str, Any] = {}
         self._log_lines: deque[str] = deque(maxlen=100)
         self._task_done: asyncio.Event = asyncio.Event()
@@ -199,6 +204,9 @@ class Task(ABC):
         except Exception as e:
             self._status = TaskStatus.ERROR
             logger.error(e, exc_info=True)
+            # The exception type carries real diagnostic weight when str(e) is
+            # empty or terse (a bare TimeoutError says nothing on its own).
+            self._error_message = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
             self._results = {"status": TaskStatus.ERROR, "message": str(e)}
             self.log(f"Error: {e}")
         finally:
@@ -316,6 +324,23 @@ class Task(ABC):
     def get_status_message(self) -> str:
         """Returns any message to return with task status"""
         return ""
+
+    def get_error_message(self) -> Optional[str]:
+        """The message explaining why this task failed, or None if it hasn't.
+
+        Persisted alongside the ERROR status so the reason outlives the one-shot
+        result payload and stays visible on the task's card.
+        """
+        return self._error_message
+
+    def set_error_message(self, message: str) -> None:
+        """Record a failure the task itself didn't raise.
+
+        For the Manager, which marks tasks ERROR for reasons outside _execute
+        (a pause that timed out, a stale heartbeat) and would otherwise leave the
+        card saying "error" with no reason at all.
+        """
+        self._error_message = message
 
     def get_status_actions(self) -> list[dict]:
         """Returns action buttons to show in the live task status UI while the task is running.

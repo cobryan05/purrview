@@ -3895,6 +3895,21 @@ button.filter-active {
   min-width: 0;
 }
 
+/* Why an errored task failed (ActiveTaskField). Sits at the top of the card body
+   above the timestamps: it's the one thing you opened a failed card to read.
+   `pre-wrap` + `break-word` because these are raw exception strings — long URLs
+   and repr() output must wrap rather than stretch the card out of its grid cell. */
+.task-error-message {
+  background: var(--color-danger-soft);
+  border-left: 3px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  padding: 0.35em 0.5em;
+  margin-bottom: 0.4em;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
 /* A `group` status widget (ActiveTaskField): a nestable section inside a task
    card, so a long diagnostic block — the dedup histograms and sweep tables —
    folds down to one line when you are only trying to scroll past the card.

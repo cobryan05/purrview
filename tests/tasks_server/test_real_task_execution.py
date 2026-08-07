@@ -198,6 +198,28 @@ async def test_error_task_logs_error_message():
     assert any("Error" in line for line in logs)
 
 
+async def test_error_task_records_a_persistable_error_message():
+    """The failure reason is kept on the task itself, not only in the one-shot
+    result, so the Manager can persist it to task_instances.error_message and the
+    card can still explain the failure long after the result has been consumed."""
+    task = _make_task("ErrorTask")
+    await task.start()
+    await task.wait_for_task_done(timeout=5.0)
+
+    # The exception type is included: a bare TimeoutError's str() is empty, and
+    # "error" with no text is exactly the state this feature exists to remove.
+    assert task.get_error_message() == "ValueError: deliberate error"
+
+
+async def test_successful_task_has_no_error_message():
+    task = _make_task("TestTask")
+    await task.start()
+    await task.wait_for_task_done(timeout=5.0)
+
+    assert task.get_status() == TaskStatus.COMPLETED
+    assert task.get_error_message() is None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Data request / data ready protocol
 # ──────────────────────────────────────────────────────────────────────────────

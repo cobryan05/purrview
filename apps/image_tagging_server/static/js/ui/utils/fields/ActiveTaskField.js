@@ -3,6 +3,9 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTaskStatusSchemas, fetchTaskStatusData, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
 import { statusWidgets } from '/app-static/js/ui/utils/statusWidgets/index.js';
 
+/** Statuses that mean "this task is no longer doing anything". */
+export const TERMINAL_STATUSES = new Set(['completed', 'error']);
+
 const STATUS_COLORS = {
   pending: '#888',
   running: '#2196F3',
@@ -250,6 +253,19 @@ export class ActiveTaskField extends Field {
     const body = document.createElement('div');
     body.style.cssText = 'padding:0.4em 0 0.2em 1em; border-left:2px solid #e8e8e8; margin-top:0.3em; font-size:0.85em;';
 
+    // ── Why it failed ──────────────────────────────────────────────────
+    // Rendered here rather than as a status widget on purpose: a task type with
+    // its own status_schema() (CollectTrainingImages, TrainModel, …) doesn't
+    // include the default statusMessage widget, so a schema-driven error message
+    // would be invisible on exactly the cards most likely to have one.
+    if (this._status === 'error' && this._message) {
+      const errDiv = document.createElement('div');
+      errDiv.className = 'task-error-message';
+      errDiv.dataset.testid = 'task-error-message';
+      errDiv.textContent = this._message;
+      body.appendChild(errDiv);
+    }
+
     // Timestamps
     {
       const parts = [];
@@ -467,6 +483,11 @@ export class ActiveTaskField extends Field {
         }
       }
 
+      // A finished task's status data is a snapshot persisted when it ended — it
+      // cannot change, so fetch it once and don't hold a 5s timer open on a card
+      // the user may leave expanded indefinitely.
+      const isTerminal = TERMINAL_STATUSES.has(this._status);
+
       details.addEventListener('toggle', () => {
         if (details.open) {
           while (pendingMounts.length) {
@@ -474,7 +495,7 @@ export class ActiveTaskField extends Field {
               console.error('Status widget mount failed:', err));
           }
           refresh();
-          if (pollTimer === null) pollTimer = setInterval(refresh, STATUS_DATA_POLL_MS);
+          if (!isTerminal && pollTimer === null) pollTimer = setInterval(refresh, STATUS_DATA_POLL_MS);
         } else {
           stopPolling();
           teardown();

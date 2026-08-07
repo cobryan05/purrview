@@ -2,7 +2,7 @@ import {
   cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus,
   pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig,
 } from '/app-static/js/shared/api/tasks.js';
-import { ActiveTaskField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
+import { ActiveTaskField, TaskConfigField, TERMINAL_STATUSES } from '/app-static/js/ui/utils/fields/index.js';
 import { confirmStartIfDirty, createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
@@ -286,8 +286,8 @@ function _scrollParent(el) {
   return null;
 }
 
-/** Statuses that mean "this task is no longer doing anything". */
-const TERMINAL_STATUSES = new Set(['completed', 'error']);
+// TERMINAL_STATUSES lives with ActiveTaskField (which also gates its status-data
+// polling on it) so the card and this list can't disagree about what "finished" means.
 
 /**
  * Count tasks that are still live, for the Activity tab's badge.

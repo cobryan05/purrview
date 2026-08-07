@@ -239,3 +239,27 @@ async def test_determinate_zero_progress_serializes_as_zero_not_null(http_client
     assert data["tasks"][TASK_UUID]["progress"] is not None
 
     await http_client.post("/api/tasks/instances/cancel", json={"taskUuids": [TASK_UUID]})
+
+
+async def test_failed_task_persists_its_error_message(manager, tasks_api_mock):
+    """End-to-end: a task that raises must have the reason written to the DB
+    alongside status='error'. The result payload carrying the same text is
+    one-shot — it's deleted on first read — so this is what makes the failure
+    still explainable on the card afterwards."""
+    # Registered in test_real_task_execution; importing it here would be circular,
+    # so reuse the registry the way the manager itself does.
+    import tests.tasks_server.test_real_task_execution  # noqa: F401
+
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].typename = "ErrorTask"
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {}
+
+    await manager.start_new_task(CONFIG_UUID)
+    # Let _execute run to completion and the manager's completion path persist.
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if any(c.args[1].status == "error" for c in tasks_api_mock.set_task_instance_status.call_args_list):
+            break
+
+    error_writes = [c for c in tasks_api_mock.set_task_instance_status.call_args_list if c.args[1].status == "error"]
+    assert error_writes, "a raising task must write status='error'"
+    assert error_writes[-1].args[1].error_message == "ValueError: deliberate error"

@@ -510,6 +510,9 @@ class DeleteTaskInstancesPayload(ApiPayload):
 
 class SetTaskStatusPayload(ApiPayload):
     status: TaskStatus
+    # Only meaningful with status=ERROR. Any other status clears whatever message
+    # was stored, so a resumed/rerun instance doesn't keep displaying a stale one.
+    error_message: Optional[str] = None
 
 
 class SetTaskResultPayload(ApiPayload):
@@ -524,6 +527,9 @@ class SetTaskTimestampsPayload(ApiPayload):
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     log_json: Optional[List[str]] = None
+    # Snapshot of the task's status widgets, persisted next to the logs for the same
+    # reason and on the same best-effort footing (see TaskInstanceBase.status_data_json).
+    status_data_json: Optional[Dict[str, Any]] = None
 
 
 class GetTaskResultsPayload(ApiPayload):
@@ -2499,7 +2505,7 @@ class WebApp:
         )
         async def set_task_instance_status(instance_uuid: str, payload: SetTaskStatusPayload) -> StatusResponse:
             try:
-                await self._manager.set_task_status(instance_uuid, payload.status)
+                await self._manager.set_task_status(instance_uuid, payload.status, payload.error_message)
                 return StatusResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 logger.error(e, exc_info=True)
@@ -2548,6 +2554,7 @@ class WebApp:
                     started_at=payload.started_at,
                     ended_at=payload.ended_at,
                     log_json=payload.log_json,
+                    status_data_json=payload.status_data_json,
                 )
                 return StatusResponse(status=JsonValues.SUCCESS)
             except Exception as e:

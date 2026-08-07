@@ -2227,8 +2227,10 @@ class Manager:
     async def delete_task_instances(self, task_uuids: List[str]) -> None:
         await self._db_client.delete_active_tasks(task_uuids)
 
-    async def set_task_status(self, instance_uuid: str, status: TaskStatus) -> None:
-        await self._db_client.set_task_status(instance_uuid, status)
+    async def set_task_status(
+        self, instance_uuid: str, status: TaskStatus, error_message: Optional[str] = None
+    ) -> None:
+        await self._db_client.set_task_status(instance_uuid, status, error_message=error_message)
 
     async def set_task_result(self, instance_uuid: str, result: TaskResultData) -> None:
         await self._db_client.set_task_result(instance_uuid, result)
@@ -2242,9 +2244,14 @@ class Manager:
         started_at: Optional[datetime] = None,
         ended_at: Optional[datetime] = None,
         log_json: Optional[List[str]] = None,
+        status_data_json: Optional[Dict[str, Any]] = None,
     ) -> None:
         await self._db_client.set_task_timestamps_and_logs(
-            instance_uuid, started_at=started_at, ended_at=ended_at, log_json=log_json
+            instance_uuid,
+            started_at=started_at,
+            ended_at=ended_at,
+            log_json=log_json,
+            status_data_json=status_data_json,
         )
 
     async def update_task_heartbeat(self, instance_uuid: str) -> None:

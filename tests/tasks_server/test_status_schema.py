@@ -1,5 +1,9 @@
 import asyncio
+from unittest.mock import MagicMock
 
+import db_client.models as db_models
+
+from apps.helpers.consts import TaskStatus
 from tests.tasks_server.conftest import (
     CONFIG_UUID,
     STATUS_SCHEMA_CONFIG_UUID,
@@ -82,15 +86,62 @@ class TestTaskInstanceStatusData:
         assert data["status"] == "success"
         assert data["statusData"] == {}
 
-    async def test_not_running_task_is_omitted(self, http_client):
+    async def test_not_running_task_with_no_snapshot_is_omitted(self, http_client):
         # TASK_UUID's config was never started in this test, so it's not in
-        # _running_tasks -- must be omitted rather than raising.
+        # _running_tasks and has nothing persisted -- must be omitted, not raise.
         resp = await http_client.post(
             "/api/tasks/instances/status-data",
             json={"taskUuids": [TASK_UUID]},
         )
         assert resp.status_code == 200
         assert resp.json()["statusData"] == {}
+
+    async def test_finished_task_serves_its_persisted_snapshot(self, http_client, tasks_api_mock):
+        """A completed task is gone from _running_tasks, so its widgets used to render
+        empty. The snapshot saved when it finished is served in the live values' place."""
+        snapshot = {"counter": 42, "dedup_image_hist": {"bins": [], "total": 0}}
+        finished = db_models.TaskInstanceRead(
+            uuid=TASK_UUID,
+            config_uuid=CONFIG_UUID,
+            status=TaskStatus.COMPLETED,
+            resume_data=None,
+            result=None,
+            error_message=None,
+            status_data=snapshot,
+        )
+        tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[finished])
+
+        resp = await http_client.post(
+            "/api/tasks/instances/status-data",
+            json={"taskUuids": [TASK_UUID]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["statusData"] == {TASK_UUID: snapshot}
+
+    async def test_running_task_prefers_live_values_over_the_snapshot(self, http_client, tasks_api_mock):
+        """A stale snapshot must never shadow a running task's real numbers."""
+        stale = db_models.TaskInstanceRead(
+            uuid=STATUS_SCHEMA_TASK_UUID,
+            config_uuid=STATUS_SCHEMA_CONFIG_UUID,
+            status=TaskStatus.RUNNING,
+            resume_data=None,
+            result=None,
+            error_message=None,
+            status_data={"counter": 9999},
+        )
+        tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[stale])
+
+        await http_client.post(
+            "/api/tasks/instances/start",
+            json={"configUuid": STATUS_SCHEMA_CONFIG_UUID},
+        )
+        await asyncio.sleep(0)
+
+        resp = await http_client.post(
+            "/api/tasks/instances/status-data",
+            json={"taskUuids": [STATUS_SCHEMA_TASK_UUID]},
+        )
+        assert resp.json()["statusData"] == {STATUS_SCHEMA_TASK_UUID: {"counter": 0}}
 
 
 class TestTaskCommand:

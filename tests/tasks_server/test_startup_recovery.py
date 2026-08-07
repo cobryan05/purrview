@@ -84,6 +84,22 @@ async def test_init_marks_running_without_checkpoint_as_error(manager, tasks_api
     uuid_arg, payload_arg = tasks_api_mock.set_task_instance_status.call_args.args
     assert uuid_arg == "run-no-chk-uuid"
     assert payload_arg.status == "error"
+    # There is no Task object left to explain this one, so the recovery pass has
+    # to supply the reason itself — otherwise the card just says "error".
+    assert payload_arg.error_message is not None
+    assert "no checkpoint" in payload_arg.error_message
+
+
+async def test_init_does_not_attach_an_error_message_to_a_recovered_paused_task(manager, tasks_api_mock):
+    """A resumable task isn't a failure; it must not carry failure text."""
+    inst = _make_instance("run-chk-uuid", TaskStatus.RUNNING, resume_data={"images_saved": 10})
+    tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
+
+    await manager._init()
+
+    _, payload_arg = tasks_api_mock.set_task_instance_status.call_args.args
+    assert payload_arg.status == "paused"
+    assert payload_arg.error_message is None
 
 
 async def test_init_handles_mixed_running_instances(manager, tasks_api_mock):

@@ -1096,3 +1096,134 @@ class TestSchemaFieldHelpText:
         editor = self._open_editor(page, base_url)
         expect(editor.locator(".schema-field__help")).to_have_count(2)
         expect(editor).not_to_contain_text("Tooltip only.")
+
+
+# ---------------------------------------------------------------------------
+# Error message on a failed task's card
+# ---------------------------------------------------------------------------
+
+ERRORED_TASK = {
+    "instance": {
+        "uuid": "ffffffff-0000-0000-0000-000000000005",
+        "status": "error",
+        "startedAt": "2024-01-01T00:00:00",
+        "endedAt": "2024-01-01T05:34:00",
+        "errorMessage": "URLError: <urlopen error _ssl.c:999: The handshake operation timed out>",
+    },
+    # typename matters: without it the card falls back to DEFAULT_STATUS_SCHEMA, and
+    # the "survives a custom status schema" test below would prove nothing.
+    "config": {"name": "Nightly Refresh", "uuid": FAKE_CONFIG["uuid"], "typename": TASK_TYPE},
+    "progress": 100.0,
+    "isPausedInPlace": False,
+    "logLines": ["Error: <urlopen error _ssl.c:999: The handshake operation timed out>"],
+}
+
+
+class TestErroredTaskShowsWhyItFailed:
+    """A failed task used to say only "● error". The reason lived in the one-shot
+    result (deleted on first read) and in the log tail, which a task type with its
+    own status_schema() doesn't necessarily render."""
+
+    def _open_errored_card(self, page: Page, base_url: str, status_schema=None):
+        task_id = ERRORED_TASK["instance"]["uuid"]
+        _setup_full_task_mocks(page, configs={}, tasks={task_id: ERRORED_TASK})
+        page.route(
+            "**/api/tasks/types/status-schema",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"schemas": {TASK_TYPE: status_schema or []}}),
+            ),
+        )
+        _navigate_to_activity(page, base_url)
+        page.wait_for_selector("#active-tasks-list summary", timeout=5000)
+        page.locator("#active-tasks-list summary").first.click()
+
+    def test_error_message_is_shown_on_the_card(self, page: Page, base_url: str):
+        self._open_errored_card(page, base_url)
+        expect(page.get_by_test_id("task-error-message")).to_contain_text("handshake operation timed out")
+
+    def test_error_message_survives_a_custom_status_schema(self, page: Page, base_url: str):
+        """The row is rendered by the card itself, not as a status widget — a task
+        type whose schema omits the default statusMessage widget (every real one
+        that defines its own) must still explain the failure."""
+        self._open_errored_card(
+            page,
+            base_url,
+            status_schema=[{"id": "stats", "type": "stat_grid", "source": "summary", "fields": {"a": "A"}}],
+        )
+        expect(page.get_by_test_id("task-error-message")).to_contain_text("handshake operation timed out")
+
+    def test_completed_task_has_no_error_row(self, page: Page, base_url: str):
+        task_id = COMPLETED_TASK["instance"]["uuid"]
+        _setup_full_task_mocks(page, configs={}, tasks={task_id: COMPLETED_TASK})
+        _navigate_to_activity(page, base_url)
+        page.wait_for_selector("#active-tasks-list summary", timeout=5000)
+        page.locator("#active-tasks-list summary").first.click()
+        expect(page.get_by_test_id("task-error-message")).to_have_count(0)
+
+
+# ---------------------------------------------------------------------------
+# Completed tasks keep their status widgets
+# ---------------------------------------------------------------------------
+
+
+class TestCompletedTaskKeepsItsStatusWidgets:
+    """Status widgets read from /status-data, which used to be live-only — so a
+    finished task's histograms and stat grids rendered empty and everything the run
+    measured was lost. The server now serves the snapshot persisted when it ended;
+    the card doesn't care where the numbers came from, but it must stop polling for
+    them, since a finished task's data can never change."""
+
+    STATUS_SCHEMA = [
+        {"id": "stats", "type": "stat_grid", "label": "Totals", "fields": {"images_saved": "Saved"}},
+        {"id": "dedup_image_hist", "type": "histogram", "label": "Distance"},
+    ]
+    SNAPSHOT = {
+        "stats": {"images_saved": "306"},
+        "dedup_image_hist": {"bins": [{"label": "0", "count": 42, "marked": True}], "total": 42},
+    }
+
+    def _setup(self, page: Page, base_url: str, status_data_calls: list):
+        task_id = COMPLETED_TASK["instance"]["uuid"]
+        # typename is what makes the card resolve THIS schema instead of the default.
+        task = {**COMPLETED_TASK, "config": {**COMPLETED_TASK["config"], "typename": TASK_TYPE}}
+        _setup_full_task_mocks(page, configs={}, tasks={task_id: task})
+        page.route(
+            "**/api/tasks/types/status-schema",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"schemas": {TASK_TYPE: self.STATUS_SCHEMA}}),
+            ),
+        )
+
+        def handle_status_data(route: Route):
+            status_data_calls.append(1)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "statusData": {task_id: self.SNAPSHOT}}),
+            )
+
+        page.route("**/api/tasks/instances/status-data", handle_status_data)
+        _navigate_to_activity(page, base_url)
+        page.wait_for_selector("#active-tasks-list summary", timeout=5000)
+        page.locator("#active-tasks-list summary").first.click()
+
+    def test_persisted_stats_and_histogram_render(self, page: Page, base_url: str):
+        self._setup(page, base_url, [])
+        card = page.locator("#active-tasks-list .task-instance-card")
+        expect(card).to_contain_text("306")
+        expect(card).to_contain_text("Saved")
+        # The histogram widget rendered its bin rather than its empty state.
+        expect(card).not_to_contain_text("No measurements yet.")
+
+    def test_finished_card_fetches_once_and_stops_polling(self, page: Page, base_url: str):
+        calls: list = []
+        self._setup(page, base_url, calls)
+        expect(page.locator("#active-tasks-list .task-instance-card")).to_contain_text("306")
+        after_open = len(calls)
+        # Well past the 5s poll cadence — a running card would have polled again.
+        page.wait_for_timeout(6000)
+        assert len(calls) == after_open, f"expected no further polls, got {len(calls) - after_open}"
