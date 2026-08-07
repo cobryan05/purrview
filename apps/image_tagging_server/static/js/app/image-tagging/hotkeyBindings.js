@@ -25,6 +25,7 @@ export const FIXED_ACTIONS = [
   { id: 'action:undo', label: 'Undo' },
   { id: 'action:redo', label: 'Redo' },
   { id: 'action:resetZoom', label: 'Reset zoom' },
+  { id: 'action:enhance', label: 'Cycle image enhancement' },
 ];
 
 const DEFAULT_BINDINGS = {
@@ -39,6 +40,7 @@ const DEFAULT_BINDINGS = {
   'shift+delete': 'action:deleteImage',
   'shift+backspace': 'action:deleteImage',
   '0': 'action:resetZoom',
+  'e': 'action:enhance',
 };
 
 /** @type {Record<string,string>|null} */

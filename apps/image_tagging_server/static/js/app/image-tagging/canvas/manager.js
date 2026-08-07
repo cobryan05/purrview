@@ -1,6 +1,7 @@
 
 import { computeViewport } from './viewport.js';
 import { BboxView } from './views/bboxView.js';
+import { renderEnhanced, DEFAULT_ENHANCE_MODE } from './enhance.js';
 
 /**
  * @param {import('@image_tagging_types').CanvasState} canvas
@@ -12,8 +13,12 @@ export async function setCanvasImage(canvas, uiImage) {
   // Clean up existing background image; bbox cleanup handled by rerenderBboxViews
   layer.find('.background-image').forEach(n => n.destroy());
 
+  // The enhancement mode is a property of the canvas, not of the image, so it
+  // carries across file navigation without the user re-picking it each frame.
+  canvas.sourceImage = uiImage.img;
+
   const konvaImg = new Konva.Image({
-    image: uiImage.img,
+    image: renderEnhanced(uiImage.img, canvas.enhanceMode ?? DEFAULT_ENHANCE_MODE),
     name: 'background-image',
     width: stage.width(),
     height: stage.height(),

@@ -59,6 +59,11 @@ export const EventTypes = Object.freeze({
   CANVAS_BBOX_DOUBLE_CLICKED: "canvas:bbox:double_clicked",
   CANVAS_BBOX_CLICKED: "canvas:bbox:clicked",
   CANVAS_TOOL_CHANGED: "canvas:tool:changed",
+  /**
+   * Fired when a canvas's display-only image enhancement mode changes.
+   * Payload: { runtimeId: string, mode: string }  (mode ids in canvas/enhance.js)
+   */
+  CANVAS_ENHANCE_CHANGED: "canvas:enhance:changed",
   LOAD_IMAGE_ONTO_CANVAS: "canvas:image:load",
   /** Fired after image data is fully loaded into runtime state. */
   IMAGE_LOADED_ONTO_CANVAS: "canvas:image:loaded",

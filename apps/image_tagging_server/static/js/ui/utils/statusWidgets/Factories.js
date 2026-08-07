@@ -283,7 +283,10 @@ export const statusWidgets = {
     // caller appends the returned element. mount() runs after that append.
     const mount = async () => {
       try {
-        instance = await createCanvasInstance(canvasContainer, { tool: 'select' });
+        // 'none': these previews carry no enhance control, and several can be
+        // on screen at once — don't spend CPU on an enhancement nobody asked
+        // this widget for.
+        instance = await createCanvasInstance(canvasContainer, { tool: 'select', enhance: 'none' });
         await instance.loadImage(data.path);
         if (Array.isArray(data.bboxes) && data.bboxes.length) {
           seedRuntimeBboxes(instance.runtime, data.bboxes);

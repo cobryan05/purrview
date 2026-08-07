@@ -4,6 +4,7 @@ import { loadImageOntoCanvas } from './image.js';
 import { attachHotkeys } from '../../hotkeys.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { defaultEnhanceMode } from './enhance.js';
 
 /**
  * Shared canvas setup: wires stage events, hotkeys, and live tag-icon refresh.
@@ -43,12 +44,17 @@ export async function initCanvasCore(runtime) {
  * the Konva stage will size itself to the container's current clientWidth/clientHeight.
  *
  * @param {HTMLElement} container
- * @param {{ tool?: string }} [options]
+ * @param {{ tool?: string, enhance?: string }} [options]
+ *   enhance: initial display-enhancement mode id. Defaults to whatever mode the
+ *   user last selected this session, so a modal opened while working through
+ *   dark frames comes up already enhanced. Pass 'none' for canvases with no
+ *   enhance control (read-only previews), which also skips the CPU cost.
  * @returns {Promise<{ runtime: import('@image_tagging_types').ImageTaggingRuntime, loadImage: (path: string) => Promise<void>, destroy: () => void }>}
  */
 export async function createCanvasInstance(container, options = {}) {
   const runtime = options.runtime ?? createImageTaggingRuntime();
   runtime.setCanvasContainer(container);
+  if (runtime.canvas) runtime.canvas.enhanceMode = options.enhance ?? defaultEnhanceMode();
   const coreHandle = await initCanvasCore(runtime);
   runtime.setTool(options.tool ?? 'select');
 

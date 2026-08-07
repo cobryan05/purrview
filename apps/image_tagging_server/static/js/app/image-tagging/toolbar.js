@@ -5,8 +5,9 @@ import { setTool } from './canvas/tools.js';
 import { deleteCurrentImage } from './files.js';
 import { makeCanvasSurfaceAdapter } from './canvas/contextTargets.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/index.js';
+import { cycleCanvasEnhancement, getEnhanceMode, defaultEnhanceMode } from './canvas/enhance.js';
 
-const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'resetZoom', 'deleteImage', 'search'];
+const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'enhance', 'resetZoom', 'deleteImage', 'search'];
 
 /**
  * Initialises a canvas toolbar into an explicit container element.
@@ -44,6 +45,13 @@ export function init(runtime, container, options = {}) {
     { key: 'clear',  label: 'Clear',   onClick: () => clearAnnotations(runtime) },
     { key: 'delete', label: 'Delete',  onClick: () => deleteSelected(runtime) },
     { key: 'save',        label: 'Save',       onClick: () => saveAnnotations(runtime) },
+    {
+      key: 'enhance',
+      label: '✨',
+      flex: '0 0 auto',
+      title: 'Cycle image enhancement',
+      onClick: () => cycleCanvasEnhancement(runtime),
+    },
     { key: 'resetZoom',   label: '⊡', title: 'Reset zoom (0)', onClick: () => resetCanvasZoom(runtime.canvas) },
     { key: 'deleteImage', label: '🗑', title: 'Delete image (Shift+Del)', onClick: () => deleteCurrentImage(runtime) },
     {
@@ -65,7 +73,10 @@ export function init(runtime, container, options = {}) {
     .forEach(btn => {
       const b = document.createElement('button');
       b.textContent = btn.label;
-      b.style.flex = '1';
+      // Most buttons share the row evenly; ones whose label changes width at
+      // runtime size to their content instead so the text can't get clipped.
+      b.style.flex = btn.flex ?? '1';
+      if (btn.flex) b.style.whiteSpace = 'nowrap';
       b.dataset.toolbarKey = btn.key;
       b.addEventListener('click', btn.onClick);
       if (btn.dataTool) b.dataset.tool = btn.dataTool;
@@ -114,6 +125,22 @@ export function init(runtime, container, options = {}) {
   const saveBtn = container.querySelector('[data-toolbar-key="save"]');
   const deleteImageBtn = container.querySelector('[data-toolbar-key="deleteImage"]');
   const searchBtn = container.querySelector('[data-toolbar-key="search"]');
+  const enhanceBtn = container.querySelector('[data-toolbar-key="enhance"]');
+
+  /** @param {string} [modeId] - defaults to the canvas's current mode. */
+  const _syncEnhance = (modeId) => {
+    if (!enhanceBtn) return;
+    const mode = getEnhanceMode(modeId ?? runtime.canvas?.enhanceMode ?? defaultEnhanceMode());
+    enhanceBtn.textContent = `✨ ${mode.short}`;
+    enhanceBtn.dataset.enhanceMode = mode.id;
+    enhanceBtn.title = `${mode.title}\nClick to cycle enhancement (display only — annotations are unaffected)`;
+    enhanceBtn.classList.toggle('selected', mode.id !== 'none');
+  };
+  _syncEnhance();
+  const unsubEnhance = events.subscribeToCanvas(
+    runtime.id, EventTypes.CANVAS_ENHANCE_CHANGED, ({ mode }) => _syncEnhance(mode),
+  );
+
   const _syncButtons = () => {
     if (undoBtn) undoBtn.disabled = !runtime.canUndo;
     if (redoBtn) redoBtn.disabled = !runtime.canRedo;
@@ -128,5 +155,5 @@ export function init(runtime, container, options = {}) {
   _syncButtons();
   const unsubBboxChanged = events.subscribeToCanvas(runtime.id, EventTypes.CANVAS_BBOXES_CHANGED, _syncButtons);
 
-  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); } };
+  return { destroy: () => { unsubToolChanged(); unsubBboxChanged(); unsubImageLoaded(); unsubEnhance(); } };
 }

@@ -1,3 +1,4 @@
+import { DEFAULT_ENHANCE_MODE } from './enhance.js';
 
 /**
   @param {HTMLElement} container
@@ -59,6 +60,12 @@ export function createCanvasState(container) {
     interactionState,
     activeImageLoadId: 0,
     resizeObserver: null,
+    // Display-only enhancement (see canvas/enhance.js). `sourceImage` keeps the
+    // untouched element around so modes can be re-derived from the original
+    // rather than from the last enhancement's output.
+    enhanceMode: DEFAULT_ENHANCE_MODE,
+    sourceImage: null,
+    backgroundImage: null,
   };
 
   return canvasState;
