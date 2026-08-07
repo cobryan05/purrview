@@ -3,6 +3,7 @@ export * from './createMultiSelectDropdown.js';
 export * from './confirmModal.js';
 export * from './modalShell.js';
 export * from './data/createCachedFetcher.js';
+export * from './focus.js';
 export * from './createGenericRow.js';
 export * from './logging.js';
 export * from './panelEditorBar.js';

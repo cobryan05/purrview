@@ -8,6 +8,7 @@ import {
   handleWheel
 } from './interaction.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { blurTextEntryFocus } from '/app-static/js/ui/utils/focus.js';
 
 /**
  * Wires stage event handlers and a ResizeObserver for a canvas instance.
@@ -21,6 +22,14 @@ export async function initCanvasStage(runtime) {
   if (!stage) {
     return;
   }
+
+  // Middle-mouse panning (handleMouseDown) and Konva's own touch handling both
+  // call preventDefault() on the pointer event, which stops the browser moving
+  // focus. Without this, typing in a sidebar search box and then panning leaves
+  // the input focused — and a focused text field suppresses every hotkey for as
+  // long as the canvas is open, which no amount of clicking on the canvas undoes.
+  // Blur it ourselves.
+  stage.on('mousedown touchstart', () => blurTextEntryFocus());
 
   stage.on('mousedown', e => handleMouseDown(e, runtime));
   stage.on('mousemove', e => handleMouseMove(e, runtime));

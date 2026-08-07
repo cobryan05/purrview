@@ -222,3 +222,135 @@ class TestKeyboardDelete:
 
         result = page.evaluate("""() => window._testRuntime.state.image.bboxes.size""")
         assert result == 1  # bbox still there
+
+
+# ---------------------------------------------------------------------------
+# Focus handling
+# ---------------------------------------------------------------------------
+
+
+def _focus_element(page: Page, html: str) -> None:
+    """Append an element to the body and give it focus."""
+    page.evaluate(
+        """(html) => {
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;bottom:0;right:0;';
+        host.innerHTML = html;
+        document.body.appendChild(host);
+        window._testFocused = host.firstElementChild;
+        window._testFocused.focus();
+    }""",
+        html,
+    )
+
+
+class TestHotkeysAndFocus:
+    """Only *text entry* focus may swallow hotkeys.
+
+    The inference panel's model checkboxes and confidence slider are <input>s
+    too, and clicking one used to kill every hotkey for the rest of the modal's
+    life: Konva's stage calls preventDefault() on pointerdown, so a subsequent
+    click on the canvas never moves focus off the input.
+    """
+
+    def test_text_input_focus_suppresses_hotkeys(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('select')""")
+
+        _focus_element(page, "<input type='text'>")
+        page.keyboard.press("r")
+
+        assert page.evaluate("""() => window._testRuntime.tool""") == "select"
+
+    def test_textarea_focus_suppresses_hotkeys(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('select')""")
+
+        _focus_element(page, "<textarea></textarea>")
+        page.keyboard.press("r")
+
+        assert page.evaluate("""() => window._testRuntime.tool""") == "select"
+
+    def test_checkbox_focus_does_not_suppress_hotkeys(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('select')""")
+
+        _focus_element(page, "<input type='checkbox'>")
+        page.keyboard.press("r")
+
+        assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
+
+    def test_range_slider_focus_does_not_suppress_hotkeys(self, page: Page, base_url: str):
+        """The inference panel's confidence slider."""
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('select')""")
+
+        _focus_element(page, "<input type='range' min='0' max='100'>")
+        page.keyboard.press("Delete")
+
+        assert page.evaluate("""() => window._testRuntime.state.image.bboxes.size""") == 1
+        page.keyboard.press("r")
+        assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
+
+    def test_button_focus_does_not_suppress_hotkeys(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('select')""")
+
+        _focus_element(page, "<button>Save</button>")
+        page.keyboard.press("r")
+
+        assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
+
+    def test_middle_mouse_pan_blurs_a_focused_text_input(self, page: Page, base_url: str):
+        """Middle-drag panning calls preventDefault(), so the browser never moves
+        focus off the input — which is why "clicking around on the canvas" did not
+        revive the hotkeys. The stage has to blur text entry itself."""
+        page.goto(base_url)
+        page.evaluate("""async () => {
+            const { createCanvasInstance } =
+                await import('/app-static/js/app/image-tagging/canvas/instance.js');
+            const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const { rerenderBboxViews } =
+                await import('/app-static/js/app/image-tagging/canvas/manager.js');
+
+            const div = document.createElement('div');
+            div.style.cssText = 'width:400px;height:300px;position:fixed;top:0;left:0;';
+            document.body.appendChild(div);
+
+            const instance = await createCanvasInstance(div, { tool: 'select', enhance: 'none' });
+            const runtime = instance.runtime;
+
+            const imgCanvas = document.createElement('canvas');
+            imgCanvas.width = 400; imgCanvas.height = 300;
+            const img = new Image();
+            img.src = imgCanvas.toDataURL();
+            await new Promise(r => { img.onload = r; });
+
+            const b = createUIBBbox({ uuid: 'b1', x: 0.25, y: 0.25, width: 0.5, height: 0.5 });
+            runtime.setImage({
+                uuid: 'img', filename: 'test.png', image_path: '/test.png',
+                img, bboxes: new Map([['b1', b]]), dirty: false,
+            });
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+            window._testRuntime = runtime;
+        }""")
+
+        # Centre of the bbox, in page coordinates.
+        point = page.evaluate("""() => {
+            const r = window._testRuntime.canvas.layer.findOne('#b1').getClientRect();
+            const c = window._testRuntime.canvas.container.getBoundingClientRect();
+            return { x: c.left + r.x + r.width / 2, y: c.top + r.y + r.height / 2 };
+        }""")
+
+        _focus_element(page, "<input type='text'>")
+        assert page.evaluate("""() => document.activeElement.tagName""") == "INPUT"
+
+        # Middle-button drag = pan.
+        page.mouse.move(point["x"], point["y"])
+        page.mouse.down(button="middle")
+        page.mouse.move(point["x"] + 10, point["y"] + 10)
+        page.mouse.up(button="middle")
+
+        assert page.evaluate("""() => document.activeElement.tagName""") != "INPUT"
+        page.keyboard.press("r")
+        assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"

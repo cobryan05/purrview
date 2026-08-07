@@ -1511,3 +1511,76 @@ class TestVerificationAfterAnnotationsSaved:
         page.locator(".ctx-menu-item", has_text="Mark Verified").last.click()
 
         expect(image_card.locator(".label-chip")).to_have_text(["Cat✓", "Dog✓"])
+
+
+# ---------------------------------------------------------------------------
+# 12. Canvas modal hotkeys
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasModalHotkeys:
+    """Hotkeys must keep working for the whole life of the modal.
+
+    Reported bug: open the modal, press ']' once to advance, and every hotkey
+    (']', '[', Delete, tool keys) goes dead until the modal is closed and
+    reopened.
+    """
+
+    def _open_modal(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        # Wait for the sidebar/inference panels, i.e. the fully-wired modal.
+        expect(modal.locator("button[data-toolbar-key='bbox']")).to_be_enabled(timeout=8000)
+        return modal
+
+    def test_tool_hotkey_works_when_modal_opens(self, page: Page, base_url: str):
+        modal = self._open_modal(page, base_url)
+
+        page.keyboard.press("r")
+
+        expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
+
+    def test_tool_hotkey_still_works_after_bracket_navigation(self, page: Page, base_url: str):
+        modal = self._open_modal(page, base_url)
+
+        page.keyboard.press("]")
+        page.wait_for_timeout(600)  # let the nav-triggered image load settle
+        page.keyboard.press("r")
+
+        expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
+
+    def test_bracket_navigation_still_works_after_bracket_navigation(self, page: Page, base_url: str):
+        """']' twice must reach the third entry (bbox-3, on image2)."""
+        modal = self._open_modal(page, base_url)
+        title = modal.get_by_test_id("canvas-edit-modal-title")
+        expect(title).to_have_text("Edit: folder/image1.jpg")
+
+        page.keyboard.press("]")
+        page.wait_for_timeout(600)
+        page.keyboard.press("]")
+
+        expect(title).to_have_text("Edit: folder/image2.jpg", timeout=5000)
+
+    def test_tool_hotkey_still_works_after_navigating_to_another_image(self, page: Page, base_url: str):
+        modal = self._open_modal(page, base_url)
+        title = modal.get_by_test_id("canvas-edit-modal-title")
+
+        page.keyboard.press("]")
+        page.wait_for_timeout(600)
+        page.keyboard.press("]")
+        expect(title).to_have_text("Edit: folder/image2.jpg", timeout=5000)
+        page.wait_for_timeout(600)
+
+        page.keyboard.press("r")
+
+        expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))

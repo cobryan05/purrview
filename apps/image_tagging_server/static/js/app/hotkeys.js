@@ -4,6 +4,7 @@ import { cycleCanvasEnhancement } from './image-tagging/canvas/enhance.js';
 import { setTool } from './image-tagging/canvas/tools.js';
 import { next_image, prev_image, deleteCurrentImage } from './image-tagging/files.js';
 import { actionForCombo, eventToCombo } from './image-tagging/hotkeyBindings.js';
+import { isTextEntryElement } from '/app-static/js/ui/utils/focus.js';
 
 /** @type {import('@image_tagging_types').ImageTaggingRuntime[]} */
 const _stack = [];
@@ -41,8 +42,9 @@ document.addEventListener('keydown', e => {
   const runtime = _stack[_stack.length - 1];
   if (!runtime) return;
 
-  const tag = document.activeElement?.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Only *text entry* focus swallows hotkeys. Checkboxes, radios and range
+  // sliders — the inference panel is full of them — must not.
+  if (isTextEntryElement(document.activeElement)) return;
 
   const action = actionForCombo(eventToCombo(e));
   if (!action) return;
