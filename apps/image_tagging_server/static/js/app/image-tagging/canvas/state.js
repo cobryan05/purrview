@@ -64,6 +64,9 @@ export function createCanvasState(container) {
     // untouched element around so modes can be re-derived from the original
     // rather than from the last enhancement's output.
     enhanceMode: DEFAULT_ENHANCE_MODE,
+    // Set by createCanvasInstance for canvases with no enhance control; makes
+    // the enhance hotkey a no-op there.
+    enhanceLocked: false,
     sourceImage: null,
     backgroundImage: null,
   };

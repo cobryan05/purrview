@@ -155,7 +155,10 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
             try {
               await startTask({ configUuid: config.uuid });
               toast('Task started — see the Activity tab', 3000);
-              refresh?.();
+              // Only the list needs updating. A full refresh() would re-run
+              // renderTaskConfigs, which tears down this editor and drops you
+              // back on a blank "New Task Config" form.
+              await refreshList();
             } catch (error) {
               toast(error.message || 'Failed to start task', 5000, 'error');
             } finally {

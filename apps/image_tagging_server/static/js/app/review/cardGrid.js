@@ -583,13 +583,14 @@ export function buildImageCard(controller, entry, opts) {
   async function _toggleChipVerification(labelBboxes, nextUuid) {
     const scratch = document.createElement('div');
     for (const b of labelBboxes) {
-      await makeAdapter({ bbox: b, img }, scratch).setVerification(nextUuid);
+      // Per-box card refresh is suppressed: a chip can cover dozens of boxes,
+      // and refreshCard() below does the same work once at the end.
+      await makeAdapter({ bbox: b, img }, scratch).setVerification(nextUuid, { refreshImageCard: false });
     }
     // Only the verify direction earns the "✓ Verified" badge; un-verifying has
     // no honest badge state, and the chip already shows the new state.
     if (nextUuid === VERIFIED_TAG_UUID) controller.markCardStale(card, 'verified');
-    renderChips();
-    renderStatusRow();
+    refreshCard();
   }
 
   function renderChips() {
@@ -849,10 +850,11 @@ export function buildImageRow(controller, entry, opts) {
   async function _toggleChipVerification(labelBboxes, nextUuid) {
     const scratch = document.createElement('div');
     for (const b of labelBboxes) {
-      await makeAdapter({ bbox: b, img }, scratch).setVerification(nextUuid);
+      // See the image card's copy: one refresh at the end, not one per box.
+      await makeAdapter({ bbox: b, img }, scratch).setVerification(nextUuid, { refreshImageCard: false });
     }
     if (nextUuid === VERIFIED_TAG_UUID) controller.markCardStale(row, 'verified');
-    renderChips();
+    refreshRow();
   }
 
   function renderChips() {
@@ -865,10 +867,11 @@ export function buildImageRow(controller, entry, opts) {
 
   // Same registry the image card uses, so canvas saves and bulk actions land
   // on list rows too.
-  registerImageRefresher?.(img.uuid, () => {
+  function refreshRow() {
     renderCountBadge();
     renderChips();
-  });
+  }
+  registerImageRefresher?.(img.uuid, refreshRow);
 
   const meta = document.createElement('span');
   meta.className = 'review-row__meta';

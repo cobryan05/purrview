@@ -1448,3 +1448,66 @@ class TestImageContextMenuLabelRefusal:
 
         page.wait_for_timeout(500)
         assert page.locator("#toast-container", has_text="left unchanged").count() == 0
+
+
+# ---------------------------------------------------------------------------
+# 14. Bbox-card verification after a canvas save resynced the image
+# ---------------------------------------------------------------------------
+
+
+class TestVerificationAfterAnnotationsSaved:
+    """IMAGE_ANNOTATIONS_SAVED rebuilds `entry.img.bboxes` from the save payload,
+    but a bbox card's adapter stays closed over the bbox object it was built with.
+    Verifying through that adapter used to mutate only the orphaned object, so the
+    image card — which renders its per-label ✓/? marks from `img.bboxes` — kept
+    showing the pre-toggle state until the next full re-render."""
+
+    def _setup(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(
+            page,
+            [
+                {**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"},
+                {**VERIFIED_TAG, "name": "Verified", "color": "#27ae60", "kind": "system"},
+            ],
+        )
+        _mock_misc_review_endpoints(page)
+        _navigate_to_review(page, base_url)
+        _show_all_bboxes(page)
+        _switch_view(page, "all")
+
+    def test_image_card_chip_follows_a_bbox_card_verify(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+
+        image_card = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
+        expect(image_card.locator(".label-chip")).to_have_text(["Cat?", "Dog✓"])
+
+        # Stand in for a canvas save: the panel resyncs img.bboxes from this
+        # payload, replacing the objects the bbox cards' adapters hold.
+        page.evaluate(
+            """async ([bbox1, bbox2]) => {
+            const { events } = await import('/app-static/js/shared/events/bus.js');
+            const { EventTypes } = await import('/app-static/js/shared/events/types.js');
+            const toUi = (b) => ({
+                uuid: b.uuid, x: b.x, y: b.y, width: b.width, height: b.height,
+                label: { uuid: b.label.uuid, text: b.label.name, color: b.label.color },
+                tags: b.tags, metadataJson: b.metadataJson,
+            });
+            events.publish(EventTypes.IMAGE_ANNOTATIONS_SAVED, {
+                imageUuid: 'img-1',
+                imageFilename: 'folder/image1.jpg',
+                bboxes: new Map([bbox1, bbox2].map(b => [b.uuid, toUi(b)])),
+            });
+        }""",
+            [BBOX_1, BBOX_2],
+        )
+        page.wait_for_timeout(200)
+        expect(image_card.locator(".label-chip")).to_have_text(["Cat?", "Dog✓"])
+
+        # Now verify the Cat box through its own bbox card's context menu.
+        page.locator("#review-root [data-bbox-uuid='bbox-1']").click(button="right")
+        page.locator(".ctx-menu-item", has_text="Verification").first.click()
+        page.locator(".ctx-menu-item", has_text="Mark Verified").last.click()
+
+        expect(image_card.locator(".label-chip")).to_have_text(["Cat✓", "Dog✓"])

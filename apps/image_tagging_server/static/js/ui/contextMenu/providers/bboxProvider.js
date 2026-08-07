@@ -6,7 +6,8 @@
  *   getTagUuids()         → string[]
  *   applyLabel(uuid)      → Promise<void>   (null = no label)
  *   toggleTag(uuid)       → Promise<void>
- *   setVerification(uuid) → Promise<void>   (null = clear all verification indicators)
+ *   setVerification(uuid, opts?) → Promise<void>   (null = clear all verification indicators;
+ *                                                   opts.refreshImageCard = false to batch)
  *   remove()              → Promise<void>
  */
 

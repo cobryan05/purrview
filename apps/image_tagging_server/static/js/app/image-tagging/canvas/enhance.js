@@ -97,6 +97,10 @@ export function applyCanvasEnhancement(canvas, modeId, runtimeId) {
  */
 export function cycleCanvasEnhancement(runtime) {
   if (!runtime?.canvas) return null;
+  // Read-only previews opt out entirely (see createCanvasInstance's lockEnhance):
+  // they have no enhance control, and the hotkey reaching one would both enhance a
+  // widget nobody asked to enhance and poison the default for every later canvas.
+  if (runtime.canvas.enhanceLocked) return null;
   const next = nextEnhanceModeId(runtime.canvas.enhanceMode ?? DEFAULT_ENHANCE_MODE);
   _lastMode = next;
   applyCanvasEnhancement(runtime.canvas, next, runtime.id);

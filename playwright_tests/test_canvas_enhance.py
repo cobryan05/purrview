@@ -385,3 +385,57 @@ class TestToolbarButton:
         assert result["seen"][1]["label"].endswith("Levels")
         # Back at 'none' after a full lap, so the highlight is off again.
         assert result["selectedWhileOn"] is False
+
+
+# ---------------------------------------------------------------------------
+# Locked canvases (read-only previews)
+# ---------------------------------------------------------------------------
+
+
+class TestLockedCanvas:
+    def test_locked_canvas_ignores_cycle_and_keeps_session_default(self, shared_page: Page):
+        """A canvas created with lockEnhance has no enhance control.
+
+        The enhance hotkey is global (initCanvasCore attaches it to every canvas,
+        including read-only status-widget previews), so without the lock, pressing
+        it while such a preview had focus would both enhance a widget nobody asked
+        to enhance and change the default mode for every canvas created afterwards.
+        """
+        result = shared_page.evaluate(
+            """async (mod) => {
+            const { cycleCanvasEnhancement, defaultEnhanceMode } = await import(mod);
+
+            const before = defaultEnhanceMode();
+            const locked = { canvas: { enhanceMode: 'none', enhanceLocked: true } };
+            const returned = cycleCanvasEnhancement(locked);
+            return {
+                returned,
+                modeAfter: locked.canvas.enhanceMode,
+                defaultBefore: before,
+                defaultAfter: defaultEnhanceMode(),
+            };
+        }""",
+            ENHANCE,
+        )
+        assert result["returned"] is None
+        assert result["modeAfter"] == "none"
+        assert result["defaultAfter"] == result["defaultBefore"]
+
+    def test_unlocked_canvas_still_cycles(self, shared_page: Page):
+        """The lock is opt-in — ordinary canvases keep the sticky-mode behaviour."""
+        result = shared_page.evaluate(
+            """async (mod) => {
+            const { cycleCanvasEnhancement, defaultEnhanceMode, nextEnhanceModeId,
+                    ENHANCE_MODES, DEFAULT_ENHANCE_MODE } = await import(mod);
+            const canvas = { canvas: { enhanceMode: DEFAULT_ENHANCE_MODE } };
+            const returned = cycleCanvasEnhancement(canvas);
+            const out = { returned, expected: nextEnhanceModeId(DEFAULT_ENHANCE_MODE), def: defaultEnhanceMode() };
+            // _lastMode is module state on a shared page: walk the rest of the
+            // cycle so the session default is back where the next test found it.
+            for (let i = 1; i < ENHANCE_MODES.length; i++) cycleCanvasEnhancement(canvas);
+            return out;
+        }""",
+            ENHANCE,
+        )
+        assert result["returned"] == result["expected"]
+        assert result["def"] == result["expected"]

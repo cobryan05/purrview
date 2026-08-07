@@ -255,8 +255,12 @@ export function createListEditorScreen({
 
     // An empty *result* is a different state from an empty *list* — say so,
     // otherwise a typo in the filter box reads as "my configs are gone".
+    // ...but only when there is something to have filtered out. An empty list
+    // already shows its own "No X yet." line; adding "No matches." under it
+    // renders both at once.
+    const hasItems = !!listBody.querySelector('.le-list-item');
     let noMatch = listBody.querySelector('.le-list-nomatch');
-    if (q && visible === 0) {
+    if (q && visible === 0 && hasItems) {
       if (!noMatch) {
         noMatch = createListEmpty('No matches.');
         noMatch.classList.add('le-list-nomatch');

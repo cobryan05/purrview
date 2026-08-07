@@ -425,7 +425,12 @@ class HashIndex:
         else:
             self._bbox_trees[label_uuid].add(item)
             self._valid_bboxes[label_uuid].add(uuid)
-        self._bbox_flat.setdefault(label_uuid, _FlatHashTable(self._bbox_byte_len)).add(uuid, phash)
+        # Not setdefault(): that would build (and immediately discard) a full
+        # _FlatHashTable on every hit, which at the default bbox hash width is
+        # several KB of numpy allocation per insert.
+        if label_uuid not in self._bbox_flat:
+            self._bbox_flat[label_uuid] = _FlatHashTable(self._bbox_byte_len)
+        self._bbox_flat[label_uuid].add(uuid, phash)
 
     def remove_image(self, uuid: str) -> None:
         """Tombstone an image entry (lazy eviction from the tree)."""
@@ -674,6 +679,11 @@ class HashIndex:
             bbox_flags[i]: True when bbox i's phash is within its threshold of any stored bbox with
             the same label — independently of image_is_dup.  Callers that need a combined signal
             (e.g. "tag only when both image and bbox are dups") should AND with image_is_dup themselves.
+            An unlabelled bbox is never flagged: it has no same-label population to be a duplicate
+            of, and find_similar_bboxes' "no labels given → search every tree" fallback is a
+            *query* convenience, not a comparability claim.  Practical effect: a frame carrying an
+            unmapped detection can no longer be discarded by the all-bboxes-duplicated rule, which
+            is the conservative direction (keep the frame).
             *_min_distance(s): threshold-independent nearest-neighbour distances, for threshold
             calibration.  None means "nothing to compare against" (empty index, or an unlabelled
             bbox), which is not the same as "far away" and must not be bucketed as a distance.

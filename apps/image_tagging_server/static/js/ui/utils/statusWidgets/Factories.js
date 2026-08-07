@@ -286,7 +286,7 @@ export const statusWidgets = {
         // 'none': these previews carry no enhance control, and several can be
         // on screen at once — don't spend CPU on an enhancement nobody asked
         // this widget for.
-        instance = await createCanvasInstance(canvasContainer, { tool: 'select', enhance: 'none' });
+        instance = await createCanvasInstance(canvasContainer, { tool: 'select', enhance: 'none', lockEnhance: true });
         await instance.loadImage(data.path);
         if (Array.isArray(data.bboxes) && data.bboxes.length) {
           seedRuntimeBboxes(instance.runtime, data.bboxes);

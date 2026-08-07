@@ -915,6 +915,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       // Update in-memory bbox tags, preserving icon values for known tags
       const existing = new Map((bbox.tags ?? []).map(t => [t.uuid, t]));
       bbox.tags = tagUuids.map(u => existing.get(u) ?? { uuid: u, icon: null });
+      // `bbox` is normally the same object as its entry in `img.bboxes`, but a
+      // canvas save replaces that array wholesale (IMAGE_ANNOTATIONS_SAVED) and
+      // leaves this adapter closed over the old object. The image card renders
+      // its ✓/? chips and status row from `img.bboxes`, so it would keep showing
+      // the pre-toggle state unless the new object is updated too.
+      const bboxInImg = img.bboxes?.find(b => b.uuid === bbox.uuid);
+      if (bboxInImg && bboxInImg !== bbox) bboxInImg.tags = bbox.tags;
     }
 
     function _publishBboxChanged({ deleted = false } = {}) {
@@ -988,7 +995,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         _publishBboxChanged();
       },
 
-      async setVerification(uuid) {
+      // `refreshImageCard: false` is for callers flipping a run of boxes on one
+      // image: every refresh redraws the whole card, so N boxes cost N full
+      // re-renders. They refresh once when the run finishes instead.
+      async setVerification(uuid, { refreshImageCard = true } = {}) {
         const tags = currentTagUuids();
         let newTagUuids;
         if (uuid === null) {
@@ -1007,7 +1017,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         const thumb = card.querySelector('.thumb');
         if (thumb) thumb.src = getBboxThumbnailUrl(img.filename, bbox.uuid, 300) + `&t=${Date.now()}`;
         markCardStale(card, 'verified');
-        _imageCardRefreshers.get(img.uuid)?.();
+        if (refreshImageCard) _imageCardRefreshers.get(img.uuid)?.();
         _publishBboxChanged();
       },
 

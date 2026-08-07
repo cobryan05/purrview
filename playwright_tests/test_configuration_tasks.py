@@ -763,6 +763,32 @@ class TestTaskLifecycleButtons:
         wait_until(page, lambda: start_calls, "Expected POST to /api/tasks/instances/start")
         assert start_calls[0].get("configUuid") == FAKE_CONFIG["uuid"]
 
+    def test_start_keeps_the_config_open_in_the_editor(self, page: Page, base_url: str):
+        """Starting must not throw you back to a blank New Task Config form.
+
+        A full pane refresh rebuilds renderTaskConfigs from scratch, which clears
+        the list selection and reopens the empty form — losing the config you were
+        looking at, on the one screen where Start is reachable.
+        """
+        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG}, tasks={})
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "new-task-uuid"}),
+            ),
+        )
+
+        _navigate_to_tasks(page, base_url)
+        _open_config(page)
+        _editor_footer(page).locator("button[title='Start']").click()
+        page.wait_for_timeout(900)
+
+        expect(_name_input(page)).to_have_value(FAKE_CONFIG["name"])
+        expect(_editor_footer(page).locator("button[title='Start']")).to_have_count(1)
+        expect(page.locator("#task-config-list .le-list-item.active")).to_have_count(1)
+
     def test_stop_running_task_calls_cancel(self, page: Page, base_url: str):
         """Clicking Stop on a running task POSTs to /api/tasks/instances/cancel."""
         cancel_calls: list[dict] = []

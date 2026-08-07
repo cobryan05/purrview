@@ -250,6 +250,18 @@ class TestSourceListLoading:
         expect(page.locator("#source-management-box .le-list-item:visible")).to_have_count(1)
         expect(page.locator("#source-management-box .le-list-item:visible")).to_contain_text("Back Yard")
 
+    def test_empty_list_shows_one_empty_message_while_filtering(self, page: Page, base_url: str):
+        """An empty list already says "No sources yet." — don't stack "No matches." under it."""
+        _mock_sources(page, {})
+        _mock_providers(page, ["UrlImageProvider"])
+        _mock_provider_schema(page)
+        _navigate_to_sources(page, base_url)
+        page.wait_for_selector("#source-management-box .le-list-empty", timeout=5000)
+
+        page.locator("#source-management-box .le-list-search input").fill("anything")
+        page.wait_for_timeout(200)
+        expect(page.locator("#source-management-box .le-list-empty:visible")).to_have_count(1)
+
 
 # ---------------------------------------------------------------------------
 # Provider dropdown
