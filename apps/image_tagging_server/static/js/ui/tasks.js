@@ -3,7 +3,7 @@ import {
   pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig,
 } from '/app-static/js/shared/api/tasks.js';
 import { ActiveTaskField, TaskConfigField } from '/app-static/js/ui/utils/fields/index.js';
-import { createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
+import { confirmStartIfDirty, createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 
@@ -118,7 +118,7 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
           } : undefined,
         });
         screen.setBarHandle(barHandle);
-        const { setDirty, setSaving, updateTitle } = barHandle;
+        const { setDirty, setSaving, getDirty, updateTitle } = barHandle;
 
         const field = await TaskConfigField.create(
           config
@@ -141,7 +141,16 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
           startBtn.textContent = '▶ Start';
           startBtn.title = 'Start';
           startBtn.className = 'panel-btn';
+          startBtn.dataset.testid = 'task-start';
           startBtn.addEventListener('click', async () => {
+            // The server runs the config as stored, so unsaved form edits would
+            // silently not be part of the run.
+            const proceed = await confirmStartIfDirty({
+              getDirty,
+              save: () => _doSave(false),
+              actionText: 'Start',
+            });
+            if (!proceed) return;
             startBtn.disabled = true;
             try {
               await startTask({ configUuid: config.uuid });

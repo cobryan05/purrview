@@ -3268,6 +3268,34 @@ button.filter-active {
 }
 .panel-dirty-dot.visible { opacity: 1; }
 
+/* Worded companion to the dot. The dot alone was easy to walk past on the way
+   to a "Start" button, and starting runs the *saved* config — so unsaved state
+   has to be legible, not just present. */
+.panel-dirty-label {
+  flex-shrink: 0;
+  padding: 0 0.4em;
+  border-radius: var(--radius-full);
+  /* --app-warning-border is the *dark* amber under the dark theme, which all but
+     vanishes on the bar; the badge and the halo below key off the foreground
+     amber instead so they read at a glance. */
+  border: 1px solid color-mix(in srgb, var(--app-warning-color) 60%, transparent);
+  background: color-mix(in srgb, var(--app-warning-color) 12%, transparent);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--app-warning-color);
+  white-space: nowrap;
+}
+
+/* Save button while there are unsaved changes: the one control in the bar that
+   should pull the eye. Pico paints .panel-btn's background, so the emphasis is
+   an outline + halo rather than a background swap. */
+.panel-btn--attention:not(:disabled) {
+  border-color: var(--app-warning-color) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-warning-color) 40%, transparent);
+}
+
 /* Compact label:input pairs inside panel bodies */
 .panel-field-row {
   display: flex;

@@ -934,3 +934,136 @@ class TestModelTreePreview:
         _editor_body(page).wait_for(timeout=4000)
 
         expect(_preview(page)).to_have_count(0)
+
+
+# ---------------------------------------------------------------------------
+# Unsaved changes vs. "Start Training"
+# ---------------------------------------------------------------------------
+
+
+class TestUnsavedChangesBeforeStartTraining:
+    """The trainer reads the config from the server, so starting with a dirty
+    form would train the previous settings. Editing must be visible, and
+    "Start Training" must ask before launching."""
+
+    @staticmethod
+    def _open_existing(page: Page, base_url: str):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1")
+        _mock_label_stats(page, "tc-1")
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+        page.wait_for_timeout(600)
+
+    @staticmethod
+    def _make_dirty(page: Page):
+        _editor_body(page).locator("input[placeholder='Required']").first.fill("Corrupt Detector v2")
+        page.wait_for_timeout(200)
+
+    @staticmethod
+    def _start_btn(page: Page):
+        return _editor_body(page).locator("button", has_text="Start Training")
+
+    def test_editing_shows_unsaved_badge_and_lights_save(self, page: Page, base_url: str):
+        self._open_existing(page, base_url)
+        badge = page.get_by_test_id("panel-dirty-label")
+        expect(badge).to_be_hidden()
+        self._make_dirty(page)
+        expect(badge).to_be_visible()
+        expect(_editor_bar(page).locator("button", has_text="Save")).to_have_class(re.compile("panel-btn--attention"))
+
+    def test_start_while_dirty_prompts_and_cancel_aborts(self, page: Page, base_url: str):
+        """Cancelling the prompt creates no task config and starts nothing."""
+        start_calls: list = []
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: (
+                start_calls.append("create"),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configUuid": "tmp-cfg"}),
+                ),
+            ),
+        )
+        self._open_existing(page, base_url)
+        self._make_dirty(page)
+
+        self._start_btn(page).click()
+        modal = page.get_by_test_id("modal-shell-dialog")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("unsaved changes")
+        modal.locator("button", has_text="Cancel").click()
+        page.wait_for_timeout(500)
+
+        assert not start_calls, "Training must not start while the prompt is cancelled"
+        # The button is usable again after backing out of the prompt.
+        expect(self._start_btn(page)).to_be_enabled()
+
+    def test_save_and_start_saves_before_launching(self, page: Page, base_url: str):
+        """'Save & start training' PUTs the config first, then starts the task."""
+        calls: list[str] = []
+
+        def _record(name: str, body: dict, methods=None):
+            def handler(route: Route):
+                if methods and route.request.method not in methods:
+                    route.fallback()
+                    return
+                calls.append(name)
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+            return handler
+
+        self._open_existing(page, base_url)
+        page.route(
+            "**/api/training-configs/tc-1",
+            _record("save", {"status": "success", "config": EXISTING_TC}, methods={"PUT"}),
+        )
+        page.route(
+            "**/api/tasks/configs/create",
+            _record("create", {"status": "success", "configUuid": "tmp-cfg"}),
+        )
+        page.route(
+            "**/api/tasks/instances/start",
+            _record("start", {"status": "success", "taskUuid": "task-1"}),
+        )
+
+        self._make_dirty(page)
+        self._start_btn(page).click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Save & start").click()
+
+        wait_until(page, lambda: "start" in calls, "Expected training to start after saving")
+        assert calls.index("save") < calls.index("start"), f"Save must precede start, got {calls}"
+
+    def test_start_when_clean_does_not_prompt(self, page: Page, base_url: str):
+        """An untouched config starts immediately, as before."""
+        calls: list[str] = []
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: (
+                calls.append("create"),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configUuid": "tmp-cfg"}),
+                ),
+            ),
+        )
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: (
+                calls.append("start"),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+                ),
+            ),
+        )
+        self._open_existing(page, base_url)
+
+        self._start_btn(page).click()
+        wait_until(page, lambda: "start" in calls, "Expected an immediate start with no prompt")

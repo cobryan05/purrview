@@ -27,7 +27,7 @@ import {
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { renderCoverageStats, renderReadinessStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
-import { makeFieldRow, buildPanelEditorBar, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
+import { makeFieldRow, buildPanelEditorBar, confirmStartIfDirty, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
@@ -508,21 +508,10 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
           editorBody.appendChild(renderLabelStatsPanel(config, labelsMap));
         }
 
-        // Train button + inline progress card (only for fully-configured existing configs)
-        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
-          const { el: trainSection } = createTaskRunnerSection({
-            buttonLabel: '▶ Start Training',
-            runningLabel: 'Training…',
-            buildStartArgs: () => ({
-              typename: 'TrainModelTask',
-              name: `Train ${config.name}`,
-              params: { training_config_uuid: config.uuid },
-            }),
-          });
-          editorBody.appendChild(trainSection);
-        }
-
-        screen.setDoSave(async () => {
+        // Declared before the train section so "Start Training" can offer to run
+        // it — the trainer reads the config from the server, so unsaved edits
+        // would otherwise be left out of the run without a word.
+        const _doSave = async () => {
           const data = formHandle.getSaveData();
           if (!data.name) { toast('Name is required', 3000, 'error'); return false; }
           if (!data.modelConfigNodeUuid) { toast('A model shape node is required', 3000, 'error'); return false; }
@@ -547,7 +536,30 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
             setSaving(false);
             return false;
           }
-        });
+        };
+        screen.setDoSave(_doSave);
+
+        // Train button + inline progress card (only for fully-configured existing configs)
+        if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
+          const { el: trainSection } = createTaskRunnerSection({
+            buttonLabel: '▶ Start Training',
+            runningLabel: 'Training…',
+            buildStartArgs: async () => {
+              const proceed = await confirmStartIfDirty({
+                getDirty: barHandle.getDirty,
+                save: _doSave,
+                actionText: 'Start Training',
+              });
+              if (!proceed) return null;
+              return {
+                typename: 'TrainModelTask',
+                name: `Train ${config.name}`,
+                params: { training_config_uuid: config.uuid },
+              };
+            },
+          });
+          editorBody.appendChild(trainSection);
+        }
 
         _updateListSelection(config?.uuid ?? null);
       } finally {

@@ -106,7 +106,16 @@ export function createTaskRunnerSection({ buttonLabel, runningLabel, buildStartA
   };
 
   startBtn.addEventListener('click', async () => {
-    const startArgs = await buildStartArgs();
+    // buildStartArgs may await a user prompt (e.g. the unsaved-changes modal),
+    // so the button has to be held down for that window too — otherwise a second
+    // click stacks a second modal on the first.
+    startBtn.disabled = true;
+    let startArgs;
+    try {
+      startArgs = await buildStartArgs();
+    } finally {
+      if (!startArgs) startBtn.disabled = false;
+    }
     if (!startArgs) return;
 
     startBtn.disabled = true;

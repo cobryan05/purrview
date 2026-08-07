@@ -33,6 +33,15 @@ export function buildPanelEditorBar({ container, item, newTitle, deleteTitle, on
   titleSpan.className = 'panel-box__title';
   titleSpan.textContent = item ? item.name : newTitle;
 
+  // A 7px dot next to an uppercase title was too quiet to notice before hitting
+  // an action button (Start / Start Training), so unsaved state also says so in
+  // words and lights the Save button up.
+  const dirtyLabel = document.createElement('span');
+  dirtyLabel.className = 'panel-dirty-label';
+  dirtyLabel.textContent = 'Unsaved changes';
+  dirtyLabel.dataset.testid = 'panel-dirty-label';
+  dirtyLabel.hidden = true;
+
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.textContent = item ? 'Save' : 'Create';
@@ -43,6 +52,8 @@ export function buildPanelEditorBar({ container, item, newTitle, deleteTitle, on
   const setDirty = (v) => {
     _dirty = v;
     dirtyDot.classList.toggle('visible', v);
+    dirtyLabel.hidden = !v;
+    saveBtn.classList.toggle('panel-btn--attention', v);
     // Don't re-enable the button while a save is in flight — setDirty(true) fires
     // on every keystroke and would otherwise allow a second concurrent submission.
     if (!_saving) saveBtn.disabled = !v;
@@ -55,7 +66,7 @@ export function buildPanelEditorBar({ container, item, newTitle, deleteTitle, on
   const getDirty = () => _dirty;
   const updateTitle = (name) => { titleSpan.textContent = name; };
 
-  container.append(dirtyDot, titleSpan);
+  container.append(dirtyDot, titleSpan, dirtyLabel);
 
   if (item && onDelete) {
     const deleteBtn = document.createElement('button');

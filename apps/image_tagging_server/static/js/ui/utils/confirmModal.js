@@ -149,3 +149,30 @@ export function showUnsavedConfigChangesModal() {
     discardText: "Don't save & continue",
   });
 }
+
+/**
+ * Variant for the "you pressed Start while the form is dirty" case.
+ *
+ * Distinct from showUnsavedConfigChangesModal because the stakes are different:
+ * navigating away only loses edits, whereas starting launches server-side work
+ * against the *last saved* config, so "discard" silently runs something other
+ * than what is on screen. The wording says so, and 'discard' is spelled as
+ * "Start with saved settings" rather than a generic continue.
+ *
+ * @param {{ actionText?: string }} [opts] - e.g. 'Start Training'; defaults to 'Start'.
+ * @returns {Promise<'save'|'discard'|'cancel'>}
+ */
+export function showUnsavedBeforeStartModal({ actionText = 'Start' } = {}) {
+  return _buildModal({
+    title: 'Unsaved changes',
+    message: 'This config has unsaved changes. Starting now would run the last '
+      + 'saved settings, not the ones on screen.',
+    buttons: [
+      { text: 'Cancel', value: 'cancel', className: 'secondary' },
+      { text: `${actionText} with saved settings`, value: 'discard', className: 'contrast' },
+      { text: `Save & ${actionText.toLowerCase()}`, value: 'save' },
+    ],
+    defaultFocusIndex: 2,
+    defaultCloseValue: 'cancel',
+  });
+}

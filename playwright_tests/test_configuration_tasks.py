@@ -890,6 +890,107 @@ class TestDeleteTaskConfig:
         assert not delete_calls, "API must NOT be called when the confirm modal is cancelled"
 
 
+class TestUnsavedChangesBeforeStart:
+    """Starting runs the config as stored on the server, so unsaved form edits
+    would silently not be part of the run. Editing must be visible, and Start
+    must ask."""
+
+    @staticmethod
+    def _make_dirty(page: Page):
+        _name_input(page).fill("Nightly Refresh (edited)")
+        page.wait_for_timeout(200)
+
+    def test_editing_shows_unsaved_badge_and_lights_save(self, page: Page, base_url: str):
+        """A worded badge appears in the bar and Save gets the attention style."""
+        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG}, tasks={})
+        _navigate_to_tasks(page, base_url)
+        _open_config(page)
+
+        badge = page.get_by_test_id("panel-dirty-label")
+        expect(badge).to_be_hidden()
+        self._make_dirty(page)
+        expect(badge).to_be_visible()
+        save_btn = _editor_bar(page).locator("button", has_text="Save")
+        expect(save_btn).to_have_class(re.compile("panel-btn--attention"))
+
+    def test_start_while_dirty_prompts_and_cancel_aborts(self, page: Page, base_url: str):
+        """Cancelling the unsaved-changes prompt starts nothing."""
+        start_calls: list[dict] = []
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: (
+                start_calls.append(json.loads(route.request.post_data)),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "taskUuid": "new-task-uuid"}),
+                ),
+            ),
+        )
+        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG}, tasks={})
+        _navigate_to_tasks(page, base_url)
+        _open_config(page)
+        self._make_dirty(page)
+
+        _editor_footer(page).locator("button[title='Start']").click()
+        modal = page.get_by_test_id("modal-shell-dialog")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("unsaved changes")
+        modal.locator("button", has_text="Cancel").click()
+        page.wait_for_timeout(500)
+
+        assert not start_calls, "Start must not run while the prompt is cancelled"
+
+    def test_save_and_start_updates_then_starts(self, page: Page, base_url: str):
+        """'Save & start' persists the edits first, then launches the task."""
+        calls: list[str] = []
+
+        def _record(name: str, body: dict):
+            def handler(route: Route):
+                calls.append(name)
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+            return handler
+
+        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG}, tasks={})
+        page.route("**/api/tasks/configs/update", _record("update", {"status": "success"}))
+        page.route(
+            "**/api/tasks/instances/start",
+            _record("start", {"status": "success", "taskUuid": "new-task-uuid"}),
+        )
+
+        _navigate_to_tasks(page, base_url)
+        _open_config(page)
+        self._make_dirty(page)
+
+        _editor_footer(page).locator("button[title='Start']").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Save & start").click()
+
+        wait_until(page, lambda: "start" in calls, "Expected the task to start after saving")
+        assert calls.index("update") < calls.index("start"), f"Save must precede start, got {calls}"
+
+    def test_start_when_clean_does_not_prompt(self, page: Page, base_url: str):
+        """An untouched config starts immediately, as before."""
+        start_calls: list[dict] = []
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: (
+                start_calls.append(json.loads(route.request.post_data)),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "taskUuid": "new-task-uuid"}),
+                ),
+            ),
+        )
+        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG}, tasks={})
+        _navigate_to_tasks(page, base_url)
+        _open_config(page)
+
+        _editor_footer(page).locator("button[title='Start']").click()
+        wait_until(page, lambda: start_calls, "Expected an immediate start with no prompt")
+
+
 class TestSchemaFieldHelpText:
     """`help` is visible prose under a field, unlike `description`, which is only
     a tooltip on the label. Some settings (the duplicate thresholds) need a whole
