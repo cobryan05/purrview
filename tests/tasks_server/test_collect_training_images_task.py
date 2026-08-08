@@ -222,6 +222,13 @@ async def _run_task(
 
         await task.start()
         await task.wait_for_task_done(timeout=10.0)
+        # Stashed so tests can assert on the mocked collaborators (e.g. that inference
+        # was never called) after the patch context has exited.
+        task._test_mocks = {
+            "inference_api": mock_inf_cls.return_value,
+            "images_api": mock_img_cls.return_value,
+            "models_api": mock_models_cls.return_value,
+        }
 
     return task
 
@@ -3355,3 +3362,198 @@ class TestAllSourcesFailingStopsTheRun:
 
         assert task.get_status() == TaskStatus.COMPLETED
         assert task._images_saved >= 3
+
+
+# ─── Collect-everything mode (no models configured) ───────────────────────────
+
+
+_NO_MODEL_PARAMS = {**_PARAMS, "model_label_config": []}
+
+
+class TestCollectAllWhenNoModelsConfigured:
+    """With no models configured there is nothing to match against, so the task
+    collects every frame the providers hand over — unannotated, and still subject
+    to the filter chain and deduplication."""
+
+    async def test_init_sets_collect_all_when_model_label_config_is_empty(self):
+        task = _make_task(params=_NO_MODEL_PARAMS)
+        await task._init(_NO_MODEL_PARAMS, resume_data=None)
+        assert task._collect_all is True
+        assert task._model_names == []
+
+    async def test_init_does_not_set_collect_all_when_a_model_is_configured(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+        assert task._collect_all is False
+
+    async def test_a_model_with_only_disabled_labels_is_not_collect_all(self):
+        """Zero confidence is the UI's "not collecting this label" convention. That's
+        an explicitly disabled model, not an unconfigured task — it must keep its
+        existing behaviour (collect nothing) rather than silently collecting
+        everything."""
+        params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0}}]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        assert task._collect_all is False
+        assert task._target_labels == []
+
+    async def test_every_frame_is_saved_without_running_inference(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1), _tracked_image(2)]
+        task = await _run_task(images, params=_NO_MODEL_PARAMS, detect=False, tmp_path=tmp_path)
+
+        assert task.get_status() == TaskStatus.COMPLETED
+        assert task._images_saved == 3
+        assert len(list(tmp_path.rglob("*.jpg"))) == 3
+        task._test_mocks["inference_api"].detect.assert_not_called()
+
+    async def test_saved_frames_carry_no_bboxes(self, tmp_path):
+        """Nothing detected anything, so the images land unannotated — the point of
+        the mode is the raw frames, not empty boxes."""
+        task = await _run_task([_tracked_image(0)], params=_NO_MODEL_PARAMS, detect=False, tmp_path=tmp_path)
+
+        payloads = [c.args[0] for c in task._test_mocks["images_api"].update_image_metadata.call_args_list]
+        assert len(payloads) == 1
+        assert payloads[0].boxes == []
+
+    async def test_no_models_are_pinned(self, tmp_path):
+        task = await _run_task([_tracked_image(0)], params=_NO_MODEL_PARAMS, detect=False, tmp_path=tmp_path)
+        task._test_mocks["models_api"].pin_model_api_api_models_model_name_pin_post.assert_not_called()
+
+    async def test_frames_are_still_tracked_for_resume(self, tmp_path):
+        images = [_tracked_image(0), _tracked_image(1)]
+        task = await _run_task(images, params=_NO_MODEL_PARAMS, detect=False, tmp_path=tmp_path)
+        assert set(task._resume_data["processed_ids"]) == {f"{_SOURCE}:0", f"{_SOURCE}:1"}
+
+
+class TestCollectAllStillRunsTheFilterChain:
+    """An empty detection list normally means "frame not saved anyway", so the chain
+    is skipped. In collect-everything mode an empty list is the normal case for a
+    frame that IS about to be saved, so its image-level steps must still run — they
+    are the only filtering such a run has."""
+
+    async def _collect_all_task_with_chain(self, steps, backend):
+        from apps.tasks_server.tasks._filter_chain_runner import FilterChainRunner
+
+        task = _make_task(params=_NO_MODEL_PARAMS)
+        await task._init(_NO_MODEL_PARAMS, resume_data=None)
+        task._filter_chain_runner = FilterChainRunner(steps, backend)
+        return task
+
+    async def test_discard_image_still_discards_a_frame_with_no_detections(self):
+        backend = _FakeFilterChainBackend(kinds={"corrupt": "image_classifier"}, classify_results={"corrupt": 0.9})
+        step = _fc_step(model_name="corrupt", action="discard_image", confidence=0.5)
+        task = await self._collect_all_task_with_chain([step], backend)
+
+        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), _fc_packet(), [])
+        assert discard is True
+        assert result == []
+        assert task._filtered_discarded == 1
+
+    async def test_tag_image_still_tags_a_frame_with_no_detections(self):
+        backend = _FakeFilterChainBackend(kinds={"night": "image_classifier"}, classify_results={"night": 0.9})
+        step = _fc_step(model_name="night", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
+        task = await self._collect_all_task_with_chain([step], backend)
+
+        provided = _fc_provided()
+        _result, discard, _force_save = await task._apply_filter_chain_to_frame(provided, _fc_packet(), [])
+        assert discard is False
+        assert provided._filter_chain_image_tags == {"tag-x"}
+
+    async def test_a_discarded_frame_is_not_saved(self, tmp_path):
+        """End-to-end counterpart: `matching` is empty either way, so the discard flag
+        is the only thing that can stop the save. _run() only consults the chain when
+        _filter_chain_runner is set, so _init is wrapped to install one."""
+        original_init = CollectTrainingImagesTask._init
+
+        async def _init_with_runner(self, params, resume_data):
+            await original_init(self, params, resume_data)
+            self._filter_chain_runner = object()  # truthiness is all _run() checks
+
+        async def _discard_everything(self, provided, base64_img, matching):
+            return [], True, False
+
+        with (
+            patch.object(CollectTrainingImagesTask, "_init", _init_with_runner),
+            patch.object(CollectTrainingImagesTask, "_apply_filter_chain_to_frame", _discard_everything),
+        ):
+            task = await _run_task(
+                [_tracked_image(0), _tracked_image(1)],
+                params=_NO_MODEL_PARAMS,
+                detect=False,
+                tmp_path=tmp_path,
+            )
+
+        assert task._images_saved == 0
+        assert list(tmp_path.rglob("*.jpg")) == []
+
+    async def test_a_kept_frame_is_still_saved(self, tmp_path):
+        """The mirror image: a chain that matches nothing must not stop collection."""
+        original_init = CollectTrainingImagesTask._init
+
+        async def _init_with_runner(self, params, resume_data):
+            await original_init(self, params, resume_data)
+            self._filter_chain_runner = object()
+
+        async def _keep_everything(self, provided, base64_img, matching):
+            return matching, False, False
+
+        with (
+            patch.object(CollectTrainingImagesTask, "_init", _init_with_runner),
+            patch.object(CollectTrainingImagesTask, "_apply_filter_chain_to_frame", _keep_everything),
+        ):
+            task = await _run_task(
+                [_tracked_image(0), _tracked_image(1)],
+                params=_NO_MODEL_PARAMS,
+                detect=False,
+                tmp_path=tmp_path,
+            )
+
+        assert task._images_saved == 2
+
+
+class TestCollectAllDedup:
+    """With no bboxes the worker's bbox checks are vacuous, so dedup degrades to an
+    image-level comparison — which is the right rule when there is nothing else to
+    compare."""
+
+    async def _run_worker(self, action, response):
+        params = {**_NO_MODEL_PARAMS, "enable_dedup": True, "duplicate_action": action}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._image_hash_size = 8
+        task._bbox_hash_size = 16
+        task._dedup_queue = asyncio.Queue()
+        task._pending_saves = []
+
+        provided = MagicMock()
+        provided.image = np.zeros((32, 32, 3), dtype=np.uint8)
+        provided.metadata.source = "src"
+        provided.metadata.frame_idx = None
+
+        images_api = MagicMock()
+        images_api.check_dedup_bulk.return_value = response
+
+        await task._dedup_queue.put((provided, [], ImageProviderType.LIVE_STREAM))
+        await task._dedup_queue.put(None)
+        with patch.object(task, "_save_image", new=AsyncMock(return_value="f.jpg")) as save:
+            await task._dedup_worker(images_api, Path("/tmp"))
+        return task, save
+
+    @staticmethod
+    def _response(image_min, image_is_dup):
+        resp = MagicMock()
+        resp.image_min_distance = image_min
+        resp.bbox_min_distances = []
+        resp.image_is_dup = image_is_dup
+        resp.bbox_flags = []
+        return resp
+
+    async def test_duplicate_frame_is_discarded(self):
+        task, save = await self._run_worker("discard", self._response(0, image_is_dup=True))
+        save.assert_not_called()
+        assert task._dup_frames_discarded == 1
+
+    async def test_novel_frame_is_saved(self):
+        task, save = await self._run_worker("discard", self._response(30, image_is_dup=False))
+        save.assert_called_once()
+        assert task._dup_frames_discarded == 0

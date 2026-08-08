@@ -200,6 +200,7 @@ class CollectTrainingImagesTask(Task):
         self._images_saved: int = 0
         self._images_processed: int = 0
         self._enable_dedup: bool = False
+        self._collect_all: bool = False
         self._duplicate_action: str = "discard"
         self._image_dup_threshold: int = 5
         self._bbox_dup_threshold: int = 8
@@ -260,6 +261,12 @@ class CollectTrainingImagesTask(Task):
                     )
                 label_bands[label_uuid] = band
         self._model_names: list[str] = ordered_model_names
+        # No models configured at all → collect-everything mode: no inference runs and
+        # every fetched frame is saved unannotated, after the filter chain and dedup
+        # have still had their say. Deliberately keyed on "no models", not "no target
+        # labels": a model whose labels are all at zero confidence is an explicitly
+        # disabled model, and keeps its existing behaviour of collecting nothing.
+        self._collect_all: bool = not self._model_names
         self._overlap_iou_threshold: float = float(params.get("overlap_iou_threshold", SAME_BBOX_IOU_THRESHOLD))
         # Cross-model merge policy for same-label collisions (Phase 5A). Default preserves
         # today's behaviour: earlier-configured (higher priority) models win.
@@ -416,7 +423,10 @@ class CollectTrainingImagesTask(Task):
             providers.append(provider)
 
         self._status_msg = "Pinning models"
-        self.log(f"Pinning {len(self._model_names)} model(s)")
+        if self._collect_all:
+            self.log("No models configured — collecting every frame (filter chain and dedup still apply)")
+        else:
+            self.log(f"Pinning {len(self._model_names)} model(s)")
         models_api = ModelsApi(inference_api_client)
         pin_ids: dict[str, Optional[str]] = {}
         for name in self._model_names:
@@ -829,10 +839,16 @@ class CollectTrainingImagesTask(Task):
                         base64_img = await asyncio.to_thread(base64_encode_jpg, provided.image)
                         t_encode = time.perf_counter()  # PERF
 
-                    matching = await self._run_inference(inference_api, base64_img, pin_ids)
+                    # Collect-everything mode skips inference entirely — there is no
+                    # model to run and nothing to match against, so the frame is saved
+                    # unannotated unless the filter chain or dedup drops it.
+                    matching = (
+                        [] if self._collect_all else await self._run_inference(inference_api, base64_img, pin_ids)
+                    )
+                    discarded = False
                     force_save = False
                     if self._filter_chain_runner is not None:
-                        matching, _discarded, force_save = await self._apply_filter_chain_to_frame(
+                        matching, discarded, force_save = await self._apply_filter_chain_to_frame(
                             provided, base64_img, matching
                         )
                     t_infer = time.perf_counter()  # PERF
@@ -848,7 +864,7 @@ class CollectTrainingImagesTask(Task):
                     _enc_label = "pre_enc" if _pre_encoded else "on_the_fly"
                     logger.debug(
                         "Frame timing (%s): fetch=%.1fms encode=%.1fms(%s) infer=%.1fms%s",
-                        "matched" if matching else "no match",
+                        "matched" if matching else ("collect-all" if self._collect_all else "no match"),
                         _fetch_ms,
                         _encode_ms,
                         _enc_label,
@@ -856,7 +872,7 @@ class CollectTrainingImagesTask(Task):
                         (
                             " (dedup queued)"
                             if (matching and self._enable_dedup)
-                            else " (save dispatched)" if matching else ""
+                            else " (save dispatched)" if (matching or (self._collect_all and not discarded)) else ""
                         ),
                     )
                     if _perf_frame_count % _PERF_SUMMARY_INTERVAL == 0:
@@ -870,11 +886,18 @@ class CollectTrainingImagesTask(Task):
                         )
                     # PERF END
 
-                    if matching:
+                    # In collect-everything mode `matching` is always empty, so the save
+                    # is driven by the frame itself: everything the providers hand over
+                    # is collected unless the filter chain discarded it (or dedup, below,
+                    # decides it's a duplicate).
+                    if matching or (self._collect_all and not discarded):
                         if self._enable_dedup:
                             # Hand off to the dedup coroutine.  This may block briefly if
                             # the worker is still processing the previous frame (queue
                             # maxsize=1), providing natural backpressure.
+                            # With no detections (collect-everything) the worker's bbox
+                            # checks are vacuous and dedup degrades to image-level only,
+                            # which is exactly the right rule when there are no bboxes.
                             await self._dedup_queue.put((provided, matching, ptype))
                         else:
                             save_task = asyncio.create_task(
@@ -1589,7 +1612,12 @@ class CollectTrainingImagesTask(Task):
         once _save_image knows the image's saved path, so it lands on the image
         record rather than being (incorrectly) folded into every bbox's tags.
         """
-        if self._filter_chain_runner is None or not matching:
+        # An empty `matching` normally means "frame not saved anyway", so the chain is
+        # skipped as pure wasted inference. In collect-everything mode an empty list is
+        # the normal case for a frame that IS about to be saved, so the chain must still
+        # run — its image-level steps (discard_image / tag_image) are the only filtering
+        # such a run has.
+        if self._filter_chain_runner is None or (not matching and not self._collect_all):
             return matching, False, False
 
         # base64_img is the JSON packet produced by base64_encode_jpg (imageUtils.py)
@@ -2185,8 +2213,13 @@ class CollectTrainingImagesTask(Task):
             },
             "model_label_config": {
                 "type": "array",
-                "required": "true",
+                "required": False,
                 "label": "Model/Label Configuration",
+                "description": (
+                    "Models to run on each frame, and which labels/confidences trigger a save. "
+                    "Leave empty to collect every frame unannotated (the filter chain and "
+                    "deduplication settings below still apply)."
+                ),
                 "allow_group_insert": True,
                 "items": {
                     "type": "model_label",
