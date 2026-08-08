@@ -5,7 +5,9 @@ the inference backend's classify/detect calls at the seam — no real ONNX
 session or live server needed (mirrors RunClassifierTask's test pattern).
 """
 
+import asyncio
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -539,3 +541,195 @@ class TestRunEndToEnd:
 
         called_payload = mock_images_api.batch_images_by_uuids.call_args.args[0]
         assert len(called_payload.image_uuids) == 3
+
+
+class TestConcurrency:
+    """Images within a batch run concurrently so the inference server always has
+    requests queued (serial processing left the GPU idle ~90% of the time). The
+    batch boundary stays a sync point, so counters and resume data must come out
+    exactly as they did serially.
+    """
+
+    # Borrowed rather than inherited: subclassing TestRunEndToEnd would re-run
+    # its whole suite under this class's name as well.
+    _patch_common = TestRunEndToEnd._patch_common
+
+    def _images_setup(self, tmp_path, count):
+        paths = []
+        for i in range(count):
+            p = tmp_path / f"img_{i}.jpg"
+            p.write_bytes(b"fake")
+            paths.append(p)
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(
+            images=[_stub(uuid=f"img-{i}", filename=str(p)) for i, p in enumerate(paths)]
+        )
+        mock_images_api.get_image_metadata.return_value = MagicMock(status="success", image=MagicMock(bboxes=[]))
+        mock_images_api.set_image_tag.return_value = MagicMock()
+        return paths, mock_images_api
+
+    async def test_counters_match_serial_over_many_images(self, tmp_path):
+        count = 12
+        paths, mock_images_api = self._images_setup(tmp_path, count)
+
+        step = _step(model_name="corrupt", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
+        patches = self._patch_common([step], mock_images_api)
+
+        task = _make_task(
+            {
+                "filter_chain_uuid": "chain-1",
+                "image_uuids": [str(p) for p in paths],
+                "batch_size": 5,  # deliberately not a divisor of count
+                "concurrency": 4,
+            }
+        )
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+                new=AsyncMock(return_value=0.9),
+            ),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+
+        assert result["images_processed"] == count
+        assert result["images_changed"] == count
+        assert result["images_tagged"] == count
+        assert mock_images_api.set_image_tag.call_count == count
+
+    async def test_images_actually_overlap(self, tmp_path):
+        """The point of the change: prove more than one image is in flight at
+        once, so this can't silently regress to serial and still pass."""
+        count = 8
+        paths, mock_images_api = self._images_setup(tmp_path, count)
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def _slow_classify(*args, **kwargs):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            try:
+                await asyncio.sleep(0.01)  # a yield point, standing in for the HTTP round-trip
+                return 0.9
+            finally:
+                in_flight -= 1
+
+        step = _step(model_name="corrupt", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
+        patches = self._patch_common([step], mock_images_api)
+
+        task = _make_task(
+            {
+                "filter_chain_uuid": "chain-1",
+                "image_uuids": [str(p) for p in paths],
+                "batch_size": 8,
+                "concurrency": 4,
+            }
+        )
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+                new=_slow_classify,
+            ),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+
+        assert result["images_processed"] == count
+        assert max_in_flight > 1, "images ran serially — the concurrency change has regressed"
+        assert max_in_flight <= 4, f"semaphore breached: {max_in_flight} in flight with concurrency=4"
+
+    async def test_concurrency_is_clamped_to_at_least_one(self, tmp_path):
+        """A 0 or negative param would make asyncio.Semaphore(0) block forever,
+        hanging the batch loop with no way out."""
+        paths, mock_images_api = self._images_setup(tmp_path, 2)
+        step = _step(model_name="corrupt", action="tag_image", confidence=0.5, action_params={"tag_uuid": "tag-x"})
+        patches = self._patch_common([step], mock_images_api)
+
+        task = _make_task(
+            {
+                "filter_chain_uuid": "chain-1",
+                "image_uuids": [str(p) for p in paths],
+                "concurrency": 0,
+            }
+        )
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.classify_whole_image",
+                new=AsyncMock(return_value=0.9),
+            ),
+        ):
+            await task._init(task._params, None)
+            assert task._concurrency == 1
+            result = await asyncio.wait_for(task._run(), timeout=10)
+
+        assert result["images_processed"] == 2
+
+    async def test_review_tag_created_once_under_concurrency(self, tmp_path):
+        """_ensure_review_tag's check-then-create spans awaits: without a lock,
+        concurrent images all miss the cache and each create the same tag."""
+        count = 6
+        paths = []
+        for i in range(count):
+            p = tmp_path / f"img_{i}.jpg"
+            p.write_bytes(b"fake")
+            paths.append(p)
+
+        boxes = {f"img-{i}": _bbox(uuid=f"bbox-{i}", label_uuid="cat") for i in range(count)}
+
+        mock_images_api = MagicMock()
+        mock_images_api.batch_images_by_uuids.return_value = MagicMock(
+            images=[_stub(uuid=f"img-{i}", filename=str(p)) for i, p in enumerate(paths)]
+        )
+        mock_images_api.get_image_metadata.side_effect = lambda payload: MagicMock(
+            status="success",
+            image=MagicMock(bboxes=[boxes[f"img-{paths.index(Path(payload.image_path))}"]]),
+        )
+        mock_images_api.update_bbox.return_value = MagicMock()
+
+        mock_tags_api = MagicMock()
+        mock_tags_api.list_tags.return_value = MagicMock(tags=[])
+
+        async def _slow_detect(*args, **kwargs):
+            await asyncio.sleep(0.01)  # force overlap across the ensure-tag section
+            return [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9)]
+
+        step = _step(
+            model_name="valves",
+            action="relabel_bbox",
+            confidence=0.5,
+            action_params={"target_label_uuid": "water_valve_label"},
+        )
+        patches = self._patch_common([step], mock_images_api, mock_tags_api=mock_tags_api)
+
+        task = _make_task(
+            {
+                "filter_chain_uuid": "chain-1",
+                "image_uuids": [str(p) for p in paths],
+                "batch_size": count,
+                "concurrency": 4,
+            }
+        )
+        with (
+            patches,
+            patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="detector"),
+            patch(
+                "apps.tasks_server.tasks.ApplyFilterChainTask._HttpInferenceBackend.detect",
+                new=_slow_detect,
+            ),
+        ):
+            await task._init(task._params, None)
+            result = await task._run()
+
+        assert result["bboxes_relabeled"] == count
+        assert (
+            mock_tags_api.add_tag.call_count == 1
+        ), f"review tag created {mock_tags_api.add_tag.call_count} times — the ensure-tag race is back"

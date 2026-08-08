@@ -61,6 +61,11 @@ _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 _MAX_IMAGES_CEILING = 5000
 _CLASSIFIER_KINDS = {"image_classifier", "multi_label_classifier"}
 _SCOPE_PAGE_SIZE = 200
+# Images in flight at once (see self._concurrency). 4 keeps the inference
+# server's single GPU thread fed without piling up enough concurrent decodes to
+# swamp its event loop — inference is the shared resource, so raising this only
+# helps up to the point that server saturates.
+_DEFAULT_CONCURRENCY = 4
 
 
 def _read_model_kind(model_name: str) -> str:
@@ -142,6 +147,12 @@ class ApplyFilterChainTask(Task):
         self._batch_size: int = int(params.get("batch_size", 32))
         self._dry_run: bool = bool(params.get("dry_run", False))
         self._image_source: str = str(params.get("image_source", "filesystem"))
+        # How many images are in flight at once. Each image is overwhelmingly
+        # wait (disk read, inference HTTP round-trip, DB writes) rather than CPU
+        # in *this* process, so running one at a time left the GPU idle ~90% of
+        # the time: it sat between requests with nothing queued. Clamped to >=1
+        # so a 0/negative param can't deadlock the batch loop.
+        self._concurrency: int = max(1, int(params.get("concurrency", _DEFAULT_CONCURRENCY)))
 
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
         self._images_changed: int = resume_data.get("images_changed", 0) if resume_data else 0
@@ -156,10 +167,16 @@ class ApplyFilterChainTask(Task):
         # Per-instance review tags are created lazily; track which uuids we've
         # already ensured so relabel and add_bbox can each have their own tag.
         self._review_tags_ensured: set = set()
+        # Serializes _ensure_review_tag: its check-then-create spans awaits, so
+        # concurrent images could otherwise both miss the cache and race to
+        # create the same tag. Created lazily in _run() — _init() may run off
+        # the loop that later owns the task.
+        self._review_tag_lock: Optional[asyncio.Lock] = None
         # name -> label_uuid fallback for add_bbox, populated in _run().
         self._name_to_label_uuid: Dict[str, str] = {}
 
     async def _run(self) -> Dict[str, Any]:
+        self._review_tag_lock = asyncio.Lock()
         db_api_client = self._manager.get_db_api_client()
         inference_api_client = self._manager.get_inference_api_client()
         filter_chains_api = FilterChainsApi(db_api_client)
@@ -229,26 +246,39 @@ class ApplyFilterChainTask(Task):
             # Fetch the whole batch's image records in one round-trip instead of
             # one get_image_metadata call per image (an N+1 over up to max_images).
             prefetched = await self._prefetch_batch_records(images_api, batch)
-            for stub in batch:
-                if self._cancel_flag.is_set():
-                    break
-                try:
-                    changed = await self._process_image(
-                        images_api,
-                        tags_api,
-                        runner,
-                        stub,
-                        review_tag_uuid,
-                        review_tag_name,
-                        add_tag_uuid,
-                        add_tag_name,
-                        prefetched.get(getattr(stub, "uuid", None)),
-                    )
-                    if changed:
-                        self._images_changed += 1
-                except Exception:
-                    logger.exception("Failed to process image %s", getattr(stub, "filename", "?"))
-                self._images_processed += 1
+
+            # Images within a batch are independent (each touches only its own
+            # bboxes/tags), so they run concurrently to keep several requests
+            # queued at the inference server instead of leaving it idle between
+            # round-trips. The batch boundary stays a hard sync point: every
+            # image finishes before resume data is written below, so resume
+            # semantics are unchanged by the out-of-order completion.
+            semaphore = asyncio.Semaphore(self._concurrency)
+
+            async def _run_one(stub: Any) -> Optional[bool]:
+                """True/False = processed (changed or not); None = skipped."""
+                async with semaphore:
+                    if self._cancel_flag.is_set():
+                        return None
+                    try:
+                        return await self._process_image(
+                            images_api,
+                            tags_api,
+                            runner,
+                            stub,
+                            review_tag_uuid,
+                            review_tag_name,
+                            add_tag_uuid,
+                            add_tag_name,
+                            prefetched.get(getattr(stub, "uuid", None)),
+                        )
+                    except Exception:
+                        logger.exception("Failed to process image %s", getattr(stub, "filename", "?"))
+                        return False
+
+            outcomes = await asyncio.gather(*(_run_one(stub) for stub in batch))
+            self._images_changed += sum(1 for changed in outcomes if changed)
+            self._images_processed += sum(1 for changed in outcomes if changed is not None)
 
             progress = min(100.0, self._images_processed / max(total, 1) * 100.0)
             self._update_progress(progress)
@@ -326,14 +356,20 @@ class ApplyFilterChainTask(Task):
     async def _ensure_review_tag(self, tags_api: TagsApi, tag_uuid: str, tag_name: str) -> None:
         if tag_uuid in self._review_tags_ensured:
             return
-        existing = await asyncio.to_thread(tags_api.list_tags)
-        existing_uuids = {t.uuid for t in (existing.tags or [])}
-        if tag_uuid not in existing_uuids:
-            await asyncio.to_thread(
-                tags_api.add_tag,
-                AddTagPayload(uuid=tag_uuid, name=tag_name, color="#e8a020", kind=ApiTagKind.TASK_GENERATED),
-            )
-        self._review_tags_ensured.add(tag_uuid)
+        # Re-check under the lock: with images processed concurrently, several
+        # can clear the fast path above before any of them creates the tag.
+        assert self._review_tag_lock is not None, "_ensure_review_tag called outside _run()"
+        async with self._review_tag_lock:
+            if tag_uuid in self._review_tags_ensured:
+                return
+            existing = await asyncio.to_thread(tags_api.list_tags)
+            existing_uuids = {t.uuid for t in (existing.tags or [])}
+            if tag_uuid not in existing_uuids:
+                await asyncio.to_thread(
+                    tags_api.add_tag,
+                    AddTagPayload(uuid=tag_uuid, name=tag_name, color="#e8a020", kind=ApiTagKind.TASK_GENERATED),
+                )
+            self._review_tags_ensured.add(tag_uuid)
 
     async def _process_image(
         self,
@@ -643,6 +679,7 @@ class ApplyFilterChainTask(Task):
                     "dataset_uuid",
                     "max_images",
                     "batch_size",
+                    "concurrency",
                     "dry_run",
                 ],
             },
@@ -691,6 +728,12 @@ class ApplyFilterChainTask(Task):
                 "type": "int",
                 "label": "Batch Size",
                 "default": 32,
+            },
+            "concurrency": {
+                "type": "int",
+                "label": "Concurrency",
+                "default": _DEFAULT_CONCURRENCY,
+                "description": "Images processed in parallel. Higher keeps the GPU busier, up to what the inference server can absorb.",
             },
             "dry_run": {
                 "type": "boolean",
