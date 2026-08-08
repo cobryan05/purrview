@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, TypeVar, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set, TypeVar, Union
 from uuid import uuid4
 
 from alembic import command as alembic_command
@@ -474,6 +474,52 @@ def _chunked(seq: List, size: Optional[int] = None):
         size = _UUID_IN_CHUNK
     for i in range(0, len(seq), size):
         yield seq[i : i + size]
+
+
+def _keyset_start_index(
+    images: Sequence["ImageRecord"],
+    *,
+    after_uuid: str,
+    after_sort_value: Optional[datetime],
+    sort_by: str,
+    sort_order: str,
+) -> Optional[int]:
+    """Index of the first row *after* the cursor, in an already-sorted list.
+
+    Returns ``None`` when the cursor cannot be located — the caller should then
+    return an empty page rather than restarting from the top.
+
+    ⚠️ A cursor with no ``after_sort_value`` cannot be honoured by comparing sort
+    values, and comparing ``uuid`` instead is only correct when ``sort_by`` is
+    ``"uuid"``. Under a ``created_at`` sort, uuids are random with respect to the
+    row order, so a uuid comparison matches within the first row or two: the page
+    barely advances and can settle on re-serving the *same* page forever, with
+    ``has_more`` stuck true. That is an unbounded request loop for any client that
+    pages until exhaustion — which is exactly what the review modals do when a
+    client-side filter rejects a whole chunk (`app/review/main.js` sends
+    ``afterSortValue: null``). Since the list is already materialised here, locate
+    the cursor row itself and resume after it; no sort value is needed.
+    """
+    if sort_by != "uuid" and after_sort_value is None:
+        for i, img in enumerate(images):
+            if img.uuid == after_uuid:
+                return i + 1
+        # The cursor row is gone (deleted, or no longer matches the filter). There
+        # is no sound resume point, so end the walk instead of starting over.
+        return None
+
+    for i, img in enumerate(images):
+        if sort_by == "uuid":
+            past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
+        else:
+            attr = getattr(img, sort_by)
+            if sort_order == "asc":
+                past = attr > after_sort_value or (attr == after_sort_value and img.uuid > after_uuid)
+            else:
+                past = attr < after_sort_value or (attr == after_sort_value and img.uuid < after_uuid)
+        if past:
+            return i
+    return None
 
 
 class DbClient:
@@ -1215,13 +1261,26 @@ class DbClient:
             # For datetime sorts, use a composite (sort_field, uuid) keyset to handle
             # ties deterministically without gaps or duplicates.
             if params.after_uuid is not None:
-                if params.sort_by == "uuid" or params.after_sort_value is None:
+                sv = params.after_sort_value
+                if params.sort_by != "uuid" and sv is None:
+                    # A uuid-only cursor cannot drive a (sort_col, uuid) keyset, and
+                    # falling back to a bare uuid comparison is wrong here for the same
+                    # reason it is in `_keyset_start_index`: uuids are unordered with
+                    # respect to created_at/updated_at, so the page barely advances and
+                    # a client paging to exhaustion can loop forever. Recover the sort
+                    # value from the cursor row itself (PK lookup) instead.
+                    sv = await session.scalar(select(sort_col).where(ImageRecord.uuid == params.after_uuid))
+
+                if params.sort_by == "uuid":
                     if params.sort_order == "asc":
                         stmt = stmt.where(ImageRecord.uuid > params.after_uuid)
                     else:
                         stmt = stmt.where(ImageRecord.uuid < params.after_uuid)
+                elif sv is None:
+                    # The cursor row is gone; there is no sound resume point, so return
+                    # an empty page rather than restarting from the top.
+                    return []
                 else:
-                    sv = params.after_sort_value
                     if params.sort_order == "asc":
                         stmt = stmt.where(
                             or_(
@@ -4268,20 +4327,13 @@ class DbClient:
 
         # Apply keyset cursor.
         if after_uuid is not None:
-            start_idx = None
-            for i, img in enumerate(all_images):
-                attr = getattr(img, sort_by)
-                if sort_by == "uuid" or after_sort_value is None:
-                    past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
-                else:
-                    sv = after_sort_value
-                    if sort_order == "asc":
-                        past = attr > sv or (attr == sv and img.uuid > after_uuid)
-                    else:
-                        past = attr < sv or (attr == sv and img.uuid < after_uuid)
-                if past:
-                    start_idx = i
-                    break
+            start_idx = _keyset_start_index(
+                all_images,
+                after_uuid=after_uuid,
+                after_sort_value=after_sort_value,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            )
             if start_idx is None:
                 return [], False
             all_images = all_images[start_idx:]
@@ -4357,22 +4409,15 @@ class DbClient:
         all_images.sort(key=_sort_key, reverse=(sort_order == "desc"))
 
         # Apply keyset cursor to resume from the previous page.
-        start_idx = 0
         if after_uuid is not None:
-            for i, img in enumerate(all_images):
-                attr = getattr(img, sort_by)
-                if sort_by == "uuid" or after_sort_value is None:
-                    past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
-                else:
-                    sv = after_sort_value
-                    if sort_order == "asc":
-                        past = attr > sv or (attr == sv and img.uuid > after_uuid)
-                    else:
-                        past = attr < sv or (attr == sv and img.uuid < after_uuid)
-                if past:
-                    start_idx = i
-                    break
-            else:
+            start_idx = _keyset_start_index(
+                all_images,
+                after_uuid=after_uuid,
+                after_sort_value=after_sort_value,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            )
+            if start_idx is None:
                 return [], False
             all_images = all_images[start_idx:]
 
@@ -4448,20 +4493,13 @@ class DbClient:
 
         # Apply keyset cursor to resume from the previous page.
         if after_uuid is not None:
-            start_idx = None
-            for i, img in enumerate(bucket_images):
-                attr = getattr(img, sort_by)
-                if sort_by == "uuid" or after_sort_value is None:
-                    past = img.uuid > after_uuid if sort_order == "asc" else img.uuid < after_uuid
-                else:
-                    sv = after_sort_value
-                    if sort_order == "asc":
-                        past = attr > sv or (attr == sv and img.uuid > after_uuid)
-                    else:
-                        past = attr < sv or (attr == sv and img.uuid < after_uuid)
-                if past:
-                    start_idx = i
-                    break
+            start_idx = _keyset_start_index(
+                bucket_images,
+                after_uuid=after_uuid,
+                after_sort_value=after_sort_value,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            )
             if start_idx is None:
                 return [], False
             bucket_images = bucket_images[start_idx:]

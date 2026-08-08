@@ -816,6 +816,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // means fetchImages returned fewer than a full chunk (no more candidates).
   // Filter mode ignores these — it keeps fixed-page keyset pagination.
   let _curatedCursor = null;
+  // ⚠️ The uuid alone is NOT a usable cursor. The server-side custom fetchers
+  // (the training-config/coverage modals) keyset-paginate on `(created_at,
+  // uuid)`; given a uuid with no sort value they cannot build that predicate,
+  // and the page stops advancing. Since these loops page until exhaustion, a
+  // curated filter that rejects a whole chunk then loops forever — that is the
+  // "Needs Review + filename filter never finishes" hang.
+  //
+  // Always `createdAt`, never `sortBySelect.value`: modal mode hides the sort
+  // controls and never passes `sortBy` to `fetchImages`, so every custom fetcher
+  // is using its own `created_at` default. Deriving from the select could send
+  // an `updatedAt` against a created_at-ordered query and skip rows instead.
+  let _curatedCursorSortValue = null;
+  const _curatedSortValueOf = (img) => img?.createdAt ?? null;
   let _curatedExhausted = false;
   let _loadingMore = false;
   let _loadMorePending = false;
@@ -1425,12 +1438,20 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       do {
         _loadMorePending = false;
         while (!_curatedExhausted && _allEntries.length < MAX_ENTRIES && _nearBottom()) {
-          const raw = await fetchImages({ afterUuid: _curatedCursor, afterSortValue: null, limit: _pageSize + 1 });
+          const raw = await fetchImages({
+            afterUuid: _curatedCursor,
+            afterSortValue: _curatedCursorSortValue,
+            limit: _pageSize + 1,
+          });
           if (_renderGeneration !== _gen) return; // superseded by a full render() mid-flight
 
           const exhausted = raw.length <= _pageSize;
           const pageImages = raw.slice(0, _pageSize);
-          if (pageImages.length > 0) _curatedCursor = pageImages[pageImages.length - 1].uuid;
+          if (pageImages.length > 0) {
+            const last = pageImages[pageImages.length - 1];
+            _curatedCursor = last.uuid;
+            _curatedCursorSortValue = _curatedSortValueOf(last);
+          }
           _curatedExhausted = exhausted;
           _hasMore = !exhausted;
           if (pageImages.length === 0) break;
@@ -1530,10 +1551,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           // so `images` is left empty — the generic per-image entry-building
           // loop below is then a no-op for this branch.
           _curatedCursor = null;
+          _curatedCursorSortValue = null;
           _curatedExhausted = false;
           while (_allEntries.length < _pageSize && !_curatedExhausted) {
             if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
-            const raw = await fetchImages({ afterUuid: _curatedCursor, afterSortValue: null, limit: _pageSize + 1 });
+            const raw = await fetchImages({
+              afterUuid: _curatedCursor,
+              afterSortValue: _curatedCursorSortValue,
+              limit: _pageSize + 1,
+            });
             // Re-check after the await before touching shared cursor/entry state:
             // a filter change or Refresh mid-fetch starts a newer render() that
             // has already reset _allEntries/_curatedCursor, and writing this
@@ -1541,7 +1567,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             if (_renderGeneration !== _gen) { clearTimeout(_slowTimer); return; }
             const exhausted = raw.length <= _pageSize;
             const pageImages = raw.slice(0, _pageSize);
-            if (pageImages.length > 0) _curatedCursor = pageImages[pageImages.length - 1].uuid;
+            if (pageImages.length > 0) {
+              const last = pageImages[pageImages.length - 1];
+              _curatedCursor = last.uuid;
+              _curatedCursorSortValue = _curatedSortValueOf(last);
+            }
             _curatedExhausted = exhausted;
             if (pageImages.length === 0) break;
             _allEntries.push(..._buildCuratedEntries(pageImages));
