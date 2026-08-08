@@ -100,6 +100,13 @@ def _make_model_groups_mock():
     return handle
 
 
+def _make_filter_chains_mock():
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success", "chains": []})
+
+    return handle
+
+
 def _make_settings_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "settings": {}})
@@ -190,6 +197,11 @@ def live_server() -> Generator[str, None, None]:
         ("MODEL_GROUPS_PROXY", _make_model_groups_mock()),
         ("TRAINING_CONFIGS_PROXY", _make_training_configs_mock()),
         ("SETTINGS_PROXY", _make_settings_mock()),
+        # Missed when filter chains landed: unmocked, this proxy makes a REAL
+        # connection to the db service, so the two "no console errors" tests
+        # passed only while a live stack happened to be running and failed with
+        # httpx.ConnectError otherwise.
+        ("FILTER_CHAINS_PROXY", _make_filter_chains_mock()),
     ]
     originals = []
     for attr, mock_fn in proxies_and_mocks:
