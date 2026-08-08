@@ -1227,3 +1227,108 @@ class TestCompletedTaskKeepsItsStatusWidgets:
         # Well past the 5s poll cadence — a running card would have polled again.
         page.wait_for_timeout(6000)
         assert len(calls) == after_open, f"expected no further polls, got {len(calls) - after_open}"
+
+
+# ---------------------------------------------------------------------------
+# `tags` schema field — the compact multi-select, not the old checkbox column
+# ---------------------------------------------------------------------------
+
+
+class TestTagsSchemaField:
+    """A `tags` field (e.g. CollectTrainingImages' "Apply Tags") renders as the
+    shared compact multi-select dropdown.
+
+    It used to render as CheckboxField: one full-width `<label><input></label><br>`
+    per tag, so a form with a real tag vocabulary became a wall of rows. The
+    field is now MultiSelectField, wrapping the same `.ms-dropdown` widget the
+    review filter toolbar uses.
+    """
+
+    _SCHEMA = {
+        "meta": {"order": ["apply_tags"]},
+        "apply_tags": {
+            "type": "tags",
+            "label": "Apply Tags",
+            "description": "Tags to apply to every bounding box in each saved image.",
+            "default": [],
+        },
+    }
+
+    _TAGS = [
+        {"uuid": "tag-aaa", "name": "Daytime", "color": "#00ff00", "icon": None},
+        {"uuid": "tag-bbb", "name": "Nighttime", "color": "#0000ff", "icon": None},
+    ]
+
+    def _open_editor(self, page: Page, base_url: str, tags: list | None = None):
+        page.route(
+            "**/api/tags/list",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"tags": self._TAGS if tags is None else tags}),
+            ),
+        )
+        _mock_task_types(page)
+        _mock_task_schema(page, self._SCHEMA)
+        _mock_task_configs(page, {})
+        _mock_active_tasks(page, {})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        _type_select(page).select_option(TASK_TYPE)
+        page.wait_for_timeout(1000)
+        return page.locator("#task-config-list .le-editor")
+
+    def test_renders_a_dropdown_trigger_not_a_checkbox_column(self, page: Page, base_url: str):
+        editor = self._open_editor(page, base_url)
+        expect(editor.locator(".ms-dropdown__trigger")).to_have_count(1)
+        # The panel is closed, so no tag row is on screen until it is opened.
+        expect(editor.locator(".ms-item")).to_have_count(2)
+        expect(editor.locator(".ms-item").first).to_be_hidden()
+
+    def test_trigger_summarises_the_empty_selection(self, page: Page, base_url: str):
+        editor = self._open_editor(page, base_url)
+        # 'None selected', not the filter widget's 'All' — an empty tag list
+        # applies no tags, it does not apply every tag.
+        expect(editor.locator(".ms-dropdown__trigger")).to_contain_text("None selected")
+
+    def test_field_label_is_not_repeated_inside_the_trigger(self, page: Page, base_url: str):
+        editor = self._open_editor(page, base_url)
+        expect(editor.locator(".schema-field__label", has_text="Apply Tags")).to_have_count(1)
+        expect(editor.locator(".ms-dropdown__trigger")).not_to_contain_text("Apply Tags")
+
+    def test_no_exclude_toggles_on_a_picker(self, page: Page, base_url: str):
+        """The `≠` per-row exclude button builds queries; it is meaningless when
+        the list is choosing which tags to apply."""
+        editor = self._open_editor(page, base_url)
+        editor.locator(".ms-dropdown__trigger").click()
+        expect(editor.locator(".ms-item__not-btn")).to_have_count(0)
+        expect(editor.locator(".ms-mode-btn")).to_have_count(0)
+
+    def test_selecting_a_tag_reaches_the_create_payload(self, page: Page, base_url: str):
+        create_calls: list[dict] = []
+
+        def handle_create(route: Route):
+            create_calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": FAKE_CONFIG["uuid"]}),
+            )
+
+        editor = self._open_editor(page, base_url)
+        page.route("**/api/tasks/configs/create", handle_create)
+
+        editor.locator(".ms-dropdown__trigger").click()
+        editor.locator(".ms-item input[value='tag-bbb']").check()
+        expect(editor.locator(".ms-dropdown__trigger")).to_contain_text("Nighttime")
+
+        _name_input(page).fill("Collector")
+        _editor_bar(page).locator("button", has_text="Create").click()
+        wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
+        assert create_calls[0]["params"]["apply_tags"] == ["tag-bbb"], create_calls[0]["params"]
+
+    def test_empty_vocabulary_shows_a_placeholder(self, page: Page, base_url: str):
+        editor = self._open_editor(page, base_url, tags=[])
+        editor.locator(".ms-dropdown__trigger").click()
+        expect(editor.locator(".ms-dropdown__empty")).to_be_visible()
+        expect(editor.locator(".ms-dropdown__empty")).to_contain_text("No tags defined yet")

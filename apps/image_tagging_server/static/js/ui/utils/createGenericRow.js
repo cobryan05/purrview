@@ -4,7 +4,7 @@ import { createEmojiButton } from './createButton.js'
  * Creates a generic row with optional color swatch, label/input field, and action buttons.
  *
  * @param {Object} config
- * @param {import('./fields/Field.js').Field} config.field - A Field instance (TextField, RadioField, CheckboxField, etc.)
+ * @param {import('./fields/Field.js').Field} config.field - A Field instance (TextField, RadioField, MultiSelectField, etc.)
  * @param {number} [config.indentLevel=0] - Indentation level.
  * @param {Array} [config.leftButtons=[]] - Left-side button configs.
  * @param {Array} [config.rightButtons=[]] - Right-side button configs.

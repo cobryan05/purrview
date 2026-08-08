@@ -998,8 +998,13 @@ class TestExpandedCardFitsItsBox:
     row wider than the card, and the histogram/tables spilled past the border."""
 
     _SCHEMA = [
-        {"id": "stats", "type": "stat_grid", "source": "status", "label": "Collection stats",
-         "fields": {f"k{i}": f"Field number {i}" for i in range(6)}},
+        {
+            "id": "stats",
+            "type": "stat_grid",
+            "source": "status",
+            "label": "Collection stats",
+            "fields": {f"k{i}": f"Field number {i}" for i in range(6)},
+        },
         {
             "id": "calibration",
             "type": "group",
@@ -1010,16 +1015,24 @@ class TestExpandedCardFitsItsBox:
                     "type": "group",
                     "label": "Image distance",
                     "widgets": [
-                        {"id": "dist", "type": "histogram", "source": "status",
-                         "label": "Distance to nearest stored image"},
-                        {"id": "sweep", "type": "table", "source": "status",
-                         "label": "Image threshold sweep (what each value would have done)",
-                         "columns": [
-                             {"key": "threshold", "label": "Image threshold"},
-                             {"key": "matched", "label": "Frames matching"},
-                             {"key": "discarded", "label": "Would discard"},
-                             {"key": "kept", "label": "Would keep"},
-                         ]},
+                        {
+                            "id": "dist",
+                            "type": "histogram",
+                            "source": "status",
+                            "label": "Distance to nearest stored image",
+                        },
+                        {
+                            "id": "sweep",
+                            "type": "table",
+                            "source": "status",
+                            "label": "Image threshold sweep (what each value would have done)",
+                            "columns": [
+                                {"key": "threshold", "label": "Image threshold"},
+                                {"key": "matched", "label": "Frames matching"},
+                                {"key": "discarded", "label": "Would discard"},
+                                {"key": "kept", "label": "Would keep"},
+                            ],
+                        },
                     ],
                 },
             ],
@@ -1066,14 +1079,12 @@ class TestExpandedCardFitsItsBox:
         card = page.locator(f"[data-task-uuid='{task_id}']")
         expect(card).to_contain_text("sample(s)")
 
-        spill = card.evaluate(
-            """el => {
+        spill = card.evaluate("""el => {
                 const right = el.getBoundingClientRect().right;
                 let worst = 0;
                 for (const node of el.querySelectorAll('.status-group, table, .status-histogram__track')) {
                     worst = Math.max(worst, node.getBoundingClientRect().right - right);
                 }
                 return Math.round(worst);
-            }"""
-        )
+            }""")
         assert spill <= 1, f"widget content spills {spill}px past the card's right edge"

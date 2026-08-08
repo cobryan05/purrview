@@ -69,6 +69,7 @@
    *
    * ⚠️ modalZIndex.js reads --layer-modal-* and --layer-bottom-bars at load.
    * Renaming or removing them silently falls back to the JS defaults. */
+  --layer-sticky-header: 30;
   --layer-dropdown: 200;
   --layer-modal-base: 1000;
   --layer-modal-max: 1890;

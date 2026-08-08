@@ -39,7 +39,7 @@ import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } f
 import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
-import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
+import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { saveAnnotations, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
@@ -2319,10 +2319,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     const tagOptions = filterVisibleTags(tags.values())
       .map(tag => ({ key: tag.uuid, text: (tag.icon ? tag.icon + ' ' : '') + tag.name, color: tag.color || '#cccccc' }));
-    const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
+    const tagField = new MultiSelectField({ label: 'Tags', value: [], options: tagOptions, emptyText: 'No tags defined yet' });
     const tagPickerRow = document.createElement('div');
     tagPickerRow.className = 'bulk-modal-tag-picker-row';
-    tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
+    tagPickerRow.appendChild(await tagField.renderEdit());
 
     for (const action of actions) {
       const lbl = document.createElement('label');
@@ -2366,7 +2366,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const resolvedAction = _VERIF_TAG_MAP[selectedAction] ? 'addTags' : selectedAction;
       const selectedTagUuids = _VERIF_TAG_MAP[selectedAction]
         ? [_VERIF_TAG_MAP[selectedAction]]
-        : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue()
+        : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagField.getValue()
         // revertRelabel: strip only the task-generated review tag(s) among the
         // current filter — never a system tag like UNVERIFIED that may also be
         // part of the active filter (e.g. filtering by review-tag + UNVERIFIED
@@ -3445,10 +3445,10 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
       color: tag.color || '#cccccc',
     }));
-  const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
+  const tagField = new MultiSelectField({ label: 'Tags', value: [], options: tagOptions, emptyText: 'No tags defined yet' });
   const tagPickerRow = document.createElement('div');
   tagPickerRow.className = 'bulk-modal-tag-picker-row';
-  tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
+  tagPickerRow.appendChild(await tagField.renderEdit());
 
   const btnRow = document.createElement('div');
   btnRow.className = 'bulk-modal-btn-row';
@@ -3470,7 +3470,7 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     const resolvedAction = _VERIF_TAG_MAP[selectedAction] ? 'addTags' : selectedAction;
     const selectedTagUuids = _VERIF_TAG_MAP[selectedAction]
       ? [_VERIF_TAG_MAP[selectedAction]]
-      : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagCheckboxField.getValue() : [];
+      : (selectedAction === 'addTags' || selectedAction === 'removeTags') ? tagField.getValue() : [];
     await onConfirm(resolvedAction, newLabelUuid, selectedTagUuids, tags);
   });
 

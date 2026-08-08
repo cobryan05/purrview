@@ -12,7 +12,7 @@ import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { bulkApplyImagesByUuids } from '/app-static/js/shared/api/review.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
-import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
+import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 
 export const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUncertain'];
 
@@ -88,10 +88,10 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
       color: tag.color || '#cccccc',
     }));
-  const tagCheckboxField = new CheckboxField({ value: [], options: tagOptions });
+  const tagField = new MultiSelectField({ label: 'Tags', value: [], options: tagOptions, emptyText: 'No tags defined yet' });
   const tagPickerRow = document.createElement('div');
-  tagPickerRow.style.cssText = 'max-height:180px;overflow-y:auto;display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
-  tagPickerRow.appendChild(await tagCheckboxField.renderEdit());
+  tagPickerRow.style.cssText = 'display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+  tagPickerRow.appendChild(await tagField.renderEdit());
 
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
@@ -107,7 +107,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
     const isTagAction = TAG_ACTIONS.includes(selectedAction);
-    const selectedTagUuids = isTagAction ? tagCheckboxField.getValue() : [];
+    const selectedTagUuids = isTagAction ? tagField.getValue() : [];
     if (isTagAction && selectedTagUuids.length === 0) {
       toast('Select at least one tag', 'error');
       return;

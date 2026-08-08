@@ -12,10 +12,50 @@ main.container {
 }
 
 /* ===== Top-level tabs ===== */
+/* Pinned to the top of the page scroll: on a long results page (Review search,
+   Configuration tables) switching tabs used to mean scrolling all the way back
+   up. The negative horizontal margin + matching padding bleeds the opaque
+   background across main.container's side padding, so content scrolling
+   underneath doesn't peek out past the header's edges.
+   Its height is published as --main-tabs-h by app/main.js — anything else that
+   sticks to top must offset by it (see .main-tab-pane .review-sticky-top).
+   It hides on scroll-down and returns on scroll-up; see app/utils/scrollChrome.js. */
 .main-tab-header {
   display: flex;
   border-bottom: 1px solid var(--border-strong);
   margin-bottom: var(--space-2);
+  position: sticky;
+  top: 0;
+  z-index: var(--layer-sticky-header);
+  background: var(--pico-background-color, var(--bg));
+  margin-left: calc(-1 * var(--space-4));
+  margin-right: calc(-1 * var(--space-4));
+  padding-left: var(--space-4);
+  padding-right: var(--space-4);
+  transition: transform 0.18s ease;
+}
+
+/* ===== Auto-hiding chrome =====
+   Together the tab strip and the Review toolbar block cost a large slice of the
+   viewport, so they slide away while scrolling down and come back the moment
+   you scroll up. Driven by body.chrome-hidden from app/utils/scrollChrome.js.
+
+   Both use transform rather than display/height: a reflow on reveal would shift
+   the result cards under the cursor. The review block has to clear the header's
+   height on top of its own, since it sits at top: var(--main-tabs-h). */
+body.chrome-hidden .main-tab-header {
+  transform: translateY(-100%);
+}
+
+body.chrome-hidden .main-tab-pane .review-sticky-top {
+  transform: translateY(calc(-100% - var(--main-tabs-h, 0px)));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main-tab-header,
+  .main-tab-pane .review-sticky-top {
+    transition: none;
+  }
 }
 
 .main-tab-button {
@@ -880,6 +920,14 @@ button.lt-swatch:hover {
   top: 0;
   z-index: 10;
   background: var(--pico-background-color, var(--surface-sunken));
+}
+
+/* In the tab context the main tab header is pinned at top: 0 too, so park the
+   review bars directly beneath it instead of underneath it. The modal context
+   mounts on document.body (outside .main-tab-pane) and keeps top: 0. */
+.main-tab-pane .review-sticky-top {
+  top: var(--main-tabs-h, 0px);
+  transition: transform 0.18s ease;
 }
 
 .review-toolbar {
@@ -2519,9 +2567,10 @@ button.filter-active {
   color: var(--text-muted);
 }
 
+/* The tag picker is a MultiSelectField — one trigger button whose panel is
+   absolutely positioned. No max-height/overflow here: a scroll box would clip
+   the panel (the old CheckboxField column is what needed one). */
 .bulk-modal-tag-picker-row {
-  max-height: 180px;
-  overflow-y: auto;
   display: none;
   flex-direction: column;
   gap: 0.3em;

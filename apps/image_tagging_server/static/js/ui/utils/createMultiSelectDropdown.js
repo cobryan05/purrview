@@ -28,6 +28,11 @@ import { prefs } from '/app-static/js/shared/prefs.js';
  *   defaultSelected?: string[],
  *   defaultMode?: 'any'|'all',
  *   showModeToggle?: boolean,    // default true
+ *   allowExclude?: boolean,      // default true; false hides the per-row "≠" exclude toggle
+ *                                // (selection widgets pick items, they don't build queries)
+ *   emptyText?: string,          // placeholder shown when `items` is empty
+ *   emptySummary?: string,       // trigger text when nothing is selected (default 'All' —
+ *                                // a filter matches everything; a picker should say 'None selected')
  *   hierarchyToggle?: {          // optional "include descendants" toggle
  *     label?: string,            // checkbox label text
  *     default?: boolean,
@@ -53,6 +58,9 @@ export function createMultiSelectDropdown({
   defaultSelected = [],
   defaultMode = 'any',
   showModeToggle = true,
+  allowExclude = true,
+  emptyText = null,
+  emptySummary = 'All',
   hierarchyToggle = null,
   onChange,
   filterKey,
@@ -225,14 +233,30 @@ export function createMultiSelectDropdown({
   /** @type {Map<string, HTMLLabelElement>} uuid → item label element */
   const itemElMap = new Map();
 
-  for (const item of items) {
+  // Placeholder for an empty list — without it the panel opens on nothing and
+  // reads as broken rather than as "there is nothing to pick yet".
+  const emptyEl = document.createElement('div');
+  emptyEl.className = 'ms-dropdown__empty';
+  emptyEl.textContent = emptyText ?? 'Nothing to select';
+  emptyEl.style.cssText = 'font-size:0.8em;color:var(--pico-muted-color,#888);font-style:italic;padding:4px 8px;';
+
+  // Only the placeholder toggles. The Select All / Select None row stays put:
+  // it is a no-op on an empty list, but callers (and tests) drive it whether or
+  // not items have loaded, and hiding it makes the panel jump as they arrive.
+  function _syncEmpty() {
+    emptyEl.style.display = checkboxMap.size > 0 ? 'none' : '';
+  }
+
+  itemsDiv.appendChild(emptyEl);
+
+  function _buildItem(item) {
     if (item.isSeparator) {
       const sep = document.createElement('div');
       sep.className = 'ms-item-separator';
       sep.style.cssText = 'font-size:0.72em;font-weight:bold;text-transform:uppercase;letter-spacing:.06em;color:#666;padding:5px 8px 2px;user-select:none;pointer-events:none;';
       sep.textContent = item.label ?? '';
       itemsDiv.appendChild(sep);
-      continue;
+      return;
     }
 
     const lbl = document.createElement('label');
@@ -266,14 +290,18 @@ export function createMultiSelectDropdown({
     nameSpan.textContent = ' ' + item.name;
     lbl.appendChild(nameSpan);
 
-    // Per-row "not" toggle: excludes this item from results
-    const notBtn = document.createElement('button');
-    notBtn.type = 'button';
-    notBtn.className = 'ms-item__not-btn';
-    notBtn.title = 'Exclude this item';
-    notBtn.textContent = '≠';
-    notBtnMap.set(item.uuid, notBtn);
-    lbl.appendChild(notBtn);
+    // Per-row "not" toggle: excludes this item from results. Query-building
+    // only — a plain "pick some items" widget passes allowExclude: false.
+    let notBtn = null;
+    if (allowExclude) {
+      notBtn = document.createElement('button');
+      notBtn.type = 'button';
+      notBtn.className = 'ms-item__not-btn';
+      notBtn.title = 'Exclude this item';
+      notBtn.textContent = '≠';
+      notBtnMap.set(item.uuid, notBtn);
+      lbl.appendChild(notBtn);
+    }
 
     itemsDiv.appendChild(lbl);
 
@@ -292,6 +320,7 @@ export function createMultiSelectDropdown({
       onChange([..._selected], [..._excluded], _mode);
     });
 
+    if (!notBtn) return;
     notBtn.addEventListener('mousedown', (e) => e.stopPropagation());
     notBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -311,6 +340,11 @@ export function createMultiSelectDropdown({
       onChange([..._selected], [..._excluded], _mode);
     });
   }
+
+  /** Live copy of `items` — addItem() appends here so the trigger summary can name late arrivals. */
+  const _items = [...items];
+  for (const item of _items) _buildItem(item);
+  _syncEmpty();
 
   // ── Open / close ────────────────────────────────────────────────────────────
   function _openPanel() {
@@ -371,12 +405,12 @@ export function createMultiSelectDropdown({
     const excCount = _excluded.size;
     let summary;
     if (_selected.length === 0 && excCount === 0) {
-      summary = 'All';
+      summary = emptySummary;
     } else if (_selected.length === 1 && excCount === 0) {
-      const item = items.find(i => i.uuid === _selected[0]);
+      const item = _items.find(i => i.uuid === _selected[0]);
       summary = item ? item.name : '1 selected';
     } else if (_selected.length === 0 && excCount === 1) {
-      const excItem = items.find(i => i.uuid === [..._excluded][0]);
+      const excItem = _items.find(i => i.uuid === [..._excluded][0]);
       summary = excItem ? `not ${excItem.name}` : '1 excluded';
     } else {
       const parts = [];
@@ -384,7 +418,9 @@ export function createMultiSelectDropdown({
       if (excCount > 0) parts.push(`${excCount} excl`);
       summary = parts.join(', ');
     }
-    trigger.textContent = `${label}: ${summary} ▾`;
+    // An empty `label` means the caller already draws a heading above the
+    // control (schema forms do) — don't repeat it inside the button.
+    trigger.textContent = label ? `${label}: ${summary} ▾` : `${summary} ▾`;
     trigger.classList.toggle('ms-dropdown__trigger--active', _selected.length > 0 || excCount > 0);
   }
 
@@ -439,6 +475,28 @@ export function createMultiSelectDropdown({
     getExcluded: () => [..._excluded],
     getMode: () => _mode,
     getHierarchyToggle: () => _hierarchyToggle,
+
+    /**
+     * Append an item to the open list — for widgets that can create a new
+     * option inline (e.g. the "+ New tag" button on the tags field). Pass
+     * `select: true` to check it immediately; that fires onChange, since the
+     * selection really did change.
+     * @param {{uuid: string, name: string, color?: string|null}} item
+     * @param {{ select?: boolean }} [opts]
+     */
+    addItem(item, { select = false } = {}) {
+      if (checkboxMap.has(item.uuid)) return;
+      _items.push(item);
+      _buildItem(item);
+      _syncEmpty();
+      if (select) {
+        const cb = checkboxMap.get(item.uuid);
+        if (cb) cb.checked = true;
+        _selected = [..._selected, item.uuid];
+        _syncTrigger();
+        onChange([..._selected], [..._excluded], _mode);
+      }
+    },
 
     /**
      * Programmatically update selection, mode, hierarchy toggle, and/or

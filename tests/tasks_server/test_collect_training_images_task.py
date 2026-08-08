@@ -2907,6 +2907,22 @@ class TestDedupThresholdCalibration:
         # the bbox threshold does.
         assert all(int(r["discarded"].split(" ")[0]) <= 1 for r in rows)
 
+    async def test_sweep_ladders_run_past_any_plausible_threshold(self):
+        """A sweep that stops at the current setting can't answer "what if I
+        raised it?", which is the only question the table exists to answer."""
+        assert max(CollectTrainingImagesTask._BBOX_SWEEP_THRESHOLDS) >= 100
+        assert max(CollectTrainingImagesTask._IMAGE_SWEEP_THRESHOLDS) >= 64
+
+    async def test_sweep_includes_a_configured_threshold_off_the_ladder(self):
+        task = await self._task(image_t=7, samples=[(1, [1])])
+        rows = task._dedup_sweep_rows((0, 5, 10), "image")
+        assert [r["threshold"] for r in rows] == ["0", "5", "7 ←current", "10"]
+
+    async def test_off_ladder_bbox_threshold_is_inserted_in_order(self):
+        task = await self._task(bbox_t=33, samples=[(1, [1])])
+        rows = task._dedup_sweep_rows((0, 32, 40), "bbox")
+        assert [r["threshold"] for r in rows] == ["0", "32", "33 ←current", "40"]
+
     # ── histogram ───────────────────────────────────────────────────────────
 
     async def test_histogram_counts_and_marks_threshold_bin(self):

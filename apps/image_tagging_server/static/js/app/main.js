@@ -4,6 +4,7 @@ import { init as initReview, applyFilterWhenReady } from './review/main.js';
 import { init as initOperations } from './operations/main.js';
 import { init as initSettings } from './settings/main.js';
 import { setupMainTabs, navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { initScrollChrome, showChrome } from '/app-static/js/app/utils/scrollChrome.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime, setPrimaryRuntimeId } from './image-tagging/runtime.js';
 import { initContextMenus } from '/app-static/js/ui/contextMenu/index.js';
@@ -60,6 +61,10 @@ export async function init(appState) {
         await initSettings?.();
       }
     }
+    // A tab switch can arrive programmatically (OPEN_REVIEW_WITH_FILTERS, the
+    // canvas "back to review" path) while the chrome is scrolled out of view —
+    // land on the new tab with it showing rather than seemingly headerless.
+    showChrome();
     // Let features react to main-tab focus changes (e.g. the Operations
     // tab closes its task SSE stream when it loses focus).
     events.publish(EventTypes.MAIN_TAB_CHANGED, { tabName });
@@ -92,10 +97,31 @@ export async function init(appState) {
   });
 
 
+  trackMainTabsHeight(container);
+  initScrollChrome();
+
   // Activate default top-level tab
   const defaultTabBtn = container?.querySelector('.main-tab-button.active');
   if (defaultTabBtn) defaultTabBtn.click();
 
+}
+
+/**
+ * Publish the pinned main-tab header's height as --main-tabs-h so the other
+ * sticky bars (the Review toolbar) can park below it. Measured rather than
+ * hard-coded in CSS: the header's height moves with font size and with the
+ * Activity badge, and an offset that drifts either overlaps the header or
+ * leaves a strip of scrolling content showing between the two bars.
+ *
+ * @param {Element|null} container
+ */
+function trackMainTabsHeight(container) {
+  const header = container?.querySelector('.main-tab-header');
+  if (!header) return;
+  const publish = () =>
+    document.documentElement.style.setProperty('--main-tabs-h', `${header.offsetHeight}px`);
+  publish();
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(publish).observe(header);
 }
 
 function activateMainTab(container, tabId) {

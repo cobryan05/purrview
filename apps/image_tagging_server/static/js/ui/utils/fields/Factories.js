@@ -9,7 +9,7 @@ import { ImageProviderSelectField } from './ImageProviderSelectField.js';
 import { BooleanCheckboxField } from './BooleanField.js';
 import { TextField } from './TextField.js'
 import { ModelLabelSelectField } from './ModelLabelSelectField.js';
-import { CheckboxField } from './CheckboxField.js';
+import { MultiSelectField } from './MultiSelectField.js';
 import { DropDownField } from './DropDownField.js';
 import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
@@ -215,7 +215,7 @@ export const fieldFactories = {
   },
 
   async tags(fieldName, fieldMeta, values, onChange) {
-    const { allow_add_tag, ...rest } = fieldMeta;
+    const { type, required, description, label, allow_add_tag, ...rest } = fieldMeta;
 
     const tags = await fetchTags();
 
@@ -226,29 +226,32 @@ export const fieldFactories = {
         color: tag.color || '#cccccc',
       }));
 
-    const checkboxField = new CheckboxField({
+    // `label` is deliberately not forwarded: SchemaField already draws the
+    // field's heading above the control, and the dropdown would repeat it
+    // inside the trigger button.
+    const tagField = new MultiSelectField({
       value: values[fieldName],
       onChange: (val) => {
         onChange?.(val);
       },
       options: tagOptions,
+      emptyText: 'No tags defined yet',
       ...rest
     });
 
-    if (!allow_add_tag) return checkboxField;
+    if (!allow_add_tag) return tagField;
 
     // Wrap with an inline "add new tag" affordance.
     // flattenIntoParent must be present: SchemaField calls it on every field instance.
     return {
       getEditMode: () => true,
       flattenIntoParent: () => false,
-      getValue: () => checkboxField.getValue(),
-      renderView: async () => checkboxField.renderView(),
+      getValue: () => tagField.getValue(),
+      renderView: async () => tagField.renderView(),
       renderEdit: async () => {
         const wrapper = document.createElement('div');
 
-        let checkboxEl = await checkboxField.renderEdit();
-        wrapper.appendChild(checkboxEl);
+        wrapper.appendChild(await tagField.renderEdit());
 
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
@@ -291,15 +294,13 @@ export const fieldFactories = {
             // createNewTag returns the created tag and already clears the cache.
             const newTag = await createNewTag(name, '#888888');
             if (newTag) {
-              const opt = { key: newTag.uuid, text: newTag.name, color: newTag.color || '#cccccc' };
-              checkboxField._options.push(opt);
-              checkboxField._optionsMap.set(newTag.uuid, opt);
-              checkboxField._value = [...(checkboxField._value || []), opt];
-              onChange?.(checkboxField.getValue());
-              // Re-render the checkbox list in-place.
-              const newCheckboxEl = await checkboxField.renderEdit();
-              checkboxEl.replaceWith(newCheckboxEl);
-              checkboxEl = newCheckboxEl;
+              // addOption appends to the live dropdown and checks it — no
+              // re-render, so an open panel stays open and scrolled.
+              tagField.addOption(
+                { key: newTag.uuid, text: newTag.name, color: newTag.color || '#cccccc' },
+                { select: true },
+              );
+              onChange?.(tagField.getValue());
             }
           } catch (err) {
             console.error('Failed to create tag:', err);

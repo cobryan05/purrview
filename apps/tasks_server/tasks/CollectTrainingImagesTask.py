@@ -181,8 +181,12 @@ class CollectTrainingImagesTask(Task):
     # Candidate thresholds shown in the sweep tables. Image phashes are hash_size²
     # bits (64 at the default 8) and bbox phashes 256 at the default 16, so the two
     # live on different scales and get their own ranges rather than a shared one.
-    _IMAGE_SWEEP_THRESHOLDS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20)
-    _BBOX_SWEEP_THRESHOLDS: tuple[int, ...] = (0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40)
+    # Both ladders run past any threshold anyone would plausibly configure and cover
+    # the same span the histogram does: a sweep that stops at the current setting
+    # can't answer "what would raising it do?", which is the whole point of the table.
+    # Steps widen with distance because that's where the curve flattens out.
+    _IMAGE_SWEEP_THRESHOLDS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 64)
+    _BBOX_SWEEP_THRESHOLDS: tuple[int, ...] = (0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 56, 64, 72, 80, 90, 100)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -1129,8 +1133,12 @@ class CollectTrainingImagesTask(Task):
         if not samples:
             return []
         action = self._sweep_action()
+        # The configured value always gets a row, even if it isn't on the ladder —
+        # without it there's nothing to compare the other rows against.
+        configured = self._image_dup_threshold if vary == "image" else self._bbox_dup_threshold
+        sweep = sorted(set(thresholds) | {configured})
         rows: list[dict[str, Any]] = []
-        for t in thresholds:
+        for t in sweep:
             image_t = t if vary == "image" else self._image_dup_threshold
             bbox_t = t if vary == "bbox" else self._bbox_dup_threshold
             discarded = sum(1 for img, bbs in samples if self._would_discard(img, bbs, image_t, bbox_t, action))
@@ -1138,7 +1146,7 @@ class CollectTrainingImagesTask(Task):
                 matched = sum(1 for img, _ in samples if img is not None and img <= t)
             else:
                 matched = sum(1 for _, bbs in samples for d in bbs if d is not None and d <= t)
-            current = (t == self._image_dup_threshold) if vary == "image" else (t == self._bbox_dup_threshold)
+            current = t == configured
             rows.append(
                 {
                     "threshold": f"{t} ←current" if current else str(t),

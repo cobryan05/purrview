@@ -52,7 +52,9 @@ export class SchemaField extends Field {
    * stacking every field down one long column.
    */
   static FULL_WIDTH_TYPES = new Set([
-    'array', 'tags', 'group', 'source_config', 'bbox_info', 'directory',
+    // 'tags' is deliberately absent: it renders as a single compact dropdown
+    // trigger now (MultiSelectField), not the old full-width checkbox column.
+    'array', 'group', 'source_config', 'bbox_info', 'directory',
     // model_label renders a grid of per-label min/max confidence bands — it is
     // the widest control in any schema and overflows a grid track visibly.
     'model_label',
