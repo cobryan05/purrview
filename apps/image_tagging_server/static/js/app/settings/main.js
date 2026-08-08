@@ -22,19 +22,135 @@ export async function init() {
   const wrap = document.createElement('div');
   wrap.className = 'settings-wrap';
 
-  // ── Server Configuration section ─────────────────────────────────────
-  const serverSection = document.createElement('section');
-  serverSection.className = 'settings-section';
-  serverSection.id = 'settings-section-server';
+  // The three settings panels load their values concurrently — each awaits its
+  // own settings reads, so building them in sequence would serialise round-trips
+  // that have nothing to do with each other.
+  const [serverPanel, dedupPanel, uiPanel] = await Promise.all([
+    _buildServerSection(),
+    _buildDedupSection(),
+    _buildUiSettingsSection(),
+  ]);
 
-  const serverHeader = document.createElement('div');
-  serverHeader.className = 'settings-section-header';
+  wrap.append(serverPanel, dedupPanel, uiPanel, _buildHotkeySection());
+  container.appendChild(wrap);
+}
 
-  const serverTitle = document.createElement('h4');
-  serverTitle.textContent = 'Server Configuration';
+/* ── Panel scaffolding ──────────────────────────────────────────────────────
+ * Every section is a `.panel-box` (the same bordered bar+body component the
+ * Configuration screens use), so Settings picks up the app's panel styling for
+ * free instead of carrying its own section chrome. */
 
-  serverHeader.appendChild(serverTitle);
-  serverSection.appendChild(serverHeader);
+/**
+ * @param {string} title
+ * @param {{id?: string, extraClass?: string}} [opts]
+ * @returns {{section: HTMLElement, bar: HTMLElement, body: HTMLElement, heading: HTMLElement}}
+ */
+function _panel(title, { id, extraClass } = {}) {
+  const section = document.createElement('section');
+  section.className = 'panel-box settings-panel';
+  if (extraClass) section.classList.add(extraClass);
+  if (id) section.id = id;
+
+  const bar = document.createElement('div');
+  bar.className = 'panel-box__bar settings-section-header';
+
+  const heading = document.createElement('div');
+  heading.className = 'panel-box__title';
+  heading.textContent = title;
+  bar.appendChild(heading);
+
+  const body = document.createElement('div');
+  body.className = 'panel-box__body settings-panel__body';
+
+  section.append(bar, body);
+  return { section, bar, body, heading };
+}
+
+/**
+ * Build one settings row: label on the left, controls on the right, with an
+ * optional hint underneath and a status line that only takes vertical space
+ * once it has something to say.
+ *
+ * @param {{label: string, description?: string, controls: HTMLElement[], stacked?: boolean}} opts
+ * @returns {{row: HTMLElement, status: HTMLElement, setStatus: (text: string, state?: string) => void}}
+ */
+function _buildRow({ label, description, controls, stacked = false }) {
+  const row = document.createElement('div');
+  row.className = 'settings-server-row';
+  if (stacked) row.classList.add('settings-server-row--stacked');
+
+  const head = document.createElement('div');
+  head.className = 'settings-row-head';
+
+  const rowLabel = document.createElement('div');
+  rowLabel.className = 'settings-server-label';
+  rowLabel.textContent = label;
+
+  const inputRow = document.createElement('div');
+  inputRow.className = 'settings-server-input-row';
+  inputRow.append(...controls);
+
+  head.append(rowLabel, inputRow);
+  row.appendChild(head);
+
+  if (description) {
+    const desc = document.createElement('div');
+    desc.className = 'settings-server-desc';
+    desc.textContent = description;
+    row.appendChild(desc);
+  }
+
+  const status = document.createElement('div');
+  status.className = 'settings-server-status';
+  status.dataset.state = 'muted';
+  row.appendChild(status);
+
+  const setStatus = (text, state = 'muted') => {
+    status.textContent = text;
+    status.dataset.state = state;
+  };
+
+  return { row, status, setStatus };
+}
+
+/** A compact Save/Test button for a settings row. */
+function _rowButton(text, { secondary = false } = {}) {
+  const btn = document.createElement('button');
+  btn.textContent = text;
+  btn.className = secondary ? 'secondary panel-btn settings-server-btn' : 'panel-btn settings-server-btn';
+  return btn;
+}
+
+/**
+ * Run a save handler with the usual button feedback: disable → "Saving…" →
+ * "✓ Saved" → back to the original label. Every row shared this block verbatim.
+ *
+ * @param {HTMLButtonElement} btn
+ * @param {() => Promise<void>} work
+ * @param {(msg: string) => void} onError
+ */
+async function _withSaveFeedback(btn, work, onError) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    await work();
+    btn.textContent = '✓ Saved';
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1500);
+  } catch (e) {
+    onError(e.message);
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+
+/* ── Server configuration ──────────────────────────────────────────────────── */
+
+async function _buildServerSection() {
+  const { section, body } = _panel('Servers', { id: 'settings-section-server' });
 
   // Load current server config for defaults/overrides
   let serverConfig = {};
@@ -46,17 +162,14 @@ export async function init() {
     }
   } catch (_) {}
 
-  serverSection.appendChild(
+  body.append(
     _buildServerRow({
       label: 'Inference Server',
       serverType: 'inference_server',
       settingKey: 'inference_server_url',
       defaultUrl: serverConfig.inference_server ?? 'http://localhost:8001',
       currentOverride: serverConfig.inference_server_url_override ?? null,
-    })
-  );
-
-  serverSection.appendChild(
+    }),
     _buildServerRow({
       label: 'Training Server',
       serverType: 'training_server',
@@ -66,83 +179,85 @@ export async function init() {
     })
   );
 
-  wrap.appendChild(serverSection);
-
-  // ── Deduplication Settings section ───────────────────────────────────
-  wrap.appendChild(await _buildDedupSection());
-
-  // ── UI Settings section ───────────────────────────────────────────────
-  wrap.appendChild(await _buildUiSettingsSection());
-
-  // ── Keyboard Shortcuts section (collapsible) ──────────────────────────
-  const hotkeySection = document.createElement('section');
-  hotkeySection.className = 'settings-section';
-
-  const hotkeyHeader = document.createElement('div');
-  hotkeyHeader.className = 'settings-section-header settings-section-header--collapsible';
-
-  const hotkeyTitleRow = document.createElement('div');
-  hotkeyTitleRow.style.cssText = 'display:flex; align-items:center; gap:0.5em; cursor:pointer; flex:1;';
-
-  const collapseToggle = document.createElement('span');
-  collapseToggle.className = 'settings-collapse-chevron';
-  collapseToggle.textContent = '▶';
-
-  const hotkeyTitle = document.createElement('h4');
-  hotkeyTitle.textContent = 'Keyboard Shortcuts';
-
-  hotkeyTitleRow.append(collapseToggle, hotkeyTitle);
-
-  const resetBtn = document.createElement('button');
-  resetBtn.textContent = 'Reset to defaults';
-  resetBtn.className = 'secondary';
-  resetBtn.style.cssText = 'font-size:0.85em; padding:0.2em 0.6em;';
-  resetBtn.onclick = (e) => {
-    e.stopPropagation();
-    _hotkeyHandle?.reset();
-  };
-
-  hotkeyHeader.append(hotkeyTitleRow, resetBtn);
-
-  // Outer div controls show/hide. Inner div is passed to renderHotkeyPanel,
-  // which sets its own inline display:flex — keeping that separate prevents
-  // the inline style from overriding the outer div's display:none on collapse.
-  const hotkeyBody = document.createElement('div');
-  hotkeyBody.style.display = 'none';
-
-  const hotkeyInner = document.createElement('div');
-  hotkeyInner.className = 'settings-hotkey-body';
-  hotkeyBody.appendChild(hotkeyInner);
-
-  let hotkeyLoaded = false;
-
-  async function toggleHotkeys() {
-    const isCollapsed = hotkeyBody.style.display === 'none';
-    hotkeyBody.style.display = isCollapsed ? '' : 'none';
-    collapseToggle.textContent = isCollapsed ? '▼' : '▶';
-    if (isCollapsed && !hotkeyLoaded) {
-      hotkeyLoaded = true;
-      _hotkeyHandle = await renderHotkeyPanel(hotkeyInner);
-    }
-  }
-
-  hotkeyTitleRow.addEventListener('click', toggleHotkeys);
-
-  hotkeySection.append(hotkeyHeader, hotkeyBody);
-  wrap.appendChild(hotkeySection);
-  container.appendChild(wrap);
+  return section;
 }
 
-async function _buildDedupSection() {
-  const section = document.createElement('section');
-  section.className = 'settings-section';
+/**
+ * Build a server URL configuration row. The URL input needs the full row width,
+ * so this row stacks its label above the controls rather than sitting beside them.
+ *
+ * @param {{label:string, serverType:string, settingKey:string, defaultUrl:string, currentOverride:string|null}} opts
+ * @returns {HTMLElement}
+ */
+function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOverride }) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'settings-server-input';
+  input.placeholder = `${defaultUrl}  (default)`;
+  input.value = currentOverride ?? '';
 
-  const header = document.createElement('div');
-  header.className = 'settings-section-header';
-  const title = document.createElement('h4');
-  title.textContent = 'Deduplication';
-  header.appendChild(title);
-  section.appendChild(header);
+  const testBtn = _rowButton('Test', { secondary: true });
+  const saveBtn = _rowButton('Save');
+
+  const { row, setStatus } = _buildRow({
+    label,
+    controls: [input, testBtn, saveBtn],
+    stacked: true,
+  });
+
+  if (currentOverride) {
+    setStatus(`Using: ${currentOverride}`, 'info');
+  } else {
+    setStatus(`Using default: ${defaultUrl}`, 'muted');
+  }
+
+  testBtn.addEventListener('click', async () => {
+    const url = input.value.trim() || defaultUrl;
+    testBtn.disabled = true;
+    testBtn.textContent = 'Testing…';
+    setStatus(`Testing ${url}…`, 'muted');
+    try {
+      const res = await apiFetch('/api/test-server', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, server_type: serverType }),
+      });
+      const data = await res.json();
+      setStatus(data.success ? `✓ ${data.message}` : `✗ ${data.message}`, data.success ? 'ok' : 'error');
+    } catch (e) {
+      setStatus(`✗ ${e.message}`, 'error');
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test';
+    }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const url = input.value.trim();
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        // Clear override — save empty string; backend treats '' as "no override"
+        await setSetting(settingKey, url);
+        // Tell backend to reload proxies
+        const res = await apiFetch('/api/reload-server-config', { method: 'POST' });
+        const data = await res.json();
+        if (data.status !== 'success') {
+          throw new Error(`Save failed: ${data.message ?? 'unknown error'}`);
+        }
+        setStatus(url ? `Using: ${url}` : `Using default: ${defaultUrl}`, url ? 'info' : 'muted');
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
+  });
+
+  return row;
+}
+
+/* ── Deduplication ─────────────────────────────────────────────────────────── */
+
+async function _buildDedupSection() {
+  const { section, body } = _panel('Deduplication', { extraClass: 'settings-panel--tall' });
 
   const warning = document.createElement('p');
   warning.className = 'settings-dedup-warning';
@@ -150,7 +265,7 @@ async function _buildDedupSection() {
     'Hash sizes must match the index. Saving a new hash size clears all stored hashes and rebuilds an empty index immediately — ' +
     'existing images will not match in similarity search until reprocessed. Each image can be reprocessed individually, or you ' +
     'can run a Database Maintenance task (Configuration → Tasks) with "Recompute ALL perceptual hashes" enabled to update them all at once.';
-  section.appendChild(warning);
+  body.appendChild(warning);
 
   // Load all four settings in parallel
   const [imgHashStored, bboxHashStored, imgThreshStored, bboxThreshStored] = await Promise.all([
@@ -175,13 +290,13 @@ async function _buildDedupSection() {
 
   const { element: imgHashRow,   select: imgHashSelect  } = _buildHashSizeRow({
     key: 'dedup_image_hash_size',
-    label: 'Image Hash Size',
+    label: 'Image hash size',
     description: 'Grid dimension n for whole-image perceptual hash (n² bits). Default: 8 → 64-bit.',
     currentN: imgN,
   });
   const { element: imgThreshRow, input:  imgThreshInput  } = _buildThresholdRow({
     key: 'dedup_image_threshold',
-    label: 'Image Similarity Threshold',
+    label: 'Image threshold',
     description: 'Max Hamming distance for "find similar images" searches. Auto-set to 20% of hash range when hash size changes.',
     currentVal: _threshVal(imgThreshStored, imgMax),
     max: imgMax,
@@ -189,13 +304,13 @@ async function _buildDedupSection() {
 
   const { element: bboxHashRow,   select: bboxHashSelect  } = _buildHashSizeRow({
     key: 'dedup_bbox_hash_size',
-    label: 'BBox Hash Size',
+    label: 'BBox hash size',
     description: 'Grid dimension n for bounding-box crop perceptual hash (n² bits). Default: 16 → 256-bit.',
     currentN: bboxN,
   });
   const { element: bboxThreshRow, input:  bboxThreshInput  } = _buildThresholdRow({
     key: 'dedup_bbox_threshold',
-    label: 'BBox Similarity Threshold',
+    label: 'BBox threshold',
     description: 'Max Hamming distance for "find similar bboxes" searches. Auto-set to 20% of hash range when hash size changes.',
     currentVal: _threshVal(bboxThreshStored, bboxMax),
     max: bboxMax,
@@ -212,29 +327,15 @@ async function _buildDedupSection() {
   _wireHashToThreshold(imgHashSelect, imgThreshInput);
   _wireHashToThreshold(bboxHashSelect, bboxThreshInput);
 
-  section.append(imgHashRow, imgThreshRow, bboxHashRow, bboxThreshRow);
+  body.append(imgHashRow, imgThreshRow, bboxHashRow, bboxThreshRow);
   return section;
 }
 
 function _buildHashSizeRow({ key, label, description, currentN }) {
   const HASH_SIZES = [4, 8, 16, 32, 64];
 
-  const row = document.createElement('div');
-  row.className = 'settings-server-row';
-
-  const rowLabel = document.createElement('div');
-  rowLabel.className = 'settings-server-label';
-  rowLabel.textContent = label;
-
-  const desc = document.createElement('div');
-  desc.className = 'settings-server-desc';
-  desc.textContent = description;
-
-  const inputRow = document.createElement('div');
-  inputRow.className = 'settings-server-input-row';
-
   const select = document.createElement('select');
-  select.className = 'settings-server-input settings-server-input--narrow';
+  select.className = 'settings-server-input settings-server-input--select';
   for (const n of HASH_SIZES) {
     const opt = document.createElement('option');
     opt.value = String(n);
@@ -243,16 +344,9 @@ function _buildHashSizeRow({ key, label, description, currentN }) {
     select.appendChild(opt);
   }
 
-  const saveBtn = document.createElement('button');
-  saveBtn.textContent = 'Save';
-  saveBtn.className = 'settings-server-btn';
+  const saveBtn = _rowButton('Save');
 
-  inputRow.append(select, saveBtn);
-
-  const statusLine = document.createElement('div');
-  statusLine.className = 'settings-server-status';
-  statusLine.dataset.state = 'muted';
-  statusLine.textContent = `Current: ${currentN} (${currentN * currentN}-bit)`;
+  const { row, setStatus } = _buildRow({ label, description, controls: [select, saveBtn] });
 
   saveBtn.addEventListener('click', async () => {
     const val = parseInt(select.value, 10);
@@ -272,15 +366,13 @@ function _buildHashSizeRow({ key, label, description, currentN }) {
     saveBtn.textContent = 'Saving…';
     try {
       await setSetting(key, String(val));
-      statusLine.textContent = `Saved: ${val} (${val * val}-bit) — rebuilding index…`;
-      statusLine.dataset.state = 'info';
+      setStatus(`Saved: ${val} (${val * val}-bit) — rebuilding index…`, 'info');
       saveBtn.textContent = 'Rebuilding…';
       try {
         await apiFetch('/api/images/phash/clear-and-rebuild', { method: 'POST' });
-        statusLine.textContent = `Saved: ${val} (${val * val}-bit) — index rebuilt.`;
+        setStatus(`Saved: ${val} (${val * val}-bit) — index rebuilt.`, 'info');
       } catch (rebuildErr) {
-        statusLine.textContent = `Saved: ${val} (${val * val}-bit) — index rebuild failed: ${rebuildErr.message}`;
-        statusLine.dataset.state = 'error';
+        setStatus(`Saved: ${val} (${val * val}-bit) — index rebuild failed: ${rebuildErr.message}`, 'error');
       }
       saveBtn.textContent = '✓ Done';
       setTimeout(() => {
@@ -288,32 +380,16 @@ function _buildHashSizeRow({ key, label, description, currentN }) {
         saveBtn.disabled = false;
       }, 1500);
     } catch (e) {
-      statusLine.textContent = `✗ ${e.message}`;
-      statusLine.dataset.state = 'error';
+      setStatus(`✗ ${e.message}`, 'error');
       saveBtn.textContent = 'Save';
       saveBtn.disabled = false;
     }
   });
 
-  row.append(rowLabel, desc, inputRow, statusLine);
   return { element: row, select };
 }
 
 function _buildThresholdRow({ key, label, description, currentVal, max }) {
-  const row = document.createElement('div');
-  row.className = 'settings-server-row';
-
-  const rowLabel = document.createElement('div');
-  rowLabel.className = 'settings-server-label';
-  rowLabel.textContent = label;
-
-  const desc = document.createElement('div');
-  desc.className = 'settings-server-desc';
-  desc.textContent = description;
-
-  const inputRow = document.createElement('div');
-  inputRow.className = 'settings-server-input-row';
-
   const input = document.createElement('input');
   input.type = 'number';
   input.min = '1';
@@ -322,58 +398,34 @@ function _buildThresholdRow({ key, label, description, currentVal, max }) {
   input.className = 'settings-server-input settings-server-input--narrow';
   input.value = String(currentVal);
 
-  const saveBtn = document.createElement('button');
-  saveBtn.textContent = 'Save';
-  saveBtn.className = 'settings-server-btn';
+  const saveBtn = _rowButton('Save');
 
-  inputRow.append(input, saveBtn);
-
-  const statusLine = document.createElement('div');
-  statusLine.className = 'settings-server-status';
-  statusLine.dataset.state = 'muted';
-  statusLine.textContent = `Current: ${currentVal}`;
+  const { row, setStatus } = _buildRow({ label, description, controls: [input, saveBtn] });
 
   saveBtn.addEventListener('click', async () => {
     const curMax = parseInt(input.max, 10);
     const val = parseInt(input.value, 10);
     if (isNaN(val) || val < 1 || val > curMax) {
-      statusLine.textContent = `Value must be between 1 and ${curMax}.`;
-      statusLine.dataset.state = 'error';
+      setStatus(`Value must be between 1 and ${curMax}.`, 'error');
       return;
     }
-    saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving…';
-    try {
-      await setSetting(key, String(val));
-      statusLine.textContent = `Saved: ${val}`;
-      statusLine.dataset.state = 'info';
-      saveBtn.textContent = '✓ Saved';
-      setTimeout(() => {
-        saveBtn.textContent = 'Save';
-        saveBtn.disabled = false;
-      }, 1500);
-    } catch (e) {
-      statusLine.textContent = `✗ ${e.message}`;
-      statusLine.dataset.state = 'error';
-      saveBtn.textContent = 'Save';
-      saveBtn.disabled = false;
-    }
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        await setSetting(key, String(val));
+        setStatus(`Saved: ${val}`, 'info');
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
   });
 
-  row.append(rowLabel, desc, inputRow, statusLine);
   return { element: row, input };
 }
 
-async function _buildUiSettingsSection() {
-  const section = document.createElement('section');
-  section.className = 'settings-section';
+/* ── UI settings ───────────────────────────────────────────────────────────── */
 
-  const header = document.createElement('div');
-  header.className = 'settings-section-header';
-  const title = document.createElement('h4');
-  title.textContent = 'UI Settings';
-  header.appendChild(title);
-  section.appendChild(header);
+async function _buildUiSettingsSection() {
+  const { section, body } = _panel('Interface');
 
   // ── Hover thumbnail delay ────────────────────────────────────────────
   const HOVER_DELAY_KEY = 'ui_hover_delay_ms';
@@ -385,20 +437,6 @@ async function _buildUiSettingsSection() {
     if (stored !== null) currentDelay = parseInt(stored, 10) || HOVER_DELAY_DEFAULT;
   } catch (_) {}
 
-  const row = document.createElement('div');
-  row.className = 'settings-server-row';
-
-  const rowLabel = document.createElement('div');
-  rowLabel.className = 'settings-server-label';
-  rowLabel.textContent = 'Hover thumbnail delay';
-
-  const desc = document.createElement('div');
-  desc.className = 'settings-server-desc';
-  desc.textContent = 'Milliseconds to wait before showing the thumbnail popup on hover. Default: 500.';
-
-  const inputRow = document.createElement('div');
-  inputRow.className = 'settings-server-input-row';
-
   const input = document.createElement('input');
   input.type = 'number';
   input.min = '0';
@@ -407,157 +445,87 @@ async function _buildUiSettingsSection() {
   input.className = 'settings-server-input settings-server-input--narrow';
   input.value = String(currentDelay);
 
-  const saveBtn = document.createElement('button');
-  saveBtn.textContent = 'Save';
-  saveBtn.className = 'settings-server-btn';
+  const unit = document.createElement('span');
+  unit.className = 'settings-input-unit';
+  unit.textContent = 'ms';
 
-  inputRow.append(input, saveBtn);
+  const saveBtn = _rowButton('Save');
 
-  const statusLine = document.createElement('div');
-  statusLine.className = 'settings-server-status';
-  statusLine.dataset.state = 'muted';
-  statusLine.textContent = `Current: ${currentDelay} ms`;
+  const { row, setStatus } = _buildRow({
+    label: 'Hover thumbnail delay',
+    description: 'How long to wait before showing the thumbnail popup on hover. Default: 500 ms.',
+    controls: [input, unit, saveBtn],
+  });
 
   saveBtn.addEventListener('click', async () => {
     const val = parseInt(input.value, 10);
     if (!Number.isFinite(val) || val < 0 || val > 5000) {
-      statusLine.textContent = 'Value must be between 0 and 5000 ms.';
-      statusLine.dataset.state = 'error';
+      setStatus('Value must be between 0 and 5000 ms.', 'error');
       return;
     }
-    saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving…';
-    try {
-      await setSetting(HOVER_DELAY_KEY, String(val));
-      setConfiguredHoverDelay(val);
-      statusLine.textContent = `Saved: ${val} ms`;
-      statusLine.dataset.state = 'info';
-      saveBtn.textContent = '✓ Saved';
-      setTimeout(() => {
-        saveBtn.textContent = 'Save';
-        saveBtn.disabled = false;
-      }, 1500);
-    } catch (e) {
-      statusLine.textContent = `✗ ${e.message}`;
-      statusLine.dataset.state = 'error';
-      saveBtn.textContent = 'Save';
-      saveBtn.disabled = false;
-    }
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        await setSetting(HOVER_DELAY_KEY, String(val));
+        setConfiguredHoverDelay(val);
+        setStatus(`Saved: ${val} ms`, 'info');
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
   });
 
-  row.append(rowLabel, desc, inputRow, statusLine);
-  section.appendChild(row);
-
+  body.appendChild(row);
   return section;
 }
 
-/**
- * Build a server URL configuration row.
- * @param {{label:string, serverType:string, settingKey:string, defaultUrl:string, currentOverride:string|null}} opts
- * @returns {HTMLElement}
- */
-function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOverride }) {
-  const row = document.createElement('div');
-  row.className = 'settings-server-row';
+/* ── Keyboard shortcuts (collapsible, full width) ──────────────────────────── */
 
-  const rowLabel = document.createElement('div');
-  rowLabel.className = 'settings-server-label';
-  rowLabel.textContent = label;
+function _buildHotkeySection() {
+  const { section, bar, body, heading } = _panel('Keyboard Shortcuts', { extraClass: 'settings-panel--full' });
+  bar.classList.add('settings-section-header--collapsible');
 
-  const inputRow = document.createElement('div');
-  inputRow.className = 'settings-server-input-row';
+  // The chevron and the title move into one wrapper so the whole heading — not
+  // just the word — is the toggle target.
+  const toggleRow = document.createElement('div');
+  toggleRow.className = 'settings-collapse-toggle';
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'settings-server-input';
-  input.placeholder = `${defaultUrl}  (default)`;
-  input.value = currentOverride ?? '';
+  const collapseToggle = document.createElement('span');
+  collapseToggle.className = 'settings-collapse-chevron';
+  collapseToggle.textContent = '▶';
 
-  const testBtn = document.createElement('button');
-  testBtn.textContent = 'Test';
-  testBtn.className = 'secondary settings-server-btn';
+  bar.insertBefore(toggleRow, heading);
+  toggleRow.append(collapseToggle, heading);
 
-  const saveBtn = document.createElement('button');
-  saveBtn.textContent = 'Save';
-  saveBtn.className = 'settings-server-btn';
+  const resetBtn = _rowButton('Reset to defaults', { secondary: true });
+  resetBtn.onclick = (e) => {
+    e.stopPropagation();
+    _hotkeyHandle?.reset();
+  };
 
-  inputRow.append(input, testBtn, saveBtn);
+  bar.appendChild(resetBtn);
 
-  const statusLine = document.createElement('div');
-  statusLine.className = 'settings-server-status';
-  if (currentOverride) {
-    statusLine.textContent = `Using: ${currentOverride}`;
-    statusLine.dataset.state = 'info';
-  } else {
-    statusLine.textContent = `Using default: ${defaultUrl}`;
-    statusLine.dataset.state = 'muted';
+  // The panel body carries the collapse (inline display:none); the inner div is
+  // what renderHotkeyPanel fills. Keeping them separate means the panel's own
+  // `display: flex` never has to fight the collapse.
+  body.style.display = 'none';
+
+  const hotkeyInner = document.createElement('div');
+  hotkeyInner.className = 'settings-hotkey-body';
+  body.appendChild(hotkeyInner);
+
+  let hotkeyLoaded = false;
+
+  async function toggleHotkeys() {
+    const isCollapsed = body.style.display === 'none';
+    body.style.display = isCollapsed ? '' : 'none';
+    collapseToggle.textContent = isCollapsed ? '▼' : '▶';
+    if (isCollapsed && !hotkeyLoaded) {
+      hotkeyLoaded = true;
+      _hotkeyHandle = await renderHotkeyPanel(hotkeyInner);
+    }
   }
 
-  testBtn.addEventListener('click', async () => {
-    const url = input.value.trim() || defaultUrl;
-    testBtn.disabled = true;
-    testBtn.textContent = 'Testing…';
-    statusLine.dataset.state = 'muted';
-    statusLine.textContent = `Testing ${url}…`;
-    try {
-      const res = await apiFetch('/api/test-server', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, server_type: serverType }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        statusLine.textContent = `✓ ${data.message}`;
-        statusLine.dataset.state = 'ok';
-      } else {
-        statusLine.textContent = `✗ ${data.message}`;
-        statusLine.dataset.state = 'error';
-      }
-    } catch (e) {
-      statusLine.textContent = `✗ ${e.message}`;
-      statusLine.dataset.state = 'error';
-    } finally {
-      testBtn.disabled = false;
-      testBtn.textContent = 'Test';
-    }
-  });
+  toggleRow.addEventListener('click', toggleHotkeys);
 
-  saveBtn.addEventListener('click', async () => {
-    const url = input.value.trim();
-    saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving…';
-    try {
-      if (url) {
-        await setSetting(settingKey, url);
-      } else {
-        // Clear override — delete by saving empty string; backend treats '' as "no override"
-        await setSetting(settingKey, '');
-      }
-      // Tell backend to reload proxies
-      const res = await apiFetch('/api/reload-server-config', { method: 'POST' });
-      const data = await res.json();
-      if (data.status === 'success') {
-        statusLine.textContent = url ? `Using: ${url}` : `Using default: ${defaultUrl}`;
-        statusLine.dataset.state = url ? 'info' : 'muted';
-        saveBtn.textContent = '✓ Saved';
-        setTimeout(() => {
-          saveBtn.textContent = 'Save';
-          saveBtn.disabled = false;
-        }, 1500);
-      } else {
-        statusLine.textContent = `✗ Save failed: ${data.message ?? 'unknown error'}`;
-        statusLine.dataset.state = 'error';
-        saveBtn.textContent = 'Save';
-        saveBtn.disabled = false;
-      }
-    } catch (e) {
-      statusLine.textContent = `✗ ${e.message}`;
-      statusLine.dataset.state = 'error';
-      saveBtn.textContent = 'Save';
-      saveBtn.disabled = false;
-    }
-  });
-
-  row.append(rowLabel, inputRow, statusLine);
-  return row;
+  return section;
 }

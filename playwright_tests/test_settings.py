@@ -260,6 +260,57 @@ class TestTestConnection:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Layout — panels in a grid, controls inside their panel
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsLayout:
+    def test_sections_render_as_panel_boxes_in_a_grid(self, page: Page, base_url: str):
+        """Every section is a `.panel-box` and the wrap lays them out as a multi-column
+        grid — the tab used to be one 560px-wide column of bespoke sections."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        wrap = page.locator("#tab-settings .settings-wrap")
+        expect(wrap).to_have_css("display", "grid")
+        # Servers, Deduplication, Interface, Keyboard Shortcuts
+        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(4)
+
+        # At a desktop width the grid resolves to more than one column.
+        columns = page.evaluate(
+            "() => getComputedStyle(document.querySelector('#tab-settings .settings-wrap'))"
+            ".gridTemplateColumns.split(' ').length"
+        )
+        assert columns > 1, f"expected a multi-column settings grid, got {columns}"
+
+    def test_narrow_controls_stay_narrow_and_inside_their_panel(self, page: Page, base_url: str):
+        """Layout invariant, not a regression test: the sized controls stay small and
+        inside their panel. The `--narrow`/`--select` rules use a flex-basis rather than
+        a `width` precisely because Pico sets `width: 100%` on inputs and selects from a
+        far higher-specificity selector, and a losing `width` stretches the control
+        across the row and pushes the Save button past the panel edge."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        measured = page.evaluate("""() => [...document.querySelectorAll(
+                '#tab-settings .settings-server-input--narrow, #tab-settings .settings-server-input--select'
+            )].map(el => {
+                const panel = el.closest('.panel-box').getBoundingClientRect();
+                const r = el.getBoundingClientRect();
+                return { cls: el.className, width: r.width, overflow: r.right - panel.right,
+                         panelWidth: panel.width };
+            })""")
+        assert measured, "expected narrow controls in the Deduplication / Interface panels"
+        for m in measured:
+            assert m["overflow"] <= 0, f"{m['cls']} overflows its panel by {m['overflow']:.0f}px"
+            # A control that lost the width fight fills the row; a sized one is a
+            # small fraction of the panel.
+            assert m["width"] < m["panelWidth"] * 0.5, f"{m['cls']} is not sized narrow: {m['width']:.0f}px"
+
+
+# ---------------------------------------------------------------------------
 # 4. Hotkeys collapsible panel
 # ---------------------------------------------------------------------------
 
@@ -283,6 +334,11 @@ class TestHotkeysPanel:
         expect(chevron).to_have_text("▼")
         expect(body).to_be_visible()
         expect(page.locator("#tab-settings .settings-hotkey-body")).not_to_be_empty()
+        # Rows flow into a grid rather than one row-per-line column — with one row
+        # per label *and* per visible tag, a single column runs arbitrarily tall.
+        grid = page.locator("#tab-settings .settings-hotkey-body .hotkey-grid").first
+        expect(grid).to_have_css("display", "grid")
+        assert grid.locator(".hotkey-row").count() > 0
 
         title_row.click()
         page.wait_for_timeout(200)

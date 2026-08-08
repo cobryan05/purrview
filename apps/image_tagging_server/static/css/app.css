@@ -3961,19 +3961,39 @@ button.filter-active {
   padding: var(--space-2) var(--space-2) var(--space-1);
 }
 
-/* ===== Settings tab ===== */
+/* ===== Settings tab =====
+   Panels flow into as many ~360px columns as the window gives, instead of the
+   single 560px column the tab used to be — that column left the right-hand ~60%
+   of the tab empty at any normal width while running well over a viewport tall.
+   Each section is a `.panel-box`, so Settings inherits the same bar+body chrome
+   as the Configuration screens rather than carrying its own section styling. */
 .settings-wrap {
-  max-width: 560px;
-  padding: 1em 0.5em;
-  display: flex;
-  flex-direction: column;
-  gap: 2em;
+  max-width: 1400px;
+  padding: var(--space-4) var(--space-2);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
 }
 
-.settings-section {
+/* Sections that want the full row regardless of the current column count —
+   the hotkey list is one row per label *and* per tag, so it never belongs in a
+   narrow column beside a four-row panel. */
+.settings-panel--full {
+  grid-column: 1 / -1;
+}
+
+/* Deduplication is several times taller than the panels beside it. Without the
+   row span, a two-column layout puts it alone in row 1 and leaves the space
+   under Servers empty; spanning lets the short panels stack in the other column. */
+.settings-panel--tall {
+  grid-row: span 2;
+}
+
+.settings-panel__body {
   display: flex;
   flex-direction: column;
-  gap: 0.75em;
+  padding: var(--space-1) var(--space-3) var(--space-2);
 }
 
 /* App-level warning/caution colour tokens — Pico has no amber semantic variables.
@@ -3996,83 +4016,120 @@ button.filter-active {
   --app-warning-border: #7a5800;
 }
 
+/* The section header is a `.panel-box__bar`; these rules only add what the bar
+   itself doesn't carry. */
 .settings-section-header {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--pico-muted-border-color, var(--border-strong));
-  padding-bottom: 0.4em;
 }
 
 .settings-hotkey-body {
   display: flex;
   flex-direction: column;
-  gap: 1em;
+  gap: var(--space-4);
 }
 
 /* Collapsible sections */
 .settings-section-header--collapsible {
-  cursor: default;
   user-select: none;
 }
 
+.settings-collapse-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  min-width: 0;
+}
+
 .settings-collapse-chevron {
-  font-size: 0.75em;
+  font-size: 0.65em;
   color: var(--pico-muted-color, var(--text-muted));
-  transition: transform 0.15s;
   line-height: 1;
 }
 
-
-/* Server configuration rows */
+/* Settings rows — label and controls share one line, with the hint and status
+   as sub-lines that only cost height when they have content. */
 .settings-server-row {
   display: flex;
   flex-direction: column;
-  gap: 0.35em;
-  padding: 0.75em 0;
-  border-bottom: 1px solid var(--pico-muted-border-color, var(--border-strong));
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .settings-server-row:last-child {
   border-bottom: none;
+  padding-bottom: 0;
+}
+
+.settings-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* A URL needs the whole row, so those rows stack instead. */
+.settings-server-row--stacked .settings-row-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
 }
 
 .settings-server-label {
   font-weight: 600;
-  font-size: 0.9em;
+  font-size: var(--text-sm);
+  min-width: 0;
 }
 
 .settings-server-input-row {
   display: flex;
   align-items: center;
-  gap: 0.5em;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .settings-server-input {
   flex: 1;
   min-width: 0;
-  font-size: 0.9em;
-  padding: 0.3em 0.5em;
+  font-size: var(--text-sm);
   margin: 0;
+  --pico-form-element-spacing-vertical: 0.25em;
+  --pico-form-element-spacing-horizontal: 0.45em;
 }
 
+/* Narrow numeric/select controls sit at a fixed size on the right of the row
+   rather than stretching across it.
+   ⚠️ This must be a flex-basis, not a `width`: Pico sets `width: 100%` on every
+   input and select from a much higher-specificity selector, so a `width` here
+   loses and the control overflows the panel. A basis wins because it is the
+   flex algorithm's input, not a competing declaration. */
 .settings-server-input--narrow {
-  max-width: 6em;
+  flex: 0 0 7.5em;
 }
 
-.settings-section-header h4 {
-  margin: 0;
+/* A select has to fit its longest option plus Pico's caret, which a plain
+   number input does not. */
+.settings-server-input--select {
+  flex: 0 0 9.5em;
 }
 
-.settings-server-btn {
-  flex-shrink: 0;
-  font-size: 0.85em;
-  padding: 0.3em 0.7em;
+.settings-input-unit {
+  font-size: var(--text-xs);
+  color: var(--pico-muted-color, var(--text-muted));
 }
 
 .settings-server-status {
-  font-size: 0.82em;
-  min-height: 1.2em;
+  font-size: var(--text-xs);
+}
+
+/* Empty status lines are the common case (a saved setting has nothing to say),
+   so they collapse rather than reserving a blank line under every row. */
+.settings-server-status:empty {
+  display: none;
 }
 
 .settings-server-status[data-state='ok'] {
@@ -4092,19 +4149,79 @@ button.filter-active {
 }
 
 .settings-server-desc {
-  font-size: 0.82em;
+  font-size: var(--text-xs);
+  line-height: 1.35;
   color: var(--pico-muted-color, var(--text-muted));
-  margin-bottom: 0.2em;
+}
+
+/* ===== Keyboard-shortcut rows (app/image-tagging/hotkeyModal.js) =====
+   Rendered into the Settings tab's Keyboard Shortcuts panel. Previously 100%
+   inline `cssText`; the classes exist so the panel themes with everything else. */
+.hotkey-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 0 var(--space-5);
+}
+
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-0) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.hotkey-row__name {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hotkey-row__swatch {
+  flex: 0 0 auto;
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: var(--radius-xs);
+}
+
+.hotkey-row__key {
+  flex: 0 0 auto;
+  min-width: 7em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* An unbound action is a prompt, not a value — mute it so the bound keys are
+   what the eye picks out when scanning a column of thirty rows. */
+.hotkey-row__key--unset {
+  color: var(--pico-muted-color, var(--text-muted)) !important;
+}
+
+.hotkey-row__key--capturing {
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+.hotkey-row__clear {
+  flex: 0 0 auto;
+  line-height: 1;
 }
 
 .settings-dedup-warning {
-  font-size: 0.82em;
+  font-size: var(--text-xs);
+  line-height: 1.4;
   color: var(--app-warning-color);
-  background: var(--app-warning-bg);
-  border: 1px solid var(--app-warning-border);
-  border-radius: 4px;
-  padding: 0.4em 0.7em;
-  margin: 0;
+  background: color-mix(in srgb, var(--app-warning-color) 10%, transparent);
+  border-left: 2px solid var(--app-warning-color);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0 var(--space-1);
 }
 
 /* ===== Bottom Bars Wrapper (notices + active-model stacked) ===== */

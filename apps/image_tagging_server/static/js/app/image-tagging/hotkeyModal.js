@@ -24,32 +24,37 @@ import {
 export async function renderHotkeyPanel(container) {
   const [labels, tags] = await Promise.all([fetchLabels(), fetchTags(), initHotkeyBindings()]);
 
-  container.style.cssText = 'display:flex; flex-direction:column; gap:1em;';
-
   let capturingActionId = null;
 
   /** @param {{id:string,label:string,icon?:string,color?:string}} a */
   function renderRow(a) {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex; align-items:center; gap:0.5em;';
+    row.className = 'hotkey-row';
 
     const name = document.createElement('span');
-    name.style.cssText = 'flex:1; display:flex; align-items:center; gap:0.4em;';
+    name.className = 'hotkey-row__name';
     if (a.color) {
       const sw = document.createElement('span');
-      sw.style.cssText = `display:inline-block; width:0.8em; height:0.8em; border-radius:2px; background:${a.color};`;
+      sw.className = 'hotkey-row__swatch';
+      sw.style.background = a.color;
       name.appendChild(sw);
     }
     name.appendChild(document.createTextNode(`${a.icon ? a.icon + ' ' : ''}${a.label}`));
+    name.title = a.label;
 
     const keyBtn = document.createElement('button');
-    keyBtn.style.cssText = 'min-width:120px;';
+    keyBtn.className = 'panel-btn hotkey-row__key';
     if (capturingActionId === a.id) {
       keyBtn.textContent = 'Press a key…';
-      keyBtn.classList.add('selected');
+      keyBtn.classList.add('hotkey-row__key--capturing');
     } else {
       const combos = combosForAction(a.id);
-      keyBtn.textContent = combos.length ? combos.map(comboLabel).join(', ') : 'Set key';
+      if (combos.length) {
+        keyBtn.textContent = combos.map(comboLabel).join(', ');
+      } else {
+        keyBtn.textContent = 'Set key';
+        keyBtn.classList.add('hotkey-row__key--unset');
+      }
     }
     keyBtn.onclick = () => {
       capturingActionId = capturingActionId === a.id ? null : a.id;
@@ -58,7 +63,7 @@ export async function renderHotkeyPanel(container) {
 
     const clearBtn = document.createElement('button');
     clearBtn.textContent = '✕';
-    clearBtn.className = 'secondary';
+    clearBtn.className = 'secondary panel-btn hotkey-row__clear';
     clearBtn.title = 'Clear binding';
     clearBtn.onclick = () => {
       clearBinding(a.id);
@@ -73,10 +78,16 @@ export async function renderHotkeyPanel(container) {
   function section(heading, rows) {
     const wrap = document.createElement('div');
     const h = document.createElement('div');
-    h.style.cssText = 'font-weight:600; opacity:0.7; margin-bottom:0.3em;';
+    h.className = 'panel-section-label';
     h.textContent = heading;
-    wrap.appendChild(h);
-    rows.forEach(r => wrap.appendChild(r));
+
+    // Rows flow into as many columns as the panel width allows — one row per
+    // label *and* per visible tag makes a single column arbitrarily tall.
+    const grid = document.createElement('div');
+    grid.className = 'hotkey-grid';
+    rows.forEach(r => grid.appendChild(r));
+
+    wrap.append(h, grid);
     return wrap;
   }
 
