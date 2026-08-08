@@ -119,6 +119,21 @@ class Manager:
         # reflected within a few seconds when the user hits Refresh.
         self._count_cache: dict[str, tuple[int, float]] = {}
         self._COUNT_CACHE_TTL = 60.0
+        # Expired entries are only ever overwritten on an identical key, so a browsing
+        # session that keeps trying new filter combinations would grow this dict
+        # forever. Sweep expired keys once the dict crosses a soft ceiling.
+        self._COUNT_CACHE_MAX_ENTRIES = 512
+        # Thumbnail generation decodes the *full-resolution* source image (PIL
+        # open + convert) even when the output is a small bbox crop. Dispatched
+        # via asyncio.to_thread that runs on the default executor, so a grid view
+        # firing dozens of thumbnail requests at once could hold
+        # min(32, cpu+4) full-res decodes in memory simultaneously — hundreds of
+        # MB of spike for 4K sources. Cap the concurrent decodes instead.
+        self._thumb_decode_sem = asyncio.Semaphore(int(os.environ.get("THUMB_DECODE_CONCURRENCY", "4")))
+        # Held reference to the in-flight cache-trim task: asyncio only keeps weak
+        # references to tasks, so a bare create_task() can be garbage-collected
+        # mid-run. Doubles as a coalescing flag — one trim at a time is plenty.
+        self._thumb_trim_task: Optional[asyncio.Task] = None
         # Maximum seconds to wait for the count query before returning -1.
         # count_images_search does a full table scan with no LIMIT; on large
         # datasets (100k+ images) with complex multi-EXISTS filters it can take
@@ -1399,6 +1414,7 @@ class Manager:
                 )
                 if total_count >= 0:
                     self._count_cache[cache_key] = (total_count, now)
+                    self._evict_expired_counts(now)
         else:
             t1 = time.monotonic()
             batch = await self._db_client.list_images_search(fetch_params)
@@ -2289,6 +2305,25 @@ class Manager:
     # THUMBNAIL API
     ################################################################################
 
+    def _evict_expired_counts(self, now: float) -> None:
+        """Drop timed-out entries from the count cache once it grows past the ceiling.
+
+        Entries are keyed by a hash of the filter predicates, so every distinct filter
+        combination a user tries leaves one behind; without this they are only ever
+        replaced by an identical query and the dict grows for the life of the process.
+        """
+        if len(self._count_cache) <= self._COUNT_CACHE_MAX_ENTRIES:
+            return
+        stale = [key for key, (_, ts) in self._count_cache.items() if now - ts >= self._COUNT_CACHE_TTL]
+        for key in stale:
+            del self._count_cache[key]
+        if len(self._count_cache) > self._COUNT_CACHE_MAX_ENTRIES:
+            # Everything is still live (a burst of distinct filters inside one TTL
+            # window). Drop the oldest to keep the ceiling meaningful.
+            excess = len(self._count_cache) - self._COUNT_CACHE_MAX_ENTRIES
+            for key in sorted(self._count_cache, key=lambda k: self._count_cache[k][1])[:excess]:
+                del self._count_cache[key]
+
     def _thumb_cache_dir(self) -> Path:
         return CACHE_DIR / "thumb_cache"
 
@@ -2323,11 +2358,28 @@ class Manager:
                 logger.warning(f"Failed to evict thumbnail {path.name}: {e}")
 
     def _schedule_thumb_cache_trim(self) -> None:
-        """Fire-and-forget: trim the cache in a background thread if a size limit is set."""
+        """Trim the cache in a background thread if a size limit is set.
+
+        Coalesced: each trim globs and stats the whole cache directory, so running one
+        per thumbnail miss (which is how often this is called) is pure waste. If a trim
+        is already in flight, this is a no-op — that trim will observe whatever the
+        current on-disk state is by the time it runs.
+        """
         if THUMB_CACHE_MAX_MB <= 0:
             return
+        if self._thumb_trim_task is not None and not self._thumb_trim_task.done():
+            return
         max_bytes = THUMB_CACHE_MAX_MB * 1024 * 1024
-        asyncio.create_task(asyncio.to_thread(self._trim_thumb_cache_sync, max_bytes))
+        # Keep a strong reference (asyncio holds only a weak one) and log failures
+        # instead of letting them vanish into an un-awaited task.
+        task = asyncio.create_task(asyncio.to_thread(self._trim_thumb_cache_sync, max_bytes))
+        self._thumb_trim_task = task
+
+        def _log_failure(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning(f"Thumbnail cache trim failed: {t.exception()}")
+
+        task.add_done_callback(_log_failure)
 
     def _resolve_image_file_path(self, image_path: str) -> Optional[Path]:
         """Resolve an image path to a file under _files_root, or None.
@@ -2430,7 +2482,8 @@ class Manager:
                 logger.warning(f"Failed to generate thumbnail for bbox {bbox_uuid}: {e}")
                 return None
 
-        jpeg_bytes = await asyncio.to_thread(_generate)
+        async with self._thumb_decode_sem:
+            jpeg_bytes = await asyncio.to_thread(_generate)
         if jpeg_bytes is None:
             return None
 
@@ -2492,7 +2545,8 @@ class Manager:
                 logger.warning(f"Failed to generate image thumbnail for {image_path}: {e}")
                 return None
 
-        png_bytes = await asyncio.to_thread(_generate)
+        async with self._thumb_decode_sem:
+            png_bytes = await asyncio.to_thread(_generate)
         if png_bytes is None:
             return None
 

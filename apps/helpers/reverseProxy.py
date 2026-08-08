@@ -1,5 +1,24 @@
 import httpx
-from fastapi import Request, Response
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
+# Hop-by-hop headers are connection-scoped and must not be forwarded to the client:
+# passing upstream's Content-Length/Transfer-Encoding through alongside a re-chunked
+# StreamingResponse produces a response whose framing contradicts its own body.
+_HOP_BY_HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "content-encoding",
+        "content-length",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 
 
 class ReverseProxy:
@@ -35,8 +54,24 @@ class ReverseProxy:
 
         proxy_res = await self.client.send(proxy_req, stream=True)
 
-        return Response(
-            content=await proxy_res.aread(),
+        # Stream the body straight through rather than aread()-ing it into memory.
+        # The previous version buffered the whole upstream response, then copied it
+        # again into the outgoing Response — for image traffic that meant several
+        # copies of every payload resident per in-flight request. It also leaked the
+        # upstream connection whenever aread() raised part-way (httpx only closes the
+        # response at the *end* of a fully-consumed iteration), which is exactly what
+        # happens when a client navigates away mid-load.
+        async def body_iter():
+            try:
+                async for chunk in proxy_res.aiter_raw():
+                    yield chunk
+            finally:
+                await proxy_res.aclose()
+
+        headers = {k: v for k, v in proxy_res.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
+
+        return StreamingResponse(
+            body_iter(),
             status_code=proxy_res.status_code,
-            headers=dict(proxy_res.headers),
+            headers=headers,
         )

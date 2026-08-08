@@ -132,3 +132,76 @@ class TestStopGuards:
         streamer._task = asyncio.get_running_loop().create_task(_never_ending())
         await streamer.astop()
         assert streamer._task is None
+
+
+class TestReadTransportCleanup:
+    """The stdout pipe transport from connect_read_pipe() is created on every
+    start()/astart(). It used to be dropped without closing, so each restart leaked
+    the pipe fd and the StreamReader's buffer — and FfmpegImageProvider resets its
+    restart counter on every successful frame, so a flapping source restarts
+    unboundedly over a long run."""
+
+    class _FakeTransport:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    async def test_sync_stop_closes_the_read_transport(self):
+        streamer = FFmpegStreamerIn("rtsp://fake")
+        transport = self._FakeTransport()
+        streamer._read_transport = transport
+
+        streamer.stop()
+
+        assert transport.closed
+        assert streamer._read_transport is None
+
+    async def test_astop_closes_the_read_transport(self):
+        streamer = FFmpegStreamerIn("rtsp://fake")
+        transport = self._FakeTransport()
+        streamer._read_transport = transport
+
+        await streamer.astop()
+
+        assert transport.closed
+        assert streamer._read_transport is None
+
+    async def test_close_is_idempotent(self):
+        streamer = FFmpegStreamerIn("rtsp://fake")
+        transport = self._FakeTransport()
+        streamer._read_transport = transport
+
+        streamer.stop()
+        streamer.stop()
+        await streamer.astop()
+
+        assert transport.closed
+
+    async def test_a_failing_close_does_not_propagate(self):
+        """stop() is called from cleanup paths; a bad transport must not mask them."""
+
+        class _Boom:
+            def close(self):
+                raise OSError("already gone")
+
+        streamer = FFmpegStreamerIn("rtsp://fake")
+        streamer._read_transport = _Boom()
+
+        streamer.stop()
+
+        assert streamer._read_transport is None
+
+    async def test_restart_cycles_do_not_accumulate_transports(self):
+        streamer = FFmpegStreamerIn("rtsp://fake")
+        transports = []
+
+        for _ in range(5):
+            transport = self._FakeTransport()
+            transports.append(transport)
+            streamer._read_transport = transport  # as the worker would set it
+            await streamer.astop()
+
+        assert all(t.closed for t in transports)
+        assert streamer._read_transport is None

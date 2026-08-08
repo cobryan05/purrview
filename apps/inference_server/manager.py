@@ -73,6 +73,17 @@ class Manager:
     POLLING_INTERVAL: float = 5.0  # Interval in seconds for periodic tasks
     MODEL_PIN_TIME: float = 10.0 * 60  # Default timeout in seconds before unloading model from GPU
 
+    # Pin id used by recognize() when the caller holds no pin of its own (e.g. the
+    # /classify endpoint, which has no pin/unpin handshake). A single shared id per
+    # model — rather than a fresh uuid per call — means back-to-back calls refresh
+    # one pin instead of accumulating thousands of them, and the model stays loaded
+    # between calls. Without this, every pinless recognize() built and immediately
+    # destroyed an ort.InferenceSession; under CUDA that churns a GPU context plus
+    # host-side arenas per call and RSS grows monotonically (observed: 1500+ session
+    # loads in 33 minutes and ~700 MB of unreclaimed heap). The model still unloads
+    # on the normal expiry path once MODEL_PIN_TIME passes with no further calls.
+    IMPLICIT_PIN_ID: str = "__implicit_keepwarm__"
+
     def __init__(self, models_path: str):
         """
         Initialize the Manager with a models directory path.
@@ -269,8 +280,15 @@ class Manager:
         """
         if model_name not in self._avail_models:
             raise FileNotFoundError(f"Model '{model_name}' not found in available models")
-        if model_name in self._pinned_models:
-            raise ValueError(f"Model '{model_name}' is currently pinned/in use and cannot be deleted")
+        pinned = self._pinned_models.get(model_name)
+        if pinned is not None:
+            # The implicit keep-warm pin is not a caller reservation — it only means the
+            # model was used recently and hasn't aged out yet. Drop it and continue;
+            # only a real caller-held pin blocks deletion.
+            if set(pinned.pins) - {self.IMPLICIT_PIN_ID}:
+                raise ValueError(f"Model '{model_name}' is currently pinned/in use and cannot be deleted")
+            del self._pinned_models[model_name]
+            logger.info(f"Model '{model_name}' unloaded from memory to allow deletion.")
 
         model_path = Path(self._avail_models[model_name])
         sidecar_path = model_path.with_suffix(".json")
@@ -344,13 +362,17 @@ class Manager:
         path = self.staged_model_path(staging_id)
         path.unlink(missing_ok=True)
 
-    async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME) -> str:
+    async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME, pin_id: Optional[str] = None) -> str:
         """
         Pin a model into memory, keeping it loaded until unpinned.
 
         Args:
             model_name (str): Name of the model to pin.
             timeout (float): Timeout in seconds for the pin.
+            pin_id (Optional[str]): Reuse a specific pin id instead of generating a
+                fresh one. Passing an id that is already pinned refreshes its expiry
+                rather than adding a second pin — used for IMPLICIT_PIN_ID so pinless
+                callers share one long-lived pin per model.
 
         Returns:
             str: A unique pin ID that can be used to unpin the model.
@@ -380,7 +402,7 @@ class Manager:
             finally:
                 self._loading_models.pop(model_name, None)
 
-        pin_id = str(uuid.uuid4())
+        pin_id = pin_id or str(uuid.uuid4())
         expiry = time.time() + timeout
         self._pinned_models[model_name].pins[pin_id] = Pin(pin_id=pin_id, expiry=expiry, timeout=timeout)
         logger.debug(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
@@ -437,52 +459,49 @@ class Manager:
         if model_name not in self._avail_models:
             raise ValueError(f"Model '{model_name}' is not available. Please check the model name.")
 
-        # If the caller holds a valid long-lived pin and the model is already loaded,
-        # skip creating a temp pin — the caller's pin guarantees the model stays alive.
-        # Refresh the pin's expiry first so it can't expire mid-inference.
+        # A caller holding its own valid pin just gets its expiry refreshed, so the pin
+        # can't lapse mid-inference. Everyone else falls back to the shared implicit
+        # pin, which keeps the session loaded across calls.
         pinned = self._pinned_models.get(model_name)
         caller_pin_valid = pin_id is not None and pinned is not None and pin_id in pinned.pins
         if caller_pin_valid:
             pinned.pins[pin_id].expiry = time.time() + pinned.pins[pin_id].timeout
-            tmp_pin_id = None
         else:
-            tmp_pin_id = await self.pin_model(model_name)
+            # Pinless caller: load once and keep the model warm under the shared
+            # implicit pin (refreshing its expiry), rather than tearing the session
+            # down in a finally: and rebuilding it on the very next call. See
+            # IMPLICIT_PIN_ID. _cleanup_expired_pins still unloads it once the model
+            # has been idle for MODEL_PIN_TIME.
+            await self.pin_model(model_name, pin_id=self.IMPLICIT_PIN_ID)
 
-        try:
-            model = self._pinned_models.get(model_name)
-            if not model or not model.inference:
-                raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
+        model = self._pinned_models.get(model_name)
+        if not model or not model.inference:
+            raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
 
-            t0 = time.perf_counter()
-            inference_result: InferenceResult = await model.inference.processImage(
-                image, conf_thresh=conf_thresh, **kwargs
+        t0 = time.perf_counter()
+        inference_result: InferenceResult = await model.inference.processImage(image, conf_thresh=conf_thresh, **kwargs)
+        t_infer = time.perf_counter()
+
+        if return_annotated_img:
+            inference_result.annotated_image = annotate_image(image, inference_result.detections)
+
+        if len(inference_result.detections) > 0:
+            t_cls = time.perf_counter()
+            class_uuid_maps = await self.get_models_classes([model_name])
+            class_uuid_map = class_uuid_maps.get(model_name, {})
+            for det in inference_result.detections:
+                if not det.bbox.class_str:
+                    continue
+                det.bbox.label_uuid = class_uuid_map.get(det.bbox.class_str, det.bbox.label_uuid)
+            logger.debug(
+                f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms "
+                f"class_lookup={1000*(time.perf_counter()-t_cls):.1f}ms "
+                f"({len(inference_result.detections)} dets)"
             )
-            t_infer = time.perf_counter()
+        else:
+            logger.debug(f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms (no detections)")
 
-            if return_annotated_img:
-                inference_result.annotated_image = annotate_image(image, inference_result.detections)
-
-            if len(inference_result.detections) > 0:
-                t_cls = time.perf_counter()
-                class_uuid_maps = await self.get_models_classes([model_name])
-                class_uuid_map = class_uuid_maps.get(model_name, {})
-                for det in inference_result.detections:
-                    if not det.bbox.class_str:
-                        continue
-                    det.bbox.label_uuid = class_uuid_map.get(det.bbox.class_str, det.bbox.label_uuid)
-                logger.debug(
-                    f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms "
-                    f"class_lookup={1000*(time.perf_counter()-t_cls):.1f}ms "
-                    f"({len(inference_result.detections)} dets)"
-                )
-            else:
-                logger.debug(f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms (no detections)")
-
-            return inference_result
-
-        finally:
-            if tmp_pin_id:
-                await self.unpin_model(model_name, tmp_pin_id)
+        return inference_result
 
     def _cleanup_expired_pins(self):
         """

@@ -159,6 +159,7 @@ _EXISTS_DISPATCH_MIN_FRACTION = 0.20
 # TTL for the cached selectivity probe counts. Staleness only affects which
 # query shape is chosen, never correctness, so this can be generous.
 _SELECTIVITY_CACHE_TTL = 60.0
+_SELECTIVITY_CACHE_MAX_ENTRIES = 512
 
 
 def _escape_like_pattern(pattern: str) -> str:
@@ -1057,7 +1058,16 @@ class DbClient:
             return cached[0]
         async with self._async_session_maker() as session:
             value = (await session.exec(count_stmt)).one()
-        self._selectivity_cache[key] = (value, time.monotonic())
+        now = time.monotonic()
+        self._selectivity_cache[key] = (value, now)
+        # Keys are derived from the filter predicates, so a browsing session that keeps
+        # varying its filters leaves an entry behind for each combination; expired ones
+        # are never otherwise removed. Sweep once past a soft ceiling.
+        if len(self._selectivity_cache) > _SELECTIVITY_CACHE_MAX_ENTRIES:
+            for stale_key in [
+                k for k, (_, ts) in self._selectivity_cache.items() if now - ts >= _SELECTIVITY_CACHE_TTL
+            ]:
+                del self._selectivity_cache[stale_key]
         return value
 
     async def _should_use_exists_dispatch(self, params: ImageSearchParams) -> bool:

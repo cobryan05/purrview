@@ -46,6 +46,12 @@ class FFmpegStreamerIn:
         self._task: Optional[asyncio.Task] = None
         self._event_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self._is_frame_aligned: bool = False
+        # Transport returned by connect_read_pipe() in the worker. A new one is created
+        # on every start()/astart(); without closing it on stop the pipe fd and the
+        # StreamReader's buffer stay alive for the life of the process, and a source
+        # that flaps restarts unboundedly (FfmpegImageProvider resets its restart
+        # counter on every successful frame, so the cap is only on *consecutive* ones).
+        self._read_transport: Optional[asyncio.ReadTransport] = None
 
     def __repr__(self):
         return f"FFmpegStreamerIn [{self._source}]"
@@ -113,9 +119,20 @@ class FFmpegStreamerIn:
                 except asyncio.QueueEmpty:
                     pass
 
+    def _close_read_transport(self) -> None:
+        """Close the stdout pipe transport, if one is open. Safe to call repeatedly."""
+        if self._read_transport is None:
+            return
+        try:
+            self._read_transport.close()
+        except Exception as e:
+            logger.warning(f"Failed to close read transport for {self._source}: {e}")
+        self._read_transport = None
+
     def stop(self) -> None:
         """Stops the streamer and terminates the process. Safe to call multiple times."""
         self._stop_event.set()
+        self._close_read_transport()
         if self._process is None:
             return
         self._process.terminate()
@@ -163,6 +180,7 @@ class FFmpegStreamerIn:
         """Async, non-blocking equivalent of stop(). Terminates the process and cancels/awaits
         the worker task without blocking the event loop."""
         self._stop_event.set()
+        self._close_read_transport()
 
         if self._process is not None:
             process = self._process
@@ -225,7 +243,8 @@ class FFmpegStreamerIn:
 
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
-        await self._event_loop.connect_read_pipe(lambda: protocol, self._process.stdout)
+        transport, _ = await self._event_loop.connect_read_pipe(lambda: protocol, self._process.stdout)
+        self._read_transport = transport
 
         logger.info(f"Starting stream [{self._source}] {self._width}x{self._height}@{self._fps}fps")
 
