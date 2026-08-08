@@ -1792,7 +1792,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // callers acting on parent images MUST pass an explicit title so the modal
   // never implies it's acting on bboxes.
   async function _runImageBulkAction(imageEntries, titleText = null) {
-    await showImageBulkActionModal(imageEntries, labels, async (action, labelUuid, tagUuids) => {
+    await showImageBulkActionModal(imageEntries, labels, async (action, labelUuids, tagUuids) => {
       if (action === 'delete') {
         const n = imageEntries.length;
         const noun = n === 1 ? 'image' : 'images';
@@ -1824,7 +1824,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         return;
       }
 
-      const { failCount, skippedCount, succeededEntries } = await executeBulkImageAction(action, imageEntries, labelUuid, tagUuids);
+      const { failCount, skippedCount, succeededEntries } = await executeBulkImageAction(action, imageEntries, labelUuids, tagUuids);
       for (const { img } of succeededEntries) {
         const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
         if (card) markCardStale(card, 'tagged');
@@ -1961,7 +1961,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
 
     if (kind === 'image') {
-      await showImageBulkActionModal(entries, labels, async (action, labelUuid, tagUuids) => {
+      await showImageBulkActionModal(entries, labels, async (action, labelUuids, tagUuids) => {
         if (action === 'delete') {
           const n = entries.length;
           const noun = n === 1 ? 'image' : 'images';
@@ -1979,7 +1979,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           const { modifiedCount, failCount, skippedCount } = await bulkApplyImagesByUuids({
             imageUuids: entries.map(e => e.img.uuid),
             action,
-            labelUuid,
+            labelUuids,
             tagUuids,
           });
           if (action === 'delete') {
@@ -2076,7 +2076,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       return { first: [], last: [] };
     });
 
-    await showImageBulkActionModal([], labels, async (action, labelUuid, tagUuids) => {
+    await showImageBulkActionModal([], labels, async (action, labelUuids, tagUuids) => {
       if (action === 'delete') {
         const confirmed = await showConfirmModal({
           title: 'Delete All Matching Images',
@@ -2096,7 +2096,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           sortBy: sortBySelect.value,
           sortOrder: sortOrderSelect.value,
           action,
-          labelUuid,
+          selectedLabelUuids: labelUuids,
           selectedTagUuids: tagUuids,
         });
         statusMsg.classList.remove('review-toolbar__status--loading');

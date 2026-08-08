@@ -1724,6 +1724,43 @@ button.filter-active {
   white-space: nowrap;
 }
 
+/* Trailing informational pill on a row (opt-in via the item's `badge`).
+ * Never interactive — clicks fall through to the row's own checkbox. */
+.ms-item__badge {
+  flex-shrink: 0;
+  padding: 0 0.4em;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* "This label is part of the active training run." */
+.ms-item__badge--training {
+  border-color: color-mix(in srgb, var(--color-info) 55%, transparent);
+  background: color-mix(in srgb, var(--color-info) 16%, transparent);
+  color: var(--color-info);
+}
+
+/* Inline pickers inside the bulk-action modal: the 480px default sized for a
+   full-height form would push the modal's buttons off-screen. */
+.bulk-modal-picker .ms-dropdown--inline .ms-dropdown__panel {
+  height: 240px;
+  min-height: 120px;
+}
+
+.ms-dropdown__search {
+  margin: 0 4px 4px;
+  padding: 3px 6px;
+  height: auto;
+  font-size: 0.8em;
+  --pico-form-element-spacing-vertical: 0;
+  --pico-form-element-spacing-horizontal: 0.4rem;
+}
+
 .ms-item__not-btn {
   flex-shrink: 0;
   width: 17px;

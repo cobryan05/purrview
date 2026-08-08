@@ -527,12 +527,16 @@ export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = nu
 /**
  * Apply an image-level action to an explicit list of images in one server-side
  * pass — the image-kind counterpart of bulkApplyBboxesByUuids.
+ *
+ * Label actions (setPresent/setAbsent/setUncertain) take a list: the server
+ * applies the action to every listed label in the same pass, and still reports
+ * counts in images, not (image, label) pairs.
  */
-export async function bulkApplyImagesByUuids({ imageUuids, action, labelUuid = null, tagUuids = [] }) {
+export async function bulkApplyImagesByUuids({ imageUuids, action, labelUuids = [], tagUuids = [] }) {
   const res = await apiFetch('/api/images/bulk-apply-by-uuids', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageUuids, action, labelUuid, tagUuids }),
+    body: JSON.stringify({ imageUuids, action, labelUuids, tagUuids }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');
@@ -577,9 +581,11 @@ export async function bulkApplyImages({
   verificationLabelUuids = [],
   bboxVerification = null,
   requireBboxes = false,
-  // Action params
+  // Action params. `selectedLabelUuids` (not `labelUuids`) so it doesn't
+  // collide with the filter's own `labelUuids` above — same convention the
+  // tag side already uses with `selectedTagUuids`.
   action,
-  labelUuid = null,
+  selectedLabelUuids = [],
   selectedTagUuids = [],
 } = {}) {
   // The action here is image-level, so bboxVerification needs no bbox-level
@@ -617,7 +623,7 @@ export async function bulkApplyImages({
     body: JSON.stringify({
       filter: filterBody,
       action,
-      labelUuid: labelUuid ?? null,
+      labelUuids: selectedLabelUuids,
       tagUuids: selectedTagUuids,
     }),
   });

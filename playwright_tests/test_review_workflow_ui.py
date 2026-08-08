@@ -781,14 +781,14 @@ class TestBulkParentImagesAction:
 
         page.locator("input[type=radio][value=setAbsent]").click()
         modal_locator = page.locator("div:has(> strong:has-text('distinct image'))")
-        modal_locator.locator("select").select_option("lbl-cat")
+        modal_locator.locator(".bulk-modal-picker--labels input[type=checkbox][value='lbl-cat']").check()
         modal_locator.locator("button", has_text="Apply").click()
         wait_until(page, lambda: len(calls) >= 1, lambda: f"Expected 1 batched bulk-apply-by-uuids call, got {calls}")
 
         assert len(calls) == 1, f"Expected 1 batched bulk-apply-by-uuids call, got {calls}"
         call = calls[0]
         assert call["action"] == "setAbsent"
-        assert call["labelUuid"] == "lbl-cat"
+        assert call["labelUuids"] == ["lbl-cat"]
         assert sorted(call["imageUuids"]) == ["img-1", "img-2"]
 
 
@@ -835,16 +835,16 @@ class TestBulkImageAction:
         modal_title = page.locator("strong", has_text="Apply to 2 selected images")
         expect(modal_title).to_be_visible()
 
-        # Explicitly select 'Mark label Absent' and choose Cat.
+        # Explicitly select 'Mark label Absent' and check Cat in the label picker.
         page.locator("input[type=radio][value=setAbsent]").click()
-        page.locator("div:has(> strong:text-is('Apply to 2 selected images')) select").select_option("lbl-cat")
+        page.locator(".bulk-modal-picker--labels input[type=checkbox][value='lbl-cat']").check()
         page.locator("div:has(> strong:text-is('Apply to 2 selected images')) button", has_text="Apply").click()
         wait_until(page, lambda: len(calls) >= 1, lambda: f"Expected 1 batched bulk-apply-by-uuids call, got {calls}")
 
         assert len(calls) == 1, f"Expected 1 batched bulk-apply-by-uuids call, got {calls}"
         call = calls[0]
         assert call["action"] == "setAbsent"
-        assert call["labelUuid"] == "lbl-cat"
+        assert call["labelUuids"] == ["lbl-cat"]
         assert sorted(call["imageUuids"]) == ["img-1", "img-2"]
 
 

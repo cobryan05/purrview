@@ -12742,6 +12742,13 @@
             "type": "string",
             "title": "Action"
           },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
+          },
           "labelUuid": {
             "anyOf": [
               {
@@ -12776,6 +12783,13 @@
           "action": {
             "type": "string",
             "title": "Action"
+          },
+          "labelUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labeluuids"
           },
           "labelUuid": {
             "anyOf": [

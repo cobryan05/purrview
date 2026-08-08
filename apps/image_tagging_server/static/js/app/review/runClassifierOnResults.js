@@ -352,7 +352,7 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
       img: { uuid: r.candidate.imageUuid, filename: r.candidate.imagePath, tags: [] },
     }));
 
-    await showImageBulkActionModal(entries, ctx.labels, async (action, labelUuid, tagUuids) => {
+    await showImageBulkActionModal(entries, ctx.labels, async (action, labelUuids, tagUuids) => {
       try {
         if (action === 'delete') {
           const n = entries.length;
@@ -381,7 +381,7 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
             failCount > 0 ? 'warning' : 'success',
           );
         } else {
-          const { failCount, succeededEntries } = await executeBulkImageAction(action, entries, labelUuid, tagUuids);
+          const { failCount, succeededEntries } = await executeBulkImageAction(action, entries, labelUuids, tagUuids);
           const summary = failCount > 0
             ? `Applied to ${succeededEntries.length}/${entries.length} image(s), ${failCount} failed`
             : `Applied to ${succeededEntries.length} image(s)`;

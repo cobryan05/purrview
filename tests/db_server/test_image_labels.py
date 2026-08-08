@@ -777,6 +777,134 @@ class TestBulkApplyImagesByUuidsLabelActions:
         labels = await _get_image_labels(http_client, name)
         assert labels[label_uuid] == "present"
 
+    async def test_bulk_apply_set_present_for_multiple_labels(self, http_client, files_root, label_uuid, label2_uuid):
+        """labelUuids applies the action to every listed label in one pass, and
+        still counts images (not image/label pairs)."""
+        image_uuid = await self._make_image(http_client, files_root, "bulk_multi_present.png")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={
+                "imageUuids": [image_uuid],
+                "action": "setPresent",
+                "labelUuids": [label_uuid, label2_uuid],
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["modifiedCount"] == 1
+        assert body["failCount"] == 0
+
+        labels = await _get_image_labels(http_client, "bulk_multi_present.png")
+        assert labels[label_uuid] == "present"
+        assert labels[label2_uuid] == "present"
+
+    async def test_bulk_apply_set_uncertain_clears_every_listed_label(
+        self, http_client, files_root, label_uuid, label2_uuid
+    ):
+        name = "bulk_multi_uncertain.png"
+        image_uuid = await self._make_image(http_client, files_root, name)
+        await _set_label(http_client, name, label_uuid, "absent")
+        await _set_label(http_client, name, label2_uuid, "absent")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={
+                "imageUuids": [image_uuid],
+                "action": "setUncertain",
+                "labelUuids": [label_uuid, label2_uuid],
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1
+
+        labels = await _get_image_labels(http_client, name)
+        assert label_uuid not in labels
+        assert label2_uuid not in labels
+
+    async def test_bulk_apply_multi_label_partial_skip_still_counts_as_modified(
+        self, http_client, files_root, label_uuid, label2_uuid
+    ):
+        """setAbsent is skipped per-label when a verified bbox contradicts it,
+        but the image is still "modified" if any other label was applied —
+        an image is only "skipped" when every label it was asked about was."""
+        name = "bulk_multi_partial_skip.png"
+        (files_root / name).write_bytes(make_png())
+        r = await _update_bboxes(
+            http_client,
+            name,
+            [
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                }
+            ],
+        )
+        image_uuid = r["image"]["uuid"]
+
+        resp = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={
+                "imageUuids": [image_uuid],
+                "action": "setAbsent",
+                "labelUuids": [label_uuid, label2_uuid],
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["modifiedCount"] == 1
+        assert body["skippedCount"] == 0
+        assert body["failCount"] == 0
+
+        labels = await _get_image_labels(http_client, name)
+        # Contradicted label untouched, the other one marked absent.
+        assert labels[label_uuid] == "present"
+        assert labels[label2_uuid] == "absent"
+
+    async def test_bulk_apply_label_action_without_labels_is_a_no_op(self, http_client, files_root):
+        """No labels selected must not report images as modified — the same
+        guard the tag actions already have."""
+        image_uuid = await self._make_image(http_client, files_root, "bulk_no_labels.png")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setPresent", "labelUuids": []},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == 0
+        assert body["failCount"] == 0
+        assert await _get_image_labels(http_client, "bulk_no_labels.png") == {}
+
+    async def test_bulk_apply_legacy_single_label_uuid_still_accepted(
+        self, http_client, files_root, label_uuid, label2_uuid
+    ):
+        """The pre-multi-select `labelUuid` field keeps working, and merges with
+        `labelUuids` rather than being ignored."""
+        image_uuid = await self._make_image(http_client, files_root, "bulk_legacy_label.png")
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={
+                "imageUuids": [image_uuid],
+                "action": "setPresent",
+                "labelUuid": label_uuid,
+                "labelUuids": [label2_uuid],
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1
+
+        labels = await _get_image_labels(http_client, "bulk_legacy_label.png")
+        assert labels[label_uuid] == "present"
+        assert labels[label2_uuid] == "present"
+
     async def test_bulk_apply_unknown_action_raises(self, http_client, files_root, label_uuid):
         image_uuid = await self._make_image(http_client, files_root, "bulk_unknown_action.png")
 
@@ -851,6 +979,32 @@ class TestBulkApplyImagesByFilter:
         for name in names:
             labels = await _get_image_labels(http_client, name)
             assert labels[label_uuid] == "absent"
+
+    async def test_bulk_apply_by_filter_sets_multiple_labels(self, http_client, files_root, label_uuid, label2_uuid):
+        """The filter-driven path takes the same label list as the by-uuids one,
+        applying every label in a single pagination pass."""
+        names = ["filter_multi_a.png", "filter_multi_b.png"]
+        for name in names:
+            (files_root / name).write_bytes(make_png())
+            await _update_bboxes(http_client, name, [])
+
+        r = await http_client.post(
+            "/api/images/bulk-apply",
+            json={
+                "filter": {"terms": [{"kind": "filename", "patterns": ["filter_multi"]}]},
+                "action": "setAbsent",
+                "labelUuids": [label_uuid, label2_uuid],
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == len(names)
+        assert body["failCount"] == 0
+
+        for name in names:
+            labels = await _get_image_labels(http_client, name)
+            assert labels[label_uuid] == "absent"
+            assert labels[label2_uuid] == "absent"
 
     async def test_bulk_apply_by_filter_reports_skipped(self, http_client, files_root, label_uuid):
         name = "filter_skip.png"

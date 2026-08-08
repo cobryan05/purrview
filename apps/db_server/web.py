@@ -158,8 +158,15 @@ class BulkApplyImagesByUuidsPayload(ApiPayload):
     action: (
         str  # setPresent | setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
     )
+    # label_uuids is the current field — a label action may target several labels
+    # in one pass. label_uuid is the older single-label form, still accepted so
+    # callers that send it keep working; the two are merged server-side.
+    label_uuids: List[str] = Field(default_factory=list)
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
+
+    def resolved_label_uuids(self) -> List[str]:
+        return _merge_label_uuids(self.label_uuids, self.label_uuid)
 
 
 class BulkApplyImagesPayload(ApiPayload):
@@ -167,8 +174,21 @@ class BulkApplyImagesPayload(ApiPayload):
     action: (
         str  # setPresent | setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
     )
+    label_uuids: List[str] = Field(default_factory=list)
     label_uuid: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
+
+    def resolved_label_uuids(self) -> List[str]:
+        return _merge_label_uuids(self.label_uuids, self.label_uuid)
+
+
+def _merge_label_uuids(label_uuids: List[str], label_uuid: Optional[str]) -> List[str]:
+    """Combine the multi-label field with the legacy single-label one, de-duped
+    and order-preserving, so a caller sending either (or both) gets the same set."""
+    merged = list(label_uuids)
+    if label_uuid and label_uuid not in merged:
+        merged.append(label_uuid)
+    return merged
 
 
 logging.basicConfig(stream=sys.stdout)
@@ -1819,7 +1839,7 @@ class WebApp:
                 modified_count, fail_count, skipped_count = await self._manager.bulk_apply_images_by_uuids(
                     image_uuids=payload.image_uuids,
                     action=payload.action,
-                    label_uuid=payload.label_uuid,
+                    label_uuids=payload.resolved_label_uuids(),
                     tag_uuids=payload.tag_uuids,
                 )
                 return BulkApplyAllResponse(
@@ -1844,7 +1864,7 @@ class WebApp:
                 modified_count, fail_count, skipped_count = await self._manager.bulk_apply_images(
                     search_params=payload.filter,
                     action=payload.action,
-                    label_uuid=payload.label_uuid,
+                    label_uuids=payload.resolved_label_uuids(),
                     tag_uuids=payload.tag_uuids,
                 )
                 return BulkApplyAllResponse(

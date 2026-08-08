@@ -340,9 +340,11 @@ class TestClassifierRunFlow:
         bulk_modal = page.locator("text=Apply to 2 selected images").locator("..")
         expect(bulk_modal).to_be_visible(timeout=3000)
         bulk_modal.locator("label", has_text="Add Tags").locator("input[type=radio]").check()
-        # The tag picker is a MultiSelectField — open its panel before picking.
-        bulk_modal.locator(".ms-dropdown__trigger").click()
-        bulk_modal.locator(".ms-item", has_text="Corrupt").locator("input[type=checkbox]").check()
+        # The tag picker renders inline (no trigger to open), and is scoped
+        # explicitly: the label picker in the same modal also has a "Corrupt" row.
+        bulk_modal.locator(".bulk-modal-picker--tags .ms-item", has_text="Corrupt").locator(
+            "input[type=checkbox]"
+        ).check()
         bulk_modal.locator("button", has_text="Apply").click()
 
         expect(page.locator("#toast-container")).to_contain_text("Applied to 2 image(s)", timeout=3000)

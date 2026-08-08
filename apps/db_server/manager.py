@@ -1008,7 +1008,7 @@ class Manager:
         self,
         image_uuid: str,
         action: str,
-        label_uuid: Optional[str],
+        label_uuids: List[str],
         tag_uuids: List[str],
     ) -> str:
         """Apply one image-level bulk action to a single image uuid.
@@ -1016,6 +1016,11 @@ class Manager:
         Shared by bulk_apply_images_by_uuids (explicit-list candidates) and
         bulk_apply_images (filter-derived candidates) so the two entry points
         can't drift.
+
+        Label actions accept several labels and apply to each in turn. The
+        return value stays per-image so the counts callers report keep meaning
+        "images", not "(image, label) pairs": "skipped" is returned only when
+        *every* requested label was skipped, "modified" when at least one landed.
 
         Returns "modified" or "skipped" ("skipped" == setAbsent refused because
         the image already has a verified bbox for that label — a legitimate
@@ -1027,7 +1032,7 @@ class Manager:
             if rel_path is None:
                 raise ValueError(f"image {image_uuid} not found or already deleted")
         elif action == "setUncertain":
-            await self._db_client.delete_image_labels(image_uuid, [label_uuid])
+            await self._db_client.delete_image_labels(image_uuid, list(label_uuids))
         elif action == "addTags":
             await self._db_client.add_image_tags(image_uuid, tag_uuids)
         elif action == "removeTags":
@@ -1042,11 +1047,17 @@ class Manager:
             # Mirror the single-image path's rule (set_image_label_status): ABSENT is
             # refused when a verified bbox already contradicts it. A bulk run treats
             # that as a skip, not a failure.
-            if await self._db_client.image_has_verified_bbox_for_label(image_uuid, label_uuid):
+            applied = 0
+            for label_uuid in label_uuids:
+                if await self._db_client.image_has_verified_bbox_for_label(image_uuid, label_uuid):
+                    continue
+                await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.ABSENT)
+                applied += 1
+            if label_uuids and applied == 0:
                 return "skipped"
-            await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.ABSENT)
         elif action == "setPresent":
-            await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
+            for label_uuid in label_uuids:
+                await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
         else:
             raise ValueError(f"Unknown bulk image action: {action}")
         return "modified"
@@ -1055,7 +1066,7 @@ class Manager:
         self,
         image_uuids: List[str],
         action: str,
-        label_uuid: Optional[str] = None,
+        label_uuids: Optional[List[str]] = None,
         tag_uuids: Optional[List[str]] = None,
     ) -> Tuple[int, int, int]:
         """Apply an image-level bulk action (setPresent/setAbsent/setUncertain/delete/
@@ -1065,15 +1076,20 @@ class Manager:
         Returns (modified_count, fail_count, skipped_count).
         """
         tag_uuids = tag_uuids or []
+        label_uuids = label_uuids or []
         if action in ("addTags", "removeTags", "setTagAbsent", "setTagUncertain") and not tag_uuids:
             # Nothing to do — don't report images as "modified" for a no-op.
+            return 0, 0, 0
+        if action in ("setPresent", "setAbsent", "setUncertain") and not label_uuids:
+            # Same no-op guard as the tag actions above: a label action with no
+            # labels would otherwise count every image as "modified".
             return 0, 0, 0
         modified_count = 0
         fail_count = 0
         skipped_count = 0
         for image_uuid in image_uuids:
             try:
-                result = await self._apply_image_bulk_action(image_uuid, action, label_uuid, tag_uuids)
+                result = await self._apply_image_bulk_action(image_uuid, action, label_uuids, tag_uuids)
                 if result == "skipped":
                     skipped_count += 1
                 else:
@@ -1087,7 +1103,7 @@ class Manager:
         self,
         search_params: ImageSearchParams,
         action: str,
-        label_uuid: Optional[str] = None,
+        label_uuids: Optional[List[str]] = None,
         tag_uuids: Optional[List[str]] = None,
     ) -> Tuple[int, int, int]:
         """Apply an image-level action to every image matching the filter, across all pages.
@@ -1098,7 +1114,10 @@ class Manager:
         Returns (modified_count, fail_count, skipped_count).
         """
         tag_uuids = tag_uuids or []
+        label_uuids = label_uuids or []
         if action in ("addTags", "removeTags", "setTagAbsent", "setTagUncertain") and not tag_uuids:
+            return 0, 0, 0
+        if action in ("setPresent", "setAbsent", "setUncertain") and not label_uuids:
             return 0, 0, 0
 
         # Paginate by uuid regardless of the caller's requested sort — mirrors
@@ -1133,7 +1152,7 @@ class Manager:
 
             for img in batch:
                 try:
-                    result = await self._apply_image_bulk_action(img.uuid, action, label_uuid, tag_uuids)
+                    result = await self._apply_image_bulk_action(img.uuid, action, label_uuids, tag_uuids)
                     if result == "skipped":
                         skipped_count += 1
                     else:

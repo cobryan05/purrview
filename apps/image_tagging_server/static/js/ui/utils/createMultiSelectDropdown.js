@@ -24,13 +24,16 @@ import { prefs } from '/app-static/js/shared/prefs.js';
  *
  * @param {{
  *   label: string,
- *   items: Array<{uuid: string, name: string, color?: string|null, depth?: number}>,
+ *   items: Array<{uuid: string, name: string, color?: string|null, depth?: number,
+ *                 badge?: {text: string, title?: string, className?: string}|null}>,
  *   defaultSelected?: string[],
  *   defaultMode?: 'any'|'all',
  *   showModeToggle?: boolean,    // default true
  *   allowExclude?: boolean,      // default true; false hides the per-row "≠" exclude toggle
  *                                // (selection widgets pick items, they don't build queries)
  *   emptyText?: string,          // placeholder shown when `items` is empty
+ *   searchable?: boolean,        // default false; adds a type-to-filter box above the list
+ *                                // (worth it for label-sized vocabularies, noise for 5 tags)
  *   emptySummary?: string,       // trigger text when nothing is selected (default 'All' —
  *                                // a filter matches everything; a picker should say 'None selected')
  *   hierarchyToggle?: {          // optional "include descendants" toggle
@@ -59,6 +62,7 @@ export function createMultiSelectDropdown({
   defaultMode = 'any',
   showModeToggle = true,
   allowExclude = true,
+  searchable = false,
   emptyText = null,
   emptySummary = 'All',
   hierarchyToggle = null,
@@ -221,6 +225,21 @@ export function createMultiSelectDropdown({
   }
   const _hasHierarchy = _childrenOf.size > 0;
 
+  // ── Optional type-to-filter box ────────────────────────────────────────────
+  // Filters which rows are *visible* only. Select All / Select None keep
+  // operating on the whole list, so a stale search term can never silently
+  // shrink what those buttons do.
+  let searchInput = null;
+  if (searchable) {
+    searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'ms-dropdown__search';
+    searchInput.placeholder = 'Filter…';
+    searchInput.autocomplete = 'off';
+    panelEl.appendChild(searchInput);
+    searchInput.addEventListener('mousedown', (e) => e.stopPropagation());
+  }
+
   // ── Item list (checkboxes with depth indentation) ──────────────────────────
   const itemsDiv = document.createElement('div');
   itemsDiv.className = 'ms-dropdown__items';
@@ -249,9 +268,13 @@ export function createMultiSelectDropdown({
 
   itemsDiv.appendChild(emptyEl);
 
+  /** @type {HTMLElement[]} group headings, hidden while a search term is active */
+  const separatorEls = [];
+
   function _buildItem(item) {
     if (item.isSeparator) {
       const sep = document.createElement('div');
+      separatorEls.push(sep);
       sep.className = 'ms-item-separator';
       sep.style.cssText = 'font-size:0.72em;font-weight:bold;text-transform:uppercase;letter-spacing:.06em;color:#666;padding:5px 8px 2px;user-select:none;pointer-events:none;';
       sep.textContent = item.label ?? '';
@@ -289,6 +312,17 @@ export function createMultiSelectDropdown({
     nameSpan.className = 'ms-item__name';
     nameSpan.textContent = ' ' + item.name;
     lbl.appendChild(nameSpan);
+
+    // Optional trailing pill — a per-row annotation the caller supplies
+    // (e.g. "in training run"). Purely informational: it never affects
+    // selection, so it must not swallow the click that toggles the row.
+    if (item.badge?.text) {
+      const badgeEl = document.createElement('span');
+      badgeEl.className = 'ms-item__badge' + (item.badge.className ? ` ${item.badge.className}` : '');
+      badgeEl.textContent = item.badge.text;
+      if (item.badge.title) badgeEl.title = item.badge.title;
+      lbl.appendChild(badgeEl);
+    }
 
     // Per-row "not" toggle: excludes this item from results. Query-building
     // only — a plain "pick some items" widget passes allowExclude: false.
@@ -345,6 +379,29 @@ export function createMultiSelectDropdown({
   const _items = [...items];
   for (const item of _items) _buildItem(item);
   _syncEmpty();
+
+  /** Hide rows that don't match the search box; no-op when not searchable. */
+  function _applySearch() {
+    if (!searchInput) return;
+    const term = searchInput.value.trim().toLowerCase();
+    let visible = 0;
+    for (const item of _items) {
+      if (item.isSeparator) continue;
+      const el = itemElMap.get(item.uuid);
+      if (!el) continue;
+      const match = !term || item.name.toLowerCase().includes(term);
+      el.style.display = match ? '' : 'none';
+      if (match) visible++;
+    }
+    // Group headings only make sense over an unfiltered list.
+    for (const sep of separatorEls) sep.style.display = term ? 'none' : '';
+    emptyEl.style.display = visible === 0 ? '' : 'none';
+    emptyEl.textContent = term && checkboxMap.size > 0
+      ? 'No matches'
+      : (emptyText ?? 'Nothing to select');
+  }
+
+  searchInput?.addEventListener('input', _applySearch);
 
   // ── Open / close ────────────────────────────────────────────────────────────
   function _openPanel() {
@@ -489,6 +546,7 @@ export function createMultiSelectDropdown({
       _items.push(item);
       _buildItem(item);
       _syncEmpty();
+      _applySearch();
       if (select) {
         const cb = checkboxMap.get(item.uuid);
         if (cb) cb.checked = true;

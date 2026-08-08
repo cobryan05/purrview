@@ -9,14 +9,24 @@
 
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
+import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { bulkApplyImagesByUuids } from '/app-static/js/shared/api/review.js';
+import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
+import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
 
 export const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUncertain'];
+export const LABEL_ACTIONS = ['setPresent', 'setAbsent', 'setUncertain'];
 
 /**
+ * @param {Array<{img: object}>} entries
+ * @param {Map<string, object>} labels
+ * @param {(action: string, labelUuids: string[], tagUuids: string[]) => Promise<void>} onConfirm
+ *   `labelUuids` is a list — label actions can target several labels at once —
+ *   and is empty for tag and delete actions.
+ * @param {string|null} [titleText]
  * @param {object} [opts]
  * @param {HTMLElement} [opts.previewNode] — inserted directly under the title.
  *   Callers use it to show a thumbnail preview of the affected range; the node
@@ -32,7 +42,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
-    padding:1.5em;min-width:300px;display:flex;flex-direction:column;gap:0.8em;`;
+    padding:1.5em;min-width:380px;display:flex;flex-direction:column;gap:0.8em;`;
 
   const title = document.createElement('strong');
   title.textContent = titleText ?? `Apply to ${entries.length} selected image${entries.length === 1 ? '' : 's'}`;
@@ -62,7 +72,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
     if (action.value === 'setPresent') radio.checked = true;
     radio.addEventListener('change', () => {
       selectedAction = action.value;
-      labelPickerRow.style.display = (selectedAction === 'setPresent' || selectedAction === 'setAbsent' || selectedAction === 'setUncertain') ? '' : 'none';
+      labelPickerRow.style.display = LABEL_ACTIONS.includes(selectedAction) ? 'flex' : 'none';
       tagPickerRow.style.display = TAG_ACTIONS.includes(selectedAction) ? 'flex' : 'none';
     });
     lbl.appendChild(radio);
@@ -70,16 +80,50 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
     radioGroup.appendChild(lbl);
   }
 
+  // ── Label picker — multi-select ───────────────────────────────────────────
+  // A label action applies to every checked label in one pass, so "mark Absent
+  // for the six labels this training run cares about" is one trip through the
+  // modal rather than six. Labels in the active training run are badged, since
+  // that is usually the set the user means to act on.
+  const trainingLabelUuids = activeTrainingConfig.getLabelUuids();
+  const activeConfig = activeTrainingConfig.getActive();
+  const labelItems = flattenHierarchy(labels).map(lbl => ({
+    uuid: lbl.uuid,
+    name: lbl.name,
+    color: lbl.color || null,
+    depth: lbl.depth,
+    parentUuid: lbl.parentUuid ?? null,
+    badge: trainingLabelUuids.has(lbl.uuid)
+      ? { text: 'training', className: 'ms-item__badge--training', title: `In the active training run${activeConfig ? `: ${activeConfig.name}` : ''}` }
+      : null,
+  }));
+
+  let selectedLabelUuids = [];
+  const labelDropdown = createMultiSelectDropdown({
+    label: 'Labels',
+    items: labelItems,
+    defaultSelected: [],
+    showModeToggle: false,
+    allowExclude: false,
+    searchable: true,
+    inline: true,
+    emptyText: 'No labels defined yet',
+    emptySummary: 'None selected',
+    onChange: (selected) => { selectedLabelUuids = selected; },
+  });
+
   const labelPickerRow = document.createElement('div');
-  const labelPicker = document.createElement('select');
-  for (const lbl of labels.values()) {
-    const opt = document.createElement('option');
-    opt.value = lbl.uuid;
-    opt.textContent = lbl.name;
-    labelPicker.appendChild(opt);
-  }
-  labelPickerRow.appendChild(document.createTextNode('Label: '));
-  labelPickerRow.appendChild(labelPicker);
+  labelPickerRow.className = 'bulk-modal-picker bulk-modal-picker--labels';
+  labelPickerRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;padding:0.3em 0;';
+  const labelPickerHeading = document.createElement('span');
+  labelPickerHeading.style.cssText = 'font-size:0.85em;color:var(--text-muted,#aaa);';
+  labelPickerHeading.textContent = trainingLabelUuids.size > 0
+    ? 'Labels (badged ones are in the active training run)'
+    : 'Labels';
+  labelPickerRow.append(labelPickerHeading, labelDropdown.element);
+  // Nothing is pre-selected on purpose: these actions rewrite label state across
+  // every image in the range, so the user has to say which labels — a helpful
+  // default here would be a silently destructive one.
 
   // Tag picker (shown only for addTags / removeTags) — same picker as the bbox bulk modal.
   const tagOptions = filterVisibleTags(tags.values())
@@ -88,15 +132,25 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
       text: (tag.icon ? tag.icon + ' ' : '') + tag.name,
       color: tag.color || '#cccccc',
     }));
-  const tagField = new MultiSelectField({ label: 'Tags', value: [], options: tagOptions, emptyText: 'No tags defined yet' });
+  const tagField = new MultiSelectField({ label: 'Tags', value: [], options: tagOptions, emptyText: 'No tags defined yet', inline: true });
   const tagPickerRow = document.createElement('div');
+  tagPickerRow.className = 'bulk-modal-picker bulk-modal-picker--tags';
   tagPickerRow.style.cssText = 'display:none;flex-direction:column;gap:0.3em;padding:0.3em 0;';
-  tagPickerRow.appendChild(await tagField.renderEdit());
+  const tagPickerHeading = document.createElement('span');
+  tagPickerHeading.style.cssText = 'font-size:0.85em;color:var(--text-muted,#aaa);';
+  tagPickerHeading.textContent = 'Tags';
+  tagPickerRow.append(tagPickerHeading, await tagField.renderEdit());
 
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
-  function closeImageBulk() { unregisterEscHandler(closeImageBulk); _layer.release(); overlay.remove(); }
+  function closeImageBulk() {
+    unregisterEscHandler(closeImageBulk);
+    labelDropdown.destroy();
+    tagField.destroy();
+    _layer.release();
+    overlay.remove();
+  }
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
@@ -107,13 +161,18 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   okBtn.style.cssText = 'background:#ff003322;border:1px solid #ff0033;border-radius:3px;padding:0.2em 0.8em;cursor:pointer;';
   okBtn.addEventListener('click', async () => {
     const isTagAction = TAG_ACTIONS.includes(selectedAction);
+    const isLabelAction = LABEL_ACTIONS.includes(selectedAction);
     const selectedTagUuids = isTagAction ? tagField.getValue() : [];
     if (isTagAction && selectedTagUuids.length === 0) {
       toast('Select at least one tag', 'error');
       return;
     }
+    if (isLabelAction && selectedLabelUuids.length === 0) {
+      toast('Select at least one label', 'error');
+      return;
+    }
     closeImageBulk();
-    await onConfirm(selectedAction, labelPicker.value, selectedTagUuids);
+    await onConfirm(selectedAction, isLabelAction ? [...selectedLabelUuids] : [], selectedTagUuids);
   });
 
   btnRow.appendChild(cancelBtn);
@@ -135,7 +194,13 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   overlay.addEventListener('click', e => { if (e.target === overlay) closeImageBulk(); });
 }
 
-export async function executeBulkImageAction(action, entries, labelUuid, tagUuids = []) {
+/**
+ * @param {string} action
+ * @param {Array<{img: object}>} entries
+ * @param {string[]} labelUuids  every label a label-action should be applied to
+ * @param {string[]} [tagUuids]
+ */
+export async function executeBulkImageAction(action, entries, labelUuids = [], tagUuids = []) {
   let failCount = 0;
   let skippedCount = 0;
   const succeededEntries = [];
@@ -183,7 +248,7 @@ export async function executeBulkImageAction(action, entries, labelUuid, tagUuid
     const { failCount: serverFailCount, skippedCount: serverSkippedCount } = await bulkApplyImagesByUuids({
       imageUuids: entries.map(e => e.img.uuid),
       action,
-      labelUuid,
+      labelUuids,
     });
     failCount = serverFailCount;
     skippedCount = serverSkippedCount;
