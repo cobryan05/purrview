@@ -287,13 +287,20 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
     return labelsMap?.get(uuid)?.name ?? uuid;
   }
 
-  function _labelDepth(uuid) {
+  // Indent depth is counted over ancestors actually present in the same table, not
+  // the label's absolute depth in the global tree. A label whose parent isn't in
+  // this model shape (or sits in the other scope section) is a root here, and
+  // indenting it under a parent nobody can see reads as broken hierarchy.
+  function _labelDepth(uuid, presentUuids) {
     let depth = 0;
+    // Bounds the walk itself, not the depth — depth no longer increments on every
+    // hop, so it can't serve as the cycle guard.
+    let hops = 0;
     let current = labelsMap?.get(uuid);
     while (current?.parentUuid) {
-      depth++;
+      if (presentUuids.has(current.parentUuid)) depth++;
       current = labelsMap?.get(current.parentUuid);
-      if (depth > 20) break;
+      if (++hops > 20) break;
     }
     return depth;
   }
@@ -395,6 +402,8 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
       return detailTr;
     }
 
+    const presentUuids = new Set(stats.map(s => s.labelUuid));
+
     const tbody = document.createElement('tbody');
     for (const stat of stats) {
       const tr = document.createElement('tr');
@@ -414,7 +423,7 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
         nameTd.appendChild(_makeChildBadge(_labelName(stat.rollUpParentUuid)));
       }
 
-      const depth = _labelDepth(stat.labelUuid);
+      const depth = _labelDepth(stat.labelUuid, presentUuids);
       const indentPx = 6 + depth * 14;
 
       if (stat.labelScope === 'image') {

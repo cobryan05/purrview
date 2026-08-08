@@ -3710,12 +3710,15 @@ class DbClient:
                 base_label_uuids = [n.label_uuid for n in non_root_nodes]
                 rollup_nodes = [n for n in non_root_nodes if n.roll_up_unchecked]
 
-                if not rollup_nodes:
-                    return base_label_uuids, {}
-
-                # Load full label hierarchy to find rollup children.
+                # Load full label hierarchy: needed to find rollup children, and to
+                # order the result depth-first. The query above returns rows in
+                # arbitrary order, and callers (the coverage table) indent by label
+                # depth, so unsorted output renders children detached from parents.
                 all_labels_result = await session.exec(select(Label))
                 all_labels = {lbl.uuid: lbl for lbl in all_labels_result.all()}
+
+                if not rollup_nodes:
+                    return DbClient._sort_labels_hierarchically(base_label_uuids, all_labels), {}
 
             else:
                 # ── Specific node ─────────────────────────────────────────────
@@ -3730,6 +3733,10 @@ class DbClient:
         children_by_parent: dict[Optional[str], list[Label]] = {}
         for lbl in all_labels.values():
             children_by_parent.setdefault(lbl.parent_uuid, []).append(lbl)
+        # Siblings alphabetical, matching _sort_labels_hierarchically, so descendant
+        # order is deterministic rather than whatever the label table returned.
+        for siblings in children_by_parent.values():
+            siblings.sort(key=lambda lbl: lbl.name.lower())
 
         def _collect_label_descendants(parent_uuid: str, exclude_set: set) -> list[str]:
             """Recursively collect label-hierarchy descendants, skipping those in exclude_set."""

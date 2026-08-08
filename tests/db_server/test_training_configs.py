@@ -680,6 +680,40 @@ class TestRollupLabelDerivation:
         assert {label_a, label_b, label_c} <= set(label_uuids)
         assert label_uuids.index(label_b) < label_uuids.index(label_c)
 
+    async def test_root_node_without_rollup_is_hierarchically_ordered(self, http_client, db_client):
+        """Labels come back depth-first even when no node has roll_up_unchecked.
+
+        The coverage table indents each row by its label depth, so a flat
+        DB-row-order list renders every child far below its parent with
+        orphaned indentation.
+        """
+        parent = await _create_label(http_client, "zz-order-parent")
+        child_b = await _create_label(http_client, "order-child-b", parent_uuid=parent)
+        child_a = await _create_label(http_client, "order-child-a", parent_uuid=parent)
+        other_root = await _create_label(http_client, "aa-order-other-root")
+
+        # Nodes deliberately declared with the children last, mimicking the
+        # arbitrary row order a root-node query returns.
+        mc = await _create_model_config(
+            http_client,
+            "mc-order-no-rollup",
+            nodes=[
+                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {"label_uuid": parent, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {"label_uuid": other_root, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {"label_uuid": child_b, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {"label_uuid": child_a, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+            ],
+        )
+        root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
+
+        label_uuids, rollup_map = await db_client._derive_labels_for_node(root_node["uuid"])
+
+        assert rollup_map == {}
+        # Roots sorted by name, each parent immediately followed by its children
+        # (siblings alphabetical).
+        assert label_uuids == [other_root, parent, child_a, child_b]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Label stats endpoint
