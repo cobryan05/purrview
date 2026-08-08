@@ -12715,6 +12715,11 @@
               }
             ],
             "title": "Bboxgeometry"
+          },
+          "markVerified": {
+            "type": "boolean",
+            "title": "Markverified",
+            "default": true
           }
         },
         "type": "object",

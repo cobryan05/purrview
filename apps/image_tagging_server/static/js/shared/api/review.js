@@ -509,12 +509,15 @@ export async function countMatchingBboxes({
  * @param {?Record<string, {x: number, y: number, width: number, height: number}>}
  *   [opts.bboxGeometry] - bboxUuid -> replacement coordinates, applied on relabel
  *   (e.g. "Run Model on Results" swapping in a refinement model's suggested box).
+ * @param {boolean} [opts.markVerified=true] - whether a relabel promotes the box to
+ *   VERIFIED. True for human relabels (the default); "Run Model on Results" passes
+ *   false so accepting a *model's* suggestion leaves the box unverified/reviewable.
  */
-export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = null, tagUuids = [], bboxGeometry = null }) {
+export async function bulkApplyBboxesByUuids({ bboxUuids, action, labelUuid = null, tagUuids = [], bboxGeometry = null, markVerified = true }) {
   const res = await apiFetch('/api/images/bbox/bulk-apply-by-uuids', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bboxUuids, action, labelUuid, tagUuids, bboxGeometry }),
+    body: JSON.stringify({ bboxUuids, action, labelUuid, tagUuids, bboxGeometry, markVerified }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bulk apply failed');

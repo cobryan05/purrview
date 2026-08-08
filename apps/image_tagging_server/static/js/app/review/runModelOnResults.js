@@ -24,6 +24,7 @@ import {
   invalidateBboxThumbnails,
   addBbox,
   UNVERIFIED_TAG_UUID,
+  VERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { fetchModelsList, fetchModelsKinds, clearModelsCache } from '/app-static/js/shared/api/models.js';
@@ -388,7 +389,20 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   deleteRadio.value = 'delete';
   deleteLabel.append(deleteRadio, document.createTextNode('Delete'));
 
-  actionRow.append(relabelLabel, deleteLabel);
+  // Accepting this preview applies a *model's* opinion, not a human's, so it must
+  // NOT silently promote boxes to VERIFIED — the whole point of the review queue
+  // is that model output stays reviewable. Opt-in only, default off.
+  const verifyLabel = document.createElement('label');
+  verifyLabel.style.cssText = 'display:flex;align-items:center;gap:0.3em;cursor:pointer;margin-left:auto;';
+  verifyLabel.title = 'Off: relabeled boxes keep their current verification state (still reviewable). '
+    + 'On: treat this apply as a human decision and mark the boxes verified.';
+  const verifyCheckbox = document.createElement('input');
+  verifyCheckbox.type = 'checkbox';
+  verifyCheckbox.className = 'relabel-modal-mark-verified';
+  verifyCheckbox.checked = false;
+  verifyLabel.append(verifyCheckbox, document.createTextNode('Mark as verified'));
+
+  actionRow.append(relabelLabel, deleteLabel, verifyLabel);
   body.appendChild(actionRow);
 
   // ── Bulk select controls ───────────────────────────────────────────────
@@ -698,6 +712,9 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     for (const r of rows) {
       r.proposedChip.style.opacity = isDelete ? '0.35' : '1';
     }
+    // Verification only applies to the relabel branch — deletes have nothing to verify.
+    verifyCheckbox.disabled = isDelete;
+    verifyLabel.style.opacity = isDelete ? '0.35' : '1';
   }
   relabelRadio.addEventListener('change', () => _setDeleteMode(false));
   deleteRadio.addEventListener('change', () => _setDeleteMode(true));
@@ -739,6 +756,8 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     cancelBtn.disabled = true;
     try {
       const isDelete = deleteRadio.checked;
+      // Off by default: a model's suggestion isn't a human verification.
+      const markVerified = verifyCheckbox.checked;
       // New-box candidates have no bbox uuid yet — they're created (not
       // relabeled/deleted). The Relabel/Delete radio governs only existing boxes;
       // in Delete mode new boxes are simply not created.
@@ -775,12 +794,14 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
             action: 'relabel',
             labelUuid,
             bboxGeometry: Object.keys(bboxGeometry).length > 0 ? bboxGeometry : null,
+            markVerified,
           });
           modifiedCount += res.modifiedCount;
           failCount += res.failCount;
         }
 
-        // Create the accepted new boxes (UNVERIFIED, so they land as reviewable).
+        // Create the accepted new boxes — UNVERIFIED so they land as reviewable,
+        // unless the user opted into treating this apply as a human verification.
         for (const r of newRows) {
           const c = r.candidate;
           try {
@@ -791,7 +812,7 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
               y: c.geometry.y,
               width: c.geometry.width,
               height: c.geometry.height,
-              tagUuids: [UNVERIFIED_TAG_UUID],
+              tagUuids: [markVerified ? VERIFIED_TAG_UUID : UNVERIFIED_TAG_UUID],
               metadataJson: { run_model_added: true, source_model: ctx.modelName },
             });
             addedCount += 1;

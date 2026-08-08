@@ -147,6 +147,10 @@ class BulkApplyBboxesByUuidsPayload(ApiPayload):
     # Optional bbox_uuid -> {"x","y","width","height"} overrides, applied on relabel
     # (e.g. "Run Model on Results" replacing a bbox with a refinement model's box).
     bbox_geometry: Optional[Dict[str, Dict[str, float]]] = None
+    # Whether a relabel promotes the box to VERIFIED. Defaults True (a relabel is
+    # normally a human decision); "Run Model on Results" sends False so accepting
+    # a model's suggestion leaves the box reviewable.
+    mark_verified: bool = True
 
 
 class BulkApplyImagesByUuidsPayload(ApiPayload):
@@ -1793,6 +1797,7 @@ class WebApp:
                     label_uuid=payload.label_uuid,
                     tag_uuids=payload.tag_uuids,
                     bbox_geometry=payload.bbox_geometry,
+                    mark_verified=payload.mark_verified,
                 )
                 return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
             except Exception as e:

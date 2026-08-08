@@ -880,6 +880,7 @@ class Manager:
         label_uuid: Optional[str],
         tag_uuids: List[str],
         geometry: Optional[Dict[str, float]] = None,
+        mark_verified: bool = True,
     ) -> None:
         """Apply one bulk action (relabel/delete/addTags/removeTags/revertRelabel) to a single bbox.
 
@@ -887,6 +888,11 @@ class Manager:
         bulk_apply_bboxes_by_uuids (explicit-list candidates) so the two entry
         points can't drift. Raises on failure — caller is responsible for
         catching and counting it.
+
+        `mark_verified` governs the relabel branch only. A relabel is normally a
+        human decision, so it promotes the box to VERIFIED; callers applying a
+        *model's* suggestion ("Run Model on Results") pass False so the box keeps
+        whatever verification state it already had and stays reviewable.
         """
         _VERIFICATION_UUIDS: Set[str] = {UNVERIFIED_TAG_UUID}
         current_tags = [t.uuid for t in bbox.tags or []]
@@ -920,7 +926,11 @@ class Manager:
             new_label = label_uuid if assigning else bbox.label_uuid
             metadata_json = None
             if assigning:
-                new_tags = [u for u in current_tags if u not in _VERIFICATION_UUIDS] + [VERIFIED_TAG_UUID]
+                new_tags = (
+                    [u for u in current_tags if u not in _VERIFICATION_UUIDS] + [VERIFIED_TAG_UUID]
+                    if mark_verified
+                    else current_tags
+                )
                 if bbox.label_uuid and label_uuid != bbox.label_uuid and bbox.phash:
                     self._hash_index.move_bbox(bbox.uuid, bbox.label_uuid, label_uuid, bbox.phash)
                 # A manual relabel supersedes any prior filter-chain relabel: drop the
@@ -941,6 +951,7 @@ class Manager:
         label_uuid: Optional[str],
         tag_uuids: List[str],
         bbox_geometry: Optional[Dict[str, Dict[str, float]]] = None,
+        mark_verified: bool = True,
     ) -> Tuple[int, int]:
         """Apply action to an explicit list of bboxes in one server-side pass.
 
@@ -954,6 +965,9 @@ class Manager:
         with the refinement model's suggested box instead of keeping the original
         (the model that ran is assumed to be more precise than whatever produced
         the original box).
+
+        `mark_verified=False` relabels without promoting the box to VERIFIED —
+        used when the relabel comes from a model suggestion rather than a human.
 
         Returns (modified_count, fail_count).
         """
@@ -969,7 +983,9 @@ class Manager:
             bbox, img = result
             try:
                 geometry = bbox_geometry.get(bbox_uuid) if bbox_geometry else None
-                await self._apply_bbox_bulk_action(bbox, action, label_uuid, tag_uuids, geometry=geometry)
+                await self._apply_bbox_bulk_action(
+                    bbox, action, label_uuid, tag_uuids, geometry=geometry, mark_verified=mark_verified
+                )
                 modified_count += 1
                 synced_images[img.uuid] = img
             except Exception as e:

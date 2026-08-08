@@ -717,6 +717,93 @@ async def test_bulk_apply_bboxes_by_uuids_relabel(http_client, image_file, label
     meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
     bboxes = meta_r.json()["image"]["bboxes"]
     assert bboxes[0]["labelUuid"] == other_uuid
+    # Default (markVerified omitted) keeps the historical behaviour: a relabel is
+    # a human decision, so the box is promoted to VERIFIED.
+    tag_uuids = [t["uuid"] for t in bboxes[0]["tags"]]
+    assert VERIFIED_TAG_UUID in tag_uuids
+    assert UNVERIFIED_TAG_UUID not in tag_uuids
+
+
+async def _seed_unverified_bbox(http_client, label_uuid, bid):
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
+        },
+    )
+
+
+async def test_bulk_apply_by_uuids_relabel_mark_verified_false_keeps_unverified(http_client, image_file, label_uuid):
+    """markVerified=False relabels without promoting the box to VERIFIED.
+
+    "Run Model on Results" accepts a *model's* suggestion, not a human's, so the
+    box must stay unverified (still reviewable) unless the user opts in.
+    """
+    bid = str(uuid.uuid4())
+    r2 = await http_client.post("/api/labels", json={"name": "other_unverified", "color": "#654321"})
+    other_uuid = r2.json()["label"]["uuid"]
+    await _seed_unverified_bbox(http_client, label_uuid, bid)
+
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply-by-uuids",
+        json={
+            "bboxUuids": [bid],
+            "action": "relabel",
+            "labelUuid": other_uuid,
+            "tagUuids": [],
+            "markVerified": False,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["modifiedCount"] == 1, r.json()
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bbox = meta_r.json()["image"]["bboxes"][0]
+    # The relabel still landed…
+    assert bbox["labelUuid"] == other_uuid
+    # …but the verification state is untouched.
+    tag_uuids = [t["uuid"] for t in bbox["tags"]]
+    assert UNVERIFIED_TAG_UUID in tag_uuids
+    assert VERIFIED_TAG_UUID not in tag_uuids
+
+
+async def test_bulk_apply_by_uuids_relabel_mark_verified_true_promotes(http_client, image_file, label_uuid):
+    """markVerified=True is the explicit opt-in and still stamps VERIFIED."""
+    bid = str(uuid.uuid4())
+    r2 = await http_client.post("/api/labels", json={"name": "other_verified", "color": "#654321"})
+    other_uuid = r2.json()["label"]["uuid"]
+    await _seed_unverified_bbox(http_client, label_uuid, bid)
+
+    r = await http_client.post(
+        "/api/images/bbox/bulk-apply-by-uuids",
+        json={
+            "bboxUuids": [bid],
+            "action": "relabel",
+            "labelUuid": other_uuid,
+            "tagUuids": [],
+            "markVerified": True,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["modifiedCount"] == 1, r.json()
+
+    meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+    bbox = meta_r.json()["image"]["bboxes"][0]
+    tag_uuids = [t["uuid"] for t in bbox["tags"]]
+    assert bbox["labelUuid"] == other_uuid
+    assert VERIFIED_TAG_UUID in tag_uuids
+    assert UNVERIFIED_TAG_UUID not in tag_uuids
 
 
 # ──────────────────────────────────────────────────────────────────────────────

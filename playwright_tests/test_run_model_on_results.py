@@ -21,6 +21,7 @@ import pytest
 from playwright.sync_api import Page, Route, expect
 
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
+VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
 LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
 LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
@@ -149,6 +150,22 @@ def _mock_bulk_apply_by_uuids(page: Page, modified_count=None, fail_count=0):
         )
 
     page.route("**/api/images/bbox/bulk-apply-by-uuids", handle)
+    return calls
+
+
+def _mock_add_bbox(page: Page):
+    """Captures POST /api/images/bbox bodies (new-box creation from a preview)."""
+    calls = []
+
+    def handle(route: Route):
+        calls.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "bboxUuid": "new-bbox-1"}),
+        )
+
+    page.route("**/api/images/bbox", handle)
     return calls
 
 
@@ -1020,6 +1037,55 @@ class TestRelabelConfirmationModal:
             assert c["action"] == "relabel"
         assert page.evaluate("window.__refreshCount") == 1
 
+    def test_mark_verified_is_off_by_default_and_relabel_sends_false(self, page: Page, base_url: str):
+        """Accepting the preview applies a *model's* opinion — it must not silently
+        promote the boxes to verified. The opt-in checkbox starts unchecked and the
+        relabel call carries markVerified=false."""
+        self._setup(page, base_url)
+        calls = _mock_bulk_apply_by_uuids(page)
+        _mock_invalidate_thumbnails(page)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        verify_cb = modal.locator("input.relabel-modal-mark-verified")
+        expect(verify_cb).to_be_visible()
+        expect(verify_cb).not_to_be_checked()
+
+        modal.locator("button", has_text="Apply to").click()
+        expect(modal).to_have_count(0, timeout=3000)
+
+        assert len(calls) == 2
+        for c in calls:
+            assert c["action"] == "relabel"
+            assert c["markVerified"] is False, c
+
+    def test_mark_verified_checked_sends_true(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        calls = _mock_bulk_apply_by_uuids(page)
+        _mock_invalidate_thumbnails(page)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("input.relabel-modal-mark-verified").check()
+        modal.locator("button", has_text="Apply to").click()
+        expect(modal).to_have_count(0, timeout=3000)
+
+        assert len(calls) == 2
+        for c in calls:
+            assert c["markVerified"] is True, c
+
+    def test_mark_verified_disabled_in_delete_mode(self, page: Page, base_url: str):
+        """Deletes have no verification state to set, so the opt-in is inert there."""
+        self._setup(page, base_url)
+        _open_confirm_modal(page, CANDIDATES_MIXED)
+
+        modal = page.locator(".relabel-confirm-modal")
+        verify_cb = modal.locator("input.relabel-modal-mark-verified")
+        modal.locator("input[type=radio][value=delete]").check()
+        expect(verify_cb).to_be_disabled()
+        modal.locator("input[type=radio][value=relabel]").check()
+        expect(verify_cb).to_be_enabled()
+
     def test_failcount_is_surfaced_without_crashing(self, page: Page, base_url: str):
         self._setup(page, base_url)
         _mock_bulk_apply_by_uuids(page, modified_count=1, fail_count=2)
@@ -1094,3 +1160,39 @@ class TestRelabelConfirmationModal:
         # laid out — wait for that instead of asserting immediately.
         overlay.page.wait_for_function("el => el.width > 0", arg=overlay.element_handle())
         assert overlay.evaluate("el => el.height") > 0
+
+    def test_new_box_verification_tag_follows_mark_verified(self, page: Page, base_url: str):
+        """A box the model invented lands UNVERIFIED by default, and VERIFIED only
+        when the user explicitly opts in."""
+        self._setup(page, base_url)
+        _mock_image_thumbnails(page)
+        _mock_invalidate_thumbnails(page)
+        candidate = {
+            "bboxUuid": None,
+            "imageUuid": "img-1",
+            "imagePath": "folder/image1.jpg",
+            "currentLabelUuid": None,
+            "currentLabelName": None,
+            "proposedLabelUuid": "lbl-dog",
+            "proposedLabelName": "Dog",
+            "confidence": 0.8,
+            "geometry": {"x": 0.2, "y": 0.3, "width": 0.4, "height": 0.1},
+            "isNew": True,
+        }
+
+        calls = _mock_add_bbox(page)
+        _open_confirm_modal(page, [candidate])
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("button", has_text="Apply to").click()
+        expect(modal).to_have_count(0, timeout=3000)
+        assert len(calls) == 1
+        assert calls[0]["tagUuids"] == [UNVERIFIED_TAG_UUID], calls[0]
+
+        calls.clear()
+        _open_confirm_modal(page, [candidate])
+        modal = page.locator(".relabel-confirm-modal")
+        modal.locator("input.relabel-modal-mark-verified").check()
+        modal.locator("button", has_text="Apply to").click()
+        expect(modal).to_have_count(0, timeout=3000)
+        assert len(calls) == 1
+        assert calls[0]["tagUuids"] == [VERIFIED_TAG_UUID], calls[0]
