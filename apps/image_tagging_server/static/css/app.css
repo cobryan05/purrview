@@ -1218,6 +1218,45 @@ button.lt-swatch:hover {
   margin-top: var(--space-1, 0.25em) !important;
   box-shadow: var(--shadow, 0 4px 16px rgba(0, 0, 0, 0.4));
   min-width: 480px;
+  /* Room for the close button, which is absolutely positioned in the corner
+     so it doesn't reflow the filter rows. */
+  padding-top: 1.9em !important;
+}
+
+/* Close affordance in the popover's top-right corner. The panel used to be
+   dismissable only by pressing "+ Add filter" again — see setFilterPopoverOpen
+   in app/review/main.js, which also wires ESC and outside-click. */
+.review-filter-popover__close {
+  position: absolute;
+  top: var(--space-1, 0.25em);
+  right: var(--space-1, 0.25em);
+  z-index: 1;
+  width: 1.6em;
+  height: 1.6em;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: var(--text-xs, 0.78rem);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.review-filter-popover__close:hover,
+.review-filter-popover__close:focus-visible {
+  color: var(--text);
+  background: var(--surface-elevated);
+}
+
+/* Pressed look while the popover is open, so the toggle reads as a two-state
+   control rather than a plain action button. */
+.review-filter-chip-bar__add[aria-expanded='true'] {
+  background: var(--surface-elevated);
+  color: var(--text);
 }
 
 /* Two horizontal rows inside the panel */

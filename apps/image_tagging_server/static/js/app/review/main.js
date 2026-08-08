@@ -561,8 +561,62 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // straight into bboxes view. Kept in sync by the view-toggle handler below.
     filterPanel.setConfigReadyAvailable(initialViewFilter !== 'bboxes');
 
+    // ── Popover open/close ──────────────────────────────────────────────────
+    // Clicking "+ Add filter" a second time was the ONLY way to dismiss this,
+    // which nothing on screen suggested. It now also closes on ESC, on an
+    // outside click, and via its own ✕ button.
+    let _filterEscHandler = null;
+
+    // Capture phase so this runs before any inner handler can stop propagation.
+    // mousedown rather than click: a click that starts inside the popover and
+    // releases outside it (dragging across a slider or selecting label text)
+    // would otherwise dismiss the panel mid-interaction.
+    function _onFilterOutsideMouseDown(e) {
+      if (filterPanel.element.contains(e.target)) return;
+      // The toggle's own click handler flips state; closing here as well would
+      // close-then-reopen and make the button look dead.
+      if (filterToggleBtn.contains(e.target)) return;
+      setFilterPopoverOpen(false);
+    }
+
+    function setFilterPopoverOpen(open) {
+      if (open === !filterPanel.element.hidden) return;  // already in that state
+      filterPanel.element.hidden = !open;
+      filterToggleBtn.setAttribute('aria-expanded', String(open));
+      if (open) {
+        _filterEscHandler = () => setFilterPopoverOpen(false);
+        registerEscHandler(_filterEscHandler);
+        document.addEventListener('mousedown', _onFilterOutsideMouseDown, true);
+      } else {
+        unregisterEscHandler(_filterEscHandler);
+        _filterEscHandler = null;
+        document.removeEventListener('mousedown', _onFilterOutsideMouseDown, true);
+        // ESC/outside-click can fire while focus sits on a control inside the
+        // now-hidden panel, which would strand focus on an unreachable element.
+        filterToggleBtn.focus();
+      }
+    }
+
+    filterToggleBtn.setAttribute('aria-haspopup', 'dialog');
+    filterToggleBtn.setAttribute('aria-expanded', 'false');
+    filterPanel.element.setAttribute('role', 'dialog');
+    filterPanel.element.setAttribute('aria-label', 'Add filter');
+
+    // Explicit close affordance — the popover is a large panel, and the only
+    // previous exit was the button that opened it, well away from where the
+    // pointer ends up after editing a filter.
+    const filterPopoverClose = document.createElement('button');
+    filterPopoverClose.type = 'button';
+    filterPopoverClose.className = 'review-filter-popover__close';
+    filterPopoverClose.dataset.testid = 'review-filter-popover-close';
+    filterPopoverClose.textContent = '✕';
+    filterPopoverClose.title = 'Close (Esc)';
+    filterPopoverClose.setAttribute('aria-label', 'Close filter panel');
+    filterPopoverClose.addEventListener('click', () => setFilterPopoverOpen(false));
+    filterPanel.element.insertBefore(filterPopoverClose, filterPanel.element.firstChild);
+
     filterToggleBtn.addEventListener('click', () => {
-      filterPanel.element.hidden = !filterPanel.element.hidden;
+      setFilterPopoverOpen(filterPanel.element.hidden);
     });
 
     // Inject Tags + Labels dropdowns into the toolbar as the first group.

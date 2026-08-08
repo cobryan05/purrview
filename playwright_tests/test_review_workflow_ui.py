@@ -931,6 +931,61 @@ class TestFilterToggleButton:
         expect(toggle_btn).not_to_have_class(re.compile(r"\bfilter-active\b"))
 
 
+class TestFilterPopoverDismissal:
+    """Pressing "+ Add filter" again was the only way to close the popover, and
+    nothing on screen said so. ESC, an outside click and an explicit ✕ all close
+    it now, and the toggle reports its state via aria-expanded."""
+
+    def _open(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _navigate_to_review(page, base_url)
+
+        toggle = page.get_by_test_id("review-filter-toggle")
+        popover = page.locator("#review-root .review-filter-popover")
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+        expect(popover).to_be_hidden()
+
+        toggle.click()
+        expect(popover).to_be_visible()
+        expect(toggle).to_have_attribute("aria-expanded", "true")
+        return toggle, popover
+
+    def test_escape_closes_the_popover(self, page: Page, base_url: str):
+        toggle, popover = self._open(page, base_url)
+        page.keyboard.press("Escape")
+        expect(popover).to_be_hidden()
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+
+    def test_outside_click_closes_the_popover(self, page: Page, base_url: str):
+        toggle, popover = self._open(page, base_url)
+        page.mouse.click(5, 5)
+        expect(popover).to_be_hidden()
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+
+    def test_close_button_closes_the_popover(self, page: Page, base_url: str):
+        toggle, popover = self._open(page, base_url)
+        page.get_by_test_id("review-filter-popover-close").click()
+        expect(popover).to_be_hidden()
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+
+    def test_clicking_inside_keeps_the_popover_open(self, page: Page, base_url: str):
+        """The outside-click listener must not fire for the panel's own controls,
+        or every filter edit would dismiss the editor mid-use."""
+        _toggle, popover = self._open(page, base_url)
+        popover.locator(".bbox-verification-select").click()
+        expect(popover).to_be_visible()
+
+    def test_toggle_button_still_closes_it(self, page: Page, base_url: str):
+        """The original affordance must keep working: the outside-click handler
+        ignores the toggle so it doesn't close-then-reopen and look dead."""
+        toggle, popover = self._open(page, base_url)
+        toggle.click()
+        expect(popover).to_be_hidden()
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+
+
 # ---------------------------------------------------------------------------
 # 10. Saved Views (slice 5, PR 5.2 — replaces the localStorage preset store)
 # ---------------------------------------------------------------------------
