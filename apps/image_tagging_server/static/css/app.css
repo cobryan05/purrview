@@ -386,6 +386,46 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   flex-shrink: 0;
 }
 
+/* ── Training-run gaps in the select-mode label list ─────────────────────────
+   A "gap" is a label the active training run still needs a verdict on for the
+   current image. The marker has to survive a glance down a long list, so it
+   works on three channels at once: a warning-tinted row, a left rail, and a
+   ring on the very control that resolves it. */
+
+.label-gap-summary {
+  padding: 0 6px 6px;
+  font-size: 0.72em;
+  font-weight: 600;
+  color: var(--color-warning);
+  cursor: default;
+}
+
+.label-panel-row--gap {
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-warning);
+}
+
+.label-panel-row--gap:hover {
+  background: color-mix(in srgb, var(--color-warning) 20%, transparent) !important;
+}
+
+.label-status-btn--gap {
+  border-color: var(--color-warning) !important;
+  background: color-mix(in srgb, var(--color-warning) 18%, transparent) !important;
+  animation: label-gap-pulse 2.4s ease-in-out 3;
+}
+
+/* Three pulses on appearance, then still — enough to catch the eye when a new
+   image loads without leaving the panel permanently animated. */
+@keyframes label-gap-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50%      { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-warning) 45%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .label-status-btn--gap { animation: none; }
+}
+
 /* Select mode row accessories: right-aligned coverage badges + target toggle */
 .label-row-right-wrap {
   margin-left: auto;

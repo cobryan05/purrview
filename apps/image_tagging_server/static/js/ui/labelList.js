@@ -14,6 +14,7 @@
 import { fetchLabels, clearLabelsCache, createNewLabel, deleteLabel, updateLabel } from '/app-static/js/shared/api/labels.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import {
+  fetchTrainingConfigImageGaps,
   fetchTrainingConfigImagesByLabelStatus,
   fetchTrainingConfigNeedsReview,
 } from '/app-static/js/shared/api/trainingConfigs.js';
@@ -858,6 +859,15 @@ async function mountSelectMode(container, { runtime, filter }) {
   bulkRow.appendChild(bulkLabel);
   bulkRow.appendChild(bulkButtonsRow);
   stickyHeader.appendChild(bulkRow);
+
+  // Standing count of what this image still owes the active run — the per-row
+  // markers say which labels, this says how many are left without scrolling.
+  const gapSummary = document.createElement('div');
+  gapSummary.className = 'label-gap-summary';
+  gapSummary.dataset.testid = 'label-gap-summary';
+  gapSummary.hidden = true;
+  stickyHeader.appendChild(gapSummary);
+
   container.appendChild(stickyHeader);
 
   const rawLabelsMap = await fetchLabels();
@@ -909,9 +919,77 @@ async function mountSelectMode(container, { runtime, filter }) {
   /** @type {Map<string, (status: string) => void>} */
   const rowUpdaters = new Map();
 
+  // ── Training-run gaps ───────────────────────────────────────────────────
+  // What the active training run still needs from THIS image. The server owns
+  // the definition (GET image-gaps == the coverage table's own notion of a gap,
+  // rollups included), so this set is only ever fetched, never derived here.
+  /** @type {Set<string>} label uuids the server reported as unresolved for this image */
+  let gapUuids = new Set();
+  let _gapSeq = 0;
+
   function effectiveStatus(uuid) {
     if (derivedPresent.has(uuid)) return 'present';
     return serverStates.get(uuid) ?? 'uncertain';
+  }
+
+  /**
+   * Whether a gap the server reported is still open, given edits made since the
+   * fetch (including unsaved ones).
+   *
+   * This mirrors the server's accounting rule (_co_label_accounted_for) but is
+   * deliberately only allowed to *close* a gap the server already named — it
+   * never invents one. So a drift between the two rules costs at most a stale
+   * highlight until the next save re-fetches, never a false alarm.
+   */
+  function isOpenGap(uuid) {
+    if (!gapUuids.has(uuid)) return false;
+    const status = effectiveStatus(uuid);
+    // Image-scope labels are settled by either verdict; object-scope ones need a
+    // verified box (Present alone is not evidence) or an explicit Absent.
+    // Read the scope from the full label map, not the rendered rows: a gap on a
+    // label the current filter hides still counts toward the header summary.
+    return rawLabelsMap.get(uuid)?.scope === 'image'
+      ? status === 'uncertain'
+      : !(derivedPresent.has(uuid) || status === 'absent');
+  }
+
+  /** Name of the run the gaps are judged against, for titles. */
+  function _gapRunName() {
+    return activeTrainingConfig.getActive()?.name ?? 'training run';
+  }
+
+  /** Header line: how many of this run's labels this image still owes. */
+  function refreshGapSummary() {
+    const open = [...gapUuids].filter(isOpenGap);
+    gapSummary.hidden = open.length === 0;
+    if (!open.length) return;
+    const names = open.map(u => rawLabelsMap.get(u)?.name ?? u);
+    gapSummary.textContent = `⚠ ${open.length} label${open.length === 1 ? '' : 's'} needed for "${_gapRunName()}"`;
+    gapSummary.title = names.join(', ');
+  }
+
+  /** Re-read this image's gaps from the server. No-op without an active run. */
+  async function loadGaps() {
+    const tcNow = activeTrainingConfig.getActive();
+    const imageUuid = runtime?.state?.image?.uuid;
+    const seq = ++_gapSeq;
+    if (!tcNow || !imageUuid) {
+      gapUuids = new Set();
+      refreshStatusButtons();
+      return;
+    }
+    let gaps;
+    try {
+      gaps = await fetchTrainingConfigImageGaps(tcNow.uuid, [imageUuid]);
+    } catch (err) {
+      // A missing gap list must not blank out the working panel — leave the
+      // last known set alone and let the next load try again.
+      console.warn('[labelList] Failed to fetch training-run gaps:', err);
+      return;
+    }
+    if (seq !== _gapSeq) return; // superseded by a newer image load
+    gapUuids = new Set((gaps.get(imageUuid) ?? []).map(g => g.labelUuid));
+    refreshStatusButtons();
   }
 
   /** Update both local maps together; the single write site prevents drift between them. */
@@ -1189,6 +1267,18 @@ async function mountSelectMode(container, { runtime, filter }) {
           : status === 'present'   ? 'Present — positive training example (click to cycle)'
           : status === 'absent'    ? 'Confirmed not present — negative training example (click to cycle)'
           : 'Unreviewed (click to cycle)';
+
+        // A label this image still owes the active training run. The marker sits
+        // on the status button — the control that resolves it — so the eye lands
+        // where the click goes, and it clears the moment the status settles.
+        const isGap = isOpenGap(label.uuid);
+        row.classList.toggle('label-panel-row--gap', isGap);
+        btn.classList.toggle('label-status-btn--gap', isGap);
+        if (isGap) {
+          btn.title = label.scope === 'image'
+            ? `Needed by "${_gapRunName()}" — mark it present or absent`
+            : `Needed by "${_gapRunName()}" — verify a box or mark it absent`;
+        }
       }
 
       applyStatus(effectiveStatus(label.uuid));
@@ -1330,11 +1420,20 @@ async function mountSelectMode(container, { runtime, filter }) {
 
   renderSections();
   updateBulkLabel();
+  // The panel can mount with an image already on the canvas — a tab switch, or
+  // the remount a training-config publish triggers. Pick it up rather than
+  // waiting for the next load event (see adoptImage).
+  if (runtime?.state?.image?.image_path) {
+    adoptImage(runtime.state.image.image_path);
+  } else {
+    loadGaps();
+  }
 
   function refreshStatusButtons() {
     for (const [uuid, update] of rowUpdaters) {
       update(effectiveStatus(uuid));
     }
+    refreshGapSummary();
   }
 
   function syncHighlight(activeLabelUuid) {
@@ -1345,29 +1444,48 @@ async function mountSelectMode(container, { runtime, filter }) {
     });
   }
 
+  /**
+   * Adopt `path` as the panel's current image and load its server state.
+   *
+   * Shared by the IMAGE_LOADED_ONTO_CANVAS handler and the mount itself. The
+   * mount call covers the case where an image is already on the canvas when
+   * this panel mounts — a tab switch, or the remount a training-config publish
+   * triggers — so label states and gaps are read for it straight away instead
+   * of waiting for the next load event.
+   */
+  async function adoptImage(path) {
+    // Discard any pending presence changes for the previous image.
+    pendingFlush.clear();
+    currentImagePath = path;
+    // Gaps are fetched independently of the label-state fetch below, not after
+    // it: they are separate requests answering separate questions, and chaining
+    // them meant one slow (or stalled) label-state response silently suppressed
+    // the gap highlight entirely.
+    gapUuids = new Set();
+    loadGaps();
+    const seq = ++_loadSeq;
+    let states;
+    try {
+      states = await fetchImageLabels(path);
+    } catch (err) {
+      console.error('Failed to fetch image labels:', err);
+      states = new Map();
+    }
+    if (seq !== _loadSeq) return; // superseded by a newer load
+    // Retain explicit PRESENT and ABSENT marks from the server.
+    // Derived PRESENT (from verified bboxes) is computed separately via computeDerivedPresent.
+    serverStates = new Map([...states].filter(([, v]) => v !== 'uncertain'));
+    derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
+    // Gaps were already requested above; this just repaints with the label
+    // states that have now arrived (and whatever gaps landed meanwhile).
+    refreshStatusButtons();
+  }
+
   // Fetch server label states when a new image is loaded; discard any pending unsaved changes.
   const unsubImage = events.subscribeToCanvas(
     runtime.id,
     EventTypes.IMAGE_LOADED_ONTO_CANVAS,
-    async ({ path }) => {
-      // Discard any pending presence changes for the previous image.
-      pendingFlush.clear();
-      currentImagePath = path;
-      const seq = ++_loadSeq;
-      let states;
-      try {
-        states = await fetchImageLabels(path);
-      } catch (err) {
-        console.error('Failed to fetch image labels:', err);
-        states = new Map();
-      }
-      if (seq !== _loadSeq) return; // superseded by a newer load
-      // Retain explicit PRESENT and ABSENT marks from the server.
-      // Derived PRESENT (from verified bboxes) is computed separately via computeDerivedPresent.
-      serverStates = new Map([...states].filter(([, v]) => v !== 'uncertain'));
-      derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
-      refreshStatusButtons();
-    }
+    ({ path }) => adoptImage(path)
   );
 
   // Recompute derived presence whenever the bbox collection changes
@@ -1395,7 +1513,9 @@ async function mountSelectMode(container, { runtime, filter }) {
       // Verified/unverified counts may have changed (presence marks and/or bboxes) — refresh
       // the cached coverage stats so badges elsewhere don't go stale until a manual refresh.
       activeTrainingConfig.refreshStats();
-      if (!currentImagePath || !pendingFlush.size || _flushInFlight) return;
+      // A save with no pending presence changes (boxes only) skips the flush
+      // below but can still have closed gaps — resync before bailing out.
+      if (!currentImagePath || !pendingFlush.size || _flushInFlight) { loadGaps(); return; }
       _flushInFlight = true;
       try {
         while (currentImagePath && pendingFlush.size) {
@@ -1447,6 +1567,10 @@ async function mountSelectMode(container, { runtime, filter }) {
       } finally {
         _flushInFlight = false;
       }
+      // Re-read gaps from the authority once the save has landed: boxes and
+      // presence marks written just now may have closed some, and rollup rules
+      // the local check doesn't model may have closed others.
+      loadGaps();
     }
   );
 
