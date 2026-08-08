@@ -906,3 +906,101 @@ class TestRequireBboxesInteraction:
         )
         assert any("has-bbox.png" in f for f in images)
         assert not any("no-bbox.png" in f for f in images)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# filename — matched against the FILES_ROOT-relative path
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestFilenameTermIsRelativeToFilesRoot:
+    """The `filename` column stores absolute paths, but every record the API
+    returns has been relativised (`Manager._image_rel_path`), and the review
+    modals run the identical filter client-side over that relative value
+    (`filterPredicate.js`'s `imageMatchesFilename`). So the term matches the
+    relative path: a pattern that only exists in the FILES_ROOT prefix — which
+    the user is never shown — must not match anything."""
+
+    async def test_matches_relative_path_segments(self, http_client, files_root):
+        (files_root / "cams").mkdir()
+        _make_image(files_root, "cams/front.png")
+        await _register_image(http_client, "cams/front.png")
+
+        for pattern in ("front", "cams/", "cams/front.png", ".png"):
+            images = _filenames(
+                await _review(http_client, show_all_bboxes=True, terms=[{"kind": "filename", "patterns": [pattern]}])
+            )
+            assert any("cams/front.png" in f for f in images), pattern
+
+    async def test_does_not_match_the_files_root_prefix(self, http_client, files_root):
+        _make_image(files_root, "plain.png")
+        await _register_image(http_client, "plain.png")
+
+        # `files_root` is <tmp>/files — "files" appears in the stored absolute
+        # path and in nothing the user can see. Pre-relativisation this matched
+        # every image in the database.
+        images = _filenames(
+            await _review(http_client, show_all_bboxes=True, terms=[{"kind": "filename", "patterns": ["files"]}])
+        )
+        assert images == []
+
+        # The full absolute path is likewise no longer a valid query.
+        images = _filenames(
+            await _review(
+                http_client, show_all_bboxes=True, terms=[{"kind": "filename", "patterns": [str(files_root)]}]
+            )
+        )
+        assert images == []
+
+    async def test_returned_filename_is_what_the_pattern_matched(self, http_client, files_root):
+        """Guards the invariant the whole change rests on: whatever the filter
+        matched is exactly the string the client receives and re-filters."""
+        (files_root / "cams").mkdir()
+        _make_image(files_root, "cams/front.png")
+        await _register_image(http_client, "cams/front.png")
+
+        images = _filenames(
+            await _review(http_client, show_all_bboxes=True, terms=[{"kind": "filename", "patterns": ["cams/"]}])
+        )
+        assert images == ["cams/front.png"]
+
+    async def test_negate_uses_the_relative_path_too(self, http_client, files_root):
+        (files_root / "cams").mkdir()
+        _make_image(files_root, "cams/front.png")
+        _make_image(files_root, "other.png")
+        await _register_image(http_client, "cams/front.png")
+        await _register_image(http_client, "other.png")
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "filename", "patterns": ["cams"], "negate": True}],
+            )
+        )
+        assert images == ["other.png"]
+
+        # Negating a prefix-only pattern excludes nothing, since it matches nothing.
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "filename", "patterns": ["files"], "negate": True}],
+            )
+        )
+        assert sorted(images) == ["cams/front.png", "other.png"]
+
+    async def test_row_outside_files_root_falls_back_to_stored_path(self, db_client, files_root):
+        """Mirrors `_image_rel_path`'s fallback: a row whose filename isn't
+        under FILES_ROOT (legacy import) keeps its stored value, and that is
+        also what the client is shown — so it must stay matchable."""
+        from pathlib import Path
+
+        from apps.helpers.db.types import ImageSearchParams
+
+        await db_client.add_image(Path("/elsewhere/legacy/orphan.png"))
+
+        rows = await db_client.list_images_search(
+            ImageSearchParams(terms=[{"kind": "filename", "patterns": ["legacy/orphan"]}], require_bboxes=False)
+        )
+        assert [r.filename for r in rows] == ["/elsewhere/legacy/orphan.png"]

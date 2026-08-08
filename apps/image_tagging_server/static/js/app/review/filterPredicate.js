@@ -48,7 +48,90 @@ export function defaultCuratedFilterState() {
     tagUuids: [],
     tagExcludeUuids: [],
     tagMatchMode: 'any', // 'any' | 'all'
+    // Image-scoped (NOT bbox-scoped — see `imageMatchesFilename`): a
+    // case-insensitive substring test over `img.filename`. '' is the no-op.
+    filenameSearch: '',
+    // Image-scoped date range over `img.createdAt`, mirroring the main page's
+    // DateTerm (`field: 'created'`). ISO strings, as produced by
+    // `new Date(input.value).toISOString()`; null is the no-op.
+    dateFrom: null,
+    dateTo: null,
   };
+}
+
+/**
+ * Parse a datetime string off an image record into epoch millis.
+ *
+ * The API hands back **naive** timestamps — `"2026-08-08T15:59:08.408748"`,
+ * no offset — even though `created_at`/`updated_at` are declared
+ * `DateTime(timezone=True)`: SQLite has no native datetime type and drops the
+ * zone, so the value round-trips as a bare string and Pydantic serialises it
+ * without one. `new Date()` reads an offset-less ISO *date-time* as **local**
+ * time, which would silently shift every comparison by the viewer's UTC
+ * offset (and shift it differently for two users looking at the same image).
+ * The stored instants are UTC, so an offset-less string is pinned to UTC here.
+ *
+ * @param {?string} value
+ * @returns {?number} epoch millis, or null if absent/unparseable
+ */
+export function parseRecordDate(value) {
+  if (!value) return null;
+  const s = String(value);
+  const iso = /(?:Z|[+-]\d{2}:?\d{2})$/.test(s) ? s : `${s}Z`;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * Image-scoped created-date range test — the client-side counterpart of the
+ * server's `DateTerm` with `field: 'created'` (the only field the review UI
+ * ever sends; see buildReviewFilterBody in shared/api/review.js).
+ *
+ * Bounds are inclusive on both ends, matching the server's `col >= from` /
+ * `col <= to`. An image with no `createdAt` fails any active bound, mirroring
+ * SQL's NULL comparison never being true.
+ *
+ * @param {{createdAt?: string}} img
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function imageMatchesDate(img, state) {
+  const from = parseRecordDate(state.dateFrom);
+  const to = parseRecordDate(state.dateTo);
+  if (from === null && to === null) return true;
+
+  const created = parseRecordDate(img.createdAt);
+  if (created === null) return false;
+  if (from !== null && created < from) return false;
+  if (to !== null && created > to) return false;
+  return true;
+}
+
+/**
+ * Image-scoped filename substring test — the client-side counterpart of the
+ * server's `FilenameTerm` (`ImageRecord.filename.like('%pat%')`,
+ * db_client._apply_filter_terms).
+ *
+ * Two deliberate differences from the server, both consequences of where this
+ * runs rather than choices:
+ *  - **Relative, not absolute path.** The DB stores absolute filenames and the
+ *    server LIKEs against those; every object that reaches this predicate has
+ *    already been rewritten to a FILES_ROOT-relative path by
+ *    `Manager._image_rel_path` (manager.py, both `get_images_by_uuids` and the
+ *    review-queue path). So a pattern matching only the FILES_ROOT prefix
+ *    ("image_datasets") matches everything server-side and nothing here.
+ *  - **Explicitly case-insensitive.** SQLite's LIKE is case-insensitive for
+ *    ASCII by default; `String.includes` is not, so we lowercase both sides to
+ *    keep the main page and the modals agreeing on the common (ASCII) case.
+ *
+ * @param {{filename?: string}} img
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function imageMatchesFilename(img, state) {
+  const needle = (state.filenameSearch || '').trim().toLowerCase();
+  if (!needle) return true;
+  return (img.filename || '').toLowerCase().includes(needle);
 }
 
 /**
@@ -172,12 +255,20 @@ export function bboxMatchesFilter(bbox, state, labels) {
  * matches the server's per-label-uuid EXISTS loop for `label_match_mode="all"`
  * in `_apply_image_search_filters`).
  *
- * @param {{uuid: string, bboxes?: Array<object>}} img
+ * The filename and date filters are applied first and independently: both are
+ * image-scoped, so they must reject the image outright rather than participate
+ * in the "any bbox matches" logic below (a bbox-free image with a non-matching
+ * filename has to fail even though `hasActiveBboxFilter` is false).
+ *
+ * @param {{uuid: string, filename?: string, createdAt?: string, bboxes?: Array<object>}} img
  * @param {ReturnType<typeof defaultCuratedFilterState>} state
  * @param {Map<string, object>} labels
  * @returns {boolean}
  */
 export function imageMatchesFilter(img, state, labels) {
+  if (!imageMatchesFilename(img, state)) return false;
+  if (!imageMatchesDate(img, state)) return false;
+
   const matching = (img.bboxes || []).filter(b => bboxMatchesFilter(b, state, labels));
   if (matching.length === 0) {
     // No matching bboxes. Only reject when there is an active bbox-scoped

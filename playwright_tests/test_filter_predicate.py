@@ -70,6 +70,9 @@ class TestDefaultState:
             "tagUuids": [],
             "tagExcludeUuids": [],
             "tagMatchMode": "any",
+            "filenameSearch": "",
+            "dateFrom": None,
+            "dateTo": None,
         }
 
     def test_empty_state_bbox_matches_everything(self, shared_page: Page):
@@ -347,3 +350,189 @@ class TestCombined:
             )
             is False
         )
+
+
+# ---------------------------------------------------------------------------
+# Filename substring (image-scoped, not bbox-scoped)
+# ---------------------------------------------------------------------------
+
+
+class TestFilenameFilter:
+    """`filenameSearch` is the client-side counterpart of the server's
+    FilenameTerm LIKE. It is applied by `imageMatchesFilter` alone — bboxes
+    carry no filename, so `bboxMatchesFilter` must ignore it entirely."""
+
+    # An image with a filename plus one plain bbox.
+    NAMED = "{uuid:'i1', filename:'datasets/cams/front_2024.jpg', bboxes:[bbox('cat')]}"
+
+    def test_empty_search_is_a_noop(self, shared_page: Page):
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAMED}, st({{filenameSearch:''}}), labels)") is True
+
+    def test_substring_matches_anywhere_in_the_path(self, shared_page: Page):
+        for needle in ("front", "cams/", "2024.jpg", "datasets"):
+            assert (
+                _eval(shared_page, f"imageMatchesFilter({self.NAMED}, st({{filenameSearch:'{needle}'}}), labels)")
+                is True
+            ), needle
+
+    def test_non_matching_substring_rejects(self, shared_page: Page):
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAMED}, st({{filenameSearch:'rear'}}), labels)") is False
+
+    def test_case_insensitive_both_directions(self, shared_page: Page):
+        # SQLite's LIKE is case-insensitive for ASCII; String.includes is not,
+        # so the predicate lowercases both sides to stay in step with it.
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAMED}, st({{filenameSearch:'FRONT'}}), labels)") is True
+        assert (
+            _eval(
+                shared_page,
+                "imageMatchesFilter({uuid:'i1', filename:'A/B/CAM.JPG', bboxes:[bbox('cat')]}, st({filenameSearch:'cam'}), labels)",
+            )
+            is True
+        )
+
+    def test_whitespace_only_search_is_a_noop(self, shared_page: Page):
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAMED}, st({{filenameSearch:'   '}}), labels)") is True
+
+    def test_rejects_bbox_free_image(self, shared_page: Page):
+        # The bbox-scoped filters deliberately let bbox-free images through
+        # (hasActiveBboxFilter is false under the default state). Filename is
+        # image-scoped, so it must still reject one whose path doesn't match.
+        assert (
+            _eval(
+                shared_page,
+                "imageMatchesFilter({uuid:'i1', filename:'a/b.jpg', bboxes:[]}, st({filenameSearch:'zzz'}), labels)",
+            )
+            is False
+        )
+        assert (
+            _eval(
+                shared_page,
+                "imageMatchesFilter({uuid:'i1', filename:'a/b.jpg', bboxes:[]}, st({filenameSearch:'b.jpg'}), labels)",
+            )
+            is True
+        )
+
+    def test_missing_filename_field_rejects_when_searching(self, shared_page: Page):
+        assert _eval(shared_page, "imageMatchesFilter(img(bbox('cat')), st({filenameSearch:'x'}), labels)") is False
+        assert _eval(shared_page, "imageMatchesFilter(img(bbox('cat')), st(), labels)") is True
+
+    def test_bbox_predicate_ignores_filename(self, shared_page: Page):
+        # A bbox has no filename; the bbox predicate must not start rejecting
+        # every bbox just because a filename search is active.
+        assert _eval(shared_page, "bboxMatchesFilter(bbox('cat'), st({filenameSearch:'zzz'}), labels)") is True
+
+    def test_ands_with_bbox_filters(self, shared_page: Page):
+        expr = "imageMatchesFilter({uuid:'i1', filename:'cams/front.jpg', bboxes:[bbox('cat')]}, st({filenameSearch:'%s', labelUuids:['%s']}), labels)"
+        assert _eval(shared_page, expr % ("front", "cat")) is True
+        assert _eval(shared_page, expr % ("front", "dog")) is False  # bbox filter fails
+        assert _eval(shared_page, expr % ("rear", "cat")) is False  # filename fails
+
+
+# ---------------------------------------------------------------------------
+# Created-date range (image-scoped, not bbox-scoped)
+# ---------------------------------------------------------------------------
+
+
+class TestDateFilter:
+    """`dateFrom`/`dateTo` mirror the server's DateTerm on `created`. Like
+    filename they are image-scoped and applied by `imageMatchesFilter` alone."""
+
+    # createdAt as the API actually serialises it: naive, no UTC offset.
+    NAIVE = "{uuid:'i1', filename:'a.jpg', createdAt:'2026-06-15T12:00:00.123456', bboxes:[bbox('cat')]}"
+
+    def test_no_bounds_is_a_noop(self, shared_page: Page):
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, st(), labels)") is True
+
+    def test_offsetless_timestamps_are_read_as_utc(self, shared_page: Page):
+        # The regression this guards: `new Date('2026-06-15T12:00:00')` is
+        # LOCAL time, so in any non-UTC browser an image stored at 12:00 UTC
+        # would fall on the wrong side of a 12:00 UTC bound. parseRecordDate
+        # pins offset-less values to UTC.
+        assert (
+            _eval(
+                shared_page,
+                "(await import('/app-static/js/app/review/filterPredicate.js'))"
+                ".parseRecordDate('2026-06-15T12:00:00') === Date.UTC(2026, 5, 15, 12, 0, 0)",
+            )
+            is True
+        )
+
+    def test_explicit_offset_is_respected(self, shared_page: Page):
+        assert (
+            _eval(
+                shared_page,
+                "(await import('/app-static/js/app/review/filterPredicate.js'))"
+                ".parseRecordDate('2026-06-15T12:00:00Z') === Date.UTC(2026, 5, 15, 12, 0, 0)",
+            )
+            is True
+        )
+        assert (
+            _eval(
+                shared_page,
+                "(await import('/app-static/js/app/review/filterPredicate.js'))"
+                ".parseRecordDate('2026-06-15T14:00:00+02:00') === Date.UTC(2026, 5, 15, 12, 0, 0)",
+            )
+            is True
+        )
+
+    def test_from_bound_is_inclusive(self, shared_page: Page):
+        # Exactly on the bound passes (server uses >=).
+        assert (
+            _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, st({{dateFrom:'2026-06-15T12:00:00.123Z'}}), labels)")
+            is True
+        )
+        assert (
+            _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, st({{dateFrom:'2026-06-14T00:00:00Z'}}), labels)")
+            is True
+        )
+        assert (
+            _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, st({{dateFrom:'2026-06-16T00:00:00Z'}}), labels)")
+            is False
+        )
+
+    def test_to_bound_is_inclusive(self, shared_page: Page):
+        assert (
+            _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, st({{dateTo:'2026-06-16T00:00:00Z'}}), labels)")
+            is True
+        )
+        assert (
+            _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, st({{dateTo:'2026-06-14T00:00:00Z'}}), labels)")
+            is False
+        )
+
+    def test_both_bounds_form_a_range(self, shared_page: Page):
+        inside = "st({dateFrom:'2026-06-01T00:00:00Z', dateTo:'2026-07-01T00:00:00Z'})"
+        outside = "st({dateFrom:'2026-01-01T00:00:00Z', dateTo:'2026-02-01T00:00:00Z'})"
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, {inside}, labels)") is True
+        assert _eval(shared_page, f"imageMatchesFilter({self.NAIVE}, {outside}, labels)") is False
+
+    def test_missing_created_at_fails_an_active_bound(self, shared_page: Page):
+        # Mirrors SQL: a NULL never satisfies a comparison.
+        assert (
+            _eval(shared_page, "imageMatchesFilter(img(bbox('cat')), st({dateFrom:'2026-01-01T00:00:00Z'}), labels)")
+            is False
+        )
+        assert _eval(shared_page, "imageMatchesFilter(img(bbox('cat')), st(), labels)") is True
+
+    def test_rejects_bbox_free_image(self, shared_page: Page):
+        assert (
+            _eval(
+                shared_page,
+                "imageMatchesFilter({uuid:'i1', createdAt:'2026-06-15T12:00:00', bboxes:[]}, st({dateFrom:'2026-07-01T00:00:00Z'}), labels)",
+            )
+            is False
+        )
+
+    def test_bbox_predicate_ignores_dates(self, shared_page: Page):
+        assert (
+            _eval(shared_page, "bboxMatchesFilter(bbox('cat'), st({dateFrom:'2030-01-01T00:00:00Z'}), labels)") is True
+        )
+
+    def test_ands_with_filename_and_bbox_filters(self, shared_page: Page):
+        base = "{uuid:'i1', filename:'cams/front.jpg', createdAt:'2026-06-15T12:00:00', bboxes:[bbox('cat')]}"
+        ok = "st({dateFrom:'2026-06-01T00:00:00Z', filenameSearch:'cams', labelUuids:['cat']})"
+        bad_date = "st({dateFrom:'2026-07-01T00:00:00Z', filenameSearch:'cams', labelUuids:['cat']})"
+        bad_name = "st({dateFrom:'2026-06-01T00:00:00Z', filenameSearch:'nope', labelUuids:['cat']})"
+        assert _eval(shared_page, f"imageMatchesFilter({base}, {ok}, labels)") is True
+        assert _eval(shared_page, f"imageMatchesFilter({base}, {bad_date}, labels)") is False
+        assert _eval(shared_page, f"imageMatchesFilter({base}, {bad_name}, labels)") is False

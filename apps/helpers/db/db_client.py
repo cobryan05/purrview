@@ -17,7 +17,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
-from sqlalchemy import Select, and_, delete, event, exists, func, or_, text, true
+from sqlalchemy import Select, and_, case, delete, event, exists, func, or_, text, true
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -26,6 +26,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
 
 from .types import (
@@ -167,6 +168,34 @@ def _escape_like_pattern(pattern: str) -> str:
     return pattern.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+def _relative_filename_expr(files_root: Optional[Union[str, Path]] = None):
+    """SQL expression yielding each image's FILES_ROOT-relative filename.
+
+    The `images.filename` column stores absolute paths, but every record handed
+    to a client is relativised first (`Manager._image_rel_path`), so filename
+    *filtering* has to work on the relative form too — otherwise a pattern can
+    match a prefix the user is never shown, and the server-side filter
+    disagrees with the identical client-side one used in the review modals
+    (`filterPredicate.js`'s `imageMatchesFilename`).
+
+    Mirrors `_image_rel_path` exactly, fallback included: a row whose filename
+    is not under FILES_ROOT (legacy imports, relative paths written before the
+    root was enforced) is matched on its stored value unchanged, because that
+    is also what the client displays for it.
+    """
+    root = str(Path(files_root) if files_root is not None else FILES_ROOT).rstrip("/")
+    prefix = f"{root}/"
+    # +1 to move past the last character of the prefix, +1 again because
+    # SQLite's substr() is 1-indexed.
+    return case(
+        (
+            ImageRecord.filename.like(f"{_escape_like_pattern(prefix)}%", escape="!"),
+            func.substr(ImageRecord.filename, len(prefix) + 1),
+        ),
+        else_=ImageRecord.filename,
+    )
+
+
 def _label_uuids_with_descendants(label_uuids: List[str], cte_name: str = "label_desc") -> Select:
     """Return a SELECT of all label UUIDs that are the given labels OR any of
     their descendants (recursive).  Uses a recursive CTE so no separate query
@@ -190,7 +219,13 @@ def _label_uuids_with_descendants(label_uuids: List[str], cte_name: str = "label
     return select(cte.c.uuid)
 
 
-def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_exists: bool = False) -> Select:
+def _apply_image_search_filters(
+    stmt: Select,
+    params: ImageSearchParams,
+    *,
+    use_exists: bool = False,
+    files_root: Optional[Union[str, Path]] = None,
+) -> Select:
     """Apply all ImageSearchParams filter predicates to *stmt* and return it.
 
     Does not add ORDER BY, LIMIT, or keyset cursors — those are caller concerns.
@@ -219,7 +254,7 @@ def _apply_image_search_filters(stmt: Select, params: ImageSearchParams, *, use_
     _bbox_implied = False
 
     if params.terms:
-        stmt, _bbox_implied = _apply_filter_terms(stmt, params, use_exists=use_exists)
+        stmt, _bbox_implied = _apply_filter_terms(stmt, params, use_exists=use_exists, files_root=files_root)
 
     # ── Require at least one bbox ─────────────────────────────────────────────
     # Skip when any earlier filter already guarantees bbox existence.
@@ -238,7 +273,13 @@ BBOX_VERIFICATION_STATE_TO_TAG_UUID = {
 }
 
 
-def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: bool = False) -> "tuple[Select, bool]":
+def _apply_filter_terms(
+    stmt: Select,
+    params: ImageSearchParams,
+    *,
+    use_exists: bool = False,
+    files_root: Optional[Union[str, Path]] = None,
+) -> "tuple[Select, bool]":
     """Apply params.terms (the new discriminated-union filter model) to *stmt*.
 
     Returns (stmt, bbox_implied) — bbox_implied mirrors _apply_image_search_filters'
@@ -433,10 +474,21 @@ def _apply_filter_terms(stmt: Select, params: ImageSearchParams, *, use_exists: 
             expr = and_(*sub_exprs) if sub_exprs else true()
 
         elif isinstance(term, FilenameTerm):
+            # Matched against the FILES_ROOT-*relative* path, not the absolute
+            # one the column stores. The column is absolute, but every record
+            # that reaches a client has already been relativised by
+            # Manager._image_rel_path, so matching the raw column let a pattern
+            # hit on a prefix the user can never see ("image_datasets" matched
+            # everything) and made this filter disagree with the identical
+            # client-side one in the review modals (filterPredicate.js's
+            # imageMatchesFilename). `_relative_filename_expr` mirrors
+            # _image_rel_path exactly, including its fallback for rows that
+            # aren't under FILES_ROOT at all.
+            rel_filename = _relative_filename_expr(files_root)
             sub_exprs = []
             for pattern in term.patterns:
                 escaped = _escape_like_pattern(pattern)
-                sub_exprs.append(ImageRecord.filename.like(f"%{escaped}%", escape="!"))
+                sub_exprs.append(rel_filename.like(f"%{escaped}%", escape="!"))
             expr = and_(*sub_exprs) if sub_exprs else true()
 
         else:  # pragma: no cover - unreachable, pydantic discriminator rejects unknown kinds
@@ -525,7 +577,19 @@ def _keyset_start_index(
 class DbClient:
     """Helper class for SQLModel interactions for image annotations."""
 
-    def __init__(self, db_dir: Union[str, Path], *, memory: bool = False):
+    def __init__(
+        self,
+        db_dir: Union[str, Path],
+        *,
+        memory: bool = False,
+        files_root: Optional[Union[str, Path]] = None,
+    ):
+        # `files_root` is only used to make FilenameTerm match the same
+        # FILES_ROOT-relative path the client sees (Manager._image_rel_path
+        # rewrites every outgoing record), rather than the absolute path the
+        # column actually stores. Defaults to the process-wide FILES_ROOT so
+        # existing callers (and every test fixture) keep working untouched.
+        self._files_root: Path = Path(files_root) if files_root is not None else FILES_ROOT
         self._db_dir = Path(db_dir)
         self._db_path: Path = self._db_dir / DB_FILE
         self._labels_json_path: Path = self._db_dir / LABELS_JSON
@@ -1243,7 +1307,7 @@ class DbClient:
                 selectinload(ImageRecord.tags),
             )
 
-            stmt = _apply_image_search_filters(stmt, params, use_exists=use_exists)
+            stmt = _apply_image_search_filters(stmt, params, use_exists=use_exists, files_root=self._files_root)
 
             # ── Sort column ────────────────────────────────────────────────────
             # NOTE: filename is intentionally NOT a sort option — the keyset
@@ -1317,7 +1381,7 @@ class DbClient:
         does not apply and IN's one-time materialisation is cheapest.
         """
         async with self._async_session_maker() as session:
-            inner = _apply_image_search_filters(select(ImageRecord.uuid), params)
+            inner = _apply_image_search_filters(select(ImageRecord.uuid), params, files_root=self._files_root)
             stmt = select(func.count()).select_from(inner.subquery())
             result = await session.exec(stmt)
             return result.one()
@@ -1339,7 +1403,9 @@ class DbClient:
         can drop most of them).
         """
         async with self._async_session_maker() as session:
-            image_uuids = _apply_image_search_filters(select(ImageRecord.uuid), params).subquery()
+            image_uuids = _apply_image_search_filters(
+                select(ImageRecord.uuid), params, files_root=self._files_root
+            ).subquery()
             stmt = select(func.count()).select_from(BBox).where(BBox.image_uuid.in_(select(image_uuids.c.uuid)))
 
             tag_filter = None if show_all_bboxes else (bbox_tag_filter or None)
@@ -3389,7 +3455,7 @@ class DbClient:
                         ImageRecord.created_at,
                         ImageRecord.updated_at,
                     )
-                    stmt = _apply_image_search_filters(stmt, params, use_exists=use_exists)
+                    stmt = _apply_image_search_filters(stmt, params, use_exists=use_exists, files_root=self._files_root)
                     if after_uuid is not None:
                         stmt = stmt.where(ImageRecord.uuid > after_uuid)
                     stmt = stmt.order_by(ImageRecord.uuid.asc()).limit(_READINESS_PAGE_SIZE)

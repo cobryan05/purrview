@@ -770,12 +770,68 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     _tagsDropdown = _buildCuratedTagsDropdown();
     tagsContainer.appendChild(_tagsDropdown.element);
 
+    // Filename substring — image-scoped, so unlike the three controls above it
+    // is not part of the bbox predicate; `imageMatchesFilter` applies it as its
+    // own gate. Same 400ms debounce + `.trim()` as filters.js's filename input
+    // so typing in a modal doesn't re-render (and, in modal mode, re-page) on
+    // every keystroke. Matches the FILES_ROOT-*relative* path — see
+    // `imageMatchesFilename` for why that differs from the main page's
+    // server-side LIKE.
+    const filenameContainer = document.createElement('div');
+    filenameContainer.className = 'curated-filename';
+    const filenameLabel = document.createElement('span');
+    filenameLabel.className = 'filter-label';
+    filenameLabel.textContent = 'File:';
+    const filenameInput = document.createElement('input');
+    filenameInput.type = 'text';
+    filenameInput.placeholder = 'substring…';
+    filenameInput.title = 'Filter to images whose path contains this text (case-insensitive)';
+    filenameInput.setAttribute('data-testid', 'curated-filename-input');
+    let _filenameDebounce = null;
+    filenameInput.addEventListener('input', () => {
+      clearTimeout(_filenameDebounce);
+      _filenameDebounce = setTimeout(() => {
+        const next = filenameInput.value.trim();
+        if (next === _curated.filenameSearch) return;
+        _curated = { ..._curated, filenameSearch: next };
+        _onCuratedChange();
+      }, 400);
+    });
+    filenameContainer.append(filenameLabel, filenameInput);
+
+    // Created-date range — also image-scoped, also client-side. Mirrors
+    // filters.js's pair of datetime-local inputs, including the conversion to
+    // an ISO string on change; `imageMatchesDate` handles the fact that the
+    // API's createdAt comes back without a UTC offset.
+    const dateContainer = document.createElement('div');
+    dateContainer.className = 'curated-date';
+    const dateLabel = document.createElement('span');
+    dateLabel.className = 'filter-label';
+    dateLabel.textContent = 'Date:';
+    const dateFromInput = document.createElement('input');
+    dateFromInput.type = 'datetime-local';
+    dateFromInput.title = 'From date (image created)';
+    dateFromInput.setAttribute('data-testid', 'curated-date-from');
+    dateFromInput.addEventListener('change', () => {
+      _curated = { ..._curated, dateFrom: dateFromInput.value ? new Date(dateFromInput.value).toISOString() : null };
+      _onCuratedChange();
+    });
+    const dateToInput = document.createElement('input');
+    dateToInput.type = 'datetime-local';
+    dateToInput.title = 'To date (image created)';
+    dateToInput.setAttribute('data-testid', 'curated-date-to');
+    dateToInput.addEventListener('change', () => {
+      _curated = { ..._curated, dateTo: dateToInput.value ? new Date(dateToInput.value).toISOString() : null };
+      _onCuratedChange();
+    });
+    dateContainer.append(dateLabel, dateFromInput, document.createTextNode('–'), dateToInput);
+
     // Append after the caller's own toolbarControls (threshold/count/switch) —
     // toolbarControls is a positional contract elsewhere (createFilterPanel's
     // toolbarControls array); here it's simpler (a single element/fragment),
     // but the same "append, don't insert" rule applies so caller-built
     // controls never shift position (NOTES.md).
-    const curatedGroup = makeToolbarGroup(verificationControl.element, labelsContainer, tagsContainer);
+    const curatedGroup = makeToolbarGroup(verificationControl.element, labelsContainer, tagsContainer, filenameContainer, dateContainer);
     curatedGroup.classList.add('modal-toolbar-row');
     toolbar.append(makeToolbarSep(), curatedGroup);
   }

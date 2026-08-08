@@ -7,18 +7,22 @@ from apps.helpers.db.db_client import DbClient
 
 
 @pytest.fixture
-async def db_client(tmp_path):
-    client = DbClient(db_dir=tmp_path, memory=True)
-    await client.init_db()
-    yield client
-    await client.close()
-
-
-@pytest.fixture
 def files_root(tmp_path):
     d = tmp_path / "files"
     d.mkdir()
     return d
+
+
+@pytest.fixture
+async def db_client(tmp_path, files_root):
+    # `files_root` must match the Manager's below: the filename filter matches
+    # the FILES_ROOT-relative path (_relative_filename_expr), so a client
+    # pointed at a different root would fall back to matching the absolute
+    # path and quietly diverge from what the API returns.
+    client = DbClient(db_dir=tmp_path, memory=True, files_root=files_root)
+    await client.init_db()
+    yield client
+    await client.close()
 
 
 @pytest.fixture

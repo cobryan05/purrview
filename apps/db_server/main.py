@@ -11,7 +11,7 @@ from .web import WebApp
 
 config = APPS_CONFIG[Path(__file__).parent.name]
 FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
-db_client = DbClient(DB_DIR)
+db_client = DbClient(DB_DIR, files_root=FILES_ROOT)
 
 manager = Manager(db_client=db_client, files_root=FILES_ROOT)
 web_app = WebApp(manager=manager, app_name=config.name)

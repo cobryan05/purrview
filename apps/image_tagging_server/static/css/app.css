@@ -1296,6 +1296,35 @@ button.filter-active {
   accent-color: var(--color-warning);
 }
 
+/* Filename substring filter in the curated (modal) filter surface. The
+   .review-filter-panel input rules that compact the main page's identical
+   control are scoped to that panel, so the same look is re-declared here via
+   the same --pico-* bridge used by the toolbar's <select> rule above. */
+.curated-filename {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.curated-date {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.curated-filename input[type="text"],
+.curated-date input[type="datetime-local"] {
+  --pico-form-element-spacing-vertical: 0.15em;
+  --pico-form-element-spacing-horizontal: 0.4em;
+  font-size: 0.85em;
+  height: auto;
+  margin-bottom: 0;
+}
+
+.curated-filename input[type="text"] {
+  width: 11em;
+}
+
 .modal-switch-btn {
   font-size: 0.8em;
   padding: 0.15em 0.6em;

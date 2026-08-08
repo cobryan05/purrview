@@ -253,3 +253,154 @@ class TestApplyToAllRespectsCuratedFilter:
         # showBulkActionModal's title reflects entries.length from the curated,
         # not raw, candidate set — asserts M3's fix in applyToAllCandidates.
         expect(page.locator("strong", has_text="Apply to all 1 matched bbox")).to_be_visible()
+
+
+class TestCuratedFilenameFilter:
+    """The filename substring control is image-scoped: it lives in the same
+    curated group but is applied by `imageMatchesFilter` as its own gate, not
+    by the bbox predicate. Matching is against the FILES_ROOT-*relative* path
+    the server already puts on each record."""
+
+    # Same three bboxes, but each image in a distinguishable path.
+    IMAGES = [
+        {"uuid": "img-1", "filename": "cams/front/shot1.jpg", "bboxes": [BBOX_1]},
+        {"uuid": "img-2", "filename": "cams/rear/shot2.jpg", "bboxes": [BBOX_2]},
+        {"uuid": "img-3", "filename": "archive/rear_old.jpg", "bboxes": [BBOX_3]},
+    ]
+
+    def _open(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG, VERIFIED_TAG, REVIEWED_TAG])
+        _mock_image_labels_batch(page)
+        _open_curated_modal(page, base_url, candidates=self.IMAGES)
+
+    def _search(self, page: Page, text: str):
+        page.locator("[data-testid='curated-filename-input']").fill(text)
+        # The input is debounced by 400ms before it triggers a re-render.
+        page.wait_for_timeout(700)
+
+    def test_control_is_present(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='curated-filename-input']")).to_be_visible()
+
+    def test_substring_narrows_to_one_image(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._search(page, "shot1")
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
+
+    def test_directory_segment_matches_multiple(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._search(page, "cams/")
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
+
+    def test_case_insensitive(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._search(page, "SHOT2")
+
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_have_count(0)
+
+    def test_clearing_restores_all(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._search(page, "shot1")
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
+
+        self._search(page, "")
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
+
+    def test_ands_with_the_bbox_filters(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        # "rear" matches img-2 and img-3; verified narrows to img-2's bbox only.
+        self._search(page, "rear")
+        page.locator(".bbox-verification-select").select_option("verified")
+        page.wait_for_timeout(300)
+
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
+
+    def test_apply_to_all_count_reflects_filename_filter(self, page: Page, base_url: str):
+        # M3's rule: the whole-candidate-set path must run the same predicate.
+        self._open(page, base_url)
+        self._search(page, "cams/")
+
+        page.locator("button", has_text="Apply to All").click()
+        expect(page.locator("strong", has_text="Apply to all 2 matched bbox")).to_be_visible()
+
+
+class TestCuratedDateFilter:
+    """The created-date range, also image-scoped and also client-side. The
+    fixture timestamps are naive (no UTC offset) because that is exactly what
+    the API serialises — `parseRecordDate` pins them to UTC."""
+
+    IMAGES = [
+        {"uuid": "img-1", "filename": "a.jpg", "createdAt": "2026-01-10T12:00:00", "bboxes": [BBOX_1]},
+        {"uuid": "img-2", "filename": "b.jpg", "createdAt": "2026-06-15T12:00:00", "bboxes": [BBOX_2]},
+        {"uuid": "img-3", "filename": "c.jpg", "createdAt": "2026-12-20T12:00:00", "bboxes": [BBOX_3]},
+    ]
+
+    def _open(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG, VERIFIED_TAG, REVIEWED_TAG])
+        _mock_image_labels_batch(page)
+        _open_curated_modal(page, base_url, candidates=self.IMAGES)
+
+    def _set_range(self, page: Page, testid: str, value: str):
+        page.locator(f"[data-testid='{testid}']").fill(value)
+        page.locator(f"[data-testid='{testid}']").dispatch_event("change")
+        page.wait_for_timeout(300)
+
+    def test_controls_are_present(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='curated-date-from']")).to_be_visible()
+        expect(page.locator("[data-testid='curated-date-to']")).to_be_visible()
+
+    def test_from_bound_drops_earlier_images(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._set_range(page, "curated-date-from", "2026-03-01T00:00")
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
+
+    def test_to_bound_drops_later_images(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._set_range(page, "curated-date-to", "2026-09-01T00:00")
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
+
+    def test_both_bounds_form_a_window(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._set_range(page, "curated-date-from", "2026-03-01T00:00")
+        self._set_range(page, "curated-date-to", "2026-09-01T00:00")
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
+
+    def test_clearing_restores_all(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._set_range(page, "curated-date-from", "2026-03-01T00:00")
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_have_count(0)
+
+        self._set_range(page, "curated-date-from", "")
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
+
+    def test_apply_to_all_count_reflects_date_filter(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._set_range(page, "curated-date-from", "2026-03-01T00:00")
+
+        page.locator("button", has_text="Apply to All").click()
+        expect(page.locator("strong", has_text="Apply to all 2 matched bbox")).to_be_visible()
