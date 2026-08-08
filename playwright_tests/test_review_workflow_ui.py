@@ -629,6 +629,109 @@ class TestBulkApplyAllScope:
         assert {"kind": "bboxVerification", "state": "verified"} in body["filter"]["terms"], body
 
 
+class TestBulkAllButtonViewGating:
+    """Each filter-scoped bulk button appears only in the view whose entries it
+    acts on — the bbox one applies bbox-level actions no matter what's on
+    screen, which is exactly the confusion the gating removes."""
+
+    def _setup(self, page: Page, base_url: str, bbox_count: int = 7):
+        _mock_review_queue(page, PAGE_1_IMAGES, total_count=2)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [])
+        _mock_misc_review_endpoints(page)
+        page.route(
+            "**/api/images/bbox/count",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "count": bbox_count}),
+            ),
+        )
+        _navigate_to_review(page, base_url)
+
+    def test_bbox_button_shows_a_real_bbox_count_not_the_image_count(self, page: Page, base_url: str):
+        """The review queue's totalCount counts images (2 here); the bbox button
+        must show the separate bbox count (7) or it understates its own scope."""
+        self._setup(page, base_url)
+        _switch_view(page, "bboxes")
+
+        expect(page.get_by_test_id("review-bulk-apply-all")).to_have_text("Apply to All Filtered Bboxes (7)")
+
+    def test_only_the_bbox_button_shows_in_bboxes_view(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _switch_view(page, "bboxes")
+
+        expect(page.get_by_test_id("review-bulk-apply-all")).to_be_visible()
+        expect(page.get_by_test_id("review-bulk-apply-filtered-images")).to_be_hidden()
+
+    def test_only_the_images_button_shows_in_images_view(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _switch_view(page, "images")
+
+        expect(page.get_by_test_id("review-bulk-apply-filtered-images")).to_be_visible()
+        expect(page.get_by_test_id("review-bulk-apply-all")).to_be_hidden()
+
+    def test_both_buttons_show_in_all_view(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _switch_view(page, "all")
+
+        expect(page.get_by_test_id("review-bulk-apply-all")).to_be_visible()
+        expect(page.get_by_test_id("review-bulk-apply-filtered-images")).to_be_visible()
+
+
+class TestApplyToFilteredImagesScope:
+    """ "Apply to Filtered Images" must say how many images it will hit and
+    show the same first-3/last-3 range preview as "Apply to All"."""
+
+    def test_button_shows_the_filtered_image_count(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES, total_count=1234)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [])
+        _mock_misc_review_endpoints(page)
+
+        _navigate_to_review(page, base_url)
+
+        expect(page.get_by_test_id("review-bulk-apply-filtered-images")).to_have_text(
+            "Apply to Filtered Images (1,234)"
+        )
+
+    def test_modal_shows_count_and_first_last_range_preview(self, page: Page, base_url: str):
+        """The reverse-sorted query supplies the "Last" group, so the modal
+        shows both ends of the filtered range, not just the open page."""
+        png_bytes = base64.b64decode(TINY_PNG_B64)
+        page.route(
+            "**/thumbnail?*",
+            lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
+        )
+
+        def handle_queue(route: Route):
+            body = json.loads(route.request.post_data or "{}")
+            # Default sort order is 'desc'; the preview's tail query flips it.
+            images = PAGE_2_IMAGES if body.get("sortOrder") == "asc" else PAGE_1_IMAGES
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "images": images, "hasMore": False, "totalCount": 3}),
+            )
+
+        page.route("**/api/images/review", handle_queue)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [])
+        _mock_misc_review_endpoints(page)
+
+        _navigate_to_review(page, base_url)
+        page.get_by_test_id("review-bulk-apply-filtered-images").click()
+
+        dialog = page.locator("div:has(> strong:text-is('Apply to All 3 Filtered Images'))").last
+        expect(dialog).to_be_visible()
+
+        preview = dialog.locator(".bulk-modal-preview-row")
+        expect(preview.locator(".image-compare-group-label", has_text="First")).to_be_visible()
+        expect(preview.locator(".image-compare-group-label", has_text="Last")).to_be_visible()
+        # 2 images from the head query + 1 distinct image from the tail query.
+        expect(preview.locator(".image-compare-thumb")).to_have_count(3)
+
+
 # ---------------------------------------------------------------------------
 # 6b. Apply to Parent Images (bbox selection -> distinct parent images)
 # ---------------------------------------------------------------------------
@@ -1092,97 +1195,28 @@ class TestGroupHighlight:
 
 
 # ---------------------------------------------------------------------------
-# 12. List view (ui/entryView.js)
+# 12. Grid-only results (list view removed)
 # ---------------------------------------------------------------------------
 
 
-class TestListView:
-    def test_toggle_to_list_view_renders_rows_and_persists(self, page: Page, base_url: str):
-        """Switching the entryView toggle to list view renders `.review-row`
-        elements (instead of grid `.review-card` cells), and the choice survives
-        a reload via localStorage `review-view` — mirroring the file browser's
-        `fb-view` persistence."""
+class TestGridOnlyResults:
+    def test_no_list_toggle_and_stored_list_pref_still_renders_grid(self, page: Page, base_url: str):
+        """The grid/list toggle is gone from the review toolbar, and a stale
+        `review-view=list` in localStorage (written before the removal) must not
+        leave the panel rendering nothing — the panel forces itself back to grid."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
 
+        page.goto(base_url)
+        page.evaluate("() => localStorage.setItem('review-view', 'list')")
         _navigate_to_review(page, base_url)
         _switch_view(page, "bboxes")
 
-        # Explicitly in bboxes view, no tag filter → all 3 bbox cards visible.
+        expect(page.locator("#review-root .fb-view-toggle")).to_have_count(0)
+        expect(page.locator("#review-root .review-list")).to_have_count(0)
+        expect(page.locator("#review-root .review-grid")).to_have_count(1)
         expect(page.locator("#review-root [data-testid='review-card']")).to_have_count(3)
-        expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(0)
-
-        page.locator("#review-root .fb-view-toggle button[title='List view']").click()
-        page.wait_for_timeout(200)
-
-        expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(3)
-        expect(page.locator("#review-root .review-list")).to_have_count(1)
-        expect(page.locator("#review-root .review-grid")).to_have_count(0)
-        assert page.evaluate("() => localStorage.getItem('review-view')") == "list"
-
-        # Reload — list view should be remembered; viewFilter resets to 'images' default → 2 rows.
-        page.reload()
-        page.wait_for_load_state("networkidle")
-        page.locator(".main-tab-button[data-tab='tab-review']").click()
-        page.wait_for_load_state("networkidle")
-        page.wait_for_selector("#review-root .review-list", timeout=4000)
-        expect(page.locator("#review-root [data-testid='review-row']")).to_have_count(2)
-
-    def test_list_view_selection_and_canvas_modal(self, page: Page, base_url: str):
-        """In list view, checking a row's checkbox enables Bulk Apply (same
-        `applySelect` wiring as grid cards), and double-clicking a row's
-        thumbnail opens the canvas modal — proving `entryView.layout` queries
-        and handlers work identically across both render paths."""
-        _mock_review_queue(page, PAGE_1_IMAGES)
-        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
-        _mock_misc_review_endpoints(page)
-
-        # Thumbnails are fetched as raw bytes via fetch().blob() — serve a tiny real PNG
-        # so the <img class="thumb"> has nonzero size and can be double-clicked.
-        png_bytes = base64.b64decode(TINY_PNG_B64)
-        page.route(
-            "**/thumbnail?*",
-            lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
-        )
-        page.route(
-            "**/api/images/*/file",
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps(
-                    {
-                        "status": "success",
-                        "imageBase64": TINY_PNG_B64,
-                        "mimeType": "image/png",
-                        "image": {"uuid": "img-1", "filename": "folder/image1.jpg", "bboxes": [BBOX_1, BBOX_2]},
-                    }
-                ),
-            ),
-        )
-
-        _navigate_to_review(page, base_url)
-        _switch_view(page, "bboxes")
-        page.locator("#review-root .fb-view-toggle button[title='List view']").click()
-        page.wait_for_timeout(200)
-
-        rows = page.locator("#review-root [data-testid='review-row']")
-        # Explicitly in bboxes view, no tag filter → all 3 bbox rows visible.
-        expect(rows).to_have_count(3)
-
-        bulk_btn = page.get_by_test_id("review-bulk-apply")
-        expect(bulk_btn).to_have_text("Bulk Apply (0)")
-
-        row = page.locator("#review-root [data-bbox-uuid='bbox-1']")
-        row.locator("input[type=checkbox]").click()
-        expect(bulk_btn).to_have_text("Bulk Apply (1)")
-        expect(bulk_btn).to_be_enabled()
-
-        row.locator("img.thumb").dblclick()
-        modal = page.get_by_test_id("canvas-edit-modal")
-        expect(modal).to_be_visible(timeout=8000)
-        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_have_text("Edit: folder/image1.jpg")
 
 
 # ---------------------------------------------------------------------------

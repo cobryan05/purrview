@@ -8,8 +8,6 @@ import {
   createCardGrid,
   buildBboxCard,
   buildImageCard,
-  buildBboxRow,
-  buildImageRow,
 } from '/app-static/js/app/review/cardGrid.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 import {
@@ -18,6 +16,7 @@ import {
   bulkApplyBboxesByUuids,
   bulkApplyImagesByUuids,
   bulkApplyImages,
+  countMatchingBboxes,
   updateImageBboxes,
   updateBbox,
   deleteBbox,
@@ -401,21 +400,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const statusMsg = document.createElement('span');
   statusMsg.className = 'review-toolbar__status';
 
-  // ── Entry view (grid/list scaffold) ───────────────────────────────
+  // ── Entry view (grid only) ────────────────────────────────────────
+  // Review results are thumbnails first — the list rendering carried no
+  // information the cards don't, so the toggle and the row renderers are gone.
   const entryView = createEntryView({
     storageKey: 'review-view',
     defaultView: 'grid',
-    showToggle: true,
-    listClass: 'review-list',
+    showToggle: false,
     gridClass: 'review-grid',
     renderCell: (entry, i) => entry.kind === 'image'
       ? buildImageCard(cardGrid, entry, _cardOpts(labels, i))
       : buildBboxCard(cardGrid, entry, _cardOpts(labels, i)),
-    renderRow: (entry, i) => entry.kind === 'image'
-      ? buildImageRow(cardGrid, entry, _cardOpts(labels, i))
-      : buildBboxRow(cardGrid, entry, _cardOpts(labels, i)),
     // Cards subscribe to EventBus on build; drain before every rebuild or a
-    // grid/list toggle doubles the subscriptions each click.
+    // re-render doubles the subscriptions.
     onBeforeRender: () => _drainCardUnsubs(),
   });
   // `grid` aliases the live container holding cards/rows — selection, stale-marking,
@@ -444,7 +441,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   toolbar.append(
     makeToolbarGroup(sortLabel, sortBySelect, sortOrderSelect),
     makeToolbarSep(),
-    makeToolbarGroup(viewToggle, entryView.element, pageSizeSelect),
+    makeToolbarGroup(viewToggle, pageSizeSelect),
     makeToolbarSep(),
     persistentUtilityGroup,
   );
@@ -808,7 +805,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   let _rendering = false;
   let _renderGeneration = 0;
   let _hasMore = false;
+  // Matching IMAGES (what the review query paginates by). Do NOT reuse this as
+  // a bbox count — one image carries many bboxes.
   let _totalCount = 0;
+  // Matching BBOXES, fetched separately (null = not resolved yet).
+  let _totalBboxCount = null;
 
   // ── Infinite-scroll state (M2, fetchImages mode only) ────────────────────
   // `_curatedCursor` is the afterUuid to resume from; `_curatedExhausted`
@@ -875,6 +876,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       verificationLabelUuids: _verificationLabelUuidsFor(fs),
       bboxVerification: fs.bboxVerification,
     };
+  }
+
+  // Bbox-level subset of the current filter — the same narrowing render()
+  // applies client-side when building bbox entries. Sent to the bulk-apply and
+  // bbox-count endpoints so both agree with what the grid shows.
+  function _bboxSubsetFilters(fs) {
+    const bboxTagFilter = fs.showAllBboxes ? [] : (fs.tagUuids ?? []);
+    const bboxLabelFilter = fs.labelUuids?.length > 0
+      ? (fs.labelIncludeChildren
+          ? Array.from(expandWithDescendants(fs.labelUuids, labels))
+          : fs.labelUuids)
+      : [];
+    return { bboxTagFilter, bboxLabelFilter };
   }
 
   // Full set of image UUIDs matching this review panel's current scope — the
@@ -1136,15 +1150,54 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       bulkParentImagesBtn.textContent = `Apply to Parent Images (${distinctCount})`;
     }
     if (!fetchImages) {
-      const countStr = _totalCount > 0 ? _totalCount.toLocaleString() : '?';
-      bulkAllBtn.textContent = `Apply to All (${countStr})`;
+      const imgCountStr = _totalCount > 0 ? _totalCount.toLocaleString() : '?';
+      const bboxCountStr = _totalBboxCount === null ? '…' : _totalBboxCount.toLocaleString();
+      bulkAllBtn.textContent = `Apply to All Filtered Bboxes (${bboxCountStr})`;
+      // Gated on the image total, not the bbox count: the bbox count is
+      // advisory (and may be pending or have failed), and "no matching images"
+      // already implies no matching bboxes.
       bulkAllBtn.disabled = _totalCount === 0;
+      bulkAllImagesBtn.textContent = `Apply to Filtered Images (${imgCountStr})`;
+      bulkAllImagesBtn.disabled = _totalCount === 0;
+      // Each button is shown only in the view whose entries it acts on, so the
+      // action level always matches what's on screen; 'all' view offers both.
+      bulkAllBtn.hidden = _viewFilter === 'images';
+      bulkAllImagesBtn.hidden = _viewFilter === 'bboxes';
     } else {
       // No server-side total in custom-fetchImages mode — the full candidate
       // count is only known once showApplyToAllCandidatesModal fetches it.
+      // That path resolves image-vs-bbox scope from the current view itself,
+      // so it stays visible in every view (and is the only bulk-all button
+      // there — the filter-based images one has no filter to reuse).
       bulkAllBtn.textContent = 'Apply to All';
       bulkAllBtn.disabled = _visibleEntries.length === 0;
+      bulkAllBtn.hidden = false;
+      bulkAllImagesBtn.hidden = true;
     }
+  }
+
+  /**
+   * Refresh the matching-bbox total behind "Apply to All Filtered Bboxes".
+   * Generation-guarded like render(): a filter change mid-flight starts a newer
+   * render whose count must win.
+   */
+  async function _refreshBboxCount(gen) {
+    if (fetchImages) return;
+    const fs = filterPanel.getState();
+    try {
+      const count = await countMatchingBboxes({
+        ..._baseReviewFilterOpts(fs),
+        requireBboxes: _viewFilter === 'bboxes',
+        ..._bboxSubsetFilters(fs),
+      });
+      if (_renderGeneration !== gen) return;
+      _totalBboxCount = count;
+    } catch (err) {
+      if (_renderGeneration !== gen) return;
+      Logger.error('review: bbox count fetch failed', err);
+      _totalBboxCount = null;
+    }
+    updateBulkBtn();
   }
 
   function updateStatusMsg() {
@@ -1596,6 +1649,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     clearTimeout(_slowTimer);
     renderFromEntries();
 
+    // Not awaited — the grid must not wait on a count query. The previous
+    // value stays on the button until it resolves (no '…' flicker on paging).
+    _refreshBboxCount(_gen);
+
     refreshBtn.disabled = false;
     _rendering = false;
 
@@ -1949,12 +2006,51 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // tractable at scale without selecting every bbox by hand.
   async function applyToAllImagesByFilter() {
     const fs = filterPanel.getState();
-    const titleText = 'Apply to all images matching the current filter';
+    const sortBy = sortBySelect.value;
+    const sortOrder = sortOrderSelect.value;
+    const totalImageCount = _totalCount;
+    const titleText = `Apply to All ${totalImageCount.toLocaleString()} Filtered Image${totalImageCount === 1 ? '' : 's'}`;
+
+    // ── Preview section: first 3 / last 3 images of the filtered range ────
+    // Fetched from the server rather than read off _visibleEntries so it shows
+    // the true ends of the filtered set, not just whichever page is open.
+    const previewSection = document.createElement('div');
+    previewSection.className = 'bulk-modal-preview-section';
+    const previewHdr = document.createElement('div');
+    previewHdr.className = 'bulk-modal-preview-hdr';
+    previewHdr.textContent = 'Preview range';
+    const previewRow = document.createElement('div');
+    previewRow.className = 'bulk-modal-preview-row';
+    const previewStatus = document.createElement('span');
+    previewStatus.className = 'bulk-modal-preview-status';
+    previewStatus.textContent = 'Loading preview…';
+    previewRow.appendChild(previewStatus);
+    previewSection.append(previewHdr, previewRow);
+
+    const endOpts = {
+      ..._baseReviewFilterOpts(fs),
+      requireBboxes: _viewFilter === 'bboxes',
+      sortBy,
+      limit: 3,
+    };
+    // Start both end queries now; render them once the modal is on screen.
+    const previewPromise = Promise.all([
+      fetchReviewQueue({ ...endOpts, sortOrder }),
+      fetchReviewQueue({ ...endOpts, sortOrder: sortOrder === 'desc' ? 'asc' : 'desc' }),
+    ]).then(([firstPage, lastPage]) => ({
+      first: firstPage.images ?? [],
+      // Reverse so the "Last" group still reads in natural sort order.
+      last: [...(lastPage.images ?? [])].reverse(),
+    })).catch(err => {
+      Logger.error('applyToAllImagesByFilter: failed to fetch preview range:', err);
+      return { first: [], last: [] };
+    });
+
     await showImageBulkActionModal([], labels, async (action, labelUuid, tagUuids) => {
       if (action === 'delete') {
         const confirmed = await showConfirmModal({
           title: 'Delete All Matching Images',
-          message: 'Permanently delete every image matching the current filter, across all pages? '
+          message: `Permanently delete all ${totalImageCount.toLocaleString()} images matching the current filter, across all pages? `
             + 'This removes the files and all their annotations from disk. This cannot be undone.',
           confirmText: 'Delete',
           danger: true,
@@ -1983,7 +2079,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         statusMsg.textContent = `Bulk apply failed: ${err.message}`;
         Logger.error('applyToAllImagesByFilter failed:', err);
       }
-    }, titleText);
+    }, titleText, { previewNode: previewSection });
+
+    const { first, last } = await previewPromise;
+    _populateImagePreviewRow(previewRow, first, last);
   }
 
   bulkAllImagesBtn.addEventListener('click', applyToAllImagesByFilter);
@@ -2145,16 +2244,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const fs = filterPanel.getState();
     const sortBy = sortBySelect.value;
     const sortOrder = sortOrderSelect.value;
-    const totalBboxCount = _totalCount;
+    // Server-side count of the bboxes this will actually modify (the image
+    // total is a different, much smaller number — see _totalCount).
+    const totalBboxCount = _totalBboxCount;
+    const totalBboxStr = totalBboxCount === null ? '' : ` ${totalBboxCount.toLocaleString()}`;
 
     // ── Build bbox-level filter (mirrors the render() subset logic) ──────
     const showAll = fs.showAllBboxes;
-    const bboxTagFilter = showAll ? [] : (fs.tagUuids ?? []);
-    const bboxLabelFilter = fs.labelUuids?.length > 0
-      ? (fs.labelIncludeChildren
-          ? Array.from(expandWithDescendants(fs.labelUuids, labels))
-          : fs.labelUuids)
-      : [];
+    const { bboxTagFilter, bboxLabelFilter } = _bboxSubsetFilters(fs);
     const bboxTagSet = showAll ? null : new Set(bboxTagFilter);
     const bboxLabelSet = bboxLabelFilter.length > 0 ? new Set(bboxLabelFilter) : null;
 
@@ -2174,7 +2271,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     dialog.className = 'bulk-modal-dialog bulk-modal-dialog--wide';
 
     const title = document.createElement('strong');
-    title.textContent = `Apply to All ${totalBboxCount.toLocaleString()} Matching Bboxes`;
+    title.textContent = `Apply to All${totalBboxStr} Filtered Bboxes`;
 
     // ── Preview section ──────────────────────────────────────────────────
     const previewSection = document.createElement('div');
@@ -2247,7 +2344,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // ── Warning ──────────────────────────────────────────────────────────
     const warning = document.createElement('div');
     warning.className = 'bulk-modal-warning';
-    warning.textContent = `⚠ This will modify all ${totalBboxCount.toLocaleString()} bboxes matching your current filters, across every page. This cannot be undone.`;
+    warning.textContent = `⚠ This will modify all${totalBboxStr} bboxes matching your current filters, across every page. This cannot be undone.`;
 
     // ── Buttons ──────────────────────────────────────────────────────────
     const btnRow = document.createElement('div');
@@ -2260,7 +2357,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     cancelBtn.addEventListener('click', close);
 
     const okBtn = document.createElement('button');
-    okBtn.textContent = `Apply to All ${totalBboxCount.toLocaleString()}`;
+    okBtn.textContent = `Apply to All${totalBboxStr}`;
     okBtn.className = 'bulk-modal-ok-btn';
     okBtn.addEventListener('click', async () => {
       close();
@@ -2277,7 +2374,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         : (selectedAction === 'revertRelabel')
           ? (fs.tagUuids ?? []).filter(uuid => tags.get(uuid)?.kind === 'task_generated')
         : [];
-      statusMsg.textContent = `Applying to all ${totalBboxCount.toLocaleString()} bboxes…`;
+      statusMsg.textContent = `Applying to all${totalBboxStr} bboxes…`;
       statusMsg.classList.add('review-toolbar__status--loading');
       try {
         const { modifiedCount, failCount } = await bulkApplyAll({
@@ -3183,6 +3280,54 @@ function _makeBboxThumbGroup(entries, label) {
   lbl.textContent = label;
   group.append(thumbs, lbl);
   return group;
+}
+
+function _makeImageThumbGroup(images, label) {
+  const group = document.createElement('div');
+  group.className = 'image-compare-group';
+  const thumbs = document.createElement('div');
+  thumbs.className = 'image-compare-thumbs';
+  for (const img of images) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'image-compare-thumb-wrap';
+    const thumb = document.createElement('img');
+    thumb.className = 'image-compare-thumb';
+    thumb.src = getImageThumbnailUrl(img.filename, 80);
+    thumb.title = img.filename ?? '';
+    wrapper.appendChild(thumb);
+    thumbs.appendChild(wrapper);
+  }
+  const lbl = document.createElement('div');
+  lbl.className = 'image-compare-group-label';
+  lbl.textContent = label;
+  group.append(thumbs, lbl);
+  return group;
+}
+
+/**
+ * Populate a preview row with first-N / last-N image thumbnails — the
+ * image-level twin of _populateBboxPreviewRow, so "Apply to Filtered Images"
+ * shows the same both-ends-of-the-range sanity check as "Apply to All".
+ */
+function _populateImagePreviewRow(row, firstImgs, lastImgs) {
+  row.innerHTML = '';
+  if (firstImgs.length === 0 && lastImgs.length === 0) {
+    const msg = document.createElement('span');
+    msg.className = 'image-compare-empty-msg';
+    msg.textContent = 'No preview available.';
+    row.appendChild(msg);
+    return;
+  }
+  const firstUuids = new Set(firstImgs.map(i => i.uuid));
+  const uniqueLast = lastImgs.filter(i => !firstUuids.has(i.uuid));
+  if (firstImgs.length > 0) row.appendChild(_makeImageThumbGroup(firstImgs, 'First'));
+  if (uniqueLast.length > 0) {
+    const sep = document.createElement('div');
+    sep.className = 'image-compare-sep';
+    sep.textContent = '···';
+    row.appendChild(sep);
+    row.appendChild(_makeImageThumbGroup(uniqueLast, 'Last'));
+  }
 }
 
 /** Populate a preview row with first-N / last-N bbox thumbnails. */

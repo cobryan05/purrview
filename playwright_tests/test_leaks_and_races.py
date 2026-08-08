@@ -293,9 +293,10 @@ class TestImageLabelChipsBatch:
 
 
 class TestViewToggleSubscriptionLeak:
-    def test_grid_list_toggle_does_not_duplicate_card_subscriptions(self, page: Page, base_url: str):
-        """Toggling grid↔list rebuilds every card; each rebuild must drain the
-        previous cards' EventBus subscriptions or they double per click."""
+    def test_view_filter_toggle_does_not_duplicate_card_subscriptions(self, page: Page, base_url: str):
+        """Switching All/Images/Bboxes rebuilds every card; each rebuild must
+        drain the previous cards' EventBus subscriptions or they double per
+        click. (Was the grid↔list toggle, before list view was removed.)"""
         import json
 
         images = [{"uuid": "img-1", "filename": "folder/im1.jpg", "bboxes": []}]
@@ -317,15 +318,15 @@ class TestViewToggleSubscriptionLeak:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-review']").click()
-        page.wait_for_selector("#review-root .review-grid, #review-root .review-list", timeout=5000)
+        page.wait_for_selector("#review-root .review-grid", timeout=5000)
         page.wait_for_timeout(500)
 
         baseline = _listener_count(page)
         # Toggle back and forth a few times; listener count must not grow.
         for _ in range(3):
-            page.locator("#review-root .fb-view-toggle button[title='List view']").click()
-            page.wait_for_timeout(150)
-            page.locator("#review-root .fb-view-toggle button[title='Grid view']").click()
-            page.wait_for_timeout(150)
+            page.locator("#review-root .view-btn[data-view-key='bboxes']").click()
+            page.wait_for_timeout(250)
+            page.locator("#review-root .view-btn[data-view-key='images']").click()
+            page.wait_for_timeout(250)
         after = _listener_count(page)
         assert after == baseline, f"view toggling grew listeners {baseline} → {after}"

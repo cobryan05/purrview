@@ -119,6 +119,20 @@ class BulkApplyAllPayload(ApiPayload):
     bbox_verification: Optional[str] = None  # verified | unverified
 
 
+class CountBboxesPayload(ApiPayload):
+    """Same filter surface as BulkApplyAllPayload, minus the action fields."""
+
+    filter: ImageSearchParams
+    bbox_tag_filter: List[str] = Field(default_factory=list)
+    bbox_label_filter: List[str] = Field(default_factory=list)
+    show_all_bboxes: bool = False
+    bbox_verification: Optional[str] = None  # verified | unverified
+
+
+class CountBboxesResponse(StatusResponse):
+    count: int = 0
+
+
 class BulkApplyAllResponse(StatusResponse):
     modified_count: int = 0
     fail_count: int = 0
@@ -1711,6 +1725,29 @@ class WebApp:
         ) -> StatusResponse:
             await self._manager.invalidate_bbox_thumbnails(payload.bbox_uuids)
             return StatusResponse()
+
+        @self._app.post(
+            "/api/images/bbox/count",
+            response_model=CountBboxesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="count_bboxes",
+        )
+        async def count_bboxes_endpoint(
+            payload: CountBboxesPayload,
+        ) -> CountBboxesResponse:
+            """Count the bboxes a bulk-apply with this same filter would modify."""
+            try:
+                count = await self._manager.count_bboxes_matching(
+                    search_params=payload.filter,
+                    bbox_tag_filter=payload.bbox_tag_filter,
+                    bbox_label_filter=payload.bbox_label_filter,
+                    show_all_bboxes=payload.show_all_bboxes,
+                    bbox_verification=payload.bbox_verification,
+                )
+                return CountBboxesResponse(count=count)
+            except Exception as e:
+                logger.exception("count_bboxes failed")
+                return CountBboxesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/images/bbox/bulk-apply",

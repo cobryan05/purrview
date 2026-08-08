@@ -16,7 +16,13 @@ import { CheckboxField } from '/app-static/js/ui/utils/fields/CheckboxField.js';
 
 export const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUncertain'];
 
-export async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null) {
+/**
+ * @param {object} [opts]
+ * @param {HTMLElement} [opts.previewNode] — inserted directly under the title.
+ *   Callers use it to show a thumbnail preview of the affected range; the node
+ *   may still be populating asynchronously when the modal opens.
+ */
+export async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null, opts = {}) {
   const tags = await fetchTags().catch(() => new Map());
 
   const _layer = acquireModalLayer({ dialog: true });
@@ -112,7 +118,15 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
 
   btnRow.appendChild(cancelBtn);
   btnRow.appendChild(okBtn);
-  dialog.append(title, radioGroup, labelPickerRow, tagPickerRow, btnRow);
+  dialog.append(title);
+  if (opts.previewNode) {
+    // Two thumbnail groups plus the separator need more room than the
+    // action-picker-only default (matches .bulk-modal-dialog--wide).
+    dialog.style.minWidth = '420px';
+    dialog.style.maxWidth = '600px';
+    dialog.appendChild(opts.previewNode);
+  }
+  dialog.append(radioGroup, labelPickerRow, tagPickerRow, btnRow);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
   applyModalCascade(dialog, _layer.depth);

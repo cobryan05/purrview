@@ -1889,30 +1889,11 @@ button.filter-active {
   border: 1px solid var(--color-accent);
 }
 
-/* In the review toolbar the shared `.fb-view-toggle` (grid/list icons) is
-   visually merged with `.review-view-toggle` (All/Images/Bboxes) — it drops
-   its own border and left-radius so the two pills butt up against each other
-   and read as a single segmented control. */
-.review-toolbar .fb-view-toggle {
-  margin-left: 0;
-  border: 1px solid var(--border-strong);
-  border-left: none;
-  border-radius: 0 4px 4px 0;
-}
-/* The review-view-toggle on its right edge also square-off so they join neatly */
+/* The All/Images/Bboxes pill used to be joined to a grid/list toggle on its
+   right; that toggle is gone (review results are grid-only), so it is a
+   standalone segmented control again. */
 .review-toolbar .review-view-toggle {
-  border-radius: 4px 0 0 4px;
-}
-.review-toolbar .fb-view-toggle button {
-  padding: 0.2em 0.6em;
-  font-size: 0.85em;
-  color: var(--text-muted);
-  line-height: 1;
-}
-.review-toolbar .fb-view-toggle button.active {
-  background: var(--surface-elevated);
-  color: var(--text);
-  border: none;
+  border-radius: 4px;
 }
 
 /* ===== Review: Image-mode card =====
@@ -1993,79 +1974,6 @@ button.filter-active {
   animation: recently-viewed-flash 3s ease-out forwards;
   position: relative;
   z-index: 2; /* float above neighbours so the glow isn't clipped */
-}
-
-/* ===== Review: List view (rows reuse .review-card for selection/state/highlight rules) ===== */
-.review-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3em;
-  padding-bottom: 2em;
-}
-
-.review-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6em;
-  padding: 0.3em 0.5em;
-}
-
-.review-row .thumb {
-  width: 64px;
-  height: 64px;
-  object-fit: contain;
-  background: var(--surface-sunken);
-  border-radius: 4px;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-
-.review-row input[type=checkbox] {
-  position: static;
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: var(--color-accent);
-}
-
-.review-row .card-info {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.3em;
-  padding: 0;
-  font-size: 0.8em;
-  min-width: 0;
-  flex: 1;
-}
-
-.review-row .card-state-badge {
-  margin-bottom: 0;
-}
-
-.review-row .bbox-count-badge {
-  position: static;
-  flex-shrink: 0;
-  background: var(--surface-raised);
-}
-
-.review-row__meta,
-.review-row__chips {
-  color: var(--text-muted);
-  font-size: 0.85em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.review-row__chips {
-  display: inline-flex;
-  gap: 2px;
-  white-space: normal;
 }
 
 /* ===== Thumbnail hover-preview popover (ui/thumbnailHoverPreview.js) =====

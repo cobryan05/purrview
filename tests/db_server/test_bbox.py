@@ -792,3 +792,125 @@ async def test_add_bbox_accumulates_without_disturbing_siblings(http_client, set
     uuids = {b["uuid"] for b in bboxes}
     assert len(bboxes) == 3
     assert orig in uuids  # original bbox never touched by the inserts
+
+
+class TestCountBboxes:
+    """POST /api/images/bbox/count — the number behind "Apply to All Filtered
+    Bboxes". It must equal what a bulk-apply with the same filter modifies; the
+    review queue's totalCount counts *images* and is not a substitute."""
+
+    async def _make_three_bboxes(self, http_client, label_uuid, review_tag):
+        tagged_verified = str(uuid.uuid4())
+        tagged_unverified = str(uuid.uuid4())
+        untagged_unverified = str(uuid.uuid4())
+        await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "bbox_test.png",
+                "boxes": [
+                    {
+                        "uuid": tagged_verified,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tagUuids": [VERIFIED_TAG_UUID, review_tag],
+                    },
+                    {
+                        "uuid": tagged_unverified,
+                        "labelUuid": label_uuid,
+                        "x": 0.3,
+                        "y": 0.3,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tagUuids": [UNVERIFIED_TAG_UUID, review_tag],
+                    },
+                    {
+                        "uuid": untagged_unverified,
+                        "labelUuid": label_uuid,
+                        "x": 0.6,
+                        "y": 0.6,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "tagUuids": [UNVERIFIED_TAG_UUID],
+                    },
+                ],
+            },
+        )
+        return tagged_verified, tagged_unverified, untagged_unverified
+
+    async def test_counts_every_bbox_when_unfiltered(self, http_client, image_file, label_uuid):
+        r_tag = await http_client.post("/api/tags/add", json={"name": "review-me", "color": "#abcabc"})
+        await self._make_three_bboxes(http_client, label_uuid, r_tag.json()["tag"]["uuid"])
+
+        r = await http_client.post(
+            "/api/images/bbox/count",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+            },
+        )
+        assert r.status_code == 200
+        # Three bboxes on ONE image — an image count would report 1 here.
+        assert r.json()["count"] == 3, r.json()
+
+    async def test_bbox_subset_filters_narrow_the_count(self, http_client, image_file, label_uuid):
+        r_tag = await http_client.post("/api/tags/add", json={"name": "review-me", "color": "#abcabc"})
+        review_tag = r_tag.json()["tag"]["uuid"]
+        await self._make_three_bboxes(http_client, label_uuid, review_tag)
+
+        body = {
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "bboxTagFilter": [review_tag],
+            "bboxLabelFilter": [],
+            "showAllBboxes": False,
+            "bboxVerification": "unverified",
+        }
+        r = await http_client.post("/api/images/bbox/count", json=body)
+        assert r.status_code == 200
+        # Only the tagged AND unverified bbox: verification ANDs with the tag
+        # filter rather than joining its OR list.
+        assert r.json()["count"] == 1, r.json()
+
+    async def test_count_matches_what_bulk_apply_modifies(self, http_client, image_file, label_uuid):
+        """Anti-drift: the count and the action share an argument shape, so the
+        number shown must equal the number changed for the same filter."""
+        r_tag = await http_client.post("/api/tags/add", json={"name": "review-me", "color": "#abcabc"})
+        review_tag = r_tag.json()["tag"]["uuid"]
+        await self._make_three_bboxes(http_client, label_uuid, review_tag)
+
+        scope = {
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "bboxTagFilter": [review_tag],
+            "bboxLabelFilter": [],
+            "showAllBboxes": False,
+            "bboxVerification": "unverified",
+        }
+        r_count = await http_client.post("/api/images/bbox/count", json=scope)
+        r_apply = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={**scope, "action": "delete", "tagUuids": []},
+        )
+        assert r_count.status_code == 200 and r_apply.status_code == 200
+        assert r_count.json()["count"] == r_apply.json()["modifiedCount"] == 1
+
+    async def test_label_filter_excludes_other_labels(self, http_client, image_file, label_uuid):
+        r_tag = await http_client.post("/api/tags/add", json={"name": "review-me", "color": "#abcabc"})
+        await self._make_three_bboxes(http_client, label_uuid, r_tag.json()["tag"]["uuid"])
+        r_other = await http_client.post("/api/labels", json={"name": "count_other", "color": "#123456"})
+        other_label = r_other.json()["label"]["uuid"]
+
+        r = await http_client.post(
+            "/api/images/bbox/count",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [other_label],
+                "showAllBboxes": True,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["count"] == 0, r.json()

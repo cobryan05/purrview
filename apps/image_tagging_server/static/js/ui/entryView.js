@@ -43,7 +43,10 @@ export function createEntryView({
   onToggle,
   onBeforeRender,
 }) {
-  const stored = prefs.readRaw(storageKey);
+  // Without a toggle there is no user choice to restore, and a stored value
+  // left over from when there was one can select a view the caller no longer
+  // supplies a renderer for — which renders nothing at all.
+  const stored = showToggle ? prefs.readRaw(storageKey) : null;
   let _view = (stored === 'list' || stored === 'grid') ? stored : defaultView;
   let _entries = [];
   let _emptyText = '';

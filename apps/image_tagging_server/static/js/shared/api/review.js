@@ -432,6 +432,75 @@ export async function bulkApplyAll({
 }
 
 /**
+ * Count the bboxes a bulkApplyAll with this same filter would modify.
+ *
+ * Takes the identical option shape as bulkApplyAll minus the action fields, so
+ * the count shown on the button and in the modal can't drift from the scope of
+ * the action itself. NOT interchangeable with the review queue's totalCount —
+ * that one counts matching *images*.
+ *
+ * @returns {Promise<number>}
+ */
+export async function countMatchingBboxes({
+  tagUuids = [UNVERIFIED_TAG_UUID],
+  tagExcludeUuids = [],
+  showAllBboxes = false,
+  tagMatchMode = 'any',
+  labelUuids = [],
+  labelExcludeUuids = [],
+  labelMatchMode = 'any',
+  labelIncludeChildren = false,
+  filenameSearch,
+  dateFrom = null,
+  dateTo = null,
+  imageLabelFilters = [],
+  imageLabelConditions = [],
+  verificationCheck = null,
+  verificationLabelUuids = [],
+  bboxVerification = null,
+  requireBboxes = false,
+  bboxTagFilter = [],
+  bboxLabelFilter = [],
+} = {}) {
+  const filterBody = buildReviewFilterBody({
+    tagUuids,
+    tagExcludeUuids,
+    showAllBboxes,
+    tagMatchMode,
+    labelUuids,
+    labelExcludeUuids,
+    labelMatchMode,
+    labelIncludeChildren,
+    sortBy: 'created_at',
+    sortOrder: 'desc',
+    requireBboxes,
+    filenameSearch,
+    dateFrom,
+    dateTo,
+    imageLabelFilters,
+    imageLabelConditions,
+    verificationCheck,
+    verificationLabelUuids,
+    bboxVerification,
+  });
+
+  const res = await apiFetch('/api/images/bbox/count', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filter: filterBody,
+      bboxTagFilter,
+      bboxLabelFilter,
+      showAllBboxes,
+      bboxVerification: bboxVerification && bboxVerification !== 'any' ? bboxVerification : null,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Bbox count failed');
+  return data.count ?? 0;
+}
+
+/**
  * Apply an action to an explicit list of bboxes in one server-side pass.
  * Used by candidate-list-driven modals (similarity/diversity search) that have
  * no server-side filter equivalent for their already-known result set.

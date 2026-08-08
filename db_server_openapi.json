@@ -1509,6 +1509,48 @@
         }
       }
     },
+    "/api/images/bbox/count": {
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Count Bboxes Endpoint",
+        "description": "Count the bboxes a bulk-apply with this same filter would modify.",
+        "operationId": "count_bboxes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountBboxesPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountBboxesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/images/bbox/bulk-apply": {
       "post": {
         "tags": [
@@ -6065,6 +6107,76 @@
           "labelName"
         ],
         "title": "CoLabelGapBreakdownEntry"
+      },
+      "CountBboxesPayload": {
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/ImageSearchParams"
+          },
+          "bboxTagFilter": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Bboxtagfilter"
+          },
+          "bboxLabelFilter": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Bboxlabelfilter"
+          },
+          "showAllBboxes": {
+            "type": "boolean",
+            "title": "Showallbboxes",
+            "default": false
+          },
+          "bboxVerification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bboxverification"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filter"
+        ],
+        "title": "CountBboxesPayload",
+        "description": "Same filter surface as BulkApplyAllPayload, minus the action fields."
+      },
+      "CountBboxesResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "CountBboxesResponse"
       },
       "CreateDirectoryPayload": {
         "properties": {

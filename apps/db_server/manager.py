@@ -834,6 +834,30 @@ class Manager:
 
         return modified_count, fail_count
 
+    async def count_bboxes_matching(
+        self,
+        search_params: ImageSearchParams,
+        bbox_tag_filter: List[str],
+        bbox_label_filter: List[str],
+        show_all_bboxes: bool = False,
+        bbox_verification: Optional[str] = None,
+    ) -> int:
+        """How many bboxes bulk_apply_bboxes would touch for this exact filter.
+
+        Same argument shape as bulk_apply_bboxes so the number the UI shows and
+        the number it then modifies cannot drift.
+        """
+        verification_tag_uuid = (
+            BBOX_VERIFICATION_STATE_TO_TAG_UUID.get(bbox_verification) if bbox_verification else None
+        )
+        return await self._db_client.count_bboxes_search(
+            search_params,
+            bbox_tag_filter=bbox_tag_filter,
+            bbox_label_filter=bbox_label_filter,
+            show_all_bboxes=show_all_bboxes,
+            bbox_verification_tag_uuid=verification_tag_uuid,
+        )
+
     async def _apply_bbox_bulk_action(
         self,
         bbox: BBox,

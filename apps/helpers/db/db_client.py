@@ -1253,6 +1253,45 @@ class DbClient:
             result = await session.exec(stmt)
             return result.one()
 
+    async def count_bboxes_search(
+        self,
+        params: ImageSearchParams,
+        bbox_tag_filter: Optional[List[str]] = None,
+        bbox_label_filter: Optional[List[str]] = None,
+        show_all_bboxes: bool = False,
+        bbox_verification_tag_uuid: Optional[str] = None,
+    ) -> int:
+        """Count the bboxes that bulk_apply_bboxes would touch for this filter.
+
+        The image-level predicates select the same images as count_images_search;
+        the bbox-level arguments then narrow to the subset the review grid shows,
+        mirroring bulk_apply_bboxes's per-bbox filter exactly (an image count is
+        NOT a usable stand-in — images carry many bboxes, and the subset filter
+        can drop most of them).
+        """
+        async with self._async_session_maker() as session:
+            image_uuids = _apply_image_search_filters(select(ImageRecord.uuid), params).subquery()
+            stmt = select(func.count()).select_from(BBox).where(BBox.image_uuid.in_(select(image_uuids.c.uuid)))
+
+            tag_filter = None if show_all_bboxes else (bbox_tag_filter or None)
+            if tag_filter:
+                stmt = stmt.where(
+                    BBox.uuid.in_(select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid.in_(tag_filter)))
+                )
+            if bbox_label_filter:
+                stmt = stmt.where(BBox.label_uuid.in_(bbox_label_filter))
+            if bbox_verification_tag_uuid is not None:
+                # ANDed rather than folded into tag_filter — that list is OR
+                # semantics, so merging would widen the count, not narrow it.
+                stmt = stmt.where(
+                    BBox.uuid.in_(
+                        select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == bbox_verification_tag_uuid)
+                    )
+                )
+
+            result = await session.exec(stmt)
+            return result.one()
+
     async def get_bbox_with_image(self, bbox_uuid: str) -> Optional[tuple[BBox, ImageRecord]]:
         """Return a bbox (with tags and label eagerly loaded) and its parent image, or None."""
         async with self._async_session_maker() as session:
