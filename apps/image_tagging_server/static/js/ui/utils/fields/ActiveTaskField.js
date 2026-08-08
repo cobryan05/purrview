@@ -527,6 +527,7 @@ export class ActiveTaskField extends Field {
     if (action.type === 'open_review') {
       events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
         tagUuids: action.payload?.tag_uuids ?? [],
+        imageTagUuids: action.payload?.image_tag_uuids ?? [],
       });
       return;
     }

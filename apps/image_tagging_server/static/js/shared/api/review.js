@@ -61,6 +61,7 @@ function buildReviewFilterBody({
   afterSortValue = null,
   imageLabelFilters = [],
   imageLabelConditions = [],
+  imageTagConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -144,6 +145,14 @@ function buildReviewFilterBody({
     // them, so existing saved presets/datasets keep behaving as before.
     terms.push({ kind: 'imageLabel', labelUuid: c.labelUuid, state, rollUp: c.rollUp ?? true, negate: c.negate ?? false });
   }
+  for (const c of imageTagConditions) {
+    // Whole-image tag state (image_tags table) — NOT the bboxTag terms above,
+    // which only ever match via an image's bboxes. This is the only term that
+    // can match an image carrying none.
+    // 'unset' (no row at all) is the term model's 'unreviewed', mirroring the
+    // 'uncertain' → 'unreviewed' mapping used for image labels.
+    terms.push({ kind: 'imageTag', tagUuid: c.tagUuid, state: c.state === 'unset' ? 'unreviewed' : c.state });
+  }
 
   if (afterUuid) body.afterUuid = afterUuid;
   if (afterSortValue) body.afterSortValue = afterSortValue;
@@ -199,6 +208,7 @@ export async function fetchReviewQueue({
   afterSortValue = null,
   imageLabelFilters = [],
   imageLabelConditions = [],
+  imageTagConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -226,6 +236,7 @@ export async function fetchReviewQueue({
     afterSortValue,
     imageLabelFilters,
     imageLabelConditions,
+    imageTagConditions,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
@@ -373,6 +384,7 @@ export async function bulkApplyAll({
   dateTo = null,
   imageLabelFilters = [],
   imageLabelConditions = [],
+  imageTagConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -403,6 +415,7 @@ export async function bulkApplyAll({
     dateTo,
     imageLabelFilters,
     imageLabelConditions,
+    imageTagConditions,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
@@ -455,6 +468,7 @@ export async function countMatchingBboxes({
   dateTo = null,
   imageLabelFilters = [],
   imageLabelConditions = [],
+  imageTagConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -479,6 +493,7 @@ export async function countMatchingBboxes({
     dateTo,
     imageLabelFilters,
     imageLabelConditions,
+    imageTagConditions,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
@@ -577,6 +592,7 @@ export async function bulkApplyImages({
   dateTo = null,
   imageLabelFilters = [],
   imageLabelConditions = [],
+  imageTagConditions = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -612,6 +628,7 @@ export async function bulkApplyImages({
     dateTo,
     imageLabelFilters,
     imageLabelConditions,
+    imageTagConditions,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,

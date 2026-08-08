@@ -76,11 +76,17 @@ export async function init(appState) {
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
   });
 
-  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids, labelUuids, verificationCheck }) => {
+  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids, imageTagUuids, labelUuids, verificationCheck }) => {
     activateMainTab(container, 'tab-review');
     // applyFilterWhenReady applies immediately if the panel is already up, or
     // queues the state so init() applies it once createReviewPanel resolves.
     const state = { tagUuids: tagUuids ?? [] };
+    // Whole-image tags (image_tags), as opposed to the bbox tags above — the
+    // only filter that can match a frame collected without any bboxes.
+    // Always written, so a caller that passes none clears a previous selection
+    // rather than silently leaving it applied (same reason bboxVerification is
+    // always present in datasetFormToReviewState).
+    state.imageTagConditions = (imageTagUuids ?? []).map(uuid => ({ tagUuid: uuid, state: 'present' }));
     if (labelUuids !== undefined) state.labelUuids = labelUuids;
     if (verificationCheck !== undefined) state.verificationCheck = verificationCheck;
     applyFilterWhenReady(state);

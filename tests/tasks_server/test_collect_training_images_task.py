@@ -534,12 +534,26 @@ def test_get_status_actions_with_tag_uuid():
     """get_status_actions returns an open_review action when a tag UUID is set."""
     task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
     task._task_tag_uuid = "some-tag-uuid"
+    task._collect_all = False
     actions = task.get_status_actions()
     assert len(actions) == 1
     action = actions[0]
     assert action["type"] == "open_review"
     assert action["label"] == "Browse results"
-    assert action["payload"] == {"tag_uuids": ["some-tag-uuid"]}
+    assert action["payload"] == {
+        "tag_uuids": ["some-tag-uuid"],
+        "image_tag_uuids": ["some-tag-uuid"],
+    }
+
+
+def test_get_status_actions_in_collect_all_mode_filters_on_the_image_tag_only():
+    """Collect-everything runs save unannotated frames, so a bbox-tag filter would
+    match nothing and would exclude every frame the button is meant to show."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    task._task_tag_uuid = "some-tag-uuid"
+    task._collect_all = True
+    payload = task.get_status_actions()[0]["payload"]
+    assert payload == {"tag_uuids": [], "image_tag_uuids": ["some-tag-uuid"]}
 
 
 async def test_run_inference_runs_all_models_even_when_first_has_no_detections():
@@ -3557,3 +3571,101 @@ class TestCollectAllDedup:
         task, save = await self._run_worker("discard", self._response(30, image_is_dup=False))
         save.assert_called_once()
         assert task._dup_frames_discarded == 0
+
+
+# ─── Task-level tags land on the image record, not only on bboxes ─────────────
+
+
+class TestTaskTagsAreAppliedAtImageLevel:
+    """A task tag ("collected by this run") is an image-level fact. It was only ever
+    written into each saved bbox's tag_uuids, so a collect-everything run — no models,
+    therefore no bboxes — wrote it nowhere at all and its "See results" filter found
+    nothing. The tag must reach the image record in both modes, while still staying on
+    the bboxes for runs that have them."""
+
+    @staticmethod
+    def _image_tags(task) -> list[str]:
+        return [c.args[0].tag_uuid for c in task._test_mocks["images_api"].set_image_tag.call_args_list]
+
+    @staticmethod
+    def _bbox_tags(task) -> list[str]:
+        payloads = [c.args[0] for c in task._test_mocks["images_api"].update_image_metadata.call_args_list]
+        return [t for p in payloads for b in p.boxes for t in b.tag_uuids]
+
+    async def test_apply_tags_reach_the_image_record(self, tmp_path):
+        params = {**_PARAMS, "apply_tags": ["tag-a", "tag-b"]}
+        task = await _run_task([_tracked_image(0)], params=params, detect=True, tmp_path=tmp_path)
+
+        assert task._images_saved == 1
+        assert self._image_tags(task) == ["tag-a", "tag-b"]
+        assert all(c.args[0].action == "add" for c in task._test_mocks["images_api"].set_image_tag.call_args_list)
+
+    async def test_apply_tags_still_reach_the_bboxes(self, tmp_path):
+        """Image-level tagging is additive — the existing per-bbox tags stay put so
+        already-collected data keeps matching the bbox-tag filter."""
+        params = {**_PARAMS, "apply_tags": ["tag-a"]}
+        task = await _run_task([_tracked_image(0)], params=params, detect=True, tmp_path=tmp_path)
+
+        assert "tag-a" in self._bbox_tags(task)
+
+    async def test_apply_tags_reach_the_image_when_there_are_no_bboxes(self, tmp_path):
+        """The reported bug: collect-everything mode saves unannotated frames, so a
+        bbox-only tag write is a no-op."""
+        params = {**_NO_MODEL_PARAMS, "apply_tags": ["tag-a"]}
+        task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
+
+        assert task._images_saved == 1
+        assert self._bbox_tags(task) == []
+        assert self._image_tags(task) == ["tag-a"]
+
+    async def test_generated_task_tag_reaches_the_image_record(self, tmp_path):
+        """The generated task tag takes the same path as apply_tags (both land in
+        _extra_tag_uuids), but it is the one the task's own "See results" action
+        filters on, so assert it end-to-end."""
+        params = {**_NO_MODEL_PARAMS, "generate_task_tag": True}
+        tags_api = MagicMock()
+        tags_api.list_tags.return_value = MagicMock(tags=[])
+
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+            task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
+
+        assert task._task_tag_uuid is not None
+        assert self._image_tags(task) == [task._task_tag_uuid]
+
+    async def test_filter_chain_image_tags_are_kept_alongside_task_tags(self, tmp_path):
+        """The filter chain's own tag_image writes share this call site — neither set
+        may displace the other."""
+        params = {**_NO_MODEL_PARAMS, "apply_tags": ["tag-a"]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._meta_write_lock = asyncio.Lock()  # normally created by _run()
+
+        provided = ImageWithProviderMetadata(
+            image=np.zeros((8, 8, 3), dtype=np.uint8),
+            metadata=ImageProviderMetadata(source=_SOURCE, frame_idx=0),
+        )
+        provided._filter_chain_image_tags = {"tag-chain"}
+        images_api = MagicMock()
+
+        await task._save_image(images_api, provided, [], tmp_path)
+
+        assert {c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list} == {"tag-a", "tag-chain"}
+
+    async def test_a_tag_in_both_sets_is_written_once(self, tmp_path):
+        """A filter chain configured to apply the same tag the task already applies
+        must not produce a duplicate write."""
+        params = {**_NO_MODEL_PARAMS, "apply_tags": ["tag-a"]}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._meta_write_lock = asyncio.Lock()  # normally created by _run()
+
+        provided = ImageWithProviderMetadata(
+            image=np.zeros((8, 8, 3), dtype=np.uint8),
+            metadata=ImageProviderMetadata(source=_SOURCE, frame_idx=0),
+        )
+        provided._filter_chain_image_tags = {"tag-a"}
+        images_api = MagicMock()
+
+        await task._save_image(images_api, provided, [], tmp_path)
+
+        assert [c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list] == ["tag-a"]

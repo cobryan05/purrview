@@ -325,6 +325,10 @@ class CollectTrainingImagesTask(Task):
         self._config_name: str = params.get("_config_name", "")
         # Set in _run() when a TASK_GENERATED tag is created or found; used in result actions.
         self._task_tag_uuid: Optional[str] = None
+        # Every tag applied to each collected image and bbox. Seeded here so the
+        # attribute always exists for _save_image; _run() re-derives it and appends
+        # the generated task tag once the API clients are up.
+        self._extra_tag_uuids: list[str] = list(self._apply_tag_uuids)
 
         # Optional pre-save filter chain (WORKFLOW_FILTERCHAIN_PLAN.md Phase 4):
         # applied to each frame's in-memory detections before they're saved.
@@ -1025,7 +1029,15 @@ class CollectTrainingImagesTask(Task):
                 {
                     "type": "open_review",
                     "label": "See results",
-                    "payload": {"tag_uuids": [self._task_tag_uuid]},
+                    # image_tag_uuids is what actually finds every collected frame:
+                    # the tag is written to the image record, so it matches whether
+                    # or not the frame ended up with bboxes. tag_uuids (a bbox-tag
+                    # filter) is kept for annotated runs, where narrowing to the
+                    # tagged bboxes is the more useful view.
+                    "payload": {
+                        "tag_uuids": [] if self._collect_all else [self._task_tag_uuid],
+                        "image_tag_uuids": [self._task_tag_uuid],
+                    },
                 }
             ]
         return result
@@ -1787,18 +1799,27 @@ class CollectTrainingImagesTask(Task):
             self.log(f"Failed to save metadata: {filename}")
             return None
 
-        # Image-level filter-chain tag_image match, stashed by
-        # _apply_filter_chain_to_frame — apply now that the image is saved.
-        image_tag_uuids = getattr(provided, "_filter_chain_image_tags", None)
-        if image_tag_uuids:
-            for tag_uuid in image_tag_uuids:
-                try:
-                    await asyncio.to_thread(
-                        images_api.set_image_tag,
-                        SetImageTagPayload(image_path=rel_path, tag_uuid=tag_uuid, action="add"),
-                    )
-                except Exception:
-                    logger.exception(f"Failed to apply filter-chain image tag {tag_uuid} to {rel_path}")
+        # Image-level tags, applied now that the image record exists. Two sources:
+        #   - self._extra_tag_uuids — the generated task tag plus any explicit
+        #     apply_tags. "This run collected this frame" is a property of the
+        #     image, so it belongs here as well as on each bbox above. Bbox-only
+        #     was silently a no-op for collect-everything runs (no models → no
+        #     bboxes → nothing to hang the tag on), which left the task's own
+        #     "See results" filter matching nothing.
+        #   - _filter_chain_image_tags — tag_image matches stashed by
+        #     _apply_filter_chain_to_frame.
+        # Deduplicated (a chain may apply a tag the task already applies) while
+        # preserving order, so each tag is written exactly once.
+        filter_chain_image_tags = getattr(provided, "_filter_chain_image_tags", None) or ()
+        image_tag_uuids = list(dict.fromkeys([*self._extra_tag_uuids, *filter_chain_image_tags]))
+        for tag_uuid in image_tag_uuids:
+            try:
+                await asyncio.to_thread(
+                    images_api.set_image_tag,
+                    SetImageTagPayload(image_path=rel_path, tag_uuid=tag_uuid, action="add"),
+                )
+            except Exception:
+                logger.exception(f"Failed to apply image tag {tag_uuid} to {rel_path}")
 
         logger.debug(
             "_save_image total: %.1fms for %s",
@@ -2156,7 +2177,12 @@ class CollectTrainingImagesTask(Task):
                 {
                     "type": "open_review",
                     "label": "Browse results",
-                    "payload": {"tag_uuids": [self._task_tag_uuid]},
+                    # See _result()'s action for why both are sent: the image tag
+                    # is the one that matches every collected frame, bboxes or not.
+                    "payload": {
+                        "tag_uuids": [] if self._collect_all else [self._task_tag_uuid],
+                        "image_tag_uuids": [self._task_tag_uuid],
+                    },
                 }
             ]
         return []

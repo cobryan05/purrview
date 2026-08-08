@@ -19,7 +19,7 @@
  */
 import { VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
-import { createImageLabelConditions } from '/app-static/js/ui/imageTagConditions.js';
+import { createImageLabelConditions, createImageTagConditions } from '/app-static/js/ui/imageTagConditions.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { filterVisibleTags, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
@@ -39,6 +39,11 @@ const DEFAULT_STATE = () => ({
   // Per-image-label conditions: [{ labelUuid, state: 'present'|'absent'|'uncertain' }]
   // Each entry is an AND condition applied against the image_labels table.
   imageLabelConditions: [],
+  // Per-image-tag conditions: [{ tagUuid, state: 'present'|'absent'|'unset' }]
+  // Each entry is an AND condition applied against the image_tags table.
+  // Distinct from `tagUuids` above, which filters on tags carried by an image's
+  // BBOXES — an image with no bboxes can only ever be matched by these.
+  imageTagConditions: [],
   filenameSearch: '',
   dateFrom: null,
   dateTo: null,
@@ -193,6 +198,17 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     },
   );
 
+  // ── Image tag conditions component ────────────────────────────────────────
+  // Whole-image tag state, against the image_tags table. Shares the Tags
+  // dropdown's visibility rules so the same tags appear in both surfaces.
+  const imageTagConditionsComp = createImageTagConditions(
+    _visibleTags(),
+    (conditions) => {
+      _state.imageTagConditions = conditions;
+      emit();
+    },
+  );
+
   // Destroy `dropdown`, rebuild it via `buildFn` into `container`, and return the new instance.
   function _rebuildDropdown(dropdown, container, buildFn) {
     dropdown.destroy();
@@ -207,6 +223,11 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
     _state.tagUuids = [];
     _state.tagExcludeUuids = [];
+    // The image-tag conditions draw from the same visibility rules, so a
+    // now-hidden tag must drop out of both surfaces, not just the dropdown.
+    imageTagConditionsComp.setAvailableTags(_visibleTags());
+    _state.imageTagConditions = [];
+    imageTagConditionsComp.setState([]);
     emit();
   }
 
@@ -226,6 +247,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
         tags = await fetchTags().catch(() => tags);
         tagsDropdown = _rebuildDropdown(tagsDropdown, tagsContainer, _buildTagsDropdown);
         tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);
+        // Refresh names/colours in the image-tag picker too; the selection is
+        // preserved here for the same reason it is above.
+        imageTagConditionsComp.setAvailableTags(_visibleTags());
+        imageTagConditionsComp.setState(_state.imageTagConditions);
       } while (_tagsUpdatePending);
     } finally {
       _tagsUpdateInFlight = false;
@@ -410,9 +435,23 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   imageLabelSection.appendChild(imageLabelSectionLabel);
   imageLabelSection.appendChild(imageLabelConditionsComp.element);
 
+  // Image tag conditions section — filter by whole-image tag status against the
+  // image_tags table. The Tags dropdown in the toolbar above is bbox-scoped, so
+  // this is the only surface that can match an image carrying no bboxes (e.g. a
+  // collect-everything training run, which saves unannotated frames).
+  const imageTagSection = document.createElement('div');
+  imageTagSection.className = 'filter-section filter-section--grow';
+
+  const imageTagSectionLabel = document.createElement('div');
+  imageTagSectionLabel.className = 'filter-section-label';
+  imageTagSectionLabel.textContent = 'Image Tag Filters';
+  imageTagSection.appendChild(imageTagSectionLabel);
+  imageTagSection.appendChild(imageTagConditionsComp.element);
+
   secondaryRow.appendChild(verificationSection);
   secondaryRow.appendChild(bboxVerificationControl.element);
   secondaryRow.appendChild(imageLabelSection);
+  secondaryRow.appendChild(imageTagSection);
   panel.appendChild(secondaryRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -423,6 +462,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + s.labelUuids.length
       + s.labelExcludeUuids.length
       + s.imageLabelConditions.length
+      + s.imageTagConditions.length
       + (s.filenameSearch ? 1 : 0)
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
@@ -473,6 +513,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       });
     });
 
+    s.imageTagConditions.forEach((c, idx) => {
+      chips.push({
+        key: `imageTag-${c.tagUuid}-${idx}`,
+        label: `Image tag: ${_tagName(c.tagUuid)} · ${c.state}`,
+        onRemove: () => setState({ imageTagConditions: s.imageTagConditions.filter((_, i) => i !== idx) }),
+      });
+    });
+
     if (s.filenameSearch) {
       chips.push({ key: 'filename', label: `File: ${s.filenameSearch}`, onRemove: () => setState({ filenameSearch: '' }) });
     }
@@ -505,6 +553,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.labelExcludeUuids.length === 0
       && s.labelMatchMode === 'any'
       && s.imageLabelConditions.length === 0
+      && s.imageTagConditions.length === 0
       && !s.filenameSearch
       && !s.dateFrom
       && !s.dateTo
@@ -536,6 +585,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.imageLabelConditions !== undefined) {
       imageLabelConditionsComp.setState(_state.imageLabelConditions);
     }
+    if (partial.imageTagConditions !== undefined) {
+      imageTagConditionsComp.setState(_state.imageTagConditions);
+    }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
         ? new Date(_state.dateFrom).toISOString().slice(0, 16)
@@ -563,6 +615,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     tagsDropdown.destroy();
     _labelsDropdown?.destroy();
     imageLabelConditionsComp.destroy();
+    imageTagConditionsComp.destroy();
     bboxVerificationControl.destroy();
     _unsubAll();
   }

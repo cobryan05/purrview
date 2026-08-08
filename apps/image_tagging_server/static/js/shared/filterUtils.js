@@ -29,6 +29,7 @@ export function reviewStateToDatasetForm(reviewState) {
   const dateTo = reviewState.dateTo ?? null;
   const filenameSearch = reviewState.filenameSearch ?? '';
   const imageLabelConditions = reviewState.imageLabelConditions ?? [];
+  const imageTagConditions = reviewState.imageTagConditions ?? [];
   // 'any' (and a missing key) is the no-op default — see review/filters.js's
   // DEFAULT_STATE — so it must not produce a term.
   const bboxVerification = reviewState.bboxVerification ?? 'any';
@@ -60,6 +61,15 @@ export function reviewStateToDatasetForm(reviewState) {
       state,
       rollUp: c.rollUp ?? true,
       negate: c.negate ?? false,
+    });
+  }
+  for (const c of imageTagConditions) {
+    // The picker's 'unset' (no image_tags row at all) is the term model's
+    // 'unreviewed' — same mapping as the imageLabel conditions above.
+    terms.push({
+      kind: 'imageTag',
+      tagUuid: c.tagUuid,
+      state: c.state === 'unset' ? 'unreviewed' : c.state,
     });
   }
 
@@ -105,6 +115,12 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
       rollUp: t.rollUp ?? true,
       negate: t.negate ?? false,
     }));
+  const imageTagConditions = terms
+    .filter(t => t.kind === 'imageTag')
+    .map(t => ({
+      tagUuid: t.tagUuid,
+      state: t.state === 'unreviewed' ? 'unset' : t.state,
+    }));
 
   return {
     tagUuids: tagTerm?.tagUuids ?? [],
@@ -115,6 +131,7 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     labelMatchMode: f.labelMatchMode ?? 'any',
     labelIncludeChildren: f.labelIncludeChildren ?? false,
     imageLabelConditions,
+    imageTagConditions,
     filenameSearch: filenameTerm?.patterns?.[0] ?? '',
     dateFrom: dateTerm?.from ?? null,
     dateTo: dateTerm?.to ?? null,

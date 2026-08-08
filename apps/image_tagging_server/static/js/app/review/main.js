@@ -963,6 +963,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       labelMatchMode: fs.labelMatchMode,
       labelIncludeChildren: fs.labelIncludeChildren,
       imageLabelConditions: fs.imageLabelConditions ?? [],
+      imageTagConditions: fs.imageTagConditions ?? [],
       filenameSearch: fs.filenameSearch || undefined,
       dateFrom: fs.dateFrom || undefined,
       dateTo: fs.dateTo || undefined,
