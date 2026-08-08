@@ -203,6 +203,63 @@ class TestExtractYoloxFormat:
         assert scores[row, 0] == pytest.approx(objectness * class_score, abs=1e-6)
 
 
+class TestPreprocessHook:
+    """YOLOX overrides the base pipeline's `_preprocess` hook rather than the
+    whole of `processImage`. These pin the two properties that override exists
+    for, so collapsing it back into the shared pipeline can't silently
+    reintroduce the base's /255 normalize or re-center the letterbox.
+    """
+
+    def _preprocess(self, image, input_shape=(640, 640)):
+        # _preprocess delegates to the class's own _preprocess_no_normalize, so
+        # the stand-in needs it too — _FakeProvider deliberately carries only
+        # what the pure-decode tests need.
+        fake = _FakeProvider(input_shape)
+        fake._preprocess_no_normalize = YoloxInferenceProvider._preprocess_no_normalize
+        return YoloxInferenceProvider._preprocess(fake, image)
+
+    def test_does_not_normalize_to_unit_range(self):
+        """YOLOX feeds raw 0-255 float32 pixels — the shared
+        YoloUtils.preprocess_image divides by 255, which would silently halve
+        every activation if the base hook were used unmodified."""
+        image = np.full((480, 640, 3), 200, dtype=np.uint8)
+        img, _scale, _pad = self._preprocess(image)
+
+        assert img.max() > 1.0, "pixels look normalized to [0,1]; YOLOX must stay 0-255"
+        assert np.isclose(img.max(), 200.0)
+
+    def test_letterbox_pads_bottom_right_only(self):
+        """top_left anchor: a wide image gets all its padding on the bottom,
+        so the top-left corner is image content and the bottom row is pad."""
+        image = np.full((320, 640, 3), 200, dtype=np.uint8)
+        img, _scale, pad = self._preprocess(image)
+
+        assert pad == (0, 0), "top_left anchoring must place the image flush at the origin"
+        # NCHW -> pull the first channel's first and last rows.
+        assert np.isclose(img[0, 0, 0, 0], 200.0), "top-left should be image content"
+        assert np.isclose(img[0, 0, -1, 0], 114.0), "bottom row should be value-114 padding"
+
+    def test_output_is_nchw_at_model_input_size(self):
+        image = np.full((480, 640, 3), 128, dtype=np.uint8)
+        img, scale, _pad = self._preprocess(image)
+
+        assert img.shape == (1, 3, 640, 640)
+        assert img.dtype == np.float32
+        assert np.isclose(scale, 1.0)
+
+    def test_converts_bgr_to_rgb(self):
+        """Channel order must flip: the base pipeline hands processImage a BGR
+        array, and the network expects RGB."""
+        image = np.zeros((64, 64, 3), dtype=np.uint8)
+        image[:, :, 0] = 255  # pure blue in BGR
+
+        img, _scale, _pad = self._preprocess(image)
+
+        # After BGR->RGB, blue lands in channel index 2, not 0.
+        assert np.isclose(img[0, 2, 0, 0], 255.0)
+        assert np.isclose(img[0, 0, 0, 0], 0.0)
+
+
 class TestRegistration:
     def test_yolox_registered(self):
         assert inference_provider_registry["yolox"] is YoloxInferenceProvider

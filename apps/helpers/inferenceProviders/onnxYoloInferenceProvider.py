@@ -91,13 +91,33 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         """Split raw preds (num_preds, 4+nc) into (boxes_xyxy, scores)."""
         raise NotImplementedError()
 
+    def _preprocess(self, image: np.ndarray) -> Tuple[np.ndarray, float, Tuple[int, int]]:
+        """BGR image -> (NCHW input tensor, scale, pad). Runs in a worker thread.
+
+        Split out of ``processImage`` so the whole CPU-bound section is one
+        callable that can be handed to an executor. Providers whose
+        preprocessing differs (e.g. YOLOX, which must not normalize) override
+        this rather than re-implementing ``processImage``.
+        """
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return YoloUtils.preprocess_image(image_rgb, self.input_shape, anchor=self.LETTERBOX_ANCHOR)
+
     async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
         original_shape = image.shape[:2]
         imgH, imgW = original_shape
 
         t0 = time.perf_counter()  # PERF
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        img, scale, pad = YoloUtils.preprocess_image(image_rgb, self.input_shape, anchor=self.LETTERBOX_ANCHOR)
+        # Offloaded to a worker thread rather than run inline: cvtColor + letterbox
+        # is ~8ms of pure CPU per image, and inline it blocks the event loop for
+        # the whole duration, stalling every other in-flight request (measured on
+        # a bulk run: median 8ms but p90 117ms / p99 996ms, purely from loop
+        # contention — there is no await in this section for the time to hide in).
+        # cv2 releases the GIL internally, so this genuinely overlaps with the
+        # session.run below on other requests. Deliberately NOT the cuda_executor:
+        # that pool is single-threaded to keep CUDA calls on one thread, so
+        # preprocessing there would serialize behind the GPU instead of
+        # overlapping with it.
+        img, scale, pad = await asyncio.to_thread(self._preprocess, image)
         t_pre = time.perf_counter()  # PERF
 
         if self.cuda_executor:

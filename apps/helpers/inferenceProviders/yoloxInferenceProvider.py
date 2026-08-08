@@ -44,14 +44,10 @@ supported:
   no-normalize behavior through the shared helper's parameters.
 """
 
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 import cv2
 import numpy as np
-
-import apps.helpers.yoloUtils as YoloUtils
-from apps.helpers.bboxUtils import BBox
-from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceResult
 
 from .onnxYoloInferenceProvider import OnnxYoloInferenceProvider
 from .Registry import register_inference_provider
@@ -85,7 +81,7 @@ def _build_grids_and_strides(input_h: int, input_w: int, strides=_STRIDES) -> Tu
 class YoloxInferenceProvider(OnnxYoloInferenceProvider):
     """Decodes YOLOX's grid-relative raw output + separate objectness channel.
 
-    Overrides ``processImage`` (not just ``_extract``) because YOLOX's own
+    Overrides ``_preprocess`` as well as ``_extract`` because YOLOX's own
     preprocessing convention (no /255 normalize) differs from the shared
     ``YoloUtils.preprocess_image`` helper in a way that helper's parameters
     can't express — see module docstring.
@@ -142,80 +138,19 @@ class YoloxInferenceProvider(OnnxYoloInferenceProvider):
 
         return boxes_xyxy, scores
 
-    async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
-        """Overrides the base pipeline's preprocessing step only: YOLOX's own
-        preprocessing does not normalize to [0, 1] (raw 0-255 float32 pixel
-        values feed the network) — the shared ``YoloUtils.preprocess_image``
-        always divides by 255 with no opt-out, so this duplicates that
-        function's resize/letterbox/pad logic without the normalize step
-        rather than adding a provider-specific flag to the shared helper that
-        every other (normalize-expecting) family would have to ignore.
+    def _preprocess(self, image: np.ndarray) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+        """YOLOX preprocessing: the same resize/letterbox/pad as the base
+        pipeline, but WITHOUT the final /255 normalize — raw 0-255 float32
+        pixel values feed the network (matches YOLOX's own ``preproc``).
+
+        Preprocessing is the *only* step where YOLOX diverges from the shared
+        pipeline, so overriding this hook is sufficient; the base
+        ``processImage`` handles everything else, which also gives YOLOX the
+        same worker-thread offload and timing instrumentation as every other
+        family.
         """
-        import asyncio
-        import time
-        from uuid import uuid4
-
-        original_shape = image.shape[:2]
-        imgH, imgW = original_shape
-
-        t0 = time.perf_counter()
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        img, scale, pad = self._preprocess_no_normalize(image_rgb, self.input_shape)
-        t_pre = time.perf_counter()
-
-        if self.cuda_executor:
-            loop = asyncio.get_running_loop()
-            preds_list = await loop.run_in_executor(self.cuda_executor, self.session.run, None, {self.input_name: img})
-        else:
-            preds_list = await asyncio.to_thread(self.session.run, None, {self.input_name: img})
-
-        preds = preds_list[0]
-        t_onnx = time.perf_counter()
-
-        if preds.shape[1] < preds.shape[2]:
-            preds = np.transpose(preds, (0, 2, 1))
-
-        conf_thresh = float(kwargs.get("conf_thresh", self.conf_thresh))
-        boxes_xyxy, scores = self._extract(preds[0])
-        detections = YoloUtils.decode_detections(
-            boxes_xyxy,
-            scores,
-            conf_thresh=conf_thresh,
-            iou_thresh=self.iou_thresh,
-            scale=scale,
-            pad=pad,
-            original_shape=original_shape,
-            skip_nms=self.SKIP_NMS,
-        )
-        t_post = time.perf_counter()
-
-        detection_results: List[DetectionResult] = []
-        for det in detections:
-            x_min, y_min, x_max, y_max = map(float, det[:4])
-            confidence = float(det[4])
-            class_id = int(det[5])
-            class_name = self.class_names[class_id] if self.class_names and class_id < len(self.class_names) else None
-
-            rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)
-            x, y, width, height = rel_bbox.asRX1Y1WH()
-
-            bbox = BoundingBoxMetadata(
-                uuid=str(uuid4()),
-                class_str=class_name,
-                x=x,
-                y=y,
-                width=width,
-                height=height,
-            )
-            detection_results.append(DetectionResult(bbox=bbox, confidence=confidence))
-
-        return InferenceResult(
-            source_width=imgW,
-            source_height=imgH,
-            detections=detection_results,
-            inference_time=None,
-            source_image=image,
-        )
+        return self._preprocess_no_normalize(image_rgb, self.input_shape)
 
     @staticmethod
     def _preprocess_no_normalize(
