@@ -278,15 +278,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   selectAllLabel.appendChild(selectAllCb);
   selectAllLabel.appendChild(document.createTextNode('Select all'));
 
-  // Bulk Apply button (selected items on current page)
+  // Apply to Selected button (checked items on current page)
   const bulkBtn = document.createElement('button');
-  bulkBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
+  bulkBtn.className = 'review-toolbar__btn';
   bulkBtn.dataset.testid = 'review-bulk-apply';
-  bulkBtn.textContent = 'Bulk Apply (0)';
+  bulkBtn.textContent = 'Apply to Selected (0)';
   bulkBtn.disabled = true;
 
   // Apply to Parent Images button — visible only when the current selection is
-  // bbox-kind. Bulk Apply (above) can only offer bbox-level actions (relabel/
+  // bbox-kind. Apply to Selected (above) can only offer bbox-level actions (relabel/
   // delete/tags) for a bbox selection; this resolves the DISTINCT parent images
   // behind the selected bboxes and routes them into the image-level bulk-action
   // flow instead (e.g. filter by a bbox label, then mark the image-level label
@@ -301,7 +301,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // Bulk Apply All button — all matching results across all pages (filter mode),
   // or the full candidate list (custom fetchImages mode, e.g. similarity search).
   const bulkAllBtn = document.createElement('button');
-  bulkAllBtn.className = 'review-toolbar__btn review-toolbar__btn--primary';
+  bulkAllBtn.className = 'review-toolbar__btn';
   bulkAllBtn.textContent = 'Apply to All';
   bulkAllBtn.dataset.testid = 'review-bulk-apply-all';
   bulkAllBtn.disabled = true;
@@ -465,7 +465,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // test clicks "Apply to All" with nothing selected). They must stay
   // reachable at zero selection, so — despite UI_REDESIGN §32.6's original
   // table putting them in the selection-gated contextual bar's ⋯ overflow —
-  // they live here instead, always visible. Bulk Apply / Apply to Parent
+  // they live here instead, always visible. Apply to Selected / Apply to Parent
   // Images are the only genuinely selection-dependent actions; see the
   // contextual action bar below.
   const filterScopedActionsBar = document.createElement('div');
@@ -475,7 +475,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   // ── Contextual action bar (slice 3, PR 3.3) ────────────────────────
   // Appears only with an active selection — hidden the rest of the time.
-  // Bulk Apply always shows; Apply to Parent Images additionally requires a
+  // Apply to Selected always shows; Apply to Parent Images additionally requires a
   // bbox-kind selection (unchanged condition from updateBulkBtn below).
   const clearSelectionBtn = document.createElement('button');
   clearSelectionBtn.className = 'review-toolbar__btn';
@@ -1132,7 +1132,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       !_deletedUuids.has(entryId(e)) &&
       (_selectionKind === null || e.kind === _selectionKind)
     ).length;
-    bulkBtn.textContent = `Bulk Apply (${_selected.size})`;
+    bulkBtn.textContent = `Apply to Selected (${_selected.size})`;
     bulkBtn.disabled = _selected.size === 0;
     selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
     selectAllCb.indeterminate = _selected.size > 0 && _selected.size < activeCount;
@@ -1756,7 +1756,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     return [...seen.values()];
   }
 
-  // Shared by the "Bulk Apply" image-selection branch and "Apply to Parent
+  // Shared by the "Apply to Selected" image-selection branch and "Apply to Parent
   // Images" (bbox selection → distinct parent images). titleText overrides
   // showImageBulkActionModal's default "Apply to N selected images" title —
   // callers acting on parent images MUST pass an explicit title so the modal
@@ -1827,7 +1827,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     await _runImageBulkAction(imageEntries, titleText);
   });
 
-  // ── Bulk Apply ────────────────────────────────────────────────────
+  // ── Apply to Selected ────────────────────────────────────────────────────
   bulkBtn.addEventListener('click', async () => {
     const _selected = cardGrid.selected;
     if (_selected.size === 0) return;

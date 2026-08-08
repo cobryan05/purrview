@@ -454,12 +454,12 @@ class TestSingleSelection:
         _navigate_to_review(page, base_url)
         _switch_view(page, "bboxes")
         bulk_btn = page.get_by_test_id("review-bulk-apply")
-        expect(bulk_btn).to_have_text("Bulk Apply (0)")
+        expect(bulk_btn).to_have_text("Apply to Selected (0)")
         expect(bulk_btn).to_be_disabled()
 
         page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
 
-        expect(bulk_btn).to_have_text("Bulk Apply (1)")
+        expect(bulk_btn).to_have_text("Apply to Selected (1)")
         expect(bulk_btn).to_be_enabled()
 
 
@@ -487,7 +487,7 @@ class TestShiftClickRangeSelection:
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).to_be_checked()
         bulk_btn = page.get_by_test_id("review-bulk-apply")
-        expect(bulk_btn).to_have_text("Bulk Apply (3)")
+        expect(bulk_btn).to_have_text("Apply to Selected (3)")
 
 
 # ---------------------------------------------------------------------------
@@ -514,13 +514,13 @@ class TestSelectAll:
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).to_be_checked()
         bulk_btn = page.get_by_test_id("review-bulk-apply")
-        expect(bulk_btn).to_have_text("Bulk Apply (3)")
+        expect(bulk_btn).to_have_text("Apply to Selected (3)")
 
         # Unchecking clears the selection again
         select_all.uncheck()
         for i in range(3):
             expect(cards.nth(i).locator("input[type=checkbox]")).not_to_be_checked()
-        expect(bulk_btn).to_have_text("Bulk Apply (0)")
+        expect(bulk_btn).to_have_text("Apply to Selected (0)")
 
 
 # ---------------------------------------------------------------------------

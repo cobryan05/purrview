@@ -1064,16 +1064,6 @@ button.lt-swatch:hover {
   cursor: default;
 }
 
-.review-toolbar__btn--primary:not(:disabled) {
-  border-color: var(--color-accent);
-  color: var(--color-danger);
-  background: var(--color-accent-soft);
-}
-
-.review-toolbar__btn--primary:not(:disabled):hover {
-  background: var(--color-accent-soft);
-  color: var(--text);
-}
 
 .review-toolbar__select-all {
   display: flex;
