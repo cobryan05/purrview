@@ -22,6 +22,8 @@ export async function openLabelModal(config, labelUuid, labelStatus, modalTitle,
   const { showReviewModal } = await import('/app-static/js/app/review/main.js');
   await showReviewModal({
     title: modalTitle,
+    // Cards are judged by the run these numbers came from, not the session's active run.
+    gapsConfig: config,
     fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
       return fetchTrainingConfigImagesByLabelStatus(config.uuid, {
         labelUuid,
@@ -41,6 +43,8 @@ export async function openVerifiedBboxModal(config, effectiveLabelUuids, modalTi
   const uuidSet = effectiveLabelUuids instanceof Set ? effectiveLabelUuids : new Set(effectiveLabelUuids);
   await showReviewModal({
     title: modalTitle,
+    // Cards are judged by the run these numbers came from, not the session's active run.
+    gapsConfig: config,
     initialViewFilter: 'bboxes',
     bboxFilterFn: (b) => uuidSet.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === VERIFIED_TAG_UUID),
     fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
@@ -61,6 +65,8 @@ export async function openBboxNeedsReviewModal(config, labelUuid, modalTitle, ro
   const effectiveUuids = new Set([labelUuid, ...rollupChildUuids]);
   await showReviewModal({
     title: modalTitle,
+    // Cards are judged by the run these numbers came from, not the session's active run.
+    gapsConfig: config,
     initialViewFilter: 'bboxes',
     bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID),
     fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
@@ -90,13 +96,17 @@ const _clickableCountCss = 'cursor: pointer; text-decoration: underline dotted; 
  * @param {{
  *   config: {uuid: string, name: string},
  *   readiness: { readyCount: number, needsReviewCount: number, notStartedCount: number, rollUpActive?: boolean },
+ *   previousRun?: object|null,
  *   onNavigate?: () => void,
  * }} opts
  * @param {() => void} [opts.onNavigate] - called right before any count click opens the
  *   review modal, so a caller rendering this inside its own floating panel
  *   (e.g. activeModelBar.js's coverage popup) can close itself first.
+ * @param {object|null} [opts.previousRun] - result of loadPreviousRun(); omitted or
+ *   null renders exactly as before, so callers that don't resolve a previous run
+ *   (the bottom-bar popup) are unaffected.
  */
-export function renderReadinessStats(content, { config, readiness, onNavigate }) {
+export function renderReadinessStats(content, { config, readiness, previousRun = null, onNavigate }) {
   const { readyCount, needsReviewCount, notStartedCount, rollUpActive = false } = readiness;
 
   async function _openImageModal(fetchImages, modalTitle) {
@@ -104,6 +114,7 @@ export function renderReadinessStats(content, { config, readiness, onNavigate })
     const { showReviewModal } = await import('/app-static/js/app/review/main.js');
     await showReviewModal({
       title: modalTitle,
+      gapsConfig: config,
       fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
         return fetchImages({ uuid: config.uuid, afterUuid, afterSortValue, limit });
       },
@@ -165,6 +176,71 @@ export function renderReadinessStats(content, { config, readiness, onNavigate })
     status.appendChild(document.createTextNode(`  (${total} total)`));
   }
   content.appendChild(status);
+
+  if (previousRun) {
+    content.appendChild(_makePreviousRunLine(previousRun, readyCount));
+  }
+}
+
+/**
+ * "Last run: N images … +M ready since" — the whole point of showing a previous
+ * run at all is the delta, so the delta is what gets the emphasis.
+ *
+ * @param {object} previousRun - result of loadPreviousRun()
+ * @param {number} readyCount - images that would go into a run started now
+ */
+function _makePreviousRunLine(previousRun, readyCount) {
+  const { modelName, trainedAt, trainCount, valCount, manifestCount, stillInDatasetCount } = previousRun;
+
+  const line = document.createElement('div');
+  line.dataset.testid = 'training-previous-run';
+  line.style.cssText = 'margin-top: 0.35em; color: var(--pico-muted-color, #888);';
+
+  const when = _formatTrainedAt(trainedAt);
+  const head = document.createElement('span');
+  head.textContent = `⏮ Last run (${modelName}${when ? `, ${when}` : ''}): `;
+  line.appendChild(head);
+
+  const count = document.createElement('span');
+  count.dataset.testid = 'training-previous-run-count';
+  count.style.cssText = 'color: var(--pico-color, #ccc);';
+  count.textContent = `${manifestCount.toLocaleString()} image${manifestCount === 1 ? '' : 's'}`;
+  count.title = `${trainCount.toLocaleString()} train / ${valCount.toLocaleString()} validation`;
+  line.appendChild(count);
+
+  // Signed, because a run can also shrink — images get deleted, datasets get
+  // re-scoped — and rendering that as "+-40 since" would be nonsense.
+  const delta = readyCount - manifestCount;
+  const deltaSpan = document.createElement('span');
+  deltaSpan.dataset.testid = 'training-previous-run-delta';
+  if (delta > 0) {
+    deltaSpan.style.cssText = 'color:#4c4;';
+    deltaSpan.textContent = `  +${delta.toLocaleString()} ready since`;
+  } else if (delta < 0) {
+    deltaSpan.style.cssText = 'color:#f90;';
+    deltaSpan.textContent = `  ${delta.toLocaleString()} vs. ready now`;
+  } else {
+    deltaSpan.textContent = '  no change since';
+  }
+  line.appendChild(deltaSpan);
+
+  // Only worth saying when it isn't the whole manifest — otherwise it's noise on
+  // every healthy config.
+  if (stillInDatasetCount > 0 && stillInDatasetCount < manifestCount) {
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size: 0.9em;';
+    note.textContent = `${(manifestCount - stillInDatasetCount).toLocaleString()} of those are no longer in this config's datasets`;
+    line.appendChild(note);
+  }
+
+  return line;
+}
+
+function _formatTrainedAt(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString();
 }
 
 /**
@@ -178,14 +254,19 @@ export function renderReadinessStats(content, { config, readiness, onNavigate })
  *   labelStats: object[],
  *   totalImages: number,
  *   labelsMap: Map<string, object>,
+ *   previousRun?: object|null,
  *   onNavigate?: () => void,
  * }} opts
  * @param {() => void} [opts.onNavigate] - called right before any cell click opens the
  *   review modal, so a caller rendering this table inside its own floating panel
  *   (e.g. activeModelBar.js's coverage popup) can close itself first — otherwise a
  *   high-z-index panel would sit on top of the review modal it just opened.
+ * @param {object|null} [opts.previousRun] - result of loadPreviousRun(). When given,
+ *   each table gains a "Last run" column counting the same thing as its first
+ *   column, restricted to the images that trained the current model. Omitted or
+ *   null renders exactly as before.
  */
-export function renderCoverageStats(content, { config, labelStats, totalImages, labelsMap, onNavigate }) {
+export function renderCoverageStats(content, { config, labelStats, totalImages, labelsMap, previousRun = null, onNavigate }) {
   const totalNote = document.createElement('div');
   totalNote.style.cssText = 'color: var(--pico-muted-color, #888); margin-bottom: 0.5em; font-size: 0.9em;';
   totalNote.textContent = `${totalImages.toLocaleString()} image${totalImages === 1 ? '' : 's'} across selected dataset${(config.datasetUuids?.length ?? 0) === 1 ? '' : 's'}`;
@@ -366,6 +447,28 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
       let detailTr = null;
       for (const col of columns) {
         const td = document.createElement('td');
+
+        // "Last run" columns read from the previous run's stats rather than the
+        // current ones, and are never clickable: the review modal browses the
+        // dataset as it is now, so a click here would open a set that doesn't
+        // match the number it came from.
+        if (col.prevKey) {
+          const prev = previousRun?.labelStatsByUuid?.get(stat.labelUuid)?.[col.prevKey] ?? 0;
+          const now = stat[col.compareKey] ?? 0;
+          const diff = now - prev;
+          td.style.cssText = 'text-align: right; padding: 2px 6px; white-space: nowrap; color: var(--pico-muted-color, #888);';
+          td.title = `Last run: ${prev.toLocaleString()} · now: ${now.toLocaleString()}`;
+          td.appendChild(document.createTextNode(prev.toLocaleString()));
+          if (diff !== 0) {
+            const deltaSpan = document.createElement('span');
+            deltaSpan.style.cssText = `margin-left: 4px; ${diff > 0 ? 'color:#4c4;' : 'color:#f90;'}`;
+            deltaSpan.textContent = diff > 0 ? `+${diff.toLocaleString()}` : diff.toLocaleString();
+            td.appendChild(deltaSpan);
+          }
+          tr.appendChild(td);
+          continue;
+        }
+
         const val = stat[col.key] ?? 0;
 
         const isClickable = (col.browseStatus || col.browseFn) && val > 0;
@@ -427,6 +530,15 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
     return table;
   }
 
+  // Appended right after the column it is a historical reading of, so the
+  // comparison is adjacent rather than at opposite ends of the row.
+  const _prevCol = (prevKey, compareKey, what) => ({
+    header: 'Last run',
+    prevKey,
+    compareKey,
+    title: `${what} among the images that trained the current model (${previousRun?.modelName ?? ''}), and the change since`,
+  });
+
   if (imageLabels.length > 0) {
     const sectionHead = document.createElement('div');
     sectionHead.style.cssText = 'font-weight: 600; margin: 0.5em 0 0.25em; font-size: 0.9em;';
@@ -434,6 +546,7 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
     content.appendChild(sectionHead);
     content.appendChild(_makeTable(imageLabels, [
       { header: 'Positive', key: 'presentImageCount', title: 'Images explicitly marked Present for this label', goodIf: s => s.presentImageCount > 0, browseStatus: 'present' },
+      ...(previousRun ? [_prevCol('presentImageCount', 'presentImageCount', 'Images marked Present')] : []),
       { header: 'Negative', key: 'absentImageCount', title: 'Images explicitly marked Absent for this label', goodIf: s => s.absentImageCount > 0, browseStatus: 'absent' },
       { header: 'Unverified', key: 'unverifiedImageCount', title: 'Images with no status set for this label — click to review', warnIf: s => s.unverifiedImageCount > 0, browseStatus: 'uncertain' },
     ]));
@@ -450,6 +563,7 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
           const effectiveUuids = new Set([stat.labelUuid, ...(stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : [])]);
           return openVerifiedBboxModal(config, effectiveUuids, `${_labelName(stat.labelUuid)} — verified boxes (${config.name})`);
         }},
+      ...(previousRun ? [_prevCol('verifiedBboxCount', 'verifiedBboxCount', 'Verified boxes')] : []),
       { header: 'Unverified', key: 'unverifiedBboxCount', title: 'Unverified boxes — bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
         browseFn: (stat) => openBboxNeedsReviewModal(config, stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
       { header: 'All clear', key: 'coLabelsCoveredCount',

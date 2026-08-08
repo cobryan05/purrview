@@ -8735,6 +8735,59 @@
         }
       }
     },
+    "/api/training-configs/{uuid}/label-stats-for-images": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Label Stats For Images",
+        "description": "Same per-label stats as GET /label-stats, but counted over only the\nsupplied images \u2014 the training page replays a previous run's recorded\nmanifest through it to show what went in last time.",
+        "operationId": "get_training_config_label_stats_for_images",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainingConfigLabelStatsForImagesPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingConfigLabelStatsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs/{uuid}/needs-review-images": {
       "post": {
         "tags": [
@@ -11552,6 +11605,28 @@
             },
             "type": "array",
             "title": "Valimageuuids"
+          },
+          "trainedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trainedat"
+          },
+          "modelConfigNodeUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelconfignodeuuid"
           }
         },
         "type": "object",

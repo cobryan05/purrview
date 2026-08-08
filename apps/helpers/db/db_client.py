@@ -4722,12 +4722,21 @@ class DbClient:
             sort_order=sort_order,
         )
 
-    async def get_training_config_label_stats(self, uuid: str) -> Optional[dict]:
+    async def get_training_config_label_stats(
+        self, uuid: str, restrict_to_image_uuids: Optional[list[str]] = None
+    ) -> Optional[dict]:
         """Return per-label dataset stats for a training config.
 
         Relevant labels are derived from the model config node referenced by
         model_config_node_uuid. If no node is assigned, falls back to using
         all labels across all linked datasets.
+
+        *restrict_to_image_uuids* narrows every count to that subset of the
+        dataset union (None = the whole union, today's behaviour). The training
+        page uses it to replay these stats over a previously-trained model's
+        recorded image manifest, so "what went in last time" and "what is here
+        now" are produced by the same code rather than two counting rules that
+        can drift apart.
 
         Returns None if the training config doesn't exist.
         """
@@ -4769,6 +4778,17 @@ class DbClient:
         # Collect all image UUIDs from the datasets (union, de-duped).
         _union_stubs = await self._enumerate_dataset_union_stubs(list(datasets_by_uuid.keys()))
         all_image_uuids: list[str] = [s.uuid for s in _union_stubs]
+
+        # Optional restriction to an explicit image set — used to re-run these exact
+        # stats over a previous training run's recorded manifest, so "then" and "now"
+        # are counted by identical rules. Intersected with the dataset union rather
+        # than used raw: an image the run trained on but that has since left the
+        # dataset can't be counted against labels this config no longer covers.
+        # `total_images` then reports how much of the manifest survived, which the
+        # caller compares against the manifest length it already holds.
+        if restrict_to_image_uuids is not None:
+            _restrict = set(restrict_to_image_uuids)
+            all_image_uuids = [u for u in all_image_uuids if u in _restrict]
 
         total_images = len(all_image_uuids)
 

@@ -2817,8 +2817,12 @@ class Manager:
     async def get_dataset_image_uuids(self, dataset_uuids: list[str]) -> list[str]:
         return await self._db_client.get_dataset_image_uuids(dataset_uuids)
 
-    async def get_training_config_label_stats(self, uuid: str) -> "Optional[dict]":
-        return await self._db_client.get_training_config_label_stats(uuid)
+    async def get_training_config_label_stats(
+        self, uuid: str, restrict_to_image_uuids: "Optional[list[str]]" = None
+    ) -> "Optional[dict]":
+        return await self._db_client.get_training_config_label_stats(
+            uuid, restrict_to_image_uuids=restrict_to_image_uuids
+        )
 
     async def get_training_config_needs_review_images(
         self, uuid: str, payload: "NeedsReviewImagesPayload"

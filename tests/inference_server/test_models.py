@@ -177,3 +177,57 @@ async def test_set_model_device_unknown_model_returns_failure(http_client):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "failure"
+
+
+class TestGetModelTrainingImages:
+    """The training page reads a previous run's image manifest through this
+    endpoint, so both the manifest and the provenance that identifies which run
+    produced it have to survive the round trip."""
+
+    async def _write_sidecar(self, models_dir, extra: dict) -> None:
+        sidecar = models_dir / "yolo_test.json"
+        data = json.loads(sidecar.read_text())
+        data.update(extra)
+        sidecar.write_text(json.dumps(data))
+
+    async def test_returns_recorded_manifest(self, http_client, models_dir):
+        await self._write_sidecar(
+            models_dir,
+            {"train_image_uuids": ["a", "b", "c"], "val_image_uuids": ["d"]},
+        )
+        resp = await http_client.get("/api/models/yolo_test/training-images")
+        data = resp.json()
+        assert data["status"] == "success"
+        # camelCase on the wire: the response inherits StatusResponse's to_camel
+        # alias generator. A client reading train_image_uuids gets nothing, which
+        # is exactly how the Training Data modal came to report "no UUIDs
+        # recorded" for every model.
+        assert data["trainImageUuids"] == ["a", "b", "c"]
+        assert data["valImageUuids"] == ["d"]
+
+    async def test_returns_run_provenance(self, http_client, models_dir):
+        await self._write_sidecar(
+            models_dir,
+            {
+                "train_image_uuids": ["a"],
+                "trained_at": "2026-08-01T12:00:00+00:00",
+                "model_config_node_uuid": "node-123",
+            },
+        )
+        resp = await http_client.get("/api/models/yolo_test/training-images")
+        data = resp.json()
+        assert data["trainedAt"] == "2026-08-01T12:00:00+00:00"
+        assert data["modelConfigNodeUuid"] == "node-123"
+
+    async def test_sidecar_without_provenance_returns_nulls(self, http_client):
+        """Models trained before those fields existed must still resolve, with the
+        provenance simply absent rather than the request failing."""
+        resp = await http_client.get("/api/models/yolo_test/training-images")
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["trainedAt"] is None
+        assert data["modelConfigNodeUuid"] is None
+
+    async def test_unknown_model_returns_failure(self, http_client):
+        resp = await http_client.get("/api/models/nonexistent/training-images")
+        assert resp.json()["status"] == "failure"

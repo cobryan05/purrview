@@ -104,9 +104,11 @@ export async function _fetchModelsLabelMappings({ modelNames }) {
 export const fetchModelsLabelMappings = wrapSingleKey(_fetchModelsLabelMappings);
 
 /**
- * Fetch the training and validation image UUIDs stored in a model's sidecar JSON.
+ * Fetch the training and validation image UUIDs stored in a model's sidecar JSON,
+ * plus the run provenance (`trainedAt`, `modelConfigNodeUuid`) a caller needs to
+ * confirm the model really is the one a given training config last produced.
  * @param {string} modelName
- * @returns {Promise<{train: string[], val: string[]}>}
+ * @returns {Promise<{train: string[], val: string[], trainedAt: string|null, modelConfigNodeUuid: string|null}>}
  */
 export async function fetchModelTrainingImages(modelName) {
   const res = await apiFetch(`/api/models/${encodeURIComponent(modelName)}/training-images`);
@@ -114,7 +116,18 @@ export async function fetchModelTrainingImages(modelName) {
   if (!res.ok || data.status === 'failure') {
     throw new Error(data.message || 'Failed to fetch training images');
   }
-  return { train: data.train_image_uuids ?? [], val: data.val_image_uuids ?? [] };
+  // ModelTrainingImagesResponse inherits StatusResponse's to_camel alias generator,
+  // so the wire fields are camelCase. This used to read only the snake_case names
+  // and therefore always resolved to empty arrays — the Training Data modal
+  // reported "no training image UUIDs recorded" for every model, including ones
+  // whose sidecar had a full manifest. Snake_case is kept as a fallback so an
+  // older/by-name-serialised response still works.
+  return {
+    train: data.trainImageUuids ?? data.train_image_uuids ?? [],
+    val: data.valImageUuids ?? data.val_image_uuids ?? [],
+    trainedAt: data.trainedAt ?? data.trained_at ?? null,
+    modelConfigNodeUuid: data.modelConfigNodeUuid ?? data.model_config_node_uuid ?? null,
+  };
 }
 
 /**

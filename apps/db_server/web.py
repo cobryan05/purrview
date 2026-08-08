@@ -667,6 +667,12 @@ class TrainingConfigLabelStatsResponse(StatusResponse):
     total_images: int = 0
 
 
+class TrainingConfigLabelStatsForImagesPayload(Payload):
+    # A previously-trained model's recorded image manifest. POST rather than a GET
+    # query param purely because this list runs to thousands of UUIDs.
+    image_uuids: List[str] = Field(default_factory=list)
+
+
 class NeedsReviewImagesPayload(Payload):
     label_uuids: List[str] = Field(default_factory=list)
     after_uuid: Optional[str] = None
@@ -3168,6 +3174,32 @@ class WebApp:
         ) -> TrainingConfigLabelStatsResponse:
             try:
                 result = await self._manager.get_training_config_label_stats(uuid)
+                if result is None:
+                    return TrainingConfigLabelStatsResponse(
+                        status=JsonValues.FAILURE, message="Training config not found"
+                    )
+                return TrainingConfigLabelStatsResponse(status=JsonValues.SUCCESS, **result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigLabelStatsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/label-stats-for-images",
+            response_model=TrainingConfigLabelStatsResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_label_stats_for_images",
+        )
+        async def get_training_config_label_stats_for_images(
+            uuid: str,
+            payload: TrainingConfigLabelStatsForImagesPayload,
+        ) -> TrainingConfigLabelStatsResponse:
+            """Same per-label stats as GET /label-stats, but counted over only the
+            supplied images — the training page replays a previous run's recorded
+            manifest through it to show what went in last time."""
+            try:
+                result = await self._manager.get_training_config_label_stats(
+                    uuid, restrict_to_image_uuids=payload.image_uuids
+                )
                 if result is None:
                     return TrainingConfigLabelStatsResponse(
                         status=JsonValues.FAILURE, message="Training config not found"

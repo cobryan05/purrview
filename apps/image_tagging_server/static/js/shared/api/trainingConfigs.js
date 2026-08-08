@@ -220,3 +220,26 @@ export async function fetchTrainingConfigLabelStats(uuid) {
   }
   return { labelStats: data.labelStats ?? [], totalImages: data.totalImages ?? 0 };
 }
+
+/**
+ * The same per-label stats as fetchTrainingConfigLabelStats, but counted over
+ * only `imageUuids` — used to replay a previously-trained model's recorded
+ * manifest so the "last run" numbers come from the same counting rules as the
+ * current ones. `totalImages` comes back as the number of those images still in
+ * the config's datasets, which can be lower than imageUuids.length.
+ *
+ * @param {string} uuid
+ * @param {string[]} imageUuids
+ */
+export async function fetchTrainingConfigLabelStatsForImages(uuid, imageUuids) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/label-stats-for-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch previous-run label stats');
+  }
+  return { labelStats: data.labelStats ?? [], totalImages: data.totalImages ?? 0 };
+}

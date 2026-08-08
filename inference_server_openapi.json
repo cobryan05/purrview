@@ -1559,6 +1559,28 @@
             },
             "type": "array",
             "title": "Valimageuuids"
+          },
+          "trainedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trainedat"
+          },
+          "modelConfigNodeUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelconfignodeuuid"
           }
         },
         "type": "object",

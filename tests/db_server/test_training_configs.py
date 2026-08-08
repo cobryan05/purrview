@@ -1220,3 +1220,324 @@ class TestImagesByLabelStatusBboxFilters:
         uncertain_body = await _images_by_label_status(http_client, cfg["uuid"], label_uuid, "uncertain")
         assert any("compat_uncertain" in f for f in _filenames(uncertain_body))
         assert not any("compat_present" in f for f in _filenames(uncertain_body))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# image-gaps — per-image "what does this image still need" for a training config
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _image_uuid(http_client, image_path: str) -> str:
+    r = await http_client.post("/api/images/metadata/get", json={"imagePath": image_path})
+    assert r.status_code == 200, r.text
+    return r.json()["image"]["uuid"]
+
+
+async def _image_gaps(http_client, config_uuid: str, image_uuids: list[str]) -> dict:
+    r = await http_client.post(
+        f"/api/training-configs/{config_uuid}/image-gaps",
+        json={"imageUuids": image_uuids},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body["gaps"]
+
+
+class TestTrainingConfigImageGaps:
+    """Per-image gap listing — the card-level counterpart of the co-label gap counts."""
+
+    async def _setup_two_labels(self, http_client, tc_name: str, label_a_name: str, label_b_name: str):
+        label_a = await _create_label(http_client, label_a_name)
+        label_b = await _create_label(http_client, label_b_name)
+        ds = await _create_dataset(http_client, f"ds-{tc_name}")
+        mc = await _create_model_config(
+            http_client,
+            f"mc-{tc_name}",
+            nodes=[
+                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {"label_uuid": label_a, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {"label_uuid": label_b, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+            ],
+        )
+        root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
+        cfg = await _create_training_config(
+            http_client, tc_name, [ds["uuid"]], model_config_node_uuid=root_node["uuid"]
+        )
+        return cfg, label_a, label_b
+
+    async def test_lists_unresolved_labels_per_image(self, http_client, files_root):
+        """An image with a verified box for A but nothing for B reports B as its only gap."""
+        cfg, label_a, label_b = await self._setup_two_labels(http_client, "gaps-basic", "gaps-a", "gaps-b")
+
+        img_gap = await _register_image(http_client, files_root, "gaps_gap.png")
+        await _create_bbox(http_client, img_gap, label_a, [VERIFIED_TAG_UUID])
+        gap_uuid = await _image_uuid(http_client, img_gap)
+
+        gaps = await _image_gaps(http_client, cfg["uuid"], [gap_uuid])
+
+        assert gap_uuid in gaps, gaps
+        assert [e["labelUuid"] for e in gaps[gap_uuid]] == [label_b]
+        assert gaps[gap_uuid][0]["labelName"] == "gaps-b"
+        assert gaps[gap_uuid][0]["labelScope"] == "object"
+
+    async def test_fully_covered_image_is_omitted(self, http_client, files_root):
+        """Images with nothing outstanding are left out of the map entirely, not mapped to []."""
+        cfg, label_a, label_b = await self._setup_two_labels(http_client, "gaps-covered", "gapsc-a", "gapsc-b")
+
+        img = await _register_image(http_client, files_root, "gaps_covered.png")
+        await _create_bbox(http_client, img, label_a, [VERIFIED_TAG_UUID])
+        await _set_image_label(http_client, img, label_b, "absent")
+        img_uuid = await _image_uuid(http_client, img)
+
+        gaps = await _image_gaps(http_client, cfg["uuid"], [img_uuid])
+
+        assert gaps == {}, gaps
+
+    async def test_absent_resolves_an_object_scope_gap(self, http_client, files_root):
+        """Marking the missing object-scope label Absent — what a card chip click does — clears it."""
+        cfg, label_a, label_b = await self._setup_two_labels(http_client, "gaps-absent", "gapsa-a", "gapsa-b")
+
+        img = await _register_image(http_client, files_root, "gaps_absent.png")
+        await _create_bbox(http_client, img, label_a, [VERIFIED_TAG_UUID])
+        img_uuid = await _image_uuid(http_client, img)
+
+        before = await _image_gaps(http_client, cfg["uuid"], [img_uuid])
+        assert [e["labelUuid"] for e in before[img_uuid]] == [label_b]
+
+        await _set_image_label(http_client, img, label_b, "absent")
+
+        after = await _image_gaps(http_client, cfg["uuid"], [img_uuid])
+        assert img_uuid not in after, after
+
+    async def test_absent_on_rollup_parent_clears_the_gap(self, http_client, files_root):
+        """A gap names the top-level label; one Absent write on that parent resolves it, so the
+        UI must never need to fan the write out to rollup children."""
+        parent = await _create_label(http_client, "gaps-rollup-parent")
+        child = await _create_label(http_client, "gaps-rollup-child", parent_uuid=parent)
+        other = await _create_label(http_client, "gaps-rollup-other")
+        ds = await _create_dataset(http_client, "ds-gaps-rollup")
+        mc = await _create_model_config(
+            http_client,
+            "mc-gaps-rollup",
+            nodes=[
+                {"label_uuid": None, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+                {
+                    "label_uuid": parent,
+                    "model_type": "object_detection",
+                    "architecture": "yolo_v9_c",
+                    "roll_up_unchecked": True,
+                },
+                {"label_uuid": other, "model_type": "object_detection", "architecture": "yolo_v9_c"},
+            ],
+        )
+        root_node = next(n for n in mc["nodes"] if n["labelUuid"] is None)
+        cfg = await _create_training_config(
+            http_client, "gaps-rollup", [ds["uuid"]], model_config_node_uuid=root_node["uuid"]
+        )
+
+        img = await _register_image(http_client, files_root, "gaps_rollup.png")
+        # Verified box for the ROLLUP CHILD — that covers the parent, leaving `other` as the gap.
+        await _create_bbox(http_client, img, child, [VERIFIED_TAG_UUID])
+        img_uuid = await _image_uuid(http_client, img)
+
+        before = await _image_gaps(http_client, cfg["uuid"], [img_uuid])
+        assert [e["labelUuid"] for e in before[img_uuid]] == [other], before
+
+        await _set_image_label(http_client, img, other, "absent")
+
+        after = await _image_gaps(http_client, cfg["uuid"], [img_uuid])
+        assert img_uuid not in after, after
+
+    async def test_scoped_to_requested_images_only(self, http_client, files_root):
+        """Only the requested page of images is reported on, even when others have gaps."""
+        cfg, label_a, label_b = await self._setup_two_labels(http_client, "gaps-scope", "gapss-a", "gapss-b")
+
+        img_one = await _register_image(http_client, files_root, "gaps_scope_one.png")
+        img_two = await _register_image(http_client, files_root, "gaps_scope_two.png")
+        await _create_bbox(http_client, img_one, label_a, [VERIFIED_TAG_UUID])
+        await _create_bbox(http_client, img_two, label_a, [VERIFIED_TAG_UUID])
+        uuid_one = await _image_uuid(http_client, img_one)
+        uuid_two = await _image_uuid(http_client, img_two)
+
+        gaps = await _image_gaps(http_client, cfg["uuid"], [uuid_one])
+
+        assert uuid_one in gaps
+        assert uuid_two not in gaps, gaps
+
+    async def test_empty_request_and_unknown_config(self, http_client, files_root):
+        cfg, _label_a, _label_b = await self._setup_two_labels(http_client, "gaps-edge", "gapse-a", "gapse-b")
+
+        assert await _image_gaps(http_client, cfg["uuid"], []) == {}
+        assert await _image_gaps(http_client, str(uuid.uuid4()), [str(uuid.uuid4())]) == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Label stats scoped to an explicit image set (previous training run)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestTrainingConfigLabelStatsForImages:
+    """The training page replays a previously-trained model's recorded image
+    manifest through this endpoint, so "what went into the last run" and "what is
+    in the dataset now" are counted by the same code rather than two rules that
+    can drift apart."""
+
+    ENDPOINT = "/api/training-configs/{uuid}/label-stats-for-images"
+
+    async def _post(self, http_client, config_uuid: str, image_uuids: list[str]) -> dict:
+        r = await http_client.post(
+            self.ENDPOINT.format(uuid=config_uuid),
+            json={"imageUuids": image_uuids},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    async def _object_config_with_three_images(self, http_client, files_root, prefix: str):
+        """A config over one object label with three images, each holding one
+        verified bbox. Returns (config, label_uuid, [image_uuid, ...])."""
+        label_uuid = (await http_client.post("/api/labels", json={"name": f"{prefix}-lbl", "color": "#00ff00"})).json()[
+            "label"
+        ]["uuid"]
+
+        ds = (
+            await http_client.post(
+                "/api/datasets",
+                json={"name": f"{prefix}-ds", "filter_json": {}, "label_uuids": [label_uuid]},
+            )
+        ).json()["dataset"]
+
+        image_uuids = []
+        for i in range(3):
+            path = await _register_image(http_client, files_root, f"{prefix}_{i}.png")
+            await _create_bbox(http_client, path, label_uuid, [VERIFIED_TAG_UUID])
+            image_uuids.append(await _image_uuid(http_client, path))
+
+        mc = (
+            await http_client.post(
+                "/api/model-configs",
+                json={
+                    "name": f"mc-{prefix}",
+                    "nodes": [
+                        {
+                            "label_uuid": label_uuid,
+                            "model_type": "object_detection",
+                            "architecture": "yolo_v9_c",
+                        }
+                    ],
+                },
+            )
+        ).json()["config"]
+
+        cfg = await _create_training_config(
+            http_client, f"{prefix}-cfg", [ds["uuid"]], model_config_node_uuid=mc["nodes"][0]["uuid"]
+        )
+        return cfg, label_uuid, image_uuids
+
+    async def test_counts_only_the_supplied_images(self, http_client, files_root):
+        cfg, label_uuid, image_uuids = await self._object_config_with_three_images(
+            http_client, files_root, "lsfi-subset"
+        )
+
+        body = await self._post(http_client, cfg["uuid"], image_uuids[:2])
+
+        assert body["status"] == "success"
+        assert body["totalImages"] == 2
+        stat = next(s for s in body["labelStats"] if s["labelUuid"] == label_uuid)
+        assert stat["verifiedBboxCount"] == 2
+
+    async def test_full_set_matches_the_unrestricted_endpoint(self, http_client, files_root):
+        """Passing every image must reproduce GET /label-stats exactly — that
+        equality is what makes the previous-run column comparable to the current
+        one instead of a differently-computed number sitting next to it."""
+        cfg, _label_uuid, image_uuids = await self._object_config_with_three_images(
+            http_client, files_root, "lsfi-full"
+        )
+
+        scoped = await self._post(http_client, cfg["uuid"], image_uuids)
+        unrestricted = (await http_client.get(f"/api/training-configs/{cfg['uuid']}/label-stats")).json()
+
+        assert scoped["totalImages"] == unrestricted["totalImages"] == 3
+        assert scoped["labelStats"] == unrestricted["labelStats"]
+
+    async def test_unknown_image_uuids_are_ignored(self, http_client, files_root):
+        """An image the run trained on but that has since left the dataset must not
+        inflate the count — totalImages reports how much of the manifest survived."""
+        cfg, label_uuid, image_uuids = await self._object_config_with_three_images(
+            http_client, files_root, "lsfi-stale"
+        )
+
+        body = await self._post(http_client, cfg["uuid"], [image_uuids[0], str(uuid.uuid4())])
+
+        assert body["totalImages"] == 1
+        stat = next(s for s in body["labelStats"] if s["labelUuid"] == label_uuid)
+        assert stat["verifiedBboxCount"] == 1
+
+    async def test_empty_image_list_counts_nothing(self, http_client, files_root):
+        cfg, label_uuid, _image_uuids = await self._object_config_with_three_images(
+            http_client, files_root, "lsfi-empty"
+        )
+
+        body = await self._post(http_client, cfg["uuid"], [])
+
+        assert body["status"] == "success"
+        assert body["totalImages"] == 0
+        stat = next((s for s in body["labelStats"] if s["labelUuid"] == label_uuid), None)
+        assert stat is not None
+        assert stat["verifiedBboxCount"] == 0
+
+    async def test_image_scope_present_counts_are_scoped(self, http_client, files_root):
+        """The image-label table's "Positive" column is what the previous-run column
+        mirrors for image-scope labels, so it must narrow the same way."""
+        label_uuid = (
+            await http_client.post("/api/labels", json={"name": "lsfi-img-lbl", "color": "#ff8800", "scope": "image"})
+        ).json()["label"]["uuid"]
+
+        # No label_uuids filter — image-scope labels have no bboxes, so filtering by
+        # label_uuids (which scopes to bbox labels) would return 0 images.
+        ds = (
+            await http_client.post(
+                "/api/datasets",
+                json={"name": "lsfi-img-ds", "filter_json": {}},
+            )
+        ).json()["dataset"]
+
+        image_uuids = []
+        for i in range(3):
+            path = await _register_image(http_client, files_root, f"lsfi_img_{i}.png")
+            await _set_image_label(http_client, path, label_uuid, "present")
+            image_uuids.append(await _image_uuid(http_client, path))
+
+        mc = (
+            await http_client.post(
+                "/api/model-configs",
+                json={
+                    "name": "mc-lsfi-img",
+                    "nodes": [
+                        {
+                            "label_uuid": label_uuid,
+                            "model_type": "image_classifier",
+                            "architecture": "resnet_18",
+                        }
+                    ],
+                },
+            )
+        ).json()["config"]
+
+        cfg = await _create_training_config(
+            http_client, "lsfi-img-cfg", [ds["uuid"]], model_config_node_uuid=mc["nodes"][0]["uuid"]
+        )
+
+        body = await self._post(http_client, cfg["uuid"], image_uuids[:2])
+
+        stat = next(s for s in body["labelStats"] if s["labelUuid"] == label_uuid)
+        assert body["totalImages"] == 2
+        assert stat["presentImageCount"] == 2
+        assert stat["unverifiedImageCount"] == 0
+
+    async def test_nonexistent_config_returns_failure(self, http_client):
+        r = await http_client.post(
+            self.ENDPOINT.format(uuid=uuid.uuid4()),
+            json={"imageUuids": []},
+        )
+        assert r.json()["status"] == "failure"

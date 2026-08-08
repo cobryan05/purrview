@@ -1067,3 +1067,212 @@ class TestUnsavedChangesBeforeStartTraining:
 
         self._start_btn(page).click()
         wait_until(page, lambda: "start" in calls, "Expected an immediate start with no prompt")
+
+
+# ---------------------------------------------------------------------------
+# Previous training run ("how many more images since we last trained?")
+# ---------------------------------------------------------------------------
+
+
+def _mock_model_training_images(
+    page: Page,
+    *,
+    train: list | None = None,
+    val: list | None = None,
+    trained_at: str | None = "2026-07-01T09:00:00+00:00",
+    node_uuid: str | None = "node-root",
+    failure: bool = False,
+):
+    """Stand in for a trained model's sidecar manifest.
+
+    Deliberately camelCase, matching the real response: ModelTrainingImagesResponse
+    inherits StatusResponse's to_camel alias generator.
+    """
+
+    def handler(route: Route):
+        if failure:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "failure", "message": "Model not found"}),
+            )
+            return
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "trainImageUuids": train if train is not None else [],
+                    "valImageUuids": val if val is not None else [],
+                    "trainedAt": trained_at,
+                    "modelConfigNodeUuid": node_uuid,
+                }
+            ),
+        )
+
+    page.route("**/api/models/*/training-images", handler)
+
+
+def _mock_label_stats_for_images(page: Page, config_uuid: str, stats: dict | None = None, captured: list | None = None):
+    def handler(route: Route):
+        if captured is not None:
+            try:
+                captured.append(json.loads(route.request.post_data or "{}"))
+            except Exception:
+                captured.append({})
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", **(stats or {"labelStats": [], "totalImages": 0})}),
+        )
+
+    page.route(f"**/api/training-configs/{config_uuid}/label-stats-for-images", handler)
+
+
+class TestPreviousRunInReadinessPanel:
+    """A config that has been trained before shows what went into that run, so the
+    number of images added since is readable at a glance rather than inferred."""
+
+    def _setup(self, page: Page, base_url: str, ready: int = 10, **manifest_kwargs):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1", ready=ready, needs_review=0, not_started=0)
+        _mock_label_stats(page, "tc-1")
+        _mock_label_stats_for_images(page, "tc-1")
+        _mock_model_training_images(page, **manifest_kwargs)
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+    def test_previous_run_image_count_is_shown(self, page: Page, base_url: str):
+        self._setup(page, base_url, ready=10, train=["a", "b", "c", "d", "e", "f"], val=["g"])
+
+        line = _box(page).get_by_test_id("training-previous-run")
+        expect(line).to_be_visible(timeout=4000)
+        expect(_box(page).get_by_test_id("training-previous-run-count")).to_contain_text("7 images")
+
+    def test_delta_since_last_run_is_shown(self, page: Page, base_url: str):
+        """10 ready now against 7 last time — the delta is the whole point."""
+        self._setup(page, base_url, ready=10, train=["a", "b", "c", "d", "e", "f"], val=["g"])
+
+        delta = _box(page).get_by_test_id("training-previous-run-delta")
+        expect(delta).to_be_visible(timeout=4000)
+        expect(delta).to_contain_text("+3 ready since")
+
+    def test_shrinking_dataset_is_not_rendered_as_a_gain(self, page: Page, base_url: str):
+        """Images get deleted and datasets get re-scoped; "+-4" would be nonsense."""
+        self._setup(page, base_url, ready=3, train=["a", "b", "c", "d", "e", "f", "g"])
+
+        delta = _box(page).get_by_test_id("training-previous-run-delta")
+        expect(delta).to_be_visible(timeout=4000)
+        expect(delta).to_contain_text("-4")
+        expect(delta).not_to_contain_text("+")
+
+    def test_no_previous_run_line_when_model_does_not_exist(self, page: Page, base_url: str):
+        """The common case for a new config — it must stay silent, not error."""
+        self._setup(page, base_url, ready=10, failure=True)
+
+        expect(_box(page).get_by_test_id("training-readiness-ready-count")).to_be_visible(timeout=4000)
+        expect(_box(page).get_by_test_id("training-previous-run")).to_have_count(0)
+
+    def test_no_previous_run_line_when_manifest_was_not_recorded(self, page: Page, base_url: str):
+        """ "Remember exact image list" can be turned off — then there is nothing to
+        compare against and the line must not claim a run of 0 images."""
+        self._setup(page, base_url, ready=10, train=[], val=[])
+
+        expect(_box(page).get_by_test_id("training-readiness-ready-count")).to_be_visible(timeout=4000)
+        expect(_box(page).get_by_test_id("training-previous-run")).to_have_count(0)
+
+    def test_model_from_a_different_shape_node_is_ignored(self, page: Page, base_url: str):
+        """The model name is derived from the config name, so an unrelated model can
+        collide with it. The sidecar's node uuid is what rules that out — without
+        this check the panel would report a stranger's numbers as this config's."""
+        self._setup(page, base_url, ready=10, train=["a", "b"], node_uuid="some-other-node")
+
+        expect(_box(page).get_by_test_id("training-readiness-ready-count")).to_be_visible(timeout=4000)
+        expect(_box(page).get_by_test_id("training-previous-run")).to_have_count(0)
+
+    def test_manifest_is_sent_to_the_scoped_label_stats_endpoint(self, page: Page, base_url: str):
+        """The per-label previous-run numbers come from replaying the manifest
+        through the config's own label-stats query, so the manifest has to reach it."""
+        captured: list = []
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1", ready=4, needs_review=0)
+        _mock_label_stats(page, "tc-1")
+        _mock_label_stats_for_images(page, "tc-1", captured=captured)
+        _mock_model_training_images(page, train=["img-1", "img-2"], val=["img-3"])
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+        expect(_box(page).get_by_test_id("training-previous-run")).to_be_visible(timeout=4000)
+        wait_until(page, lambda: captured, "no POST to /label-stats-for-images")
+        assert captured[0]["imageUuids"] == ["img-1", "img-2", "img-3"]
+
+
+class TestPreviousRunColumnInLabelStats:
+    """The coverage table gains a "Last run" column so the delta is visible per
+    class, not just in total."""
+
+    def _setup(self, page: Page, base_url: str, prev_verified: int = 2):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1", ready=8, needs_review=0)
+        _mock_labels(page, [{"uuid": "lbl-obj", "name": "Cat", "color": "#ff0000", "parentUuid": None}])
+        _mock_label_stats_object(page, "tc-1")
+        _mock_label_stats_for_images(
+            page,
+            "tc-1",
+            stats={
+                "labelStats": [
+                    {
+                        "labelUuid": "lbl-obj",
+                        "labelScope": "object",
+                        "verifiedBboxCount": prev_verified,
+                        "unverifiedBboxCount": 0,
+                        "coLabelsCoveredCount": 0,
+                        "coLabelGapsCount": 0,
+                        "hasRollup": False,
+                        "rollUpParentUuid": None,
+                    }
+                ],
+                "totalImages": 4,
+            },
+        )
+        _mock_model_training_images(page, train=["a", "b", "c", "d"])
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+    def test_last_run_column_shows_previous_count_and_delta(self, page: Page, base_url: str):
+        """Current verified boxes for the label is 5 (LABEL_STATS_WITH_OBJECT); the
+        previous run had 2, so the column reads 2 with a +3."""
+        self._setup(page, base_url, prev_verified=2)
+
+        header = _box(page).locator("th", has_text="Last run").first
+        expect(header).to_be_visible(timeout=4000)
+
+        row = _box(page).locator("tr", has=page.locator("td", has_text="Cat")).first
+        expect(row).to_contain_text("+3")
+
+    def test_column_is_absent_without_a_previous_run(self, page: Page, base_url: str):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(page, "tc-1", ready=8, needs_review=0)
+        _mock_labels(page, [{"uuid": "lbl-obj", "name": "Cat", "color": "#ff0000", "parentUuid": None}])
+        _mock_label_stats_object(page, "tc-1")
+        _mock_model_training_images(page, failure=True)
+
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+        expect(_box(page).locator("th", has_text="Verified").first).to_be_visible(timeout=4000)
+        expect(_box(page).locator("th", has_text="Last run")).to_have_count(0)

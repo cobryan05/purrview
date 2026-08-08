@@ -27,6 +27,7 @@ import {
   clearTrainingConfigsCache,
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { renderCoverageStats, renderReadinessStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
+import { loadPreviousRun } from '/app-static/js/ui/utils/previousTrainingRun.js';
 import { makeFieldRow, buildPanelEditorBar, confirmStartIfDirty, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
@@ -287,9 +288,17 @@ function renderReadinessPanel(config) {
     content.appendChild(loading);
 
     try {
-      const readiness = await fetchTrainingConfigReadiness(config.uuid);
+      // Both in flight together: the previous run costs two extra round trips
+      // (sidecar, then stats over its manifest) and nothing about the readiness
+      // numbers depends on it. loadPreviousRun resolves to null rather than
+      // throwing when this config has never been trained, so it can't fail the
+      // panel.
+      const [readiness, previousRun] = await Promise.all([
+        fetchTrainingConfigReadiness(config.uuid),
+        loadPreviousRun(config),
+      ]);
       content.innerHTML = '';
-      renderReadinessStats(content, { config, readiness });
+      renderReadinessStats(content, { config, readiness, previousRun });
     } catch (err) {
       showPaneError(content, `Could not load readiness: ${err.message}`);
     } finally {
@@ -339,9 +348,12 @@ function renderLabelStatsPanel(config, labelsMap) {
     content.appendChild(loading);
 
     try {
-      const { labelStats, totalImages } = await fetchTrainingConfigLabelStats(config.uuid);
+      const [{ labelStats, totalImages }, previousRun] = await Promise.all([
+        fetchTrainingConfigLabelStats(config.uuid),
+        loadPreviousRun(config),
+      ]);
       content.innerHTML = '';
-      renderCoverageStats(content, { config, labelStats, totalImages, labelsMap });
+      renderCoverageStats(content, { config, labelStats, totalImages, labelsMap, previousRun });
     } catch (err) {
       showPaneError(content, `Could not load label stats: ${err.message}`);
     } finally {

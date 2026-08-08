@@ -135,6 +135,10 @@ class CuratedModelsResponse(StatusResponse):
 class ModelTrainingImagesResponse(StatusResponse):
     train_image_uuids: List[str] = Field(default_factory=list)
     val_image_uuids: List[str] = Field(default_factory=list)
+    # Provenance, so a caller that guessed this model name from a training config
+    # can confirm it really is that config's last run before showing its numbers.
+    trained_at: Optional[str] = None
+    model_config_node_uuid: Optional[str] = None
 
 
 class InferenceResponse(StatusResponse):
@@ -469,6 +473,8 @@ class WebApp:
                     status=JsonValues.SUCCESS,
                     train_image_uuids=config.get("train_image_uuids") or [],
                     val_image_uuids=config.get("val_image_uuids") or [],
+                    trained_at=config.get("trained_at"),
+                    model_config_node_uuid=config.get("model_config_node_uuid"),
                 )
             except Exception as e:
                 return ModelTrainingImagesResponse(status=JsonValues.FAILURE, message=str(e))
