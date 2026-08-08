@@ -1073,6 +1073,28 @@ class TestCanvasModalRoundTrip:
         expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
         expect(card.locator("input[type=checkbox]")).to_be_disabled()
 
+    def test_double_click_opens_canvas_for_an_image_with_no_bboxes(self, page: Page, base_url: str):
+        """Regression: the image-card double-click handler bailed out unless the
+        image already had a bbox, so every un-annotated image in a search result —
+        exactly the ones a reviewer needs to open and draw on — did nothing at all."""
+        boxless = {"uuid": "img-boxless", "filename": "folder/boxless.jpg", "bboxes": []}
+        _mock_review_queue(page, [boxless])
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "images")
+
+        card = page.locator("#review-root [data-image-uuid='img-boxless'][data-kind='image']")
+        expect(card).to_have_count(1)
+        card.locator("img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_have_text("Edit: folder/boxless.jpg")
+
     def test_save_from_image_card_updates_that_card(self, page: Page, base_url: str):
         """Regression: opening the canvas from an IMAGE card and hitting Save & Close
         left the card showing its pre-save boxes. IMAGE_ANNOTATIONS_SAVED fired and

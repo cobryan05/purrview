@@ -2992,7 +2992,9 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
       layer.draw();
     }
   }
-  _highlightBbox(bbox.uuid);
+  // No bbox when the canvas was opened from an image with none yet — there is
+  // simply nothing to highlight, and the editor opens ready to draw one.
+  if (bbox) _highlightBbox(bbox.uuid);
 
   // ── Wire label list + tag panel ────────────────────────────────────
   sidebarPanelsHandle = await createSidebarPanels(instance.runtime, {
@@ -3170,11 +3172,14 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     const currentBbox = _currentBbox;
     const allUuids = [...new Set([
       ...instance.runtime.state.image.bboxes.keys(),
-      bbox.uuid, // always include the originally-opened bbox
+      // Always include the originally-opened bbox — absent when the canvas was
+      // opened on an image that had none.
+      ...(bbox ? [bbox.uuid] : []),
     ])];
     await invalidateBboxThumbnails(allUuids);
     const currentBboxesMap = new Map(instance.runtime.state.image.bboxes);
-    const updatedUIBbox = currentBboxesMap.get(currentBbox?.uuid ?? bbox.uuid);
+    const openedUuid = currentBbox?.uuid ?? bbox?.uuid;
+    const updatedUIBbox = openedUuid ? currentBboxesMap.get(openedUuid) : undefined;
     closeModal();
     // Broadcast to all review panels (including nested / parent modals) so
     // every card showing a bbox from this image gets refreshed.

@@ -521,8 +521,11 @@ export function buildImageCard(controller, entry, opts) {
   thumbLoader.load(thumbImg, getImageThumbnailUrl(img.filename, 200));
   thumbImg.addEventListener('dblclick', () => {
     clearTimer();
-    const firstBbox = (img.bboxes ?? [])[0];
-    if (firstBbox) onOpenEditor({ kind: 'bbox', bbox: firstBbox, img, imageInitiated: true });
+    // An image with no boxes yet still opens — that's the case where the editor
+    // is most needed (draw the first box). It used to bail out silently, which
+    // read as a dead double-click on every un-annotated search result.
+    const firstBbox = (img.bboxes ?? [])[0] ?? null;
+    onOpenEditor({ kind: 'bbox', bbox: firstBbox, img, imageInitiated: true });
   });
 
   // Bbox canvas overlay — draws normalized rects over the thumbnail
