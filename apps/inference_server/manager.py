@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -96,6 +96,9 @@ class Manager:
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
         self._loading_models: Dict[str, asyncio.Future] = {}  # in-progress loads; awaited by concurrent pin requests
+        # model_path -> (sidecar mtime_ns, class name -> label_uuid). See
+        # get_models_classes(); keyed on mtime so it self-invalidates on edit.
+        self._class_map_cache: Dict[str, Tuple[int, Dict[str, Optional[str]]]] = {}
         self._config = {"service": APPS.INFERENCE_SERVER, "models_path": models_path}
 
     async def get_server_config(self) -> Dict[str, Any]:
@@ -158,6 +161,17 @@ class Manager:
         ret = {}
         for model_name, model_path in model_paths.items():
             try:
+                # recognize() calls this for every image that produced a detection,
+                # so an uncached call means a sidecar stat+read+json.parse per image
+                # on the event loop during a bulk run. Cache on the sidecar's
+                # mtime_ns so an edit (from this process or any other) invalidates
+                # itself without callers having to remember to flush.
+                cached = self._class_map_cache.get(model_path)
+                sidecar_mtime = self._sidecar_mtime_ns(model_path)
+                if cached is not None and sidecar_mtime is not None and cached[0] == sidecar_mtime:
+                    ret[model_name] = cached[1]
+                    continue
+
                 metadata = get_model_metadata(model_path)
                 model_classes = metadata.get("classes", [])
                 class_map = metadata.get("class_map", {})
@@ -178,9 +192,24 @@ class Manager:
                     for name in model_classes
                 }
                 ret[model_name] = class_uuids
+                if sidecar_mtime is not None:
+                    self._class_map_cache[model_path] = (sidecar_mtime, class_uuids)
             except FileNotFoundError:
                 continue
         return ret
+
+    @staticmethod
+    def _sidecar_mtime_ns(model_path: str) -> Optional[int]:
+        """mtime of a model's JSON sidecar, or None if it isn't there yet.
+
+        None disables caching for that model rather than caching a miss: with no
+        sidecar, get_model_metadata() derives metadata from the ONNX file and
+        *writes* the sidecar, so the next call has a real mtime to key on.
+        """
+        try:
+            return os.stat(Path(model_path).with_suffix(".json")).st_mtime_ns
+        except OSError:
+            return None
 
     async def set_model_class_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
         """

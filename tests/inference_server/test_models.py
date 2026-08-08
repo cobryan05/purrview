@@ -1,7 +1,10 @@
 import json
+import os
+import time
 
 import pytest
 
+import apps.inference_server.manager as manager_module
 from apps.inference_server.manager import Manager
 
 
@@ -231,3 +234,68 @@ class TestGetModelTrainingImages:
     async def test_unknown_model_returns_failure(self, http_client):
         resp = await http_client.get("/api/models/nonexistent/training-images")
         assert resp.json()["status"] == "failure"
+
+
+class TestClassMapCache:
+    """`recognize()` calls get_models_classes() for every image that produced a
+    detection, so an uncached call meant a sidecar stat+read+json.parse per
+    image on the event loop during a bulk run. The cache is keyed on the
+    sidecar's mtime so it self-invalidates on edit.
+    """
+
+    async def test_repeat_calls_read_sidecar_once(self, manager, monkeypatch):
+        calls = []
+        real = manager_module.get_model_metadata
+
+        def counting(model_path, *args, **kwargs):
+            calls.append(model_path)
+            return real(model_path, *args, **kwargs)
+
+        monkeypatch.setattr(manager_module, "get_model_metadata", counting)
+
+        first = await manager.get_models_classes(["yolo_test"])
+        for _ in range(5):
+            again = await manager.get_models_classes(["yolo_test"])
+            assert again == first
+
+        assert len(calls) == 1, f"sidecar re-read {len(calls)} times; cache is not holding"
+
+    async def test_sidecar_edit_invalidates_cache(self, manager, models_dir):
+        before = await manager.get_models_classes(["yolo_test"])
+        assert before["yolo_test"]["cat"] is None
+
+        meta_path = models_dir / "yolo_test.json"
+        meta = json.loads(meta_path.read_text())
+        meta["class_map"] = {"cat": "uuid-cat"}
+        meta_path.write_text(json.dumps(meta))
+        # Force a distinct mtime: the cache keys on it, and a same-nanosecond
+        # rewrite would legitimately look unchanged.
+        os.utime(meta_path, ns=(time.time_ns(), time.time_ns() + 1_000_000))
+
+        after = await manager.get_models_classes(["yolo_test"])
+        assert after["yolo_test"]["cat"] == "uuid-cat", "edited sidecar served from a stale cache"
+
+    async def test_missing_sidecar_does_not_poison_cache(self, manager, models_dir):
+        """With no sidecar, get_model_metadata derives metadata from the ONNX and
+        writes one. Caching that as a permanent miss would pin the derived value
+        forever, so no-sidecar results must simply not be cached."""
+        (models_dir / "yolo_test.json").unlink()
+
+        # Derivation fails on the fake ONNX bytes; the point is only that the
+        # failure isn't cached as a hit for the next (now-valid) call.
+        try:
+            await manager.get_models_classes(["yolo_test"])
+        except Exception:
+            pass
+        assert str(models_dir / "yolo_test.onnx") not in manager._class_map_cache
+
+    async def test_label_association_is_visible_immediately(self, http_client, manager):
+        """End-to-end guard on the invalidation path: the write goes through the
+        manager's own setter, so a stale cache here would make the UI show the
+        old mapping until restart."""
+        await http_client.put(
+            "/api/models/yolo_test/classes/cat/label",
+            json={"labelUuid": "label-uuid-abc"},
+        )
+        classes = await manager.get_models_classes(["yolo_test"])
+        assert classes["yolo_test"]["cat"] == "label-uuid-abc"
