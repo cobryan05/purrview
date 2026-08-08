@@ -4167,6 +4167,86 @@ class DbClient:
 
         return {"class_names": class_names, "images": image_entries}
 
+    async def _derive_co_label_shape(self, model_config_node_uuid: Optional[str]):
+        """Resolve a model-config node into the rollup-aware "co-label shape" used by
+        every co-label computation.
+
+        Returns (labels_map, top_level_uuids, effective_for_tl, child_to_parent) where:
+            labels_map        {label_uuid: Label} for every label in the node's shape
+            top_level_uuids   labels that are not a rollup child — the units a gap is counted against
+            effective_for_tl  {top_level_uuid: [top_level_uuid, *rollup_children]}
+            child_to_parent   {rollup_child_uuid: top_level_uuid}
+
+        Returns empty structures when the node resolves to no labels.
+        """
+        node_label_uuids, rollup_map = await self._derive_labels_for_node(model_config_node_uuid)
+        if not node_label_uuids:
+            return {}, [], {}, {}
+
+        labels_map = await self.get_labels_by_uuids(node_label_uuids)
+
+        child_to_parent: dict[str, str] = {}
+        for _parent, _children in rollup_map.items():
+            for _child in _children:
+                child_to_parent[_child] = _parent
+
+        top_level_uuids = [u for u in node_label_uuids if u not in child_to_parent and u in labels_map]
+        effective_for_tl = {tl: [tl] + rollup_map.get(tl, []) for tl in top_level_uuids}
+        return labels_map, top_level_uuids, effective_for_tl, child_to_parent
+
+    async def get_training_config_image_gaps(
+        self, uuid: str, image_uuids: list[str]
+    ) -> dict[str, list[dict[str, str]]]:
+        """Per-image list of the training config's labels that are still unresolved.
+
+        For each requested image, returns the top-level labels of the config's model shape
+        that are NOT yet "accounted for" (see _co_label_accounted_for: a verified bbox or an
+        explicit Absent for object-scope labels; an explicit Present or Absent for
+        image-scope ones). This is the same notion of "gap" the coverage table counts, but
+        sliced per image instead of per label, so a review card can show what that one image
+        still needs.
+
+        Scoped to the passed image uuids — callers batch one call per rendered page rather
+        than per card, and the underlying queries only ever touch those images.
+
+        Images with no gaps are omitted from the result entirely.
+        """
+        tc = await self.get_training_config(uuid)
+        if tc is None or not image_uuids:
+            return {}
+
+        labels_map, top_level_uuids, effective_for_tl, _ = await self._derive_co_label_shape(tc.model_config_node_uuid)
+        if not top_level_uuids:
+            return {}
+
+        async with self._async_session_maker() as session:
+            accounted_for = await self._co_label_accounted_for(
+                session, list(image_uuids), top_level_uuids, effective_for_tl, labels_map
+            )
+
+        gaps: dict[str, list[dict[str, str]]] = {}
+        for image_uuid in image_uuids:
+            missing = []
+            # Iterate top_level_uuids (not the dict) so the order is the model shape's own
+            # order — the card renders these in a capped row, and a stable order keeps the
+            # same labels from shuffling between page renders.
+            for tl_uuid in top_level_uuids:
+                if image_uuid in accounted_for.get(tl_uuid, set()):
+                    continue
+                label = labels_map.get(tl_uuid)
+                if label is None:
+                    continue
+                missing.append(
+                    {
+                        "label_uuid": tl_uuid,
+                        "label_name": label.name,
+                        "label_scope": label.scope.value,
+                    }
+                )
+            if missing:
+                gaps[image_uuid] = missing
+        return gaps
+
     async def _co_label_accounted_for(
         self,
         session,
@@ -4311,25 +4391,15 @@ class DbClient:
                     )
                 elif status in ("co_labels_covered", "co_label_gaps"):
                     # Derive all labels in the training config to build the co-label picture.
-                    node_label_uuids, co_rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
-                    if not node_label_uuids:
+                    (
+                        co_labels_map,
+                        top_level_uuids_co,
+                        effective_for_tl_co,
+                        child_to_parent_co,
+                    ) = await self._derive_co_label_shape(tc.model_config_node_uuid)
+                    if not top_level_uuids_co:
                         matching = set()
                     else:
-                        co_labels_map = await self.get_labels_by_uuids(node_label_uuids)
-
-                        # Build rollup-aware lookup structures.
-                        child_to_parent_co: dict[str, str] = {}
-                        for _parent, _children in co_rollup_map.items():
-                            for _child in _children:
-                                child_to_parent_co[_child] = _parent
-                        all_rollup_children_co = set(child_to_parent_co.keys())
-                        top_level_uuids_co = [
-                            u for u in node_label_uuids if u not in all_rollup_children_co and u in co_labels_map
-                        ]
-                        effective_for_tl_co: dict[str, list[str]] = {
-                            tl: [tl] + co_rollup_map.get(tl, []) for tl in top_level_uuids_co
-                        }
-
                         # Base: images with ≥1 verified bbox for the focus label (effective set).
                         focus_eff = effective_for_tl_co.get(label_uuid, effective_label_uuids)
                         base = await _collect(

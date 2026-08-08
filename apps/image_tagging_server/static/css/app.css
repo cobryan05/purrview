@@ -1956,6 +1956,51 @@ button.filter-active {
   font-style: italic;
 }
 
+/* ===== Training-run gap row on review image cards =====
+   "What this image still needs before the selected training run can use it."
+   Deliberately distinct from the solid bbox chips and the dashed whole-image
+   chips: these are outstanding work, not facts about the image. */
+.card-gaps-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 0.2em;
+}
+.card-gaps-row__lead {
+  color: var(--color-warning);
+  font-size: 0.75em;
+  cursor: help;
+}
+.gap-chip {
+  --gap-chip-color: var(--color-warning);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 5px;
+  border: 1px dotted var(--gap-chip-color);
+  border-radius: 10px;
+  font-size: 0.75em;
+  color: var(--gap-chip-color);
+  background: color-mix(in srgb, var(--gap-chip-color) 12%, transparent);
+}
+.gap-chip--more {
+  padding: 0 5px;
+  cursor: help;
+}
+.gap-chip__act {
+  /* Reset Pico's button styling — these are chip-sized affordances, not buttons. */
+  all: unset;
+  padding: 0 3px;
+  border-radius: 8px;
+  line-height: 1.4;
+  cursor: pointer;
+  color: inherit;
+}
+.gap-chip__act:hover {
+  background: color-mix(in srgb, var(--gap-chip-color) 35%, transparent);
+}
+
 .verify-chip {
   display: inline-block;
   margin-left: 0.35em;
@@ -2112,6 +2157,20 @@ button.filter-active {
   max-width: 492px;
   height: auto;
   border-radius: 3px;
+}
+/* Popover with a side column (e.g. the full "needs verification" list on a review
+   card): lay the image and the column out side by side and widen the shell to fit. */
+.thumb-hover-popover.has-side {
+  display: flex;
+  gap: 8px;
+  max-width: 720px;
+}
+.thumb-hover-popover .popover-side {
+  min-width: 150px;
+  max-width: 200px;
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 0.8em;
 }
 .thumb-hover-popover canvas.popover-canvas {
   position: absolute;

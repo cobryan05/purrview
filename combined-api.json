@@ -8947,6 +8947,59 @@
         }
       }
     },
+    "/api/training-configs/{uuid}/image-gaps": {
+      "post": {
+        "tags": [
+          "training_configs"
+        ],
+        "summary": "Get Training Config Image Gaps",
+        "description": "Per-image list of this training config's labels that are still unresolved.\n\nBatched deliberately: callers pass one rendered page of image uuids, not one\nimage at a time.",
+        "operationId": "get_training_config_image_gaps",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageGapsPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainingConfigImageGapsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/training-configs/{uuid}/images-by-label-status": {
       "post": {
         "tags": [
@@ -14946,6 +14999,42 @@
         "type": "object",
         "title": "GetTaskResultsResponse"
       },
+      "ImageGapEntry": {
+        "properties": {
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "labelName": {
+            "type": "string",
+            "title": "Labelname"
+          },
+          "labelScope": {
+            "type": "string",
+            "title": "Labelscope"
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid",
+          "labelName",
+          "labelScope"
+        ],
+        "title": "ImageGapEntry"
+      },
+      "ImageGapsPayload": {
+        "properties": {
+          "imageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Imageuuids"
+          }
+        },
+        "type": "object",
+        "title": "ImageGapsPayload"
+      },
       "ImageItemStatus": {
         "type": "string",
         "enum": [
@@ -17552,6 +17641,51 @@
           "name"
         ],
         "title": "TrainingConfigCreate"
+      },
+      "TrainingConfigImageGapsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "gaps": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/ImageGapEntry"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Gaps"
+          }
+        },
+        "type": "object",
+        "title": "TrainingConfigImageGapsResponse"
+      },
+      "TrainingConfigLabelStatsForImagesPayload": {
+        "properties": {
+          "imageUuids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Imageuuids"
+          }
+        },
+        "type": "object",
+        "title": "TrainingConfigLabelStatsForImagesPayload"
       },
       "TrainingConfigLabelStatsResponse": {
         "properties": {

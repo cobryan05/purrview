@@ -1044,6 +1044,7 @@ async function mountSelectMode(container, { runtime, filter }) {
           if (isImage) {
             await showReviewModal({
               title: `${label.name} — verified present (${tc.name})`,
+              gapsConfig: tc,
               initialViewFilter: 'images',
               fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
                 fetchTrainingConfigImagesByLabelStatus(tc.uuid, {
@@ -1056,6 +1057,7 @@ async function mountSelectMode(container, { runtime, filter }) {
             const effectiveUuids = new Set([label.uuid, ...rollupChildUuids]);
             await showReviewModal({
               title: `${label.name} — verified boxes (${tc.name})`,
+              gapsConfig: tc,
               initialViewFilter: 'bboxes',
               bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === VERIFIED_TAG_UUID),
               fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
@@ -1073,6 +1075,7 @@ async function mountSelectMode(container, { runtime, filter }) {
           if (isImage) {
             await showReviewModal({
               title: `${label.name} — unreviewed (${tc.name})`,
+              gapsConfig: tc,
               initialViewFilter: 'images',
               fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>
                 fetchTrainingConfigImagesByLabelStatus(tc.uuid, {
@@ -1085,6 +1088,7 @@ async function mountSelectMode(container, { runtime, filter }) {
             const effectiveUuids = new Set([label.uuid, ...rollupChildUuids]);
             await showReviewModal({
               title: `${label.name} — needs review (${tc.name})`,
+              gapsConfig: tc,
               initialViewFilter: 'bboxes',
               bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID),
               fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) =>

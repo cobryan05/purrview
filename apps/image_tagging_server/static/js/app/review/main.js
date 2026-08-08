@@ -31,6 +31,7 @@ import {
 } from '/app-static/js/shared/api/review.js';
 import { fetchImageLabels, fetchImageLabelsBatch, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
+import { fetchTrainingConfigImageGaps } from '/app-static/js/shared/api/trainingConfigs.js';
 import { setImageTag, setImageTagStatus } from '/app-static/js/shared/api/imageTags.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
@@ -183,7 +184,7 @@ function makeSelect(className, options, defaultValue) {
  *
  * @returns {Promise<{ destroy: () => void }>}
  */
-export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', toolbarControls = null, bboxFilterFn = null } = {}) {
+export async function createReviewPanel(container, { fetchImages = null, datasetActions = true, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', toolbarControls = null, bboxFilterFn = null, gapsConfig = null } = {}) {
   container.innerHTML = '';
 
   const labelsPromise = fetchLabels().catch(() => new Map());
@@ -855,6 +856,30 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // per render — cards read from here instead of issuing a GET per card.
   // img.uuid → (labelUuid → 'present'|'absent')
   let _pageImageLabels = new Map();
+  // Unresolved training-run labels for the current page, same batching deal as
+  // _pageImageLabels. img.uuid → [{ labelUuid, labelName, labelScope }]; images with
+  // nothing outstanding are absent from the map (not mapped to []).
+  let _pageImageGaps = new Map();
+  // Which run the gap annotations are judged against: the run the modal was opened
+  // from, else the session's active run. Resolved once per panel — a mid-session
+  // change of active run doesn't retro-relabel an already-open modal, which is the
+  // honest behaviour (the cards' gap rows would otherwise silently change meaning).
+  const _gapsConfig = gapsConfig ?? activeTrainingConfig.getActive() ?? null;
+
+  /** Batch-fetch gaps for the given image uuids and merge into _pageImageGaps. */
+  async function _loadImageGaps(imageUuids, { replace = false } = {}) {
+    if (replace) _pageImageGaps = new Map();
+    if (!_gapsConfig || !imageUuids.length) return;
+    try {
+      const gaps = await fetchTrainingConfigImageGaps(_gapsConfig.uuid, imageUuids);
+      // Images resolved to zero gaps are omitted from the response, so a stale entry
+      // from a previous fetch has to be cleared explicitly rather than overwritten.
+      for (const uuid of imageUuids) _pageImageGaps.delete(uuid);
+      for (const [uuid, entries] of gaps) _pageImageGaps.set(uuid, entries);
+    } catch (err) {
+      Logger.error('review: batch image-gaps fetch failed', err);
+    }
+  }
 
   let _pageCursors = [null];
   let _lastCursor = null;
@@ -1404,6 +1429,16 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       registerImageRefresher: (uuid, fn) => _imageCardRefreshers.set(uuid, fn),
       getPageImageLabels: uuid => _pageImageLabels.get(uuid),
       subscribeImageLabelChanges,
+      gapsConfig: _gapsConfig,
+      getPageImageGaps: uuid => _pageImageGaps.get(uuid),
+      makeImageAdapter: makeReviewImageAdapter,
+      // Re-reads gaps for ONE image after a chip resolves it. Scoped to that image
+      // on purpose — the rest of the page is untouched by the write, and refetching
+      // the whole page on every chip click would be a request per click.
+      refreshImageGaps: async (imageUuid) => {
+        await _loadImageGaps([imageUuid]);
+        return _pageImageGaps.get(imageUuid) ?? [];
+      },
     };
   }
 
@@ -1529,6 +1564,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           } catch (err) {
             Logger.error('review: batch image-labels fetch (load-more) failed', err);
           }
+          await _loadImageGaps(newImageUuids);
           if (_renderGeneration !== _gen) return;
 
           const newVisible = newEntries.filter(e =>
@@ -1728,6 +1764,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       Logger.error('review: batch image-labels fetch failed', err);
       _pageImageLabels = new Map();
     }
+    await _loadImageGaps([...new Set(_allEntries.map(e => e.img.uuid))], { replace: true });
     if (_renderGeneration !== _gen) return;
 
     updatePageInfo();
@@ -2613,7 +2650,14 @@ export async function init() {
  *                     the dataset's conditions. "Update Dataset" button pushes changes
  *                     back to the caller via onUpdateFilters (caller must still Save).
  */
-export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null } = {}) {
+/**
+ * @param {object} [opts]
+ * @param {{uuid: string, name: string}} [opts.gapsConfig]
+ *   Training run whose unresolved labels are annotated onto each image card. Pass the
+ *   run the modal was opened from (a gaps/coverage cell) so the cards are judged by the
+ *   same run the numbers came from; omit to fall back to the session's active run.
+ */
+export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null, gapsConfig = null } = {}) {
   const overlay = document.createElement('div');
   const _layer = acquireModalLayer({ dialog: true });
   overlay.className = 'compare-modal-overlay';
@@ -2699,7 +2743,7 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
     }
     return panel.refresh;
   } else {
-    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls, bboxFilterFn });
+    const panel = await createReviewPanel(content, { fetchImages, referenceBboxUuids, referenceImageUuids, initialViewFilter, toolbarControls, bboxFilterFn, gapsConfig });
     panelRef.current = panel;
     // Guard: if close() fired during the await, destroy the now-orphaned panel.
     if (!document.body.contains(overlay)) { panel.destroy(); return panel.refresh; }

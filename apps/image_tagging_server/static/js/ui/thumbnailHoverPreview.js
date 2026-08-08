@@ -51,6 +51,7 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
   // pages that never hover an image never grow a stray DOM node.
   let popover = null;
   let imgWrap = null;
+  let sideWrap = null;
 
   let _timer = null;
   let _visible = false;
@@ -67,6 +68,13 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
     imgWrap = document.createElement('div');
     imgWrap.className = 'popover-img-wrap fb-popover-img-wrap';
     popover.appendChild(imgWrap);
+
+    // Optional column beside the image, filled per-show from meta.buildSidePanel().
+    // Empty (and display:none) for every caller that doesn't supply one.
+    sideWrap = document.createElement('div');
+    sideWrap.className = 'popover-side';
+    popover.appendChild(sideWrap);
+
     document.body.appendChild(popover);
   }
 
@@ -193,9 +201,17 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
 
   async function show(el, meta) {
     if (_destroyed) return;
-    const { imagePath, imageUuid, allBboxes, hoveredBboxUuid } = meta;
+    const { imagePath, imageUuid, allBboxes, hoveredBboxUuid, buildSidePanel } = meta;
     ensurePopover();
     const token = ++_token;
+
+    // Built at show time, not attach time, so a card whose state changed since it was
+    // attached (e.g. gaps resolved) shows the current list rather than a stale capture.
+    sideWrap.innerHTML = '';
+    const sidePanel = buildSidePanel?.() ?? null;
+    if (sidePanel) sideWrap.appendChild(sidePanel);
+    sideWrap.hidden = !sidePanel;
+    popover.classList.toggle('has-side', !!sidePanel);
 
     imgWrap.innerHTML = '';
     const img = document.createElement('img');

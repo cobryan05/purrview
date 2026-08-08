@@ -401,7 +401,18 @@ function appendChipVerifyMark(chip, labelBboxes, labelName, onToggleVerify) {
  *   - `subscribeImageLabelChanges(uuid, filename, render)` — wire the
  *                            IMAGE_LABELS_CHANGED / IMAGE_ANNOTATIONS_SAVED
  *                            per-card subscriptions (image card only).
+ *   - `gapsConfig`         — {uuid, name} training run the gap row is judged
+ *                            against, or null to render no gap row.
+ *   - `getPageImageGaps(uuid)` — page-level gap list for a uuid (image card only).
+ *   - `refreshImageGaps(uuid)` — re-read one image's gaps after a resolve; returns
+ *                            the fresh list (image card only).
+ *   - `makeImageAdapter(entry)` — image-level adapter (setLabelPresence) used by the
+ *                            gap chips (image card only).
  */
+
+// How many gap chips render on a card before the rest collapse into a "+N" chip.
+// The full list is always available in the hover preview's side panel.
+const MAX_GAP_CHIPS = 3;
 
 // ── Bbox card builder ─────────────────────────────────────────────
 export function buildBboxCard(controller, entry, opts) {
@@ -489,6 +500,47 @@ export function buildBboxCard(controller, entry, opts) {
   return card;
 }
 
+/**
+ * Build the popover side panel listing every label this image still needs — the
+ * uncapped counterpart of the card's gap chip row.
+ *
+ * @param {{labelUuid: string, labelName: string, labelScope: string}[]} gaps
+ * @param {{name: string}} config
+ */
+function buildGapSidePanel(gaps, config, labels) {
+  if (!gaps.length) return null;
+  const panel = document.createElement('div');
+
+  const heading = document.createElement('div');
+  heading.style.cssText = 'color:var(--pico-muted-color,#888);margin-bottom:4px;line-height:1.3;';
+  heading.textContent = `Needs ${gaps.length} verification${gaps.length !== 1 ? 's' : ''} for "${config.name}"`;
+  panel.appendChild(heading);
+
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+  for (const gap of gaps) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:4px;';
+    const color = labels.get(gap.labelUuid)?.color;
+    if (color) {
+      const dot = document.createElement('span');
+      dot.style.cssText = `flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:${color};`;
+      row.appendChild(dot);
+    }
+    const name = document.createElement('span');
+    name.textContent = gap.labelName;
+    row.appendChild(name);
+    const scope = document.createElement('span');
+    scope.style.cssText = 'color:var(--pico-muted-color,#888);margin-left:auto;';
+    // Says what would actually resolve it — the two scopes clear differently.
+    scope.textContent = gap.labelScope === 'image' ? 'present/absent' : 'box or absent';
+    row.appendChild(scope);
+    list.appendChild(row);
+  }
+  panel.appendChild(list);
+  return panel;
+}
+
 // ── Image card builder ────────────────────────────────────────────
 export function buildImageCard(controller, entry, opts) {
   const { img } = entry;
@@ -496,6 +548,7 @@ export function buildImageCard(controller, entry, opts) {
     gridEl, labels, index, referenceImageUuids, hoverPreview, thumbLoader,
     makeAdapter, resolveContext, onOpenEditor,
     registerImageRefresher, getPageImageLabels, subscribeImageLabelChanges,
+    gapsConfig = null, getPageImageGaps, refreshImageGaps, makeImageAdapter,
   } = opts;
 
   // Read `img.bboxes` fresh on every render rather than snapshotting it: a save
@@ -666,6 +719,91 @@ export function buildImageCard(controller, entry, opts) {
   }
   renderStatusRow();
 
+  // ── Training-run gap row ────────────────────────────────────────
+  // What this image still needs before the active/selected training run counts it.
+  // Chips are actionable: resolving one here is the whole point of a gaps view.
+  const gapsRow = document.createElement('div');
+  gapsRow.className = 'card-gaps-row';
+  gapsRow.dataset.testid = 'card-gaps-row';
+
+  // Live list — re-read after every resolve so the hover panel (built at show
+  // time) and the chip row never disagree.
+  let _gaps = gapsConfig ? (getPageImageGaps?.(img.uuid) ?? []) : [];
+
+  async function _resolveGap(gap, status) {
+    // Absent on the top-level label is enough even under rollup — the server
+    // counts an Absent on the parent as covering its rollup children, so this
+    // must NOT fan out to children.
+    await makeImageAdapter?.({ img })?.setLabelPresence(gap.labelUuid, status);
+    _gaps = (await refreshImageGaps?.(img.uuid)) ?? [];
+    renderGapsRow();
+    if (_gaps.length === 0) controller.markCardStale(card, 'verified');
+  }
+
+  function _makeGapChip(gap) {
+    const chip = document.createElement('span');
+    chip.className = 'gap-chip';
+    const color = labels.get(gap.labelUuid)?.color;
+    if (color) chip.style.cssText = `--gap-chip-color:${color};`;
+
+    const name = document.createElement('span');
+    name.className = 'gap-chip__name';
+    name.textContent = gap.labelName;
+    chip.appendChild(name);
+
+    // Image-scope labels are cleared by EITHER present or absent, so both are
+    // offered. Object-scope ones can only be cleared here by absent — the other
+    // route (a verified box) needs the canvas, which the card's dblclick opens.
+    if (gap.labelScope === 'image') {
+      const presentBtn = document.createElement('button');
+      presentBtn.type = 'button';
+      presentBtn.className = 'gap-chip__act';
+      presentBtn.textContent = '✓';
+      presentBtn.title = `Mark "${gap.labelName}" present on this image`;
+      presentBtn.addEventListener('click', ev => { ev.stopPropagation(); _resolveGap(gap, 'present'); });
+      chip.appendChild(presentBtn);
+    }
+
+    const absentBtn = document.createElement('button');
+    absentBtn.type = 'button';
+    absentBtn.className = 'gap-chip__act';
+    absentBtn.textContent = '✕';
+    absentBtn.title = `Mark "${gap.labelName}" absent from this image`;
+    absentBtn.addEventListener('click', ev => { ev.stopPropagation(); _resolveGap(gap, 'absent'); });
+    chip.appendChild(absentBtn);
+
+    chip.title = gap.labelScope === 'image'
+      ? `"${gap.labelName}" has no present/absent status on this image`
+      : `"${gap.labelName}" needs a verified box or an explicit absent`;
+    return chip;
+  }
+
+  function renderGapsRow() {
+    gapsRow.innerHTML = '';
+    gapsRow.hidden = _gaps.length === 0;
+    if (!_gaps.length) return;
+
+    const lead = document.createElement('span');
+    lead.className = 'card-gaps-row__lead';
+    lead.textContent = 'Needs:';
+    // The run doing the judging is never implicit — the active run and the run a
+    // gaps modal was opened from can differ.
+    lead.title = `Unresolved for training run "${gapsConfig.name}" — hover the card for the full list`;
+    gapsRow.appendChild(lead);
+
+    for (const gap of _gaps.slice(0, MAX_GAP_CHIPS)) gapsRow.appendChild(_makeGapChip(gap));
+
+    const overflow = _gaps.length - MAX_GAP_CHIPS;
+    if (overflow > 0) {
+      const more = document.createElement('span');
+      more.className = 'gap-chip gap-chip--more';
+      more.textContent = `+${overflow}`;
+      more.title = _gaps.slice(MAX_GAP_CHIPS).map(g => g.labelName).join(', ');
+      gapsRow.appendChild(more);
+    }
+  }
+  renderGapsRow();
+
   const meta = document.createElement('div');
   meta.style.cssText = 'color:#aaa;font-size:0.75em;';
   meta.textContent = img.filename.split('/').slice(-2).join('/');
@@ -679,6 +817,15 @@ export function buildImageCard(controller, entry, opts) {
     renderChips();
     _renderImageLabelChips(null);
     renderStatusRow();
+    // Verifying a box can close a gap, so a canvas save has to re-read them.
+    // Deliberately not awaited: the rest of the card must repaint immediately
+    // rather than block on a round trip.
+    if (gapsConfig && refreshImageGaps) {
+      refreshImageGaps(img.uuid).then(gaps => {
+        _gaps = gaps ?? [];
+        renderGapsRow();
+      }).catch(() => {});
+    }
   }
 
   // Register so bulk bbox actions and canvas saves can refresh this card.
@@ -686,6 +833,7 @@ export function buildImageCard(controller, entry, opts) {
 
   info.appendChild(chipsRow);
   info.appendChild(imageLabelChipsRow);
+  info.appendChild(gapsRow);
   info.appendChild(statusRow);
   info.appendChild(meta);
   card.appendChild(cb);
@@ -698,6 +846,8 @@ export function buildImageCard(controller, entry, opts) {
     imageUuid: img.uuid,
     allBboxes: img.bboxes,
     hoveredBboxUuid: null,
+    // Uncapped gap list beside the enlarged image — where a 12-item list belongs.
+    buildSidePanel: gapsConfig ? () => buildGapSidePanel(_gaps, gapsConfig, labels) : undefined,
   });
 
   attachContext(card, ev => resolveContext({ kind: 'image', img }, card, 'image'));

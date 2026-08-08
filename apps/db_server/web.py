@@ -694,6 +694,23 @@ class TrainingTargetDetectionDatasetPayload(Payload):
     class_remap: Dict[str, str] = Field(default_factory=dict)
 
 
+class ImageGapEntry(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    label_uuid: str
+    label_name: str
+    label_scope: str  # "image" or "object"
+
+
+class ImageGapsPayload(Payload):
+    image_uuids: List[str] = Field(default_factory=list)
+
+
+class TrainingConfigImageGapsResponse(StatusResponse):
+    # Keyed by image uuid; images with no gaps are omitted rather than mapped to [].
+    gaps: Dict[str, List[ImageGapEntry]] = Field(default_factory=dict)
+
+
 class ImagesByLabelStatusPayload(Payload):
     label_uuid: str
     rollup_label_uuids: Optional[List[str]] = None
@@ -3242,6 +3259,30 @@ class WebApp:
             except Exception as e:
                 logger.exception("Failed to fetch not-started images for training config %s", uuid)
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/image-gaps",
+            response_model=TrainingConfigImageGapsResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_image_gaps",
+        )
+        async def get_training_config_image_gaps(
+            uuid: str, payload: ImageGapsPayload
+        ) -> TrainingConfigImageGapsResponse:
+            """Per-image list of this training config's labels that are still unresolved.
+
+            Batched deliberately: callers pass one rendered page of image uuids, not one
+            image at a time.
+            """
+            try:
+                gaps = await self._manager.get_training_config_image_gaps(uuid, payload.image_uuids)
+                return TrainingConfigImageGapsResponse(
+                    status=JsonValues.SUCCESS,
+                    gaps={k: [ImageGapEntry(**entry) for entry in v] for k, v in gaps.items()},
+                )
+            except Exception as e:
+                logger.exception("Failed to fetch image gaps for training config %s", uuid)
+                return TrainingConfigImageGapsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/training-configs/{uuid}/images-by-label-status",

@@ -2893,6 +2893,9 @@ class Manager:
             results.append(record)
         return results, has_more
 
+    async def get_training_config_image_gaps(self, uuid: str, image_uuids: "list[str]") -> "dict[str, list[dict]]":
+        return await self._db_client.get_training_config_image_gaps(uuid, image_uuids)
+
     async def get_training_config_images_by_label_status(
         self, uuid: str, payload: "ImagesByLabelStatusPayload"
     ) -> "tuple[list[ImageRecordRead], bool]":

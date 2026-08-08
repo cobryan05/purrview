@@ -190,6 +190,28 @@ export async function fetchTrainingConfigImagesByLabelStatus(uuid, {
   return data.images ?? [];
 }
 
+/**
+ * Per-image list of the labels a training config still needs resolved.
+ *
+ * Batched on purpose — pass one rendered page of image uuids, never one image at a time.
+ * Images with nothing outstanding are omitted from the returned map.
+ *
+ * @returns {Promise<Map<string, {labelUuid: string, labelName: string, labelScope: string}[]>>}
+ */
+export async function fetchTrainingConfigImageGaps(uuid, imageUuids) {
+  if (!uuid || !imageUuids?.length) return new Map();
+  const res = await apiFetch(`/api/training-configs/${uuid}/image-gaps`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch image gaps');
+  }
+  return new Map(Object.entries(data.gaps ?? {}));
+}
+
 export async function fetchTrainingConfigLabelStats(uuid) {
   const res = await apiFetch(`/api/training-configs/${uuid}/label-stats`);
   const data = await res.json();
