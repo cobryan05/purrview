@@ -8,7 +8,9 @@ context and host-side arenas per call, and the process RSS grows monotonically
 (observed in production: 1502 loads of one classifier in 33 minutes).
 """
 
+import asyncio
 import json
+import threading
 
 import numpy as np
 import pytest
@@ -133,3 +135,48 @@ class TestDeleteModelWithImplicitPin:
 
         with pytest.raises(ValueError, match="currently pinned"):
             await keepwarm_manager.delete_model("clf")
+
+
+class TestDeleteModelRacesLoad:
+    """A pinless recognize() and a concurrent delete_model() can interleave around
+    the model's initial (slow) load. Without serializing the two, delete_model can
+    see the model as "not yet pinned" mid-load, delete its files, and then have
+    pin_model finish the load anyway and re-insert a "ghost" entry into
+    _pinned_models — one that is loaded in memory but absent from _avail_models,
+    so a later delete_model 404s before ever being able to clean it up.
+    """
+
+    async def test_delete_during_slow_load_leaves_no_ghost_pinned_model(self, tmp_path, monkeypatch):
+        (tmp_path / "clf.onnx").write_bytes(b"fake onnx")
+        (tmp_path / "clf.json").write_text(json.dumps(MODEL_METADATA))
+        mgr = Manager(models_path=str(tmp_path))
+        await mgr.list_models()
+
+        load_started = threading.Event()
+        release_load = threading.Event()
+
+        def _slow_load(path):
+            load_started.set()
+            release_load.wait(timeout=5)
+            return _CountingProvider([])
+
+        monkeypatch.setattr("apps.inference_server.manager.load_yolo_onnx", _slow_load)
+
+        recognize_task = asyncio.create_task(mgr.recognize("clf", _img(), conf_thresh=0.5))
+        while not load_started.is_set():
+            await asyncio.sleep(0.01)
+
+        # Give delete_model a chance to observe the model as not-yet-pinned before
+        # the slow load (and therefore pin_model) completes.
+        delete_task = asyncio.create_task(mgr.delete_model("clf"))
+        await asyncio.sleep(0.05)
+        release_load.set()
+
+        await asyncio.gather(recognize_task, delete_task, return_exceptions=True)
+
+        if "clf" not in mgr._avail_models:
+            assert "clf" not in mgr._pinned_models, (
+                "model was deleted from _avail_models but a load that raced the "
+                "deletion re-inserted it into _pinned_models — a ghost entry that "
+                "a future delete_model('clf') can never reach again"
+            )

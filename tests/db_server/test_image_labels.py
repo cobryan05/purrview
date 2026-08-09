@@ -700,7 +700,7 @@ class TestBulkApplyImagesByUuidsLabelActions:
 
         r = await http_client.post(
             "/api/images/bulk-apply-by-uuids",
-            json={"imageUuids": [image_uuid], "action": "setPresent", "labelUuid": label_uuid},
+            json={"imageUuids": [image_uuid], "action": "setPresent", "labelUuids": [label_uuid]},
         )
         assert r.status_code == 200
         body = r.json()
@@ -716,7 +716,7 @@ class TestBulkApplyImagesByUuidsLabelActions:
 
         r = await http_client.post(
             "/api/images/bulk-apply-by-uuids",
-            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuid": label_uuid},
+            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuids": [label_uuid]},
         )
         assert r.status_code == 200
         body = r.json()
@@ -731,7 +731,7 @@ class TestBulkApplyImagesByUuidsLabelActions:
 
         r = await http_client.post(
             "/api/images/bulk-apply-by-uuids",
-            json={"imageUuids": [image_uuid], "action": "setUncertain", "labelUuid": label_uuid},
+            json={"imageUuids": [image_uuid], "action": "setUncertain", "labelUuids": [label_uuid]},
         )
         assert r.status_code == 200
         assert r.json()["modifiedCount"] == 1
@@ -764,7 +764,7 @@ class TestBulkApplyImagesByUuidsLabelActions:
 
         resp = await http_client.post(
             "/api/images/bulk-apply-by-uuids",
-            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuid": label_uuid},
+            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuids": [label_uuid]},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -867,6 +867,43 @@ class TestBulkApplyImagesByUuidsLabelActions:
         assert labels[label_uuid] == "present"
         assert labels[label2_uuid] == "absent"
 
+    async def test_bulk_apply_multi_label_uses_one_session_per_image_not_per_label(
+        self, http_client, files_root, label_uuid, label2_uuid, db_client, monkeypatch
+    ):
+        """setAbsent/setPresent used to open one DB session per (image, label) pair.
+        With N labels applied to one image, that's N sessions where one suffices —
+        assert the session count no longer scales with label count."""
+        r = await http_client.post("/api/labels", json={"name": "bird", "color": "#00FF00"})
+        label3_uuid = r.json()["label"]["uuid"]
+
+        name = "bulk_multi_session_count.png"
+        image_uuid = await self._make_image(http_client, files_root, name)
+
+        real_session_maker = db_client._async_session_maker
+        session_opens = []
+
+        def counting_session_maker(*args, **kwargs):
+            session_opens.append(1)
+            return real_session_maker(*args, **kwargs)
+
+        monkeypatch.setattr(db_client, "_async_session_maker", counting_session_maker)
+
+        resp = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={
+                "imageUuids": [image_uuid],
+                "action": "setPresent",
+                "labelUuids": [label_uuid, label2_uuid, label3_uuid],
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["modifiedCount"] == 1
+
+        assert len(session_opens) <= 2, (
+            f"setPresent for 1 image x 3 labels opened {len(session_opens)} DB sessions; "
+            "expected a constant number independent of label count"
+        )
+
     async def test_bulk_apply_label_action_without_labels_is_a_no_op(self, http_client, files_root):
         """No labels selected must not report images as modified — the same
         guard the tag actions already have."""
@@ -882,35 +919,12 @@ class TestBulkApplyImagesByUuidsLabelActions:
         assert body["failCount"] == 0
         assert await _get_image_labels(http_client, "bulk_no_labels.png") == {}
 
-    async def test_bulk_apply_legacy_single_label_uuid_still_accepted(
-        self, http_client, files_root, label_uuid, label2_uuid
-    ):
-        """The pre-multi-select `labelUuid` field keeps working, and merges with
-        `labelUuids` rather than being ignored."""
-        image_uuid = await self._make_image(http_client, files_root, "bulk_legacy_label.png")
-
-        r = await http_client.post(
-            "/api/images/bulk-apply-by-uuids",
-            json={
-                "imageUuids": [image_uuid],
-                "action": "setPresent",
-                "labelUuid": label_uuid,
-                "labelUuids": [label2_uuid],
-            },
-        )
-        assert r.status_code == 200
-        assert r.json()["modifiedCount"] == 1
-
-        labels = await _get_image_labels(http_client, "bulk_legacy_label.png")
-        assert labels[label_uuid] == "present"
-        assert labels[label2_uuid] == "present"
-
     async def test_bulk_apply_unknown_action_raises(self, http_client, files_root, label_uuid):
         image_uuid = await self._make_image(http_client, files_root, "bulk_unknown_action.png")
 
         r = await http_client.post(
             "/api/images/bulk-apply-by-uuids",
-            json={"imageUuids": [image_uuid], "action": "bogusAction", "labelUuid": label_uuid},
+            json={"imageUuids": [image_uuid], "action": "bogusAction", "labelUuids": [label_uuid]},
         )
         assert r.status_code == 200
         body = r.json()
@@ -940,7 +954,7 @@ class TestBulkApplyImagesByFilter:
             json={
                 "filter": {"terms": [{"kind": "filename", "patterns": ["filter_match"]}]},
                 "action": "setAbsent",
-                "labelUuid": label_uuid,
+                "labelUuids": [label_uuid],
             },
         )
         assert r.status_code == 200
@@ -969,7 +983,7 @@ class TestBulkApplyImagesByFilter:
             json={
                 "filter": {"terms": [{"kind": "filename", "patterns": ["filter_page_"]}]},
                 "action": "setAbsent",
-                "labelUuid": label_uuid,
+                "labelUuids": [label_uuid],
             },
         )
         assert r.status_code == 200
@@ -1030,7 +1044,7 @@ class TestBulkApplyImagesByFilter:
             json={
                 "filter": {"terms": [{"kind": "filename", "patterns": ["filter_skip"]}]},
                 "action": "setAbsent",
-                "labelUuid": label_uuid,
+                "labelUuids": [label_uuid],
             },
         )
         assert resp.status_code == 200

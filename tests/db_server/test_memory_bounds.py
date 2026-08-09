@@ -171,3 +171,29 @@ class TestSelectivityCacheEviction:
         await db_client._selectivity_count("probe", select(func.count()).select_from(ImageRecord))
 
         assert len(db_client._selectivity_cache) <= ceiling + 1
+
+    async def test_live_entries_are_trimmed_oldest_first_when_none_have_expired(self, db_client):
+        """A burst of distinct filter probes inside one TTL window leaves every
+        entry still "live" — the expiry sweep alone can't free anything, so it
+        must fall back to dropping the oldest entries to enforce the ceiling."""
+        from apps.helpers.db import db_client as db_client_mod
+
+        ceiling = db_client_mod._SELECTIVITY_CACHE_MAX_ENTRIES
+
+        import time
+
+        now = time.monotonic()
+        # All within TTL (recent timestamps), so the expiry sweep can't evict any.
+        for i in range(ceiling + 10):
+            db_client._selectivity_cache[f"fresh-{i}"] = (i, now - (ceiling + 10 - i) * 0.001)
+
+        from sqlmodel import func, select
+
+        from apps.helpers.db.types import ImageRecord
+
+        await db_client._selectivity_count("probe", select(func.count()).select_from(ImageRecord))
+
+        assert len(db_client._selectivity_cache) <= ceiling + 1
+        # The oldest of the "fresh" entries went first.
+        assert "fresh-0" not in db_client._selectivity_cache
+        assert f"fresh-{ceiling + 9}" in db_client._selectivity_cache

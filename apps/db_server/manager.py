@@ -1046,18 +1046,16 @@ class Manager:
         elif action == "setAbsent":
             # Mirror the single-image path's rule (set_image_label_status): ABSENT is
             # refused when a verified bbox already contradicts it. A bulk run treats
-            # that as a skip, not a failure.
-            applied = 0
-            for label_uuid in label_uuids:
-                if await self._db_client.image_has_verified_bbox_for_label(image_uuid, label_uuid):
-                    continue
-                await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.ABSENT)
-                applied += 1
-            if label_uuids and applied == 0:
+            # that as a skip, not a failure. Batched into one query + one upsert per
+            # image regardless of label count, rather than a round trip per label.
+            verified = await self._db_client.labels_with_verified_bbox(image_uuid, label_uuids)
+            applicable = [label_uuid for label_uuid in label_uuids if label_uuid not in verified]
+            if applicable:
+                await self._db_client.set_image_labels_status(image_uuid, applicable, ImageItemStatus.ABSENT)
+            if label_uuids and not applicable:
                 return "skipped"
         elif action == "setPresent":
-            for label_uuid in label_uuids:
-                await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
+            await self._db_client.set_image_labels_status(image_uuid, label_uuids, ImageItemStatus.PRESENT)
         else:
             raise ValueError(f"Unknown bulk image action: {action}")
         return "modified"

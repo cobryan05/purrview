@@ -1174,10 +1174,16 @@ class DbClient:
         # varying its filters leaves an entry behind for each combination; expired ones
         # are never otherwise removed. Sweep once past a soft ceiling.
         if len(self._selectivity_cache) > _SELECTIVITY_CACHE_MAX_ENTRIES:
-            for stale_key in [
-                k for k, (_, ts) in self._selectivity_cache.items() if now - ts >= _SELECTIVITY_CACHE_TTL
-            ]:
+            stale_keys = [k for k, (_, ts) in self._selectivity_cache.items() if now - ts >= _SELECTIVITY_CACHE_TTL]
+            for stale_key in stale_keys:
                 del self._selectivity_cache[stale_key]
+            if len(self._selectivity_cache) > _SELECTIVITY_CACHE_MAX_ENTRIES:
+                # Everything is still live (a burst of distinct filters inside one TTL
+                # window). Drop the oldest to keep the ceiling meaningful.
+                excess = len(self._selectivity_cache) - _SELECTIVITY_CACHE_MAX_ENTRIES
+                oldest_keys = sorted(self._selectivity_cache, key=lambda k: self._selectivity_cache[k][1])[:excess]
+                for stale_key in oldest_keys:
+                    del self._selectivity_cache[stale_key]
         return value
 
     async def _should_use_exists_dispatch(self, params: ImageSearchParams) -> bool:
@@ -2518,6 +2524,27 @@ class DbClient:
             await session.exec(stmt)
             await session.commit()
 
+    async def set_image_labels_status(self, image_uuid: str, label_uuids: List[str], status: ImageItemStatus) -> None:
+        """Batch upsert image_label rows for several labels on one image in a single
+        session/statement, rather than one set_image_label_status() round trip per
+        label — used by the bulk setAbsent/setPresent actions."""
+        if not label_uuids:
+            return
+        now = datetime.now(timezone.utc)
+        async with self._async_session_maker() as session:
+            stmt = sqlite_insert(ImageLabel).values(
+                [
+                    {"image_uuid": image_uuid, "label_uuid": label_uuid, "status": status, "updated_at": now}
+                    for label_uuid in label_uuids
+                ]
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[ImageLabel.image_uuid, ImageLabel.label_uuid],
+                set_={"status": stmt.excluded.status, "updated_at": stmt.excluded.updated_at},
+            )
+            await session.exec(stmt)
+            await session.commit()
+
     async def get_image_labels(self, image_uuid: str) -> List[ImageLabel]:
         """Return all image_label rows for a given image."""
         async with self._async_session_maker() as session:
@@ -2563,6 +2590,26 @@ class DbClient:
             )
             result = await session.exec(stmt)
             return result.first() is not None
+
+    async def labels_with_verified_bbox(self, image_uuid: str, label_uuids: List[str]) -> Set[str]:
+        """Return the subset of label_uuids that have >=1 verified bbox on this image,
+        in a single query — the batch counterpart to image_has_verified_bbox_for_label,
+        used by the bulk setAbsent action to avoid one query per label."""
+        if not label_uuids:
+            return set()
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(BBox.label_uuid)
+                .join(BBoxTagLink, BBoxTagLink.bbox_uuid == BBox.uuid)
+                .where(
+                    BBox.image_uuid == image_uuid,
+                    BBox.label_uuid.in_(label_uuids),
+                    BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID,
+                )
+                .distinct()
+            )
+            result = await session.exec(stmt)
+            return set(result.all())
 
     async def list_images_for_label(
         self,
@@ -4581,7 +4628,9 @@ class DbClient:
         async with self._async_session_maker() as session:
             labels_result = await session.exec(select(Label).where(Label.uuid.in_(label_uuids)))
             labels_by_uuid = {lbl.uuid: lbl for lbl in labels_result.all()}
-        image_label_uuids = [u for u in label_uuids if labels_by_uuid.get(u) and labels_by_uuid[u].scope == LabelScope.IMAGE]
+        image_label_uuids = [
+            u for u in label_uuids if labels_by_uuid.get(u) and labels_by_uuid[u].scope == LabelScope.IMAGE
+        ]
         object_label_uuids = [
             u for u in label_uuids if labels_by_uuid.get(u) and labels_by_uuid[u].scope == LabelScope.OBJECT
         ]

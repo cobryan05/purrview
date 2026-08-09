@@ -96,6 +96,7 @@ class Manager:
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
         self._loading_models: Dict[str, asyncio.Future] = {}  # in-progress loads; awaited by concurrent pin requests
+        self._model_locks: Dict[str, asyncio.Lock] = {}  # serializes pin_model/delete_model per model_name
         # model_path -> (sidecar mtime_ns, class name -> label_uuid). See
         # get_models_classes(); keyed on mtime so it self-invalidates on edit.
         self._class_map_cache: Dict[str, Tuple[int, Dict[str, Optional[str]]]] = {}
@@ -167,7 +168,7 @@ class Manager:
                 # mtime_ns so an edit (from this process or any other) invalidates
                 # itself without callers having to remember to flush.
                 cached = self._class_map_cache.get(model_path)
-                sidecar_mtime = self._sidecar_mtime_ns(model_path)
+                sidecar_mtime = await self._sidecar_mtime_ns(model_path)
                 if cached is not None and sidecar_mtime is not None and cached[0] == sidecar_mtime:
                     ret[model_name] = cached[1]
                     continue
@@ -199,15 +200,19 @@ class Manager:
         return ret
 
     @staticmethod
-    def _sidecar_mtime_ns(model_path: str) -> Optional[int]:
+    async def _sidecar_mtime_ns(model_path: str) -> Optional[int]:
         """mtime of a model's JSON sidecar, or None if it isn't there yet.
 
         None disables caching for that model rather than caching a miss: with no
         sidecar, get_model_metadata() derives metadata from the ONNX file and
         *writes* the sidecar, so the next call has a real mtime to key on.
+
+        Runs os.stat() in a thread — get_models_classes() awaits this once per
+        detection during a bulk inference run, so a blocking stat() here would
+        stall the event loop on every other in-flight request.
         """
         try:
-            return os.stat(Path(model_path).with_suffix(".json")).st_mtime_ns
+            return await asyncio.to_thread(lambda: os.stat(Path(model_path).with_suffix(".json")).st_mtime_ns)
         except OSError:
             return None
 
@@ -296,6 +301,16 @@ class Manager:
 
         return {"model_name": model_name, "classes": metadata.get("classes", [])}
 
+    def _get_model_lock(self, model_name: str) -> asyncio.Lock:
+        """Lock serializing pin_model/delete_model for a given model_name, so a
+        delete can't run while a load is in flight (and vice versa) and see the
+        model as neither pinned nor fully absent. Created lazily per model_name."""
+        lock = self._model_locks.get(model_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._model_locks[model_name] = lock
+        return lock
+
     async def delete_model(self, model_name: str) -> None:
         """Delete a model's ONNX weights and sidecar JSON from the models dir.
 
@@ -309,23 +324,34 @@ class Manager:
         """
         if model_name not in self._avail_models:
             raise FileNotFoundError(f"Model '{model_name}' not found in available models")
-        pinned = self._pinned_models.get(model_name)
-        if pinned is not None:
-            # The implicit keep-warm pin is not a caller reservation — it only means the
-            # model was used recently and hasn't aged out yet. Drop it and continue;
-            # only a real caller-held pin blocks deletion.
-            if set(pinned.pins) - {self.IMPLICIT_PIN_ID}:
-                raise ValueError(f"Model '{model_name}' is currently pinned/in use and cannot be deleted")
-            del self._pinned_models[model_name]
-            logger.info(f"Model '{model_name}' unloaded from memory to allow deletion.")
 
-        model_path = Path(self._avail_models[model_name])
-        sidecar_path = model_path.with_suffix(".json")
+        # Shares a lock with pin_model so this can't interleave with a concurrent
+        # load: without it, delete_model could see the model as "not yet pinned"
+        # mid-load, delete its files, and then have the in-flight pin_model call
+        # finish anyway and re-insert a ghost entry into _pinned_models.
+        async with self._get_model_lock(model_name):
+            if model_name not in self._avail_models:
+                raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-        await asyncio.to_thread(model_path.unlink, True)
-        await asyncio.to_thread(sidecar_path.unlink, True)
+            pinned = self._pinned_models.get(model_name)
+            if pinned is not None:
+                # The implicit keep-warm pin is not a caller reservation — it only means the
+                # model was used recently and hasn't aged out yet. Drop it and continue;
+                # only a real caller-held pin blocks deletion.
+                if set(pinned.pins) - {self.IMPLICIT_PIN_ID}:
+                    raise ValueError(f"Model '{model_name}' is currently pinned/in use and cannot be deleted")
+                del self._pinned_models[model_name]
+                logger.info(f"Model '{model_name}' unloaded from memory to allow deletion.")
 
-        del self._avail_models[model_name]
+            model_path = Path(self._avail_models[model_name])
+            sidecar_path = model_path.with_suffix(".json")
+
+            await asyncio.to_thread(model_path.unlink, True)
+            await asyncio.to_thread(sidecar_path.unlink, True)
+
+            del self._avail_models[model_name]
+
+        self._model_locks.pop(model_name, None)
 
     def detect_uploaded_model(self, filename: str, header: bytes) -> Dict[str, Any]:
         """Detect the format of an about-to-be-uploaded model file from its filename and
@@ -412,31 +438,37 @@ class Manager:
         else:
             raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-        # If a concurrent pin_model call is already loading this model, wait for it.
-        if model_name in self._loading_models:
-            await self._loading_models[model_name]
+        # Shares a lock with delete_model — see _get_model_lock — so a concurrent
+        # delete can't run mid-load and leave a ghost entry once this finishes.
+        async with self._get_model_lock(model_name):
+            # If a concurrent pin_model call is already loading this model, wait for it.
+            if model_name in self._loading_models:
+                await self._loading_models[model_name]
 
-        if model_name not in self._pinned_models:
-            load_future: asyncio.Future = asyncio.get_running_loop().create_future()
-            self._loading_models[model_name] = load_future
-            try:
-                new_model = InferenceModel(model_name=model_name, path=model_path)
-                new_model.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
-                self._pinned_models[model_name] = new_model
-                logger.info(f"Model '{model_name}' loaded into memory.")
-                load_future.set_result(None)
-            except Exception as exc:
-                load_future.set_exception(exc)
-                raise
-            finally:
-                self._loading_models.pop(model_name, None)
+            if model_name not in self._avail_models:
+                raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-        pin_id = pin_id or str(uuid.uuid4())
-        expiry = time.time() + timeout
-        self._pinned_models[model_name].pins[pin_id] = Pin(pin_id=pin_id, expiry=expiry, timeout=timeout)
-        logger.debug(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
+            if model_name not in self._pinned_models:
+                load_future: asyncio.Future = asyncio.get_running_loop().create_future()
+                self._loading_models[model_name] = load_future
+                try:
+                    new_model = InferenceModel(model_name=model_name, path=model_path)
+                    new_model.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
+                    self._pinned_models[model_name] = new_model
+                    logger.info(f"Model '{model_name}' loaded into memory.")
+                    load_future.set_result(None)
+                except Exception as exc:
+                    load_future.set_exception(exc)
+                    raise
+                finally:
+                    self._loading_models.pop(model_name, None)
 
-        return pin_id
+            pin_id = pin_id or str(uuid.uuid4())
+            expiry = time.time() + timeout
+            self._pinned_models[model_name].pins[pin_id] = Pin(pin_id=pin_id, expiry=expiry, timeout=timeout)
+            logger.debug(f"Model '{model_name}' pinned with ID '{pin_id}' and timeout {timeout}s.")
+
+            return pin_id
 
     async def unpin_model(self, model_name: str, pin_id: str) -> None:
         """

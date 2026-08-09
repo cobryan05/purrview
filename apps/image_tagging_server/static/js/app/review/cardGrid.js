@@ -6,6 +6,7 @@ import {
 } from '/app-static/js/shared/api/review.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
+import { Logger } from '/app-static/js/ui/utils/logging.js';
 
 // Verification toggle advanced by double-clicking a card's verify chip:
 // Unverified ↔ Verified. Keyed by the chip's current verification tag so the
@@ -824,7 +825,7 @@ export function buildImageCard(controller, entry, opts) {
       refreshImageGaps(img.uuid).then(gaps => {
         _gaps = gaps ?? [];
         renderGapsRow();
-      }).catch(() => {});
+      }).catch(err => Logger.error('review: image gap refresh failed', err));
     }
   }
 

@@ -14,6 +14,7 @@ import {
   fetchTrainingConfigPartialReviewImages,
   fetchTrainingConfigNotStartedImages,
 } from '/app-static/js/shared/api/trainingConfigs.js';
+import { formatTrainedAt } from '/app-static/js/ui/utils/previousTrainingRun.js';
 
 /**
  * @param {{uuid: string, name: string}} config
@@ -196,7 +197,7 @@ function _makePreviousRunLine(previousRun, readyCount) {
   line.dataset.testid = 'training-previous-run';
   line.style.cssText = 'margin-top: 0.35em; color: var(--pico-muted-color, #888);';
 
-  const when = _formatTrainedAt(trainedAt);
+  const when = formatTrainedAt(trainedAt);
   const head = document.createElement('span');
   head.textContent = `⏮ Last run (${modelName}${when ? `, ${when}` : ''}): `;
   line.appendChild(head);
@@ -234,13 +235,6 @@ function _makePreviousRunLine(previousRun, readyCount) {
   }
 
   return line;
-}
-
-function _formatTrainedAt(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString();
 }
 
 /**

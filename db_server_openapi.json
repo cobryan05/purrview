@@ -6031,17 +6031,6 @@
             "type": "array",
             "title": "Labeluuids"
           },
-          "labelUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuid"
-          },
           "tagUuids": {
             "items": {
               "type": "string"
@@ -6072,17 +6061,6 @@
             },
             "type": "array",
             "title": "Labeluuids"
-          },
-          "labelUuid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeluuid"
           },
           "tagUuids": {
             "items": {

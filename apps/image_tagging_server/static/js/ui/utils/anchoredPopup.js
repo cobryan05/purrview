@@ -15,6 +15,35 @@ import { acquireModalLayer, registerEscHandler, unregisterEscHandler } from './m
  */
 
 /**
+ * Wires the outside-click + ESC dismiss contract shared by every anchored
+ * popup/popover, for callers that manage their own positioning (e.g. a
+ * CSS-anchored popover) and so can't use openAnchoredPopup itself.
+ *
+ * Capture-phase mousedown rather than click: a click that starts inside the
+ * popup and releases outside it (dragging across a slider or selecting text)
+ * would otherwise dismiss the panel mid-interaction.
+ *
+ * @param {HTMLElement} contentEl  popup content; clicks inside never dismiss
+ * @param {HTMLElement} anchorEl  trigger element; clicks on/inside it never dismiss
+ *   (its own handler is assumed to toggle open state — dismissing here too
+ *   would close-then-reopen and make the button look dead)
+ * @param {() => void} onClose  called on outside mousedown or ESC
+ * @returns {() => void} unbind — call when closing via another path (e.g. its own ✕ button)
+ */
+export function bindOutsideDismiss(contentEl, anchorEl, onClose) {
+  function outsideListener(e) {
+    if (contentEl.contains(e.target) || anchorEl.contains(e.target)) return;
+    onClose();
+  }
+  document.addEventListener('mousedown', outsideListener, true);
+  registerEscHandler(onClose);
+  return function unbind() {
+    unregisterEscHandler(onClose);
+    document.removeEventListener('mousedown', outsideListener, true);
+  };
+}
+
+/**
  * @param {HTMLElement} anchorEl  element the popup is positioned relative to
  * @param {HTMLElement} contentEl  popup content; caller owns its styling
  * @returns {{ close: () => void }}
@@ -59,22 +88,15 @@ export function openAnchoredPopup(anchorEl, contentEl) {
   contentEl.style.visibility = '';
 
   let _closed = false;
+  let unbindDismiss = null;
   function close() {
     if (_closed) return;
     _closed = true;
-    unregisterEscHandler(close);
+    unbindDismiss();
     layer?.release();
     contentEl.remove();
-    document.removeEventListener('mousedown', outsideListener, true);
   }
-
-  function outsideListener(e) {
-    if (!contentEl.contains(e.target) && e.target !== anchorEl) close();
-  }
-  document.addEventListener('mousedown', outsideListener, true);
-  // Join the shared ESC stack so a popup over a modal closes first, instead of
-  // ESC falling through to whatever happened to be listening.
-  registerEscHandler(close);
+  unbindDismiss = bindOutsideDismiss(contentEl, anchorEl, close);
 
   return { close };
 }

@@ -299,3 +299,41 @@ class TestClassMapCache:
         )
         classes = await manager.get_models_classes(["yolo_test"])
         assert classes["yolo_test"]["cat"] == "label-uuid-abc"
+
+    async def test_sidecar_stat_does_not_block_event_loop(self, manager, monkeypatch):
+        """get_models_classes() is awaited per-detection during a bulk inference
+        run; a synchronous os.stat() there would stall every other in-flight
+        request for as long as the stat takes. Assert the stat itself runs off
+        the event loop: a concurrent short timer must fire on schedule (~0.05s)
+        rather than only after the slow stat (~0.2s) finally lets the loop turn.
+        """
+        import asyncio
+        import time as time_module
+
+        real_stat = os.stat
+
+        def slow_stat(path, *args, **kwargs):
+            if str(path).endswith(".json"):
+                time_module.sleep(0.2)
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", slow_stat)
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        ticker_elapsed = None
+
+        async def ticker():
+            nonlocal ticker_elapsed
+            await asyncio.sleep(0.05)
+            ticker_elapsed = loop.time() - start
+
+        ticker_task = asyncio.create_task(ticker())
+        await manager.get_models_classes(["yolo_test"])
+        await ticker_task
+
+        assert ticker_elapsed is not None and ticker_elapsed < 0.15, (
+            f"ticker (scheduled for ~0.05s) fired after {ticker_elapsed:.3f}s — the event loop "
+            "was blocked by the sidecar stat() until it finished (~0.2s) instead of letting the "
+            "timer run concurrently"
+        )

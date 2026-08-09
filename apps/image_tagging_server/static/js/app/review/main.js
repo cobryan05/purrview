@@ -40,6 +40,7 @@ import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } f
 import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { bindOutsideDismiss } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { trapModalFocus } from '/app-static/js/ui/utils/modalShell.js';
 import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
@@ -566,33 +567,23 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // ── Popover open/close ──────────────────────────────────────────────────
     // Clicking "+ Add filter" a second time was the ONLY way to dismiss this,
     // which nothing on screen suggested. It now also closes on ESC, on an
-    // outside click, and via its own ✕ button.
-    let _filterEscHandler = null;
-
-    // Capture phase so this runs before any inner handler can stop propagation.
-    // mousedown rather than click: a click that starts inside the popover and
-    // releases outside it (dragging across a slider or selecting label text)
-    // would otherwise dismiss the panel mid-interaction.
-    function _onFilterOutsideMouseDown(e) {
-      if (filterPanel.element.contains(e.target)) return;
-      // The toggle's own click handler flips state; closing here as well would
-      // close-then-reopen and make the button look dead.
-      if (filterToggleBtn.contains(e.target)) return;
-      setFilterPopoverOpen(false);
-    }
+    // outside click, and via its own ✕ button. Dismiss wiring is shared with
+    // anchoredPopup.js (bindOutsideDismiss) rather than hand-rolled here — this
+    // panel keeps its own CSS-anchored positioning, so it can't use
+    // openAnchoredPopup itself, but it must not drift from the shared contract.
+    let _unbindFilterDismiss = null;
 
     function setFilterPopoverOpen(open) {
       if (open === !filterPanel.element.hidden) return;  // already in that state
       filterPanel.element.hidden = !open;
       filterToggleBtn.setAttribute('aria-expanded', String(open));
       if (open) {
-        _filterEscHandler = () => setFilterPopoverOpen(false);
-        registerEscHandler(_filterEscHandler);
-        document.addEventListener('mousedown', _onFilterOutsideMouseDown, true);
+        _unbindFilterDismiss = bindOutsideDismiss(filterPanel.element, filterToggleBtn, () =>
+          setFilterPopoverOpen(false),
+        );
       } else {
-        unregisterEscHandler(_filterEscHandler);
-        _filterEscHandler = null;
-        document.removeEventListener('mousedown', _onFilterOutsideMouseDown, true);
+        _unbindFilterDismiss?.();
+        _unbindFilterDismiss = null;
         // ESC/outside-click can fire while focus sits on a control inside the
         // now-hidden panel, which would strand focus on an unreachable element.
         filterToggleBtn.focus();
