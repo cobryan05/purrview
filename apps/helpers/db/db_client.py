@@ -4485,6 +4485,65 @@ class DbClient:
         page = await self._get_images_with_relations([img.uuid for img in all_images[:limit]])
         return page, has_more
 
+    async def _images_needing_label_review(
+        self,
+        image_uuids: List[str],
+        image_label_uuids: List[str],
+        object_label_uuids: List[str],
+    ) -> set[str]:
+        """Return the subset of image_uuids that still need review for any of the given
+        target labels — image-scope labels checked against image_labels rows, object-scope
+        labels checked against bbox UNVERIFIED tags. See get_training_config_needs_review_images.
+        """
+        needs_review: set[str] = set()
+        if not image_uuids:
+            return needs_review
+
+        async with self._async_session_maker() as session:
+            if image_label_uuids:
+                # Count present/absent image_labels rows per image, across the target
+                # image-scope labels only. An image needs review if that count is short
+                # of the full target-label count (i.e. at least one is unassessed).
+                verified_counts: dict[str, int] = {}
+                for chunk in _chunked(image_uuids):
+                    rows = (
+                        await session.exec(
+                            select(ImageLabel.image_uuid, func.count().label("cnt"))
+                            .where(
+                                ImageLabel.image_uuid.in_(chunk),
+                                ImageLabel.label_uuid.in_(image_label_uuids),
+                                ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                            )
+                            .group_by(ImageLabel.image_uuid)
+                        )
+                    ).all()
+                    for img_uuid, cnt in rows:
+                        verified_counts[img_uuid] = cnt
+                target_count = len(image_label_uuids)
+                for img_uuid in image_uuids:
+                    if verified_counts.get(img_uuid, 0) < target_count:
+                        needs_review.add(img_uuid)
+
+            if object_label_uuids:
+                # Images with at least one bbox for a target object-scope label that
+                # still carries the UNVERIFIED tag.
+                for chunk in _chunked(image_uuids):
+                    rows = (
+                        await session.exec(
+                            select(BBox.image_uuid)
+                            .join(BBoxTagLink, BBox.uuid == BBoxTagLink.bbox_uuid)
+                            .where(
+                                BBox.image_uuid.in_(chunk),
+                                BBox.label_uuid.in_(object_label_uuids),
+                                BBoxTagLink.tag_uuid == UNVERIFIED_TAG_UUID,
+                            )
+                            .distinct()
+                        )
+                    ).all()
+                    needs_review.update(rows)
+
+        return needs_review
+
     async def get_training_config_needs_review_images(
         self,
         uuid: str,
@@ -4499,7 +4558,12 @@ class DbClient:
         """Return (images, has_more) for images that need verification in a training config.
 
         Images are those within the config's linked dataset union that have at least one
-        target label (derived from the model config node) without a verified image_label row.
+        target label (derived from the model config node) not yet verified. What "verified"
+        means depends on the target label's scope, mirroring get_training_config_label_stats:
+        - image-scope labels: a present/absent image_labels row.
+        - object-scope labels: at least one bbox for that label carries the UNVERIFIED tag
+          (an image can be fully triaged at the whole-image level — e.g. marked "absent" —
+          while an individual bbox for that label still needs a human look).
 
         extra_label_uuids — when provided, additionally narrows the pool to images that
         also have bboxes with these labels (applied on top of each dataset's own filters).
@@ -4514,10 +4578,19 @@ class DbClient:
         if not label_uuids:
             return [], False
 
-        # Collect all needs-review images from each linked dataset (union, de-duped by UUID).
-        def _add_verification_predicates(params: ImageSearchParams) -> None:
-            # Decouple verification targets from the pool label filter.
-            params.terms = list(params.terms) + [LabelVerificationTerm(check="has_unverified", label_uuids=label_uuids)]
+        async with self._async_session_maker() as session:
+            labels_result = await session.exec(select(Label).where(Label.uuid.in_(label_uuids)))
+            labels_by_uuid = {lbl.uuid: lbl for lbl in labels_result.all()}
+        image_label_uuids = [u for u in label_uuids if labels_by_uuid.get(u) and labels_by_uuid[u].scope == LabelScope.IMAGE]
+        object_label_uuids = [
+            u for u in label_uuids if labels_by_uuid.get(u) and labels_by_uuid[u].scope == LabelScope.OBJECT
+        ]
+
+        # Collect the candidate pool from each linked dataset (union, de-duped by UUID).
+        # Verification itself is checked separately below (per-scope), not folded into the
+        # dataset search params, since object-scope verification isn't expressible as a
+        # LabelVerificationTerm (that term only reads image_labels rows).
+        def _narrow_pool(params: ImageSearchParams) -> None:
             if extra_label_uuids:
                 # Narrow pool: image must also have bboxes with the extra labels.
                 # Merge into the dataset's own pool ObjectLabelTerm (built by
@@ -4538,9 +4611,15 @@ class DbClient:
                 else:
                     params.terms.append(ObjectLabelTerm(label_uuids=list(extra_label_uuids), roll_up=False))
 
-        all_images = await self._enumerate_dataset_union_stubs(
-            tc.dataset_uuids, mutate_params=_add_verification_predicates
+        all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids, mutate_params=_narrow_pool)
+
+        if not all_images:
+            return [], False
+
+        needs_review_uuids = await self._images_needing_label_review(
+            [img.uuid for img in all_images], image_label_uuids, object_label_uuids
         )
+        all_images = [img for img in all_images if img.uuid in needs_review_uuids]
 
         if not all_images:
             return [], False

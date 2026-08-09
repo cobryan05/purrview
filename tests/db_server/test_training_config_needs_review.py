@@ -21,8 +21,8 @@ from tests.conftest import make_png
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _create_label(http_client, name: str) -> str:
-    r = await http_client.post("/api/labels", json={"name": name, "color": "#ff0000"})
+async def _create_label(http_client, name: str, scope: str = "image") -> str:
+    r = await http_client.post("/api/labels", json={"name": name, "color": "#ff0000", "scope": scope})
     assert r.status_code == 200, r.text
     return r.json()["label"]["uuid"]
 
@@ -344,6 +344,70 @@ class TestNeedsReviewImages:
         body_filtered = await _needs_review(http_client, cfg["uuid"], labelUuids=[pool_label_uuid])
         assert len(body_filtered["images"]) == 1
         assert "nr_extra_with_pool" in body_filtered["images"][0]["filename"]
+
+    async def test_object_scope_label_uses_bbox_verification_not_image_label(self, http_client, files_root):
+        """For an object-detection training config, "needs review" for a bbox label
+        must be driven by the bbox's own UNVERIFIED tag, not by the image_labels
+        table. An image can be fully triaged at the whole-image level (e.g. marked
+        'absent' for the label, perhaps by a bulk action) while still carrying an
+        individual bbox for that label that nobody has verified yet — that bbox
+        is exactly what this endpoint exists to surface (it backs the "Unverified"
+        column click in the object-labels coverage table, which is filtered
+        client-side to bboxes carrying the UNVERIFIED tag)."""
+        import uuid as _uuid
+
+        from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+
+        ds = await _create_dataset(http_client, "nr-obj-ds")
+        label_uuid = await _create_label(http_client, "nr-obj-label", scope="object")
+
+        await _register_image(http_client, files_root, "nr_obj_img.png")
+
+        # Add an unverified bbox for the label.
+        bbox_id = str(_uuid.uuid4())
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "nr_obj_img.png",
+                "boxes": [
+                    {
+                        "uuid": bbox_id,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.3,
+                        "height": 0.3,
+                        "tagUuids": [UNVERIFIED_TAG_UUID],
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        # Whole-image label status already marked "absent" — fully triaged at the
+        # image level, but the bbox itself is still unverified.
+        await _verify_label(http_client, "nr_obj_img.png", label_uuid, "absent")
+
+        mc = await _create_model_config(
+            http_client,
+            "mc-nr-obj",
+            nodes=[
+                {
+                    "label_uuid": label_uuid,
+                    "model_type": "object_detection",
+                    "architecture": "yolov8n",
+                }
+            ],
+        )
+        node_uuid = mc["nodes"][0]["uuid"]
+        cfg = await _create_training_config(http_client, "nr-tc-obj", [ds["uuid"]], model_config_node_uuid=node_uuid)
+
+        body = await _needs_review(http_client, cfg["uuid"], labelUuids=[label_uuid])
+        assert len(body["images"]) == 1, (
+            "image with an unverified bbox for the target label must appear, "
+            "even though the whole-image label status is already 'absent'"
+        )
+        assert "nr_obj_img" in body["images"][0]["filename"]
 
     async def test_extra_label_uuids_merges_into_dataset_pool_term_not_unrelated_term(self, http_client, files_root):
         """extra_label_uuids must widen the dataset's own label_uuids-derived pool
