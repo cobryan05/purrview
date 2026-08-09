@@ -98,6 +98,23 @@ class IngestImagesResponse(BaseModel):
     cached_total: int
 
 
+class LocalManifestEntry(BaseModel):
+    image_uuid: str
+    filename: str
+
+
+class LocalIngestPayload(BaseModel):
+    entries: List[LocalManifestEntry]
+
+
+class LocalIngestResponse(BaseModel):
+    received: int
+    cached_total: int
+    linked: int
+    copied: int
+    not_found: List[str] = Field(default_factory=list)
+
+
 class IngestSourceModelResponse(BaseModel):
     received: int
 
@@ -224,10 +241,42 @@ class WebApp:
                     status_code=409,
                 )
             tar_bytes = await request.body()
-            result = self._manager.ingest_images(job_id, tar_bytes)
+            # Tar extraction does synchronous disk I/O (write + fsync per file) —
+            # run it off the event loop so a large push doesn't stall every other
+            # request this process is serving.
+            result = await asyncio.to_thread(self._manager.ingest_images, job_id, tar_bytes)
             if result is None:
                 return JSONResponse({"detail": "Job not found"}, status_code=404)
             return IngestImagesResponse(**result)
+
+        @self._app.post(
+            "/api/training/jobs/{job_id}/images/local",
+            operation_id="ingest_local_images",
+            response_model=LocalIngestResponse,
+            tags=["training"],
+        )
+        async def ingest_local_images(job_id: str, payload: LocalIngestPayload):
+            """Zero-copy ingest: populate the cache from local filenames under
+            FILES_ROOT instead of receiving image bytes over HTTP.
+
+            Only succeeds for UUIDs whose source file is actually reachable from
+            this process (e.g. pusher and training_server share a filesystem).
+            Anything else comes back in ``not_found`` for the caller to push via
+            the tar-upload endpoint instead.
+            """
+            job = self._manager.get_job(job_id)
+            if not job:
+                return JSONResponse({"detail": "Job not found"}, status_code=404)
+            if job.status not in ("awaiting_data", "queued"):
+                return JSONResponse(
+                    {"detail": f"Cannot ingest images for job in status: {job.status}"},
+                    status_code=409,
+                )
+            entries = [(e.image_uuid, e.filename) for e in payload.entries]
+            result = await asyncio.to_thread(self._manager.ingest_local, job_id, entries)
+            if result is None:
+                return JSONResponse({"detail": "Job not found"}, status_code=404)
+            return LocalIngestResponse(**result)
 
         @self._app.post(
             "/api/training/jobs/{job_id}/source-model",
@@ -246,7 +295,7 @@ class WebApp:
                     status_code=409,
                 )
             data = await request.body()
-            result = self._manager.ingest_source_model(job_id, data)
+            result = await asyncio.to_thread(self._manager.ingest_source_model, job_id, data)
             if result is None:
                 return JSONResponse({"detail": "Job not found"}, status_code=404)
             return IngestSourceModelResponse(received=result["received"])

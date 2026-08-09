@@ -201,6 +201,100 @@ async def test_ingest_images_rejects_non_manifest_uuids(manager, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Manager — ingest_local (zero-copy)
+# ---------------------------------------------------------------------------
+
+
+async def test_ingest_local_hardlinks_from_files_root(manager, monkeypatch, tmp_path):
+    """When the source file is reachable locally, ingest_local hardlinks it into the cache."""
+    files_root = tmp_path / "files_root"
+    files_root.mkdir()
+    (files_root / "a.jpg").write_bytes(b"fake-jpeg-bytes")
+    monkeypatch.setattr("apps.training_server.manager.FILES_ROOT", files_root)
+
+    manager.start()
+    manifest = [{"image_uuid": "img-a", "filename": "a.jpg", "status": "present"}]
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+
+    result = manager.ingest_local(job.job_id, [("img-a", "a.jpg")])
+    assert result is not None
+    assert result["received"] == 1
+    assert result["linked"] == 1
+    assert result["not_found"] == []
+    assert manager._cache.has("img-a")
+    assert (manager._cache._dir / "img-a").read_bytes() == b"fake-jpeg-bytes"
+
+
+async def test_ingest_local_reports_not_found_for_unreachable_source(manager, monkeypatch, tmp_path):
+    """A filename that doesn't exist under FILES_ROOT comes back in not_found, not an error."""
+    files_root = tmp_path / "files_root"
+    files_root.mkdir()
+    monkeypatch.setattr("apps.training_server.manager.FILES_ROOT", files_root)
+
+    manager.start()
+    manifest = [{"image_uuid": "img-missing", "filename": "missing.jpg", "status": "present"}]
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+
+    result = manager.ingest_local(job.job_id, [("img-missing", "missing.jpg")])
+    assert result is not None
+    assert result["received"] == 0
+    assert result["not_found"] == ["img-missing"]
+    assert not manager._cache.has("img-missing")
+
+
+async def test_ingest_local_rejects_non_manifest_uuids(manager, monkeypatch, tmp_path):
+    files_root = tmp_path / "files_root"
+    files_root.mkdir()
+    (files_root / "b.jpg").write_bytes(b"data")
+    monkeypatch.setattr("apps.training_server.manager.FILES_ROOT", files_root)
+
+    manager.start()
+    manifest = [{"image_uuid": "allowed-uuid", "filename": "a.jpg", "status": "present"}]
+    job = await manager.submit_job({"trainer_type": "binary_image_classifier"}, manifest=manifest)
+
+    manager.ingest_local(job.job_id, [("not-in-manifest", "b.jpg")])
+    assert not manager._cache.has("not-in-manifest")
+
+
+async def test_ingest_local_unknown_job(manager):
+    assert manager.ingest_local("no-job", [("uuid-x", "x.jpg")]) is None
+
+
+async def test_ingest_local_images_endpoint(http_client, manager, monkeypatch, tmp_path):
+    """POST /jobs/{id}/images/local caches images without sending bytes over HTTP."""
+    files_root = tmp_path / "files_root"
+    files_root.mkdir()
+    (files_root / "x.jpg").write_bytes(b"fake-jpeg")
+    monkeypatch.setattr("apps.training_server.manager.FILES_ROOT", files_root)
+
+    manager.start()
+    manifest = [{"image_uuid": "uuid-X", "filename": "x.jpg", "status": "present"}]
+    submit_resp = await http_client.post(
+        "/api/training/jobs",
+        json={"trainer_type": "binary_image_classifier", "manifest": manifest},
+    )
+    job_id = submit_resp.json()["job_id"]
+
+    resp = await http_client.post(
+        f"/api/training/jobs/{job_id}/images/local",
+        json={"entries": [{"image_uuid": "uuid-X", "filename": "x.jpg"}]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["received"] == 1
+    assert data["linked"] == 1
+    assert data["not_found"] == []
+
+
+async def test_ingest_local_images_endpoint_unknown_job(http_client):
+    resp = await http_client.post(
+        "/api/training/jobs/no-job/images/local",
+        json={"entries": [{"image_uuid": "uuid-X", "filename": "x.jpg"}]},
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Manager — start_job
 # ---------------------------------------------------------------------------
 

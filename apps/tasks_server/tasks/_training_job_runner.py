@@ -28,6 +28,8 @@ from typing import Any, Optional
 
 import httpx
 from training_client.api.training_api import TrainingApi
+from training_client.models.local_ingest_payload import LocalIngestPayload
+from training_client.models.local_manifest_entry import LocalManifestEntry
 from training_client.models.manifest_entry import ManifestEntry
 from training_client.models.submit_job_payload import SubmitJobPayload
 
@@ -167,33 +169,69 @@ class TrainingJobRunnerMixin:
         # Process in batches of _TAR_BATCH_SIZE, reusing one HTTP client.
         pushed = 0
         skipped = 0
+        local_linked = 0
+        local_copied = 0
         async with httpx.AsyncClient(timeout=300.0) as client:
             for batch_start in range(0, len(missing_uuids), _TAR_BATCH_SIZE):
                 if self._cancel_flag.is_set():
                     return
                 batch = missing_uuids[batch_start : batch_start + _TAR_BATCH_SIZE]
-                tar_bytes, added, batch_skipped = await asyncio.to_thread(self._build_tar, batch, uuid_to_filename)
-                skipped += batch_skipped
-                if not added:
+
+                filenameless = [u for u in batch if u not in uuid_to_filename]
+                for u in filenameless:
+                    self.log(f"WARNING: no filename recorded for image {u}, skipping")
+                skipped += len(filenameless)
+                batch = [u for u in batch if u in uuid_to_filename]
+                if not batch:
                     continue
-                # Use httpx directly — the generated client can't send raw binary body.
-                r = await client.post(
-                    f"{self._training_base_url}/api/training/jobs/{job_id}/images",
-                    content=tar_bytes,
-                    headers={"Content-Type": "application/x-tar"},
+
+                # First try zero-copy local ingest: the training server reads
+                # straight from FILES_ROOT itself, no bytes cross HTTP at all.
+                # This only succeeds for UUIDs it can actually see on its own
+                # filesystem (e.g. pusher and training server share a
+                # container/bind mount) — anything else comes back in
+                # not_found and falls through to the tar-upload path below.
+                local_resp = await asyncio.to_thread(
+                    TrainingApi(self._api_client).ingest_local_images,
+                    job_id,
+                    LocalIngestPayload(
+                        entries=[LocalManifestEntry(image_uuid=u, filename=uuid_to_filename[u]) for u in batch]
+                    ),
                 )
-                r.raise_for_status()
-                ingest_result = r.json()
-                server_received = ingest_result.get("received", 0)
-                if server_received < added:
-                    raise RuntimeError(
-                        f"Training server only cached {server_received}/{added} images in batch. "
-                        f"Check training server logs for write errors (permissions, disk space)."
+                not_found = set(local_resp.not_found or [])
+                local_linked += local_resp.linked
+                local_copied += local_resp.copied
+                pushed += len(batch) - len(not_found)
+
+                remaining = [u for u in batch if u in not_found]
+                if remaining:
+                    tar_bytes, added, batch_skipped = await asyncio.to_thread(
+                        self._build_tar, remaining, uuid_to_filename
                     )
-                pushed += added
+                    skipped += batch_skipped
+                    if added:
+                        # Use httpx directly — the generated client can't send raw binary body.
+                        r = await client.post(
+                            f"{self._training_base_url}/api/training/jobs/{job_id}/images",
+                            content=tar_bytes,
+                            headers={"Content-Type": "application/x-tar"},
+                        )
+                        r.raise_for_status()
+                        ingest_result = r.json()
+                        server_received = ingest_result.get("received", 0)
+                        if server_received < added:
+                            raise RuntimeError(
+                                f"Training server only cached {server_received}/{added} images in batch. "
+                                f"Check training server logs for write errors (permissions, disk space)."
+                            )
+                        pushed += added
+
                 self._update_progress(min(pushed / len(missing_uuids) * 50.0, 50.0))
                 await self.heartbeat()
                 self.log(f"Pushed {pushed}/{len(missing_uuids)} images")
+
+        if local_linked or local_copied:
+            self.log(f"Zero-copy local ingest: {local_linked} hardlinked, {local_copied} copied on-disk")
 
         if skipped:
             raise RuntimeError(
