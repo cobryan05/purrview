@@ -277,6 +277,13 @@ def page(context, base_url):  # noqa: F811
     """
     p = context.new_page()
     _block_sse(p)
+    # -n auto runs many workers per host; under contention (many chromium
+    # processes competing for CPU — see e.g. concurrent agent sessions) a
+    # multi-await chain like the coverage-popup's stats fetch can occasionally
+    # miss Playwright's 30s default, which is otherwise plenty for a mocked
+    # network call. Widen the ceiling rather than the per-test wait so every
+    # action/wait_for_selector on this page benefits, not just one call site.
+    p.set_default_timeout(60000)
     yield p
     p.close()
 

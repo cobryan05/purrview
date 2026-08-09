@@ -14,6 +14,7 @@ import { bulkApplyImagesByUuids } from '/app-static/js/shared/api/review.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { trapModalFocus } from '/app-static/js/ui/utils/modalShell.js';
 import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
 
@@ -144,11 +145,13 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
 
+  let releaseFocusTrap = null;
   function closeImageBulk() {
     unregisterEscHandler(closeImageBulk);
     labelDropdown.destroy();
     tagField.destroy();
     _layer.release();
+    releaseFocusTrap?.();
     overlay.remove();
   }
 
@@ -192,6 +195,7 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   registerEscHandler(closeImageBulk);
 
   overlay.addEventListener('click', e => { if (e.target === overlay) closeImageBulk(); });
+  releaseFocusTrap = trapModalFocus(dialog);
 }
 
 /**

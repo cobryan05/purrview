@@ -2545,6 +2545,36 @@ button.filter-active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.canvas-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  flex-shrink: 0;
+}
+
+.canvas-modal-header .canvas-modal-nav-btn {
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 0.2em 0.6em;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.canvas-modal-header .canvas-modal-nav-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.canvas-modal-header .canvas-modal-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .canvas-modal-header .canvas-modal-close {

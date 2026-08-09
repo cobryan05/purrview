@@ -40,8 +40,10 @@ import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } f
 import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
+import { trapModalFocus } from '/app-static/js/ui/utils/modalShell.js';
 import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
+import { next_image, prev_image } from '/app-static/js/app/image-tagging/files.js';
 import { saveAnnotations, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
 import {
@@ -2528,7 +2530,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const btnRow = document.createElement('div');
     btnRow.className = 'bulk-modal-btn-row';
 
-    function close() { unregisterEscHandler(close); _layer.release(); dynPicker.destroy(); overlay.remove(); }
+    let releaseFocusTrap = null;
+    function close() { unregisterEscHandler(close); _layer.release(); releaseFocusTrap?.(); dynPicker.destroy(); overlay.remove(); }
 
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
@@ -2590,6 +2593,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     applyModalCascade(dialog, _layer.depth);
     registerEscHandler(close);
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    releaseFocusTrap = trapModalFocus(dialog);
 
     // ── Populate preview asynchronously ─────────────────────────────────
     // First 3: already in _visibleEntries (free)
@@ -2759,10 +2763,14 @@ export async function showReviewModal({ title = 'Browse Images', fetchImages, ed
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
   applyModalCascade(dialog, _layer.depth);
+  // Without this, focus stays on whatever triggered the modal (e.g. a search
+  // input behind it), so arrow keys/Tab keep acting on the background panel
+  // instead of the modal that's visually on top.
+  const releaseFocusTrap = trapModalFocus(dialog);
 
   // Use a ref so close() can call panel.destroy() even though panel is assigned below.
   const panelRef = { current: null };
-  function close() { unregisterEscHandler(close); _layer.release(); panelRef.current?.destroy(); overlay.remove(); }
+  function close() { unregisterEscHandler(close); _layer.release(); releaseFocusTrap(); panelRef.current?.destroy(); overlay.remove(); }
   registerEscHandler(close);
   closeBtn.addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -2987,12 +2995,34 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   titleEl.className = 'canvas-modal-title';
   titleEl.dataset.testid = 'canvas-edit-modal-title';
   titleEl.textContent = `Edit: ${img.filename.split('/').slice(-2).join('/')}`;
+
+  // Visible fallback for the [ ] nav hotkeys — same navObj, same next_image/
+  // prev_image calls, so it stays in lockstep whether the user clicks or
+  // presses a key. Hidden entirely when there's nothing to navigate through.
+  const prevBtn = document.createElement('button');
+  prevBtn.className = 'canvas-modal-nav-btn canvas-modal-nav-btn--prev';
+  prevBtn.dataset.testid = 'canvas-edit-modal-prev';
+  prevBtn.textContent = '‹ Prev';
+  prevBtn.title = 'Previous image';
+  prevBtn.style.display = 'none';
+
+  const nextBtn = document.createElement('button');
+  nextBtn.className = 'canvas-modal-nav-btn canvas-modal-nav-btn--next';
+  nextBtn.dataset.testid = 'canvas-edit-modal-next';
+  nextBtn.textContent = 'Next ›';
+  nextBtn.title = 'Next image';
+  nextBtn.style.display = 'none';
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'canvas-modal-close';
   closeBtn.dataset.testid = 'canvas-edit-modal-close';
   closeBtn.textContent = '✕';
   closeBtn.title = 'Close';
-  header.append(titleEl, closeBtn);
+
+  const headerActions = document.createElement('div');
+  headerActions.className = 'canvas-modal-header-actions';
+  headerActions.append(prevBtn, nextBtn, closeBtn);
+  header.append(titleEl, headerActions);
 
   // Toolbar
   const toolbarEl = document.createElement('div');
@@ -3072,6 +3102,8 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   cancelBtn.disabled = true;
   saveOnlyBtn.disabled = true;
   saveBtn.disabled = true;
+  prevBtn.disabled = true;
+  nextBtn.disabled = true;
 
   dialog.append(header, toolbarEl, contentArea, footer);
   overlay.appendChild(dialog);
@@ -3082,6 +3114,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   overlay.style.zIndex = _layer.zIndex;
   document.body.appendChild(overlay);
   applyModalCascade(dialog, _layer.depth);
+  // Every button above is still disabled, so this parks focus on the dialog
+  // itself for now — the important part is moving it off whatever was
+  // focused behind the modal before the awaits below start.
+  const releaseFocusTrap = trapModalFocus(dialog);
 
   // ── Create canvas instance ─────────────────────────────────────────
   let instance;
@@ -3103,6 +3139,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     Logger.error('Canvas modal: failed to load image', err);
     instance?.destroy();
     _layer.release();
+    releaseFocusTrap();
     overlay.remove();
     _modalOpen = false;
     return;
@@ -3186,6 +3223,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
   // ── Navigation: wire [ ] hotkeys to navigate within the results page ──
   let unsubNavLoad = null;
+  let _updateNavButtons = () => {};
   if (_allowNavigation && navContext?.items?.length) {
     // Duck-typed FileNavigation used by files.js's next_image / prev_image.
     // Those functions also call guardUnsavedChanges before advancing, so the
@@ -3220,6 +3258,18 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     };
     instance.runtime.setFileNavigation(navObj);
 
+    // Visible fallback for the [ ] hotkeys — same navObj, so click and keypress
+    // stay in lockstep. Only shown when there's actually something to navigate.
+    prevBtn.style.display = '';
+    nextBtn.style.display = '';
+    _updateNavButtons = () => {
+      prevBtn.disabled = _navIndex <= 0;
+      nextBtn.disabled = _navIndex >= navContext.items.length - 1;
+    };
+    _updateNavButtons();
+    prevBtn.addEventListener('click', () => prev_image(instance.runtime));
+    nextBtn.addEventListener('click', () => next_image(instance.runtime));
+
     // When files.js publishes LOAD_IMAGE_ONTO_CANVAS for our runtime, load the
     // new image into this same modal canvas.
     unsubNavLoad = events.subscribeToCanvas(
@@ -3231,6 +3281,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
         // matches the card the user double-clicked, not the first occurrence in navItems.
         const targetBbox = (_navIndex === navContext.startIndex) ? bbox : (item.bbox ?? null);
         titleEl.textContent = `Edit: ${item.img.filename.split('/').slice(-2).join('/')}`;
+        _updateNavButtons();
         try {
           await instance.loadImage(item.img.filename);
         } catch (err) {
@@ -3307,6 +3358,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   function closeModal() {
     if (_canvasEscClose) unregisterEscHandler(_canvasEscClose);
     _layer.release();
+    releaseFocusTrap();
     unsubBboxChanged();
     unsubDirty();
     if (unsubNavLoad) unsubNavLoad();
@@ -3359,6 +3411,12 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     saveOnlyBtn.disabled = disabled;
     cancelBtn.disabled = disabled;
     closeBtn.disabled = disabled;
+    if (disabled) {
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+    } else {
+      _updateNavButtons(); // restore prev/next's own boundary-based disabled state
+    }
   }
 
   async function tryClose() {
