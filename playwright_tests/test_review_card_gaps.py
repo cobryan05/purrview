@@ -18,9 +18,13 @@ Run with:
       'cd /project && python -m pytest playwright_tests/test_review_card_gaps.py -p no:asyncio -q'
 """
 
+import base64
+import io
 import json
 import re
 
+import pytest
+from PIL import Image
 from playwright.sync_api import Page, Route, expect
 
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
@@ -280,3 +284,62 @@ class TestGapChipResolves:
 
         expect(card).to_have_class(re.compile(r"\bstale-verified\b"))
         expect(page.locator("[data-testid='card-gaps-row'] .gap-chip")).to_have_count(0)
+
+
+class TestGapRowHoverPreviewOverlay:
+    """The image-card hover popover draws the bbox overlay on a canvas sized to
+    its wrapper, not to the <img> it sits on top of. Adding the gaps side panel
+    turns the popover into a flex row, and the wrapper (a flex item with default
+    `align-items: stretch`) stretches to match the taller side panel — so the
+    canvas ends up taller than the image beneath it and every bbox is drawn in
+    the wrong place."""
+
+    def _setup(self, page: Page):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG, LABEL_BIRD, LABEL_FOX, LABEL_WEATHER])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_image_labels_batch(page)
+
+        # A very wide, short image: max-width:492 caps its rendered width, so its
+        # rendered height stays small — well under the side panel's height once it
+        # lists several gaps. That gap makes the wrapper-stretch bug unmissable.
+        wide_png = io.BytesIO()
+        Image.new("RGB", (800, 40), color="red").save(wide_png, format="PNG")
+        page.route(
+            "**/thumbnail?*",
+            lambda route: route.fulfill(status=200, content_type="image/png", body=wide_png.getvalue()),
+        )
+
+    def test_overlay_canvas_matches_image_height_with_side_panel(self, page: Page, base_url: str):
+        self._setup(page)
+        _mock_image_gaps(
+            page,
+            [
+                {
+                    "img-1": [
+                        _gap("lbl-dog", "Dog"),
+                        _gap("lbl-bird", "Bird"),
+                        _gap("lbl-fox", "Fox"),
+                        _gap("lbl-weather", "Weather", "image"),
+                    ]
+                }
+            ],
+        )
+
+        _open_modal(page, base_url)
+
+        thumb = page.locator(".review-card--image .thumb").first
+        thumb.hover()
+
+        popover = page.locator(".thumb-hover-popover")
+        expect(popover).to_have_class(re.compile(r"\bvisible\b"))
+        expect(popover).to_have_class(re.compile(r"\bhas-side\b"))
+
+        img_box = page.locator(".thumb-hover-popover img.popover-img").bounding_box()
+        canvas_box = page.locator(".thumb-hover-popover canvas.popover-canvas").bounding_box()
+
+        # The overlay canvas must be sized to the actual rendered image, not to
+        # whatever height the flex row stretched its wrapper to.
+        assert canvas_box["height"] == pytest.approx(img_box["height"], abs=1.0), (
+            f"overlay canvas height {canvas_box['height']} does not match "
+            f"image height {img_box['height']} — bboxes will be drawn misaligned"
+        )

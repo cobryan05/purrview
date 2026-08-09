@@ -2241,6 +2241,7 @@ button.filter-active {
    card): lay the image and the column out side by side and widen the shell to fit. */
 .thumb-hover-popover.has-side {
   display: flex;
+  align-items: flex-start;
   gap: 8px;
   max-width: 720px;
 }
