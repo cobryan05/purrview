@@ -333,10 +333,18 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         ``label_uuids`` are written in — the two must agree, or the label-matchup
         UI pairs the wrong name with the wrong label UUID.
         """
+        # Negative-sampling cap, stored alongside the rest of the training config's
+        # free-form hyperparams. Popped out (not spread into job_config below) since
+        # it's a dataset-assembly concern the trainer itself never needs to see.
+        negative_ratio = hyperparams.pop("negative_ratio", None)
+        negative_ratio_floor = hyperparams.pop("negative_ratio_floor", None)
+
         payload = TrainingTargetDetectionDatasetPayload(
             dataset_uuids=dataset_uuids,
             label_uuids=target_label_uuids,
             class_remap=class_remap,
+            negative_ratio=negative_ratio,
+            negative_ratio_floor=negative_ratio_floor,
         )
         result = mc_api.get_training_target_detection_dataset(model_config_uuid, node_uuid, payload)
         if getattr(result, "status", None) != "success":

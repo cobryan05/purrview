@@ -679,6 +679,9 @@ class TrainingTargetDetectionDatasetPayload(Payload):
     # set) and skips re-deriving all targets on each per-target request.
     label_uuids: Optional[List[str]] = None
     class_remap: Dict[str, str] = Field(default_factory=dict)
+    # None = Manager's defaults (see Manager.NEGATIVE_RATIO_DEFAULT / _FLOOR_DEFAULT).
+    negative_ratio: Optional[float] = None
+    negative_ratio_floor: Optional[int] = None
 
 
 class ImageGapEntry(BaseModel):
@@ -2944,6 +2947,8 @@ class WebApp:
                     payload.dataset_uuids,
                     label_uuids=payload.label_uuids,
                     class_remap=payload.class_remap,
+                    negative_ratio=payload.negative_ratio,
+                    negative_ratio_floor=payload.negative_ratio_floor,
                 )
                 if result is None:
                     return DetectionDatasetResponse(

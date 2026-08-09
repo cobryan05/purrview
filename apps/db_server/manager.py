@@ -2738,10 +2738,60 @@ class Manager:
         dataset_uuids: list[str],
         label_uuids: Optional[list[str]] = None,
         class_remap: Optional[dict[str, str]] = None,
+        negative_ratio: Optional[float] = None,
+        negative_ratio_floor: Optional[int] = None,
     ) -> Optional[dict]:
-        return await self._db_client.get_training_target_detection_dataset(
+        result = await self._db_client.get_training_target_detection_dataset(
             model_config_uuid, node_uuid, dataset_uuids, label_uuids=label_uuids, class_remap=class_remap
         )
+        if result is None:
+            return None
+        return await self._apply_negative_ratio_cap(result, negative_ratio, negative_ratio_floor)
+
+    # Default cap for a detection dataset's negative (no-annotation) images, expressed
+    # as a multiple of the positive count. Bulk-verifying "absent" across a whole dataset
+    # (e.g. tagging every indoor photo as dog-absent right after adding a few outdoor dog
+    # photos) otherwise silently drowns a new class in negatives with no signal in the loss.
+    NEGATIVE_RATIO_DEFAULT = 4.0
+    NEGATIVE_RATIO_FLOOR_DEFAULT = 20
+
+    async def _apply_negative_ratio_cap(
+        self,
+        result: dict,
+        negative_ratio: Optional[float],
+        negative_ratio_floor: Optional[int],
+    ) -> dict:
+        """Cap a detection dataset's negatives at ``negative_ratio`` * positive count
+        (never below ``negative_ratio_floor``), keeping the perceptually most diverse
+        negatives via ``HashIndex`` so a handful of near-duplicate frames from one
+        static source can't be what survives the cap. No-op if already under the cap.
+        """
+        images = result.get("images", [])
+        positives = [img for img in images if img["annotations"]]
+        negatives = [img for img in images if not img["annotations"]]
+
+        ratio = negative_ratio if negative_ratio is not None else self.NEGATIVE_RATIO_DEFAULT
+        floor = negative_ratio_floor if negative_ratio_floor is not None else self.NEGATIVE_RATIO_FLOOR_DEFAULT
+        max_negatives = max(int(len(positives) * ratio), floor)
+
+        if len(negatives) <= max_negatives:
+            return result
+
+        candidate_uuids = {img["image_uuid"] for img in negatives}
+        if len(candidate_uuids) > HashIndex.MAX_DIVERSITY_CANDIDATES:
+            candidate_uuids = set(random.sample(sorted(candidate_uuids), HashIndex.MAX_DIVERSITY_CANDIDATES))
+
+        kept_uuids = set(await self.rank_images_by_diversity(None, candidate_uuids, max_negatives))
+
+        if len(kept_uuids) < max_negatives:
+            # Negatives with no indexed phash can't be ranked by diversity at all; top
+            # them up deterministically so the ratio/floor guarantee still holds.
+            remaining = sorted(uuid for uuid in candidate_uuids if uuid not in kept_uuids)
+            kept_uuids.update(remaining[: max_negatives - len(kept_uuids)])
+
+        kept_negatives = [img for img in negatives if img["image_uuid"] in kept_uuids]
+        result["images"] = positives + kept_negatives
+        return result
 
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         await self._validate_model_config_nodes(data.nodes)
@@ -2810,7 +2860,14 @@ class Manager:
         return await self._db_client.get_training_config_readiness(uuid)
 
     async def get_training_config_detection_dataset(self, uuid: str) -> "Optional[dict]":
-        return await self._db_client.get_training_config_detection_dataset(uuid)
+        result = await self._db_client.get_training_config_detection_dataset(uuid)
+        if result is None:
+            return None
+        tc = await self._db_client.get_training_config(uuid)
+        hyperparams = dict(tc.hyperparams_json or {}) if tc is not None else {}
+        return await self._apply_negative_ratio_cap(
+            result, hyperparams.get("negative_ratio"), hyperparams.get("negative_ratio_floor")
+        )
 
     async def get_dataset_image_uuids(self, dataset_uuids: list[str]) -> list[str]:
         return await self._db_client.get_dataset_image_uuids(dataset_uuids)

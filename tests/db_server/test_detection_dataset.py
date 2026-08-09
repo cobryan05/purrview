@@ -8,9 +8,11 @@ Covers:
 - images not in dataset are excluded
 """
 
+import io
 import uuid
 
 import pytest
+from PIL import Image
 
 from apps.helpers.db.types import (
     UNVERIFIED_TAG_UUID,
@@ -432,3 +434,173 @@ class TestGetBundleTargetDetectionDataset:
         assert result["status"] == "success"
         assert result["classNames"] == ["dog-snap"]
         assert len(result["images"]) == 1
+
+
+def _colored_png(rgb: tuple[int, int, int], size: int = 64) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (size, size), rgb).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestNegativeRatioCap:
+    """GET /api/training-configs/{uuid}/detection-dataset, with negative_ratio /
+    negative_ratio_floor set in the TrainingConfig's hyperparams_json —
+
+    Manager._apply_negative_ratio_cap trims an over-represented negative pool
+    (e.g. bulk-verifying a whole dataset as label-absent right after tagging a
+    handful of positives) down to a ratio of the positive count, preferring
+    perceptually diverse negatives over near-duplicates.
+    """
+
+    async def _register_colored_image(self, http_client, files_root, name: str, rgb: tuple[int, int, int]) -> str:
+        (files_root / name).write_bytes(_colored_png(rgb))
+        r = await http_client.post("/api/images/metadata/update", json={"imagePath": name, "boxes": []})
+        assert r.status_code == 200, r.text
+        return name
+
+    async def _setup_target(self, http_client) -> tuple[str, str]:
+        """Create a label + single-node object_detection model config. Returns
+        (label_uuid, node_uuid)."""
+        label_uuid = await _create_label(http_client, f"dog-{uuid.uuid4().hex[:8]}")
+        mc = await _create_model_config(
+            http_client,
+            f"mc-negcap-{uuid.uuid4().hex[:8]}",
+            nodes=[{"labelUuid": label_uuid, "modelType": "object_detection", "architecture": "yolo_v9_c"}],
+        )
+        return label_uuid, mc["nodes"][0]["uuid"]
+
+    async def _create_training_config_with_hyperparams(
+        self,
+        http_client,
+        node_uuid: str,
+        *,
+        negative_ratio: float | None = None,
+        negative_ratio_floor: int | None = None,
+    ) -> str:
+        hyperparams: dict = {}
+        if negative_ratio is not None:
+            hyperparams["negative_ratio"] = negative_ratio
+        if negative_ratio_floor is not None:
+            hyperparams["negative_ratio_floor"] = negative_ratio_floor
+        r = await http_client.post(
+            "/api/training-configs",
+            json={
+                "name": f"tc-negcap-{uuid.uuid4().hex[:8]}",
+                "datasetUuids": [_WHOLE_DB_UUID],
+                "modelConfigNodeUuid": node_uuid,
+                "hyperparamsJson": hyperparams,
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        return body["config"]["uuid"]
+
+    async def test_noop_when_negatives_already_under_cap(self, http_client, files_root):
+        """Ratio/floor cap never shrinks a dataset that's already within budget."""
+        label_uuid, node_uuid = await self._setup_target(http_client)
+
+        img_pos = await self._register_colored_image(http_client, files_root, "negcap_pos1.png", (200, 0, 0))
+        await _add_bbox(http_client, img_pos, label_uuid, [VERIFIED_TAG_UUID])
+        await _set_image_label(http_client, img_pos, label_uuid, "present")
+
+        neg_names = ["negcap_noop_neg1.png", "negcap_noop_neg2.png", "negcap_noop_neg3.png"]
+        for i, name in enumerate(neg_names):
+            img = await self._register_colored_image(http_client, files_root, name, (10 * i, 10 * i, 10 * i))
+            await _set_image_label(http_client, img, label_uuid, "absent")
+
+        # ratio=4 -> max_negatives=4, but only 3 negatives exist -> no trimming.
+        tc_uuid = await self._create_training_config_with_hyperparams(
+            http_client, node_uuid, negative_ratio=4.0, negative_ratio_floor=1
+        )
+        result = await _get_detection_dataset(http_client, tc_uuid)
+        assert len(result["images"]) == 1 + len(neg_names)
+
+    async def test_ratio_and_floor_trim_negative_pool(self, http_client, files_root):
+        """With few positives, negatives are capped at max(positives * ratio, floor)."""
+        label_uuid, node_uuid = await self._setup_target(http_client)
+
+        img_pos = await self._register_colored_image(http_client, files_root, "negcap_trim_pos.png", (200, 0, 0))
+        await _add_bbox(http_client, img_pos, label_uuid, [VERIFIED_TAG_UUID])
+        await _set_image_label(http_client, img_pos, label_uuid, "present")
+
+        # 10 visually-distinct negatives (varied color) so diversity ranking has
+        # real signal instead of ties.
+        for i in range(10):
+            name = f"negcap_trim_neg{i}.png"
+            rgb = (i * 25 % 256, (i * 60 + 30) % 256, (i * 97 + 60) % 256)
+            img = await self._register_colored_image(http_client, files_root, name, rgb)
+            await _set_image_label(http_client, img, label_uuid, "absent")
+
+        r = await http_client.post("/api/images/phash/rebuild-index")
+        assert r.json()["status"] == "success"
+
+        # 1 positive * ratio=3 -> max_negatives=3 (well above the floor).
+        tc_uuid = await self._create_training_config_with_hyperparams(
+            http_client, node_uuid, negative_ratio=3.0, negative_ratio_floor=1
+        )
+        result = await _get_detection_dataset(http_client, tc_uuid)
+        images = result["images"]
+        positives = [img for img in images if img["annotations"]]
+        negatives = [img for img in images if not img["annotations"]]
+        assert len(positives) == 1
+        assert len(negatives) == 3
+
+    async def test_floor_keeps_minimum_negatives_for_small_positive_count(self, http_client, files_root):
+        """Even at ratio=0, the floor still guarantees a usable negative pool for a
+        brand-new class with very few positives."""
+        label_uuid, node_uuid = await self._setup_target(http_client)
+
+        img_pos = await self._register_colored_image(http_client, files_root, "negcap_floor_pos.png", (200, 0, 0))
+        await _add_bbox(http_client, img_pos, label_uuid, [VERIFIED_TAG_UUID])
+        await _set_image_label(http_client, img_pos, label_uuid, "present")
+
+        for i in range(6):
+            name = f"negcap_floor_neg{i}.png"
+            rgb = (i * 40 % 256, (i * 70 + 15) % 256, (i * 111 + 50) % 256)
+            img = await self._register_colored_image(http_client, files_root, name, rgb)
+            await _set_image_label(http_client, img, label_uuid, "absent")
+
+        r = await http_client.post("/api/images/phash/rebuild-index")
+        assert r.json()["status"] == "success"
+
+        # ratio=0 would mathematically cap at 0 negatives without a floor.
+        tc_uuid = await self._create_training_config_with_hyperparams(
+            http_client, node_uuid, negative_ratio=0.0, negative_ratio_floor=4
+        )
+        result = await _get_detection_dataset(http_client, tc_uuid)
+        negatives = [img for img in result["images"] if not img["annotations"]]
+        assert len(negatives) == 4
+
+    async def test_diverse_outlier_survives_a_tight_cap(self, http_client, files_root):
+        """Among many near-identical negatives plus one visually distinct outlier,
+        a tight cap should keep the outlier rather than dropping it for an
+        arbitrary/random subset of near-duplicates."""
+        label_uuid, node_uuid = await self._setup_target(http_client)
+
+        img_pos = await self._register_colored_image(http_client, files_root, "negcap_div_pos.png", (200, 0, 0))
+        await _add_bbox(http_client, img_pos, label_uuid, [VERIFIED_TAG_UUID])
+        await _set_image_label(http_client, img_pos, label_uuid, "present")
+
+        # 8 near-duplicate near-white negatives (tiny jitter).
+        for i in range(8):
+            name = f"negcap_div_dup{i}.png"
+            rgb = (250 + (i % 2), 250, 250)
+            img = await self._register_colored_image(http_client, files_root, name, rgb)
+            await _set_image_label(http_client, img, label_uuid, "absent")
+
+        # One stark outlier (black).
+        outlier_img = await self._register_colored_image(http_client, files_root, "negcap_div_outlier.png", (0, 0, 0))
+        await _set_image_label(http_client, outlier_img, label_uuid, "absent")
+
+        r = await http_client.post("/api/images/phash/rebuild-index")
+        assert r.json()["status"] == "success"
+
+        # 1 positive * ratio=1, floor=1 -> keep exactly 1 negative.
+        tc_uuid = await self._create_training_config_with_hyperparams(
+            http_client, node_uuid, negative_ratio=1.0, negative_ratio_floor=1
+        )
+        result = await _get_detection_dataset(http_client, tc_uuid)
+        negatives = [img for img in result["images"] if not img["annotations"]]
+        assert len(negatives) == 1
+        assert negatives[0]["filename"].endswith("negcap_div_outlier.png")

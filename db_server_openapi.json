@@ -11521,6 +11521,28 @@
             },
             "type": "object",
             "title": "Classremap"
+          },
+          "negativeRatio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negativeratio"
+          },
+          "negativeRatioFloor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negativeratiofloor"
           }
         },
         "type": "object",
