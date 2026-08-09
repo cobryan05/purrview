@@ -18,6 +18,7 @@ import itertools
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -3650,6 +3651,34 @@ class TestTaskTagsAreAppliedAtImageLevel:
         await task._save_image(images_api, provided, [], tmp_path)
 
         assert {c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list} == {"tag-a", "tag-chain"}
+
+    async def test_generated_task_tag_is_renamed_when_config_changes(self, tmp_path):
+        """Reported bug: the generated task tag's UUID is derived only from the task
+        config UUID, so it's the same DB row on every run. If the user renames the
+        tag in the config (task_tag_name) and reruns, the pre-existing row must be
+        renamed to match — otherwise every subsequent run keeps applying/showing the
+        stale name via the same UUID, including in the "browse results" filter."""
+        from db_client.models.tag_read import TagRead
+
+        params = {
+            **_NO_MODEL_PARAMS,
+            "generate_task_tag": True,
+            "task_tag_name": "second_collect_run",
+        }
+        existing_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, "cfg-uuid"))
+        tags_api = MagicMock()
+        tags_api.list_tags.return_value = MagicMock(
+            tags=[TagRead(uuid=existing_uuid, name="first_collect_run", kind="task_generated")]
+        )
+
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+            task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
+
+        assert task._task_tag_uuid == existing_uuid
+        tags_api.update_tag.assert_called_once()
+        update_payload = tags_api.update_tag.call_args.args[0]
+        assert update_payload.tag_uuid == existing_uuid
+        assert update_payload.data.name == "second_collect_run"
 
     async def test_a_tag_in_both_sets_is_written_once(self, tmp_path):
         """A filter chain configured to apply the same tag the task already applies

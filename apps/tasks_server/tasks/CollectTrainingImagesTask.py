@@ -24,7 +24,9 @@ from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
 from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import TagKind as ApiTagKind  # noqa: F401 (used as ApiTagKind.TASK_GENERATED)
+from db_client.models.tag_update import TagUpdate
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
+from db_client.models.update_tag_payload import UpdateTagPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
@@ -412,6 +414,16 @@ class CollectTrainingImagesTask(Task):
                 except Exception:
                     logger.exception(f"Failed to create task tag {tag_name}")
             else:
+                existing_tag = existing_by_uuid[task_tag_uuid]
+                if existing_tag.name != tag_name:
+                    try:
+                        await asyncio.to_thread(
+                            tags_api.update_tag,
+                            UpdateTagPayload(tag_uuid=task_tag_uuid, data=TagUpdate(name=tag_name)),
+                        )
+                        self.log(f"Renamed task tag: {existing_tag.name} -> {tag_name} ({task_tag_uuid})")
+                    except Exception:
+                        logger.exception(f"Failed to rename task tag {task_tag_uuid} to {tag_name}")
                 self._extra_tag_uuids.append(task_tag_uuid)
                 self._task_tag_uuid = task_tag_uuid
 
