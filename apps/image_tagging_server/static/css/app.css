@@ -2577,6 +2577,28 @@ button.filter-active {
   cursor: default;
 }
 
+.canvas-modal-header .canvas-modal-delete-btn {
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9em;
+  padding: 0.2em 0.5em;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.canvas-modal-header .canvas-modal-delete-btn:hover:not(:disabled) {
+  color: var(--color-danger, #e55);
+  border-color: var(--color-danger, #e55);
+}
+
+.canvas-modal-header .canvas-modal-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .canvas-modal-header .canvas-modal-close {
   background: none;
   border: none;

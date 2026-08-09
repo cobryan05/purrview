@@ -1237,6 +1237,67 @@ class TestCanvasModalRoundTrip:
         expect(modal).to_have_count(0, timeout=8000)
         expect(card).to_have_class("review-card stale-deleted")
 
+    def test_delete_image_button_removes_the_whole_image_and_closes(self, page: Page, base_url: str):
+        """The header's 🗑 button deletes the whole image (not just the
+        highlighted bbox), skips the unsaved-changes prompt, and marks the
+        originating card as deleted via the same IMAGE_DELETED broadcast the
+        grid's own bulk-delete path uses."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+        page.route(
+            "**/api/images/img-1",
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "imageUuid": "img-1", "filename": "folder/image1.jpg"}),
+                )
+                if route.request.method == "DELETE"
+                else route.fallback()
+            ),
+        )
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        card = page.locator("#review-root [data-bbox-uuid='bbox-1']")
+        card.locator("img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+
+        modal.get_by_test_id("canvas-edit-modal-delete-image").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
+
+        expect(modal).to_have_count(0, timeout=8000)
+        expect(card).to_have_class("review-card stale-deleted")
+        expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
+
+    def test_delete_image_button_cancel_leaves_modal_open(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        card = page.locator("#review-root [data-bbox-uuid='bbox-1']")
+        card.locator("img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+
+        modal.get_by_test_id("canvas-edit-modal-delete-image").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Cancel").click()
+
+        expect(modal).to_be_visible()
+        expect(card).not_to_have_class("review-card stale-deleted")
+
 
 # ---------------------------------------------------------------------------
 # 11. Group highlight on hover

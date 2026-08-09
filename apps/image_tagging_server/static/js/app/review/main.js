@@ -2338,11 +2338,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     updateStatusMsg();
   });
 
-  // Mark image cards stale-deleted when an image is deleted from any panel.
+  // Mark every card for a deleted image stale — both its image-kind card (if
+  // shown) and any bbox-kind cards for it in the "bboxes"/"all" views, since
+  // deleting the whole image takes its bboxes with it too.
   const _unsubImageDeleted = events.subscribe(EventTypes.IMAGE_DELETED, ({ imageUuid } = {}) => {
     if (!imageUuid) return;
-    const card = grid.querySelector(`[data-image-uuid="${imageUuid}"][data-kind="image"]`);
-    if (card) markCardStale(card, 'deleted');
+    grid.querySelectorAll(`[data-image-uuid="${imageUuid}"]`).forEach(card => markCardStale(card, 'deleted'));
   });
 
   // Subscribe to IMAGE_BBOXES_CHANGED so incremental bbox edits (context-menu
@@ -3004,6 +3005,12 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   nextBtn.title = 'Next image';
   nextBtn.style.display = 'none';
 
+  const deleteImageBtn = document.createElement('button');
+  deleteImageBtn.className = 'canvas-modal-delete-btn';
+  deleteImageBtn.dataset.testid = 'canvas-edit-modal-delete-image';
+  deleteImageBtn.textContent = '🗑';
+  deleteImageBtn.title = 'Delete this image';
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'canvas-modal-close';
   closeBtn.dataset.testid = 'canvas-edit-modal-close';
@@ -3012,7 +3019,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
   const headerActions = document.createElement('div');
   headerActions.className = 'canvas-modal-header-actions';
-  headerActions.append(prevBtn, nextBtn, closeBtn);
+  headerActions.append(prevBtn, nextBtn, deleteImageBtn, closeBtn);
   header.append(titleEl, headerActions);
 
   // Toolbar
@@ -3090,6 +3097,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // disabled so a click landing in that window can't hit a dead button; the
   // final wiring step re-enables them.
   closeBtn.disabled = true;
+  deleteImageBtn.disabled = true;
   cancelBtn.disabled = true;
   saveOnlyBtn.disabled = true;
   saveBtn.disabled = true;
@@ -3402,6 +3410,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     saveOnlyBtn.disabled = disabled;
     cancelBtn.disabled = disabled;
     closeBtn.disabled = disabled;
+    deleteImageBtn.disabled = disabled;
     if (disabled) {
       prevBtn.disabled = true;
       nextBtn.disabled = true;
@@ -3436,6 +3445,35 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   cancelBtn.addEventListener('click', tryClose);
   overlay.addEventListener('click', e => {
     if (e.target === overlay && !closeBtn.disabled) tryClose();
+  });
+
+  // ── Delete-image button: permanently removes the whole image, not just the
+  // annotations being edited. Skips the unsaved-changes prompt entirely — once
+  // the image is gone, any pending bbox edits are moot.
+  deleteImageBtn.addEventListener('click', async () => {
+    const targetImg = _currentImg;
+    const filename = targetImg.filename?.split('/').pop() ?? targetImg.filename;
+    const confirmed = await showConfirmModal({
+      title: 'Delete image',
+      message: `Permanently delete "${filename}"? This removes the file and all its annotations from disk. This cannot be undone.`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    _setAllButtonsDisabled(true);
+    try {
+      await deleteImage(targetImg.uuid);
+    } catch (err) {
+      Logger.error('Canvas modal: delete image failed', err);
+      toast(`Failed to delete image: ${err.message}`, 4000, 'error');
+      _setAllButtonsDisabled(false);
+      return;
+    }
+
+    events.publish(EventTypes.IMAGE_DELETED, { imageUuid: targetImg.uuid, imagePath: targetImg.filename });
+    closeModal();
+    navContext?.onClose?.(targetImg);
   });
 
   // ESC key — behaves like the Cancel button (shows unsaved-changes dialog if dirty)
