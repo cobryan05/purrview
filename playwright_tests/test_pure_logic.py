@@ -513,6 +513,45 @@ class TestFileNavigation:
 
 
 # ---------------------------------------------------------------------------
+# app/image-tagging/files.js — next_image / prev_image
+# ---------------------------------------------------------------------------
+
+
+class TestFilesNavigationGuard:
+    # A canvas modal opened with `allowNavigation: false` (e.g. the "run model
+    # on results" single-candidate editor) never calls setFileNavigation, so
+    # runtime.fileNavigation stays null. The global '[' / ']' hotkeys still
+    # dispatch to whatever runtime is on top of the hotkeys stack regardless
+    # of whether it supports navigation, so next_image/prev_image must no-op
+    # instead of crashing when there's no FileNavigation to consult.
+    def test_next_image_noop_when_no_file_navigation(self, shared_page: Page):
+        page = shared_page
+        threw = page.evaluate("""async () => {
+            const { next_image } = await import('/app-static/js/app/image-tagging/files.js');
+            try {
+                await next_image({ fileNavigation: null, state: {} });
+                return false;
+            } catch (e) {
+                return true;
+            }
+        }""")
+        assert threw is False
+
+    def test_prev_image_noop_when_no_file_navigation(self, shared_page: Page):
+        page = shared_page
+        threw = page.evaluate("""async () => {
+            const { prev_image } = await import('/app-static/js/app/image-tagging/files.js');
+            try {
+                await prev_image({ fileNavigation: null, state: {} });
+                return false;
+            } catch (e) {
+                return true;
+            }
+        }""")
+        assert threw is False
+
+
+# ---------------------------------------------------------------------------
 # ui/utils/utils.js — generateUUID
 # ---------------------------------------------------------------------------
 

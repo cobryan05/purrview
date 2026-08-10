@@ -106,6 +106,7 @@ export async function init(runtime) {
  */
 export async function next_image(runtime) {
   const nav = runtime.fileNavigation;
+  if (!nav) return; // canvas has no navigation context (e.g. a single-candidate editor modal)
   if (!nav.hasNext()) {
     await browser?.loadNextPage();
     if (!nav.hasNext()) {
@@ -128,6 +129,7 @@ export async function next_image(runtime) {
  */
 export async function prev_image(runtime) {
   const nav = runtime.fileNavigation;
+  if (!nav) return; // canvas has no navigation context (e.g. a single-candidate editor modal)
   if (!nav.hasPrev()) {
     const now = Date.now();
     if (now - _lastBoundaryToast > 1200) {
