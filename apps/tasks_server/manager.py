@@ -913,7 +913,16 @@ class Manager:
 
     async def _worker_task(self):
         try:
-            await self._init()
+            try:
+                await self._init()
+            except Exception:
+                # _init() can fail on a boot-time race (e.g. db_server isn't reachable
+                # yet while services start concurrently). Its one-shot orphan-recovery
+                # pass is lost for this boot, but the periodic loop below — especially
+                # _check_stale_tasks, the safety net for exactly this kind of orphaned
+                # "running" row — must still run, or a task instance left "running" by
+                # a crash/restart is stuck forever with a frozen heartbeat.
+                logger.exception("Manager._init() failed at startup; recovery pass skipped for this boot")
             while True:
                 await asyncio.sleep(60)
                 await self._check_stale_tasks()

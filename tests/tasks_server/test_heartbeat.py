@@ -21,7 +21,7 @@ Covers:
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import db_client.models as db_models
 import pytest
@@ -271,3 +271,46 @@ async def test_check_stale_tasks_tolerates_naive_datetime(manager, tasks_api_moc
     uuid_arg, payload_arg = tasks_api_mock.set_task_instance_status.call_args.args
     assert uuid_arg == "naive-uuid"
     assert payload_arg.status == TaskStatus.ERROR
+
+
+# ---------------------------------------------------------------------------
+# _worker_task must keep running its periodic maintenance loop even when the
+# one-time _init() recovery pass fails (e.g. db_server isn't reachable yet
+# during a container boot race). _check_stale_tasks is the safety net for
+# orphaned "running" rows that _init() failed to reconcile — if a failed
+# _init() takes the whole loop down with it, that safety net never runs
+# either, and a task instance orphaned by a crash/restart is stuck showing
+# "running" forever with a frozen heartbeat, immune to Stop (which only
+# checks the in-memory _running_tasks dict).
+# ---------------------------------------------------------------------------
+
+
+async def test_worker_task_runs_periodic_loop_even_when_init_fails(manager, tasks_api_mock):
+    tasks_api_mock.list_task_instances.side_effect = ConnectionError("db_server not reachable yet")
+
+    stale_check_ran = False
+
+    async def _fake_check_stale_tasks():
+        nonlocal stale_check_ran
+        stale_check_ran = True
+
+    manager._check_stale_tasks = _fake_check_stale_tasks
+    manager._checkpoint_running_tasks = AsyncMock()
+    manager._prune_finished_task_instances = AsyncMock()
+
+    # Let the `while True` loop run exactly one pass, then stop it the same way
+    # a real cancellation would (_worker_task already catches CancelledError
+    # internally and returns cleanly) — avoids racing a real task's cancellation
+    # against the event loop.
+    sleep_calls = 0
+
+    async def _sleep_once_then_stop(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError()
+
+    with patch("apps.tasks_server.manager.asyncio.sleep", new=_sleep_once_then_stop):
+        await manager._worker_task()
+
+    assert stale_check_ran
