@@ -3652,12 +3652,11 @@ class TestTaskTagsAreAppliedAtImageLevel:
 
         assert {c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list} == {"tag-a", "tag-chain"}
 
-    async def test_generated_task_tag_is_renamed_when_config_changes(self, tmp_path):
-        """Reported bug: the generated task tag's UUID is derived only from the task
-        config UUID, so it's the same DB row on every run. If the user renames the
-        tag in the config (task_tag_name) and reruns, the pre-existing row must be
-        renamed to match — otherwise every subsequent run keeps applying/showing the
-        stale name via the same UUID, including in the "browse results" filter."""
+    async def test_renaming_the_task_tag_creates_a_new_tag_instead_of_renaming(self, tmp_path):
+        """Reported bug: the generated task tag's UUID was derived only from the task
+        config UUID, so a name change reused the same DB row and renamed it — every
+        image already collected under the old name silently became the new name.
+        A new name must mint a NEW tag and leave the old row untouched."""
         from db_client.models.tag_read import TagRead
 
         params = {
@@ -3665,20 +3664,70 @@ class TestTaskTagsAreAppliedAtImageLevel:
             "generate_task_tag": True,
             "task_tag_name": "second_collect_run",
         }
-        existing_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, "cfg-uuid"))
+        old_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, "cfg-uuid"))
         tags_api = MagicMock()
         tags_api.list_tags.return_value = MagicMock(
-            tags=[TagRead(uuid=existing_uuid, name="first_collect_run", kind="task_generated")]
+            tags=[TagRead(uuid=old_uuid, name="first_collect_run", kind="task_generated")]
         )
 
         with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
             task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
 
-        assert task._task_tag_uuid == existing_uuid
-        tags_api.update_tag.assert_called_once()
-        update_payload = tags_api.update_tag.call_args.args[0]
-        assert update_payload.tag_uuid == existing_uuid
-        assert update_payload.data.name == "second_collect_run"
+        tags_api.update_tag.assert_not_called()
+        assert task._task_tag_uuid != old_uuid
+        tags_api.add_tag.assert_called_once()
+        created = tags_api.add_tag.call_args.args[0]
+        assert created.name == "second_collect_run"
+        assert created.uuid == task._task_tag_uuid
+        # The new tag — not the old one — is what this run's images get.
+        assert self._image_tags(task) == [task._task_tag_uuid]
+
+    async def test_unchanged_task_tag_name_reuses_the_legacy_row(self, tmp_path):
+        """Configs that predate the name-keyed UUID must keep their original tag row
+        while the configured name is unchanged, so their collected history stays on
+        one tag instead of splitting across two."""
+        from db_client.models.tag_read import TagRead
+
+        params = {
+            **_NO_MODEL_PARAMS,
+            "generate_task_tag": True,
+            "task_tag_name": "first_collect_run",
+        }
+        legacy_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, "cfg-uuid"))
+        tags_api = MagicMock()
+        tags_api.list_tags.return_value = MagicMock(
+            tags=[TagRead(uuid=legacy_uuid, name="first_collect_run", kind="task_generated")]
+        )
+
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+            task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
+
+        assert task._task_tag_uuid == legacy_uuid
+        tags_api.add_tag.assert_not_called()
+        tags_api.update_tag.assert_not_called()
+
+    async def test_reverting_the_task_tag_name_returns_to_the_original_tag(self, tmp_path):
+        """Name-keyed UUIDs are stable, so switching back to a previously used name
+        re-attaches to that name's existing tag rather than making a third one."""
+        from db_client.models.tag_read import TagRead
+
+        params = {
+            **_NO_MODEL_PARAMS,
+            "generate_task_tag": True,
+            "task_tag_name": "second_collect_run",
+        }
+        second_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, "cfg-uuid:second_collect_run"))
+        tags_api = MagicMock()
+        tags_api.list_tags.return_value = MagicMock(
+            tags=[TagRead(uuid=second_uuid, name="second_collect_run", kind="task_generated")]
+        )
+
+        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+            task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
+
+        assert task._task_tag_uuid == second_uuid
+        tags_api.add_tag.assert_not_called()
+        tags_api.update_tag.assert_not_called()
 
     async def test_a_tag_in_both_sets_is_written_once(self, tmp_path):
         """A filter chain configured to apply the same tag the task already applies

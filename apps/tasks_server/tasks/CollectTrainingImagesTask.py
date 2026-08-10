@@ -24,9 +24,7 @@ from db_client.models.add_tag_payload import AddTagPayload
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
 from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import TagKind as ApiTagKind  # noqa: F401 (used as ApiTagKind.TASK_GENERATED)
-from db_client.models.tag_update import TagUpdate
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
-from db_client.models.update_tag_payload import UpdateTagPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
@@ -391,13 +389,24 @@ class CollectTrainingImagesTask(Task):
         # Resolve extra tags to apply to every saved bbox.
         self._extra_tag_uuids: list[str] = list(self._apply_tag_uuids)
         if self._generate_task_tag:
-            task_tag_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_OID, self._config_uuid))
             tag_name = self._task_tag_name_override or (
                 f"[Task] {self._config_name}" if self._config_name else f"[Task] {self._config_uuid[:8]}"
             )
+            # The tag is identified by (config, name), not by config alone. Keying it on
+            # the config UUID only meant a name change reused the same DB row and renamed
+            # it — retroactively relabelling every image already collected under the old
+            # name. A new name must mint a new tag and leave the old one (and its images)
+            # alone.
+            legacy_tag_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_OID, self._config_uuid))
+            task_tag_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_OID, f"{self._config_uuid}:{tag_name}"))
             tags_api = TagsApi(db_api_client)
             existing_tags = await asyncio.to_thread(tags_api.list_tags)
             existing_by_uuid = {t.uuid: t for t in (existing_tags.tags or [])}
+            # Configs that predate the name-keyed UUID carry a legacy row. As long as its
+            # name still matches, keep using it so their history stays on one tag.
+            legacy_tag = existing_by_uuid.get(legacy_tag_uuid)
+            if legacy_tag is not None and legacy_tag.name == tag_name:
+                task_tag_uuid = legacy_tag_uuid
             if task_tag_uuid not in existing_by_uuid:
                 try:
                     await asyncio.to_thread(
@@ -414,16 +423,9 @@ class CollectTrainingImagesTask(Task):
                 except Exception:
                     logger.exception(f"Failed to create task tag {tag_name}")
             else:
-                existing_tag = existing_by_uuid[task_tag_uuid]
-                if existing_tag.name != tag_name:
-                    try:
-                        await asyncio.to_thread(
-                            tags_api.update_tag,
-                            UpdateTagPayload(tag_uuid=task_tag_uuid, data=TagUpdate(name=tag_name)),
-                        )
-                        self.log(f"Renamed task tag: {existing_tag.name} -> {tag_name} ({task_tag_uuid})")
-                    except Exception:
-                        logger.exception(f"Failed to rename task tag {task_tag_uuid} to {tag_name}")
+                # Reusing an existing row — never rename it. Its name is what the images
+                # already carrying it were collected under.
+                self.log(f"Reusing task tag: {tag_name} ({task_tag_uuid})")
                 self._extra_tag_uuids.append(task_tag_uuid)
                 self._task_tag_uuid = task_tag_uuid
 
