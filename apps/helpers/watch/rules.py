@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..tracking.tracker import Track
 from .events import EventPhase, WatchEventSignal
-from .geometry import Zone, centroid, containment, iou, normalised_distance
+from .geometry import Zone, centroid, containment, iou, normalised_distance, overlap_ratio
 
 
 class RuleState(str, Enum):
@@ -50,7 +50,7 @@ class RuleSpec:
     name: str
     subject_a_kind: str  # "label" | "zone" | "any"
     subject_a_ref: Optional[str]
-    relation: str  # "present" | "iou" | "contains" | "centroid_in" | "distance"
+    relation: str  # "present" | "iou" | "contains" | "overlaps" | "centroid_in" | "distance"
     subject_b_kind: str  # "label" | "zone" | "none"
     subject_b_ref: Optional[str]
     threshold: float = 0.5
@@ -153,6 +153,8 @@ def evaluate_predicate(
                     score = 1.0 - dist if dist <= spec.threshold else 0.0
                 elif spec.relation == "iou":
                     score = iou(track_a.bbox, target.bounds(frame_width, frame_height))
+                elif spec.relation == "overlaps":
+                    score = target.overlap_ratio(track_a.bbox, frame_width, frame_height)
                 else:  # contains
                     score = target.overlap_fraction(track_a.bbox, frame_width, frame_height)
             else:
@@ -167,6 +169,8 @@ def evaluate_predicate(
                     score = 1.0 - dist if dist <= spec.threshold else 0.0
                 elif spec.relation == "iou":
                     score = iou(track_a.bbox, target.bbox)
+                elif spec.relation == "overlaps":
+                    score = overlap_ratio(track_a.bbox, target.bbox)
                 else:  # contains
                     score = containment(track_a.bbox, target.bbox)
 

@@ -18488,11 +18488,12 @@
           "present",
           "iou",
           "contains",
+          "overlaps",
           "centroid_in",
           "distance"
         ],
         "title": "RuleRelation",
-        "description": "How the two subjects of a rule are compared.\n\n`CONTAINS` is the default for \"cat in litter box\" and similar: a cat's box is far\nsmaller than the litter box's, so IoU stays low even at perfect containment."
+        "description": "How the two subjects of a rule are compared.\n\n`CONTAINS` is the default for \"cat in litter box\" and similar: a cat's box is far\nsmaller than the litter box's, so IoU stays low even at perfect containment.\n\n`OVERLAPS` covers the other half of that problem \u2014 two boxes that merely lap over\neach other's edges, like a cat drinking from a water bowl. There the cat is neither\ninside the bowl nor the same size as it, so `CONTAINS` and `IOU` both stay near\nzero while the interaction is plainly happening."
       },
       "RuleSubjectKind": {
         "type": "string",

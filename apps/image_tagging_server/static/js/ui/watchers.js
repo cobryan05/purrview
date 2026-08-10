@@ -13,10 +13,14 @@ let _rendering = false;
 
 // Relations, worded as a sentence fragment so a rule row reads as English. This is
 // the only layout that makes "IoU vs containment" comprehensible to a non-expert.
+// `iou` used to be worded "overlaps", which is the exact confusion it causes: IoU only
+// reads as overlap for same-size boxes, and a cat lapping at a water bowl scores near
+// zero on it. The honest wording sends that case to `overlaps` instead.
 const RELATIONS = [
   { key: 'contains', text: 'is inside' },
+  { key: 'overlaps', text: 'overlaps' },
   { key: 'centroid_in', text: 'has its centre in' },
-  { key: 'iou', text: 'overlaps' },
+  { key: 'iou', text: 'closely matches (same size)' },
   { key: 'distance', text: 'is near' },
   { key: 'present', text: 'is present' },
 ];

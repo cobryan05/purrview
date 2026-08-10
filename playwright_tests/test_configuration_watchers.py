@@ -214,6 +214,24 @@ class TestWatcherEditor:
         page.locator("[data-testid='watch-rule-relation']").select_option("present")
         expect(page.locator("[data-testid='watch-rule-subject-b']")).to_be_hidden()
 
+    def test_overlaps_is_offered_and_keeps_the_second_subject(self, page: Page, base_url: str):
+        """`overlaps` is the "cat at the water bowl" relation — arity 2, unlike present."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-relation']").select_option("overlaps")
+        expect(page.locator("[data-testid='watch-rule-relation']")).to_have_value("overlaps")
+        expect(page.locator("[data-testid='watch-rule-subject-b']")).to_be_visible()
+
+    def test_iou_is_not_worded_as_plain_overlap(self, page: Page, base_url: str):
+        """IoU reads as "overlaps" only for same-size boxes; the old wording sent the
+        water-bowl case to the one relation that cannot detect it."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        iou_option = page.locator("[data-testid='watch-rule-relation'] option[value='iou']")
+        expect(iou_option).to_have_text("closely matches (same size)")
+
     def test_adding_a_rule_appends_a_row(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
         _navigate_to_watchers(page, base_url)

@@ -48,6 +48,26 @@ def containment(a: BBox, b: BBox) -> float:
     return intersection_area(a, b) / a_area if a_area > 0 else 0.0
 
 
+def overlap_ratio(a: BBox, b: BBox) -> float:
+    """How much the boxes overlap, as a fraction of the *smaller* box's area.
+
+    The relation for "is the cat drinking from the water bowl": the cat's box merely
+    laps over the bowl's edge, so neither of the other two measures registers it. IoU
+    is dominated by the union of two differently-sized boxes and stays near zero;
+    `containment` asks how much of the cat is inside the bowl and answers "almost
+    none". Neither is wrong — they answer questions this case isn't asking.
+
+    Dividing by the smaller area asks the question that actually matters — how much of
+    the smaller object is covered — so a cat's muzzle over the rim of a bowl scores on
+    the bowl's scale rather than the cat's. Symmetric (unlike `containment`), and
+    equal to `max(containment(a, b), containment(b, a))`, so it still reaches 1.0 when
+    either box fully contains the other.
+    """
+    inter = intersection_area(a, b)
+    smaller = min(area(a), area(b))
+    return inter / smaller if smaller > 0 else 0.0
+
+
 def centroid(box: BBox) -> Point:
     x1, y1, x2, y2 = box
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
@@ -135,6 +155,14 @@ class Zone:
         provides more cheaply and more predictably.
         """
         return containment(box, self.bounds(frame_width, frame_height))
+
+    def overlap_ratio(self, box: BBox, frame_width: float, frame_height: float) -> float:
+        """Overlap between `box` and this zone, over the smaller of the two areas.
+
+        Same caveat as `overlap_fraction`: exact for box zones, bounding-box
+        approximate for polygons.
+        """
+        return overlap_ratio(box, self.bounds(frame_width, frame_height))
 
 
 def zone_from_row(row) -> Zone:

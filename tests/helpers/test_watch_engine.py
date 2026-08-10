@@ -21,6 +21,7 @@ from apps.helpers.watch.geometry import (
     intersection_area,
     iou,
     normalised_distance,
+    overlap_ratio,
     point_in_polygon,
 )
 from apps.helpers.watch.rules import RuleMachine, RuleSpec, RuleState, evaluate_predicate
@@ -95,6 +96,48 @@ class TestGeometry:
 
     def test_distance_of_zero_sized_frame_does_not_divide_by_zero(self):
         assert normalised_distance((0, 0, 1, 1), (2, 2, 3, 3), 0, 0) == 0.0
+
+
+class TestOverlapRatio:
+    """The 'cat drinking from the water bowl' case, which the other relations miss."""
+
+    # A cat lapping at a bowl: the cat's box laps over the bowl's left edge. It is not
+    # inside the bowl, and it is several times the bowl's size.
+    CAT_AT_BOWL = (100.0, 100.0, 300.0, 300.0)
+    BOWL = (280.0, 200.0, 360.0, 280.0)
+
+    def test_the_other_relations_miss_a_cat_drinking_from_a_bowl(self):
+        """Why this relation had to exist: both existing measures read as 'no'."""
+        assert iou(self.CAT_AT_BOWL, self.BOWL) < 0.05
+        assert containment(self.CAT_AT_BOWL, self.BOWL) < 0.05
+
+    def test_overlap_ratio_registers_the_same_interaction(self):
+        # 20x80 of overlap against the bowl's 80x80 — a quarter of the bowl covered.
+        assert overlap_ratio(self.CAT_AT_BOWL, self.BOWL) == pytest.approx(0.25)
+
+    def test_it_is_symmetric(self):
+        """Unlike containment, which side you name first must not change the answer."""
+        assert overlap_ratio(self.CAT_AT_BOWL, self.BOWL) == pytest.approx(overlap_ratio(self.BOWL, self.CAT_AT_BOWL))
+
+    def test_it_equals_the_better_of_the_two_containments(self):
+        a, b = self.CAT_AT_BOWL, self.BOWL
+        assert overlap_ratio(a, b) == pytest.approx(max(containment(a, b), containment(b, a)))
+
+    def test_full_containment_still_scores_one(self):
+        """It must not *lose* the containment case it generalises."""
+        cat = (450.0, 450.0, 500.0, 500.0)
+        litterbox = (400.0, 400.0, 800.0, 800.0)
+        assert overlap_ratio(cat, litterbox) == 1.0
+
+    def test_disjoint_boxes_score_zero(self):
+        assert overlap_ratio((0, 0, 10, 10), (50, 50, 60, 60)) == 0.0
+
+    def test_touching_edges_do_not_count_as_overlap(self):
+        """Boxes that merely abut share no area, so nothing should fire."""
+        assert overlap_ratio((0, 0, 10, 10), (10, 0, 20, 10)) == 0.0
+
+    def test_zero_area_box_does_not_divide_by_zero(self):
+        assert overlap_ratio((5, 5, 5, 5), (0, 0, 10, 10)) == 0.0
 
 
 class TestPointInPolygon:
@@ -179,6 +222,42 @@ class TestPredicates:
         zones = {ZONE_UUID: LITTER_ZONE}
         assert evaluate_predicate(spec, [inside], zones, FRAME_W, FRAME_H).holds is True
         assert evaluate_predicate(spec, [outside], zones, FRAME_W, FRAME_H).holds is False
+
+    def test_overlaps_fires_on_a_cat_lapping_over_a_zone_edge(self):
+        """The zone-target branch of the water-bowl case.
+
+        The zone spans 400..800; the cat spans 100..450, so only a sliver is inside.
+        `contains` reads that as a tiny fraction of a big cat and stays silent.
+        """
+        cat = _track(bbox=(100, 400, 450, 800))
+        zones = {ZONE_UUID: LITTER_ZONE}
+        assert evaluate_predicate(_rule(relation="contains", threshold=0.6), [cat], zones, FRAME_W, FRAME_H).holds is (
+            False
+        )
+        assert evaluate_predicate(_rule(relation="overlaps", threshold=0.1), [cat], zones, FRAME_W, FRAME_H).holds is (
+            True
+        )
+
+    def test_overlaps_fires_between_two_tracked_labels(self):
+        """The track-vs-track branch: a cat drinking from a detected water bowl."""
+        cat = _track(track_id=1, bbox=(100, 100, 300, 300), label=CAT)
+        bowl = _track(track_id=2, bbox=(280, 200, 360, 280), label=BOX)
+        spec = _rule(relation="overlaps", subject_b_kind="label", subject_b_ref=BOX, threshold=0.2)
+        result = evaluate_predicate(spec, [cat, bowl], {}, FRAME_W, FRAME_H)
+        assert result.holds is True
+        assert result.track_ids == [1]
+
+    def test_overlaps_respects_its_threshold(self):
+        """A cat merely brushing the bowl's corner should not read as drinking."""
+        cat = _track(track_id=1, bbox=(100, 100, 290, 290), label=CAT)
+        bowl = _track(track_id=2, bbox=(280, 280, 360, 360), label=BOX)
+        spec = _rule(relation="overlaps", subject_b_kind="label", subject_b_ref=BOX, threshold=0.2)
+        assert evaluate_predicate(spec, [cat, bowl], {}, FRAME_W, FRAME_H).holds is False
+
+    def test_overlaps_does_not_match_a_track_against_itself(self):
+        cat = _track(track_id=1, bbox=(100, 100, 300, 300), label=CAT)
+        spec = _rule(relation="overlaps", subject_b_kind="label", subject_b_ref=CAT, threshold=0.1)
+        assert evaluate_predicate(spec, [cat], {}, FRAME_W, FRAME_H).holds is False
 
     def test_centroid_in_fires_even_when_containment_would_not(self):
         """A cat much larger than the zone still counts as 'in' it by centroid."""

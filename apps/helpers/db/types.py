@@ -1188,11 +1188,17 @@ class RuleRelation(str, Enum):
 
     `CONTAINS` is the default for "cat in litter box" and similar: a cat's box is far
     smaller than the litter box's, so IoU stays low even at perfect containment.
+
+    `OVERLAPS` covers the other half of that problem — two boxes that merely lap over
+    each other's edges, like a cat drinking from a water bowl. There the cat is neither
+    inside the bowl nor the same size as it, so `CONTAINS` and `IOU` both stay near
+    zero while the interaction is plainly happening.
     """
 
     PRESENT = "present"  # arity 1: the subject is tracked at all
     IOU = "iou"  # intersection over union — right for same-size objects
     CONTAINS = "contains"  # intersection / area(a) — "how much of A is inside B"
+    OVERLAPS = "overlaps"  # intersection / min(area) — partial edge overlap, symmetric
     CENTROID_IN = "centroid_in"  # A's centre is inside B — cheapest and very robust
     DISTANCE = "distance"  # normalised centre distance — "cat near door"
 
