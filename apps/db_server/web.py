@@ -603,6 +603,11 @@ class TrainingConfigResponse(StatusResponse):
 
 class TrainingConfigReadinessResponse(StatusResponse):
     ready_count: int = 0
+    # Split of ready_count by whether the image actually contains an in-scope label:
+    # positive = at least one label verified PRESENT, negative = fully verified but all
+    # ABSENT (background). The two always sum to ready_count.
+    ready_positive_count: int = 0
+    ready_negative_count: int = 0
     needs_review_count: int = 0
     not_started_count: int = 0
     dataset_uuids: List[str] = Field(default_factory=list)
@@ -3269,6 +3274,50 @@ class WebApp:
                 return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
             except Exception as e:
                 logger.exception("Failed to fetch ready images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/ready-positive-images",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_ready_positive_images",
+        )
+        async def get_training_config_ready_positive_images(
+            uuid: str, payload: ReadyImagesPayload
+        ) -> ReviewQueueResponse:
+            """Return the READY images that are POSITIVE samples — fully verified with at
+            least one in-scope label verified PRESENT.
+
+            Uses the same response shape as the review queue so the existing review
+            grid can render the results unchanged.
+            """
+            try:
+                images, has_more = await self._manager.get_training_config_ready_positive_images(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch ready-positive images for training config %s", uuid)
+                return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/ready-negative-images",
+            response_model=ReviewQueueResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_ready_negative_images",
+        )
+        async def get_training_config_ready_negative_images(
+            uuid: str, payload: ReadyImagesPayload
+        ) -> ReviewQueueResponse:
+            """Return the READY images that are NEGATIVE (background) samples — fully verified
+            with every in-scope label verified ABSENT.
+
+            Uses the same response shape as the review queue so the existing review
+            grid can render the results unchanged.
+            """
+            try:
+                images, has_more = await self._manager.get_training_config_ready_negative_images(uuid, payload)
+                return ReviewQueueResponse(images=images, has_more=has_more, total_count=len(images))
+            except Exception as e:
+                logger.exception("Failed to fetch ready-negative images for training config %s", uuid)
                 return ReviewQueueResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(

@@ -118,7 +118,19 @@ def _mock_training_config_get(page: Page, config: dict):
     )
 
 
-def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: int = 2, not_started: int = 0):
+def _mock_readiness(
+    page: Page,
+    config_uuid: str,
+    ready: int = 3,
+    needs_review: int = 2,
+    not_started: int = 0,
+    ready_positive: int | None = None,
+    ready_negative: int = 0,
+):
+    # The split defaults to "all positive" so callers that only care about the
+    # totals keep describing the same scenario they did before it existed.
+    if ready_positive is None:
+        ready_positive = ready - ready_negative
     page.route(
         f"**/api/training-configs/{config_uuid}/readiness",
         lambda route: route.fulfill(
@@ -128,6 +140,8 @@ def _mock_readiness(page: Page, config_uuid: str, ready: int = 3, needs_review: 
                 {
                     "status": "success",
                     "readyCount": ready,
+                    "readyPositiveCount": ready_positive,
+                    "readyNegativeCount": ready_negative,
                     "needsReviewCount": needs_review,
                     "notStartedCount": not_started,
                     "datasetUuids": ["ds-alpha"],
@@ -687,6 +701,82 @@ class TestReadinessPanel:
         expect(modal_title).to_be_visible(timeout=4000)
 
         wait_until(page, lambda: len(captured_requests) >= 1, "partial-review-images endpoint was not called")
+
+
+class TestReadyPositiveNegativeSplit:
+    """A mostly-background dataset reads as thousands of "ready" images when only a
+    handful carry an annotation, so the ready count shows its positive/background split."""
+
+    def _setup(self, page: Page, base_url: str, ready: int, ready_negative: int, not_started: int = 0):
+        _mock_datasets(page, [DATASET_ALPHA])
+        _mock_model_configs(page, [MODEL_CFG])
+        _mock_training_configs_list(page, [EXISTING_TC])
+        _mock_training_config_get(page, EXISTING_TC)
+        _mock_readiness(
+            page,
+            "tc-1",
+            ready=ready,
+            needs_review=0,
+            not_started=not_started,
+            ready_negative=ready_negative,
+        )
+        _mock_label_stats(page, "tc-1")
+        _navigate_to_training_configs(page, base_url)
+        _list_item(page, "tc-1").click()
+
+    def test_split_is_shown_alongside_the_ready_count(self, page: Page, base_url: str):
+        self._setup(page, base_url, ready=3564, ready_negative=3524)
+
+        expect(_box(page).get_by_test_id("training-readiness-ready-count")).to_contain_text("3564 ready")
+        expect(_box(page).get_by_test_id("training-readiness-ready-positive-count")).to_contain_text("40 positive")
+        expect(_box(page).get_by_test_id("training-readiness-ready-negative-count")).to_contain_text("3524 background")
+
+    def test_split_is_hidden_when_nothing_is_ready(self, page: Page, base_url: str):
+        """With no ready images there is no split to make — the parenthetical would
+        just be "(0 positive · 0 background)" noise. The dataset still has images —
+        an entirely empty one renders a different message and wouldn't test this."""
+        self._setup(page, base_url, ready=0, ready_negative=0, not_started=7)
+
+        expect(_box(page).get_by_test_id("training-readiness-ready-count")).to_be_visible(timeout=4000)
+        expect(_box(page).get_by_test_id("training-readiness-ready-split")).to_have_count(0)
+
+    def test_positive_count_opens_the_positive_bucket(self, page: Page, base_url: str):
+        self._setup(page, base_url, ready=100, ready_negative=90)
+
+        positive = _box(page).get_by_test_id("training-readiness-ready-positive-count")
+        expect(positive).to_be_visible(timeout=4000)
+
+        with page.expect_request(
+            lambda r: "ready-positive-images" in r.url and r.method == "POST",
+            timeout=8000,
+        ):
+            positive.click()
+
+        expect(page.locator("strong", has_text="Positive Samples")).to_be_visible(timeout=4000)
+
+    def test_background_count_opens_the_background_bucket(self, page: Page, base_url: str):
+        self._setup(page, base_url, ready=100, ready_negative=90)
+
+        negative = _box(page).get_by_test_id("training-readiness-ready-negative-count")
+        expect(negative).to_be_visible(timeout=4000)
+
+        with page.expect_request(
+            lambda r: "ready-negative-images" in r.url and r.method == "POST",
+            timeout=8000,
+        ):
+            negative.click()
+
+        expect(page.locator("strong", has_text="Background Samples")).to_be_visible(timeout=4000)
+
+    def test_zero_side_of_the_split_is_not_clickable(self, page: Page, base_url: str):
+        """A fully-positive run still shows the split (it's reassuring), but the
+        background half has nothing to browse."""
+        self._setup(page, base_url, ready=12, ready_negative=0)
+
+        negative = _box(page).get_by_test_id("training-readiness-ready-negative-count")
+        expect(negative).to_contain_text("0 background")
+        style = negative.get_attribute("style") or ""
+        assert "cursor: pointer" not in style, "count should not be clickable when count is 0"
 
 
 # ---------------------------------------------------------------------------

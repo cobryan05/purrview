@@ -3999,6 +3999,13 @@ class DbClient:
         the training-set labels); 'not_started' otherwise — including images whose only
         verifications are ABSENT, since they haven't surfaced any in-scope label yet.
 
+        ready_count is further split into positive/negative samples: an image is a
+        POSITIVE sample when at least one in-scope label is verified PRESENT, and a
+        NEGATIVE (background) sample when it is fully verified but every in-scope label
+        is ABSENT. The split matters because a dataset can be overwhelmingly background
+        — 'ready' alone reads as far more training signal than actually exists.
+        ready_positive_count + ready_negative_count == ready_count.
+
         When rollup is active (any node has roll_up_unchecked=True) an image is
         considered ready as soon as ANY ONE of the in-scope labels is verified,
         because child annotations all roll up to their parent label. Since the
@@ -4018,6 +4025,8 @@ class DbClient:
         if not label_uuids:
             return {
                 "ready_count": 0,
+                "ready_positive_count": 0,
+                "ready_negative_count": 0,
                 "needs_review_count": 0,
                 "not_started_count": 0,
                 "dataset_uuids": dataset_uuids,
@@ -4031,6 +4040,8 @@ class DbClient:
         if not all_images:
             return {
                 "ready_count": 0,
+                "ready_positive_count": 0,
+                "ready_negative_count": 0,
                 "needs_review_count": 0,
                 "not_started_count": 0,
                 "dataset_uuids": dataset_uuids,
@@ -4046,6 +4057,8 @@ class DbClient:
         verified_by_image, present_by_image = await self._get_image_label_verification_counts(image_uuids, label_uuids)
 
         ready_count = 0
+        ready_positive_count = 0
+        ready_negative_count = 0
         needs_review_count = 0
         not_started_count = 0
         for img_uuid in image_uuids:
@@ -4053,6 +4066,10 @@ class DbClient:
             present_count = present_by_image.get(img_uuid, 0)
             if verified_count >= readiness_threshold:
                 ready_count += 1
+                if present_count > 0:
+                    ready_positive_count += 1
+                else:
+                    ready_negative_count += 1
             elif verified_count > 0 and present_count > 0:
                 needs_review_count += 1
             else:
@@ -4060,6 +4077,8 @@ class DbClient:
 
         return {
             "ready_count": ready_count,
+            "ready_positive_count": ready_positive_count,
+            "ready_negative_count": ready_negative_count,
             "needs_review_count": needs_review_count,
             "not_started_count": not_started_count,
             "dataset_uuids": dataset_uuids,
@@ -4729,7 +4748,9 @@ class DbClient:
 
         ``bucket`` selects which readiness bucket to return, matching the counts computed by
         ``get_training_config_readiness``:
-          - "ready"         — verified_count >= readiness_threshold
+          - "ready"          — verified_count >= readiness_threshold
+          - "ready_positive" — ready AND at least one in-scope label verified PRESENT
+          - "ready_negative" — ready AND every in-scope label verified ABSENT (background)
           - "needs_review"  — 0 < verified_count < readiness_threshold (partial coverage)
                               AND at least one target label verified PRESENT
           - "not_started"   — everything else (untouched, or only ABSENT verifications)
@@ -4761,6 +4782,10 @@ class DbClient:
         def _matches(verified_count: int, present_count: int) -> bool:
             if bucket == "ready":
                 return verified_count >= readiness_threshold
+            elif bucket == "ready_positive":
+                return verified_count >= readiness_threshold and present_count > 0
+            elif bucket == "ready_negative":
+                return verified_count >= readiness_threshold and present_count == 0
             elif bucket == "needs_review":
                 return 0 < verified_count < readiness_threshold and present_count > 0
             elif bucket == "not_started":
@@ -4818,6 +4843,55 @@ class DbClient:
         return await self._get_training_config_images_by_readiness_bucket(
             uuid,
             "ready",
+            limit=limit,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    async def get_training_config_ready_positive_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return (images, has_more) for READY images that are POSITIVE samples — fully
+        verified and carrying at least one in-scope label verified PRESENT.
+
+        This is the subset of ``get_training_config_ready_images`` that actually contributes
+        object annotations; the complement is ``get_training_config_ready_negative_images``.
+        """
+        return await self._get_training_config_images_by_readiness_bucket(
+            uuid,
+            "ready_positive",
+            limit=limit,
+            after_uuid=after_uuid,
+            after_sort_value=after_sort_value,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    async def get_training_config_ready_negative_images(
+        self,
+        uuid: str,
+        *,
+        limit: int = 50,
+        after_uuid: Optional[str] = None,
+        after_sort_value: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list["ImageRecord"], bool]:
+        """Return (images, has_more) for READY images that are NEGATIVE (background) samples —
+        fully verified with every in-scope label verified ABSENT.
+        """
+        return await self._get_training_config_images_by_readiness_bucket(
+            uuid,
+            "ready_negative",
             limit=limit,
             after_uuid=after_uuid,
             after_sort_value=after_sort_value,

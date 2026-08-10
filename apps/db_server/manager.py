@@ -3030,6 +3030,42 @@ class Manager:
             results.append(record)
         return results, has_more
 
+    async def get_training_config_ready_positive_images(
+        self, uuid: str, payload: "ReadyImagesPayload"
+    ) -> "tuple[list[ImageRecordRead], bool]":
+        images, has_more = await self._db_client.get_training_config_ready_positive_images(
+            uuid,
+            limit=payload.limit,
+            after_uuid=payload.after_uuid,
+            after_sort_value=payload.after_sort_value,
+            sort_by=payload.sort_by,
+            sort_order=payload.sort_order,
+        )
+        results = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            results.append(record)
+        return results, has_more
+
+    async def get_training_config_ready_negative_images(
+        self, uuid: str, payload: "ReadyImagesPayload"
+    ) -> "tuple[list[ImageRecordRead], bool]":
+        images, has_more = await self._db_client.get_training_config_ready_negative_images(
+            uuid,
+            limit=payload.limit,
+            after_uuid=payload.after_uuid,
+            after_sort_value=payload.after_sort_value,
+            sort_by=payload.sort_by,
+            sort_order=payload.sort_order,
+        )
+        results = []
+        for img in images:
+            record = ImageRecordRead.model_validate(img)
+            record.filename = self._image_rel_path(img.filename)
+            results.append(record)
+        return results, has_more
+
     async def get_training_config_partial_review_images(
         self, uuid: str, payload: "ReadyImagesPayload"
     ) -> "tuple[list[ImageRecordRead], bool]":

@@ -367,3 +367,128 @@ class TestNeedsReviewRequiresVerifiedPresence:
         readiness = await _readiness(http_client, cfg["uuid"])
         assert readiness["needsReviewCount"] == 1
         assert readiness["notStartedCount"] == 0
+
+
+class TestReadyPositiveNegativeSplit:
+    """'Ready' conflates images that carry an annotation with images verified as pure
+    background. A mostly-background dataset therefore reads as far more training signal
+    than it holds, so the ready count is split into positive/background sub-buckets."""
+
+    async def test_counts_split_and_sum_to_ready(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-split")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-split", ds["uuid"])
+
+        # Positive: fully verified with one label actually present.
+        await _register_image(http_client, files_root, "bk_split_positive.png")
+        await _verify_label(http_client, "bk_split_positive.png", parent_label, "present")
+        await _verify_label(http_client, "bk_split_positive.png", child_label, "absent")
+
+        # Background: fully verified, every in-scope label absent.
+        for i in range(3):
+            name = f"bk_split_background_{i}.png"
+            await _register_image(http_client, files_root, name)
+            await _verify_label(http_client, name, parent_label, "absent")
+            await _verify_label(http_client, name, child_label, "absent")
+
+        readiness = await _readiness(http_client, cfg["uuid"])
+        assert readiness["readyCount"] == 4
+        assert readiness["readyPositiveCount"] == 1
+        assert readiness["readyNegativeCount"] == 3
+        assert readiness["readyPositiveCount"] + readiness["readyNegativeCount"] == readiness["readyCount"]
+
+    async def test_buckets_are_disjoint_and_cover_ready(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-split-lists")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-split-lists", ds["uuid"])
+
+        await _register_image(http_client, files_root, "bk_lists_positive.png")
+        await _verify_label(http_client, "bk_lists_positive.png", parent_label, "present")
+        await _verify_label(http_client, "bk_lists_positive.png", child_label, "present")
+
+        await _register_image(http_client, files_root, "bk_lists_background.png")
+        await _verify_label(http_client, "bk_lists_background.png", parent_label, "absent")
+        await _verify_label(http_client, "bk_lists_background.png", child_label, "absent")
+
+        # Partially verified — ready in neither sub-bucket.
+        await _register_image(http_client, files_root, "bk_lists_partial.png")
+        await _verify_label(http_client, "bk_lists_partial.png", parent_label, "present")
+
+        positive = await _post_bucket(http_client, cfg["uuid"], "ready-positive-images")
+        negative = await _post_bucket(http_client, cfg["uuid"], "ready-negative-images")
+        ready = await _post_bucket(http_client, cfg["uuid"], "ready-images")
+
+        positive_uuids = {img["uuid"] for img in positive["images"]}
+        negative_uuids = {img["uuid"] for img in negative["images"]}
+        ready_uuids = {img["uuid"] for img in ready["images"]}
+
+        assert len(positive["images"]) == 1
+        assert "bk_lists_positive" in positive["images"][0]["filename"]
+        assert len(negative["images"]) == 1
+        assert "bk_lists_background" in negative["images"][0]["filename"]
+        assert positive_uuids & negative_uuids == set()
+        assert positive_uuids | negative_uuids == ready_uuids
+
+    async def test_rollup_image_with_only_absent_label_counts_as_background(self, http_client, files_root):
+        """Under rollup the threshold drops to 1, so a single ABSENT verification makes an
+        image ready. It must land in background, not positive."""
+        ds = await _create_dataset(http_client, "bk-ds-split-rollup")
+        parent_label = await _create_label(http_client, "bk-split-rollup-parent")
+        child_label = await _create_label(http_client, "bk-split-rollup-child", parent_uuid=parent_label)
+        mc = await _create_model_config(
+            http_client,
+            "mc-bk-split-rollup",
+            nodes=[
+                {
+                    "label_uuid": parent_label,
+                    "model_type": "image_classifier",
+                    "architecture": "resnet_18",
+                    "roll_up_unchecked": True,
+                },
+            ],
+        )
+        cfg = await _create_training_config(
+            http_client, "bk-tc-split-rollup", [ds["uuid"]], model_config_node_uuid=mc["nodes"][0]["uuid"]
+        )
+
+        await _register_image(http_client, files_root, "bk_rollup_background.png")
+        await _verify_label(http_client, "bk_rollup_background.png", parent_label, "absent")
+
+        await _register_image(http_client, files_root, "bk_rollup_positive.png")
+        await _verify_label(http_client, "bk_rollup_positive.png", child_label, "present")
+
+        readiness = await _readiness(http_client, cfg["uuid"])
+        assert readiness["rollUpActive"] is True
+        assert readiness["readyCount"] == 2
+        assert readiness["readyPositiveCount"] == 1
+        assert readiness["readyNegativeCount"] == 1
+
+    async def test_pagination_on_background_bucket(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-split-page")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-split-page", ds["uuid"])
+
+        for i in range(5):
+            name = f"bk_split_page_{i}.png"
+            await _register_image(http_client, files_root, name)
+            await _verify_label(http_client, name, parent_label, "absent")
+            await _verify_label(http_client, name, child_label, "absent")
+
+        all_uuids: list[str] = []
+        after_uuid = None
+        after_sort_value = None
+        for _ in range(10):
+            payload: dict = {"limit": 2}
+            if after_uuid:
+                payload["afterUuid"] = after_uuid
+                payload["afterSortValue"] = after_sort_value
+            body = await _post_bucket(http_client, cfg["uuid"], "ready-negative-images", **payload)
+            page_images = body["images"]
+            if not page_images:
+                break
+            all_uuids.extend(img["uuid"] for img in page_images)
+            if not body["hasMore"]:
+                break
+            last = page_images[-1]
+            after_uuid = last["uuid"]
+            after_sort_value = last.get("createdAt")
+
+        assert len(all_uuids) == 5
+        assert len(set(all_uuids)) == 5

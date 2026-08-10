@@ -76,6 +76,8 @@ export async function fetchTrainingConfigReadiness(uuid) {
   }
   return {
     readyCount: data.readyCount,
+    readyPositiveCount: data.readyPositiveCount ?? 0,
+    readyNegativeCount: data.readyNegativeCount ?? 0,
     needsReviewCount: data.needsReviewCount,
     notStartedCount: data.notStartedCount ?? 0,
     datasetUuids: data.datasetUuids ?? [],
@@ -121,6 +123,46 @@ export async function fetchTrainingConfigReadyImages({
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
     throw new Error(data.message || 'Failed to fetch ready images');
+  }
+  return data.images ?? [];
+}
+
+export async function fetchTrainingConfigReadyPositiveImages({
+  uuid,
+  afterUuid = null,
+  afterSortValue = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  limit = 50,
+}) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/ready-positive-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch positive-sample images');
+  }
+  return data.images ?? [];
+}
+
+export async function fetchTrainingConfigReadyNegativeImages({
+  uuid,
+  afterUuid = null,
+  afterSortValue = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
+  limit = 50,
+}) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/ready-negative-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch background-sample images');
   }
   return data.images ?? [];
 }

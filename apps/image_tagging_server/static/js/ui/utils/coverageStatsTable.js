@@ -11,6 +11,8 @@ import {
   fetchTrainingConfigImagesByLabelStatus,
   fetchTrainingConfigNeedsReview,
   fetchTrainingConfigReadyImages,
+  fetchTrainingConfigReadyPositiveImages,
+  fetchTrainingConfigReadyNegativeImages,
   fetchTrainingConfigPartialReviewImages,
   fetchTrainingConfigNotStartedImages,
 } from '/app-static/js/shared/api/trainingConfigs.js';
@@ -108,7 +110,14 @@ const _clickableCountCss = 'cursor: pointer; text-decoration: underline dotted; 
  *   (the bottom-bar popup) are unaffected.
  */
 export function renderReadinessStats(content, { config, readiness, previousRun = null, onNavigate }) {
-  const { readyCount, needsReviewCount, notStartedCount, rollUpActive = false } = readiness;
+  const {
+    readyCount,
+    readyPositiveCount = 0,
+    readyNegativeCount = 0,
+    needsReviewCount,
+    notStartedCount,
+    rollUpActive = false,
+  } = readiness;
 
   async function _openImageModal(fetchImages, modalTitle) {
     onNavigate?.();
@@ -170,6 +179,18 @@ export function renderReadinessStats(content, { config, readiness, previousRun =
     }
 
     status.appendChild(readySpan);
+    // "Ready" alone overstates the training signal: a dataset that is mostly
+    // background reads as thousands of ready images when only a handful carry
+    // an actual annotation. Split it inline so the real number is never hidden.
+    if (readyCount > 0) {
+      status.appendChild(document.createTextNode(' '));
+      status.appendChild(_makeReadySplit({
+        config,
+        readyPositiveCount,
+        readyNegativeCount,
+        openImageModal: _openImageModal,
+      }));
+    }
     status.appendChild(document.createTextNode(' · '));
     status.appendChild(needsReviewSpan);
     status.appendChild(document.createTextNode(' · '));
@@ -181,6 +202,64 @@ export function renderReadinessStats(content, { config, readiness, previousRun =
   if (previousRun) {
     content.appendChild(_makePreviousRunLine(previousRun, readyCount));
   }
+}
+
+/**
+ * The "(N positive · M background)" breakdown that follows the ready count.
+ *
+ * Positive = fully verified AND at least one in-scope label verified present;
+ * background = fully verified with every in-scope label absent. The two always
+ * sum to readyCount, so this is a split of that number, not extra images.
+ *
+ * @param {{
+ *   config: {uuid: string, name: string},
+ *   readyPositiveCount: number,
+ *   readyNegativeCount: number,
+ *   openImageModal: (fetchImages: Function, modalTitle: string) => Promise<void>,
+ * }} opts
+ * @returns {HTMLElement}
+ */
+function _makeReadySplit({ config, readyPositiveCount, readyNegativeCount, openImageModal }) {
+  const wrap = document.createElement('span');
+  wrap.dataset.testid = 'training-readiness-ready-split';
+  wrap.style.cssText = 'font-size: 0.9em; color: var(--pico-muted-color, #888);';
+
+  const makePart = (testid, count, noun, color, title, fetchImages, modalTitle) => {
+    const span = document.createElement('span');
+    span.dataset.testid = testid;
+    span.style.cssText = `color:${color}; ${count > 0 ? _clickableCountCss : ''}`;
+    // Deliberately unformatted, matching the bare "N ready" it sits next to —
+    // one line reading "3564 ready (3,524 background)" looks like two mistakes.
+    span.textContent = `${count} ${noun}`;
+    if (count > 0) {
+      span.title = title;
+      span.addEventListener('click', () => openImageModal(fetchImages, modalTitle));
+    }
+    return span;
+  };
+
+  wrap.appendChild(document.createTextNode('('));
+  wrap.appendChild(makePart(
+    'training-readiness-ready-positive-count',
+    readyPositiveCount,
+    'positive',
+    '#4c4',
+    'Browse ready images that contain at least one in-scope label',
+    fetchTrainingConfigReadyPositiveImages,
+    `Positive Samples — ${config.name}`,
+  ));
+  wrap.appendChild(document.createTextNode(' · '));
+  wrap.appendChild(makePart(
+    'training-readiness-ready-negative-count',
+    readyNegativeCount,
+    'background',
+    'var(--pico-muted-color, #888)',
+    'Browse ready images verified as containing none of the in-scope labels',
+    fetchTrainingConfigReadyNegativeImages,
+    `Background Samples — ${config.name}`,
+  ));
+  wrap.appendChild(document.createTextNode(')'));
+  return wrap;
 }
 
 /**
