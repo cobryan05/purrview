@@ -95,9 +95,14 @@ class PreviewModelRelabelTask(Task):
 
         # Candidate bboxes to preview relabels for — a subset of the bboxes on the
         # given images. Held as a set for O(1) membership tests in _process_image.
+        # Empty is only meaningful for the image-scoped "run on filtered images"
+        # flow: whole-image crop mode with add_new, where every candidate comes
+        # from _collect_new_boxes rather than relabeling an existing bbox. In any
+        # other combination an empty list can never produce a candidate, so it's
+        # rejected up front instead of silently completing with nothing.
         bbox_uuids: List[str] = list(params.get("bbox_uuids") or [])
-        if not bbox_uuids:
-            raise ValueError("bbox_uuids is required")
+        if not bbox_uuids and not (self._crop_mode == "image" and self._add_new):
+            raise ValueError("bbox_uuids is required unless crop_mode is 'image' and add_new is set")
         if len(bbox_uuids) > _SANITY_MAX_BBOX_UUIDS:
             raise ValueError(
                 f"bbox_uuids has {len(bbox_uuids)} entries, exceeding the sanity cap of "
@@ -299,13 +304,17 @@ class PreviewModelRelabelTask(Task):
             return
         # Only infer if this image actually carries a candidate bbox — the client
         # may pass images whose only candidate got filtered out, and inference is
-        # the expensive step.
+        # the expensive step. Exception: whole-image crop mode with add_new set
+        # still needs to run — a boxless image can still yield new-box candidates
+        # via _collect_new_boxes below, even with zero existing candidate bboxes.
         image_bboxes = [b for b in (img.get("bboxes") or []) if b.get("uuid") in self._bbox_uuids]
-        if not image_bboxes:
+        if not image_bboxes and not (self._crop_mode == "image" and self._add_new):
             return
         image_bytes = await self._load_image_bytes(filename, images_api)
 
         if self._crop_mode == "bbox":
+            if not image_bboxes:
+                return
             await self._process_image_bbox_crop(image_bboxes, image_bytes, img, backend, label_names)
             return
 
@@ -560,7 +569,11 @@ class PreviewModelRelabelTask(Task):
             "bbox_uuids": {
                 "type": "list",
                 "label": "Candidate Bbox UUIDs",
-                "required": True,
-                "description": "Explicit list of bbox UUIDs to preview relabels for.",
+                "required": False,
+                "description": (
+                    "Explicit list of bbox UUIDs to preview relabels for. May be empty only when "
+                    "crop_mode is 'image' and add_new is set — every candidate then comes from "
+                    "new-box detection instead of relabeling an existing bbox."
+                ),
             },
         }

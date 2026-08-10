@@ -71,6 +71,20 @@ class TestGuards:
         with pytest.raises(ValueError, match="bbox_uuids"):
             await task._init(task._params, None)
 
+    async def test_missing_bbox_uuids_raises_in_bbox_crop_mode_even_with_add_new(self):
+        # crop_mode="bbox" has nothing to crop without candidate bboxes, so the
+        # image+add_new exemption must not apply here.
+        task = _make_task(_base_params(bbox_uuids=[], crop_mode="bbox", add_new=True))
+        with pytest.raises(ValueError, match="bbox_uuids"):
+            await task._init(task._params, None)
+
+    async def test_empty_bbox_uuids_allowed_in_image_mode_with_add_new(self):
+        # Image-scoped "run on filtered images" flow: no existing candidate
+        # bboxes at all, relying entirely on add_new to produce candidates.
+        task = _make_task(_base_params(bbox_uuids=[], crop_mode="image", add_new=True))
+        await task._init(task._params, None)
+        assert task._bbox_uuids == set()
+
     async def test_large_bbox_uuids_list_is_allowed(self):
         # No hard ceiling — the client warns/caps large runs; the task accepts them.
         n = 10_000
@@ -304,6 +318,36 @@ class TestAddNewBoxes:
         new = [c for c in candidates if c.get("isNew")]
         assert len(relabel) == 1 and relabel[0]["bboxUuid"] == "bbox-1"
         assert len(new) == 1 and new[0]["geometry"]["x"] == 0.8
+
+    async def test_boxless_image_with_add_new_still_produces_new_box_candidate(self):
+        # Image-scoped "run on filtered images" flow: the image carries no bboxes
+        # at all (so bbox_uuids has nothing to match on this image), but a
+        # detection should still surface as a new-box candidate.
+        task = _make_task(_base_params(bbox_uuids=[], crop_mode="image", add_new=True))
+        detections = [Detection(x=0.2, y=0.2, width=0.1, height=0.1, confidence=0.75, label_uuid="dog")]
+        candidates = await self._run(task, detections, image_bboxes=[])
+        assert len(candidates) == 1
+        assert candidates[0]["isNew"] is True
+        assert candidates[0]["bboxUuid"] is None
+        assert candidates[0]["proposedLabelUuid"] == "dog"
+        assert task._new_boxes_found == 1
+
+    async def test_boxless_image_without_add_new_is_skipped_entirely(self):
+        # Without add_new there is nothing this image could ever produce, so
+        # _process_image should skip inference rather than call the backend.
+        # bbox_uuids has a candidate, just not one that lives on *this* image.
+        task = _make_task(_base_params(bbox_uuids=["other-bbox"], crop_mode="image", add_new=False))
+        await task._init(task._params, None)
+        task._load_image_bytes = AsyncMock(side_effect=AssertionError("should not load image bytes"))
+        backend = _FakeBackend([Detection(x=0.2, y=0.2, width=0.1, height=0.1, confidence=0.75, label_uuid="dog")])
+        img = _image(bboxes=[])
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=backend,
+            img=img,
+            label_names={"cat": "Cat", "dog": "Dog"},
+        )
+        assert task._candidates == []
 
 
 class TestBboxCropMode:

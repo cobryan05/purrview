@@ -119,6 +119,27 @@ function _collectFromImages(images, predicate) {
 }
 
 /**
+ * Like `_collectFromImages`, but for the "Filtered images" scope: every image
+ * is included regardless of whether it has any bboxes at all (unlike the
+ * bbox-filtered scope, which drops images with zero matching bboxes), and
+ * every bbox on an included image is a candidate (no bbox-filter predicate —
+ * the point of this scope is to widen past whatever bbox filter is active).
+ */
+function _collectAllFromImages(images) {
+  const bboxUuids = [];
+  const imageUuids = [];
+  const bboxImageUuids = [];
+  for (const img of images) {
+    imageUuids.push(img.uuid);
+    for (const b of (img.bboxes || [])) {
+      bboxUuids.push(b.uuid);
+      bboxImageUuids.push(img.uuid);
+    }
+  }
+  return { bboxUuids, imageUuids, bboxImageUuids };
+}
+
+/**
  * Caps a resolved scope to at most `limit` candidate bboxes, keeping only the
  * images those retained bboxes belong to (so the task doesn't waste round-trips
  * fetching images with no candidates left). A non-finite or non-positive limit
@@ -207,6 +228,71 @@ export async function resolveCandidateScope(ctx) {
   });
   const predicate = makeBboxFilterPredicate({ fetchImagesMode: false, bboxFilterFn, fs, labels });
   return _collectFromImages(images, predicate);
+}
+
+/**
+ * Resolves the "Filtered images" scope — the image-scoped sibling of
+ * `resolveCandidateScope` used for the "Run Model on Results" run dialog's
+ * scope toggle. Unlike `resolveCandidateScope`, this includes every image
+ * matching the current image-level filter/selection (even ones with zero
+ * bboxes) and every bbox on each included image (not filtered by the bbox
+ * tag/label filter) — the point of this scope is to widen past whatever bbox
+ * filter produced the small "candidate bboxes" count.
+ *
+ * Mirrors the toolbar's "Apply to Filtered Images" button semantics
+ * (`requireBboxes: viewFilter === 'bboxes'`), so its count matches what's
+ * already shown there.
+ *
+ * @param {Object} ctx - see `runModelOnResultsFlow` for field docs.
+ * @returns {Promise<{bboxUuids: string[], imageUuids: string[], bboxImageUuids: string[]}>}
+ */
+export async function resolveImageScope(ctx) {
+  const { fetchImages, filterPanel, viewFilter, selectionKind, selected, visibleEntries, sortBy, sortOrder } = ctx;
+
+  if (selectionKind === 'bbox' && selected.size > 0) {
+    const entries = visibleEntries.filter(e => e.kind === 'bbox' && selected.has(e.bbox.uuid));
+    const imagesByUuid = new Map();
+    for (const e of entries) imagesByUuid.set(e.img.uuid, e.img);
+    return _collectAllFromImages([...imagesByUuid.values()]);
+  }
+
+  if (selectionKind === 'image' && selected.size > 0) {
+    const selectedImages = visibleEntries
+      .filter(e => e.kind === 'image' && selected.has(e.img.uuid))
+      .map(e => e.img);
+    return _collectAllFromImages(selectedImages);
+  }
+
+  if (fetchImages) {
+    const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
+    return _collectAllFromImages(images);
+  }
+
+  const fs = filterPanel.getState();
+  const { images } = await fetchReviewQueue({
+    tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+    tagExcludeUuids: fs.tagExcludeUuids ?? [],
+    showAllBboxes: fs.showAllBboxes,
+    tagMatchMode: fs.tagMatchMode,
+    labelUuids: fs.labelUuids,
+    labelExcludeUuids: fs.labelExcludeUuids ?? [],
+    labelMatchMode: fs.labelMatchMode,
+    labelIncludeChildren: fs.labelIncludeChildren,
+    imageLabelConditions: fs.imageLabelConditions ?? [],
+    requireBboxes: viewFilter === 'bboxes',
+    sortBy,
+    sortOrder,
+    filenameSearch: fs.filenameSearch || undefined,
+    dateFrom: fs.dateFrom || undefined,
+    dateTo: fs.dateTo || undefined,
+    verificationCheck: viewFilter === 'bboxes' ? null : fs.verificationCheck,
+    verificationLabelUuids: (fs.verificationCheck && viewFilter !== 'bboxes')
+      ? [...activeTrainingConfig.getLabelUuids()]
+      : [],
+    bboxVerification: fs.bboxVerification,
+    limit: Number.MAX_SAFE_INTEGER,
+  });
+  return _collectAllFromImages(images);
 }
 
 /**
@@ -921,17 +1007,28 @@ export function confirmLargeRun(total) {
 }
 
 /**
- * Builds and shows the "Run Model on Results" dialog: model picker (detectors
+ * Builds and shows the "Run Model on Results" dialog: scope toggle (filtered
+ * bboxes vs. filtered images — see module docs), model picker (detectors
  * only), conf/IoU sliders, candidate-count display with cap warnings, and a
  * Run button that launches PreviewModelRelabelTask and switches the dialog to
  * a poll/progress/cancel view until the task completes.
  *
- * @param {{bboxUuids: string[], imageUuids: string[]}} scope
+ * @param {{bboxUuids: string[], imageUuids: string[]}} bboxScope - the
+ *   pre-resolved, already-warned/truncated bbox-filtered scope (see
+ *   `runModelOnResultsFlow`). The "Filtered images" scope is resolved lazily,
+ *   on first toggle, via `resolveImageScope(ctx)`.
  * @param {Object} ctx - forwarded to `openRelabelConfirmationModal` (see its docs),
- *   plus the fields `resolveCandidateScope` needs.
+ *   plus the fields `resolveCandidateScope`/`resolveImageScope` need.
  */
-async function _showRunDialog(scope, ctx) {
-  const { bboxUuids, imageUuids } = scope;
+async function _showRunDialog(bboxScope, ctx) {
+  // Active candidate lists the Run button reads from — reassigned by the scope
+  // toggle below. Start on the bbox-filtered scope (today's default behavior).
+  let bboxUuids = bboxScope.bboxUuids;
+  let imageUuids = bboxScope.imageUuids;
+  let activeScopeKind = 'bboxes';
+  // Lazily resolved on first switch to 'images' — avoids the extra fetch for
+  // the common case where the user never touches the toggle.
+  let imageScope = null;
 
   const { dialog, open, close } = createModalShell();
   dialog.style.cssText = 'max-width:520px;max-height:85vh;display:flex;flex-direction:column;overflow-y:auto;';
@@ -942,13 +1039,123 @@ async function _showRunDialog(scope, ctx) {
   dialog.appendChild(title);
   title.textContent = 'Run Model on Results';
 
-  const countLine = document.createElement('div');
-  countLine.textContent = `${bboxUuids.length.toLocaleString()} candidate bbox(es) across ${imageUuids.length.toLocaleString()} image(s).`;
-  dialog.appendChild(countLine);
+  // ── Scope toggle: filtered bboxes (today's default) vs. filtered images ──
+  // (every image matching the filter, including ones with zero bboxes — see
+  // `resolveImageScope`'s docs for why these can differ so much, e.g. "8
+  // bboxes" vs. "219 images").
+  const scopeRow = document.createElement('div');
+  scopeRow.style.cssText = 'display:flex;flex-direction:column;gap:0.2em;font-size:0.9em;';
+  const scopeLabel = document.createElement('div');
+  scopeLabel.textContent = 'Scope:';
+  scopeLabel.style.cssText = 'font-size:0.85em;color:#aaa;';
+  scopeRow.appendChild(scopeLabel);
 
-  // The large-run warning (and optional cap) is handled in `runModelOnResultsFlow`
-  // before this dialog is shown, so `bboxUuids` here is already the user-approved
-  // set — no further gating needed.
+  function _makeScopeRadio(value, initialText) {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:0.4em;cursor:pointer;';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'run-model-on-results-scope';
+    radio.value = value;
+    radio.checked = value === 'bboxes';
+    const text = document.createElement('span');
+    text.textContent = initialText;
+    label.append(radio, text);
+    scopeRow.appendChild(label);
+    return { radio, text };
+  }
+
+  const bboxScopeRadio = _makeScopeRadio(
+    'bboxes',
+    `Filtered bboxes (${bboxScope.bboxUuids.length.toLocaleString()}) — relabel existing candidate bboxes`,
+  );
+  const imageScopeRadio = _makeScopeRadio(
+    'images',
+    'Filtered images (…) — run on every matching image, including ones with no bboxes',
+  );
+  dialog.appendChild(scopeRow);
+
+  const countLine = document.createElement('div');
+  dialog.appendChild(countLine);
+  function _updateCountLine() {
+    countLine.textContent = `${bboxUuids.length.toLocaleString()} candidate bbox(es) across ${imageUuids.length.toLocaleString()} image(s).`;
+  }
+  _updateCountLine();
+
+  // The large-run warning (and optional cap) for the *bbox* scope is handled
+  // in `runModelOnResultsFlow` before this dialog is shown, so `bboxScope` is
+  // already the user-approved set. The *image* scope gets its own warning
+  // below, on first toggle, since it's resolved lazily and can be a very
+  // different (usually much larger) size.
+  async function _onScopeChange(kind) {
+    activeScopeKind = kind;
+    if (kind === 'bboxes') {
+      bboxUuids = bboxScope.bboxUuids;
+      imageUuids = bboxScope.imageUuids;
+      cropModeBboxOpt.hidden = false;
+      _updateCountLine();
+      _syncCropModeUI();
+      return;
+    }
+
+    // kind === 'images'
+    if (imageScope === null) {
+      imageScopeRadio.radio.disabled = true;
+      imageScopeRadio.text.textContent = 'Filtered images (loading…)';
+      try {
+        let resolved = await resolveImageScope(ctx);
+        if (resolved.imageUuids.length === 0) {
+          toast('No images in the current selection/filter.', 4000, 'warning');
+          imageScopeRadio.radio.checked = false;
+          bboxScopeRadio.radio.checked = true;
+          activeScopeKind = 'bboxes';
+          imageScopeRadio.text.textContent = 'Filtered images (0)';
+          return;
+        }
+        if (resolved.imageUuids.length > WARN_THRESHOLD) {
+          const limit = await confirmLargeRun(resolved.imageUuids.length);
+          if (limit === null) {
+            imageScopeRadio.radio.checked = false;
+            bboxScopeRadio.radio.checked = true;
+            activeScopeKind = 'bboxes';
+            imageScopeRadio.text.textContent = 'Filtered images (…)';
+            return;
+          }
+          if (Number.isFinite(limit)) {
+            const keptImageUuids = new Set(resolved.imageUuids.slice(0, limit));
+            const keptBboxUuids = resolved.bboxUuids.filter((_, i) => keptImageUuids.has(resolved.bboxImageUuids[i]));
+            resolved = { bboxUuids: keptBboxUuids, imageUuids: [...keptImageUuids], bboxImageUuids: resolved.bboxImageUuids };
+          }
+        }
+        imageScope = resolved;
+      } catch (err) {
+        Logger.error('Failed to resolve image scope:', err);
+        toast(`Failed to resolve filtered images: ${err.message}`, 5000, 'error');
+        imageScopeRadio.radio.checked = false;
+        bboxScopeRadio.radio.checked = true;
+        activeScopeKind = 'bboxes';
+        imageScopeRadio.text.textContent = 'Filtered images (…)';
+        return;
+      } finally {
+        imageScopeRadio.radio.disabled = false;
+      }
+    }
+    imageScopeRadio.text.textContent =
+      `Filtered images (${imageScope.imageUuids.length.toLocaleString()}) — run on every matching image, including ones with no bboxes`;
+    bboxUuids = imageScope.bboxUuids;
+    imageUuids = imageScope.imageUuids;
+    // Bbox-crop mode has nothing to crop on a boxless image — the whole point
+    // of this scope — so it's not offered here; whole-image + IoU match is the
+    // only mode, and "Also add new boxes" is the only way a boxless image can
+    // produce anything.
+    cropModeSelect.value = 'image';
+    cropModeBboxOpt.hidden = true;
+    addNewCheckbox.checked = true;
+    _updateCountLine();
+    _syncCropModeUI();
+  }
+  bboxScopeRadio.radio.addEventListener('change', () => { if (bboxScopeRadio.radio.checked) _onScopeChange('bboxes'); });
+  imageScopeRadio.radio.addEventListener('change', () => { if (imageScopeRadio.radio.checked) _onScopeChange('images'); });
 
   // ── Model + inference-input pickers, side by side to keep this compact ──
   const pickerRow = document.createElement('div');
@@ -1262,6 +1469,8 @@ async function _showRunDialog(scope, ctx) {
     cancelBtn.disabled = false;
     _setModelListDisabled(false);
     cropModeSelect.disabled = false;
+    bboxScopeRadio.radio.disabled = false;
+    imageScopeRadio.radio.disabled = false;
     progressWrap.style.display = 'none';
   }
 
@@ -1274,14 +1483,23 @@ async function _showRunDialog(scope, ctx) {
       return;
     }
 
-    if (isClassifier) {
-      if (imageUuids.length === 0) {
-        toast('No images in the current selection/filter.', 4000, 'warning');
+    if (imageUuids.length === 0) {
+      toast('No images in the current selection/filter.', 4000, 'warning');
+      return;
+    }
+    if (!isClassifier && bboxUuids.length === 0) {
+      // Only a problem if there's also no way to produce a candidate without
+      // an existing bbox — the image scope's add_new path is exactly that.
+      const canFindNew = activeScopeKind === 'images' && cropModeSelect.value === 'image' && addNewCheckbox.checked;
+      if (!canFindNew) {
+        toast(
+          'No candidate bboxes in the current selection/filter. Switch to "Filtered images" scope with '
+            + '"Also add new boxes" checked to find objects on images with no bboxes.',
+          5000,
+          'warning',
+        );
         return;
       }
-    } else if (bboxUuids.length === 0) {
-      toast('No candidate bboxes in the current selection/filter.', 4000, 'warning');
-      return;
     }
 
     // Detector runs are already capped/warned on before this dialog opens
@@ -1298,6 +1516,8 @@ async function _showRunDialog(scope, ctx) {
     cancelBtn.disabled = true;
     _setModelListDisabled(true);
     cropModeSelect.disabled = true;
+    bboxScopeRadio.radio.disabled = true;
+    imageScopeRadio.radio.disabled = true;
     progressWrap.style.display = 'flex';
     const totalImages = isClassifier ? runImageUuids.length : imageUuids.length;
 
