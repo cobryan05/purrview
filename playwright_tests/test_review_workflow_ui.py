@@ -1224,9 +1224,10 @@ class TestCanvasModalRoundTrip:
         """Regression: opening the canvas from an IMAGE card and hitting Save & Close
         left the card showing its pre-save boxes. IMAGE_ANNOTATIONS_SAVED fired and
         the panel heard it, but the card's refresher only redrew the bbox overlay —
-        and did so from the stale in-memory `img.bboxes`, so the count badge and
-        label chips never moved. Deleting one of img-1's two boxes must drop the
-        badge to '1 box' and leave only the Dog chip."""
+        and did so from the stale in-memory `img.bboxes`, so the count badge never
+        moved. Drawing a new box on img-1 and saving must bump the badge to
+        '3 boxes' (drawn, not deleted — see TestImageInitiatedOpenHasNoPreselection
+        for why this no longer uses the toolbar Delete button)."""
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(
@@ -1245,22 +1246,62 @@ class TestCanvasModalRoundTrip:
 
         card = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
         expect(card.locator(".bbox-count-badge")).to_have_text("2 boxes")
-        expect(card.locator(".label-chip")).to_have_text(["Cat?", "Dog✓"])
 
-        # Double-clicking an image thumbnail opens the canvas on its first bbox.
         card.locator("img.thumb").dblclick()
         modal = page.get_by_test_id("canvas-edit-modal")
         expect(modal).to_be_visible(timeout=8000)
 
-        modal.locator("button[data-toolbar-key='delete']").click()
+        # Draw a new box — any rectangle inside the canvas works, its exact
+        # placement isn't what this test is about.
+        modal.locator("button[data-toolbar-key='bbox']").click()
+        canvas_box = modal.locator(".canvas-modal-canvas").bounding_box()
+        x0 = canvas_box["x"] + canvas_box["width"] * 0.2
+        y0 = canvas_box["y"] + canvas_box["height"] * 0.2
+        x1 = canvas_box["x"] + canvas_box["width"] * 0.6
+        y1 = canvas_box["y"] + canvas_box["height"] * 0.6
+        page.mouse.move(x0, y0)
+        page.mouse.down()
+        page.mouse.move(x1, y1)
+        page.mouse.up()
+
         save_btn = modal.locator("button", has_text="Save & Close")
         expect(save_btn).to_have_class("save-btn--dirty")
         save_btn.click()
         expect(modal).to_have_count(0, timeout=8000)
 
         # The card reflects the save without a re-fetch.
-        expect(card.locator(".bbox-count-badge")).to_have_text("1 box")
-        expect(card.locator(".label-chip")).to_have_text(["Dog✓"])
+        expect(card.locator(".bbox-count-badge")).to_have_text("3 boxes")
+
+    def test_image_initiated_open_has_no_preselected_box(self, page: Page, base_url: str):
+        """Opening the canvas by double-clicking an IMAGE card (not a specific
+        bbox's own card) used to pass img.bboxes[0] straight into the modal as
+        its "originally opened" bbox, which highlighted it with transformer
+        handles on open — as if the user had clicked it. Nothing should be
+        selected until the user actually selects something; the toolbar
+        Delete button (a no-op with nothing selected) proves it."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _show_all_bboxes(page)
+        _switch_view(page, "images")
+
+        card = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
+        expect(card.locator(".bbox-count-badge")).to_have_text("2 boxes")
+
+        card.locator("img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        expect(modal.locator("button[data-toolbar-key='delete']")).to_be_enabled(timeout=8000)
+
+        modal.locator("button[data-toolbar-key='delete']").click()
+        page.wait_for_timeout(300)
+
+        save_btn = modal.locator("button", has_text="Save & Close")
+        expect(save_btn).not_to_have_class(re.compile(r"\bsave-btn--dirty\b"))
 
     def test_delete_works_as_soon_as_the_toolbar_is_clickable(self, page: Page, base_url: str):
         """Regression: showCanvasModal appends the overlay (and, right after

@@ -578,8 +578,11 @@ export function buildImageCard(controller, entry, opts) {
     // An image with no boxes yet still opens — that's the case where the editor
     // is most needed (draw the first box). It used to bail out silently, which
     // read as a dead double-click on every un-annotated search result.
-    const firstBbox = (img.bboxes ?? [])[0] ?? null;
-    onOpenEditor({ kind: 'bbox', bbox: firstBbox, img, imageInitiated: true });
+    // bbox is deliberately null, not img.bboxes[0]: this is an image-level
+    // open, not a specific-bbox one, so nothing should arrive pre-selected
+    // with transformer handles on it — that's reserved for double-clicking
+    // a bbox's own card (the sibling handler below, kind: 'bbox').
+    onOpenEditor({ kind: 'bbox', bbox: null, img, imageInitiated: true });
   });
 
   // Bbox canvas overlay — draws normalized rects over the thumbnail

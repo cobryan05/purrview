@@ -5,8 +5,16 @@ import { setTool } from './image-tagging/canvas/tools.js';
 import { next_image, prev_image, deleteCurrentImage } from './image-tagging/files.js';
 import { actionForCombo, eventToCombo } from './image-tagging/hotkeyBindings.js';
 import { isTextEntryElement } from '/app-static/js/ui/utils/focus.js';
+import { openDialogCount } from '/app-static/js/ui/utils/modalZIndex.js';
 
-/** @type {import('@image_tagging_types').ImageTaggingRuntime[]} */
+/**
+ * Each entry pairs a runtime with the dialog-open count captured when its
+ * hotkeys were attached. A canvas modal is itself a dialog, so that baseline
+ * already includes it — its hotkeys stay live until something opens *on top*
+ * (dialogBaseline compared against openDialogCount() on every keydown, not a
+ * plain "is anything open" check; see openDialogCount's doc comment).
+ * @type {{ runtime: import('@image_tagging_types').ImageTaggingRuntime, dialogBaseline: number }[]}
+ */
 const _stack = [];
 
 /**
@@ -39,12 +47,22 @@ function dispatchAction(action, runtime) {
 }
 
 document.addEventListener('keydown', e => {
-  const runtime = _stack[_stack.length - 1];
-  if (!runtime) return;
+  const top = _stack[_stack.length - 1];
+  if (!top) return;
+  const { runtime, dialogBaseline } = top;
 
   // Only *text entry* focus swallows hotkeys. Checkboxes, radios and range
   // sliders — the inference panel is full of them — must not.
   if (isTextEntryElement(document.activeElement)) return;
+
+  // A dialog full of buttons (e.g. the "unsaved changes?" confirm) never
+  // becomes text-entry focus, so without this a hotkey like ']' kept
+  // reaching the canvas underneath it — each press re-ran the guarded
+  // navigation and stacked another copy of the same dialog on top. Compared
+  // against this context's own baseline, not `> 0`: the canvas modal is
+  // itself a dialog, so its own hotkeys must keep working while only it is
+  // open — only a dialog stacked *on top of* it should block them.
+  if (openDialogCount() > dialogBaseline) return;
 
   const action = actionForCombo(eventToCombo(e));
   if (!action) return;
@@ -61,10 +79,11 @@ document.addEventListener('keydown', e => {
  * @returns {{ destroy: () => void }}
  */
 export function attachHotkeys(runtime) {
-  _stack.push(runtime);
+  const entry = { runtime, dialogBaseline: openDialogCount() };
+  _stack.push(entry);
   return {
     destroy() {
-      const idx = _stack.lastIndexOf(runtime);
+      const idx = _stack.indexOf(entry);
       if (idx !== -1) _stack.splice(idx, 1);
     },
   };

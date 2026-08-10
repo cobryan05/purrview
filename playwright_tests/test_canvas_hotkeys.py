@@ -354,3 +354,66 @@ class TestHotkeysAndFocus:
         assert page.evaluate("""() => document.activeElement.tagName""") != "INPUT"
         page.keyboard.press("r")
         assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
+
+
+# ---------------------------------------------------------------------------
+# Hotkeys must not fire while a dialog is open
+# ---------------------------------------------------------------------------
+
+
+class TestHotkeysBlockedWhileDialogOpen:
+    """A dialog built only of buttons (e.g. the "unsaved changes?" confirm)
+    never becomes text-entry focus, so isTextEntryElement's guard alone let
+    hotkeys keep reaching the canvas underneath it. Concretely: pressing ']'
+    (next image) while that confirm was open re-ran the guarded navigation on
+    every keypress, popping another stacked copy of the same dialog each time.
+    """
+
+    def test_bound_key_is_ignored_while_a_dialog_is_open(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('bbox')""")
+
+        page.evaluate("""async () => {
+            const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const shell = createModalShell();
+            shell.open();
+            window._testShell = shell;
+        }""")
+
+        page.keyboard.press("v")
+
+        result = page.evaluate("""() => window._testRuntime.tool""")
+        assert result == "bbox"  # unchanged — the hotkey must not have fired
+
+    def test_bound_key_works_again_once_the_dialog_closes(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('bbox')""")
+
+        page.evaluate("""async () => {
+            const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const shell = createModalShell();
+            shell.open();
+            window._testShell = shell;
+        }""")
+        page.evaluate("""() => window._testShell.close()""")
+
+        page.keyboard.press("v")
+
+        result = page.evaluate("""() => window._testRuntime.tool""")
+        assert result == "select"
+
+    def test_repeated_keypresses_do_not_open_additional_dialogs(self, page: Page, base_url: str):
+        """Direct regression for the reported bug: mashing the bound key while
+        the confirm dialog is open must not stack up more copies of it."""
+        _setup_runtime(page, base_url)
+
+        page.evaluate("""async () => {
+            const { showUnsavedChangesModal } = await import('/app-static/js/ui/utils/confirmModal.js');
+            window._testModalPromise = showUnsavedChangesModal();
+        }""")
+
+        for _ in range(5):
+            page.keyboard.press("v")
+
+        count = page.evaluate("""() => document.querySelectorAll('.app-modal-overlay').length""")
+        assert count == 1

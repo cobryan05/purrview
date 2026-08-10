@@ -121,6 +121,29 @@ function _bounce(depth, step, halfRange) {
   return (t - 4 * hs) * step;                   // returning to 0
 }
 
+/**
+ * How many centred dialogs (createModalShell / the hand-rolled modals that
+ * share its acquire/release pair) are currently open. Anchored popups and
+ * context menus don't count (see acquireModalLayer's `dialog` param) — those
+ * are transient and dismiss on outside click, not the kind of thing a
+ * background hotkey should be blocked by.
+ *
+ * Consumed by hotkeys.js as a per-context baseline, not a plain "is anything
+ * open" flag: the canvas editor modal is itself a dialog, so its own hotkeys
+ * must keep working while only it is open — they should stop only once
+ * something opens *on top* of it (e.g. the "unsaved changes?" confirm shown
+ * mid-navigation). hotkeys.js records this count at attach time and compares
+ * against it on every keydown, rather than gating on `> 0`.
+ *
+ * Focus alone can't do this job: a dialog full of buttons never becomes
+ * "text entry" focus, so without this a hotkey like ']' (next image) kept
+ * reaching the canvas underneath an open confirm dialog — each press re-ran
+ * the same guarded navigation and popped another stacked copy of it.
+ */
+export function openDialogCount() {
+  return _openDialogs;
+}
+
 export function registerEscHandler(fn) {
   _escStack.push(fn);
 }
