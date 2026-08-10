@@ -4,6 +4,8 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, Form, Request
@@ -122,6 +124,7 @@ class WebApp:
                     "service": "relay_buffer_server",
                     "status": "ok",
                     "streams": {"active": len(streams)},
+                    "buffer": self._manager.buffer_usage().to_dict(),
                 }
             )
 
@@ -192,6 +195,122 @@ class WebApp:
                     "submit_label": "Create Stream",
                 },
             )
+
+        @self._app.post(
+            "/api/streams/ensure",
+            response_class=JSONResponse,
+            operation_id="ensureStream",
+            tags=[WebApp.STREAM_API_TAG_NAME],
+        )
+        async def ensure_stream_api(
+            source_url: str = Form(..., description="Source URL to relay (rtsp://, rtmp://, srt://, http(s):// …)"),
+            holder: str = Form("", description="Identity of the consumer taking the lease"),
+            retention_s: float = Form(
+                -1.0, description="Seconds of rolling buffer to keep; negative uses the server default"
+            ),
+            record: bool = Form(True, description="Whether to maintain a rolling buffer for this source"),
+        ) -> JSONResponse:
+            """Idempotently arm a relay path for a source and take a lease on it.
+
+            Consumers read the returned master path directly — there is no per-consumer
+            path, because fanning out from the master is the whole point of the relay.
+            The response carries `recording`/`retentionS` so a caller can tell the user
+            "this source has no rewind buffer" instead of silently cutting empty clips.
+            """
+            try:
+                result = await self._manager.ensure_stream(
+                    source_url=source_url,
+                    holder=holder,
+                    retention_s=None if retention_s < 0 else retention_s,
+                    record=record,
+                )
+                return JSONResponse(content={WebApp.SUCCESS_KEY: True, **result.to_dict()})
+            except Exception as e:
+                logging.exception(f"Stream ensure failed: {e}")
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
+
+        @self._app.post(
+            "/api/streams/release",
+            response_class=JSONResponse,
+            operation_id="releaseStream",
+            tags=[WebApp.STREAM_API_TAG_NAME],
+        )
+        async def release_stream_api(
+            lease_id: str = Form(..., description="Lease id returned by ensure"),
+        ) -> JSONResponse:
+            """Release one lease; the relay path is torn down when it was the last."""
+            try:
+                released = await self._manager.release_lease(lease_id)
+                return JSONResponse(content={WebApp.SUCCESS_KEY: True, "released": released})
+            except Exception as e:
+                logging.exception(f"Stream release failed: {e}")
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
+
+        @self._app.get(
+            "/api/streams/{name}/ranges",
+            response_class=JSONResponse,
+            operation_id="streamRanges",
+            tags=[WebApp.STREAM_API_TAG_NAME],
+        )
+        async def stream_ranges_api(name: str) -> JSONResponse:
+            """Time ranges currently held in the rolling buffer for a path.
+
+            This is the honest answer to "how much rewind do I have", which is not the
+            configured retention: the buffer is RAM-backed, so a relay restart shortens
+            it without warning.
+            """
+            try:
+                ranges = await self._manager.get_ranges(name)
+                return JSONResponse(content={WebApp.SUCCESS_KEY: True, WebApp.RESULT_KEY: ranges})
+            except Exception as e:
+                logging.exception(f"Fetching ranges for {name} failed: {e}")
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
+
+        @self._app.post(
+            "/api/streams/clip",
+            response_class=JSONResponse,
+            operation_id="extractClip",
+            tags=[WebApp.STREAM_API_TAG_NAME],
+        )
+        async def extract_clip_api(
+            path: str = Form(..., description="Master path name to cut from"),
+            start: str = Form(..., description="Clip start as an ISO-8601 timestamp"),
+            duration_s: float = Form(..., description="Clip duration in seconds"),
+            dest: str = Form(..., description="Absolute destination file path"),
+        ) -> JSONResponse:
+            """Cut a window out of the rolling buffer into a file.
+
+            Retroactive by design: pre-roll is whatever the caller asks for at event
+            time, not something fixed when the stream was created. The result reports
+            `partialPreroll` when the requested window had partly aged out, so a
+            truncated clip is never presented as a complete one.
+            """
+            try:
+                started_at = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                result = await self._manager.extract_clip(
+                    path=path, start=started_at, duration_s=duration_s, dest=Path(dest)
+                )
+                return JSONResponse(content={WebApp.SUCCESS_KEY: True, **result})
+            except Exception as e:
+                logging.exception(f"Clip extraction failed: {e}")
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
+
+        @self._app.get(
+            "/api/streams/buffer",
+            response_class=JSONResponse,
+            operation_id="bufferUsage",
+            tags=[WebApp.STREAM_API_TAG_NAME],
+        )
+        async def buffer_usage_api() -> JSONResponse:
+            """RAM buffer budget: cap, committed bytes, and actual mount usage."""
+            try:
+                usage = self._manager.buffer_usage()
+                return JSONResponse(content={WebApp.SUCCESS_KEY: True, **usage.to_dict()})
+            except Exception as e:
+                logging.exception(f"Buffer usage failed: {e}")
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.post(
             "/api/streams/destroy",

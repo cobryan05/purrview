@@ -46,6 +46,19 @@ class ImageProvider:
         """Return the behavioral type of this provider. Default is LIVE_STREAM (safest fallback)."""
         return ImageProviderType.LIVE_STREAM
 
+    @classmethod
+    def ingest_tier(cls) -> str:
+        """How this provider's sources can be got into a MediaMTX path, and therefore
+        whether they can have a rolling rewind buffer.
+
+        One of ``native``/``ffmpeg``/``ring``/``none`` — see
+        ``apps.helpers.streams.ingest``. The default is ``ring`` (the safe answer: a
+        bounded in-RAM JPEG buffer) because a provider that hasn't thought about it is
+        almost certainly frame-at-a-time. Providers backed by a real continuous stream
+        override this; the URL is only inspected for those.
+        """
+        return "ring"
+
     def get_total_frames(self) -> Optional[int]:
         """For FIXED providers: best current estimate of total frames to be emitted.
         May grow as new files are opened. Returns None for non-FIXED providers."""

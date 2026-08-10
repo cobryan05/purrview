@@ -52,7 +52,8 @@ services:
       target: app
       args: *build-args
     environment:
-      THUMB_CACHE_MAX_MB: 100
+      THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
+      STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       # Reach the training node; defaults to the `training` compose service.
       # Point at a remote host for a remote training box.
@@ -71,6 +72,12 @@ services:
       - ./logs:/logs
       - ./models:/app/models
       - ./image_datasets:/app/image_datasets
+    # In-RAM rolling buffer for MediaMTX recordings (the NVR rewind window).
+    # A cap, not an allocation: an empty /buffer costs ~0 RAM. ~30 MB per
+    # camera per 60 s at 4 Mbps, so 512m holds ~17 camera-minutes. Deliberately
+    # NOT /dev/shm (64 MB on `app`, DataLoader-shared on `mono`).
+    tmpfs:
+      - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "7999:7999"   # Whisker-Watcher main app
       - "8553:8554"   # RTSP relay
@@ -84,7 +91,7 @@ services:
   # -------------------------------------------------------------------
   training:
     container_name: whiskerwatcher_training
-    shm_size: "2gb"
+    shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
       context: .
@@ -93,7 +100,9 @@ services:
       args: *build-args
     environment:
       TRAINING_CACHE_DIR: /training-cache
-      TRAINING_CACHE_MAX_MB: 10000
+      TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
+      TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
       - ./conf:/conf
       - ./logs:/logs
@@ -110,7 +119,7 @@ services:
   # -------------------------------------------------------------------
   mono:
     container_name: whiskerwatcher_mono
-    shm_size: "2gb"
+    shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
       context: .
@@ -118,12 +127,15 @@ services:
       target: combined
       args: *build-args
     environment:
-      THUMB_CACHE_MAX_MB: 100
+      THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
+      STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: localhost
       DB_SERVER_HOST: localhost
       TRAINING_CACHE_DIR: /training-cache
-      TRAINING_CACHE_MAX_MB: 10000
+      TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
+      TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
       - ./data/:/data
@@ -132,6 +144,12 @@ services:
       - ./models:/app/models
       - ./image_datasets:/app/image_datasets
       - training_cache:/training-cache
+    # In-RAM rolling buffer for MediaMTX recordings (the NVR rewind window).
+    # A cap, not an allocation: an empty /buffer costs ~0 RAM. ~30 MB per
+    # camera per 60 s at 4 Mbps, so 512m holds ~17 camera-minutes. Deliberately
+    # NOT /dev/shm (64 MB on `app`, DataLoader-shared on `mono`).
+    tmpfs:
+      - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "7999:7999"   # Whisker-Watcher main app
       - "8005:8005"   # Training server
@@ -153,7 +171,8 @@ services:
       target: dev
       args: *build-args
     environment:
-      THUMB_CACHE_MAX_MB: 100
+      THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
+      STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training-dev}
       TZ: America/Chicago
@@ -174,6 +193,12 @@ services:
       - ./static/images:/app/static/images
       - .:/project
       - ./.vscode:/app/.vscode
+    # In-RAM rolling buffer for MediaMTX recordings (the NVR rewind window).
+    # A cap, not an allocation: an empty /buffer costs ~0 RAM. ~30 MB per
+    # camera per 60 s at 4 Mbps, so 512m holds ~17 camera-minutes. Deliberately
+    # NOT /dev/shm (64 MB on `app`, DataLoader-shared on `mono`).
+    tmpfs:
+      - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "7999:7999"
       - "8553:8554"
@@ -183,7 +208,7 @@ services:
 
   training-dev:
     container_name: whiskerwatcher_training_dev
-    shm_size: "2gb"
+    shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
       context: .
@@ -192,7 +217,9 @@ services:
       args: *build-args
     environment:
       TRAINING_CACHE_DIR: /training-cache
-      TRAINING_CACHE_MAX_MB: 10000
+      TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
+      TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
       - ./conf:/conf
       - ./logs:/logs
@@ -207,7 +234,7 @@ services:
 
   mono-dev:
     container_name: whiskerwatcher_mono_dev
-    shm_size: "2gb"
+    shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
       context: .
@@ -215,11 +242,14 @@ services:
       target: combined-dev
       args: *build-args
     environment:
-      THUMB_CACHE_MAX_MB: 100
+      THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
+      STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       TRAINING_SERVER_HOST: localhost
       DB_SERVER_HOST: localhost
       TRAINING_CACHE_DIR: /training-cache
-      TRAINING_CACHE_MAX_MB: 10000
+      TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
+      TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
       MODELS_ROOT: /app/models
       TZ: America/Chicago
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
@@ -237,6 +267,12 @@ services:
       - .:/project
       - ./.vscode:/app/.vscode
       - training_cache:/training-cache
+    # In-RAM rolling buffer for MediaMTX recordings (the NVR rewind window).
+    # A cap, not an allocation: an empty /buffer costs ~0 RAM. ~30 MB per
+    # camera per 60 s at 4 Mbps, so 512m holds ~17 camera-minutes. Deliberately
+    # NOT /dev/shm (64 MB on `app`, DataLoader-shared on `mono`).
+    tmpfs:
+      - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "7999:7999"
       - "8005:8005"

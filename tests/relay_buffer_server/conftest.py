@@ -8,11 +8,13 @@ from apps.relay_buffer_server.web import WebApp
 
 
 @pytest.fixture
-def manager(monkeypatch):
+def manager(monkeypatch, tmp_path):
     api_client = MagicMock()
     api_client.configuration.host = "http://localhost:9997"
 
     mgr = Manager(media_mtx_api_client=api_client)
+    # Keep lease persistence out of /data, which is a real bind mount in the container.
+    mgr._lease_file = tmp_path / "leases.json"
 
     # Patch all methods that make real network calls to mediamtx
     monkeypatch.setattr(mgr, "refresh_streams", AsyncMock())

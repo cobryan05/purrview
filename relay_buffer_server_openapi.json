@@ -97,6 +97,187 @@
         }
       }
     },
+    "/api/streams/ensure": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Ensure Stream Api",
+        "description": "Idempotently arm a relay path for a source and take a lease on it.\n\nConsumers read the returned master path directly \u2014 there is no per-consumer\npath, because fanning out from the master is the whole point of the relay.\nThe response carries `recording`/`retentionS` so a caller can tell the user\n\"this source has no rewind buffer\" instead of silently cutting empty clips.",
+        "operationId": "ensureStream",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_ensureStream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/release": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Release Stream Api",
+        "description": "Release one lease; the relay path is torn down when it was the last.",
+        "operationId": "releaseStream",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_releaseStream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{name}/ranges": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Stream Ranges Api",
+        "description": "Time ranges currently held in the rolling buffer for a path.\n\nThis is the honest answer to \"how much rewind do I have\", which is not the\nconfigured retention: the buffer is RAM-backed, so a relay restart shortens\nit without warning.",
+        "operationId": "streamRanges",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/clip": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Extract Clip Api",
+        "description": "Cut a window out of the rolling buffer into a file.\n\nRetroactive by design: pre-roll is whatever the caller asks for at event\ntime, not something fixed when the stream was created. The result reports\n`partialPreroll` when the requested window had partly aged out, so a\ntruncated clip is never presented as a complete one.",
+        "operationId": "extractClip",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_extractClip"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/buffer": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Buffer Usage Api",
+        "description": "RAM buffer budget: cap, committed bytes, and actual mount usage.",
+        "operationId": "bufferUsage",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/streams/destroy": {
       "post": {
         "tags": [
@@ -219,6 +400,84 @@
           "stream_name"
         ],
         "title": "Body_destroyStream"
+      },
+      "Body_ensureStream": {
+        "properties": {
+          "source_url": {
+            "type": "string",
+            "title": "Source Url",
+            "description": "Source URL to relay (rtsp://, rtmp://, srt://, http(s):// \u2026)"
+          },
+          "holder": {
+            "type": "string",
+            "title": "Holder",
+            "description": "Identity of the consumer taking the lease",
+            "default": ""
+          },
+          "retention_s": {
+            "type": "number",
+            "title": "Retention S",
+            "description": "Seconds of rolling buffer to keep; negative uses the server default",
+            "default": -1.0
+          },
+          "record": {
+            "type": "boolean",
+            "title": "Record",
+            "description": "Whether to maintain a rolling buffer for this source",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_url"
+        ],
+        "title": "Body_ensureStream"
+      },
+      "Body_extractClip": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Master path name to cut from"
+          },
+          "start": {
+            "type": "string",
+            "title": "Start",
+            "description": "Clip start as an ISO-8601 timestamp"
+          },
+          "duration_s": {
+            "type": "number",
+            "title": "Duration S",
+            "description": "Clip duration in seconds"
+          },
+          "dest": {
+            "type": "string",
+            "title": "Dest",
+            "description": "Absolute destination file path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "start",
+          "duration_s",
+          "dest"
+        ],
+        "title": "Body_extractClip"
+      },
+      "Body_releaseStream": {
+        "properties": {
+          "lease_id": {
+            "type": "string",
+            "title": "Lease Id",
+            "description": "Lease id returned by ensure"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lease_id"
+        ],
+        "title": "Body_releaseStream"
       },
       "HTTPValidationError": {
         "properties": {

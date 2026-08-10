@@ -84,6 +84,22 @@ FILES_ROOT = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 # Maximum thumbnail cache size in MB. Set to 0 to disable the limit.
 THUMB_CACHE_MAX_MB = int(os.environ.get("THUMB_CACHE_MAX_MB", "100"))
 
+# In-RAM rolling buffer that MediaMTX records stream segments into, giving the
+# stream watcher a rewind window to cut event clips from. Backed by a dedicated
+# tmpfs mount (see docker-compose.yaml) — deliberately NOT /dev/shm, which is
+# 64 MB on the `app` container and shared with the PyTorch DataLoader on `mono`.
+STREAM_BUFFER_DIR = Path(os.environ.get("STREAM_BUFFER_DIR", "/buffer"))
+# The tmpfs cap, in the same docker size syntax the mount option uses ("512m").
+# Passed in as an env var as well as a mount option so the relay can refuse to
+# arm a source whose committed bytes would breach the mount, instead of only
+# discovering the limit by failing a write.
+STREAM_BUFFER_SIZE = os.environ.get("STREAM_BUFFER_SIZE", "512m")
+# Default seconds of rewind a recorded path keeps. Deliberately under a minute: the
+# buffer is RAM, and the design trades depth for costing ~nothing while idle. Lives
+# here rather than in relay_buffer_server so db_server can validate a watch profile's
+# pre-roll against it without importing another service.
+STREAM_BUFFER_RETENTION_S = float(os.environ.get("STREAM_BUFFER_RETENTION_S", "45"))
+
 # How long a finished (completed/error) task instance is kept before the tasks
 # server prunes it, and how many are kept regardless of age. Both bounds apply —
 # whichever is reached first — because they answer different questions: the age

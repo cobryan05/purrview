@@ -18,8 +18,24 @@ READ_TIMEOUT = 10.0  # Timeout for subsequent stream reads
 MAX_NO_FRAME_TIME = 5.0  # Max time between frames even during initial delay
 DELAY_STEP_SIZE = 0.1  # Increment step for increasing delay up to target delay
 
+# Bound on buffered chunks. Chunks are ~16 KB, so this is roughly 32 MB per stream —
+# enough to ride out an output stall, small enough that a permanently stalled output
+# can't consume the box. Previously unbounded, which meant a stalled output pipe grew
+# RAM without limit.
+MAX_QUEUED_CHUNKS = 2048
+
 
 class DelayedStreamer:
+    """Re-publishes a stream on a wallclock delay.
+
+    **Not part of the NVR recording path.** Event clips come from MediaMTX's recorded
+    rolling buffer via the playback server, which gives retroactive, per-event pre-roll;
+    a delayed stream only ever offers "the live feed, permanently N seconds late", can't
+    produce a clip for an event that has already finished, and costs two long-lived
+    ffmpeg processes per camera. This class remains solely to serve a live *delayed
+    view* in a browser. Do not build recording on it.
+    """
+
     @dataclass
     class QueueItem:
         data: bytes
@@ -29,11 +45,25 @@ class DelayedStreamer:
         self._source: FFmpegStreamerIn = source
         self._dest: FFmpegStreamerOut = dest
         self._delay: float = delay
-        self._data_queue: asyncio.Queue[DelayedStreamer.QueueItem] = asyncio.Queue()
+        self._data_queue: asyncio.Queue[DelayedStreamer.QueueItem] = asyncio.Queue(maxsize=MAX_QUEUED_CHUNKS)
         self._stop_event: asyncio.Event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self._thread_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1)
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Counters a consumer can read to tell whether the delay guarantee is intact.
+        # A silently-reset delay is the failure mode that made this class unusable as a
+        # pre-roll mechanism: it stopped being delayed exactly when it mattered.
+        self.dropped_chunks: int = 0
+        self.delay_resets: int = 0
+
+    @property
+    def delay_intact(self) -> bool:
+        """False once an output stall has forced the delay back to zero.
+
+        Consumers must check this rather than assuming the configured delay still
+        holds; the ramp-back-up takes DELAY_STEP_SIZE per written chunk.
+        """
+        return self.delay_resets == 0
 
     def start(self) -> None:
         """Starts the background task to manage frame reading and buffering."""
@@ -53,7 +83,7 @@ class DelayedStreamer:
         self._source.start()
         self._dest.start()
 
-        self._data_queue = asyncio.Queue()
+        self._data_queue = asyncio.Queue(maxsize=MAX_QUEUED_CHUNKS)
 
         next_item: Optional[DelayedStreamer.QueueItem] = None
         last_write_timestamp: float = 0.0
@@ -88,7 +118,20 @@ class DelayedStreamer:
                     if next_item is None:
                         next_item = item
                     else:
-                        await self._data_queue.put(item)
+                        # Drop-oldest rather than await put(): blocking here would stall
+                        # the read side too, so a stalled output would back pressure into
+                        # the camera connection instead of just degrading this view.
+                        while True:
+                            try:
+                                self._data_queue.put_nowait(item)
+                                break
+                            except asyncio.QueueFull:
+                                try:
+                                    self._data_queue.get_nowait()
+                                    self._data_queue.task_done()
+                                    self.dropped_chunks += 1
+                                except asyncio.QueueEmpty:
+                                    break
 
                 now = time.time()
                 if next_item and (now >= next_item.target_time or now > last_write_timestamp + MAX_NO_FRAME_TIME):
@@ -96,10 +139,19 @@ class DelayedStreamer:
                         await self._await_in_thread(self._dest.write, next_item.data)
                     except BrokenPipeError:
                         write_error_cnt += 1
-                        logger.warning(f"Publish stream failed (cnt: {write_error_cnt}).")
                         self._dest.stop()
                         self._dest.start()
+                        # The stream is briefly NOT delayed after this, and ramps back
+                        # up only DELAY_STEP_SIZE per written chunk. Surface it loudly
+                        # and record it on `delay_resets` — a caller that assumed the
+                        # delay still held would be silently wrong.
                         current_delay = 0.0
+                        self.delay_resets += 1
+                        logger.warning(
+                            f"Publish stream failed (cnt: {write_error_cnt}); delay reset to 0 "
+                            f"and ramping back to {self._delay}s — the delay guarantee is not "
+                            f"held until it recovers (resets: {self.delay_resets})."
+                        )
 
                     now = time.time()
                     last_write_timestamp = now

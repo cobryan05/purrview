@@ -11,6 +11,7 @@ import numpy as np
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
+from apps.helpers.streams.ingest import resolve_ingest_tier
 
 from .imageProvider import (
     ImageProvider,
@@ -49,6 +50,12 @@ class FfmpegImageProvider(ImageProvider):
     def provider_type(cls) -> ImageProviderType:
         return ImageProviderType.LIVE_STREAM
 
+    @classmethod
+    def ingest_tier(cls) -> str:
+        """Defer to the URL: this provider covers everything ffmpeg can read, which
+        spans both what MediaMTX pulls natively and what needs an ffmpeg ingest."""
+        return "native"
+
     def __init__(
         self,
         video_path: str,
@@ -78,14 +85,25 @@ class FfmpegImageProvider(ImageProvider):
         self._next_capture_time: float = 0.0
         self._frame_idx: int = 0
         self._restart_count: int = 0
-        if rtsp_relay and video_path.lower().startswith("rtsp:"):
+        self._lease_id: str = ""
+        # Relay whenever the resolved ingest tier can actually be got into a MediaMTX
+        # path — not just for `rtsp:`. Recording is a property of the path, so this one
+        # condition is what makes MJPEG cameras, V4L2 devices and other ffmpeg-readable
+        # sources buffer-capable too.
+        self._ingest_plan = resolve_ingest_tier(type(self), {"video_path": self._video_path})
+        # What the UI's buffer badge reads. Set from the resolver up front and corrected
+        # from the relay's answer in start(), because only the relay knows whether the
+        # path is actually recording.
+        self.ingest_tier_name: str = self._ingest_plan.tier.value
+        self.buffered: bool = False
+        if rtsp_relay and self._ingest_plan.buffered:
             relay_host, relay_port = (
                 APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].host,
                 APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].port,
             )
             config = relay_buffer_client.Configuration(f"http://{relay_host}:{relay_port}")
             self._rtsp_relay_api = relay_buffer_client.ApiClient(config)
-            self._relayed_name = f"stream-{uuid.uuid4()}"
+            self._relayed_name = f"provider-{uuid.uuid4()}"
 
     def __repr__(self):
         return f"FfmpegImageProvider [{self._stream}]"
@@ -93,34 +111,55 @@ class FfmpegImageProvider(ImageProvider):
     async def start(self) -> None:
         if self._rtsp_relay_api:
             api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
-            await asyncio.to_thread(api.create_stream, self._video_path, self._relayed_name)
+            # Take a lease on the shared master path and read it directly. The old code
+            # created a second, per-consumer path sourced from the master over RTSP
+            # loopback — an extra hop and an extra MediaMTX reader per consumer, for
+            # nothing, and it got worse the moment two tasks watched one camera.
+            ensured = await asyncio.to_thread(
+                api.ensure_stream,
+                self._video_path,
+                self._relayed_name,
+            )
+            if not ensured.get("success"):
+                raise RuntimeError(f"Relay refused to arm {self._video_path}: {ensured.get('error')}")
+            self._lease_id = ensured["leaseId"]
+            self._relayed_name = ensured["path"]
+            self.buffered = bool(ensured.get("recording"))
+            self.ingest_tier_name = ensured.get("ingestTier", self._ingest_plan.tier.value)
 
-            async def wait_for_stream(
-                api,
-                stream_name: str,
-                timeout: float = STREAM_START_TIMEOUT,
-                poll_interval: float = 0.5,
-            ) -> bool:
-                deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
-                    streams = await asyncio.to_thread(api.list_streams)
-                    for stream in streams.get("results", []):
-                        if stream.get("name") == stream_name:
-                            if stream["info"]["mtx_path"]["bytes_received"] > 0:
-                                return True
-                            break
-                    await asyncio.sleep(poll_interval)
-                return False
-
-            stream_found = await wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT)
-            if not stream_found:
-                raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to appear in relay list")
-            stream_url = f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
+            if not await self._wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT):
+                raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to become ready on the relay")
+            stream_url = ensured.get("rtspUrl") or (
+                f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:"
+                f"{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
+            )
         else:
             stream_url = self._video_path
 
         self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
         await self._stream.astart()
+
+    @staticmethod
+    async def _wait_for_stream(api, stream_name: str, timeout: float, poll_interval: float = 0.5) -> bool:
+        """Wait for the relay path to be ready to read.
+
+        Keys on the path's `ready` flag rather than `bytes_received > 0`: the latter is
+        a snapshot counter that reads 0 for a stream which is connected but momentarily
+        idle, so it produced spurious start-up timeouts on low-bitrate cameras.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            streams = await asyncio.to_thread(api.list_streams)
+            for stream in streams.get("results", []):
+                if stream.get("name") != stream_name:
+                    continue
+                info = stream.get("info") or {}
+                mtx_path = info.get("mtx_path") or {}
+                if info.get("active") or mtx_path.get("ready") or (mtx_path.get("bytes_received") or 0) > 0:
+                    return True
+                break
+            await asyncio.sleep(poll_interval)
+        return False
 
     async def stop(self) -> None:
         if self._stream is not None:
@@ -128,7 +167,12 @@ class FfmpegImageProvider(ImageProvider):
         if self._rtsp_relay_api:
             try:
                 api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
-                await asyncio.to_thread(api.destroy_stream, self._relayed_name)
+                if self._lease_id:
+                    # Release the lease, not the path: another watcher may still be
+                    # reading this camera, and the relay's refcount decides.
+                    await asyncio.to_thread(api.release_stream, self._lease_id)
+                else:
+                    await asyncio.to_thread(api.destroy_stream, self._relayed_name)
             except Exception as e:
                 logger.error(f"Failed to destroy relay stream {self._relayed_name}: {e}")
 

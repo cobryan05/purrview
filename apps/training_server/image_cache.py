@@ -26,7 +26,7 @@ from typing import Iterable, Optional
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = "/training-cache"
-_DEFAULT_MAX_MB = 5000  # 5 GB
+_DEFAULT_MAX_MB = 10000  # 10 GB — matches TRAINING_CACHE_MAX_MB in docker-compose.yaml
 _DEFAULT_MAX_AGE_DAYS = 30  # 0 disables the age bound
 _MAX_IMAGE_MB = 50  # reject members larger than this
 

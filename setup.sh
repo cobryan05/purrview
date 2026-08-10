@@ -31,6 +31,30 @@ ask_str() {  # ask_str "Question" default -> echoes answer
   else read -r -p "$prompt " reply || true; echo "$reply"; fi
 }
 
+# Ask for a docker size string (e.g. 512m, 2gb). Re-prompts until valid, so a
+# typo is caught here rather than becoming an opaque compose error later.
+ask_size() {  # ask_size "Question" default -> echoes answer
+  local prompt="$1" def="$2" reply
+  while true; do
+    read -r -p "$prompt [$def] " reply >&2 || true
+    reply="${reply:-$def}"
+    if printf '%s' "$reply" | grep -Eiq '^[0-9]+[kmg]b?$'; then echo "$reply"; return 0; fi
+    echo "  !! Expected a size like 512m, 1g or 2gb — got '$reply'." >&2
+  done
+}
+
+# Ask for a bare integer (MB / days / seconds). Deliberately a *different*
+# validator from ask_size: these fields must not accept a '100mb'-style suffix.
+ask_int() {  # ask_int "Question" default -> echoes answer
+  local prompt="$1" def="$2" reply
+  while true; do
+    read -r -p "$prompt [$def] " reply >&2 || true
+    reply="${reply:-$def}"
+    if printf '%s' "$reply" | grep -Eq '^[0-9]+$'; then echo "$reply"; return 0; fi
+    echo "  !! Expected a plain number with no unit suffix — got '$reply'." >&2
+  done
+}
+
 menu() {  # menu "Title" "opt1" "opt2" ... -> echoes chosen index (1-based) on stderr-free stdout
   local title="$1"; shift
   local i=1
@@ -178,6 +202,58 @@ case "$ROLE" in
     ;;
 esac
 
+# ---- sizing (RAM + disk caches) -------------------------------------------
+# Every knob has a working default in docker-compose.yaml, so the whole section
+# is opt-in and the common path stays one question long. Each prompt is gated on
+# whether this deployment actually contains the service that consumes it:
+#   mediamtx runners (stream buffer, thumb cache) -> roles 1, 2, 4
+#   training containers (shm, training cache)     -> roles 1, 3, 4
+STREAM_BUFFER_SIZE=""
+TRAINING_SHM_SIZE=""
+THUMB_CACHE_MAX_MB=""
+TRAINING_CACHE_MAX_MB=""
+TRAINING_CACHE_MAX_AGE_DAYS=""
+TRAINING_CACHE_SWEEP_INTERVAL_SEC=""
+
+HAS_MEDIAMTX="y"; [ "$ROLE" = "3" ] && HAS_MEDIAMTX="n"
+HAS_TRAINING="y"; [ "$ROLE" = "2" ] && HAS_TRAINING="n"
+
+echo
+if ask "Tune cache and buffer sizes? (defaults are fine for most deployments)" n; then
+  echo
+  if [ "$HAS_MEDIAMTX" = "y" ]; then
+    echo "-- Stream rewind buffer (in-RAM, tmpfs /buffer) --"
+    echo "   MediaMTX records each watched camera here so events can be cut with"
+    echo "   pre-roll. It's a cap, not an allocation: an empty buffer costs ~0 RAM."
+    echo "   Rule of thumb: ~30 MB per camera per 60 s of rewind at 4 Mbps."
+    BUF_CAMS="$(ask_int "  How many cameras will this host watch?" 4)"
+    BUF_SECS="$(ask_int "  How many seconds of rewind do you want?" 60)"
+    # 4 Mbps = 0.5 MB/s; double it for headroom against bitrate spikes and
+    # keyframe-aligned segments that overshoot the requested retention.
+    BUF_SUGGEST=$(( (BUF_CAMS * BUF_SECS / 2) * 2 ))
+    [ "$BUF_SUGGEST" -lt 128 ] && BUF_SUGGEST=128
+    STREAM_BUFFER_SIZE="$(ask_size "  Buffer size:" "${BUF_SUGGEST}m")"
+    echo
+    echo "-- Thumbnail cache --"
+    echo "   Disk cap in MB. NOTE: 0 disables the limit entirely (unbounded), it"
+    echo "   does not mean 'no cache'."
+    THUMB_CACHE_MAX_MB="$(ask_int "  Thumbnail cache MB:" 100)"
+    echo
+  fi
+  if [ "$HAS_TRAINING" = "y" ]; then
+    echo "-- Training shared memory --"
+    echo "   The PyTorch DataLoader's /dev/shm budget. Too small a value surfaces"
+    echo "   as a confusing disk-full-looking crash rather than an obvious OOM."
+    TRAINING_SHM_SIZE="$(ask_size "  Shared memory size:" "2gb")"
+    echo
+    echo "-- Training image cache --"
+    TRAINING_CACHE_MAX_MB="$(ask_int "  Cache size cap (MB):" 10000)"
+    TRAINING_CACHE_MAX_AGE_DAYS="$(ask_int "  Evict entries older than (days):" 30)"
+    TRAINING_CACHE_SWEEP_INTERVAL_SEC="$(ask_int "  Sweep interval (seconds):" 3600)"
+    echo
+  fi
+fi
+
 # ---- write .env -----------------------------------------------------------
 if [ -f "$ENV_FILE" ]; then
   ask "Overwrite existing $ENV_FILE?" y || { echo "Kept existing $ENV_FILE. Nothing written."; exit 0; }
@@ -196,6 +272,16 @@ fi
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
   echo "APPUSER_UID=$UID_VAL"
   echo "APPUSER_GID=$GID_VAL"
+  # Sizing knobs are only written when the user opted into tuning them; otherwise
+  # the compose defaults apply, so an untuned .env stays as short as it was.
+  echo
+  [ -n "$STREAM_BUFFER_SIZE" ] && echo "STREAM_BUFFER_SIZE=$STREAM_BUFFER_SIZE"
+  [ -n "$THUMB_CACHE_MAX_MB" ] && echo "THUMB_CACHE_MAX_MB=$THUMB_CACHE_MAX_MB"
+  [ -n "$TRAINING_SHM_SIZE" ] && echo "TRAINING_SHM_SIZE=$TRAINING_SHM_SIZE"
+  [ -n "$TRAINING_CACHE_MAX_MB" ] && echo "TRAINING_CACHE_MAX_MB=$TRAINING_CACHE_MAX_MB"
+  [ -n "$TRAINING_CACHE_MAX_AGE_DAYS" ] && echo "TRAINING_CACHE_MAX_AGE_DAYS=$TRAINING_CACHE_MAX_AGE_DAYS"
+  [ -n "$TRAINING_CACHE_SWEEP_INTERVAL_SEC" ] && echo "TRAINING_CACHE_SWEEP_INTERVAL_SEC=$TRAINING_CACHE_SWEEP_INTERVAL_SEC"
+  true
 } > "$ENV_FILE"
 
 echo

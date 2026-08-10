@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+from dataclasses import dataclass
 from subprocess import Popen
 from typing import Any, Dict, Optional, Tuple
 
@@ -10,6 +12,74 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
 READ_CHUNK_SIZE = 16 * 1024
+
+# A `Stream #0:0: Video: ...` banner line, which is where ffmpeg reports geometry.
+_VIDEO_BANNER_RE = re.compile(r"Stream #\d+:\d+.*?:\s*Video:", re.IGNORECASE)
+# WxH as a standalone token. The word boundaries matter: without them `0x18424752`
+# (the rawvideo fourcc) parses as a resolution.
+_RESOLUTION_RE = re.compile(r"(?<![\w.])(\d{2,5})x(\d{2,5})(?![\w.])")
+# fps is what we want; tbr is the fallback, since plenty of IP cameras report only
+# that and waiting for an fps figure that never arrives hangs the stream forever.
+_FPS_RE = re.compile(r"([\d.]+)\s*fps")
+_TBR_RE = re.compile(r"([\d.]+)\s*tbr")
+# Pixel format token, e.g. `yuv420p(progressive)` or `rgb24(pc, gbr/...)`.
+_PIX_FMT_RE = re.compile(r"\b((?:yuv|yuvj|rgb|bgr|gray|nv)\w*)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class VideoStreamMetadata:
+    width: int
+    height: int
+    fps: float
+    pixel_format: str
+
+    @property
+    def rgb24_frame_size(self) -> int:
+        """Bytes per frame once ffmpeg has converted to rgb24, which is what the
+        rawvideo output pipe always carries regardless of the source's own format."""
+        return self.width * self.height * 3
+
+
+def parse_video_stream_banner(line: str) -> Optional[VideoStreamMetadata]:
+    """Parse one ffmpeg stderr line into video metadata, or None if it isn't a
+    complete video-stream banner.
+
+    Deliberately tolerant, because the caller cannot recover from a miss: for a live
+    source stderr never reaches EOF, so failing to parse means `wait_for_metadata()`
+    blocks forever instead of raising. Handles the real-world shapes that broke a
+    naive comma-splitting parser — `640x480 [SAR 1:1 DAR 4:3]` (a space inside the
+    resolution field), `rawvideo (RGB[24] / 0x18424752)` (an 'x' that is not a
+    resolution), and cameras that report `tbr` but no `fps`.
+
+    Returns None rather than partial data: a wrong frame size silently misaligns every
+    subsequent read off the rawvideo pipe, which is far worse than reading one more
+    line of stderr.
+    """
+    if not _VIDEO_BANNER_RE.search(line):
+        return None
+
+    resolution = _RESOLUTION_RE.search(line)
+    if not resolution:
+        return None
+
+    fps_match = _FPS_RE.search(line) or _TBR_RE.search(line)
+    if not fps_match:
+        return None
+
+    candidates = [m.group(1).lower() for m in _PIX_FMT_RE.finditer(line)]
+    if not candidates:
+        return None
+    # Prefer a token carrying a bit depth ("rgb24", "yuv420p") over a bare one: the
+    # codec parenthetical `rawvideo (RGB[24] / 0x…)` yields a spurious "rgb" that
+    # appears *before* the real pixel format in the line.
+    pixel_format = next((c for c in candidates if any(ch.isdigit() for ch in c)), candidates[0])
+
+    return VideoStreamMetadata(
+        width=int(resolution.group(1)),
+        height=int(resolution.group(2)),
+        fps=float(fps_match.group(1)),
+        pixel_format=pixel_format,
+    )
 
 
 class FFmpegStreamerIn:
@@ -200,30 +270,29 @@ class FFmpegStreamerIn:
                 logger.error(f"Worker task for {self._source} raised during astop: {e}")
 
     def _extract_metadata_from_stderr(self) -> None:
-        """Extracts metadata from the FFmpeg process's stderr output."""
+        """Extracts metadata from the FFmpeg process's stderr output.
+
+        Note this only ever returns for a *finite* source unless a banner parses:
+        for a live camera stderr never reaches EOF, so a parse failure shows up as
+        `wait_for_metadata()` hanging rather than raising. That makes the parser's
+        tolerance load-bearing — see `parse_video_stream_banner`.
+        """
         assert self._process is not None and self._process.stderr is not None
         try:
             for line in iter(self._process.stderr.readline, b""):
-                line = line.decode("utf-8").strip()
+                line = line.decode("utf-8", "replace").strip()
                 logger.debug(f"FFmpeg stderr: {line}")
 
-                # Parse resolution
-                if "Stream #" in line and "Video:" in line:
-                    parts = line.split(",")
-                    for part in parts:
-                        if "x" in part and "fps" not in part and " " not in part.strip():
-                            resolution = part.strip().split(" ")[0]
-                            self._width, self._height = map(int, resolution.split("x"))
-                        elif "fps" in part:
-                            self._fps = float(part.strip().split(" ")[0])
-                        elif "rgb" in part or "yuv" in part:
-                            self._pixel_format = part.strip()
-
-                    # If all metadata is found, set the event
-                    if self._width and self._height and self._fps and self._pixel_format:
-                        self._frame_size = self._width * self._height * 3  # Assuming rgb24
-                        self._metadata_event.set()
-                        break
+                meta = parse_video_stream_banner(line)
+                if meta is None:
+                    continue
+                self._width = meta.width
+                self._height = meta.height
+                self._fps = meta.fps
+                self._pixel_format = meta.pixel_format
+                self._frame_size = meta.rgb24_frame_size
+                self._metadata_event.set()
+                break
         except Exception as e:
             logger.error(f"Error while extracting metadata: {e}")
         finally:
