@@ -1,0 +1,307 @@
+"""Interaction rules and their per-rule state machine.
+
+The state machine is the whole reason this module exists. A raw predicate like
+`containment(cat, litterbox) > 0.6` crosses its threshold many times per second
+because detection confidence and box geometry jitter. Dispatching on the raw
+predicate means an MQTT storm and a dozen three-second clips for one litter-box
+visit. Three guards fix that, and every rule carries all three:
+
+* ``min_duration_s`` — the predicate must hold *continuously* before the event starts,
+* ``rearm_delay_s`` — it must be *continuously false* before the event ends,
+* ``max_duration_s`` — a hard cap, so a stuck detection can't record forever.
+
+States::
+
+    IDLE ──predicate true──> PENDING ──held min_duration──> ACTIVE
+      ^                         │                              │
+      │                    predicate false                predicate false
+      │                         v                              v
+      └───────────────────── IDLE                          CLOSING
+                                                               │
+                                          ┌────false for rearm_delay────> IDLE (END)
+                                          └────true again────> ACTIVE (no new event)
+
+The `CLOSING` state is what coalesces a flapping predicate into one event: a
+re-fire inside the rearm window rejoins the event in progress rather than opening a
+new one.
+"""
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Sequence
+
+from ..tracking.tracker import Track
+from .events import EventPhase, WatchEventSignal
+from .geometry import Zone, centroid, containment, iou, normalised_distance
+
+
+class RuleState(str, Enum):
+    IDLE = "idle"
+    PENDING = "pending"  # predicate true, waiting out min_duration_s
+    ACTIVE = "active"  # event open
+    CLOSING = "closing"  # predicate false, waiting out rearm_delay_s
+
+
+@dataclass
+class RuleSpec:
+    """A rule's configuration, decoupled from its DB row so the engine stays pure."""
+
+    uuid: str
+    name: str
+    subject_a_kind: str  # "label" | "zone" | "any"
+    subject_a_ref: Optional[str]
+    relation: str  # "present" | "iou" | "contains" | "centroid_in" | "distance"
+    subject_b_kind: str  # "label" | "zone" | "none"
+    subject_b_ref: Optional[str]
+    threshold: float = 0.5
+    min_duration_s: float = 2.0
+    rearm_delay_s: float = 10.0
+    max_duration_s: float = 300.0
+    enabled: bool = True
+    event_label: Optional[str] = None
+
+    @classmethod
+    def from_row(cls, row) -> "RuleSpec":
+        get = row.get if isinstance(row, dict) else lambda k, d=None: getattr(row, k, d)
+        return cls(
+            uuid=get("uuid"),
+            name=get("name"),
+            subject_a_kind=get("subject_a_kind", "label"),
+            subject_a_ref=get("subject_a_ref"),
+            relation=get("relation", "contains"),
+            subject_b_kind=get("subject_b_kind", "none"),
+            subject_b_ref=get("subject_b_ref"),
+            threshold=get("threshold", 0.5),
+            min_duration_s=get("min_duration_s", 2.0),
+            rearm_delay_s=get("rearm_delay_s", 10.0),
+            max_duration_s=get("max_duration_s", 300.0),
+            enabled=get("enabled", True),
+            event_label=get("event_label"),
+        )
+
+
+@dataclass
+class PredicateResult:
+    """Whether a rule's condition holds right now, and which tracks satisfied it."""
+
+    holds: bool
+    track_ids: List[int] = field(default_factory=list)
+    score: float = 0.0
+    confidence: float = 0.0
+
+
+def _matching_tracks(tracks: Sequence[Track], kind: str, ref: Optional[str]) -> List[Track]:
+    if kind == "any":
+        return list(tracks)
+    if kind == "label":
+        return [t for t in tracks if t.label_uuid == ref]
+    return []
+
+
+def evaluate_predicate(
+    spec: RuleSpec,
+    tracks: Sequence[Track],
+    zones: Dict[str, Zone],
+    frame_width: float,
+    frame_height: float,
+) -> PredicateResult:
+    """Evaluate a rule against one frame's tracks. Pure — no state, no I/O."""
+    subjects_a = _matching_tracks(tracks, spec.subject_a_kind, spec.subject_a_ref)
+    if not subjects_a:
+        return PredicateResult(holds=False)
+
+    # Arity 1: "a cat is tracked at all". Same machinery as the two-subject relations,
+    # which is why single-object rules need no special case downstream.
+    if spec.relation == "present":
+        best = max(subjects_a, key=lambda t: t.confidence)
+        return PredicateResult(
+            holds=best.confidence >= spec.threshold,
+            track_ids=[t.track_id for t in subjects_a if t.confidence >= spec.threshold],
+            score=best.confidence,
+            confidence=best.confidence,
+        )
+
+    # Subject B is either a zone (the common, most reliable case) or another label.
+    if spec.subject_b_kind == "zone":
+        zone = zones.get(spec.subject_b_ref or "")
+        if zone is None:
+            # A dangling zone reference can only ever be false. The validate endpoint
+            # surfaces this at config time; here it must simply not fire.
+            return PredicateResult(holds=False)
+        targets: List[Any] = [zone]
+    else:
+        targets = _matching_tracks(tracks, spec.subject_b_kind, spec.subject_b_ref)
+        if not targets:
+            return PredicateResult(holds=False)
+
+    best_score = 0.0
+    best_conf = 0.0
+    matched: List[int] = []
+
+    for track_a in subjects_a:
+        for target in targets:
+            if isinstance(target, Zone):
+                if spec.relation == "centroid_in":
+                    score = 1.0 if target.contains_point(centroid(track_a.bbox), frame_width, frame_height) else 0.0
+                elif spec.relation == "distance":
+                    # Distance is an inverted predicate: closer is "more true", so the
+                    # threshold is an upper bound and the score is inverted to keep
+                    # "higher score = closer to firing" true everywhere.
+                    dist = normalised_distance(
+                        track_a.bbox, target.bounds(frame_width, frame_height), frame_width, frame_height
+                    )
+                    score = 1.0 - dist if dist <= spec.threshold else 0.0
+                elif spec.relation == "iou":
+                    score = iou(track_a.bbox, target.bounds(frame_width, frame_height))
+                else:  # contains
+                    score = target.overlap_fraction(track_a.bbox, frame_width, frame_height)
+            else:
+                if track_a.track_id == target.track_id:
+                    continue  # an object never interacts with itself
+                if spec.relation == "centroid_in":
+                    cx, cy = centroid(track_a.bbox)
+                    bx1, by1, bx2, by2 = target.bbox
+                    score = 1.0 if (bx1 <= cx <= bx2 and by1 <= cy <= by2) else 0.0
+                elif spec.relation == "distance":
+                    dist = normalised_distance(track_a.bbox, target.bbox, frame_width, frame_height)
+                    score = 1.0 - dist if dist <= spec.threshold else 0.0
+                elif spec.relation == "iou":
+                    score = iou(track_a.bbox, target.bbox)
+                else:  # contains
+                    score = containment(track_a.bbox, target.bbox)
+
+            # centroid_in and distance already encode their own thresholding, so a
+            # positive score means the predicate held for that pair.
+            fired = score > 0.0 if spec.relation in ("centroid_in", "distance") else score >= spec.threshold
+            if fired:
+                matched.append(track_a.track_id)
+            if score > best_score:
+                best_score = score
+                best_conf = track_a.confidence
+
+    return PredicateResult(
+        holds=bool(matched),
+        track_ids=sorted(set(matched)),
+        score=best_score,
+        confidence=best_conf,
+    )
+
+
+class RuleMachine:
+    """Per-rule hysteresis state. One instance per (rule, source)."""
+
+    def __init__(self, spec: RuleSpec, source_uuid: Optional[str] = None) -> None:
+        self.spec = spec
+        self.source_uuid = source_uuid
+        self.state = RuleState.IDLE
+        #: When the predicate most recently became true (the event's real start).
+        self._true_since: Optional[float] = None
+        #: When the predicate most recently became false (the rearm countdown's start).
+        self._false_since: Optional[float] = None
+        self._event_started_at: Optional[float] = None
+        self._track_ids: List[int] = []
+        self._peak_confidence: float = 0.0
+        #: How many times the predicate flapped while an event was open. Surfaced as a
+        #: tuning hint — a rule that flaps a lot wants a longer rearm delay.
+        self.flap_count: int = 0
+
+    # ------------------------------------------------------------------ helpers
+
+    def _signal(self, phase: EventPhase, now: float, truncated: bool = False) -> WatchEventSignal:
+        return WatchEventSignal(
+            rule_uuid=self.spec.uuid,
+            rule_name=self.spec.name,
+            phase=phase,
+            at=now,
+            started_at=self._event_started_at if self._event_started_at is not None else now,
+            source_uuid=self.source_uuid,
+            track_ids=list(self._track_ids),
+            peak_confidence=self._peak_confidence,
+            truncated=truncated,
+            metadata={"eventLabel": self.spec.event_label} if self.spec.event_label else {},
+        )
+
+    def _reset(self) -> None:
+        self.state = RuleState.IDLE
+        self._true_since = None
+        self._false_since = None
+        self._event_started_at = None
+        self._track_ids = []
+        self._peak_confidence = 0.0
+
+    # ------------------------------------------------------------------ step
+
+    def step(self, result: PredicateResult, now: float) -> List[WatchEventSignal]:
+        """Advance the machine one frame; return any transitions to dispatch."""
+        if not self.spec.enabled:
+            if self.state != RuleState.IDLE:
+                # Disabling a rule mid-event must close it, not strand it open forever.
+                signals = [self._signal(EventPhase.END, now)]
+                self._reset()
+                return signals
+            return []
+
+        signals: List[WatchEventSignal] = []
+
+        if result.holds:
+            self._track_ids = sorted(set(self._track_ids) | set(result.track_ids))
+            self._peak_confidence = max(self._peak_confidence, result.confidence)
+            self._false_since = None
+
+            if self.state is RuleState.IDLE:
+                self.state = RuleState.PENDING
+                # The event's start is when the predicate *first* held, not when
+                # hysteresis confirmed it — pre-roll is measured back from here.
+                self._true_since = now
+            elif self.state is RuleState.PENDING:
+                assert self._true_since is not None
+                if now - self._true_since >= self.spec.min_duration_s:
+                    self.state = RuleState.ACTIVE
+                    self._event_started_at = self._true_since
+                    signals.append(self._signal(EventPhase.START, now))
+            elif self.state is RuleState.CLOSING:
+                # Re-fired inside the rearm window: rejoin the open event rather than
+                # opening a second one. This is what stops one visit becoming twelve.
+                self.state = RuleState.ACTIVE
+                self.flap_count += 1
+        else:
+            if self.state is RuleState.PENDING:
+                # Never reached min_duration — no event ever existed, so nothing to emit.
+                self._reset()
+            elif self.state is RuleState.ACTIVE:
+                self.state = RuleState.CLOSING
+                self._false_since = now
+            elif self.state is RuleState.CLOSING:
+                assert self._false_since is not None
+                if now - self._false_since >= self.spec.rearm_delay_s:
+                    signals.append(self._signal(EventPhase.END, now))
+                    self._reset()
+
+        # The runaway cap applies regardless of the predicate: a stuck detection would
+        # otherwise hold an event — and a recording — open indefinitely.
+        if (
+            self.state in (RuleState.ACTIVE, RuleState.CLOSING)
+            and self._event_started_at is not None
+            and now - self._event_started_at >= self.spec.max_duration_s
+        ):
+            signals.append(self._signal(EventPhase.END, now, truncated=True))
+            self._reset()
+
+        return signals
+
+    def force_close(self, now: float) -> Optional[WatchEventSignal]:
+        """Close an open event without waiting for hysteresis.
+
+        Used on shutdown and on resume: an event that was open when the task stopped
+        must be closed and its clip enqueued, not left dangling.
+        """
+        if self.state in (RuleState.ACTIVE, RuleState.CLOSING):
+            signal = self._signal(EventPhase.END, now, truncated=True)
+            self._reset()
+            return signal
+        self._reset()
+        return None
+
+    @property
+    def is_open(self) -> bool:
+        return self.state in (RuleState.ACTIVE, RuleState.CLOSING)
