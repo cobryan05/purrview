@@ -45,8 +45,10 @@ const DEFAULT_STATE = () => ({
   // BBOXES — an image with no bboxes can only ever be matched by these.
   imageTagConditions: [],
   filenameSearch: '',
+  filenameNegate: false,
   dateFrom: null,
   dateTo: null,
+  dateNegate: false,
   verificationCheck: null,
   // Bbox verification tri-state (V1) — filters bboxes by their VERIFIED /
   // UNVERIFIED tag. Distinct from `verificationCheck` above,
@@ -334,6 +336,18 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   primaryRow.appendChild(document.createTextNode('–'));
   primaryRow.appendChild(dateToInput);
 
+  const dateNegateLabel = document.createElement('label');
+  dateNegateLabel.className = 'itc-negate-label filter-date-negate';
+  dateNegateLabel.title = 'Exclude this range (date is NOT between from/to)';
+  const dateNegateCb = document.createElement('input');
+  dateNegateCb.type = 'checkbox';
+  dateNegateCb.addEventListener('change', () => {
+    _state.dateNegate = dateNegateCb.checked;
+    emit();
+  });
+  dateNegateLabel.append(dateNegateCb, document.createTextNode('¬'));
+  primaryRow.appendChild(dateNegateLabel);
+
   primaryRow.appendChild(makeSep());
   primaryRow.appendChild(makeLabel('File:'));
 
@@ -351,6 +365,19 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   });
 
   primaryRow.appendChild(filenameInput);
+
+  const filenameNegateLabel = document.createElement('label');
+  filenameNegateLabel.className = 'itc-negate-label filter-filename-negate';
+  filenameNegateLabel.title = 'Exclude matches (filename does NOT contain this)';
+  const filenameNegateCb = document.createElement('input');
+  filenameNegateCb.type = 'checkbox';
+  filenameNegateCb.addEventListener('change', () => {
+    _state.filenameNegate = filenameNegateCb.checked;
+    emit();
+  });
+  filenameNegateLabel.append(filenameNegateCb, document.createTextNode('¬'));
+  primaryRow.appendChild(filenameNegateLabel);
+
   panel.appendChild(primaryRow);
 
   // ── Secondary row: Verification + Image Label Filters side by side ────────
@@ -522,13 +549,23 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     });
 
     if (s.filenameSearch) {
-      chips.push({ key: 'filename', label: `File: ${s.filenameSearch}`, onRemove: () => setState({ filenameSearch: '' }) });
+      const negate = s.filenameNegate ? '¬' : '';
+      chips.push({
+        key: 'filename',
+        label: `${negate}File: ${s.filenameSearch}`,
+        onRemove: () => setState({ filenameSearch: '', filenameNegate: false }),
+      });
     }
 
     if (s.dateFrom || s.dateTo) {
+      const negate = s.dateNegate ? '¬' : '';
       const from = s.dateFrom ? new Date(s.dateFrom).toLocaleDateString() : '…';
       const to = s.dateTo ? new Date(s.dateTo).toLocaleDateString() : '…';
-      chips.push({ key: 'date', label: `Date: ${from}–${to}`, onRemove: () => setState({ dateFrom: null, dateTo: null }) });
+      chips.push({
+        key: 'date',
+        label: `${negate}Date: ${from}–${to}`,
+        onRemove: () => setState({ dateFrom: null, dateTo: null, dateNegate: false }),
+      });
     }
 
     if (s.verificationCheck) {
@@ -555,8 +592,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.imageLabelConditions.length === 0
       && s.imageTagConditions.length === 0
       && !s.filenameSearch
+      && !s.filenameNegate
       && !s.dateFrom
       && !s.dateTo
+      && !s.dateNegate
       && !s.verificationCheck
       && s.bboxVerification === 'any'
     );
@@ -600,6 +639,12 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     }
     if (partial.filenameSearch !== undefined) {
       filenameInput.value = _state.filenameSearch ?? '';
+    }
+    if (partial.filenameNegate !== undefined) {
+      filenameNegateCb.checked = !!_state.filenameNegate;
+    }
+    if (partial.dateNegate !== undefined) {
+      dateNegateCb.checked = !!_state.dateNegate;
     }
     if (partial.verificationCheck !== undefined) {
       verificationSelect.value = _state.verificationCheck ?? '';

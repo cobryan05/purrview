@@ -27,7 +27,9 @@ export function reviewStateToDatasetForm(reviewState) {
   const tagMatchMode = reviewState.tagMatchMode ?? 'any';
   const dateFrom = reviewState.dateFrom ?? null;
   const dateTo = reviewState.dateTo ?? null;
+  const dateNegate = reviewState.dateNegate ?? false;
   const filenameSearch = reviewState.filenameSearch ?? '';
+  const filenameNegate = reviewState.filenameNegate ?? false;
   const imageLabelConditions = reviewState.imageLabelConditions ?? [];
   const imageTagConditions = reviewState.imageTagConditions ?? [];
   // 'any' (and a missing key) is the no-op default — see review/filters.js's
@@ -42,9 +44,10 @@ export function reviewStateToDatasetForm(reviewState) {
     const term = { kind: 'date', field: 'created' };
     if (dateFrom) term.from = dateFrom;
     if (dateTo) term.to = dateTo;
+    if (dateNegate) term.negate = true;
     terms.push(term);
   }
-  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch] });
+  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch], negate: filenameNegate });
   for (const c of imageLabelConditions) {
     // 'uncertain' (never assessed) is the term model's 'unreviewed' — see
     // shared/api/review.js's buildReviewFilterBody for the same mapping.
@@ -133,8 +136,10 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     imageLabelConditions,
     imageTagConditions,
     filenameSearch: filenameTerm?.patterns?.[0] ?? '',
+    filenameNegate: filenameTerm?.negate ?? false,
     dateFrom: dateTerm?.from ?? null,
     dateTo: dateTerm?.to ?? null,
+    dateNegate: dateTerm?.negate ?? false,
     verificationCheck: f.verificationCheck ?? null,
     // Always present: filterPanel.setState is partial, so omitting the key on
     // a filter that carries no term would leave the previous value in place

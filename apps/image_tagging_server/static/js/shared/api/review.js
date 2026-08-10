@@ -55,8 +55,10 @@ function buildReviewFilterBody({
   limit,
   requireBboxes = false,
   filenameSearch,
+  filenameNegate = false,
   dateFrom = null,
   dateTo = null,
+  dateNegate = false,
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
@@ -101,11 +103,12 @@ function buildReviewFilterBody({
     terms.push({ kind: 'objectLabel', labelUuids: [uuid], negate: true, rollUp: false });
   }
 
-  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch] });
+  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch], negate: filenameNegate });
   if (dateFrom || dateTo) {
     const term = { kind: 'date', field: 'created' };
     if (dateFrom) term.from = dateFrom;
     if (dateTo) term.to = dateTo;
+    if (dateNegate) term.negate = true;
     terms.push(term);
   }
 
@@ -202,8 +205,10 @@ export async function fetchReviewQueue({
   sortBy = 'created_at',
   sortOrder = 'desc',
   filenameSearch,
+  filenameNegate = false,
   dateFrom = null,
   dateTo = null,
+  dateNegate = false,
   afterUuid = null,
   afterSortValue = null,
   imageLabelFilters = [],
@@ -230,8 +235,10 @@ export async function fetchReviewQueue({
     limit,
     requireBboxes,
     filenameSearch,
+    filenameNegate,
     dateFrom,
     dateTo,
+    dateNegate,
     afterUuid,
     afterSortValue,
     imageLabelFilters,
@@ -380,8 +387,10 @@ export async function bulkApplyAll({
   sortBy = 'created_at',
   sortOrder = 'desc',
   filenameSearch,
+  filenameNegate = false,
   dateFrom = null,
   dateTo = null,
+  dateNegate = false,
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
@@ -411,8 +420,10 @@ export async function bulkApplyAll({
     limit: 200,
     requireBboxes,
     filenameSearch,
+    filenameNegate,
     dateFrom,
     dateTo,
+    dateNegate,
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,
@@ -464,8 +475,10 @@ export async function countMatchingBboxes({
   labelMatchMode = 'any',
   labelIncludeChildren = false,
   filenameSearch,
+  filenameNegate = false,
   dateFrom = null,
   dateTo = null,
+  dateNegate = false,
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
@@ -489,8 +502,10 @@ export async function countMatchingBboxes({
     sortOrder: 'desc',
     requireBboxes,
     filenameSearch,
+    filenameNegate,
     dateFrom,
     dateTo,
+    dateNegate,
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,
@@ -588,8 +603,10 @@ export async function bulkApplyImages({
   sortBy = 'created_at',
   sortOrder = 'desc',
   filenameSearch,
+  filenameNegate = false,
   dateFrom = null,
   dateTo = null,
+  dateNegate = false,
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
@@ -624,8 +641,10 @@ export async function bulkApplyImages({
     sortOrder,
     requireBboxes,
     filenameSearch,
+    filenameNegate,
     dateFrom,
     dateTo,
+    dateNegate,
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,

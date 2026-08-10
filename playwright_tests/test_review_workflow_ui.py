@@ -629,6 +629,76 @@ class TestBulkApplyAllScope:
         assert {"kind": "bboxVerification", "state": "verified"} in body["filter"]["terms"], body
 
 
+class TestFilenameDateNegateReachesTheGridQuery:
+    """_baseReviewFilterOpts is the single hand-picked field list every real
+    grid query goes through (main render, bulk-apply-all, bulk-apply-images,
+    "See results", etc.) — see TestBulkApplyAllScope above for the same class
+    of bug (a filter dimension added elsewhere but never forwarded here). The
+    negate checkboxes update filterPanel's own state and chip correctly, but
+    _baseReviewFilterOpts silently dropped filenameNegate/dateNegate, so the
+    actual /api/images/review request never carried them — the checkbox
+    looked like it worked but the search results were unaffected."""
+
+    def test_filename_negate_checkbox_reaches_the_actual_search_request(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        calls = []
+
+        def handle(route: Route):
+            calls.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
+            )
+
+        page.route("**/api/images/review", handle)
+
+        _navigate_to_review(page, base_url)
+        calls.clear()  # drop the initial default-filter load
+
+        page.get_by_test_id("review-filter-toggle").click()
+        page.locator("#review-root .review-filter-panel input[placeholder='substring…']").fill("closet")
+        page.locator("#review-root .filter-filename-negate input[type=checkbox]").check()
+        page.wait_for_timeout(500)  # filenameSearch is debounced 400ms
+
+        wait_until(page, lambda: calls, lambda: f"Expected POST to /api/images/review, got {calls}")
+        terms = calls[-1].get("terms", [])
+        filename_terms = [t for t in terms if t.get("kind") == "filename"]
+        assert filename_terms == [{"kind": "filename", "patterns": ["closet"], "negate": True}], calls[-1]
+
+    def test_date_negate_checkbox_reaches_the_actual_search_request(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        calls = []
+
+        def handle(route: Route):
+            calls.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
+            )
+
+        page.route("**/api/images/review", handle)
+
+        _navigate_to_review(page, base_url)
+        calls.clear()
+
+        page.get_by_test_id("review-filter-toggle").click()
+        page.locator("#review-root .review-filter-panel input[type=datetime-local]").first.fill("2026-01-01T00:00")
+        page.locator("#review-root .filter-date-negate input[type=checkbox]").check()
+        page.wait_for_timeout(200)
+
+        wait_until(page, lambda: calls, lambda: f"Expected POST to /api/images/review, got {calls}")
+        terms = calls[-1].get("terms", [])
+        date_terms = [t for t in terms if t.get("kind") == "date"]
+        assert len(date_terms) == 1, calls[-1]
+        assert date_terms[0].get("negate") is True, calls[-1]
+
+
 class TestBulkAllButtonViewGating:
     """Each filter-scoped bulk button appears only in the view whose entries it
     acts on — the bbox one applies bbox-level actions no matter what's on

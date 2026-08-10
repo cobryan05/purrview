@@ -169,3 +169,83 @@ class TestImageLabelConditionRoundTrip:
         assert restored["imageLabelConditions"] == [
             {"labelUuid": "lbl-1", "state": state, "rollUp": roll_up, "negate": negate},
         ]
+
+
+class TestFilenameNegateRoundTrip:
+    def test_filename_negate_true_is_serialized(self, shared_page: Page):
+        form = _to_form(shared_page, {"filenameSearch": "foo", "filenameNegate": True})
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "filename"][0]
+        assert term["negate"] is True
+
+    def test_filename_negate_defaults_false(self, shared_page: Page):
+        form = _to_form(shared_page, {"filenameSearch": "foo"})
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "filename"][0]
+        assert term["negate"] is False
+
+    def test_no_filename_search_means_no_term_regardless_of_negate(self, shared_page: Page):
+        """negate is a modifier on the filename search, not an independent
+        filter — an empty search must not produce a term just because negate
+        is set, or a stray checkbox click would silently start filtering."""
+        form = _to_form(shared_page, {"filenameNegate": True})
+        assert not [t for t in form["filterJson"]["terms"] if t.get("kind") == "filename"]
+
+    def test_filename_negate_is_restored(self, shared_page: Page):
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "filename", "patterns": ["foo"], "negate": True}]},
+        )
+        assert restored["filenameNegate"] is True
+        assert restored["filenameSearch"] == "foo"
+
+    def test_filename_negate_restored_defaults_false(self, shared_page: Page):
+        restored = _to_state(shared_page, {"terms": [{"kind": "filename", "patterns": ["foo"]}]})
+        assert restored["filenameNegate"] is False
+
+    @pytest.mark.parametrize("negate", [True, False])
+    def test_full_round_trip(self, shared_page: Page, negate: bool):
+        form = _to_form(shared_page, {"filenameSearch": "foo", "filenameNegate": negate})
+        restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
+        assert restored["filenameSearch"] == "foo"
+        assert restored["filenameNegate"] == negate
+
+
+class TestDateNegateRoundTrip:
+    def test_date_negate_true_is_serialized(self, shared_page: Page):
+        form = _to_form(shared_page, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": True})
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "date"][0]
+        assert term["negate"] is True
+
+    def test_date_negate_omitted_when_false(self, shared_page: Page):
+        """Matches the omit-when-default pattern used elsewhere in this module —
+        dateNegate: False must not add a `negate` key at all."""
+        form = _to_form(shared_page, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": False})
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "date"][0]
+        assert "negate" not in term
+
+    def test_no_date_range_means_no_term_regardless_of_negate(self, shared_page: Page):
+        form = _to_form(shared_page, {"dateNegate": True})
+        assert not [t for t in form["filterJson"]["terms"] if t.get("kind") == "date"]
+
+    def test_date_negate_is_restored(self, shared_page: Page):
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z", "negate": True}]},
+        )
+        assert restored["dateNegate"] is True
+        assert restored["dateFrom"] == "2026-01-01T00:00:00.000Z"
+
+    def test_date_negate_restored_defaults_false(self, shared_page: Page):
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z"}]},
+        )
+        assert restored["dateNegate"] is False
+
+    @pytest.mark.parametrize("negate", [True, False])
+    def test_full_round_trip(self, shared_page: Page, negate: bool):
+        original = {"dateFrom": "2026-01-01T00:00:00.000Z", "dateTo": "2026-02-01T00:00:00.000Z", "dateNegate": negate}
+        form = _to_form(shared_page, original)
+        restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
+        assert restored["dateFrom"] == original["dateFrom"]
+        assert restored["dateTo"] == original["dateTo"]
+        assert restored["dateNegate"] == negate

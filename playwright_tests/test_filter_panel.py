@@ -1138,3 +1138,176 @@ class TestFetchReviewQueueImageLabelFilterMapping:
     def test_exclude_maps_to_negate(self, page: Page, base_url: str):
         term = self._capture(page, base_url, [{"labelUuid": "lbl-1", "status": "present", "exclude": True}])
         assert term["negate"] is True
+
+
+# ── Filename / date negation ────────────────────────────────────────────────
+#
+# "does not contain" / "not in this range" — a negate checkbox next to each
+# control, mirroring the pattern already used for image-label/image-tag
+# conditions and tag/label excludes (see imageTagConditions.js's allowNegate).
+# Backend support (negate on FilenameTerm/DateTerm) already existed and was
+# tested (tests/db_server/test_filter_terms.py); this covers the panel UI and
+# the wire mapping in buildReviewFilterBody / filterUtils.js that were missing.
+
+
+class TestFilterPanelNegateCheckboxes:
+    def test_filename_negate_defaults_false(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const s = panel.getState();
+            {_TEARDOWN}
+            return s.filenameNegate;
+        }}""")
+        assert result is False
+
+    def test_date_negate_defaults_false(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const s = panel.getState();
+            {_TEARDOWN}
+            return s.dateNegate;
+        }}""")
+        assert result is False
+
+    def test_checking_filename_negate_updates_state(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            document.querySelector('.filter-filename-negate input').click();
+            const s = window.__fpLastState();
+            {_TEARDOWN}
+            return s.filenameNegate;
+        }}""")
+        assert result is True
+
+    def test_checking_date_negate_updates_state(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            document.querySelector('.filter-date-negate input').click();
+            const s = window.__fpLastState();
+            {_TEARDOWN}
+            return s.dateNegate;
+        }}""")
+        assert result is True
+
+    def test_set_state_syncs_filename_negate_checkbox(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameSearch: 'foo', filenameNegate: true }});
+            const checked = document.querySelector('.filter-filename-negate input').checked;
+            {_TEARDOWN}
+            return checked;
+        }}""")
+        assert result is True
+
+    def test_set_state_syncs_date_negate_checkbox(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ dateFrom: '2026-01-01T00:00:00.000Z', dateNegate: true }});
+            const checked = document.querySelector('.filter-date-negate input').checked;
+            {_TEARDOWN}
+            return checked;
+        }}""")
+        assert result is True
+
+    def test_filename_negate_makes_panel_non_default(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameNegate: true }});
+            const d = panel.isDefault();
+            {_TEARDOWN}
+            return d;
+        }}""")
+        assert result is False
+
+    def test_date_negate_makes_panel_non_default(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ dateNegate: true }});
+            const d = panel.isDefault();
+            {_TEARDOWN}
+            return d;
+        }}""")
+        assert result is False
+
+    def test_filename_chip_shows_negate_marker(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameSearch: 'foo', filenameNegate: true }});
+            const chips = panel.getChipDescriptors();
+            {_TEARDOWN}
+            return chips.find(c => c.key === 'filename').label;
+        }}""")
+        assert result == "¬File: foo"
+
+    def test_date_chip_shows_negate_marker(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ dateFrom: '2026-01-01T00:00:00.000Z', dateNegate: true }});
+            const chips = panel.getChipDescriptors();
+            {_TEARDOWN}
+            return chips.find(c => c.key === 'date').label.startsWith('¬Date:');
+        }}""")
+        assert result is True
+
+    def test_removing_filename_chip_clears_negate(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameSearch: 'foo', filenameNegate: true }});
+            const chip = panel.getChipDescriptors().find(c => c.key === 'filename');
+            chip.onRemove();
+            const s = panel.getState();
+            {_TEARDOWN}
+            return {{ filenameSearch: s.filenameSearch, filenameNegate: s.filenameNegate }};
+        }}""")
+        assert result == {"filenameSearch": "", "filenameNegate": False}
+
+
+class TestFetchReviewQueueFilenameDateNegateMapping:
+    @staticmethod
+    def _capture(page: Page, base_url: str, opts: dict) -> dict:
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "images": [], "hasMore": false, "totalCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/review", handle)
+        page.evaluate(
+            """async (opts) => {
+                const { fetchReviewQueue } = await import('/app-static/js/shared/api/review.js');
+                await fetchReviewQueue({ tagUuids: [], showAllBboxes: true, ...opts });
+            }""",
+            opts,
+        )
+        return captured["body"]
+
+    def test_filename_negate_true_is_sent(self, page: Page, base_url: str):
+        body = self._capture(page, base_url, {"filenameSearch": "foo", "filenameNegate": True})
+        terms = [t for t in body["terms"] if t["kind"] == "filename"]
+        assert terms == [{"kind": "filename", "patterns": ["foo"], "negate": True}]
+
+    def test_filename_negate_defaults_false(self, page: Page, base_url: str):
+        body = self._capture(page, base_url, {"filenameSearch": "foo"})
+        terms = [t for t in body["terms"] if t["kind"] == "filename"]
+        assert terms == [{"kind": "filename", "patterns": ["foo"], "negate": False}]
+
+    def test_date_negate_true_is_sent(self, page: Page, base_url: str):
+        body = self._capture(
+            page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": True}
+        )
+        terms = [t for t in body["terms"] if t["kind"] == "date"]
+        assert terms == [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z", "negate": True}]
+
+    def test_date_negate_omitted_when_false(self, page: Page, base_url: str):
+        """dateNegate defaults false — matches the omit-when-default pattern used
+        elsewhere in buildReviewFilterBody rather than always sending the key."""
+        body = self._capture(
+            page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": False}
+        )
+        terms = [t for t in body["terms"] if t["kind"] == "date"]
+        assert terms == [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z"}]
