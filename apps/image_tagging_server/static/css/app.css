@@ -4818,3 +4818,100 @@ progress.progress-indeterminate:indeterminate {
   padding: var(--space-2) var(--space-3);
   margin: 0;
 }
+
+/* ===== Watchers (Configuration → Watchers) ================================
+ * The list-beside-editor appearance comes from the shared `.le-*` rules; only
+ * the editor's own row layouts live here. */
+.wp-list-panel { width: 240px; }
+
+.watch-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+  margin-bottom: var(--space-2, 0.5rem);
+}
+
+.watch-source-row,
+.watch-rule-row,
+.watch-action-row {
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  padding: var(--space-3, 0.75rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
+.watch-row-head,
+.watch-row-rates,
+.watch-rule-tuning,
+.watch-action-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3, 0.75rem);
+  align-items: flex-end;
+}
+
+/* The rule reads as a sentence — "[Cat] [is inside] [Zone: litter box]" — which is
+   the only layout that makes containment-vs-IoU legible to a non-expert. */
+.watch-rule-sentence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 0.5rem);
+  align-items: center;
+}
+
+.watch-row-actions {
+  display: flex;
+  gap: var(--space-2, 0.5rem);
+}
+
+.watch-validation {
+  margin-top: var(--space-3, 0.75rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 0.25rem);
+}
+
+/* ── Zones modal ── */
+.watch-zones-dialog { max-width: 1000px; }
+
+.watch-zones-body {
+  display: flex;
+  gap: var(--space-4, 1rem);
+  align-items: flex-start;
+}
+
+/* The stage carries explicit dimensions inline as well; a zero-sized container
+   yields a permanent scale of 0 for anything that measures it. */
+.watch-zones-stage {
+  flex: 0 0 auto;
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+}
+
+.watch-zones-list {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.watch-zone-row {
+  display: flex;
+  gap: var(--space-2, 0.5rem);
+  align-items: center;
+}
+
+.watch-zone-row input { flex: 1; }
+
+.watch-zones-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2, 0.5rem);
+  margin-top: var(--space-3, 0.75rem);
+}

@@ -3,6 +3,7 @@ import { ArrayField } from './ArrayField.js'
 import { BboxInfoField } from './BboxInfoField.js';
 import { DirBrowserField } from './DirBrowserField.js';
 import { FilterChainSelectField } from './FilterChainSelectField.js';
+import { WatchProfileSelectField } from './WatchProfileSelectField.js';
 import { SourceConfigField } from './SourceConfigField.js';
 import { SourceSelectField } from './SourceSelectField.js';
 import { ImageProviderSelectField } from './ImageProviderSelectField.js';
@@ -169,6 +170,18 @@ export const fieldFactories = {
     const { type, required, description, ...rest } = fieldMeta;
 
     return await FilterChainSelectField.create({
+      value: values[fieldName],
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      ...rest
+    });
+  },
+
+  async watch_profile_uuid(fieldName, fieldMeta, values, onChange) {
+    const { type, required, description, ...rest } = fieldMeta;
+
+    return await WatchProfileSelectField.create({
       value: values[fieldName],
       onChange: (val) => {
         onChange?.(val);

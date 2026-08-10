@@ -148,7 +148,8 @@ def test_operations_subtab_switching(page: Page, base_url: str):
 def test_sources_and_tasks_are_not_in_configuration(page: Page, base_url: str):
     """Sources and Tasks moved to Operations; Configuration keeps its setup sub-tabs.
 
-    6 setup panes plus the Overview landing (PR 5.4); Model Stacks added in PR 7.2.
+    6 setup panes plus the Overview landing (PR 5.4); Model Stacks added in PR 7.2;
+    Watchers added by the StreamWatcher work.
     """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
@@ -156,7 +157,7 @@ def test_sources_and_tasks_are_not_in_configuration(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
 
     header = page.locator("#tab-configuration .workspace-tab-header")
-    expect(header.locator(".workspace-tab-button")).to_have_count(7)
+    expect(header.locator(".workspace-tab-button")).to_have_count(8)
     for tab in ["tab-source-management", "tab-task-management"]:
         expect(header.locator(f".workspace-tab-button[data-tab='{tab}']")).to_have_count(0)
 

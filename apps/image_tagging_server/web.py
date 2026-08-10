@@ -73,6 +73,21 @@ MODEL_GROUPS_PROXY = ReverseProxy(
     port=APPS_CONFIG[APPS.DB_SERVER].port,
     path="/api/model-groups",
 )
+WATCH_PROFILES_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/watch-profiles",
+)
+WATCH_EVENTS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/watch-events",
+)
+RECORDINGS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/recordings",
+)
 SETTINGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host,
     port=APPS_CONFIG[APPS.DB_SERVER].port,
@@ -248,6 +263,27 @@ class WebApp:
         )
         async def proxy_model_groups(request: Request, path: str):
             return await MODEL_GROUPS_PROXY.handle_request(path, request)
+
+        @self._app.api_route(
+            "/api/watch-profiles/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
+        async def proxy_watch_profiles(request: Request, path: str):
+            return await WATCH_PROFILES_PROXY.handle_request(path, request)
+
+        @self._app.api_route("/api/watch-events/{path:path}", methods=["GET"])
+        async def proxy_watch_events(request: Request, path: str):
+            return await WATCH_EVENTS_PROXY.handle_request(path, request)
+
+        @self._app.api_route(
+            "/api/recordings/{path:path}",
+            methods=["GET", "DELETE"],
+        )
+        async def proxy_recordings(request: Request, path: str):
+            # NOTE: clip *files* must not be fetched through here — ReverseProxy buffers
+            # whole responses, so a video would be loaded into memory and lose range
+            # support. The <video> element hits db_server's /file route directly.
+            return await RECORDINGS_PROXY.handle_request(path, request)
 
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])
         async def proxy_settings(request: Request, path: str):
