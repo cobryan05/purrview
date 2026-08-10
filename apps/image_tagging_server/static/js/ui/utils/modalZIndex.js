@@ -50,13 +50,46 @@ let _openLayers = 0;
 /** Of those, the ones that are dialogs. Drives the cascade offset. */
 let _openDialogs = 0;
 
+// ── Background scroll lock ──────────────────────────────────────────────
+// Trapping focus inside a dialog (trapModalFocus) stops the browser from
+// scrolling some OTHER focused/scrollable element, but it does not stop
+// arrow keys / Space / Page Up-Down from falling through to their *default*
+// action of scrolling the viewport itself — that fallback fires whenever the
+// key isn't otherwise handled, independent of what has focus, as long as the
+// focused element doesn't consume it. A dialog full of buttons (or nothing
+// focusable at all) never consumes those keys, so without this the page
+// behind an open dialog kept scrolling on every arrow-key press. Locked on
+// html AND body — whichever one is document.scrollingElement varies by
+// browser/quirks-mode, and locking both is cheap and safe either way.
+let _scrollLockCount = 0;
+let _prevHtmlOverflow = null;
+let _prevBodyOverflow = null;
+
+function _lockBackgroundScroll() {
+  if (_scrollLockCount === 0) {
+    _prevHtmlOverflow = document.documentElement.style.overflow;
+    _prevBodyOverflow = document.body.style.overflow;
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+  }
+  _scrollLockCount++;
+}
+
+function _unlockBackgroundScroll() {
+  _scrollLockCount = Math.max(0, _scrollLockCount - 1);
+  if (_scrollLockCount === 0) {
+    document.documentElement.style.overflow = _prevHtmlOverflow ?? '';
+    document.body.style.overflow = _prevBodyOverflow ?? '';
+  }
+}
+
 /**
  * Reserve a stacking slot strictly above every layer currently held.
  *
  * @param {Object}  [opts]
  * @param {boolean} [opts.dialog] - true for centred dialogs, which cascade off
- *   one another. Popups, menus and flyouts are anchored to something and must
- *   not count toward that depth.
+ *   one another and lock background scroll. Popups, menus and flyouts are
+ *   anchored to something and must not count toward that depth.
  * @returns {{ zIndex: number, depth: number, release: () => void }}
  *   `depth` is how many dialogs were already open; pass it to applyModalCascade.
  *   `release` is idempotent — call it from the overlay's close path.
@@ -68,6 +101,7 @@ export function acquireModalLayer({ dialog = false } = {}) {
   _zIndex = Math.min(_zIndex + _STEP, LAYERS.modalMax);
   _openLayers++;
   const depth = dialog ? _openDialogs++ : 0;
+  if (dialog) _lockBackgroundScroll();
 
   let _released = false;
   return {
@@ -77,7 +111,10 @@ export function acquireModalLayer({ dialog = false } = {}) {
       if (_released) return;
       _released = true;
       _openLayers--;
-      if (dialog) _openDialogs--;
+      if (dialog) {
+        _openDialogs--;
+        _unlockBackgroundScroll();
+      }
       // Nothing is open, so the band can start over — this is what keeps the
       // allocation bounded across a long session rather than only within one
       // nesting chain.

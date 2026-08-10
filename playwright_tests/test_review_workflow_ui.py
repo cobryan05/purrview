@@ -1303,6 +1303,51 @@ class TestCanvasModalRoundTrip:
         save_btn = modal.locator("button", has_text="Save & Close")
         expect(save_btn).not_to_have_class(re.compile(r"\bsave-btn--dirty\b"))
 
+    def test_arrow_keys_do_not_scroll_the_background_grid(self, page: Page, base_url: str):
+        """Reported bug: with the canvas modal open, pressing ArrowDown scrolled
+        the review grid behind it.
+
+        Trapping focus inside the dialog (trapModalFocus) stops the browser
+        from scrolling some OTHER focused/scrollable element, but arrow keys /
+        Space / Page Up-Down still fall through to their *default* action of
+        scrolling the viewport whenever nothing else handles the key — that
+        fallback doesn't care what has focus, only whether the key was
+        consumed. A dialog full of buttons never consumes it. The fix locks
+        html/body overflow while any dialog is open (acquireModalLayer in
+        modalZIndex.js), which this asserts against real page-level scroll,
+        not a focus check — that's what let the first (focus-only) fix look
+        complete while the bug was still fully reproducible."""
+        many_images = [
+            {"uuid": f"img-{i}", "filename": f"folder/image{i}.jpg", "bboxes": []}
+            for i in range(1, 60)
+        ]
+        many_images[0] = PAGE_1_IMAGES[0]  # img-1 keeps its real bboxes for _mock_canvas_modal_image
+        _mock_review_queue(page, many_images)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "images")
+
+        assert page.evaluate(
+            "() => document.documentElement.scrollHeight > window.innerHeight"
+        ), "page must actually be tall enough to scroll for this test to mean anything"
+
+        card = page.locator("#review-root [data-image-uuid='img-1'][data-kind='image']")
+        card.locator("img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        modal.locator("button[data-toolbar-key='bbox']").wait_for(state="visible", timeout=8000)
+
+        for _ in range(15):
+            page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(200)
+
+        scroll_y = page.evaluate("() => window.scrollY")
+        assert scroll_y == 0, f"background page scrolled to {scroll_y} while the modal was open"
+
     def test_delete_works_as_soon_as_the_toolbar_is_clickable(self, page: Page, base_url: str):
         """Regression: showCanvasModal appends the overlay (and, right after
         loadImage, the toolbar) well before it highlights the opened bbox —

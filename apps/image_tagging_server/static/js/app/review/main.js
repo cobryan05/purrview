@@ -1847,7 +1847,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const uuid = entry.img.uuid;
       if (seen.has(uuid)) continue;
       seen.add(uuid);
-      navItems.push({ img: entry.img, bbox: entry.bbox ?? entry.img.bboxes?.[0] ?? null });
+      // Same rule as the image-card double-click handler in cardGrid.js: an
+      // image-kind entry (no specific bbox of its own) must navigate to
+      // nothing pre-selected, not silently to its first bbox.
+      navItems.push({ img: entry.img, bbox: entry.bbox ?? null });
     }
     const foundIndex = navItems.findIndex(item => item.img.uuid === targetImgUuid);
     const startIndex = foundIndex >= 0 ? foundIndex : 0;
