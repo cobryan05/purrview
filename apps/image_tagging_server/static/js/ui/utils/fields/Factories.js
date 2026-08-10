@@ -130,13 +130,21 @@ export const fieldFactories = {
   },
 
   async model_label(fieldName, fieldMeta, values, onChange) {
-    const { ...rest } = fieldMeta;
+    // The band's two bounds mean whatever the owning task says they mean, so the
+    // column headers and help copy come from the schema. snake_case -> camelCase
+    // is done by hand here, the same way `allow_group_insert` is above; omitted
+    // keys fall back to ModelLabelSelectField's neutral Min/Max defaults.
+    const { name_label, min_label, max_label, band_help, ...rest } = fieldMeta;
 
     return await ModelLabelSelectField.create({
       onChange: (val) => {
         onChange?.(val);
       },
       value: values[fieldName],
+      nameLabel: name_label,
+      minLabel: min_label,
+      maxLabel: max_label,
+      bandHelp: band_help,
       ...rest
     });
   },

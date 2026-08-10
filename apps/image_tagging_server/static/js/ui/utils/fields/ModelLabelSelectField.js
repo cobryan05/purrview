@@ -6,8 +6,30 @@ import { fetchModelsLabelMappings, fetchModelsList } from '/app-static/js/shared
 export class ModelLabelSelectField extends Field {
   static DEFAULT_CONFIDENCE = 0.25;
 
-  constructor({ ...rest }) {
+  /** Column headers and help copy when the schema doesn't override them. */
+  static DEFAULT_BAND_COPY = {
+    nameLabel: 'Label',
+    minLabel: 'Min',
+    maxLabel: 'Max',
+    bandHelp:
+      'Select a model, then set a min/max confidence band to enable labels (min > 0 enables; min = 0 disables)',
+  };
+
+  /**
+   * The band's *meaning* is the caller's business, not this field's. A task that
+   * uses the two bounds for something other than a plain floor/ceiling passes
+   * its own `nameLabel`/`minLabel`/`maxLabel`/`bandHelp` through its
+   * `params_schema()` entry (Factories.model_label spreads fieldMeta straight
+   * in), and the wording follows. Defaults keep the neutral Min/Max reading, so
+   * this stays a generic per-label range picker rather than one task's widget.
+   */
+  constructor({ nameLabel, minLabel, maxLabel, bandHelp, ...rest }) {
     super(rest);
+    const d = ModelLabelSelectField.DEFAULT_BAND_COPY;
+    this._nameLabel = nameLabel || d.nameLabel;
+    this._minLabel = minLabel || d.minLabel;
+    this._maxLabel = maxLabel || d.maxLabel;
+    this._bandHelp = bandHelp || d.bandHelp;
   }
 
   static async create({ ...rest } = {}) {
@@ -58,9 +80,10 @@ export class ModelLabelSelectField extends Field {
 
   /**
    * Fills the band table: one header row, then one `display: contents` row per
-   * label. The header carries the "Min"/"Max" wording that used to be repeated
-   * as a tag beside every single input — with the inputs actually in columns,
-   * naming them once is both shorter and clearer.
+   * label. The header carries the bound wording (schema-overridable, "Min"/"Max"
+   * by default) that used to be repeated as a tag beside every single input —
+   * with the inputs actually in columns, naming them once is both shorter and
+   * clearer.
    */
   async _renderLabelList() {
     if (!this._labelsContainer) {
@@ -88,7 +111,7 @@ export class ModelLabelSelectField extends Field {
       // `--value` marks the two numeric columns, which are right-aligned over
       // right-aligned digits. Positional selectors would do it, but they'd break
       // the moment the header count changed.
-      for (const [text, kind] of [['Label', 'name'], ['Min', 'value'], ['Max', 'value']]) {
+      for (const [text, kind] of [[this._nameLabel, 'name'], [this._minLabel, 'value'], [this._maxLabel, 'value']]) {
         const head = document.createElement('div');
         head.className = `mlsf-bands__head mlsf-bands__head--${kind}`;
         if (pass) head.classList.add('mlsf-bands__head--second');
@@ -118,8 +141,7 @@ export class ModelLabelSelectField extends Field {
 
     const helpText = document.createElement('div');
     helpText.className = 'mlsf__help';
-    helpText.textContent =
-      'Select a model, then set a min/max confidence band to enable labels (min > 0 enables; min = 0 disables)';
+    helpText.textContent = this._bandHelp;
     modelRow.appendChild(helpText);
 
     // Labels grid — three real columns, so every row's min/max inputs line up
