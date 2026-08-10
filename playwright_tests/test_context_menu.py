@@ -17,6 +17,8 @@ Run with:
     pytest playwright_tests/test_context_menu.py -p no:xdist -p no:asyncio -v
 """
 
+import json
+
 import pytest
 from playwright.sync_api import Page
 
@@ -504,11 +506,11 @@ class TestCanvasFallthrough:
                 return {{ target: runtime.canvas.stage, evt: {{ clientX: 700, clientY: 500, preventDefault: () => {{}} }} }};
             }}
 
-            // First right-click: select → bbox:
+            // First right-click: select → bbox
             await handleContextMenu(makeEmptyEvt(), runtime);
             const after1 = runtime.tool;
 
-            // Second right-click: bbox: → select
+            // Second right-click: bbox → select
             await handleContextMenu(makeEmptyEvt(), runtime);
             const after2 = runtime.tool;
 
@@ -517,9 +519,87 @@ class TestCanvasFallthrough:
             {_CLEANUP}
             return {{ after1, after2, menuCount }};
         }}""")
-        assert result["after1"] == "bbox:", f"Expected 'bbox:' after first right-click, got: {result['after1']}"
+        # Must be the bare 'bbox' tool (not 'bbox:' with an empty uuid): labelList.js's
+        # CANVAS_TOOL_CHANGED listener only auto-selects a label on an exact 'bbox' match.
+        # 'bbox:' silently skips that guard and lets bboxes be drawn with no label forever.
+        assert result["after1"] == "bbox", f"Expected 'bbox' after first right-click, got: {result['after1']}"
         assert result["after2"] == "select", f"Expected 'select' after second right-click, got: {result['after2']}"
         assert result["menuCount"] == 0, "No menu should appear on empty canvas right-click"
+
+    def test_empty_canvas_right_click_auto_selects_a_label(self, page: Page, base_url: str):
+        """Right-clicking empty canvas into the bbox tool must auto-select a label.
+
+        Regression for: right-clicking empty canvas used to set the tool to the literal
+        string 'bbox:' (trailing colon, empty uuid) instead of bare 'bbox'. ui/labelList.js
+        only auto-selects a label (restoring the last used one, or defaulting to the first
+        row) when it sees the tool change to exactly 'bbox' -- 'bbox:' silently bypassed that
+        guard, so bboxes drawn via right-click never got a real label and rendered the
+        'Loading...' placeholder forever.
+        """
+        label_uuid = "22222222-3333-4444-5555-000000000042"
+        labels_payload = {
+            "status": "success",
+            "labels": [
+                {
+                    "uuid": label_uuid,
+                    "name": "only-label",
+                    "color": "#abcdef",
+                    "labelType": "standard",
+                    "scope": "object",
+                    "parentUuid": None,
+                },
+            ],
+        }
+        page.route("**/api/labels", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(labels_payload)
+        ))
+        page.route("**/api/images/*/labels", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"status": "success", "labels": []})
+        ))
+
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate(f"""async () => {{
+            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
+            const {{ handleContextMenu }} = await import('/app-static/js/app/image-tagging/canvas/interaction.js');
+            const {{ createLabelList }} = await import('/app-static/js/ui/labelList.js');
+            const {{ events, EventTypes }} = await import('/app-static/js/shared/events/index.js');
+            const {{ clearLabelsCache }} = await import('/app-static/js/shared/api/labels.js');
+            const {{ initContextMenus }} = await import('/app-static/js/ui/contextMenu/index.js');
+            initContextMenus();
+            clearLabelsCache();
+
+            {_CANVAS_SETUP}
+
+            const labelPanelDiv = document.createElement('div');
+            document.body.appendChild(labelPanelDiv);
+            await createLabelList(labelPanelDiv, {{ mode: 'select', runtime }});
+
+            events.publish(EventTypes.IMAGE_LOADED_ONTO_CANVAS, {{ path: 'test.png', runtimeId: runtime.id }});
+            await new Promise(r => setTimeout(r, 300));
+
+            runtime.setTool('select');
+
+            function makeEmptyEvt() {{
+                return {{ target: runtime.canvas.stage, evt: {{ clientX: 700, clientY: 500, preventDefault: () => {{}} }} }};
+            }}
+
+            // Right-click empty canvas: select -> bbox tool, which should auto-select
+            // the only available label rather than leaving the tool label-less.
+            await handleContextMenu(makeEmptyEvt(), runtime);
+            await new Promise(r => setTimeout(r, 50));
+            const toolAfterRightClick = runtime.tool;
+
+            {_CLEANUP}
+            labelPanelDiv.remove();
+            return {{ toolAfterRightClick }};
+        }}""")
+
+        assert result["toolAfterRightClick"] == f"bbox:{label_uuid}", (
+            f"Expected right-click to auto-select the only label ('bbox:{label_uuid}'), "
+            f"got: {result['toolAfterRightClick']}"
+        )
 
 
 # ---------------------------------------------------------------------------

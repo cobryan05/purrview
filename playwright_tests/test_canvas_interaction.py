@@ -766,7 +766,7 @@ class TestContextMenu:
             return { after1, after2 };
         }"""
         )
-        assert result["after1"] == "bbox:"
+        assert result["after1"] == "bbox"
         assert result["after2"] == "select"
 
     def test_right_click_labelled_bbox_opens_context_menu(self, shared_page: Page):

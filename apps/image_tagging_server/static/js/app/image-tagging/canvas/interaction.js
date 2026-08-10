@@ -485,7 +485,7 @@ export async function handleContextMenu(e, runtime) {
   if (bboxLabelUuid) {
     setTool(runtime, runtime.tool === `bbox:${bboxLabelUuid}` ? 'select' : `bbox:${bboxLabelUuid}`);
   } else {
-    setTool(runtime, runtime.tool === 'select' ? 'bbox:' : 'select');
+    setTool(runtime, runtime.tool === 'select' ? 'bbox' : 'select');
   }
   runtime.canvas.layer.draw();
 }
