@@ -23,7 +23,24 @@ models/
 
 static/js/htmx
 static/css/pico.min.css
+
+# Everything generate_openapi_modules.sh emits. The docker build regenerates all of
+# it from scratch inside the image (Dockerfile: `generate_openapi_modules.sh
+# ./openapi_jsons`) and nothing ever reads the copies left in the working tree, so
+# committing them only bought drift: the tracked set had already diverged from what
+# the generator produces, and every run reshuffled unrelated proxy routes into the
+# diff. `static/js/api-types/` was already ignored for the same reason; the JSON
+# specs now join it.
 static/js/api-types/
+combined-api.json
+db_server_openapi.json
+image_tagging_server_openapi.json
+inference_server_openapi.json
+relay_buffer_server_openapi.json
+tasks_server_openapi.json
+training_server_openapi.json
+openapi_jsons/
+openapi_wheels/
 storage/
 image_datasets/
 logs/
