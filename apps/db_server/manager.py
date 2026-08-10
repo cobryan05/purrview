@@ -19,7 +19,7 @@ import aiofiles
 import jstyleson
 from sqlalchemy.orm import make_transient
 
-from apps import CACHE_DIR, THUMB_CACHE_MAX_MB
+from apps import CACHE_DIR, STREAM_BUFFER_RETENTION_S, THUMB_CACHE_MAX_MB
 from apps.db_server.hash_index import HashIndex
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
@@ -53,6 +53,7 @@ from apps.helpers.db.types import (
     ModelGroupCreate,
     ModelGroupRead,
     ModelGroupUpdate,
+    RecordingRead,
     Source,
     Tag,
     TagRead,
@@ -64,6 +65,10 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
+    WatchEventRead,
+    WatchProfileCreate,
+    WatchProfileRead,
+    WatchProfileUpdate,
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.hashUtils import (
@@ -2821,6 +2826,115 @@ class Manager:
 
     async def delete_filter_chain(self, uuid: str) -> bool:
         return await self._db_client.delete_filter_chain(uuid)
+
+    # ── Watch profiles (StreamWatcher / NVR) ───────────────────────────────────
+
+    async def list_watch_profiles(self) -> List[WatchProfileRead]:
+        return await self._db_client.list_watch_profiles()
+
+    async def get_watch_profile(self, uuid: str) -> Optional[WatchProfileRead]:
+        return await self._db_client.get_watch_profile(uuid)
+
+    async def create_watch_profile(self, data: WatchProfileCreate) -> WatchProfileRead:
+        return await self._db_client.create_watch_profile(data)
+
+    async def update_watch_profile(self, uuid: str, data: WatchProfileUpdate) -> Optional[WatchProfileRead]:
+        return await self._db_client.update_watch_profile(uuid, data)
+
+    async def delete_watch_profile(self, uuid: str) -> bool:
+        return await self._db_client.delete_watch_profile(uuid)
+
+    async def validate_watch_profile(self, uuid: str) -> Optional[Dict[str, Any]]:
+        """Report configuration problems that only show up at run time.
+
+        Worth its own endpoint because every one of these fails *silently*: a rule
+        with no zone never fires, a pre-roll longer than the buffer quietly produces a
+        short clip, and a source with no models is analysed against nothing.
+        """
+        profile = await self._db_client.get_watch_profile(uuid)
+        if profile is None:
+            return None
+
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        if not profile.sources:
+            errors.append("This watcher has no sources, so it will never analyse anything.")
+
+        enabled_rules = [r for r in profile.rules if r.enabled]
+        if not enabled_rules:
+            warnings.append("No enabled rules — the watcher will track objects but never raise an event.")
+
+        zone_uuids = {z.uuid for s in profile.sources for z in s.zones}
+        for rule in profile.rules:
+            for kind, ref, side in (
+                (rule.subject_a_kind, rule.subject_a_ref, "A"),
+                (rule.subject_b_kind, rule.subject_b_ref, "B"),
+            ):
+                if kind == "zone" and ref not in zone_uuids:
+                    errors.append(f"Rule {rule.name!r}: subject {side} references a zone that no longer exists.")
+
+        for src in profile.sources:
+            if src.model_group_uuid is None and profile.default_model_group_uuid is None:
+                errors.append(
+                    f"Source {src.source_uuid} has no model stack and the profile sets no default, "
+                    "so nothing will be detected on it."
+                )
+            fps = src.analysis_fps or profile.default_analysis_fps
+            if fps > 10:
+                warnings.append(
+                    f"Source {src.source_uuid} analyses at {fps} fps. Per-frame inference over "
+                    "base64 HTTP is the throughput ceiling; 2–5 fps is usually plenty for tracking."
+                )
+
+        # Pre-roll longer than the retention can never be satisfied — the buffer simply
+        # does not hold that much history. Catch it at save time, not at cut time.
+        retentions = {src.source_uuid: (src.record_retention_s or STREAM_BUFFER_RETENTION_S) for src in profile.sources}
+        for action in profile.actions:
+            if action.kind != "record_clip":
+                continue
+            preroll = float(action.params_json.get("preroll_s", 0) or 0)
+            for source_uuid, retention in retentions.items():
+                if preroll > retention:
+                    warnings.append(
+                        f"A record_clip action asks for {preroll:g}s of pre-roll, but source "
+                        f"{source_uuid} only buffers {retention:g}s. The clip will be clamped."
+                    )
+
+        return {
+            "valid": not errors,
+            "errors": errors,
+            "warnings": warnings,
+        }
+
+    # ── Watch events and recordings ────────────────────────────────────────────
+
+    async def list_watch_events(self, **kwargs) -> List[WatchEventRead]:
+        return await self._db_client.list_watch_events(**kwargs)
+
+    async def list_recordings(self, **kwargs) -> List[RecordingRead]:
+        return await self._db_client.list_recordings(**kwargs)
+
+    async def get_recording(self, uuid: str) -> Optional[RecordingRead]:
+        return await self._db_client.get_recording(uuid)
+
+    async def delete_recording(self, uuid: str) -> bool:
+        """Delete a recording row and the clip file it points at.
+
+        The file is removed first-effort but a failure there must not leave an
+        undeletable row: the row is the index, the file is derived from it.
+        """
+        recording = await self._db_client.get_recording(uuid)
+        if recording is None:
+            return False
+        for path_str in (recording.file_path, recording.thumbnail_path):
+            if not path_str:
+                continue
+            try:
+                Path(path_str).unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Could not delete recording file %s: %s", path_str, e)
+        return await self._db_client.delete_recording(uuid)
 
     # ── Model groups ───────────────────────────────────────────────────────────
 

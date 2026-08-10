@@ -5,11 +5,12 @@ import mimetypes
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -46,6 +47,7 @@ from apps.helpers.db.types import (
     ModelGroupCreate,
     ModelGroupRead,
     ModelGroupUpdate,
+    RecordingRead,
     Source,
     SourceRead,
     Tag,
@@ -60,6 +62,10 @@ from apps.helpers.db.types import (
     TrainingConfigCreate,
     TrainingConfigRead,
     TrainingConfigUpdate,
+    WatchEventRead,
+    WatchProfileCreate,
+    WatchProfileRead,
+    WatchProfileUpdate,
 )
 from apps.helpers.types import (
     Base64Image,
@@ -733,6 +739,34 @@ class FilterChainResponse(StatusResponse):
     chain: Optional[FilterChainRead] = None
 
 
+class ListWatchProfilesResponse(StatusResponse):
+    profiles: List[WatchProfileRead] = Field(default_factory=list)
+
+
+class WatchProfileResponse(StatusResponse):
+    profile: Optional[WatchProfileRead] = None
+
+
+class WatchProfileValidationResponse(StatusResponse):
+    valid: bool = False
+    # Errors mean "this watcher cannot work"; warnings mean "this will run but probably
+    # not do what you meant". Both matter because every one of them fails silently.
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ListWatchEventsResponse(StatusResponse):
+    events: List[WatchEventRead] = Field(default_factory=list)
+
+
+class ListRecordingsResponse(StatusResponse):
+    recordings: List[RecordingRead] = Field(default_factory=list)
+
+
+class RecordingResponse(StatusResponse):
+    recording: Optional[RecordingRead] = None
+
+
 class ListModelGroupsResponse(StatusResponse):
     groups: List[ModelGroupRead] = Field(default_factory=list)
 
@@ -953,6 +987,8 @@ class WebApp:
         self._register_routes()
         self._register_model_config_routes()
         self._register_filter_chain_routes()
+        self._register_watch_profile_routes()
+        self._register_recording_routes()
         self._register_model_group_routes()
         self._register_exception()
 
@@ -3407,6 +3443,209 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_watch_profile_routes(self) -> None:
+        @self._app.get(
+            "/api/watch-profiles",
+            response_model=ListWatchProfilesResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="list_watch_profiles",
+        )
+        async def list_watch_profiles() -> ListWatchProfilesResponse:
+            try:
+                profiles = await self._manager.list_watch_profiles()
+                return ListWatchProfilesResponse(status=JsonValues.SUCCESS, profiles=profiles)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListWatchProfilesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/watch-profiles",
+            response_model=WatchProfileResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="create_watch_profile",
+        )
+        async def create_watch_profile(payload: WatchProfileCreate) -> WatchProfileResponse:
+            try:
+                profile = await self._manager.create_watch_profile(payload)
+                return WatchProfileResponse(status=JsonValues.SUCCESS, profile=profile)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return WatchProfileResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "watch profile"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchProfileResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/watch-profiles/{uuid}",
+            response_model=WatchProfileResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_profile",
+        )
+        async def get_watch_profile(uuid: str) -> WatchProfileResponse:
+            try:
+                profile = await self._manager.get_watch_profile(uuid)
+                if profile is None:
+                    return WatchProfileResponse(status=JsonValues.FAILURE, message="Watch profile not found")
+                return WatchProfileResponse(status=JsonValues.SUCCESS, profile=profile)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchProfileResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/watch-profiles/{uuid}",
+            response_model=WatchProfileResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="update_watch_profile",
+        )
+        async def update_watch_profile(uuid: str, payload: WatchProfileUpdate) -> WatchProfileResponse:
+            try:
+                profile = await self._manager.update_watch_profile(uuid, payload)
+                if profile is None:
+                    return WatchProfileResponse(status=JsonValues.FAILURE, message="Watch profile not found")
+                return WatchProfileResponse(status=JsonValues.SUCCESS, profile=profile)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return WatchProfileResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "watch profile"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchProfileResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/watch-profiles/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="delete_watch_profile",
+        )
+        async def delete_watch_profile(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_watch_profile(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Watch profile not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/watch-profiles/{uuid}/validate",
+            response_model=WatchProfileValidationResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="validate_watch_profile",
+        )
+        async def validate_watch_profile(uuid: str) -> WatchProfileValidationResponse:
+            """Surface misconfigurations that would otherwise fail silently at run time."""
+            try:
+                report = await self._manager.validate_watch_profile(uuid)
+                if report is None:
+                    return WatchProfileValidationResponse(status=JsonValues.FAILURE, message="Watch profile not found")
+                return WatchProfileValidationResponse(status=JsonValues.SUCCESS, **report)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchProfileValidationResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/watch-events",
+            response_model=ListWatchEventsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="list_watch_events",
+        )
+        async def list_watch_events(
+            profile_uuid: Optional[str] = None,
+            source_uuid: Optional[str] = None,
+            start_from: Optional[datetime] = None,
+            start_to: Optional[datetime] = None,
+            limit: int = 200,
+        ) -> ListWatchEventsResponse:
+            try:
+                events = await self._manager.list_watch_events(
+                    profile_uuid=profile_uuid,
+                    source_uuid=source_uuid,
+                    start_from=start_from,
+                    start_to=start_to,
+                    limit=limit,
+                )
+                return ListWatchEventsResponse(status=JsonValues.SUCCESS, events=events)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListWatchEventsResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_recording_routes(self) -> None:
+        @self._app.get(
+            "/api/recordings",
+            response_model=ListRecordingsResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="list_recordings",
+        )
+        async def list_recordings(
+            profile_uuid: Optional[str] = None,
+            source_uuid: Optional[str] = None,
+            limit: int = 200,
+        ) -> ListRecordingsResponse:
+            try:
+                recordings = await self._manager.list_recordings(
+                    profile_uuid=profile_uuid, source_uuid=source_uuid, limit=limit
+                )
+                return ListRecordingsResponse(status=JsonValues.SUCCESS, recordings=recordings)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListRecordingsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/recordings/{uuid}",
+            response_model=RecordingResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="get_recording",
+        )
+        async def get_recording(uuid: str) -> RecordingResponse:
+            try:
+                recording = await self._manager.get_recording(uuid)
+                if recording is None:
+                    return RecordingResponse(status=JsonValues.FAILURE, message="Recording not found")
+                return RecordingResponse(status=JsonValues.SUCCESS, recording=recording)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RecordingResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/recordings/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="delete_recording",
+        )
+        async def delete_recording(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_recording(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Recording not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/recordings/{uuid}/file",
+            tags=[ApiTags.RECORDINGS],
+            operation_id="get_recording_file",
+        )
+        async def get_recording_file(uuid: str, request: Request):
+            """Serve a clip with HTTP range support so a <video> element can seek."""
+            recording = await self._manager.get_recording(uuid)
+            if recording is None or not recording.file_path:
+                raise HTTPException(status_code=404, detail="Recording not found")
+            path = Path(recording.file_path)
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail="Recording file is missing on disk")
+            # FileResponse handles Range requests itself, which is what makes seeking
+            # work; note this must NOT be fetched through ReverseProxy, which buffers
+            # whole responses.
+            return FileResponse(path, media_type="video/mp4", filename=path.name)
 
     def _register_model_group_routes(self) -> None:
         @self._app.get(

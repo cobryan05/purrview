@@ -5019,6 +5019,548 @@
         }
       }
     },
+    "/api/watch-profiles": {
+      "get": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "List Watch Profiles",
+        "operationId": "list_watch_profiles",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWatchProfilesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "Create Watch Profile",
+        "operationId": "create_watch_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchProfileCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchProfileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/watch-profiles/{uuid}": {
+      "get": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "Get Watch Profile",
+        "operationId": "get_watch_profile",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchProfileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "Update Watch Profile",
+        "operationId": "update_watch_profile",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchProfileUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchProfileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "Delete Watch Profile",
+        "operationId": "delete_watch_profile",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/watch-profiles/{uuid}/validate": {
+      "get": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "Validate Watch Profile",
+        "description": "Surface misconfigurations that would otherwise fail silently at run time.",
+        "operationId": "validate_watch_profile",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchProfileValidationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/watch-events": {
+      "get": {
+        "tags": [
+          "watch_profiles"
+        ],
+        "summary": "List Watch Events",
+        "operationId": "list_watch_events",
+        "parameters": [
+          {
+            "name": "profile_uuid",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Profile Uuid"
+            }
+          },
+          {
+            "name": "source_uuid",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Uuid"
+            }
+          },
+          {
+            "name": "start_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start From"
+            }
+          },
+          {
+            "name": "start_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start To"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWatchEventsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/recordings": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "List Recordings",
+        "operationId": "list_recordings",
+        "parameters": [
+          {
+            "name": "profile_uuid",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Profile Uuid"
+            }
+          },
+          {
+            "name": "source_uuid",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRecordingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/recordings/{uuid}": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Get Recording",
+        "operationId": "get_recording",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Delete Recording",
+        "operationId": "delete_recording",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/recordings/{uuid}/file": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Get Recording File",
+        "description": "Serve a clip with HTTP range support so a <video> element can seek.",
+        "operationId": "get_recording_file",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/model-groups": {
       "get": {
         "tags": [
@@ -5847,6 +6389,14 @@
           "height"
         ],
         "title": "BoundingBoxMetadataModel"
+      },
+      "BufferMode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "off"
+        ],
+        "title": "BufferMode"
       },
       "BulkApplyAllPayload": {
         "properties": {
@@ -8779,6 +9329,206 @@
         ],
         "title": "ImagesByLabelStatusPayload"
       },
+      "InteractionRuleRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "profileUuid": {
+            "type": "string",
+            "title": "Profileuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "subjectAKind": {
+            "type": "string",
+            "title": "Subjectakind"
+          },
+          "subjectARef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjectaref"
+          },
+          "relation": {
+            "type": "string",
+            "title": "Relation"
+          },
+          "subjectBKind": {
+            "type": "string",
+            "title": "Subjectbkind"
+          },
+          "subjectBRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjectbref"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold",
+            "default": 0.5
+          },
+          "minDurationS": {
+            "type": "number",
+            "title": "Mindurations",
+            "default": 2.0
+          },
+          "rearmDelayS": {
+            "type": "number",
+            "title": "Rearmdelays",
+            "default": 10.0
+          },
+          "maxDurationS": {
+            "type": "number",
+            "title": "Maxdurations",
+            "default": 300.0
+          },
+          "eventLabel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eventlabel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "profileUuid",
+          "name",
+          "subjectAKind",
+          "relation",
+          "subjectBKind"
+        ],
+        "title": "InteractionRuleRead"
+      },
+      "InteractionRuleWrite": {
+        "properties": {
+          "uuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "subjectAKind": {
+            "$ref": "#/components/schemas/RuleSubjectKind",
+            "default": "label"
+          },
+          "subjectARef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjectaref"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/RuleRelation",
+            "default": "contains"
+          },
+          "subjectBKind": {
+            "$ref": "#/components/schemas/RuleSubjectKind",
+            "default": "none"
+          },
+          "subjectBRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjectbref"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold",
+            "default": 0.5
+          },
+          "minDurationS": {
+            "type": "number",
+            "title": "Mindurations",
+            "default": 2.0
+          },
+          "rearmDelayS": {
+            "type": "number",
+            "title": "Rearmdelays",
+            "default": 10.0
+          },
+          "maxDurationS": {
+            "type": "number",
+            "title": "Maxdurations",
+            "default": 300.0
+          },
+          "eventLabel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eventlabel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "InteractionRuleWrite"
+      },
       "InvalidateThumbnailsPayload": {
         "properties": {
           "bboxUuids": {
@@ -8791,6 +9541,62 @@
         },
         "type": "object",
         "title": "InvalidateThumbnailsPayload"
+      },
+      "LabelLifetimeRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "profileUuid": {
+            "type": "string",
+            "title": "Profileuuid"
+          },
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "ttlS": {
+            "type": "number",
+            "title": "Ttls",
+            "default": 2.0
+          },
+          "isAnchor": {
+            "type": "boolean",
+            "title": "Isanchor",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "profileUuid",
+          "labelUuid"
+        ],
+        "title": "LabelLifetimeRead"
+      },
+      "LabelLifetimeWrite": {
+        "properties": {
+          "labelUuid": {
+            "type": "string",
+            "title": "Labeluuid"
+          },
+          "ttlS": {
+            "type": "number",
+            "title": "Ttls",
+            "default": 2.0
+          },
+          "isAnchor": {
+            "type": "boolean",
+            "title": "Isanchor",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "labelUuid"
+        ],
+        "title": "LabelLifetimeWrite"
       },
       "LabelRead": {
         "properties": {
@@ -9300,6 +10106,35 @@
         "type": "object",
         "title": "ListModelGroupsResponse"
       },
+      "ListRecordingsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "recordings": {
+            "items": {
+              "$ref": "#/components/schemas/RecordingRead"
+            },
+            "type": "array",
+            "title": "Recordings"
+          }
+        },
+        "type": "object",
+        "title": "ListRecordingsResponse"
+      },
       "ListTagsResponse": {
         "properties": {
           "status": {
@@ -9415,6 +10250,64 @@
         },
         "type": "object",
         "title": "ListTrainingConfigsResponse"
+      },
+      "ListWatchEventsResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/WatchEventRead"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "title": "ListWatchEventsResponse"
+      },
+      "ListWatchProfilesResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/WatchProfileRead"
+            },
+            "type": "array",
+            "title": "Profiles"
+          }
+        },
+        "type": "object",
+        "title": "ListWatchProfilesResponse"
       },
       "ModelConfigCreate": {
         "properties": {
@@ -10296,6 +11189,185 @@
         "type": "object",
         "title": "ReconcileImageResponse"
       },
+      "RecordingRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "sourceUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceuuid"
+          },
+          "profileUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profileuuid"
+          },
+          "eventUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eventuuid"
+          },
+          "filePath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filepath"
+          },
+          "thumbnailPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnailpath"
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startedat"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endedat"
+          },
+          "durationS": {
+            "type": "number",
+            "title": "Durations",
+            "default": 0.0
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "title": "Sizebytes",
+            "default": 0
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "partialPreroll": {
+            "type": "boolean",
+            "title": "Partialpreroll",
+            "default": false
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "status"
+        ],
+        "title": "RecordingRead"
+      },
+      "RecordingResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "recording": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RecordingRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "RecordingResponse"
+      },
       "ReviewQueueResponse": {
         "properties": {
           "status": {
@@ -10334,6 +11406,29 @@
         },
         "type": "object",
         "title": "ReviewQueueResponse"
+      },
+      "RuleRelation": {
+        "type": "string",
+        "enum": [
+          "present",
+          "iou",
+          "contains",
+          "centroid_in",
+          "distance"
+        ],
+        "title": "RuleRelation",
+        "description": "How the two subjects of a rule are compared.\n\n`CONTAINS` is the default for \"cat in litter box\" and similar: a cat's box is far\nsmaller than the litter box's, so IoU stays low even at perfect containment."
+      },
+      "RuleSubjectKind": {
+        "type": "string",
+        "enum": [
+          "label",
+          "zone",
+          "any",
+          "none"
+        ],
+        "title": "RuleSubjectKind",
+        "description": "What one side of an interaction rule refers to."
       },
       "SetImageLabelPayload": {
         "properties": {
@@ -11861,6 +12956,942 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WatchActionRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "profileUuid": {
+            "type": "string",
+            "title": "Profileuuid"
+          },
+          "ruleUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruleuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "paramsJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Paramsjson"
+          },
+          "trigger": {
+            "type": "string",
+            "title": "Trigger"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "profileUuid",
+          "kind",
+          "trigger"
+        ],
+        "title": "WatchActionRead"
+      },
+      "WatchActionTrigger": {
+        "type": "string",
+        "enum": [
+          "object_detected",
+          "track_started",
+          "event_started",
+          "event_ended"
+        ],
+        "title": "WatchActionTrigger"
+      },
+      "WatchActionWrite": {
+        "properties": {
+          "uuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid"
+          },
+          "ruleUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruleuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "paramsJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Paramsjson"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/WatchActionTrigger",
+            "default": "event_ended"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "WatchActionWrite"
+      },
+      "WatchEventRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "profileUuid": {
+            "type": "string",
+            "title": "Profileuuid"
+          },
+          "sourceUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceuuid"
+          },
+          "ruleUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ruleuuid"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Startedat"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endedat"
+          },
+          "peakConfidence": {
+            "type": "number",
+            "title": "Peakconfidence",
+            "default": 0.0
+          },
+          "trackIdsJson": {
+            "items": {},
+            "type": "array",
+            "title": "Trackidsjson"
+          },
+          "metadataJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadatajson"
+          },
+          "recordingUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recordinguuid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "profileUuid",
+          "startedAt"
+        ],
+        "title": "WatchEventRead"
+      },
+      "WatchProfileCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "trackerTypename": {
+            "type": "string",
+            "title": "Trackertypename",
+            "default": "IouTracker"
+          },
+          "trackerParamsJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Trackerparamsjson"
+          },
+          "defaultModelGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defaultmodelgroupuuid"
+          },
+          "defaultAnalysisFps": {
+            "type": "number",
+            "title": "Defaultanalysisfps",
+            "default": 5.0
+          },
+          "defaultAnalysisWidth": {
+            "type": "integer",
+            "title": "Defaultanalysiswidth",
+            "default": 640
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/WatchProfileSourceWrite"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/InteractionRuleWrite"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/WatchActionWrite"
+            },
+            "type": "array",
+            "title": "Actions"
+          },
+          "labelLifetimes": {
+            "items": {
+              "$ref": "#/components/schemas/LabelLifetimeWrite"
+            },
+            "type": "array",
+            "title": "Labellifetimes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "WatchProfileCreate"
+      },
+      "WatchProfileRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "trackerTypename": {
+            "type": "string",
+            "title": "Trackertypename"
+          },
+          "trackerParamsJson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Trackerparamsjson"
+          },
+          "defaultModelGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defaultmodelgroupuuid"
+          },
+          "defaultAnalysisFps": {
+            "type": "number",
+            "title": "Defaultanalysisfps",
+            "default": 5.0
+          },
+          "defaultAnalysisWidth": {
+            "type": "integer",
+            "title": "Defaultanalysiswidth",
+            "default": 640
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/WatchProfileSourceRead"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/InteractionRuleRead"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/WatchActionRead"
+            },
+            "type": "array",
+            "title": "Actions"
+          },
+          "labelLifetimes": {
+            "items": {
+              "$ref": "#/components/schemas/LabelLifetimeRead"
+            },
+            "type": "array",
+            "title": "Labellifetimes"
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "name",
+          "trackerTypename"
+        ],
+        "title": "WatchProfileRead"
+      },
+      "WatchProfileResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchProfileRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "WatchProfileResponse"
+      },
+      "WatchProfileSourceRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "profileUuid": {
+            "type": "string",
+            "title": "Profileuuid"
+          },
+          "sourceUuid": {
+            "type": "string",
+            "title": "Sourceuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "modelGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelgroupuuid"
+          },
+          "analysisFps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysisfps"
+          },
+          "analysisWidth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysiswidth"
+          },
+          "recordRetentionS": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recordretentions"
+          },
+          "trackerParamsJson": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trackerparamsjson"
+          },
+          "bufferMode": {
+            "type": "string",
+            "title": "Buffermode",
+            "default": "auto"
+          },
+          "ringSeconds": {
+            "type": "number",
+            "title": "Ringseconds",
+            "default": 20.0
+          },
+          "ringMaxMb": {
+            "type": "number",
+            "title": "Ringmaxmb",
+            "default": 32.0
+          },
+          "zones": {
+            "items": {
+              "$ref": "#/components/schemas/WatchZoneRead"
+            },
+            "type": "array",
+            "title": "Zones"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "profileUuid",
+          "sourceUuid"
+        ],
+        "title": "WatchProfileSourceRead"
+      },
+      "WatchProfileSourceWrite": {
+        "properties": {
+          "sourceUuid": {
+            "type": "string",
+            "title": "Sourceuuid"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "modelGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelgroupuuid"
+          },
+          "analysisFps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysisfps"
+          },
+          "analysisWidth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysiswidth"
+          },
+          "recordRetentionS": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recordretentions"
+          },
+          "trackerParamsJson": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trackerparamsjson"
+          },
+          "bufferMode": {
+            "$ref": "#/components/schemas/BufferMode",
+            "default": "auto"
+          },
+          "ringSeconds": {
+            "type": "number",
+            "title": "Ringseconds",
+            "default": 20.0
+          },
+          "ringMaxMb": {
+            "type": "number",
+            "title": "Ringmaxmb",
+            "default": 32.0
+          },
+          "zones": {
+            "items": {
+              "$ref": "#/components/schemas/WatchZoneWrite"
+            },
+            "type": "array",
+            "title": "Zones"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sourceUuid"
+        ],
+        "title": "WatchProfileSourceWrite"
+      },
+      "WatchProfileUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "trackerTypename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trackertypename"
+          },
+          "trackerParamsJson": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trackerparamsjson"
+          },
+          "defaultModelGroupUuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defaultmodelgroupuuid"
+          },
+          "defaultAnalysisFps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defaultanalysisfps"
+          },
+          "defaultAnalysisWidth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defaultanalysiswidth"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WatchProfileSourceWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InteractionRuleWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rules"
+          },
+          "actions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WatchActionWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actions"
+          },
+          "labelLifetimes": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LabelLifetimeWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labellifetimes"
+          }
+        },
+        "type": "object",
+        "title": "WatchProfileUpdate"
+      },
+      "WatchProfileValidationResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "valid": {
+            "type": "boolean",
+            "title": "Valid",
+            "default": false
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "title": "WatchProfileValidationResponse"
+      },
+      "WatchZoneRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "profileSourceUuid": {
+            "type": "string",
+            "title": "Profilesourceuuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "pointsJson": {
+            "items": {},
+            "type": "array",
+            "title": "Pointsjson"
+          },
+          "referenceWidth": {
+            "type": "integer",
+            "title": "Referencewidth",
+            "default": 0
+          },
+          "referenceHeight": {
+            "type": "integer",
+            "title": "Referenceheight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "uuid",
+          "profileSourceUuid",
+          "name",
+          "kind"
+        ],
+        "title": "WatchZoneRead"
+      },
+      "WatchZoneWrite": {
+        "properties": {
+          "uuid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ZoneKind",
+            "default": "box"
+          },
+          "pointsJson": {
+            "items": {},
+            "type": "array",
+            "title": "Pointsjson"
+          },
+          "referenceWidth": {
+            "type": "integer",
+            "title": "Referencewidth",
+            "default": 0
+          },
+          "referenceHeight": {
+            "type": "integer",
+            "title": "Referenceheight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "WatchZoneWrite"
+      },
+      "ZoneKind": {
+        "type": "string",
+        "enum": [
+          "box",
+          "polygon"
+        ],
+        "title": "ZoneKind"
       }
     }
   }

@@ -65,7 +65,11 @@ from .types import (
     ImageSearchParams,
     ImageTagLink,
     ImageTagTerm,
+    InteractionRule,
+    InteractionRuleWrite,
     Label,
+    LabelLifetime,
+    LabelLifetimeWrite,
     LabelScope,
     LabelType,
     LabelVerificationTerm,
@@ -81,6 +85,8 @@ from .types import (
     ModelGroupRead,
     ModelGroupUpdate,
     ObjectLabelTerm,
+    Recording,
+    RecordingRead,
     Source,
     SourceRead,
     Tag,
@@ -93,6 +99,18 @@ from .types import (
     TrainingConfigRead,
     TrainingConfigUpdate,
     UserSetting,
+    WatchAction,
+    WatchActionWrite,
+    WatchEvent,
+    WatchEventRead,
+    WatchProfile,
+    WatchProfileCreate,
+    WatchProfileRead,
+    WatchProfileSource,
+    WatchProfileSourceWrite,
+    WatchProfileUpdate,
+    WatchZone,
+    WatchZoneWrite,
 )
 
 _SYSTEM_TAGS = [
@@ -5542,5 +5560,352 @@ class DbClient:
             if mg is None:
                 return False
             await session.delete(mg)
+            await session.commit()
+        return True
+
+    # ─── Watch Profiles (StreamWatcher / NVR) ─────────────────────────────────
+    #
+    # Nested writes with whole-list replace, following the Filter Chains precedent —
+    # with one deliberate difference: rules and zones may carry a `uuid` on write and
+    # it is preserved. A rule refers to a zone by uuid, so regenerating uuids on every
+    # save would silently break every zone-based rule in the profile.
+
+    @staticmethod
+    def _wp_to_read(profile: WatchProfile) -> WatchProfileRead:
+        return WatchProfileRead.model_validate(profile)
+
+    @staticmethod
+    def _watch_profile_loaders():
+        """Eager-load options for a fully-populated profile.
+
+        Note `selectinload` + `limit` interact badly in general (LIMIT applies only to
+        the main query), but there is no pagination here — profiles are few and always
+        fetched whole.
+        """
+        return (
+            selectinload(WatchProfile.sources).selectinload(WatchProfileSource.zones),
+            selectinload(WatchProfile.rules),
+            selectinload(WatchProfile.actions),
+            selectinload(WatchProfile.label_lifetimes),
+        )
+
+    @staticmethod
+    def _validate_watch_profile(data) -> None:
+        """Cross-entity checks the per-model validators cannot see.
+
+        Zone references are the important one: a rule naming a zone that isn't attached
+        to any of the profile's sources would simply never fire, which is invisible at
+        runtime and maddening to debug.
+        """
+        sources = data.sources if data.sources is not None else []
+        rules = data.rules if data.rules is not None else []
+        actions = data.actions if data.actions is not None else []
+
+        seen_sources: set = set()
+        for src in sources:
+            if src.source_uuid in seen_sources:
+                raise ValueError(f"Source {src.source_uuid!r} is listed twice in this watch profile")
+            seen_sources.add(src.source_uuid)
+
+        zone_uuids = {zone.uuid for src in sources for zone in src.zones if zone.uuid}
+        rule_uuids = {rule.uuid for rule in rules if rule.uuid}
+
+        for rule in rules:
+            for kind, ref, side in (
+                (rule.subject_a_kind, rule.subject_a_ref, "a"),
+                (rule.subject_b_kind, rule.subject_b_ref, "b"),
+            ):
+                if getattr(kind, "value", kind) == "zone" and ref and ref not in zone_uuids:
+                    raise ValueError(
+                        f"Rule {rule.name!r} references zone {ref!r} (subject {side}), "
+                        "which is not defined on any source in this profile"
+                    )
+
+        for action in actions:
+            if action.rule_uuid and action.rule_uuid not in rule_uuids:
+                raise ValueError(
+                    f"Action {action.kind!r} targets rule {action.rule_uuid!r}, which is not in this profile"
+                )
+
+    @staticmethod
+    def _add_watch_children(
+        session,
+        profile_uuid: str,
+        sources: Optional[List[WatchProfileSourceWrite]],
+        rules: Optional[List[InteractionRuleWrite]],
+        actions: Optional[List[WatchActionWrite]],
+        lifetimes: Optional[List[LabelLifetimeWrite]],
+    ) -> None:
+        """Insert the nested children of a profile. Callers delete the old rows first."""
+        for src in sources or []:
+            row = WatchProfileSource(
+                profile_uuid=profile_uuid,
+                source_uuid=src.source_uuid,
+                order=src.order,
+                enabled=src.enabled,
+                model_group_uuid=src.model_group_uuid,
+                analysis_fps=src.analysis_fps,
+                analysis_width=src.analysis_width,
+                record_retention_s=src.record_retention_s,
+                tracker_params_json=src.tracker_params_json,
+                buffer_mode=src.buffer_mode.value,
+                ring_seconds=src.ring_seconds,
+                ring_max_mb=src.ring_max_mb,
+            )
+            session.add(row)
+            for zone in src.zones:
+                session.add(
+                    WatchZone(
+                        # Keep the caller's uuid so rules referring to this zone survive
+                        # the delete-and-reinsert.
+                        **({"uuid": zone.uuid} if zone.uuid else {}),
+                        profile_source_uuid=row.uuid,
+                        name=zone.name,
+                        kind=zone.kind.value,
+                        points_json=zone.points_json,
+                        reference_width=zone.reference_width,
+                        reference_height=zone.reference_height,
+                    )
+                )
+
+        for rule in rules or []:
+            session.add(
+                InteractionRule(
+                    **({"uuid": rule.uuid} if rule.uuid else {}),
+                    profile_uuid=profile_uuid,
+                    order=rule.order,
+                    name=rule.name,
+                    enabled=rule.enabled,
+                    subject_a_kind=rule.subject_a_kind.value,
+                    subject_a_ref=rule.subject_a_ref,
+                    relation=rule.relation.value,
+                    subject_b_kind=rule.subject_b_kind.value,
+                    subject_b_ref=rule.subject_b_ref,
+                    threshold=rule.threshold,
+                    min_duration_s=rule.min_duration_s,
+                    rearm_delay_s=rule.rearm_delay_s,
+                    max_duration_s=rule.max_duration_s,
+                    event_label=rule.event_label,
+                )
+            )
+
+        for action in actions or []:
+            session.add(
+                WatchAction(
+                    **({"uuid": action.uuid} if action.uuid else {}),
+                    profile_uuid=profile_uuid,
+                    rule_uuid=action.rule_uuid,
+                    order=action.order,
+                    enabled=action.enabled,
+                    kind=action.kind,
+                    params_json=action.params_json,
+                    trigger=action.trigger.value,
+                )
+            )
+
+        for lifetime in lifetimes or []:
+            session.add(
+                LabelLifetime(
+                    profile_uuid=profile_uuid,
+                    label_uuid=lifetime.label_uuid,
+                    ttl_s=lifetime.ttl_s,
+                    is_anchor=lifetime.is_anchor,
+                )
+            )
+
+    async def list_watch_profiles(self) -> List[WatchProfileRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(WatchProfile).options(*self._watch_profile_loaders())
+            result = await session.exec(stmt)
+            return [self._wp_to_read(p) for p in result.all()]
+
+    async def get_watch_profile(self, uuid: str) -> Optional[WatchProfileRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(WatchProfile).where(WatchProfile.uuid == uuid).options(*self._watch_profile_loaders())
+            result = await session.exec(stmt)
+            profile = result.one_or_none()
+            return None if profile is None else self._wp_to_read(profile)
+
+    async def create_watch_profile(self, data: WatchProfileCreate) -> WatchProfileRead:
+        self._validate_watch_profile(data)
+        async with self._async_session_maker() as session:
+            profile = WatchProfile(
+                name=data.name,
+                description=data.description,
+                enabled=data.enabled,
+                tracker_typename=data.tracker_typename,
+                tracker_params_json=data.tracker_params_json,
+                default_model_group_uuid=data.default_model_group_uuid,
+                default_analysis_fps=data.default_analysis_fps,
+                default_analysis_width=data.default_analysis_width,
+            )
+            session.add(profile)
+            await session.flush()
+            self._add_watch_children(
+                session, profile.uuid, data.sources, data.rules, data.actions, data.label_lifetimes
+            )
+            await session.commit()
+
+            stmt = select(WatchProfile).where(WatchProfile.uuid == profile.uuid).options(*self._watch_profile_loaders())
+            result = await session.exec(stmt)
+            return self._wp_to_read(result.one())
+
+    async def update_watch_profile(self, uuid: str, data: WatchProfileUpdate) -> Optional[WatchProfileRead]:
+        self._validate_watch_profile(data)
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(WatchProfile).where(WatchProfile.uuid == uuid))
+            profile = result.one_or_none()
+            if profile is None:
+                return None
+
+            scalar_fields = data.model_dump(
+                exclude_unset=True,
+                exclude={"sources", "rules", "actions", "label_lifetimes"},
+                mode="json",
+            )
+            for key, value in scalar_fields.items():
+                if hasattr(profile, key):
+                    setattr(profile, key, value)
+
+            # Whole-list replace, but only for lists the caller actually sent:
+            # None means "no change", [] means "remove all".
+            if data.sources is not None:
+                await session.exec(delete(WatchProfileSource).where(WatchProfileSource.profile_uuid == uuid))
+            if data.rules is not None:
+                await session.exec(delete(InteractionRule).where(InteractionRule.profile_uuid == uuid))
+            if data.actions is not None:
+                await session.exec(delete(WatchAction).where(WatchAction.profile_uuid == uuid))
+            if data.label_lifetimes is not None:
+                await session.exec(delete(LabelLifetime).where(LabelLifetime.profile_uuid == uuid))
+            await session.flush()
+
+            self._add_watch_children(session, uuid, data.sources, data.rules, data.actions, data.label_lifetimes)
+
+            profile.updated_at = datetime.now(timezone.utc)
+            session.add(profile)
+            await session.commit()
+
+            stmt = select(WatchProfile).where(WatchProfile.uuid == uuid).options(*self._watch_profile_loaders())
+            result2 = await session.exec(stmt)
+            return self._wp_to_read(result2.one())
+
+    async def delete_watch_profile(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            profile = await session.get(WatchProfile, uuid)
+            if profile is None:
+                return False
+            await session.delete(profile)
+            await session.commit()
+        return True
+
+    # ─── Watch events and recordings ──────────────────────────────────────────
+
+    async def list_watch_events(
+        self,
+        profile_uuid: Optional[str] = None,
+        source_uuid: Optional[str] = None,
+        start_from: Optional[datetime] = None,
+        start_to: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> List[WatchEventRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(WatchEvent)
+            if profile_uuid:
+                stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
+            if source_uuid:
+                stmt = stmt.where(WatchEvent.source_uuid == source_uuid)
+            if start_from:
+                stmt = stmt.where(WatchEvent.started_at >= start_from)
+            if start_to:
+                stmt = stmt.where(WatchEvent.started_at <= start_to)
+            stmt = stmt.order_by(WatchEvent.started_at.desc()).limit(limit)
+            result = await session.exec(stmt)
+            return [WatchEventRead.model_validate(e) for e in result.all()]
+
+    async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
+        async with self._async_session_maker() as session:
+            session.add(event)
+            await session.commit()
+            await session.refresh(event)
+            return WatchEventRead.model_validate(event)
+
+    async def close_watch_event(
+        self,
+        uuid: str,
+        ended_at: datetime,
+        peak_confidence: Optional[float] = None,
+        recording_uuid: Optional[str] = None,
+    ) -> Optional[WatchEventRead]:
+        async with self._async_session_maker() as session:
+            event = await session.get(WatchEvent, uuid)
+            if event is None:
+                return None
+            event.ended_at = ended_at
+            if peak_confidence is not None:
+                event.peak_confidence = peak_confidence
+            if recording_uuid is not None:
+                event.recording_uuid = recording_uuid
+            session.add(event)
+            await session.commit()
+            await session.refresh(event)
+            return WatchEventRead.model_validate(event)
+
+    async def list_open_watch_events(self, profile_uuid: Optional[str] = None) -> List[WatchEventRead]:
+        """Events with no `ended_at` — what resume has to close out after a restart."""
+        async with self._async_session_maker() as session:
+            stmt = select(WatchEvent).where(WatchEvent.ended_at == None)  # noqa: E711
+            if profile_uuid:
+                stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
+            result = await session.exec(stmt)
+            return [WatchEventRead.model_validate(e) for e in result.all()]
+
+    async def list_recordings(
+        self,
+        profile_uuid: Optional[str] = None,
+        source_uuid: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[RecordingRead]:
+        async with self._async_session_maker() as session:
+            stmt = select(Recording)
+            if profile_uuid:
+                stmt = stmt.where(Recording.profile_uuid == profile_uuid)
+            if source_uuid:
+                stmt = stmt.where(Recording.source_uuid == source_uuid)
+            stmt = stmt.order_by(Recording.started_at.desc()).limit(limit)
+            result = await session.exec(stmt)
+            return [RecordingRead.model_validate(r) for r in result.all()]
+
+    async def get_recording(self, uuid: str) -> Optional[RecordingRead]:
+        async with self._async_session_maker() as session:
+            rec = await session.get(Recording, uuid)
+            return None if rec is None else RecordingRead.model_validate(rec)
+
+    async def create_recording(self, recording: Recording) -> RecordingRead:
+        async with self._async_session_maker() as session:
+            session.add(recording)
+            await session.commit()
+            await session.refresh(recording)
+            return RecordingRead.model_validate(recording)
+
+    async def update_recording(self, uuid: str, **fields) -> Optional[RecordingRead]:
+        async with self._async_session_maker() as session:
+            rec = await session.get(Recording, uuid)
+            if rec is None:
+                return None
+            for key, value in fields.items():
+                if hasattr(rec, key):
+                    setattr(rec, key, value)
+            rec.updated_at = datetime.now(timezone.utc)
+            session.add(rec)
+            await session.commit()
+            await session.refresh(rec)
+            return RecordingRead.model_validate(rec)
+
+    async def delete_recording(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            rec = await session.get(Recording, uuid)
+            if rec is None:
+                return False
+            await session.delete(rec)
             await session.commit()
         return True

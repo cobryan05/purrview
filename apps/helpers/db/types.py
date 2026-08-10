@@ -1159,3 +1159,523 @@ class TrainingConfigUpdate(ApiModel):
     model_config_node_uuid: Optional[str] = None
     dataset_uuids: Optional[List[str]] = None
     hyperparams_json: Optional[Dict[str, Any]] = None  # None = no change; [] = remove all
+
+
+# ─── Watch Profiles (StreamWatcher / NVR) ────────────────────────────────────
+#
+# A Watch Profile is the curated "what to watch, and what counts as an event"
+# entity; a StreamWatcher task is merely an execution of one. That split mirrors
+# Datasets, Filter Chains, Model Stacks and Training Configs, and it is what makes
+# "which watchers use camera 3?" and "show me every event for this rule" answerable
+# in SQL rather than by grepping a JSON blob.
+#
+# `watch_events` and `recordings` are written from the start even though the media
+# browser is a separate plan: they are its foundation, and adding them now costs
+# almost nothing versus a migration later.
+
+
+class RuleSubjectKind(str, Enum):
+    """What one side of an interaction rule refers to."""
+
+    LABEL = "label"
+    ZONE = "zone"
+    ANY = "any"
+    NONE = "none"  # arity-1 rules ("a cat is tracked at all")
+
+
+class RuleRelation(str, Enum):
+    """How the two subjects of a rule are compared.
+
+    `CONTAINS` is the default for "cat in litter box" and similar: a cat's box is far
+    smaller than the litter box's, so IoU stays low even at perfect containment.
+    """
+
+    PRESENT = "present"  # arity 1: the subject is tracked at all
+    IOU = "iou"  # intersection over union — right for same-size objects
+    CONTAINS = "contains"  # intersection / area(a) — "how much of A is inside B"
+    CENTROID_IN = "centroid_in"  # A's centre is inside B — cheapest and very robust
+    DISTANCE = "distance"  # normalised centre distance — "cat near door"
+
+
+class ZoneKind(str, Enum):
+    BOX = "box"
+    POLYGON = "polygon"
+
+
+class WatchActionTrigger(str, Enum):
+    OBJECT_DETECTED = "object_detected"
+    TRACK_STARTED = "track_started"
+    EVENT_STARTED = "event_started"
+    EVENT_ENDED = "event_ended"
+
+
+class BufferMode(str, Enum):
+    AUTO = "auto"  # use whatever ingest tier the source resolves to
+    OFF = "off"  # never arm a rolling buffer for this source
+
+
+class RecordingStatus(str, Enum):
+    PENDING = "pending"
+    WRITING = "writing"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    # The window aged out of the RAM buffer before extraction ran. Terminal: retrying
+    # can never succeed, so it must not sit in the work queue forever.
+    EXPIRED = "expired"
+
+
+class WatchZone(SQLModel, table=True):
+    """A user-drawn region on one source's frame.
+
+    Zones are the highest value-per-effort part of the whole feature: a box named
+    "litter box area" is more reliable than a litter-box detector, needs no training
+    data, and makes `cat ∩ zone` work today.
+    """
+
+    __tablename__ = "watch_zones"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    profile_source_uuid: str = Field(foreign_key="watch_profile_sources.uuid", index=True, ondelete="CASCADE")
+    name: str
+    kind: str = Field(default=ZoneKind.BOX.value)  # validated against ZoneKind in write models
+    points_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    # Coordinates are stored normalised (0..1), but the resolution they were drawn
+    # against is kept so a camera resolution change is detectable rather than silently
+    # shifting every zone.
+    reference_width: int = Field(default=0)
+    reference_height: int = Field(default=0)
+    profile_source: "WatchProfileSource" = Relationship(back_populates="zones")
+
+
+class WatchProfileSource(SQLModel, table=True):
+    """The junction that *is* the source↔watcher link."""
+
+    __tablename__ = "watch_profile_sources"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
+    # RESTRICT, not CASCADE: deleting a source that a watcher uses must fail loudly
+    # rather than quietly emptying the watcher. CASCADE on both sides of a junction
+    # turns a hard constraint into a silent unlink.
+    source_uuid: str = Field(foreign_key="sources.uuid", index=True, ondelete="RESTRICT")
+    order: int = Field(default=0)
+    enabled: bool = Field(default=True)
+    # NULL means "use the profile default" for each of these.
+    model_group_uuid: Optional[str] = Field(default=None, foreign_key="model_groups.uuid", ondelete="SET NULL")
+    analysis_fps: Optional[float] = Field(default=None)
+    analysis_width: Optional[int] = Field(default=None)
+    record_retention_s: Optional[float] = Field(default=None)
+    tracker_params_json: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    buffer_mode: str = Field(default=BufferMode.AUTO.value)
+    # Tier C (snapshot/MQTT sources) only: the in-RAM JPEG frame ring's bounds.
+    ring_seconds: float = Field(default=20.0)
+    ring_max_mb: float = Field(default=32.0)
+    profile: "WatchProfile" = Relationship(back_populates="sources")
+    zones: List[WatchZone] = Relationship(
+        back_populates="profile_source",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class InteractionRule(SQLModel, table=True):
+    """A stateful predicate over tracks that opens and closes events.
+
+    Every rule carries hysteresis because a raw threshold *will* flap: detection
+    confidence and box jitter cross it many times per second, which unguarded means an
+    MQTT storm and a dozen three-second clips for one litter-box visit.
+    """
+
+    __tablename__ = "interaction_rules"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
+    order: int = Field(default=0)
+    name: str
+    enabled: bool = Field(default=True)
+    subject_a_kind: str = Field(default=RuleSubjectKind.LABEL.value)
+    subject_a_ref: Optional[str] = Field(default=None)  # label uuid or zone uuid
+    relation: str = Field(default=RuleRelation.CONTAINS.value)
+    subject_b_kind: str = Field(default=RuleSubjectKind.NONE.value)
+    subject_b_ref: Optional[str] = Field(default=None)
+    threshold: float = Field(default=0.5)
+    # The predicate must hold continuously this long before the event STARTS.
+    min_duration_s: float = Field(default=2.0)
+    # ...and be continuously false this long before it ENDS, which is what stops one
+    # visit becoming twelve events.
+    rearm_delay_s: float = Field(default=10.0)
+    # Hard cap so a stuck detection cannot hold an event (and a recording) open forever.
+    max_duration_s: float = Field(default=300.0)
+    event_label: Optional[str] = Field(default=None)  # human name; also the MQTT topic leaf
+    profile: "WatchProfile" = Relationship(back_populates="rules")
+
+
+class LabelLifetime(SQLModel, table=True):
+    """How long a label's track survives without a detection.
+
+    In **seconds, not frames**: a frame count silently means 1 s on a 5 fps camera and
+    0.2 s on a 25 fps one, and drifts whenever a source stutters — which live streams
+    do constantly.
+    """
+
+    __tablename__ = "label_lifetimes"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
+    label_uuid: str = Field(foreign_key="labels.uuid", index=True, ondelete="CASCADE")
+    ttl_s: float = Field(default=2.0)
+    # Anchors latch their box once seen with high confidence and hold it for a long
+    # TTL, rather than trusting a detector that intermittently misses a stationary
+    # object like a litter box. Cheaper and far more robust than re-detecting it.
+    is_anchor: bool = Field(default=False)
+    profile: "WatchProfile" = Relationship(back_populates="label_lifetimes")
+
+
+class WatchAction(SQLModel, table=True):
+    """A side effect to run at some point in an event's life."""
+
+    __tablename__ = "watch_actions"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
+    # NULL means "every rule in this profile".
+    rule_uuid: Optional[str] = Field(default=None, foreign_key="interaction_rules.uuid", ondelete="CASCADE")
+    order: int = Field(default=0)
+    enabled: bool = Field(default=True)
+    kind: str  # registry key, e.g. "publish_mqtt" / "record_clip" / "save_snapshot"
+    params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    trigger: str = Field(default=WatchActionTrigger.EVENT_ENDED.value)
+    profile: "WatchProfile" = Relationship(back_populates="actions")
+
+
+class WatchProfile(TimestampModel, table=True):
+    __tablename__ = "watch_profiles"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    enabled: bool = Field(default=True)
+    tracker_typename: str = Field(default="IouTracker")
+    tracker_params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    default_model_group_uuid: Optional[str] = Field(default=None, foreign_key="model_groups.uuid", ondelete="SET NULL")
+    # Analysis rate and width are first-class because per-frame inference over
+    # base64 HTTP is the throughput ceiling: 2–5 fps at 640 px tracks cats fine and
+    # cuts payloads ~10x. Recording is unaffected — MediaMTX records the full-rate,
+    # full-resolution stream regardless of what we analyse.
+    default_analysis_fps: float = Field(default=5.0)
+    default_analysis_width: int = Field(default=640)
+    sources: List[WatchProfileSource] = Relationship(
+        back_populates="profile",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "WatchProfileSource.order"},
+    )
+    rules: List[InteractionRule] = Relationship(
+        back_populates="profile",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "InteractionRule.order"},
+    )
+    actions: List[WatchAction] = Relationship(
+        back_populates="profile",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "WatchAction.order"},
+    )
+    label_lifetimes: List[LabelLifetime] = Relationship(
+        back_populates="profile",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class Recording(TimestampModel, table=True):
+    """One extracted clip on disk.
+
+    Independent of the rolling buffer: the buffer is RAM and evaporates, these are the
+    only durable media. There is deliberately no 24/7 timeline.
+    """
+
+    __tablename__ = "recordings"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    source_uuid: Optional[str] = Field(default=None, foreign_key="sources.uuid", index=True, ondelete="SET NULL")
+    profile_uuid: Optional[str] = Field(default=None, foreign_key="watch_profiles.uuid", ondelete="SET NULL")
+    event_uuid: Optional[str] = Field(default=None, index=True)
+    file_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    duration_s: float = Field(default=0.0)
+    size_bytes: int = Field(default=0)
+    status: str = Field(default=RecordingStatus.PENDING.value)
+    error: Optional[str] = None
+    # True when the requested pre-roll had already aged out of the RAM buffer. A
+    # truncated clip must never be presented as though its pre-roll were intact.
+    partial_preroll: bool = Field(default=False)
+
+
+class WatchEvent(SQLModel, table=True):
+    """One opening and closing of a rule.
+
+    Rows with `ended_at` set and no `recording_uuid` are a work queue — but a
+    short-deadline one, because the source window ages out of the RAM buffer in under
+    a minute.
+    """
+
+    __tablename__ = "watch_events"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
+    source_uuid: Optional[str] = Field(default=None, foreign_key="sources.uuid", index=True, ondelete="SET NULL")
+    rule_uuid: Optional[str] = Field(default=None, foreign_key="interaction_rules.uuid", ondelete="SET NULL")
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_type=DateTime(timezone=True))
+    ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    peak_confidence: float = Field(default=0.0)
+    track_ids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    recording_uuid: Optional[str] = Field(default=None, foreign_key="recordings.uuid", ondelete="SET NULL")
+
+
+# ─── Watch Profile read/write models ─────────────────────────────────────────
+# Nested writes with whole-list replace, following the Filter Chains precedent.
+# Enum-typed fields appear on the *write* models only: `sa.Enum(StrEnum)` stores
+# names rather than values, so the columns stay plain `str` and validation lives here.
+
+
+class WatchZoneRead(OrmModel):
+    uuid: str
+    profile_source_uuid: str
+    name: str
+    kind: str
+    points_json: List[Any] = Field(default_factory=list)
+    reference_width: int = 0
+    reference_height: int = 0
+
+
+class WatchZoneWrite(ApiModel):
+    uuid: Optional[str] = None  # preserved on update so rules keep referring to it
+    name: str
+    kind: ZoneKind = ZoneKind.BOX
+    points_json: List[Any] = Field(default_factory=list)
+    reference_width: int = 0
+    reference_height: int = 0
+
+    @model_validator(mode="after")
+    def _validate_points(self) -> "WatchZoneWrite":
+        if self.kind == ZoneKind.BOX and len(self.points_json) != 2:
+            raise ValueError("a box zone needs exactly 2 points ([x1,y1],[x2,y2])")
+        if self.kind == ZoneKind.POLYGON and len(self.points_json) < 3:
+            raise ValueError("a polygon zone needs at least 3 points")
+        for point in self.points_json:
+            if not (isinstance(point, (list, tuple)) and len(point) == 2):
+                raise ValueError(f"zone points must be [x, y] pairs, got {point!r}")
+            # Normalised coordinates survive a camera resolution change; pixel values
+            # would silently point somewhere else after one.
+            if not all(0.0 <= float(c) <= 1.0 for c in point):
+                raise ValueError(f"zone points must be normalised to 0..1, got {point!r}")
+        return self
+
+
+class WatchProfileSourceRead(OrmModel):
+    uuid: str
+    profile_uuid: str
+    source_uuid: str
+    order: int = 0
+    enabled: bool = True
+    model_group_uuid: Optional[str] = None
+    analysis_fps: Optional[float] = None
+    analysis_width: Optional[int] = None
+    record_retention_s: Optional[float] = None
+    tracker_params_json: Optional[Dict[str, Any]] = None
+    buffer_mode: str = BufferMode.AUTO.value
+    ring_seconds: float = 20.0
+    ring_max_mb: float = 32.0
+    zones: List[WatchZoneRead] = Field(default_factory=list)
+
+
+class WatchProfileSourceWrite(ApiModel):
+    source_uuid: str
+    order: int = 0
+    enabled: bool = True
+    model_group_uuid: Optional[str] = None
+    analysis_fps: Optional[float] = None
+    analysis_width: Optional[int] = None
+    record_retention_s: Optional[float] = None
+    tracker_params_json: Optional[Dict[str, Any]] = None
+    buffer_mode: BufferMode = BufferMode.AUTO
+    ring_seconds: float = 20.0
+    ring_max_mb: float = 32.0
+    zones: List[WatchZoneWrite] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_rates(self) -> "WatchProfileSourceWrite":
+        if self.analysis_fps is not None and self.analysis_fps <= 0:
+            raise ValueError("analysis_fps must be positive when set")
+        if self.analysis_width is not None and self.analysis_width <= 0:
+            raise ValueError("analysis_width must be positive when set")
+        return self
+
+
+class InteractionRuleRead(OrmModel):
+    uuid: str
+    profile_uuid: str
+    order: int = 0
+    name: str
+    enabled: bool = True
+    subject_a_kind: str
+    subject_a_ref: Optional[str] = None
+    relation: str
+    subject_b_kind: str
+    subject_b_ref: Optional[str] = None
+    threshold: float = 0.5
+    min_duration_s: float = 2.0
+    rearm_delay_s: float = 10.0
+    max_duration_s: float = 300.0
+    event_label: Optional[str] = None
+
+
+class InteractionRuleWrite(ApiModel):
+    uuid: Optional[str] = None
+    order: int = 0
+    name: str
+    enabled: bool = True
+    subject_a_kind: RuleSubjectKind = RuleSubjectKind.LABEL
+    subject_a_ref: Optional[str] = None
+    relation: RuleRelation = RuleRelation.CONTAINS
+    subject_b_kind: RuleSubjectKind = RuleSubjectKind.NONE
+    subject_b_ref: Optional[str] = None
+    threshold: float = 0.5
+    min_duration_s: float = 2.0
+    rearm_delay_s: float = 10.0
+    max_duration_s: float = 300.0
+    event_label: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_arity(self) -> "InteractionRuleWrite":
+        # `present` is the arity-1 relation; every other relation compares two things,
+        # so a missing second subject would silently never fire.
+        if self.relation == RuleRelation.PRESENT:
+            if self.subject_b_kind != RuleSubjectKind.NONE:
+                raise ValueError("relation 'present' takes one subject; subject_b_kind must be 'none'")
+        elif self.subject_b_kind == RuleSubjectKind.NONE:
+            raise ValueError(f"relation {self.relation.value!r} needs a second subject")
+
+        for kind, ref, side in (
+            (self.subject_a_kind, self.subject_a_ref, "a"),
+            (self.subject_b_kind, self.subject_b_ref, "b"),
+        ):
+            if kind in (RuleSubjectKind.LABEL, RuleSubjectKind.ZONE) and not ref:
+                raise ValueError(f"subject_{side}_kind {kind.value!r} requires subject_{side}_ref")
+
+        if self.min_duration_s < 0 or self.rearm_delay_s < 0:
+            raise ValueError("min_duration_s and rearm_delay_s must not be negative")
+        if self.max_duration_s <= 0:
+            raise ValueError("max_duration_s must be positive — it is the runaway-event cap")
+        return self
+
+
+class LabelLifetimeRead(OrmModel):
+    uuid: str
+    profile_uuid: str
+    label_uuid: str
+    ttl_s: float = 2.0
+    is_anchor: bool = False
+
+
+class LabelLifetimeWrite(ApiModel):
+    label_uuid: str
+    ttl_s: float = 2.0
+    is_anchor: bool = False
+
+    @field_validator("ttl_s")
+    @classmethod
+    def _positive_ttl(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("ttl_s is in seconds and must be positive")
+        return v
+
+
+class WatchActionRead(OrmModel):
+    uuid: str
+    profile_uuid: str
+    rule_uuid: Optional[str] = None
+    order: int = 0
+    enabled: bool = True
+    kind: str
+    params_json: Dict[str, Any] = Field(default_factory=dict)
+    trigger: str
+
+
+class WatchActionWrite(ApiModel):
+    uuid: Optional[str] = None
+    rule_uuid: Optional[str] = None  # None = all rules in the profile
+    order: int = 0
+    enabled: bool = True
+    kind: str
+    params_json: Dict[str, Any] = Field(default_factory=dict)
+    trigger: WatchActionTrigger = WatchActionTrigger.EVENT_ENDED
+
+
+class WatchProfileRead(OrmModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    enabled: bool = True
+    tracker_typename: str
+    tracker_params_json: Dict[str, Any] = Field(default_factory=dict)
+    default_model_group_uuid: Optional[str] = None
+    default_analysis_fps: float = 5.0
+    default_analysis_width: int = 640
+    sources: List[WatchProfileSourceRead] = Field(default_factory=list)
+    rules: List[InteractionRuleRead] = Field(default_factory=list)
+    actions: List[WatchActionRead] = Field(default_factory=list)
+    label_lifetimes: List[LabelLifetimeRead] = Field(default_factory=list)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class WatchProfileCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    enabled: bool = True
+    tracker_typename: str = "IouTracker"
+    tracker_params_json: Dict[str, Any] = Field(default_factory=dict)
+    default_model_group_uuid: Optional[str] = None
+    default_analysis_fps: float = 5.0
+    default_analysis_width: int = 640
+    sources: List[WatchProfileSourceWrite] = Field(default_factory=list)
+    rules: List[InteractionRuleWrite] = Field(default_factory=list)
+    actions: List[WatchActionWrite] = Field(default_factory=list)
+    label_lifetimes: List[LabelLifetimeWrite] = Field(default_factory=list)
+
+
+class WatchProfileUpdate(ApiModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    tracker_typename: Optional[str] = None
+    tracker_params_json: Optional[Dict[str, Any]] = None
+    default_model_group_uuid: Optional[str] = None
+    default_analysis_fps: Optional[float] = None
+    default_analysis_width: Optional[int] = None
+    # None = no change; [] = remove all.
+    sources: Optional[List[WatchProfileSourceWrite]] = None
+    rules: Optional[List[InteractionRuleWrite]] = None
+    actions: Optional[List[WatchActionWrite]] = None
+    label_lifetimes: Optional[List[LabelLifetimeWrite]] = None
+
+
+class WatchEventRead(OrmModel):
+    uuid: str
+    profile_uuid: str
+    source_uuid: Optional[str] = None
+    rule_uuid: Optional[str] = None
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    peak_confidence: float = 0.0
+    track_ids_json: List[Any] = Field(default_factory=list)
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    recording_uuid: Optional[str] = None
+
+
+class RecordingRead(OrmModel):
+    uuid: str
+    source_uuid: Optional[str] = None
+    profile_uuid: Optional[str] = None
+    event_uuid: Optional[str] = None
+    file_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    duration_s: float = 0.0
+    size_bytes: int = 0
+    status: str
+    error: Optional[str] = None
+    partial_preroll: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None

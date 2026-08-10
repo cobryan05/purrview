@@ -33,6 +33,8 @@ class ApiTags(str, Enum):
     FILTER_CHAINS = "filter_chains"
     MODEL_GROUPS = "model_groups"
     SETTINGS = "settings"
+    WATCH_PROFILES = "watch_profiles"
+    RECORDINGS = "recordings"
 
 
 class TaskStatus(str, Enum):
