@@ -1596,28 +1596,56 @@ class CollectTrainingImagesTask(Task):
             policy=self._merge_policy,
         )
 
-        # Phase 5B trigger/annotation split (LIVE_COLLECTION_PLAN.md): the TRIGGER
-        # decides whether this frame is saved at all — true if ANY merged detection
-        # falls inside its label's confidence band. The ANNOTATION set (what gets
-        # written) is deliberately NOT filtered by band: it's every merged
-        # detection, in-band or not, so a saved frame is never missing a bbox for
-        # an object another model is confident is there. If the trigger doesn't
-        # fire, nothing is saved and `matching` is empty — same "no match" contract
-        # the caller already understands.
+        # Phase 5B trigger/annotation split (LIVE_COLLECTION_PLAN.md). The two
+        # bounds of a label's band do different jobs, and that asymmetry is the
+        # whole feature:
+        #
+        #   min — the TAG floor. A detection at or above it gets an unverified
+        #         bbox on any saved frame, however confident it is.
+        #   max — the REVIEW ceiling. It only gates whether a frame is worth
+        #         saving; it never suppresses a box on a frame saved anyway.
+        #
+        # So the TRIGGER (did any merged detection land inside its band?) decides
+        # whether the frame is saved at all, and the ANNOTATION set is every
+        # merged detection at or above its own label's min — deliberately NOT
+        # capped at max, so a frame saved for a 0.4 dog still carries a box for
+        # the 0.95 cat beside it rather than leaving a known true positive
+        # unlabeled. If the trigger doesn't fire, nothing is saved and `matching`
+        # is empty — same "no match" contract the caller already understands.
         if not self._frame_triggers_save(deduped):
             return []
-        return deduped
+        return self._annotatable(deduped)
 
     def _frame_triggers_save(self, detections: list) -> bool:
         """True if any (post-merge) detection lands inside its label's confidence
         band — both bounds inclusive (`min <= confidence <= max`). Only this
         decides whether the frame is saved; it does not filter which boxes are
-        written (see _run_inference)."""
+        written (see _annotatable)."""
         for det in detections:
             band = self._target_label_bands.get(det.bbox.label_uuid)
             if band is not None and band.contains(det.confidence):
                 return True
         return False
+
+    def _annotatable(self, detections: list) -> list:
+        """The (post-merge) detections that get written as unverified bboxes:
+        those at or above their OWN label's min. The band's max is not applied
+        here — see _run_inference for why the ceiling is review-only.
+
+        The per-label floor matters because the network-level `conf_thresh` is
+        `_min_all_conf`, the loosest min across every configured label. Without
+        this check, a label configured at min 0.5 would still collect boxes down
+        to a *different* label's 0.15 floor, which is not what the config says.
+
+        Must run AFTER the cross-model merge: filtering first would stop a
+        below-floor detection from suppressing an overlapping duplicate of the
+        same object (the same ordering constraint _frame_triggers_save has)."""
+        annotatable = []
+        for det in detections:
+            band = self._target_label_bands.get(det.bbox.label_uuid)
+            if band is not None and det.confidence >= band.min_confidence:
+                annotatable.append(det)
+        return annotatable
 
     async def _apply_filter_chain_to_frame(
         self, provided: ImageWithProviderMetadata, base64_img: str, matching: list
@@ -2256,9 +2284,19 @@ class CollectTrainingImagesTask(Task):
                 "required": False,
                 "label": "Model/Label Configuration",
                 "description": (
-                    "Models to run on each frame, and which labels/confidences trigger a save. "
-                    "Leave empty to collect every frame unannotated (the filter chain and "
-                    "deduplication settings below still apply)."
+                    "Models to run on each frame, and the per-label confidence range that decides what "
+                    "gets tagged and what gets collected. The two bounds do different jobs:\n\n"
+                    "• Tag from — detections at or above this get an unverified box on any frame that "
+                    "is saved, no matter how confident they are. Set to 0 to disable the label.\n"
+                    "• Review up to — a frame is only collected when some detection falls at or below "
+                    "this. Detections above it are still boxed on frames saved for something else; "
+                    "they just aren't a reason to save a frame on their own.\n\n"
+                    "That split is the point: a detection your model is already certain about "
+                    "(say a cat at 0.95) teaches you nothing at review time, while the 0.4 guesses are "
+                    "where your labelling actually adds signal. Lower 'Review up to' to collect only "
+                    "the uncertain cases; leave it at 1 to collect everything above the floor.\n\n"
+                    "Leave the whole list empty to collect every frame unannotated (the filter chain "
+                    "and deduplication settings below still apply)."
                 ),
                 "allow_group_insert": True,
                 "items": {
@@ -2266,6 +2304,13 @@ class CollectTrainingImagesTask(Task):
                     "label": "Model/Label selection",
                     "required": True,
                     "description": "Labels to collect",
+                    "min_label": "Tag from",
+                    "max_label": "Review up to",
+                    "band_help": (
+                        "Select a model, then set each label's range: tag anything at or above "
+                        "'Tag from' (0 disables the label), but only save the frame for review when a "
+                        "detection is also at or below 'Review up to'."
+                    ),
                 },
             },
             "overlap_iou_threshold": {

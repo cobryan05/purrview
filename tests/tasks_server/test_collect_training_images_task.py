@@ -2745,10 +2745,14 @@ class TestConfidenceBandPostMergeOrdering:
 
 class TestConfidenceBandTriggerVsAnnotation:
     """A trigger predicate (any merged detection in-band) decides whether the
-    frame is saved; the annotation set (what's written) is NOT filtered by
-    band — it's every merged detection, in-band or not, once the trigger
-    fires. Otherwise a frame could be saved with a known true positive (the
-    out-of-band box) left unlabeled."""
+    frame is saved. The annotation set (what's written) is then every merged
+    detection at or above its OWN label's min — the max is review-only and
+    never suppresses a box, so a frame is never saved with a known true
+    positive left unlabeled.
+
+    "Out of band" therefore splits into two halves that behave differently:
+    above max is still annotated, below min is not.
+    """
 
     _LABEL_IN_BAND = _LABEL_UUID
     _LABEL_OUT_OF_BAND = "label-out-of-band"
@@ -2760,8 +2764,8 @@ class TestConfidenceBandTriggerVsAnnotation:
                 {
                     "modelName": _MODEL_NAME,
                     "labelValues": {
-                        self._LABEL_IN_BAND: {"min": 0.5, "max": 1.0},
-                        self._LABEL_OUT_OF_BAND: {"min": 0.9, "max": 1.0},
+                        self._LABEL_IN_BAND: {"min": 0.5, "max": 0.8},
+                        self._LABEL_OUT_OF_BAND: {"min": 0.2, "max": 0.4},
                     },
                 }
             ],
@@ -2770,25 +2774,61 @@ class TestConfidenceBandTriggerVsAnnotation:
         await task._init(params, resume_data=None)
         return task
 
-    async def test_frame_with_one_in_band_and_one_out_of_band_box_is_saved_with_both_annotated(self):
+    async def test_frame_saved_for_one_label_annotates_another_label_above_its_max(self):
         task = await self._task()
 
         # Non-overlapping boxes with different (unrelated) labels: merge keeps
         # both untouched, so this isolates the trigger/annotation split from
         # the merge step entirely.
         in_band_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.7)
-        out_of_band_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.6)
+        # Above its label's max (0.4) but well above its min (0.2): too confident
+        # to be worth reviewing on its own, still worth boxing on a saved frame.
+        above_max_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.95)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [in_band_det, out_of_band_det]
+        inference_api.detect.return_value.result.detections = [in_band_det, above_max_det]
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
-        # Trigger fired (in_band_det is in band) -> frame saved. Annotation set
-        # is unfiltered -> the out-of-band box is written too, not dropped.
+        # Trigger fired (in_band_det is in band) -> frame saved. The max is
+        # review-only -> the above-max box is written too, not dropped.
         assert len(matching) == 2
         assert in_band_det in matching
-        assert out_of_band_det in matching
+        assert above_max_det in matching
+
+    async def test_detection_below_its_own_label_min_is_not_annotated(self):
+        """The network conf_thresh is the loosest min across ALL labels
+        (_min_all_conf = 0.2 here), so a 0.3 detection of the min-0.5 label
+        reaches the task. It must not be boxed: its own label's floor says 0.5.
+        Without a per-label floor it would ride in on the other label's 0.2."""
+        task = await self._task()
+
+        trigger_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.3)
+        below_own_min_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.3)
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [trigger_det, below_own_min_det]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        assert matching == [trigger_det]
+
+    async def test_annotation_floor_is_per_label_not_the_global_loosest_min(self):
+        """Same frame, same confidence, two labels with different floors: the
+        0.3 detection is kept for the min-0.2 label and dropped for the
+        min-0.5 one."""
+        task = await self._task()
+
+        kept = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.3)
+        dropped = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.3)
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [kept, dropped]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        assert kept in matching
+        assert dropped not in matching
 
     async def test_frame_with_no_in_band_detection_is_not_saved(self):
         task = await self._task()
