@@ -1219,7 +1219,7 @@ class TestPreviousRunColumnInLabelStats:
     """The coverage table gains a "Last run" column so the delta is visible per
     class, not just in total."""
 
-    def _setup(self, page: Page, base_url: str, prev_verified: int = 2):
+    def _setup(self, page: Page, base_url: str, prev_all_clear: int = 1, prev_verified: int = 2):
         _mock_datasets(page, [DATASET_ALPHA])
         _mock_model_configs(page, [MODEL_CFG])
         _mock_training_configs_list(page, [EXISTING_TC])
@@ -1237,7 +1237,7 @@ class TestPreviousRunColumnInLabelStats:
                         "labelScope": "object",
                         "verifiedBboxCount": prev_verified,
                         "unverifiedBboxCount": 0,
-                        "coLabelsCoveredCount": 0,
+                        "coLabelsCoveredCount": prev_all_clear,
                         "coLabelGapsCount": 0,
                         "hasRollup": False,
                         "rollUpParentUuid": None,
@@ -1251,15 +1251,27 @@ class TestPreviousRunColumnInLabelStats:
         _list_item(page, "tc-1").click()
 
     def test_last_run_column_shows_previous_count_and_delta(self, page: Page, base_url: str):
-        """Current verified boxes for the label is 5 (LABEL_STATS_WITH_OBJECT); the
-        previous run had 2, so the column reads 2 with a +3."""
-        self._setup(page, base_url, prev_verified=2)
+        """Current all-clear images for the label is 3 (LABEL_STATS_WITH_OBJECT); the
+        previous run had 1, so the column reads 1 with a +2."""
+        self._setup(page, base_url, prev_all_clear=1)
 
         header = _box(page).locator("th", has_text="Last run").first
         expect(header).to_be_visible(timeout=4000)
 
         row = _box(page).locator("tr", has=page.locator("td", has_text="Cat")).first
-        expect(row).to_contain_text("+3")
+        expect(row).to_contain_text("+2")
+
+    def test_delta_is_measured_against_all_clear_not_verified_boxes(self, page: Page, base_url: str):
+        """The per-class delta must count the same thing as the "+N ready since"
+        headline — training-ready images. Here all-clear is unchanged (3 then, 3 now)
+        while verified boxes grew 2 → 5, so the column must show no delta at all."""
+        self._setup(page, base_url, prev_all_clear=3, prev_verified=2)
+
+        header = _box(page).locator("th", has_text="Last run").first
+        expect(header).to_be_visible(timeout=4000)
+
+        row = _box(page).locator("tr", has=page.locator("td", has_text="Cat")).first
+        expect(row).not_to_contain_text("+3")
 
     def test_column_is_absent_without_a_previous_run(self, page: Page, base_url: str):
         _mock_datasets(page, [DATASET_ALPHA])

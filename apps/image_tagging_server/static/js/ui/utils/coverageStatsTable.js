@@ -256,9 +256,10 @@ function _makePreviousRunLine(previousRun, readyCount) {
  *   (e.g. activeModelBar.js's coverage popup) can close itself first — otherwise a
  *   high-z-index panel would sit on top of the review modal it just opened.
  * @param {object|null} [opts.previousRun] - result of loadPreviousRun(). When given,
- *   each table gains a "Last run" column counting the same thing as its first
- *   column, restricted to the images that trained the current model. Omitted or
- *   null renders exactly as before.
+ *   each table gains a "Last run" column restricted to the images that trained the
+ *   current model: "Positive" for image labels, "All clear" for object labels (the
+ *   per-class analogue of the ready count the headline delta uses). Omitted or null
+ *   renders exactly as before.
  */
 export function renderCoverageStats(content, { config, labelStats, totalImages, labelsMap, previousRun = null, onNavigate }) {
   const totalNote = document.createElement('div');
@@ -566,13 +567,16 @@ export function renderCoverageStats(content, { config, labelStats, totalImages, 
           const effectiveUuids = new Set([stat.labelUuid, ...(stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : [])]);
           return openVerifiedBboxModal(config, effectiveUuids, `${_labelName(stat.labelUuid)} — verified boxes (${config.name})`);
         }},
-      ...(previousRun ? [_prevCol('verifiedBboxCount', 'verifiedBboxCount', 'Verified boxes')] : []),
       { header: 'Unverified', key: 'unverifiedBboxCount', title: 'Unverified boxes — bounding boxes still marked Unverified — click to review images', warnIf: s => s.unverifiedBboxCount > 0,
         browseFn: (stat) => openBboxNeedsReviewModal(config, stat.labelUuid, `${_labelName(stat.labelUuid)} — unverified boxes (${config.name})`, stat.hasRollup ? _rollupChildUuids(stat.labelUuid) : []) },
       { header: 'All clear', key: 'coLabelsCoveredCount',
         title: 'Imgs all clear — images with a verified box for this label where every other label in the model shape is accounted for (verified present or marked absent) — click to browse',
         goodIf: s => s.coLabelGapsCount === 0 && s.coLabelsCoveredCount > 0,
         browseStatus: 'co_labels_covered' },
+      // Tracks "All clear", not "Verified": a verified box on its own doesn't put an
+      // image in a run, so a per-class delta measured on verified boxes disagrees with
+      // the "+N ready since" headline, which is counted over training-ready images.
+      ...(previousRun ? [_prevCol('coLabelsCoveredCount', 'coLabelsCoveredCount', 'Images all clear')] : []),
       { header: 'Gaps', key: 'coLabelGapsCount', breakdownKey: 'coLabelGapBreakdown',
         title: 'Co-label gaps — images with a verified box for this label but where one or more other model-shape labels are not yet verified or marked absent — click the number to review all, or ▾ to see which labels are driving the gaps',
         warnIf: s => s.coLabelGapsCount > 0,
