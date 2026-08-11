@@ -25,6 +25,7 @@
  * @property {number} height
  * @property {boolean} selected
  * @property {boolean} dirty
+ * @property {number} [confidence] - Inference confidence (0-1), persisted until the bbox is verified.
  */
 
 /**

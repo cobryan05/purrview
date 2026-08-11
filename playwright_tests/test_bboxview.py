@@ -438,3 +438,71 @@ class TestBboxViewDragNormalization:
         # normalised: 240/400 = 0.6, 135/300 = 0.45
         assert result["uiWidth"] == pytest.approx(0.6)
         assert result["uiHeight"] == pytest.approx(0.45)
+
+
+# ---------------------------------------------------------------------------
+# Persisted confidence in the label text
+# ---------------------------------------------------------------------------
+
+
+def _label_text(page: Page, ui_bbox_js: str) -> str:
+    return page.evaluate(
+        """async (uiBBoxJson) => {
+        const { BboxView } = await import('/app-static/js/app/image-tagging/canvas/views/bboxView.js');
+
+        """
+        + _STAGE_SETUP
+        + """
+
+        const vp = { offsetX: 0, offsetY: 0, scale: 1, imageWidth: 400, imageHeight: 300 };
+        const view = new BboxView(JSON.parse(uiBBoxJson), vp);
+        layer.add(view);
+        return view.findOne('Text').text();
+    }""",
+        ui_bbox_js,
+    )
+
+
+class TestBboxViewConfidenceLabel:
+    """A reloaded, still-unverified box shows what the model thought of it.
+
+    Only reloaded boxes carry `confidence`: a box straight out of live inference
+    has the percentage baked into `label.text` by canvas/image.js and no
+    `confidence` field, so exactly one of the two paths applies per box.
+    """
+
+    _BASE = {
+        "uuid": "u",
+        "x": 0,
+        "y": 0,
+        "width": 0.5,
+        "height": 0.5,
+        "label": {"uuid": "l", "text": "Cat", "color": "#ff0000"},
+        "tags": [],
+    }
+
+    def _bbox(self, **overrides):
+        import json
+
+        return json.dumps({**self._BASE, **overrides})
+
+    def test_confidence_appended_to_label(self, shared_page: Page):
+        assert _label_text(shared_page, self._bbox(confidence=0.824)) == "Cat (82%)"
+
+    def test_no_confidence_leaves_label_clean(self, shared_page: Page):
+        assert _label_text(shared_page, self._bbox()) == "Cat"
+
+    def test_zero_confidence_is_shown_not_dropped(self, shared_page: Page):
+        """0 is a real confidence — a truthiness check here would hide it."""
+        assert _label_text(shared_page, self._bbox(confidence=0)) == "Cat (0%)"
+
+    def test_label_already_carrying_a_pct_is_not_double_suffixed(self, shared_page: Page):
+        """Guards the seam between the two paths: image.js bakes the suffix into
+        label.text for live detections and leaves `confidence` unset, so a box
+        can never pick up "(82%) (82%)"."""
+        text = _label_text(shared_page, self._bbox(label={"uuid": "l", "text": "Cat (82%)", "color": "#ff0000"}))
+        assert text == "Cat (82%)"
+        assert text.count("%") == 1
+
+    def test_unlabelled_bbox_still_shows_loading(self, shared_page: Page):
+        assert _label_text(shared_page, self._bbox(label=None)) == "Loading..."

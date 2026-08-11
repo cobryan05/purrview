@@ -4,6 +4,11 @@ import {
   getBboxThumbnailUrl,
   getImageThumbnailUrl,
 } from '/app-static/js/shared/api/review.js';
+import {
+  SOURCE_CONFIDENCE_KEY,
+  formatConfidencePct,
+  parseConfidence,
+} from '/app-static/js/shared/domain/image/confidence.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
@@ -429,9 +434,10 @@ export function buildBboxCard(controller, entry, opts) {
   const labelName = label?.name ?? '(unknown)';
   const labelColor = label?.color ?? '#888';
   const bboxTagUuids = (bbox.tags ?? []).map(t => t.uuid);
-  const confidence = bbox.metadataJson?.confidence
-    ? `${(parseFloat(bbox.metadataJson.confidence) * 100).toFixed(0)}%`
-    : '';
+  // Was reading `metadataJson.confidence`, a key nothing has ever written — so
+  // the card's confidence display was dead. `source_confidence` is the key the
+  // add-bbox writers actually use.
+  const confidence = formatConfidencePct(parseConfidence(bbox.metadataJson?.[SOURCE_CONFIDENCE_KEY]));
 
   const card = document.createElement('div');
   card.className = 'review-card';

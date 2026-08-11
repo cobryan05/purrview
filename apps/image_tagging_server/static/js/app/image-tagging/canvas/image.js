@@ -2,6 +2,7 @@ import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
+import { formatConfidencePct } from '/app-static/js/shared/domain/image/confidence.js';
 import { Logger, toast, showUnsavedChangesModal } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
@@ -320,8 +321,10 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
     const { bbox } = detection;
 
     const labelData = bbox.labelUuid ? labelsMap.get(bbox.labelUuid) : null;
-    const pct = Math.round(detection.confidence * 100);
-    const confSuffix = ` (${pct}%)`;
+    // Baked into the label text here because a freshly-inferred box is not yet
+    // persisted and so carries no `confidence` field for BboxView to render
+    // from — exactly one of the two paths applies per box, never both.
+    const confSuffix = ` (${formatConfidencePct(detection.confidence)})`;
     const label = labelData
       ? { uuid: labelData.uuid, text: labelData.name + confSuffix, color: labelData.color }
       : bbox.labelUuid

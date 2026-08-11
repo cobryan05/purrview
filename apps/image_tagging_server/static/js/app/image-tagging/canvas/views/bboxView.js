@@ -1,4 +1,6 @@
 // @ts-check
+import { formatConfidencePct } from '/app-static/js/shared/domain/image/confidence.js';
+
 const LABEL_OFFSET_Y = -18;
 
 export class BboxView extends Konva.Group {
@@ -37,7 +39,7 @@ export class BboxView extends Konva.Group {
     });
 
     this._text = new Konva.Text({
-      text: uiBBox.label?.text || 'Loading...',
+      text: this._computeLabelText(uiBBox),
       fill: uiBBox.label?.color || 'grey',
       fontSize: 14,
       y: LABEL_OFFSET_Y,
@@ -64,6 +66,24 @@ export class BboxView extends Konva.Group {
     this.add(this._iconText);
 
     this._setupEvents();
+  }
+
+  /**
+   * Compute the label text, appending the persisted inference confidence
+   * (e.g. "cat (82%)") when the bbox carries one.
+   *
+   * ⚠️ Only reloaded boxes carry `confidence`. A box that has just come back
+   * from live inference has the percentage baked into `label.text` by
+   * canvas/image.js instead, and no `confidence` — so exactly one of the two
+   * paths applies and the suffix is never doubled.
+   * @private
+   * @param {import('@domain_image').UIBbox} uiBBox
+   * @returns {string}
+   */
+  _computeLabelText(uiBBox) {
+    const text = uiBBox.label?.text || 'Loading...';
+    const pct = formatConfidencePct(uiBBox.confidence);
+    return pct ? `${text} (${pct})` : text;
   }
 
   /**

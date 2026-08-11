@@ -186,3 +186,117 @@ class TestBboxReadToUI:
         assert result["y"] == pytest.approx(0.34)
         assert result["w"] == pytest.approx(0.56)
         assert result["h"] == pytest.approx(0.78)
+
+
+# ---------------------------------------------------------------------------
+# Persisted model confidence
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceHelpers:
+    """`shared/domain/image/confidence.js` — a leaf module on purpose: mapper.js
+    already imports BboxView, so living in mapper.js would close a
+    mapper -> bboxView -> mapper cycle, and ES circular imports fail silently as
+    `undefined` exports rather than erroring."""
+
+    def test_parse_confidence_handles_string_number_and_junk(self, shared_page: Page):
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { parseConfidence } = await import('/app-static/js/shared/domain/image/confidence.js');
+            return {
+                str: parseConfidence('0.82'),
+                num: parseConfidence(0.82),
+                zero: parseConfidence(0),
+                absent: parseConfidence(undefined),
+                nul: parseConfidence(null),
+                empty: parseConfidence(''),
+                junk: parseConfidence('not-a-number'),
+            };
+        }""")
+        assert result["str"] == pytest.approx(0.82)
+        assert result["num"] == pytest.approx(0.82)
+        # 0 is a real confidence, not "absent" — a truthiness check would drop it.
+        assert result["zero"] == 0
+        assert result["absent"] is None
+        assert result["nul"] is None
+        assert result["empty"] is None
+        assert result["junk"] is None, "parseFloat('not-a-number') is NaN and would render as 'NaN%'"
+
+    def test_format_confidence_pct(self, shared_page: Page):
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { formatConfidencePct } = await import('/app-static/js/shared/domain/image/confidence.js');
+            return {
+                mid: formatConfidencePct(0.824),
+                one: formatConfidencePct(1),
+                zero: formatConfidencePct(0),
+                absent: formatConfidencePct(undefined),
+                nan: formatConfidencePct(NaN),
+            };
+        }""")
+        assert result["mid"] == "82%"
+        assert result["one"] == "100%"
+        assert result["zero"] == "0%"
+        assert result["absent"] == ""
+        assert result["nan"] == ""
+
+
+class TestBboxReadToUIConfidence:
+    def test_source_confidence_parsed_onto_unverified_bbox(self, shared_page: Page):
+        """Written as a string by the add-bbox writers; must come back a number
+        so it survives a reload instead of only existing on freshly-inferred boxes."""
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ bboxReadToUI }} = await import('/app-static/js/shared/domain/image/mapper.js');
+            const raw = {{
+                uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1,
+                label: {{ uuid: 'lbl', name: 'Cat', color: '#f00' }},
+                tags: [{{ uuid: '{UNVERIFIED_TAG_UUID}', icon: null }}],
+                metadataJson: {{ source_confidence: '0.82' }},
+            }};
+            const ui = bboxReadToUI(raw);
+            return {{ confidence: ui.confidence, type: typeof ui.confidence }};
+        }}""")
+        assert result["confidence"] == pytest.approx(0.82)
+        assert result["type"] == "number"
+
+    def test_confidence_hidden_once_verified(self, shared_page: Page):
+        """Once a human has confirmed the box, what the model originally thought
+        is noise on the label."""
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { bboxReadToUI } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const raw = {
+                uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1,
+                label: { uuid: 'lbl', name: 'Cat', color: '#f00' },
+                tags: [],  // labelled + no verification tag => defaults to VERIFIED
+                metadataJson: { source_confidence: '0.82' },
+            };
+            return bboxReadToUI(raw).confidence ?? null;
+        }""")
+        assert result is None
+
+    def test_no_metadata_leaves_confidence_undefined(self, shared_page: Page):
+        page = shared_page
+        result = page.evaluate("""async () => {
+            const { bboxReadToUI } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const raw = { uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1, label: null, tags: [] };
+            return bboxReadToUI(raw).confidence ?? null;
+        }""")
+        assert result is None
+
+    def test_legacy_confidence_key_is_not_read(self, shared_page: Page):
+        """`metadata_json.confidence` was read for a while but never written by
+        anything — the live key is `source_confidence`. Asserted so a future
+        change doesn't quietly resurrect the dead one."""
+        page = shared_page
+        result = page.evaluate(f"""async () => {{
+            const {{ bboxReadToUI }} = await import('/app-static/js/shared/domain/image/mapper.js');
+            const raw = {{
+                uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1, label: null,
+                tags: [{{ uuid: '{UNVERIFIED_TAG_UUID}', icon: null }}],
+                metadataJson: {{ confidence: '0.99' }},
+            }};
+            return bboxReadToUI(raw).confidence ?? null;
+        }}""")
+        assert result is None

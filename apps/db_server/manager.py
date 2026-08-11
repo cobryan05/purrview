@@ -3346,7 +3346,15 @@ class Manager:
                     geo["width"],
                     geo["height"],
                     [VERIFIED_TAG_UUID if mark_verified else UNVERIFIED_TAG_UUID],
-                    metadata_json={"run_model_added": True, "source_model": c.source_model},
+                    # `source_confidence` matches what ApplyFilterChainTask's
+                    # add_bbox writes — one key for "the model's confidence when
+                    # this box was created", which the canvas label and the
+                    # review card both render until the box is verified.
+                    metadata_json={
+                        "run_model_added": True,
+                        "source_model": c.source_model,
+                        "source_confidence": c.confidence,
+                    },
                 )
             except Exception:
                 logger.exception("apply_preview_run: creating new bbox on image %s failed", c.image_uuid)
