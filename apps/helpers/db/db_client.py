@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set, TypeVar, Union
 from uuid import uuid4
@@ -18,6 +18,7 @@ import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
 from sqlalchemy import Select, and_, case, delete, event, exists, func, or_, text, true
+from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -85,6 +86,14 @@ from .types import (
     ModelGroupRead,
     ModelGroupUpdate,
     ObjectLabelTerm,
+    PreviewCandidate,
+    PreviewCandidateCreate,
+    PreviewCandidateQuery,
+    PreviewConflictPolicy,
+    PreviewDecision,
+    PreviewDecisionAction,
+    PreviewRun,
+    PreviewRunTTL,
     Recording,
     RecordingRead,
     Source,
@@ -5983,3 +5992,366 @@ class DbClient:
             await session.delete(rec)
             await session.commit()
         return True
+
+    # ── Preview runs & candidates ──────────────────────────────────────────
+    # Scratch state for persisted "Run Model on Results" previews. Nothing here
+    # is an annotation: a candidate becomes a fact only when the apply path
+    # writes it through the normal bbox methods.
+    #
+    # ⚠️ Pagination here is **offset**, not the keyset cursor the review queue
+    # uses. Two reasons: a run is a bounded, closed set (thousands of rows,
+    # already fully written before triage starts, indexed by run_uuid), and the
+    # default sort — "group every candidate from one image together, images
+    # ranked by their best candidate" — is a composite
+    # (image_max_conf, image_uuid, confidence, uuid) with no single scalar cursor
+    # value. A keyset over that would need the whole tuple threaded through the
+    # API for no measurable win at this size.
+
+    async def create_preview_run(
+        self,
+        name: str,
+        model_name: str,
+        task_typename: str,
+        params: Optional[Dict[str, Any]] = None,
+        scope: Optional[Dict[str, Any]] = None,
+        ttl_days: int = PreviewRunTTL.DEFAULT_DAYS,
+    ) -> PreviewRun:
+        run = PreviewRun(
+            name=name,
+            model_name=model_name,
+            task_typename=task_typename,
+            params_json=params or {},
+            scope_json=scope or {},
+            expires_at=datetime.now(timezone.utc) + timedelta(days=ttl_days),
+        )
+        async with self._async_session_maker() as session:
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+        return run
+
+    async def get_preview_run(self, run_uuid: str) -> Optional[PreviewRun]:
+        async with self._async_session_maker() as session:
+            return await session.get(PreviewRun, run_uuid)
+
+    async def get_preview_runs(self) -> List[PreviewRun]:
+        """Newest first — the saved-runs list is a recency list."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(PreviewRun).order_by(PreviewRun.created_at.desc()))
+            return list(result.all())
+
+    async def update_preview_run(
+        self,
+        run_uuid: str,
+        name: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        stats: Optional[Dict[str, Any]] = None,
+        expires_at: Optional[datetime] = None,
+    ) -> Optional[PreviewRun]:
+        async with self._async_session_maker() as session:
+            run = await session.get(PreviewRun, run_uuid)
+            if run is None:
+                return None
+            if name is not None:
+                run.name = name
+            if pinned is not None:
+                run.pinned = pinned
+            if stats is not None:
+                run.stats_json = stats
+            if expires_at is not None:
+                run.expires_at = expires_at
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+            return run
+
+    async def delete_preview_runs(self, run_uuids: Union[str, List[str]]) -> int:
+        if isinstance(run_uuids, str):
+            run_uuids = [run_uuids]
+        if not run_uuids:
+            return 0
+        async with self._async_session_maker() as session:
+            # Explicit candidate delete first: SQLite only honours ON DELETE
+            # CASCADE when foreign_keys pragma is on, and a core DELETE bypasses
+            # the ORM's delete-orphan cascade either way.
+            await session.exec(delete(PreviewCandidate).where(PreviewCandidate.run_uuid.in_(run_uuids)))
+            result = await session.exec(delete(PreviewRun).where(PreviewRun.uuid.in_(run_uuids)))
+            await session.commit()
+            return result.rowcount or 0
+
+    async def sweep_expired_preview_runs(self) -> int:
+        """Delete unpinned runs past their expiry. Called lazily from the list
+        endpoint — a scheduler for something this cheap would be its own bug source.
+
+        A run whose candidates are all `applied`/`rejected` expires early
+        (PreviewRunTTL.TRIAGED_HOURS): there is nothing left to come back to.
+        """
+        now = datetime.now(timezone.utc)
+        triaged_cutoff = now - timedelta(hours=PreviewRunTTL.TRIAGED_HOURS)
+        async with self._async_session_maker() as session:
+            expired = await session.exec(
+                select(PreviewRun.uuid).where(
+                    PreviewRun.pinned == False,  # noqa: E712 — SQL expression, not a truth test
+                    PreviewRun.expires_at.is_not(None),
+                    PreviewRun.expires_at <= now,
+                )
+            )
+            doomed = set(expired.all())
+
+            # Fully-triaged runs older than the short TTL. "Fully triaged" is
+            # expressed as NOT EXISTS an untriaged candidate, so a run with zero
+            # candidates (a model that proposed nothing) is swept too.
+            untriaged = (
+                select(PreviewCandidate.uuid)
+                .where(
+                    PreviewCandidate.run_uuid == PreviewRun.uuid,
+                    PreviewCandidate.decision.notin_([PreviewDecision.APPLIED, PreviewDecision.REJECTED]),
+                )
+                .exists()
+            )
+            stale = await session.exec(
+                select(PreviewRun.uuid).where(
+                    PreviewRun.pinned == False,  # noqa: E712
+                    PreviewRun.updated_at <= triaged_cutoff,
+                    ~untriaged,
+                )
+            )
+            doomed.update(stale.all())
+
+        return await self.delete_preview_runs(list(doomed)) if doomed else 0
+
+    async def add_preview_candidates(
+        self,
+        run_uuid: str,
+        candidates: Sequence[PreviewCandidateCreate],
+        conflict_policy: PreviewConflictPolicy = PreviewConflictPolicy.LAST,
+    ) -> int:
+        """Insert candidates for a run, resolving multi-model conflicts.
+
+        Several models running over the same scope can each propose on the same
+        bbox. `LAST` (the default, and what the client's merge loop always did
+        silently) overwrites the earlier proposal; `FIRST` keeps it. Conflicts are
+        keyed on (run_uuid, bbox_uuid) and only apply to *existing* boxes — two
+        models proposing new boxes are two separate detections, not a conflict.
+
+        Returns the number of rows written (updates included).
+        """
+        if not candidates:
+            return 0
+
+        async with self._async_session_maker() as session:
+            # One read of this run's existing bbox-keyed rows, rather than a
+            # lookup per candidate: a run writes candidates in batches of
+            # thousands and per-row SELECTs dominated the task's runtime.
+            existing_result = await session.exec(
+                select(PreviewCandidate).where(
+                    PreviewCandidate.run_uuid == run_uuid,
+                    PreviewCandidate.bbox_uuid.is_not(None),
+                )
+            )
+            by_bbox: Dict[str, PreviewCandidate] = {c.bbox_uuid: c for c in existing_result.all()}
+
+            written = 0
+            for c in candidates:
+                prior = by_bbox.get(c.bbox_uuid) if c.bbox_uuid else None
+                if prior is not None:
+                    if conflict_policy == PreviewConflictPolicy.FIRST:
+                        continue
+                    prior.proposed_label_uuid = c.proposed_label_uuid
+                    prior.confidence = c.confidence
+                    prior.geometry_json = c.geometry
+                    prior.source_model = c.source_model
+                    prior.current_label_uuid = c.current_label_uuid
+                    session.add(prior)
+                    written += 1
+                    continue
+
+                row = PreviewCandidate(
+                    run_uuid=run_uuid,
+                    image_uuid=c.image_uuid,
+                    bbox_uuid=c.bbox_uuid,
+                    is_new=c.is_new,
+                    current_label_uuid=c.current_label_uuid,
+                    proposed_label_uuid=c.proposed_label_uuid,
+                    confidence=c.confidence,
+                    geometry_json=c.geometry,
+                    source_model=c.source_model,
+                )
+                session.add(row)
+                if c.bbox_uuid:
+                    by_bbox[c.bbox_uuid] = row
+                written += 1
+
+            await session.commit()
+            return written
+
+    def _preview_candidate_filters(self, run_uuid: str, q: PreviewCandidateQuery) -> List[Any]:
+        clauses: List[Any] = [PreviewCandidate.run_uuid == run_uuid]
+        if q.decisions:
+            clauses.append(PreviewCandidate.decision.in_(q.decisions))
+        if q.proposed_label_uuids:
+            clauses.append(PreviewCandidate.proposed_label_uuid.in_(q.proposed_label_uuids))
+        if q.confidence_min is not None:
+            clauses.append(PreviewCandidate.confidence >= q.confidence_min)
+        if q.confidence_max is not None:
+            clauses.append(PreviewCandidate.confidence <= q.confidence_max)
+        if q.is_new is not None:
+            clauses.append(PreviewCandidate.is_new == q.is_new)
+        if q.source_models:
+            clauses.append(PreviewCandidate.source_model.in_(q.source_models))
+        return clauses
+
+    async def query_preview_candidates(
+        self, run_uuid: str, q: PreviewCandidateQuery
+    ) -> tuple[List[PreviewCandidate], int]:
+        """Filtered, sorted, offset-paginated candidates + the filtered total.
+
+        `image_confidence` (the default) reproduces the modal's client-side
+        grouping — every candidate from one image adjacent, images ranked by
+        their best candidate — which is exactly the part that did not survive
+        being paginated.
+        """
+        clauses = self._preview_candidate_filters(run_uuid, q)
+        desc = q.sort_order == "desc"
+
+        def _dir(col):
+            return col.desc() if desc else col.asc()
+
+        async with self._async_session_maker() as session:
+            total = await session.exec(select(func.count()).select_from(PreviewCandidate).where(*clauses))
+            total_count = total.one()
+
+            stmt = select(PreviewCandidate).where(*clauses)
+            if q.sort_by == "image_confidence":
+                # Rank images by their best candidate *within the current filter*,
+                # so filtering to one label doesn't leave images ordered by a
+                # candidate the user filtered away.
+                image_rank = (
+                    select(
+                        PreviewCandidate.image_uuid.label("image_uuid"),
+                        func.max(PreviewCandidate.confidence).label("best"),
+                    )
+                    .where(*clauses)
+                    .group_by(PreviewCandidate.image_uuid)
+                    .subquery()
+                )
+                stmt = stmt.join(image_rank, image_rank.c.image_uuid == PreviewCandidate.image_uuid).order_by(
+                    _dir(image_rank.c.best),
+                    PreviewCandidate.image_uuid.asc(),
+                    _dir(PreviewCandidate.confidence),
+                    PreviewCandidate.uuid.asc(),
+                )
+            elif q.sort_by == "created_at":
+                stmt = stmt.order_by(_dir(PreviewCandidate.created_at), PreviewCandidate.uuid.asc())
+            else:
+                stmt = stmt.order_by(_dir(PreviewCandidate.confidence), PreviewCandidate.uuid.asc())
+
+            stmt = stmt.offset(max(0, q.offset)).limit(max(1, q.limit))
+            result = await session.exec(stmt)
+            return list(result.all()), total_count
+
+    async def get_preview_candidates(
+        self,
+        run_uuid: str,
+        decisions: Optional[Sequence[PreviewDecision]] = None,
+        candidate_uuids: Optional[Sequence[str]] = None,
+    ) -> List[PreviewCandidate]:
+        """Unpaginated fetch — used by the apply path, which needs the whole
+        accepted set, not a page of it."""
+        clauses: List[Any] = [PreviewCandidate.run_uuid == run_uuid]
+        if decisions:
+            clauses.append(PreviewCandidate.decision.in_(list(decisions)))
+        if candidate_uuids is not None:
+            clauses.append(PreviewCandidate.uuid.in_(list(candidate_uuids)))
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(PreviewCandidate).where(*clauses))
+            return list(result.all())
+
+    async def count_preview_decisions(self, run_uuids: Sequence[str]) -> Dict[str, Dict[str, int]]:
+        """{run_uuid: {decision: count}} for the saved-runs list, in one query
+        rather than one per run."""
+        if not run_uuids:
+            return {}
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(PreviewCandidate.run_uuid, PreviewCandidate.decision, func.count())
+                .where(PreviewCandidate.run_uuid.in_(list(run_uuids)))
+                .group_by(PreviewCandidate.run_uuid, PreviewCandidate.decision)
+            )
+            counts: Dict[str, Dict[str, int]] = {}
+            for run_uuid, decision, n in result.all():
+                value = decision.value if isinstance(decision, PreviewDecision) else str(decision)
+                counts.setdefault(run_uuid, {})[value] = n
+            return counts
+
+    async def update_preview_candidates(
+        self,
+        run_uuid: str,
+        candidate_uuids: Sequence[str],
+        decision: Optional[PreviewDecision] = None,
+        decision_action: Optional[PreviewDecisionAction] = None,
+        proposed_label_uuid: Optional[str] = None,
+        geometry: Optional[Dict[str, Any]] = None,
+        applied_at: Optional[datetime] = None,
+    ) -> int:
+        """Bulk-set fields on a list of candidates. Every field is optional so the
+        triage panel can PATCH only what changed on each debounced flush.
+
+        Scoped by run_uuid as well as uuid so a stale panel can never write into
+        a different run's candidates.
+        """
+        if not candidate_uuids:
+            return 0
+        values: Dict[str, Any] = {}
+        if decision is not None:
+            values["decision"] = decision
+        if decision_action is not None:
+            values["decision_action"] = decision_action
+        if proposed_label_uuid is not None:
+            values["proposed_label_uuid"] = proposed_label_uuid
+        if geometry is not None:
+            values["geometry_json"] = geometry
+        if applied_at is not None:
+            values["applied_at"] = applied_at
+        if not values:
+            return 0
+        values["updated_at"] = datetime.now(timezone.utc)
+
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                sa_update(PreviewCandidate)
+                .where(
+                    PreviewCandidate.run_uuid == run_uuid,
+                    PreviewCandidate.uuid.in_(list(candidate_uuids)),
+                )
+                .values(**values)
+            )
+            await session.commit()
+            return result.rowcount or 0
+
+    async def get_bbox_label_uuids(self, bbox_uuids: Sequence[str]) -> Dict[str, Optional[str]]:
+        """{bbox_uuid: label_uuid} for the bboxes that still exist.
+
+        A missing key means the row is gone — which is exactly what preview
+        staleness needs, so this deliberately returns only live rows rather than
+        padding absent ones with None.
+        """
+        if not bbox_uuids:
+            return {}
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(BBox.uuid, BBox.label_uuid).where(BBox.uuid.in_(list(bbox_uuids))))
+            return {uuid: label_uuid for uuid, label_uuid in result.all()}
+
+    async def get_image_filenames(self, image_uuids: Sequence[str]) -> Dict[str, str]:
+        """{image_uuid: filename} for the images that still exist.
+
+        Absent keys mean the row is gone — the same "only live rows" contract as
+        get_bbox_label_uuids, which is what preview staleness checks against.
+        """
+        if not image_uuids:
+            return {}
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(ImageRecord.uuid, ImageRecord.filename).where(ImageRecord.uuid.in_(list(image_uuids)))
+            )
+            return {uuid: filename for uuid, filename in result.all()}

@@ -47,6 +47,15 @@ from apps.helpers.db.types import (
     ModelGroupCreate,
     ModelGroupRead,
     ModelGroupUpdate,
+    PreviewApplyResult,
+    PreviewCandidateBulkUpdate,
+    PreviewCandidateCreate,
+    PreviewCandidateQuery,
+    PreviewCandidateRead,
+    PreviewConflictPolicy,
+    PreviewRunCreate,
+    PreviewRunRead,
+    PreviewRunUpdate,
     RecordingRead,
     Source,
     SourceRead,
@@ -744,6 +753,41 @@ class FilterChainResponse(StatusResponse):
     chain: Optional[FilterChainRead] = None
 
 
+class AddPreviewCandidatesPayload(ApiPayload):
+    candidates: List[PreviewCandidateCreate] = Field(default_factory=list)
+    # Which model wins when two of them propose on the same bbox. `last` is
+    # what the browser's merge loop always did, silently; it stays the default.
+    conflict_policy: PreviewConflictPolicy = PreviewConflictPolicy.LAST
+
+
+class ApplyPreviewRunPayload(ApiPayload):
+    # Off by default: a model's suggestion is not a human verification.
+    mark_verified: bool = False
+
+
+class ListPreviewRunsResponse(StatusResponse):
+    runs: List[PreviewRunRead] = Field(default_factory=list)
+
+
+class PreviewRunResponse(StatusResponse):
+    run: Optional[PreviewRunRead] = None
+
+
+class ListPreviewCandidatesResponse(StatusResponse):
+    candidates: List[PreviewCandidateRead] = Field(default_factory=list)
+    # The count *after* filtering, not the run's total — the triage panel's
+    # pagination and its "N of M" both read off this.
+    total_count: int = 0
+
+
+class PreviewCandidatesWriteResponse(StatusResponse):
+    updated: int = 0
+
+
+class PreviewApplyResponse(StatusResponse):
+    result: PreviewApplyResult = Field(default_factory=PreviewApplyResult)
+
+
 class ListWatchProfilesResponse(StatusResponse):
     profiles: List[WatchProfileRead] = Field(default_factory=list)
 
@@ -992,6 +1036,7 @@ class WebApp:
         self._register_routes()
         self._register_model_config_routes()
         self._register_filter_chain_routes()
+        self._register_preview_run_routes()
         self._register_watch_profile_routes()
         self._register_recording_routes()
         self._register_model_group_routes()
@@ -3492,6 +3537,154 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_preview_run_routes(self) -> None:
+        """Persisted "Run Model on Results" previews.
+
+        These are scratch tables, not annotations — nothing here writes to
+        bboxes/labels/tags except `apply`, which goes through the ordinary bulk
+        bbox path.
+        """
+
+        @self._app.post(
+            "/api/preview-runs",
+            response_model=PreviewRunResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="create_preview_run",
+        )
+        async def create_preview_run(payload: PreviewRunCreate) -> PreviewRunResponse:
+            try:
+                run = await self._manager.create_preview_run(payload)
+                return PreviewRunResponse(status=JsonValues.SUCCESS, run=run)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PreviewRunResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/preview-runs",
+            response_model=ListPreviewRunsResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="list_preview_runs",
+        )
+        async def list_preview_runs() -> ListPreviewRunsResponse:
+            try:
+                runs = await self._manager.list_preview_runs()
+                return ListPreviewRunsResponse(status=JsonValues.SUCCESS, runs=runs)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListPreviewRunsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/preview-runs/{uuid}",
+            response_model=PreviewRunResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="get_preview_run",
+        )
+        async def get_preview_run(uuid: str) -> PreviewRunResponse:
+            try:
+                run = await self._manager.get_preview_run(uuid)
+                if run is None:
+                    return PreviewRunResponse(status=JsonValues.FAILURE, message="Preview run not found")
+                return PreviewRunResponse(status=JsonValues.SUCCESS, run=run)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PreviewRunResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/preview-runs/{uuid}",
+            response_model=PreviewRunResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="update_preview_run",
+        )
+        async def update_preview_run(uuid: str, payload: PreviewRunUpdate) -> PreviewRunResponse:
+            try:
+                run = await self._manager.update_preview_run(uuid, payload)
+                if run is None:
+                    return PreviewRunResponse(status=JsonValues.FAILURE, message="Preview run not found")
+                return PreviewRunResponse(status=JsonValues.SUCCESS, run=run)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PreviewRunResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/preview-runs/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="delete_preview_run",
+        )
+        async def delete_preview_run(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_preview_run(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Preview run not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/preview-runs/{uuid}/candidates",
+            response_model=PreviewCandidatesWriteResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="add_preview_candidates",
+        )
+        async def add_preview_candidates(
+            uuid: str, payload: AddPreviewCandidatesPayload
+        ) -> PreviewCandidatesWriteResponse:
+            try:
+                n = await self._manager.add_preview_candidates(uuid, payload.candidates, payload.conflict_policy)
+                return PreviewCandidatesWriteResponse(status=JsonValues.SUCCESS, updated=n)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PreviewCandidatesWriteResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # POST, not GET: the filter set (label multi-select, confidence band,
+        # decision set) is a body, exactly as /api/images/review takes one.
+        @self._app.post(
+            "/api/preview-runs/{uuid}/candidates/query",
+            response_model=ListPreviewCandidatesResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="query_preview_candidates",
+        )
+        async def query_preview_candidates(uuid: str, payload: PreviewCandidateQuery) -> ListPreviewCandidatesResponse:
+            try:
+                candidates, total = await self._manager.query_preview_candidates(uuid, payload)
+                return ListPreviewCandidatesResponse(
+                    status=JsonValues.SUCCESS, candidates=candidates, total_count=total
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListPreviewCandidatesResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/preview-runs/{uuid}/candidates",
+            response_model=PreviewCandidatesWriteResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="update_preview_candidates",
+        )
+        async def update_preview_candidates(
+            uuid: str, payload: PreviewCandidateBulkUpdate
+        ) -> PreviewCandidatesWriteResponse:
+            try:
+                n = await self._manager.update_preview_candidates(uuid, payload)
+                return PreviewCandidatesWriteResponse(status=JsonValues.SUCCESS, updated=n)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PreviewCandidatesWriteResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/preview-runs/{uuid}/apply",
+            response_model=PreviewApplyResponse,
+            tags=[ApiTags.PREVIEW_RUNS],
+            operation_id="apply_preview_run",
+        )
+        async def apply_preview_run(uuid: str, payload: ApplyPreviewRunPayload) -> PreviewApplyResponse:
+            try:
+                result = await self._manager.apply_preview_run(uuid, mark_verified=payload.mark_verified)
+                return PreviewApplyResponse(status=JsonValues.SUCCESS, result=result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return PreviewApplyResponse(status=JsonValues.FAILURE, message=str(e))
 
     def _register_watch_profile_routes(self) -> None:
         @self._app.get(

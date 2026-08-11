@@ -68,6 +68,11 @@ FILTER_CHAINS_PROXY = ReverseProxy(
     port=APPS_CONFIG[APPS.DB_SERVER].port,
     path="/api/filter-chains",
 )
+PREVIEW_RUNS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/preview-runs",
+)
 MODEL_GROUPS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host,
     port=APPS_CONFIG[APPS.DB_SERVER].port,
@@ -256,6 +261,13 @@ class WebApp:
         )
         async def proxy_filter_chains(request: Request, path: str):
             return await FILTER_CHAINS_PROXY.handle_request(path, request)
+
+        @self._app.api_route(
+            "/api/preview-runs/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
+        async def proxy_preview_runs(request: Request, path: str):
+            return await PREVIEW_RUNS_PROXY.handle_request(path, request)
 
         @self._app.api_route(
             "/api/model-groups/{path:path}",

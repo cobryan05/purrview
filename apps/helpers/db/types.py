@@ -676,6 +676,217 @@ class TaskResult(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
 
 
+# ── Preview runs ────────────────────────────────────────────────────────────
+# Persisted "Run Model on Results" previews. A detector run over a review scope
+# used to live only in a JS array inside the confirmation modal: closing the
+# modal threw away every candidate, and there was no per-candidate state, so a
+# 3,000-candidate run had to be triaged in one sitting or not at all.
+#
+# ⚠️ These are **scratch** tables, not annotation tables. Nothing here is a
+# fact about an image until the user applies it; the preview tasks still never
+# write to bboxes/labels/tags (see PreviewModelRelabelTask's docstring).
+
+
+class PreviewRunTTL:
+    """How long a run survives before the lazy sweep on GET /api/preview-runs.
+
+    Fully-triaged runs go early: their candidates are all `applied`/`rejected`,
+    so keeping them costs rows for a list nobody will open again.
+    """
+
+    DEFAULT_DAYS = 7
+    TRIAGED_HOURS = 24
+
+
+class PreviewDecision(str, Enum):
+    """Per-candidate triage state — this is what makes a run resumable."""
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    APPLIED = "applied"
+    STALE = "stale"
+
+
+class PreviewDecisionAction(str, Enum):
+    """What accepting a candidate does. Per candidate, not per run — the old
+    global Relabel/Delete radio could only be one or the other for a whole run."""
+
+    RELABEL = "relabel"
+    DELETE = "delete"
+
+
+class PreviewConflictPolicy(str, Enum):
+    """Which model wins when several models propose on the same bbox.
+
+    `LAST` reproduces the behavior that used to be hard-coded (and invisible) in
+    runModelOnResults.js's merge loop.
+    """
+
+    LAST = "last"
+    FIRST = "first"
+
+
+class PreviewRunBase(SQLModel):
+    name: str
+    model_name: str
+    task_typename: str
+    params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    scope_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    stats_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    pinned: bool = Field(default=False)
+    expires_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class PreviewRun(PreviewRunBase, TimestampModel, table=True):
+    __tablename__ = "preview_runs"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    candidates: List["PreviewCandidate"] = Relationship(
+        back_populates="run", sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+
+
+class PreviewCandidateBase(SQLModel):
+    image_uuid: str
+    # None for a proposed *new* box: there is no bbox row to point at until apply.
+    bbox_uuid: Optional[str] = None
+    is_new: bool = Field(default=False)
+    # Snapshot of the bbox's label at run time. Compared against the live row on
+    # read to spot "changed since the run" — see the staleness handling in manager.
+    current_label_uuid: Optional[str] = None
+    proposed_label_uuid: str
+    confidence: float = Field(default=0.0)
+    geometry_json: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    decision: PreviewDecision = Field(default=PreviewDecision.PENDING)
+    decision_action: Optional[PreviewDecisionAction] = Field(default=None)
+    source_model: str = Field(default="")
+    applied_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class PreviewCandidate(PreviewCandidateBase, TimestampModel, table=True):
+    __tablename__ = "preview_candidates"
+    # The two default triage views are "unreviewed first" and
+    # "highest confidence first", both scoped to one run.
+    __table_args__ = (
+        sa.Index("ix_preview_candidates_run_decision", "run_uuid", "decision"),
+        sa.Index("ix_preview_candidates_run_confidence", "run_uuid", "confidence"),
+        # Multi-model conflict resolution upserts on this pair.
+        sa.Index("ix_preview_candidates_run_bbox", "run_uuid", "bbox_uuid"),
+    )
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    run_uuid: str = Field(foreign_key="preview_runs.uuid", ondelete="CASCADE", index=True)
+    run: PreviewRun = Relationship(back_populates="candidates")
+
+
+class PreviewRunRead(OrmModel):
+    uuid: str
+    name: str
+    model_name: str
+    task_typename: str
+    params: Dict[str, Any] = Field(default_factory=dict, validation_alias="params_json")
+    scope: Dict[str, Any] = Field(default_factory=dict, validation_alias="scope_json")
+    stats: Dict[str, Any] = Field(default_factory=dict, validation_alias="stats_json")
+    pinned: bool = False
+    expires_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    # Filled in by the manager, not the ORM: counts per PreviewDecision value.
+    decision_counts: Dict[str, int] = Field(default_factory=dict)
+    candidate_count: int = 0
+
+
+class PreviewCandidateRead(OrmModel):
+    uuid: str
+    run_uuid: str
+    image_uuid: str
+    # Joined in at read time, FILES_ROOT-relative. The candidate row stores only
+    # the image uuid, but every thumbnail URL the panel builds is keyed on the
+    # path — without this the client would need a second round-trip per page.
+    image_filename: str = ""
+    bbox_uuid: Optional[str] = None
+    is_new: bool = False
+    current_label_uuid: Optional[str] = None
+    proposed_label_uuid: str
+    confidence: float = 0.0
+    geometry: Optional[Dict[str, Any]] = Field(default=None, validation_alias="geometry_json")
+    decision: PreviewDecision = PreviewDecision.PENDING
+    decision_action: Optional[PreviewDecisionAction] = None
+    source_model: str = ""
+    applied_at: Optional[datetime] = None
+    # Derived at read time by joining to the live rows — never stored, because
+    # it is a statement about *now*, not about when the run happened.
+    label_changed_since_run: bool = False
+
+
+class PreviewRunCreate(ApiModel):
+    name: Optional[str] = None
+    model_name: str = ""
+    task_typename: str = ""
+    params: Dict[str, Any] = Field(default_factory=dict)
+    scope: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PreviewRunUpdate(ApiModel):
+    name: Optional[str] = None
+    pinned: Optional[bool] = None
+    stats: Optional[Dict[str, Any]] = None
+
+
+class PreviewCandidateCreate(ApiModel):
+    image_uuid: str
+    bbox_uuid: Optional[str] = None
+    is_new: bool = False
+    current_label_uuid: Optional[str] = None
+    proposed_label_uuid: str
+    confidence: float = 0.0
+    geometry: Optional[Dict[str, Any]] = None
+    source_model: str = ""
+
+
+class PreviewCandidateBulkUpdate(ApiModel):
+    """Bulk PATCH over a list of candidates. Every field is optional — the
+    triage panel sends only what changed, debounced, on each decision edit."""
+
+    candidate_uuids: List[str] = Field(default_factory=list)
+    decision: Optional[PreviewDecision] = None
+    decision_action: Optional[PreviewDecisionAction] = None
+    proposed_label_uuid: Optional[str] = None
+    geometry: Optional[Dict[str, Any]] = None
+
+
+class PreviewCandidateQuery(ApiModel):
+    """Filter/paginate params for the candidates endpoint.
+
+    ⚠️ Offset-paginated, unlike ImageSearchParams' keyset cursor. A preview run
+    is a bounded, closed set (already fully written before triage begins,
+    indexed by run_uuid), and the default `image_confidence` ordering is a
+    four-part composite with no single scalar cursor value — a keyset over it
+    would mean threading the whole tuple through the API for no win at this size.
+    """
+
+    decisions: List[PreviewDecision] = Field(default_factory=list)
+    proposed_label_uuids: List[str] = Field(default_factory=list)
+    confidence_min: Optional[float] = None
+    confidence_max: Optional[float] = None
+    is_new: Optional[bool] = None
+    source_models: List[str] = Field(default_factory=list)
+    # image_confidence groups every candidate from one image together, ranked by
+    # that image's best candidate — the modal did this client-side, which does
+    # not survive pagination.
+    sort_by: Literal["confidence", "image_confidence", "created_at"] = "image_confidence"
+    sort_order: Literal["asc", "desc"] = "desc"
+    limit: int = 100
+    offset: int = 0
+
+
+class PreviewApplyResult(BaseModel):
+    modified: int = 0
+    added: int = 0
+    deleted: int = 0
+    failed: int = 0
+    stale: int = 0
+
+
 class ImageLabel(SQLModel, table=True):
     __tablename__ = "image_labels"
     # The composite PK leads with image_uuid, so reverse lookups by label_uuid

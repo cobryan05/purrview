@@ -53,6 +53,18 @@ from apps.helpers.db.types import (
     ModelGroupCreate,
     ModelGroupRead,
     ModelGroupUpdate,
+    PreviewApplyResult,
+    PreviewCandidate,
+    PreviewCandidateBulkUpdate,
+    PreviewCandidateCreate,
+    PreviewCandidateQuery,
+    PreviewCandidateRead,
+    PreviewConflictPolicy,
+    PreviewDecision,
+    PreviewDecisionAction,
+    PreviewRunCreate,
+    PreviewRunRead,
+    PreviewRunUpdate,
     RecordingRead,
     Source,
     Tag,
@@ -3126,3 +3138,236 @@ class Manager:
             record.filename = self._image_rel_path(img.filename)
             results.append(record)
         return results, has_more
+
+    # ── Preview runs ───────────────────────────────────────────────────────
+
+    async def create_preview_run(self, payload: "PreviewRunCreate") -> PreviewRunRead:
+        name = payload.name or f"{payload.model_name} — {datetime.now(timezone.utc):%Y-%m-%d %H:%M}"
+        run = await self._db_client.create_preview_run(
+            name=name,
+            model_name=payload.model_name,
+            task_typename=payload.task_typename,
+            params=payload.params,
+            scope=payload.scope,
+        )
+        return PreviewRunRead.model_validate(run)
+
+    async def list_preview_runs(self) -> List[PreviewRunRead]:
+        """Sweeps expired runs first — the list is the only reliably-visited
+        endpoint, so it is where the TTL gets enforced (§9 of the plan: a
+        scheduler for a delete this cheap would be its own failure mode)."""
+        try:
+            await self._db_client.sweep_expired_preview_runs()
+        except Exception:
+            logger.exception("preview run TTL sweep failed; listing anyway")
+
+        runs = await self._db_client.get_preview_runs()
+        counts = await self._db_client.count_preview_decisions([r.uuid for r in runs])
+        results = []
+        for run in runs:
+            read = PreviewRunRead.model_validate(run)
+            read.decision_counts = counts.get(run.uuid, {})
+            read.candidate_count = sum(read.decision_counts.values())
+            results.append(read)
+        return results
+
+    async def get_preview_run(self, run_uuid: str) -> Optional[PreviewRunRead]:
+        run = await self._db_client.get_preview_run(run_uuid)
+        if run is None:
+            return None
+        read = PreviewRunRead.model_validate(run)
+        read.decision_counts = (await self._db_client.count_preview_decisions([run_uuid])).get(run_uuid, {})
+        read.candidate_count = sum(read.decision_counts.values())
+        return read
+
+    async def update_preview_run(self, run_uuid: str, payload: "PreviewRunUpdate") -> Optional[PreviewRunRead]:
+        run = await self._db_client.update_preview_run(
+            run_uuid, name=payload.name, pinned=payload.pinned, stats=payload.stats
+        )
+        return None if run is None else PreviewRunRead.model_validate(run)
+
+    async def delete_preview_run(self, run_uuid: str) -> bool:
+        return await self._db_client.delete_preview_runs(run_uuid) > 0
+
+    async def add_preview_candidates(
+        self,
+        run_uuid: str,
+        candidates: List["PreviewCandidateCreate"],
+        conflict_policy: PreviewConflictPolicy = PreviewConflictPolicy.LAST,
+    ) -> int:
+        return await self._db_client.add_preview_candidates(run_uuid, candidates, conflict_policy)
+
+    async def _annotate_preview_staleness(self, candidates: List[PreviewCandidate]) -> List[PreviewCandidateRead]:
+        """Reconcile a run's snapshot against the live rows.
+
+        A saved run holds UUIDs captured when the model ran. By the time the user
+        comes back the bbox may have been relabeled or deleted and the image may
+        be gone, so this is read-time reconciliation, not stored state:
+
+          - bbox row gone (or image gone, for an is_new candidate) → `stale`
+          - bbox still there but its label moved off the snapshot →
+            `label_changed_since_run`, which is still applicable but the user
+            should see it before accepting.
+
+        `stale` is written back so the counts in the saved-runs list agree with
+        what the panel shows.
+        """
+        bbox_uuids = {c.bbox_uuid for c in candidates if c.bbox_uuid}
+        # Fetched for *every* candidate, not just the boxless ones: the panel
+        # builds each card's thumbnail URL from the path, and an absent key is
+        # also how a vanished image is detected.
+        image_uuids = {c.image_uuid for c in candidates if c.image_uuid}
+
+        live_labels: Dict[str, Optional[str]] = {}
+        if bbox_uuids:
+            live_labels = await self._db_client.get_bbox_label_uuids(list(bbox_uuids))
+        live_images: Dict[str, str] = {}
+        if image_uuids:
+            live_images = await self._db_client.get_image_filenames(list(image_uuids))
+
+        results: List[PreviewCandidateRead] = []
+        newly_stale: List[str] = []
+        for c in candidates:
+            read = PreviewCandidateRead.model_validate(c)
+            filename = live_images.get(c.image_uuid)
+            read.image_filename = self._image_rel_path(filename) if filename else ""
+            vanished = (
+                c.image_uuid not in live_images if (c.is_new or not c.bbox_uuid) else c.bbox_uuid not in live_labels
+            )
+            if vanished:
+                # Already-applied candidates are history, not stale work — an
+                # applied delete legitimately removed its own bbox.
+                if c.decision != PreviewDecision.APPLIED:
+                    read.decision = PreviewDecision.STALE
+                    if c.decision != PreviewDecision.STALE:
+                        newly_stale.append(c.uuid)
+            elif c.bbox_uuid and c.current_label_uuid is not None:
+                read.label_changed_since_run = live_labels.get(c.bbox_uuid) != c.current_label_uuid
+            results.append(read)
+
+        if newly_stale:
+            run_uuid = candidates[0].run_uuid
+            await self._db_client.update_preview_candidates(run_uuid, newly_stale, decision=PreviewDecision.STALE)
+
+        return results
+
+    async def query_preview_candidates(
+        self, run_uuid: str, query: "PreviewCandidateQuery"
+    ) -> Tuple[List[PreviewCandidateRead], int]:
+        candidates, total = await self._db_client.query_preview_candidates(run_uuid, query)
+        return await self._annotate_preview_staleness(candidates), total
+
+    async def update_preview_candidates(self, run_uuid: str, payload: "PreviewCandidateBulkUpdate") -> int:
+        return await self._db_client.update_preview_candidates(
+            run_uuid,
+            payload.candidate_uuids,
+            decision=payload.decision,
+            decision_action=payload.decision_action,
+            proposed_label_uuid=payload.proposed_label_uuid,
+            geometry=payload.geometry,
+        )
+
+    async def apply_preview_run(self, run_uuid: str, mark_verified: bool = False) -> PreviewApplyResult:
+        """Apply every `accepted` candidate in one server-side pass.
+
+        Doing this server-side (rather than the browser's per-group loop) is what
+        makes closing the laptop mid-apply safe on a several-thousand-candidate
+        run: each candidate is marked `applied` as it lands, so a re-run picks up
+        where it stopped instead of re-applying everything.
+
+        Semantics match the client loop it replaces exactly — relabels grouped by
+        proposed label with the model's geometry replacing the original, new boxes
+        created UNVERIFIED (the model's suggestion is not a human verification)
+        unless `mark_verified`, then bbox thumbnails invalidated.
+        """
+        result = PreviewApplyResult()
+        accepted = await self._db_client.get_preview_candidates(run_uuid, decisions=[PreviewDecision.ACCEPTED])
+        if not accepted:
+            return result
+
+        # Re-check liveness *inside* the apply, not only on read: the run may
+        # have been sitting in a tab for days. Never silently skip — the stale
+        # count is surfaced in the toast.
+        reconciled = await self._annotate_preview_staleness(accepted)
+        stale_uuids = {r.uuid for r in reconciled if r.decision == PreviewDecision.STALE}
+        result.stale = len(stale_uuids)
+        live = [c for c in accepted if c.uuid not in stale_uuids]
+
+        applied_uuids: List[str] = []
+        touched_bbox_uuids: List[str] = []
+
+        # ── Deletes ────────────────────────────────────────────────────────
+        to_delete = [c for c in live if c.decision_action == PreviewDecisionAction.DELETE and c.bbox_uuid]
+        if to_delete:
+            modified, failed = await self.bulk_apply_bboxes_by_uuids(
+                [c.bbox_uuid for c in to_delete], "delete", None, []
+            )
+            result.deleted += modified
+            result.failed += failed
+            applied_uuids.extend(c.uuid for c in to_delete)
+            touched_bbox_uuids.extend(c.bbox_uuid for c in to_delete)
+
+        # ── Relabels, grouped by proposed label ────────────────────────────
+        relabels = [c for c in live if c.decision_action != PreviewDecisionAction.DELETE and not c.is_new]
+        groups: Dict[str, List[PreviewCandidate]] = defaultdict(list)
+        for c in relabels:
+            if c.bbox_uuid:
+                groups[c.proposed_label_uuid].append(c)
+        for label_uuid, group in groups.items():
+            bbox_uuids = [c.bbox_uuid for c in group]
+            geometry = {c.bbox_uuid: c.geometry_json for c in group if c.geometry_json}
+            modified, failed = await self.bulk_apply_bboxes_by_uuids(
+                bbox_uuids,
+                "relabel",
+                label_uuid,
+                [],
+                bbox_geometry=geometry or None,
+                mark_verified=mark_verified,
+            )
+            result.modified += modified
+            result.failed += failed
+            applied_uuids.extend(c.uuid for c in group)
+            touched_bbox_uuids.extend(bbox_uuids)
+
+        # ── New boxes ──────────────────────────────────────────────────────
+        new_boxes = [c for c in live if c.is_new and c.decision_action != PreviewDecisionAction.DELETE]
+        for c in new_boxes:
+            geo = c.geometry_json or {}
+            image = await self._db_client.get_image_by_uuid(c.image_uuid)
+            if image is None or not geo:
+                result.failed += 1
+                continue
+            try:
+                bbox_uuid = await self.add_single_bbox(
+                    image.filename,
+                    c.proposed_label_uuid,
+                    geo["x"],
+                    geo["y"],
+                    geo["width"],
+                    geo["height"],
+                    [VERIFIED_TAG_UUID if mark_verified else UNVERIFIED_TAG_UUID],
+                    metadata_json={"run_model_added": True, "source_model": c.source_model},
+                )
+            except Exception:
+                logger.exception("apply_preview_run: creating new bbox on image %s failed", c.image_uuid)
+                bbox_uuid = None
+            if bbox_uuid is None:
+                result.failed += 1
+                continue
+            result.added += 1
+            applied_uuids.append(c.uuid)
+
+        if applied_uuids:
+            await self._db_client.update_preview_candidates(
+                run_uuid,
+                applied_uuids,
+                decision=PreviewDecision.APPLIED,
+                applied_at=datetime.now(timezone.utc),
+            )
+        if touched_bbox_uuids:
+            try:
+                await self.invalidate_bbox_thumbnails(touched_bbox_uuids)
+            except Exception:
+                logger.exception("apply_preview_run: thumbnail invalidation failed")
+
+        return result

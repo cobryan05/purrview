@@ -107,6 +107,15 @@ def _make_filter_chains_mock():
     return handle
 
 
+def _make_preview_runs_mock():
+    async def handle(path: str, request):
+        # The review toolbar's "Saved Previews" count fetches this on mount.
+        # Tests that need actual runs override the route with page.route().
+        return JSONResponse(content={"status": "success", "runs": []})
+
+    return handle
+
+
 def _make_settings_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "settings": {}})
@@ -202,6 +211,7 @@ def live_server() -> Generator[str, None, None]:
         # passed only while a live stack happened to be running and failed with
         # httpx.ConnectError otherwise.
         ("FILTER_CHAINS_PROXY", _make_filter_chains_mock()),
+        ("PREVIEW_RUNS_PROXY", _make_preview_runs_mock()),
     ]
     originals = []
     for attr, mock_fn in proxies_and_mocks:
