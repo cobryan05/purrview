@@ -47,6 +47,7 @@ import { expandLabelFilterSet, bboxHasAnyTag, VERIFICATION_TAG_BY_STATE } from '
 import { openClassifierTagConfirmationModal } from '/app-static/js/app/review/runClassifierOnResults.js';
 import { labelChip as _labelChip } from '/app-static/js/app/review/labelChip.js';
 import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
+import { createPreviewRun, updatePreviewRun } from '/app-static/js/shared/api/previewRuns.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 
 const _CLASSIFIER_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
@@ -379,10 +380,12 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
   const hoverPreview = createHoverPreview();
   const { dialog, open, close } = createModalShell({ onClose: () => hoverPreview.destroy() });
   // Reuses showReviewModal's layout pattern (apps/image_tagging_server/static/js/app/review/main.js):
-  // a max-height flex column with a fixed header/footer and a scrollable body,
-  // so a large candidate grid can't push the footer buttons off-screen.
-  dialog.style.cssText = 'max-width:900px;width:90vw;max-height:85vh;display:flex;flex-direction:column;';
-  dialog.classList.add('relabel-confirm-modal');
+  // a fixed-height flex column with a fixed header/footer and a scrollable body,
+  // so a large candidate grid can't push the footer buttons off-screen. --full
+  // matches .compare-modal-dialog (the search modal) rather than the 900px cap
+  // this used to hard-code inline — triaging thousands of candidates wants the
+  // same working surface browsing results gets.
+  dialog.classList.add('app-modal-dialog--full', 'relabel-confirm-modal');
 
   // Group candidates from the same image together (ranked by that image's best
   // candidate) so two boxes on one image are always adjacent in the grid —
@@ -1180,7 +1183,37 @@ async function _showRunDialog(bboxScope, ctx) {
   const modelListEl = document.createElement('div');
   modelListEl.className = 'inference-model-list run-model-on-results-model-list';
   modelListEl.style.cssText = 'max-height:180px;overflow-y:auto;border:1px solid #333;border-radius:4px;padding:0.3em;';
-  modelRow.append(modelLabelRow, modelListEl);
+  // ── Multi-model conflict policy ──────────────────────────────────────
+  // Two models running over the same scope can each propose on the same bbox.
+  // Until now the last one to run silently won (a bare `.set()` in the merge
+  // loop below) with no way to see or change it. Model order is the check
+  // order: `selectedItems` is a Set, which preserves insertion order, and
+  // `modelNames` is iterated in that order.
+  const conflictRow = document.createElement('div');
+  conflictRow.className = 'run-model-on-results-conflict-row';
+  conflictRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;font-size:0.85em;';
+  const conflictLabel = document.createElement('span');
+  conflictLabel.textContent = 'When models disagree on a box:';
+  conflictLabel.style.cssText = 'color:#aaa;white-space:nowrap;';
+  const conflictSelect = document.createElement('select');
+  conflictSelect.className = 'run-model-on-results-conflict-policy';
+  conflictSelect.style.cssText = 'flex:1;padding:0.1em 0.3em;font-size:0.9em;';
+  for (const [value, text] of [['last', 'Last model wins'], ['first', 'First model wins']]) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = text;
+    conflictSelect.appendChild(opt);
+  }
+  conflictSelect.setAttribute('aria-label', 'When models disagree on a box');
+  conflictRow.append(conflictLabel, conflictSelect);
+
+  /** Only meaningful with more than one detector in play. */
+  function _syncConflictRow() {
+    const multi = _resolveSelectedModelNames().length > 1;
+    conflictRow.style.display = multi ? 'flex' : 'none';
+  }
+
+  modelRow.append(modelLabelRow, modelListEl, conflictRow);
   pickerRow.appendChild(modelRow);
 
   let models = [];
@@ -1405,6 +1438,7 @@ async function _showRunDialog(bboxScope, ctx) {
     // it's only meaningful in image crop_mode.
     addNewRow.style.display = (isClassifier || cropMode === 'bbox') ? 'none' : 'flex';
     if (isClassifier || cropMode === 'bbox') addNewCheckbox.checked = false;
+    _syncConflictRow();
   }
   cropModeSelect.addEventListener('change', _syncCropModeUI);
   _syncCropModeUI();
@@ -1524,10 +1558,13 @@ async function _showRunDialog(bboxScope, ctx) {
     // Sequential run: each model in `modelNames` (raw picks + expanded group
     // members, in selection order) launches its own PreviewModelRelabelTask
     // against the same candidate scope. Results merge into a single final
-    // preview instead of one modal per model — last model in the sequence
-    // wins for any given bbox. "New box" candidates (bboxUuid === null, from
-    // add_new) have no stable identity to merge on, so they're appended from
-    // every model's run rather than deduped.
+    // preview instead of one modal per model — which model wins a contested
+    // bbox is the user's choice (`conflictPolicy`), defaulting to the last in
+    // the sequence, which is what this always did before the control existed.
+    // "New box" candidates (bboxUuid === null, from add_new) have no stable
+    // identity to merge on, so they're appended from every model's run rather
+    // than deduped.
+    const conflictPolicy = conflictSelect.value;
     const mergedByBbox = new Map();
     const newBoxCandidates = [];
     let aggImagesFailed = 0;
@@ -1535,6 +1572,40 @@ async function _showRunDialog(bboxScope, ctx) {
     let aggNoOpCount = 0;
     let aggNoMatchCount = 0;
     const aggSampleErrors = [];
+
+    // Detector runs are persisted: the run row is created up front and every
+    // model in the sequence writes its candidates straight into it, so the
+    // result survives this modal being closed and can be triaged over several
+    // sittings. Classifier runs still use the in-memory confirmation modal —
+    // their "apply" is a free-form bulk *image* action chosen afterwards, which
+    // has no representation in a candidate's persisted decision.
+    let previewRun = null;
+    if (!isClassifier) {
+      try {
+        previewRun = await createPreviewRun({
+          modelName: modelNames.join(' → '),
+          taskTypename: 'PreviewModelRelabelTask',
+          params: {
+            crop_mode: cropMode,
+            add_new: cropMode === 'image' && addNewCheckbox.checked,
+            conf_thresh: confThresh,
+            iou_thresh: iouThresh,
+            conflict_policy: conflictPolicy,
+            model_names: modelNames,
+          },
+          scope: {
+            kind: activeScopeKind,
+            bbox_uuid_count: bboxUuids.length,
+            image_uuid_count: imageUuids.length,
+          },
+        });
+      } catch (err) {
+        // Not fatal: fall back to the in-memory preview rather than refusing to
+        // run a detector the user already waited on a dialog for.
+        Logger.error('Failed to create preview run; falling back to an unsaved preview:', err);
+        toast('Could not save this preview run; results will not persist.', 5000, 'warning');
+      }
+    }
 
     try {
       for (let i = 0; i < modelNames.length; i++) {
@@ -1558,6 +1629,9 @@ async function _showRunDialog(bboxScope, ctx) {
               iou_thresh: iouThresh,
               image_uuids: imageUuids,
               bbox_uuids: bboxUuids,
+              // All models in the sequence share one run, so their proposals
+              // merge server-side under the chosen conflict policy.
+              ...(previewRun ? { preview_run_uuid: previewRun.uuid, conflict_policy: conflictPolicy } : {}),
             };
 
         const configUuid = await createTaskConfig({
@@ -1600,8 +1674,15 @@ async function _showRunDialog(bboxScope, ctx) {
         taskUuid = null;
 
         for (const c of candidates) {
-          if (isClassifier || c.isNew || !c.bboxUuid) newBoxCandidates.push(c);
-          else mergedByBbox.set(c.bboxUuid, c);
+          if (isClassifier || c.isNew || !c.bboxUuid) {
+            // Two models proposing new boxes are two detections, not a
+            // conflict — there is no shared bbox to disagree about.
+            newBoxCandidates.push(c);
+          } else if (conflictPolicy === 'first') {
+            if (!mergedByBbox.has(c.bboxUuid)) mergedByBbox.set(c.bboxUuid, c);
+          } else {
+            mergedByBbox.set(c.bboxUuid, c);
+          }
         }
         aggImagesFailed += data.images_failed ?? 0;
         aggNoDetectionCount += data.no_detection_count ?? 0;
@@ -1615,6 +1696,32 @@ async function _showRunDialog(bboxScope, ctx) {
       close();
       const displayName = modelNames.join(' → ');
       const finalCandidates = isClassifier ? newBoxCandidates : [...mergedByBbox.values(), ...newBoxCandidates];
+
+      // Persisted run: the candidates are already in the DB (the task wrote them
+      // as it went and returned only the uuid), so hand off to the triage panel
+      // rather than the in-memory confirmation modal.
+      if (previewRun) {
+        try {
+          await updatePreviewRun(previewRun.uuid, {
+            stats: {
+              images_failed: aggImagesFailed,
+              no_detection_count: aggNoDetectionCount,
+              no_op_count: aggNoOpCount,
+              sample_errors: aggSampleErrors.slice(0, 5),
+            },
+          });
+        } catch (err) {
+          Logger.error('Failed to record preview run stats:', err);
+        }
+        const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
+        await openPreviewRunModal({
+          runUuid: previewRun.uuid,
+          labels: ctx.labels,
+          onApplied: ctx.refresh,
+        });
+        return;
+      }
+
       if (isClassifier) {
         await openClassifierTagConfirmationModal(finalCandidates, {
           modelName: displayName,

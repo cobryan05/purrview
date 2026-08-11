@@ -858,3 +858,185 @@ export function buildImageCard(controller, entry, opts) {
 
   return card;
 }
+
+// ── Preview-candidate card variant ───────────────────────────────────────────
+
+/** Per-decision badge text/class, so the three surfaces that render one agree. */
+const DECISION_BADGE = {
+  accepted: { text: '✓ Accepted', cls: 'state-verified' },
+  rejected: { text: '✕ Rejected', cls: 'state-deleted' },
+  applied: { text: '● Applied', cls: 'state-applied' },
+  stale: { text: '⚠ Stale', cls: 'state-stale' },
+};
+
+/**
+ * Build a card for a **persisted preview candidate** — a model's proposal, not
+ * an annotation.
+ *
+ * A deliberate opt-in variant rather than a mode of `buildBboxCard`: a candidate
+ * carries `proposedLabelUuid` / `confidence` / a proposed `geometry`, none of
+ * which exist on a real bbox, and a `isNew` candidate has no bbox row at all —
+ * so collapsing the two builders would either leak preview-only fields into
+ * ordinary review cards or make every review card carry dead branches. Callers
+ * must ask for this one by name.
+ *
+ * @param {object} controller - createCardGrid controller (selection).
+ * @param {{id: string, candidate: object}} entry
+ * @param {{
+ *   gridEl: HTMLElement,
+ *   labels: Map<string, {name: string, color: string}>,
+ *   index: number,
+ *   hoverPreview: object,
+ *   labelChip: (name: ?string, uuid: ?string, labels: Map) => HTMLElement,
+ *   resolveContext: (entry: object, card: HTMLElement) => object[],
+ *   onOpenEditor: (entry: object) => void,
+ * }} opts
+ */
+export function buildCandidateCard(controller, entry, opts) {
+  const { candidate } = entry;
+  const { gridEl, labels, index, hoverPreview, labelChip, resolveContext, onOpenEditor } = opts;
+
+  const card = document.createElement('div');
+  card.className = 'review-card relabel-modal-card';
+  card.dataset.testid = 'preview-candidate-card';
+  card.dataset.candidateUuid = candidate.uuid;
+  // The selection controller and its shift-range selectors resolve off
+  // data-bbox-uuid; a new-box candidate has no bbox, so the entry id (which is
+  // the candidate uuid) stands in for one.
+  card.dataset.bboxUuid = entry.id;
+  card.dataset.imageUuid = candidate.imageUuid;
+  card.dataset.kind = 'bbox';
+  card.dataset.decision = candidate.decision;
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  const clearTimer = controller.attachSelectListeners(card, cb, entry.id, 'bbox', index);
+
+  const proposedColor = labels.get(candidate.proposedLabelUuid)?.color ?? '#5cc45c';
+
+  if (candidate.isNew) {
+    // No bbox to crop yet — show the whole image with the proposed geometry
+    // drawn over it (same letterbox-aware overlay as buildImageCard).
+    const thumbWrap = document.createElement('div');
+    thumbWrap.style.cssText = 'position:relative;';
+    const thumbImg = document.createElement('img');
+    thumbImg.className = 'thumb';
+    thumbImg.loading = 'lazy';
+    thumbImg.title = 'Double-click to edit in canvas';
+    thumbImg.src = getImageThumbnailUrl(candidate.imageFilename, 300);
+    const overlay = document.createElement('canvas');
+    overlay.className = 'thumb-overlay';
+    overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
+    const drawOverlay = () => {
+      if (!candidate.geometry) return;
+      drawLetterboxedBboxes(thumbImg, overlay, [{ ...candidate.geometry, color: proposedColor }]);
+    };
+    if (thumbImg.complete && thumbImg.naturalWidth) drawOverlay();
+    else thumbImg.onload = drawOverlay;
+    thumbImg.addEventListener('dblclick', () => { clearTimer(); onOpenEditor(entry); });
+    thumbWrap.append(thumbImg, overlay);
+    card.append(cb, thumbWrap);
+  } else {
+    const thumbImg = document.createElement('img');
+    thumbImg.className = 'thumb';
+    thumbImg.loading = 'lazy';
+    thumbImg.title = 'Double-click to edit in canvas';
+    thumbImg.src = getBboxThumbnailUrl(candidate.imageFilename, candidate.bboxUuid, 300);
+    thumbImg.addEventListener('dblclick', () => { clearTimer(); onOpenEditor(entry); });
+    card.append(cb, thumbImg);
+  }
+
+  const info = document.createElement('div');
+  info.className = 'card-info';
+
+  const badgeSpec = DECISION_BADGE[candidate.decision];
+  if (badgeSpec) {
+    const badge = document.createElement('div');
+    badge.className = `card-state-badge ${badgeSpec.cls}`;
+    badge.dataset.testid = 'preview-decision-badge';
+    badge.textContent = badgeSpec.text;
+    info.appendChild(badge);
+  }
+
+  const labelsRow = document.createElement('div');
+  labelsRow.className = 'relabel-modal-labels-row';
+  labelsRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;flex-wrap:wrap;';
+  const proposedChip = labelChip(labels.get(candidate.proposedLabelUuid)?.name, candidate.proposedLabelUuid, labels);
+  proposedChip.classList.add('relabel-modal-proposed-chip');
+  if (candidate.isNew) {
+    const newBadge = document.createElement('span');
+    newBadge.className = 'label-chip relabel-modal-new-badge';
+    newBadge.textContent = '＋ NEW';
+    labelsRow.append(newBadge, proposedChip);
+  } else {
+    const currentChip = labelChip(labels.get(candidate.currentLabelUuid)?.name, candidate.currentLabelUuid, labels);
+    const arrow = document.createElement('span');
+    arrow.textContent = '→';
+    labelsRow.append(currentChip, arrow, proposedChip);
+  }
+  // A relabel is still applicable when the box moved off the label the run
+  // snapshotted — but the user should see that before accepting it.
+  if (candidate.labelChangedSinceRun) {
+    const changed = document.createElement('span');
+    changed.className = 'label-chip preview-changed-badge';
+    changed.dataset.testid = 'preview-changed-badge';
+    changed.textContent = '⟳ changed since run';
+    changed.title = "This box's label changed after the model ran.";
+    labelsRow.appendChild(changed);
+  }
+  info.appendChild(labelsRow);
+
+  // A candidate whose decision is Delete has no proposed label to speak of —
+  // dim the chip rather than hide it, so the row still reads as one thing.
+  if (candidate.decisionAction === 'delete') proposedChip.style.opacity = '0.35';
+
+  const pct = Math.round((candidate.confidence ?? 0) * 100);
+  const barWrap = document.createElement('div');
+  barWrap.className = 'classify-modal-bar-wrap';
+  const bar = document.createElement('div');
+  bar.className = 'classify-modal-bar';
+  bar.style.width = `${pct}%`;
+  bar.style.background = 'var(--pico-primary)';
+  barWrap.appendChild(bar);
+  const pctSpan = document.createElement('span');
+  pctSpan.className = 'classify-modal-pct';
+  pctSpan.textContent = `${pct}%`;
+  const confRow = document.createElement('div');
+  confRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;';
+  confRow.append(barWrap, pctSpan);
+  info.appendChild(confRow);
+
+  // Which model won this box, so a multi-model run's merge is inspectable
+  // rather than something the user has to infer.
+  if (candidate.sourceModel) {
+    const src = document.createElement('div');
+    src.className = 'preview-card-source';
+    src.style.cssText = 'margin-top:0.2em;color:#aaa;font-size:0.75em;';
+    src.textContent = candidate.sourceModel;
+    info.appendChild(src);
+  }
+
+  card.appendChild(info);
+
+  attachGroupHighlight(gridEl, card, candidate.imageUuid);
+  if (candidate.isNew) {
+    hoverPreview.attach(card, {
+      imagePath: candidate.imageFilename,
+      imageUuid: candidate.imageUuid,
+      allBboxes: candidate.geometry
+        ? [{ uuid: 'new', ...candidate.geometry, label: { color: proposedColor } }]
+        : [],
+      hoveredBboxUuid: 'new',
+    });
+  } else {
+    hoverPreview.attach(card, {
+      imagePath: candidate.imageFilename,
+      imageUuid: candidate.imageUuid,
+      hoveredBboxUuid: candidate.bboxUuid,
+    });
+  }
+
+  attachContext(card, () => resolveContext(entry, card));
+
+  return card;
+}

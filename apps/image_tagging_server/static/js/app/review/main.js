@@ -347,6 +347,40 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     refresh: () => render(),
   }));
 
+  // Saved Previews — every persisted "Run Model on Results" run, so a large
+  // triage can be picked up later instead of having to finish in one sitting.
+  //
+  // Review tab only (`!fetchImages`): saved runs are a property of the whole
+  // project, not of the transient candidate set a similarity/search modal is
+  // showing, and the run-model flow inside a modal opens its own run's panel
+  // directly anyway. Building it in modal mode would put a second
+  // "Saved **Prev**iews" button in the toolbar the pagination controls live in.
+  const savedPreviewsBtn = document.createElement('button');
+  savedPreviewsBtn.className = 'review-toolbar__btn';
+  savedPreviewsBtn.dataset.testid = 'review-saved-previews';
+  savedPreviewsBtn.textContent = 'Saved Previews';
+  savedPreviewsBtn.addEventListener('click', async () => {
+    const { openSavedPreviewsModal } = await import('/app-static/js/app/review/previewPanel.js');
+    await openSavedPreviewsModal({
+      labels,
+      onApplied: () => render(),
+      onClose: () => _refreshSavedPreviewCount(),
+    });
+  });
+
+  async function _refreshSavedPreviewCount() {
+    try {
+      const { fetchPreviewRuns } = await import('/app-static/js/shared/api/previewRuns.js');
+      const runs = await fetchPreviewRuns();
+      savedPreviewsBtn.textContent = runs.length > 0 ? `Saved Previews (${runs.length})` : 'Saved Previews';
+    } catch {
+      // A count nobody asked for is not worth a toast; the button still opens
+      // the list, which reports the failure properly.
+      savedPreviewsBtn.textContent = 'Saved Previews';
+    }
+  }
+  if (!fetchImages) _refreshSavedPreviewCount();
+
   // Run Filter Chain on Results — runs a stored FilterChain (relabel/tag/add-box
   // steps) over the images behind the current selection/filter. Same scope
   // machinery as Run Model on Results, but image-scoped (see runFilterChainOnResults.js).
@@ -476,6 +510,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   filterScopedActionsBar.className = 'review-filter-scoped-actions';
   filterScopedActionsBar.dataset.testid = 'review-filter-scoped-actions';
   filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, runChainBtn);
+  if (!fetchImages) filterScopedActionsBar.insertBefore(savedPreviewsBtn, runChainBtn);
 
   // ── Contextual action bar (slice 3, PR 3.3) ────────────────────────
   // Appears only with an active selection — hidden the rest of the time.
@@ -2439,9 +2474,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     ]);
 
     // ── Build modal shell ────────────────────────────────────────────────
-    const _layer = acquireModalLayer({ dialog: true });
     const overlay = document.createElement('div');
     overlay.className = 'bulk-modal-overlay';
+    const _layer = acquireModalLayer({ dialog: true, overlay });
     overlay.style.zIndex = _layer.zIndex;
 
     const dialog = document.createElement('div');
@@ -2715,8 +2750,8 @@ export async function init() {
  */
 export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null, gapsConfig = null } = {}) {
   const overlay = document.createElement('div');
-  const _layer = acquireModalLayer({ dialog: true });
   overlay.className = 'compare-modal-overlay';
+  const _layer = acquireModalLayer({ dialog: true, overlay });
   overlay.style.zIndex = _layer.zIndex;
 
   const dialog = document.createElement('div');
@@ -3114,7 +3149,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // Held from here until closeModal (or the load-failure path below). The ESC
   // handler is not registered until well after the awaits that follow, so the
   // layer — not the ESC stack — is what marks this modal as on screen.
-  const _layer = acquireModalLayer({ dialog: true });
+  const _layer = acquireModalLayer({ dialog: true, overlay });
   overlay.style.zIndex = _layer.zIndex;
   document.body.appendChild(overlay);
   applyModalCascade(dialog, _layer.depth);
@@ -3642,9 +3677,9 @@ async function showBulkActionModal(entries, labels, onConfirm, titleText = null,
     fetchLabels().catch(() => new Map()),
   ]);
 
-  const _layer = acquireModalLayer({ dialog: true });
   const overlay = document.createElement('div');
   overlay.className = 'bulk-modal-overlay';
+  const _layer = acquireModalLayer({ dialog: true, overlay });
   overlay.style.zIndex = _layer.zIndex;
 
   const dialog = document.createElement('div');

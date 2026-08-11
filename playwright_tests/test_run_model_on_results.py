@@ -591,6 +591,98 @@ class TestRunModelMultiSelect:
         bbox1_card = confirm_modal.locator('.relabel-modal-card[data-bbox-uuid="bbox-1"]')
         expect(bbox1_card).to_contain_text("90%")  # det-b's confidence, not det-a's 50%
 
+    def test_conflict_policy_control_only_appears_for_multiple_models(self, page: Page, base_url: str):
+        """ "Which model wins" is meaningless with one model, so it stays hidden
+        until a second detector is checked."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["det-a", "det-b"])
+        _mock_thumbnails(page)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        conflict_row = dialog.locator(".run-model-on-results-conflict-row")
+        expect(conflict_row).to_be_hidden()
+
+        _check_model_in_dialog(dialog, "det-a")
+        expect(conflict_row).to_be_hidden()
+
+        _check_model_in_dialog(dialog, "det-b")
+        expect(conflict_row).to_be_visible()
+        # Default preserves the behavior that used to be hard-coded.
+        expect(dialog.locator(".run-model-on-results-conflict-policy")).to_have_value("last")
+
+    def test_first_model_wins_when_the_conflict_policy_says_so(self, page: Page, base_url: str):
+        """Before this control existed the last model silently won every
+        contested bbox, with no way to see or change it."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["det-a", "det-b"])
+        _mock_thumbnails(page)
+
+        # Both models propose on bbox-1; only det-b sees bbox-2.
+        candidates_det_a = [
+            {
+                "bboxUuid": "bbox-1",
+                "imageUuid": "img-1",
+                "imagePath": "folder/image1.jpg",
+                "currentLabelUuid": "lbl-cat",
+                "currentLabelName": "Cat",
+                "proposedLabelUuid": "lbl-dog",
+                "proposedLabelName": "Dog",
+                "confidence": 0.5,
+            },
+        ]
+        candidates_det_b = [
+            {
+                "bboxUuid": "bbox-1",
+                "imageUuid": "img-1",
+                "imagePath": "folder/image1.jpg",
+                "currentLabelUuid": "lbl-cat",
+                "currentLabelName": "Cat",
+                "proposedLabelUuid": "lbl-cat",
+                "proposedLabelName": "Cat",
+                "confidence": 0.9,
+            },
+            {
+                "bboxUuid": "bbox-2",
+                "imageUuid": "img-2",
+                "imagePath": "folder/image2.jpg",
+                "currentLabelUuid": "lbl-dog",
+                "currentLabelName": "Dog",
+                "proposedLabelUuid": "lbl-dog",
+                "proposedLabelName": "Dog",
+                "confidence": 0.6,
+            },
+        ]
+        fake_tasks = _FakeSequentialTasks({"det-a": candidates_det_a, "det-b": candidates_det_b})
+        fake_tasks.install(page)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        _check_model_in_dialog(dialog, "det-a")
+        _check_model_in_dialog(dialog, "det-b")
+        dialog.locator(".run-model-on-results-conflict-policy").select_option("first")
+        dialog.locator("button", has_text="Run").click()
+
+        confirm_modal = page.locator(".relabel-confirm-modal")
+        expect(confirm_modal).to_be_visible(timeout=8000)
+        cards = confirm_modal.locator(".relabel-modal-card")
+        expect(cards).to_have_count(2)
+        # det-a ran first, so its 50%-confidence proposal survives det-b's 90% one.
+        bbox1_card = confirm_modal.locator('.relabel-modal-card[data-bbox-uuid="bbox-1"]')
+        expect(bbox1_card).to_contain_text("50%")
+        # A bbox only one model saw is unaffected by the policy.
+        expect(confirm_modal.locator('.relabel-modal-card[data-bbox-uuid="bbox-2"]')).to_have_count(1)
+
 
 # ---------------------------------------------------------------------------
 # Full run: launch -> poll -> result -> handoff to the Chunk-C placeholder
