@@ -838,9 +838,13 @@ class TestRunModelFullFlow:
 
 
 # ---------------------------------------------------------------------------
-# Large-run warning — no hard ceiling. Below WARN_THRESHOLD (1000) the run
-# dialog opens directly; above it, a warning modal lets the user cap how many
-# candidates to process (blank = all) or cancel.
+# Large-run warning — no hard ceiling, and no prompt until Run.
+#
+# The prompt used to fire before the run dialog opened, always counting
+# *bboxes* — so an images-view user was asked to cap a unit they had not
+# chosen and might never process (the scope toggle comes later, inside the
+# dialog). It now fires once, on Run, against whichever scope is selected by
+# then, counting bboxes for bbox scope and images for image scope.
 # ---------------------------------------------------------------------------
 
 
@@ -852,16 +856,16 @@ class TestRunModelCaps:
         _mock_models(page, ["yolo9-detector"])
         _navigate_to_review(page, base_url)
 
-    def _start_flow(self, page: Page, count: int):
+    def _start_flow(self, page: Page, count: int, view_filter: str = "bboxes"):
         page.evaluate(
-            """async (count) => {
+            """async ({ count, viewFilter }) => {
             const { runModelOnResultsFlow } = await import('/app-static/js/app/review/runModelOnResults.js');
             const bboxes = Array.from({length: count}, (_, i) => ({ uuid: 'b' + i, labelUuid: 'lbl-cat', tags: [] }));
             const visibleEntries = bboxes.map(b => ({ kind: 'bbox', bbox: b, img: { uuid: 'img-' + b.uuid } }));
             window.__runFlow = runModelOnResultsFlow({
                 fetchImages: null,
                 filterPanel: { getState: () => ({ showAllBboxes: true, tagUuids: [], labelUuids: [] }) },
-                viewFilter: 'bboxes',
+                viewFilter,
                 selectionKind: 'bbox',
                 selected: new Set(bboxes.map(b => b.uuid)),
                 visibleEntries,
@@ -872,8 +876,13 @@ class TestRunModelCaps:
                 refresh: () => {},
             });
         }""",
-            count,
+            {"count": count, "viewFilter": view_filter},
         )
+
+    def _dialog(self, page: Page):
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible(timeout=3000)
+        return dialog
 
     def test_below_warn_threshold_opens_dialog_directly(self, page: Page, base_url: str):
         self._setup(page, base_url)
@@ -881,49 +890,90 @@ class TestRunModelCaps:
 
         # No warning modal for small runs — straight to the run dialog.
         expect(page.locator(".run-model-large-warning-dialog")).to_have_count(0)
-        dialog = page.locator(".run-model-on-results-dialog")
-        expect(dialog).to_be_visible(timeout=3000)
-        expect(dialog).to_contain_text("500 candidate bbox")
+        expect(self._dialog(page)).to_contain_text("500 candidate bbox")
 
-    def test_above_warn_threshold_process_all(self, page: Page, base_url: str):
+    def test_above_warn_threshold_still_opens_dialog_directly(self, page: Page, base_url: str):
+        """The regression: a large scope must not be capped before the user has
+        even picked which scope they're running on."""
         self._setup(page, base_url)
         self._start_flow(page, 1200)
+
+        expect(self._dialog(page)).to_contain_text("1,200 candidate bbox")
+        expect(page.locator(".run-model-large-warning-dialog")).to_have_count(0)
+
+    def test_warning_fires_on_run_and_processes_all(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        task = _FakeTask()
+        task.install(page, CANDIDATES)
+        self._start_flow(page, 1200)
+        dialog = self._dialog(page)
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        dialog.locator("button", has_text="Run").first.click()
 
         warning = page.locator(".run-model-large-warning-dialog")
         expect(warning).to_be_visible(timeout=3000)
         expect(warning).to_contain_text("1,200 candidate bbox")
 
-        # Leave the count blank → process all; the run dialog shows the full count.
+        # Blank → process all.
         warning.locator("button", has_text="Continue").click()
-        dialog = page.locator(".run-model-on-results-dialog")
-        expect(dialog).to_be_visible(timeout=3000)
-        expect(dialog).to_contain_text("1,200 candidate bbox")
+        expect(page.locator(".relabel-confirm-modal")).to_be_visible(timeout=5000)
+        started = [b for b in task.create_bodies if "params" in b]
+        assert started, "no task config was created"
+        assert len(started[-1]["params"]["bbox_uuids"]) == 1200
 
-    def test_above_warn_threshold_caps_count(self, page: Page, base_url: str):
+    def test_warning_on_run_caps_count(self, page: Page, base_url: str):
         self._setup(page, base_url)
+        task = _FakeTask()
+        task.install(page, CANDIDATES)
         self._start_flow(page, 1200)
+        dialog = self._dialog(page)
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        dialog.locator("button", has_text="Run").first.click()
 
         warning = page.locator(".run-model-large-warning-dialog")
         expect(warning).to_be_visible(timeout=3000)
-
-        # Cap to the first 300 → the run dialog reflects the truncated scope.
         warning.locator(".run-model-large-warning-limit").fill("300")
         warning.locator("button", has_text="Continue").click()
-        dialog = page.locator(".run-model-on-results-dialog")
-        expect(dialog).to_be_visible(timeout=3000)
-        expect(dialog).to_contain_text("300 candidate bbox")
-        expect(dialog).to_contain_text("300 image")
 
-    def test_warning_cancel_aborts_run(self, page: Page, base_url: str):
+        expect(page.locator(".relabel-confirm-modal")).to_be_visible(timeout=5000)
+        started = [b for b in task.create_bodies if "params" in b]
+        assert started, "no task config was created"
+        assert len(started[-1]["params"]["bbox_uuids"]) == 300
+
+    def test_warning_cancel_keeps_dialog_open(self, page: Page, base_url: str):
+        """Cancelling the cap now returns to the run dialog rather than
+        abandoning the whole flow — the dialog is where the choice was made."""
         self._setup(page, base_url)
         self._start_flow(page, 1200)
+        dialog = self._dialog(page)
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        dialog.locator("button", has_text="Run").first.click()
 
         warning = page.locator(".run-model-large-warning-dialog")
         expect(warning).to_be_visible(timeout=3000)
         warning.locator("button", has_text="Cancel").click()
 
         expect(warning).to_have_count(0)
-        expect(page.locator(".run-model-on-results-dialog")).to_have_count(0)
+        expect(dialog).to_be_visible()
+
+    def test_images_view_defaults_scope_to_images(self, page: Page, base_url: str):
+        """Images view should start on the image scope, not ask the user about
+        bboxes — the unit they'd have to switch scopes to even process."""
+        self._setup(page, base_url)
+        self._start_flow(page, 1200, view_filter="images")
+        dialog = self._dialog(page)
+
+        image_radio = dialog.locator("input[name='run-model-on-results-scope'][value='images']")
+        expect(image_radio).to_be_checked(timeout=3000)
+        expect(dialog.locator("input[name='run-model-on-results-scope'][value='bboxes']")).not_to_be_checked()
+
+    def test_bboxes_view_defaults_scope_to_bboxes(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        self._start_flow(page, 500, view_filter="bboxes")
+        dialog = self._dialog(page)
+
+        expect(dialog.locator("input[name='run-model-on-results-scope'][value='bboxes']")).to_be_checked()
+        expect(dialog.locator("input[name='run-model-on-results-scope'][value='images']")).not_to_be_checked()
 
 
 # ---------------------------------------------------------------------------

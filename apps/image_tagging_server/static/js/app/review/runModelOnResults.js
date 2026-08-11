@@ -926,11 +926,14 @@ function _fmtPct(x) {
  * `WARN_THRESHOLD`) and lets the user cap how many candidates to process. The
  * count input defaults to blank, meaning "all of them".
  *
- * @param {number} total - total candidate bbox count.
+ * @param {number} total - total unit count for the scope being run.
+ * @param {string} [noun] - what `total` counts, for the prompt text. The run
+ *   dialog's scope toggle decides this: bbox scope counts bboxes, image scope
+ *   (and any classifier run) counts images.
  * @returns {Promise<number|null>} the chosen limit (a positive integer), or
  *   `Infinity` to process all, or `null` if the user cancels/dismisses.
  */
-export function confirmLargeRun(total) {
+export function confirmLargeRun(total, noun = 'candidate bbox(es)') {
   return new Promise((resolve) => {
     let resolved = false;
     const finish = (v) => { if (resolved) return; resolved = true; resolve(v); close(); };
@@ -947,7 +950,7 @@ export function confirmLargeRun(total) {
     msg.append(
       document.createTextNode("You're about to run the model on "),
       Object.assign(document.createElement('strong'), { textContent: total.toLocaleString() }),
-      document.createTextNode(' candidate bbox(es). Large runs can take a while.'),
+      document.createTextNode(` ${noun}. Large runs can take a while.`),
     );
     dialog.appendChild(msg);
 
@@ -998,20 +1001,28 @@ export function confirmLargeRun(total) {
  * a poll/progress/cancel view until the task completes.
  *
  * @param {{bboxUuids: string[], imageUuids: string[]}} bboxScope - the
- *   pre-resolved, already-warned/truncated bbox-filtered scope (see
- *   `runModelOnResultsFlow`). The "Filtered images" scope is resolved lazily,
- *   on first toggle, via `resolveImageScope(ctx)`.
+ *   pre-resolved bbox-filtered scope (see `runModelOnResultsFlow`). Uncapped:
+ *   the large-run prompt happens on Run, once the scope toggle has settled.
+ *   The "Filtered images" scope is resolved via `resolveImageScope(ctx)` —
+ *   lazily on first toggle, or up front when images view makes it the default.
  * @param {Object} ctx - forwarded to `openRelabelConfirmationModal` (see its docs),
  *   plus the fields `resolveCandidateScope`/`resolveImageScope` need.
  */
 async function _showRunDialog(bboxScope, ctx) {
   // Active candidate lists the Run button reads from — reassigned by the scope
-  // toggle below. Start on the bbox-filtered scope (today's default behavior).
+  // toggle below.
   let bboxUuids = bboxScope.bboxUuids;
   let imageUuids = bboxScope.imageUuids;
-  let activeScopeKind = 'bboxes';
-  // Lazily resolved on first switch to 'images' — avoids the extra fetch for
-  // the common case where the user never touches the toggle.
+  // Owning image per entry in `bboxUuids`, kept in step with it so the Run
+  // button's cap can drop whole images without orphaning their bboxes.
+  let bboxImageUuids = bboxScope.bboxImageUuids ?? [];
+  // Default to the view the user is already in: asking an image-view user
+  // about bboxes (a unit they didn't choose) is the whole complaint the cap
+  // prompt used to embody. Anything that isn't images view keeps bbox scope.
+  let activeScopeKind = ctx.viewFilter === 'images' ? 'images' : 'bboxes';
+  // Resolved on first switch to 'images' — lazily when bbox scope is the
+  // default (avoids the extra fetch for users who never touch the toggle), or
+  // immediately below when images view makes it the starting scope.
   let imageScope = null;
 
   const { dialog, open, close } = createModalShell();
@@ -1041,7 +1052,7 @@ async function _showRunDialog(bboxScope, ctx) {
     radio.type = 'radio';
     radio.name = 'run-model-on-results-scope';
     radio.value = value;
-    radio.checked = value === 'bboxes';
+    radio.checked = value === activeScopeKind;
     const text = document.createElement('span');
     text.textContent = initialText;
     label.append(radio, text);
@@ -1066,16 +1077,16 @@ async function _showRunDialog(bboxScope, ctx) {
   }
   _updateCountLine();
 
-  // The large-run warning (and optional cap) for the *bbox* scope is handled
-  // in `runModelOnResultsFlow` before this dialog is shown, so `bboxScope` is
-  // already the user-approved set. The *image* scope gets its own warning
-  // below, on first toggle, since it's resolved lazily and can be a very
-  // different (usually much larger) size.
+  // Neither scope is capped here. The large-run prompt fires once, on Run,
+  // against whichever scope is selected by then — switching scopes is free and
+  // reversible, so a prompt on toggle would be asking about a set the user is
+  // still browsing.
   async function _onScopeChange(kind) {
     activeScopeKind = kind;
     if (kind === 'bboxes') {
       bboxUuids = bboxScope.bboxUuids;
       imageUuids = bboxScope.imageUuids;
+      bboxImageUuids = bboxScope.bboxImageUuids ?? [];
       cropModeBboxOpt.hidden = false;
       _updateCountLine();
       _syncCropModeUI();
@@ -1096,21 +1107,6 @@ async function _showRunDialog(bboxScope, ctx) {
           imageScopeRadio.text.textContent = 'Filtered images (0)';
           return;
         }
-        if (resolved.imageUuids.length > WARN_THRESHOLD) {
-          const limit = await confirmLargeRun(resolved.imageUuids.length);
-          if (limit === null) {
-            imageScopeRadio.radio.checked = false;
-            bboxScopeRadio.radio.checked = true;
-            activeScopeKind = 'bboxes';
-            imageScopeRadio.text.textContent = 'Filtered images (…)';
-            return;
-          }
-          if (Number.isFinite(limit)) {
-            const keptImageUuids = new Set(resolved.imageUuids.slice(0, limit));
-            const keptBboxUuids = resolved.bboxUuids.filter((_, i) => keptImageUuids.has(resolved.bboxImageUuids[i]));
-            resolved = { bboxUuids: keptBboxUuids, imageUuids: [...keptImageUuids], bboxImageUuids: resolved.bboxImageUuids };
-          }
-        }
         imageScope = resolved;
       } catch (err) {
         Logger.error('Failed to resolve image scope:', err);
@@ -1128,6 +1124,7 @@ async function _showRunDialog(bboxScope, ctx) {
       `Filtered images (${imageScope.imageUuids.length.toLocaleString()}) — run on every matching image, including ones with no bboxes`;
     bboxUuids = imageScope.bboxUuids;
     imageUuids = imageScope.imageUuids;
+    bboxImageUuids = imageScope.bboxImageUuids ?? [];
     // Bbox-crop mode has nothing to crop on a boxless image — the whole point
     // of this scope — so it's not offered here; whole-image + IoU match is the
     // only mode, and "Also add new boxes" is the only way a boxless image can
@@ -1140,6 +1137,12 @@ async function _showRunDialog(bboxScope, ctx) {
   }
   bboxScopeRadio.radio.addEventListener('change', () => { if (bboxScopeRadio.radio.checked) _onScopeChange('bboxes'); });
   imageScopeRadio.radio.addEventListener('change', () => { if (imageScopeRadio.radio.checked) _onScopeChange('images'); });
+
+  // Images view starts on the image scope, so resolve it now rather than
+  // waiting for a toggle the user has no reason to touch. Not awaited: the
+  // rest of the dialog (model list, sliders) should render immediately, and
+  // `_onScopeChange` owns its own loading label and error fallback.
+  if (activeScopeKind === 'images') _onScopeChange('images');
 
   // ── Model + inference-input pickers, side by side to keep this compact ──
   const pickerRow = document.createElement('div');
@@ -1517,14 +1520,30 @@ async function _showRunDialog(bboxScope, ctx) {
       }
     }
 
-    // Detector runs are already capped/warned on before this dialog opens
-    // (see runModelOnResultsFlow); classifier runs are keyed off imageUuids
-    // instead of bboxUuids, so they need their own large-run check here.
+    // The one large-run prompt, raised here rather than before the dialog
+    // opens: only now is the unit settled. Image scope (and any classifier
+    // run, which is keyed off images regardless of scope) counts images; bbox
+    // scope counts candidate bboxes.
+    const capByImage = isClassifier || activeScopeKind === 'images';
+    const capTotal = capByImage ? imageUuids.length : bboxUuids.length;
+    let runBboxUuids = bboxUuids;
     let runImageUuids = imageUuids;
-    if (isClassifier && imageUuids.length > WARN_THRESHOLD) {
-      const limit = await confirmLargeRun(imageUuids.length);
+    if (capTotal > WARN_THRESHOLD) {
+      const limit = await confirmLargeRun(capTotal, capByImage ? 'image(s)' : 'candidate bbox(es)');
       if (limit === null) return; // user cancelled/dismissed the warning
-      runImageUuids = Number.isFinite(limit) ? imageUuids.slice(0, limit) : imageUuids;
+      if (Number.isFinite(limit)) {
+        if (capByImage) {
+          // Drop whole images, then the bboxes belonging to them, so a capped
+          // run never sends a bbox whose image isn't in the run.
+          const kept = new Set(imageUuids.slice(0, limit));
+          runImageUuids = [...kept];
+          runBboxUuids = bboxUuids.filter((_, i) => kept.has(bboxImageUuids[i]));
+        } else {
+          const capped = truncateScope({ bboxUuids, imageUuids, bboxImageUuids }, limit);
+          runBboxUuids = capped.bboxUuids;
+          runImageUuids = capped.imageUuids;
+        }
+      }
     }
 
     runBtn.disabled = true;
@@ -1534,7 +1553,7 @@ async function _showRunDialog(bboxScope, ctx) {
     bboxScopeRadio.radio.disabled = true;
     imageScopeRadio.radio.disabled = true;
     progressWrap.style.display = 'flex';
-    const totalImages = isClassifier ? runImageUuids.length : imageUuids.length;
+    const totalImages = runImageUuids.length;
 
     // Sequential run: each model in `modelNames` (raw picks + expanded group
     // members, in selection order) launches its own PreviewModelRelabelTask
@@ -1576,8 +1595,8 @@ async function _showRunDialog(bboxScope, ctx) {
           },
           scope: {
             kind: activeScopeKind,
-            bbox_uuid_count: bboxUuids.length,
-            image_uuid_count: imageUuids.length,
+            bbox_uuid_count: runBboxUuids.length,
+            image_uuid_count: runImageUuids.length,
           },
         });
       } catch (err) {
@@ -1608,8 +1627,8 @@ async function _showRunDialog(bboxScope, ctx) {
               add_new: cropMode === 'image' && addNewCheckbox.checked,
               conf_thresh: confThresh,
               iou_thresh: iouThresh,
-              image_uuids: imageUuids,
-              bbox_uuids: bboxUuids,
+              image_uuids: runImageUuids,
+              bbox_uuids: runBboxUuids,
               // All models in the sequence share one run, so their proposals
               // merge server-side under the chosen conflict policy.
               ...(previewRun ? { preview_run_uuid: previewRun.uuid, conflict_policy: conflictPolicy } : {}),
@@ -1793,12 +1812,9 @@ export async function runModelOnResultsFlow(ctx) {
     return;
   }
 
-  let runScope = scope;
-  if (scope.bboxUuids.length > WARN_THRESHOLD) {
-    const limit = await confirmLargeRun(scope.bboxUuids.length);
-    if (limit === null) return; // user cancelled/dismissed the warning
-    runScope = truncateScope(scope, limit);
-  }
-
-  await _showRunDialog(runScope, ctx);
+  // No cap prompt here: which scope is actually being run (bboxes vs images)
+  // isn't decided until the run dialog's scope toggle, so asking "how many of
+  // these N bboxes?" up front asks about a unit the user may never process.
+  // The dialog raises it on Run, against whichever scope is selected.
+  await _showRunDialog(scope, ctx);
 }
