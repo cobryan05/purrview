@@ -249,3 +249,63 @@ class TestDateNegateRoundTrip:
         assert restored["dateFrom"] == original["dateFrom"]
         assert restored["dateTo"] == original["dateTo"]
         assert restored["dateNegate"] == negate
+
+
+class TestConfidenceBandRoundTrip:
+    """The confidence band is a live filter dimension (review/main.js feeds it
+    into the review query and into Apply-to-All's bbox-level narrowing), so a
+    saved View has to carry it or it silently filters differently on load."""
+
+    def test_serialized_as_term(self, shared_page: Page):
+        form = _to_form(shared_page, {"confidenceMin": 0.25, "confidenceMax": 0.75})
+        match = [t for t in form["filterJson"]["terms"] if t.get("kind") == "bboxConfidence"]
+        assert match, "a confidence band must be serialized into filterJson.terms"
+        assert match[0]["min"] == 0.25
+        assert match[0]["max"] == 0.75
+
+    def test_one_sided_band_omits_the_other_bound(self, shared_page: Page):
+        form = _to_form(shared_page, {"confidenceMax": 0.5})
+        term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "bboxConfidence"][0]
+        assert term["max"] == 0.5
+        assert "min" not in term
+
+    def test_no_bounds_is_not_serialized(self, shared_page: Page):
+        # Including includeMissing on its own — with no bounds it matches
+        # everything, so it is not a filter.
+        for state in ({}, {"confidenceMin": None, "confidenceMax": None}, {"confidenceIncludeMissing": True}):
+            form = _to_form(shared_page, state)
+            assert not [t for t in form["filterJson"]["terms"] if t.get("kind") == "bboxConfidence"], state
+
+    def test_restored_from_term(self, shared_page: Page):
+        restored = _to_state(
+            shared_page,
+            {"terms": [{"kind": "bboxConfidence", "min": 0.4, "max": 0.6, "includeMissing": True}]},
+        )
+        assert restored["confidenceMin"] == 0.4
+        assert restored["confidenceMax"] == 0.6
+        assert restored["confidenceIncludeMissing"] is True
+
+    def test_restored_defaults_to_no_band(self, shared_page: Page):
+        """No term must reset the panel to an empty band, not leave whatever the
+        user had typed before loading the View (setState is partial)."""
+        restored = _to_state(shared_page, {"terms": []})
+        assert restored["confidenceMin"] is None
+        assert restored["confidenceMax"] is None
+        assert restored["confidenceIncludeMissing"] is False
+
+    @pytest.mark.parametrize("include_missing", [True, False])
+    def test_full_round_trip(self, shared_page: Page, include_missing: bool):
+        original = {
+            "confidenceMin": 0.1,
+            "confidenceMax": 0.9,
+            "confidenceIncludeMissing": include_missing,
+            "bboxVerification": "unverified",
+            "filenameSearch": "cam1",
+        }
+        form = _to_form(shared_page, original)
+        restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
+        assert restored["confidenceMin"] == 0.1
+        assert restored["confidenceMax"] == 0.9
+        assert restored["confidenceIncludeMissing"] is include_missing
+        assert restored["bboxVerification"] == "unverified"
+        assert restored["filenameSearch"] == "cam1"

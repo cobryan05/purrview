@@ -31,6 +31,15 @@ RETIRED_TAG_UUIDS = frozenset({"00000000-0000-0000-0000-000000000003"})
 # System dataset UUIDs
 WHOLE_DATABASE_DATASET_UUID = "00000000-0000-0000-0000-000000000002"
 
+# Every bboxes.metadata_json key a model confidence has ever been written under,
+# newest-preferred first. The mirror of CONFIDENCE_KEYS in
+# static/js/shared/domain/image/confidence.js — keep the two in sync.
+#   - "confidence"        — CollectTrainingImagesTask, canvas inference, apply-preview-run
+#   - "source_confidence" — ApplyFilterChainTask's add_bbox step
+# Reading only one silently blanks the confidence on whole classes of bbox.
+BBOX_CONFIDENCE_METADATA_KEYS = ("confidence", "source_confidence")
+
+
 import jstyleson
 import numpy as np
 import sqlalchemy as sa
@@ -305,6 +314,53 @@ class ImageLabelState(str, Enum):
     ANY_REVIEWED = "any_reviewed"
 
 
+def confidence_in_band(
+    confidence: "Optional[float]",
+    minimum: "Optional[float]" = None,
+    maximum: "Optional[float]" = None,
+    include_missing: bool = False,
+) -> bool:
+    """Does this confidence fall in [minimum, maximum]?
+
+    Bounds are inclusive and independently optional; a band with neither bound
+    matches everything (the caller decides whether to apply it at all). None —
+    a bbox with no confidence — matches only under `include_missing`, the same
+    rule as BBoxConfidenceTerm and the client-side `bboxMatchesConfidence`.
+
+    Takes the value, not the bbox, so callers with the generated
+    `BBox.confidence` column loaded (the bulk-apply loop) can pass it straight
+    in instead of re-parsing the JSON it was generated from.
+    """
+    if confidence is None:
+        return include_missing
+    if minimum is not None and confidence < minimum:
+        return False
+    if maximum is not None and confidence > maximum:
+        return False
+    return True
+
+
+class BBoxConfidenceRange(ApiModel):
+    """The confidence band as a **bbox-level** predicate for bulk-apply/count.
+
+    Same three fields as BBoxConfidenceTerm, deliberately as a separate model:
+    the term selects *images* that have a bbox in the band, which cannot stop a
+    bulk action from also hitting the out-of-band bboxes on those images — the
+    exact split that already exists for bbox_verification (see
+    BulkApplyAllPayload in db_server/web.py). No `negate`: the grid has no
+    negated-confidence view to mirror.
+    """
+
+    min: Optional[float] = None
+    max: Optional[float] = None
+    include_missing: bool = False
+
+    def is_active(self) -> bool:
+        """True when a bound is set. `include_missing` alone matches everything,
+        so it is not on its own a reason to narrow anything."""
+        return self.min is not None or self.max is not None
+
+
 class ObjectLabelTerm(ApiModel):
     """Matches images having a BBOX with one of the given labels."""
 
@@ -367,6 +423,27 @@ class BBoxVerificationTerm(ApiModel):
     negate: bool = False
 
 
+class BBoxConfidenceTerm(ApiModel):
+    """Matches images having a BBOX whose model confidence falls in [min, max].
+
+    Confidence is not a column — it lives in `bboxes.metadata_json` under one of
+    `BBOX_CONFIDENCE_METADATA_KEYS`, written by whichever producer created the
+    box, and (for some producers) as a *string* rather than a number. The
+    predicate therefore coalesces across the keys and casts to REAL; see
+    `_bbox_confidence_expr` in db_client.py.
+
+    Bounds are inclusive and each is independently optional (min-only = "at
+    least", max-only = "at most"). Boxes carrying no confidence at all match
+    only when `include_missing` is set — an unset confidence is not 0.0.
+    """
+
+    kind: Literal["bboxConfidence"] = "bboxConfidence"
+    min: Optional[float] = None
+    max: Optional[float] = None
+    include_missing: bool = False
+    negate: bool = False
+
+
 class LabelVerificationTerm(ApiModel):
     """The "Config Ready" predicate: has every target label been assessed?
 
@@ -413,6 +490,7 @@ FilterTerm = Annotated[
         BBoxTagTerm,
         ImageTagTerm,
         BBoxVerificationTerm,
+        BBoxConfidenceTerm,
         LabelVerificationTerm,
         DateTerm,
         FilenameTerm,
@@ -479,6 +557,42 @@ class BBoxBase(SQLModel):
         return v
 
 
+def _bbox_confidence_sql() -> str:
+    """SQL for the `bboxes.confidence` generated column.
+
+    Built from BBOX_CONFIDENCE_METADATA_KEYS so the column and the JS reader
+    (`readConfidence`, which still parses the raw metadata client-side to draw
+    the badge) can't drift apart on which keys count or in what order. Python
+    has no reader of its own any more — `BBox.confidence` IS the read path.
+
+    Why a CASE rather than a bare CAST: SQLite's CAST of a non-numeric string
+    yields **0.0**, so a junk value ('n/a', '') would materialise as the lowest
+    possible confidence and be swept into every low-confidence band — the exact
+    boxes this filter exists to find. Junk lands as NULL instead, matching both
+    readers (`float()` raises → None; `parseFloat` → NaN → undefined). A
+    genuine "0"/"0.0" string still reads as 0.0 via the GLOB branch.
+    """
+    raw = "CASE"
+    for key in BBOX_CONFIDENCE_METADATA_KEYS[:-1]:
+        raw += (
+            f" WHEN json_extract(metadata_json, '$.{key}') IS NOT NULL" f" THEN json_extract(metadata_json, '$.{key}')"
+        )
+    raw += f" ELSE json_extract(metadata_json, '$.{BBOX_CONFIDENCE_METADATA_KEYS[-1]}') END"
+    return (
+        "CASE"
+        f" WHEN {raw} IS NULL THEN NULL"
+        f" WHEN typeof({raw}) IN ('integer', 'real') THEN {raw}"
+        f" WHEN CAST({raw} AS REAL) != 0.0 THEN CAST({raw} AS REAL)"
+        f" WHEN trim({raw}) GLOB '[+-]*' OR trim({raw}) GLOB '[0.]*' THEN CAST({raw} AS REAL)"
+        " ELSE NULL END"
+    )
+
+
+# The generated-column expression, as it must appear in both create_all and the
+# migration that adds it to an existing DB.
+BBOX_CONFIDENCE_SQL = _bbox_confidence_sql()
+
+
 class BBox(BBoxBase, TimestampModel, table=True):
     __tablename__ = "bboxes"
     # Two composites, one per lookup direction, each replacing the single-column
@@ -494,13 +608,36 @@ class BBox(BBoxBase, TimestampModel, table=True):
     # (image_uuid = images.uuid AND label_uuid IN (...)) with a single range
     # seek. Originally added by migration b1d4e8f2a093, silently dropped by the
     # phash batch_alter_table migration, restored by a6c3f8d1e2b7.
+    #
+    # (confidence, image_uuid): serves the confidence-band filter
+    # (BBoxConfidenceTerm) as a covering range seek — the band predicate reads
+    # confidence and returns image_uuid, so neither column needs a row lookup.
     __table_args__ = (
         sa.Index("ix_bboxes_label_uuid_image_uuid", "label_uuid", "image_uuid"),
         sa.Index("ix_bboxes_image_uuid_label_uuid", "image_uuid", "label_uuid"),
+        sa.Index("ix_bboxes_confidence_image_uuid", "confidence", "image_uuid"),
     )
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     image_uuid: str = Field(foreign_key="images.uuid", ondelete="CASCADE")
     label_uuid: str = Field(foreign_key="labels.uuid")
+
+    # Model confidence, denormalised out of metadata_json so it can be INDEXED.
+    #
+    # A **generated** column, deliberately, rather than a plain column the
+    # writers maintain: confidence is written by half a dozen producers
+    # (CollectTrainingImagesTask, the canvas save, ApplyFilterChainTask,
+    # preview-run apply, …) under two different keys and two different JSON
+    # types, and any one of them forgetting to also set a plain column would
+    # silently drop boxes out of the filter. SQLite recomputes this on every
+    # INSERT/UPDATE of metadata_json, so it cannot drift and no writer changes.
+    #
+    # VIRTUAL, not STORED: SQLite only allows ALTER TABLE ADD COLUMN for
+    # virtual generated columns, and a virtual column can still be indexed (the
+    # index materialises the value), which is all the query planner needs.
+    confidence: Optional[float] = Field(
+        default=None,
+        sa_column=Column("confidence", sa.Float, sa.Computed(BBOX_CONFIDENCE_SQL, persisted=False), nullable=True),
+    )
 
     image: ImageRecord = Relationship(back_populates="bboxes")
     label: Label = Relationship(back_populates="bboxes")

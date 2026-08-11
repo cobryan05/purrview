@@ -38,6 +38,8 @@ from .types import (
     VERIFIED_TAG_UUID,
     WHOLE_DATABASE_DATASET_UUID,
     BBox,
+    BBoxConfidenceRange,
+    BBoxConfidenceTerm,
     BBoxTagLink,
     BBoxTagTerm,
     BBoxVerificationTerm,
@@ -300,6 +302,48 @@ BBOX_VERIFICATION_STATE_TO_TAG_UUID = {
 }
 
 
+def _bbox_confidence_expr():
+    """A bbox's model confidence, or NULL when it has none.
+
+    This is the indexed `bboxes.confidence` column, not a json_extract over
+    metadata_json. The column is GENERATED from that same JSON (see
+    BBOX_CONFIDENCE_SQL in types.py), so it cannot drift from it, and it handles
+    the two wrinkles a naive `json_extract(metadata_json, '$.confidence')`
+    misses — the two keys producers disagree about, and the value being a string
+    on rows the canvas wrote and a float on rows the tasks wrote.
+
+    Reading the column rather than recomputing the extraction is what makes the
+    band filter scale: `ix_bboxes_confidence_image_uuid` turns it into a
+    covering range seek instead of a full scan of `bboxes`.
+    """
+    return BBox.confidence
+
+
+def _bbox_confidence_condition(minimum, maximum, include_missing: bool):
+    """Per-bbox WHERE condition for a confidence band.
+
+    Shared by the image-selecting BBoxConfidenceTerm and the bbox-level narrowing
+    in count_bboxes_search, so the count on the Apply-to-All button cannot mean
+    something different from the filter that produced it. The in-memory twin is
+    `confidence_in_band` (types.py), used by the bulk-apply loop.
+    """
+    conf = _bbox_confidence_expr()
+    bounds = []
+    if minimum is not None:
+        bounds.append(conf >= minimum)
+    if maximum is not None:
+        bounds.append(conf <= maximum)
+    if bounds:
+        condition = and_(*bounds)
+        # "Has no confidence at all" is a separate disjunct rather than a relaxed
+        # bound: NULL fails every comparison, so without this an unscored box
+        # could never satisfy the band.
+        return or_(condition, conf.is_(None)) if include_missing else condition
+    # No bounds: everything qualifies when unscored boxes are allowed, otherwise
+    # this degenerates to "has a confidence at all".
+    return true() if include_missing else conf.is_not(None)
+
+
 def _apply_filter_terms(
     stmt: Select,
     params: ImageSearchParams,
@@ -456,6 +500,10 @@ def _apply_filter_terms(
             term_implies_bbox = True
             tag_uuid = BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
             expr = _tag_predicate(BBoxTagLink.tag_uuid == tag_uuid)
+
+        elif isinstance(term, BBoxConfidenceTerm):
+            term_implies_bbox = True
+            expr = _label_predicate(_bbox_confidence_condition(term.min, term.max, term.include_missing))
 
         elif isinstance(term, LabelVerificationTerm):
             # No flat ImageSearchParams.label_uuids to fall back to as of 1.4b —
@@ -1230,7 +1278,9 @@ class DbClient:
 
         Only three term kinds have an EXISTS branch at all
         (`_apply_filter_terms`'s `_tag_predicate`/`_label_predicate`:
-        objectLabel, bboxTag, bboxVerification) — but the bail-out list is
+        objectLabel, bboxTag, bboxVerification; bboxConfidence reuses
+        `_label_predicate` and so has one too, but is never probed) — but the
+        bail-out list is
         wider than that on purpose. imageLabel/imageTag/labelVerification are
         already correlated EXISTS regardless of this flag, and date/filename
         are plain column predicates; none of them changes shape here, yet a
@@ -1295,8 +1345,10 @@ class DbClient:
                     estimates.append(await self._object_label_count(term.label_uuids, term.roll_up))
 
             else:
-                # imageLabel / imageTag / labelVerification / date / filename —
-                # no cheap COUNT probe for these. See the docstring.
+                # imageLabel / imageTag / labelVerification / date / filename /
+                # bboxConfidence — no cheap COUNT probe for these (estimating a
+                # confidence band would itself need the full json_extract scan
+                # the probe exists to avoid). See the docstring.
                 return False
 
         if not estimates or min(estimates) == 0:
@@ -1426,6 +1478,7 @@ class DbClient:
         bbox_label_filter: Optional[List[str]] = None,
         show_all_bboxes: bool = False,
         bbox_verification_tag_uuid: Optional[str] = None,
+        bbox_confidence: Optional[BBoxConfidenceRange] = None,
     ) -> int:
         """Count the bboxes that bulk_apply_bboxes would touch for this filter.
 
@@ -1454,6 +1507,12 @@ class DbClient:
                 stmt = stmt.where(
                     BBox.uuid.in_(
                         select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == bbox_verification_tag_uuid)
+                    )
+                )
+            if bbox_confidence is not None and bbox_confidence.is_active():
+                stmt = stmt.where(
+                    _bbox_confidence_condition(
+                        bbox_confidence.min, bbox_confidence.max, bbox_confidence.include_missing
                     )
                 )
 

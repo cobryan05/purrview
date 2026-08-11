@@ -699,6 +699,88 @@ class TestFilenameDateNegateReachesTheGridQuery:
         assert date_terms[0].get("negate") is True, calls[-1]
 
 
+class TestConfidenceBandReachesTheGridQuery:
+    """Same class of bug as TestFilenameDateNegateReachesTheGridQuery above: the
+    confidence band is a real filter dimension, so it has to survive the trip
+    from the panel control through _baseReviewFilterOpts into the actual
+    /api/images/review body — and, for Apply to All, into the bbox-level field
+    that stops the action hitting out-of-band boxes on matching images."""
+
+    def _fill_band(self, page: Page, min_pct: str, max_pct: str):
+        inputs = page.locator("#review-root .review-filter-panel .confidence-range-input")
+        inputs.nth(0).fill(min_pct)
+        inputs.nth(0).dispatch_event("change")
+        inputs.nth(1).fill(max_pct)
+        inputs.nth(1).dispatch_event("change")
+
+    def test_band_reaches_the_actual_search_request(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        calls = []
+
+        def handle(route: Route):
+            calls.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
+            )
+
+        page.route("**/api/images/review", handle)
+
+        _navigate_to_review(page, base_url)
+        calls.clear()
+
+        page.get_by_test_id("review-filter-toggle").click()
+        self._fill_band(page, "20", "60")
+        page.wait_for_timeout(200)
+
+        wait_until(page, lambda: calls, lambda: f"Expected POST to /api/images/review, got {calls}")
+        terms = calls[-1].get("terms", [])
+        conf_terms = [t for t in terms if t.get("kind") == "bboxConfidence"]
+        # Percent in the input, 0–1 on the wire — the unit the metadata stores.
+        assert conf_terms == [{"kind": "bboxConfidence", "min": 0.2, "max": 0.6}], calls[-1]
+
+    def test_apply_to_all_carries_the_band_as_a_bbox_level_field(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        calls = []
+
+        def handle_bulk(route: Route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "modifiedCount": 1, "failCount": 0}),
+            )
+
+        page.route("**/api/images/bbox/bulk-apply", handle_bulk)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        page.get_by_test_id("review-filter-toggle").click()
+        self._fill_band(page, "", "50")
+        page.get_by_test_id("review-filter-toggle").click()  # close the popover
+
+        page.get_by_test_id("review-bulk-apply-all").click()
+        page.locator("input[type=radio][name='bulk-all-action'][value='markVerified']").click()
+        page.locator("button", has_text="Apply to All").last.click()
+
+        wait_until(page, lambda: calls, lambda: f"Expected POST to bulk-apply, got {calls}")
+        body = calls[0]
+        # Bbox-level: without this the action reaches the high-confidence boxes
+        # sharing those images, which the grid does not show.
+        assert body.get("bboxConfidence") == {"min": None, "max": 0.5, "includeMissing": False}, body
+        # Image-level: the same band as a filter term, so paging skips images
+        # with no in-band bbox at all.
+        assert {"kind": "bboxConfidence", "max": 0.5} in body["filter"]["terms"], body
+
+
 class TestBulkAllButtonViewGating:
     """Each filter-scoped bulk button appears only in the view whose entries it
     acts on — the bbox one applies bbox-level actions no matter what's on

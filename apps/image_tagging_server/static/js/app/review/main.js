@@ -66,6 +66,7 @@ import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/a
 import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
 import { showImageBulkActionModal, executeBulkImageAction } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
+import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
@@ -853,6 +854,24 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     _tagsDropdown = _buildCuratedTagsDropdown();
     tagsContainer.appendChild(_tagsDropdown.element);
 
+    // Model-confidence band — bbox-scoped like the verification/label/tag
+    // controls above, applied by the same in-memory predicate. Percent in,
+    // 0–1 out; see createConfidenceRangeControl.
+    const confidenceControl = createConfidenceRangeControl({
+      min: _curated.confidenceMin,
+      max: _curated.confidenceMax,
+      includeMissing: _curated.confidenceIncludeMissing,
+      onChange: ({ min, max, includeMissing }) => {
+        _curated = {
+          ..._curated,
+          confidenceMin: min,
+          confidenceMax: max,
+          confidenceIncludeMissing: includeMissing,
+        };
+        _onCuratedChange();
+      },
+    });
+
     // Filename substring — image-scoped, so unlike the three controls above it
     // is not part of the bbox predicate; `imageMatchesFilter` applies it as its
     // own gate. Same 400ms debounce + `.trim()` as filters.js's filename input
@@ -914,7 +933,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // toolbarControls array); here it's simpler (a single element/fragment),
     // but the same "append, don't insert" rule applies so caller-built
     // controls never shift position (NOTES.md).
-    const curatedGroup = makeToolbarGroup(verificationControl.element, labelsContainer, tagsContainer, filenameContainer, dateContainer);
+    const curatedGroup = makeToolbarGroup(verificationControl.element, confidenceControl.element, labelsContainer, tagsContainer, filenameContainer, dateContainer);
     curatedGroup.classList.add('modal-toolbar-row');
     toolbar.append(makeToolbarSep(), curatedGroup);
   }

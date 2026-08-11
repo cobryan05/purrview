@@ -28,6 +28,7 @@ from apps.helpers.db.types import (
     UNVERIFIED_TAG_UUID,
     VERIFIED_TAG_UUID,
     BBox,
+    BBoxConfidenceRange,
     BBoxUpdate,
     DatasetCreate,
     DatasetRead,
@@ -81,6 +82,7 @@ from apps.helpers.db.types import (
     WatchProfileCreate,
     WatchProfileRead,
     WatchProfileUpdate,
+    confidence_in_band,
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.hashUtils import (
@@ -770,6 +772,7 @@ class Manager:
         bbox_label_filter: List[str],
         show_all_bboxes: bool = False,
         bbox_verification: Optional[str] = None,
+        bbox_confidence: Optional[BBoxConfidenceRange] = None,
     ) -> Tuple[int, int]:
         """Apply action to every bbox matching the filter, across all pages.
 
@@ -786,6 +789,10 @@ class Manager:
             tag. ANDed with bbox_tag_filter rather than folded into it — that
             list is OR-semantics, so merging the verification tag in would
             widen the scope instead of narrowing it.
+          - bbox_confidence: bbox's stored model confidence must fall in the
+            band. Same reason it is a bbox-level argument rather than only a
+            filter term: the term picks images that HAVE an in-band bbox, which
+            would still let the action hit their out-of-band boxes.
 
         Returns (modified_count, fail_count).
         """
@@ -797,6 +804,7 @@ class Manager:
         verification_tag_uuid: Optional[str] = (
             BBOX_VERIFICATION_STATE_TO_TAG_UUID.get(bbox_verification) if bbox_verification else None
         )
+        confidence_band = bbox_confidence if (bbox_confidence and bbox_confidence.is_active()) else None
 
         # Paginate by uuid regardless of the caller's requested sort. The action
         # mutates image.updated_at, so keyset-paginating by updated_at (asc) would
@@ -836,6 +844,15 @@ class Manager:
                         continue
                     if verification_tag_uuid is not None and not any(
                         t.uuid == verification_tag_uuid for t in bbox.tags or []
+                    ):
+                        continue
+                    if confidence_band is not None and not confidence_in_band(
+                        # The generated column, already loaded with the row —
+                        # identical to re-parsing metadata_json, minus the parse.
+                        bbox.confidence,
+                        confidence_band.min,
+                        confidence_band.max,
+                        confidence_band.include_missing,
                     ):
                         continue
                     matching.append(bbox)
@@ -884,6 +901,7 @@ class Manager:
         bbox_label_filter: List[str],
         show_all_bboxes: bool = False,
         bbox_verification: Optional[str] = None,
+        bbox_confidence: Optional[BBoxConfidenceRange] = None,
     ) -> int:
         """How many bboxes bulk_apply_bboxes would touch for this exact filter.
 
@@ -899,6 +917,7 @@ class Manager:
             bbox_label_filter=bbox_label_filter,
             show_all_bboxes=show_all_bboxes,
             bbox_verification_tag_uuid=verification_tag_uuid,
+            bbox_confidence=bbox_confidence,
         )
 
     async def _apply_bbox_bulk_action(

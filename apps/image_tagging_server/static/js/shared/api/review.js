@@ -67,6 +67,9 @@ function buildReviewFilterBody({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  confidenceMin = null,
+  confidenceMax = null,
+  confidenceIncludeMissing = false,
 } = {}) {
   const body = {
     showAllBboxes,
@@ -87,6 +90,18 @@ function buildReviewFilterBody({
   if (bboxVerification && bboxVerification !== 'any') {
     // 'verified'/'unverified' are the BBoxVerificationTerm.state literals verbatim.
     terms.push({ kind: 'bboxVerification', state: bboxVerification });
+  }
+
+  // Confidence band (BBoxConfidenceTerm). Only emitted when a bound is set:
+  // includeMissing on its own is `true()` server-side, i.e. a no-op term, and
+  // sending one would needlessly cost the json_extract scan. Nulls are dropped
+  // rather than sent, so a one-sided band stays one-sided.
+  if (confidenceMin !== null || confidenceMax !== null) {
+    const term = { kind: 'bboxConfidence' };
+    if (confidenceMin !== null) term.min = confidenceMin;
+    if (confidenceMax !== null) term.max = confidenceMax;
+    if (confidenceIncludeMissing) term.includeMissing = true;
+    terms.push(term);
   }
 
   if (labelUuids.length > 0) {
@@ -217,6 +232,9 @@ export async function fetchReviewQueue({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  confidenceMin = null,
+  confidenceMax = null,
+  confidenceIncludeMissing = false,
   requireBboxes = false,
   limit = 50,
 } = {}) {
@@ -247,6 +265,9 @@ export async function fetchReviewQueue({
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
+    confidenceMin,
+    confidenceMax,
+    confidenceIncludeMissing,
   });
 
   const res = await apiFetch('/api/images/review', {
@@ -397,6 +418,9 @@ export async function bulkApplyAll({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  confidenceMin = null,
+  confidenceMax = null,
+  confidenceIncludeMissing = false,
   requireBboxes = false,
   // Bbox-level subset filters (client-computed)
   bboxTagFilter = [],
@@ -430,6 +454,9 @@ export async function bulkApplyAll({
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
+    confidenceMin,
+    confidenceMax,
+    confidenceIncludeMissing,
   });
 
   const res = await apiFetch('/api/images/bbox/bulk-apply', {
@@ -448,6 +475,13 @@ export async function bulkApplyAll({
       // the action hit the other-state bboxes sharing those images — exactly
       // what the grid hides. The server ANDs this per bbox.
       bboxVerification: bboxVerification && bboxVerification !== 'any' ? bboxVerification : null,
+      // Same image-vs-bbox split as bboxVerification: the bboxConfidence term in
+      // `filter` selects images with an in-band bbox, this narrows the action to
+      // the in-band bboxes themselves. Null when no bound is set — includeMissing
+      // on its own would match every box.
+      bboxConfidence: (confidenceMin !== null || confidenceMax !== null)
+        ? { min: confidenceMin, max: confidenceMax, includeMissing: confidenceIncludeMissing }
+        : null,
     }),
   });
   const data = await res.json();
@@ -485,6 +519,9 @@ export async function countMatchingBboxes({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  confidenceMin = null,
+  confidenceMax = null,
+  confidenceIncludeMissing = false,
   requireBboxes = false,
   bboxTagFilter = [],
   bboxLabelFilter = [],
@@ -512,6 +549,9 @@ export async function countMatchingBboxes({
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
+    confidenceMin,
+    confidenceMax,
+    confidenceIncludeMissing,
   });
 
   const res = await apiFetch('/api/images/bbox/count', {
@@ -523,6 +563,13 @@ export async function countMatchingBboxes({
       bboxLabelFilter,
       showAllBboxes,
       bboxVerification: bboxVerification && bboxVerification !== 'any' ? bboxVerification : null,
+      // Same image-vs-bbox split as bboxVerification: the bboxConfidence term in
+      // `filter` selects images with an in-band bbox, this narrows the action to
+      // the in-band bboxes themselves. Null when no bound is set — includeMissing
+      // on its own would match every box.
+      bboxConfidence: (confidenceMin !== null || confidenceMax !== null)
+        ? { min: confidenceMin, max: confidenceMax, includeMissing: confidenceIncludeMissing }
+        : null,
     }),
   });
   const data = await res.json();
@@ -613,6 +660,9 @@ export async function bulkApplyImages({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  confidenceMin = null,
+  confidenceMax = null,
+  confidenceIncludeMissing = false,
   requireBboxes = false,
   // Action params. `selectedLabelUuids` (not `labelUuids`) so it doesn't
   // collide with the filter's own `labelUuids` above — same convention the
@@ -651,6 +701,9 @@ export async function bulkApplyImages({
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
+    confidenceMin,
+    confidenceMax,
+    confidenceIncludeMissing,
   });
 
   const res = await apiFetch('/api/images/bulk-apply', {

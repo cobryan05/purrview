@@ -416,6 +416,32 @@ function appendChipVerifyMark(chip, labelBboxes, labelName, onToggleVerify) {
 // The full list is always available in the hover preview's side panel.
 const MAX_GAP_CHIPS = 3;
 
+// Confidence bands for the card badge's colour. Chosen to match how the queue
+// is actually triaged rather than as even thirds: below 0.5 is "the model was
+// guessing", 0.8+ is "probably fine, skim it".
+const CONFIDENCE_LOW = 0.5;
+const CONFIDENCE_HIGH = 0.8;
+
+/**
+ * Badge showing a bbox's model confidence, overlaid on the crop thumbnail.
+ *
+ * Positioned against `.review-card` (which is `position: relative`), top-right,
+ * mirroring the image card's `.bbox-count-badge` — the top-LEFT corner is the
+ * selection checkbox on every card.
+ *
+ * @param {{metadataJson?: object}} bbox
+ * @returns {HTMLElement}
+ */
+export function buildConfidenceBadge(bbox) {
+  const value = readConfidence(bbox.metadataJson);
+  const badge = document.createElement('div');
+  const band = value < CONFIDENCE_LOW ? 'low' : (value < CONFIDENCE_HIGH ? 'mid' : 'high');
+  badge.className = `bbox-confidence-badge conf-${band}`;
+  badge.textContent = formatConfidencePct(value);
+  badge.title = `Model confidence: ${(value * 100).toFixed(1)}%`;
+  return badge;
+}
+
 // ── Bbox card builder ─────────────────────────────────────────────
 export function buildBboxCard(controller, entry, opts) {
   const { bbox, img } = entry;
@@ -480,13 +506,17 @@ export function buildBboxCard(controller, entry, opts) {
   const meta = document.createElement('div');
   meta.style.cssText = 'margin-top:0.2em;color:#aaa;font-size:0.75em;';
   const shortPath = img.filename.split('/').slice(-2).join('/');
-  meta.textContent = confidence ? `${confidence} · ${shortPath}` : shortPath;
+  // The confidence moved OUT of this line and onto the crop itself (below) —
+  // buried in a grey 0.75em path string it was unreadable at a glance, which is
+  // the whole job of a triage grid.
+  meta.textContent = shortPath;
 
   info.appendChild(chip);
   info.appendChild(verifyChip);
   info.appendChild(meta);
   card.appendChild(cb);
   card.appendChild(thumbImg);
+  if (confidence) card.appendChild(buildConfidenceBadge(bbox));
   card.appendChild(info);
 
   attachGroupHighlight(gridEl, card, img.uuid);
@@ -593,6 +623,10 @@ export function buildImageCard(controller, entry, opts) {
   function drawBboxOverlay() {
     drawLetterboxedBboxes(thumbImg, thumbCanvas, currentBboxes().map(bbox => ({
       x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height, color: bbox.label?.color,
+      // Per-box confidence, drawn on the box itself — on an image card the
+      // card-info line below is whole-image, so this is the only place a
+      // multi-box image can show which box scored what.
+      label: formatConfidencePct(readConfidence(bbox.metadataJson)),
     })));
   }
 

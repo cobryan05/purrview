@@ -35,9 +35,20 @@ export function reviewStateToDatasetForm(reviewState) {
   // 'any' (and a missing key) is the no-op default — see review/filters.js's
   // DEFAULT_STATE — so it must not produce a term.
   const bboxVerification = reviewState.bboxVerification ?? 'any';
+  // null on both bounds is the no-op default (review/filters.js DEFAULT_STATE),
+  // so — like bboxVerification 'any' — it must not produce a term.
+  const confidenceMin = reviewState.confidenceMin ?? null;
+  const confidenceMax = reviewState.confidenceMax ?? null;
 
   const terms = [];
   if (bboxVerification !== 'any') terms.push({ kind: 'bboxVerification', state: bboxVerification });
+  if (confidenceMin !== null || confidenceMax !== null) {
+    const term = { kind: 'bboxConfidence' };
+    if (confidenceMin !== null) term.min = confidenceMin;
+    if (confidenceMax !== null) term.max = confidenceMax;
+    if (reviewState.confidenceIncludeMissing) term.includeMissing = true;
+    terms.push(term);
+  }
   if (tagUuids.length > 0) terms.push({ kind: 'bboxTag', tagUuids, matchMode: tagMatchMode });
   for (const uuid of tagExcludeUuids) terms.push({ kind: 'bboxTag', tagUuids: [uuid], negate: true });
   if (dateFrom || dateTo) {
@@ -107,6 +118,7 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
   const dateTerm = terms.find(t => t.kind === 'date' && t.field === 'created');
   const filenameTerm = terms.find(t => t.kind === 'filename');
   const bboxVerificationTerm = terms.find(t => t.kind === 'bboxVerification' && !t.negate);
+  const confidenceTerm = terms.find(t => t.kind === 'bboxConfidence' && !t.negate);
   const imageLabelConditions = terms
     .filter(t => t.kind === 'imageLabel')
     .map(t => ({
@@ -145,6 +157,12 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     // a filter that carries no term would leave the previous value in place
     // and silently apply a filter the saved View never had.
     bboxVerification: bboxVerificationTerm?.state ?? 'any',
+    // Always present for the same reason as bboxVerification above: a partial
+    // setState that omits these would leave a previously-typed band in place.
+    // `?? null` also normalises an omitted bound back to null.
+    confidenceMin: confidenceTerm?.min ?? null,
+    confidenceMax: confidenceTerm?.max ?? null,
+    confidenceIncludeMissing: confidenceTerm?.includeMissing ?? false,
   };
 }
 

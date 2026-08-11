@@ -45,6 +45,10 @@ const bbox = (labelUuid, ...tagUuids) => ({
 });
 const img = (...bboxes) => ({ uuid: 'i1', bboxes });
 const st = (over) => ({ ...defaultCuratedFilterState(), ...(over || {}) });
+// A bbox carrying a raw metadata blob, for the confidence-band tests. `meta`
+// is passed through verbatim so a test can use either confidence key and
+// either JSON type (both occur in the real data — see CONFIDENCE_KEYS).
+const cbox = (meta) => ({ ...bbox('cat'), metadataJson: meta });
 """
 
 
@@ -73,6 +77,9 @@ class TestDefaultState:
             "filenameSearch": "",
             "dateFrom": None,
             "dateTo": None,
+            "confidenceMin": None,
+            "confidenceMax": None,
+            "confidenceIncludeMissing": False,
         }
 
     def test_empty_state_bbox_matches_everything(self, shared_page: Page):
@@ -536,3 +543,89 @@ class TestDateFilter:
         assert _eval(shared_page, f"imageMatchesFilter({base}, {ok}, labels)") is True
         assert _eval(shared_page, f"imageMatchesFilter({base}, {bad_date}, labels)") is False
         assert _eval(shared_page, f"imageMatchesFilter({base}, {bad_name}, labels)") is False
+
+
+# ---------------------------------------------------------------------------
+# Confidence band — bboxMatchesConfidence / bboxMatchesFilter
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceBand:
+    """The client-side mirror of the server's BBoxConfidenceTerm. Confidence
+    lives in the bbox's raw `metadataJson`, under either of two keys, as either
+    a string or a number."""
+
+    def test_no_bounds_is_a_noop(self, shared_page: Page):
+        # Even a bbox with no confidence at all passes when no bound is set.
+        assert _eval(shared_page, "bboxMatchesFilter(cbox(null), st(), labels)") is True
+        assert _eval(shared_page, "bboxMatchesFilter(cbox({confidence: 0.1}), st(), labels)") is True
+
+    def test_include_missing_alone_is_not_an_active_filter(self, shared_page: Page):
+        # Matches the server: a bounds-less term with include_missing is true().
+        assert _eval(shared_page, "M.hasActiveConfidenceFilter(st({confidenceIncludeMissing: true}))") is False
+        assert _eval(shared_page, "M.hasActiveConfidenceFilter(st({confidenceMin: 0.5}))") is True
+        assert _eval(shared_page, "M.hasActiveConfidenceFilter(st({confidenceMax: 0.5}))") is True
+
+    def test_bounds_are_inclusive(self, shared_page: Page):
+        assert (
+            _eval(shared_page, "bboxMatchesFilter(cbox({confidence: 0.5}), st({confidenceMin: 0.5}), labels)") is True
+        )
+        assert (
+            _eval(shared_page, "bboxMatchesFilter(cbox({confidence: 0.5}), st({confidenceMax: 0.5}), labels)") is True
+        )
+        assert (
+            _eval(shared_page, "bboxMatchesFilter(cbox({confidence: 0.49}), st({confidenceMin: 0.5}), labels)") is False
+        )
+        assert (
+            _eval(shared_page, "bboxMatchesFilter(cbox({confidence: 0.51}), st({confidenceMax: 0.5}), labels)") is False
+        )
+
+    def test_band_needs_both_bounds_satisfied(self, shared_page: Page):
+        band = "st({confidenceMin: 0.4, confidenceMax: 0.6})"
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{confidence: 0.5}}), {band}, labels)") is True
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{confidence: 0.3}}), {band}, labels)") is False
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{confidence: 0.7}}), {band}, labels)") is False
+
+    def test_reads_string_values_and_the_source_confidence_key(self, shared_page: Page):
+        # The canvas save path writes a string; ApplyFilterChainTask writes
+        # `source_confidence`. Both must filter identically to a plain float.
+        band = "st({confidenceMin: 0.4, confidenceMax: 0.6})"
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{confidence: '0.5'}}), {band}, labels)") is True
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{source_confidence: 0.5}}), {band}, labels)") is True
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{source_confidence: '0.9'}}), {band}, labels)") is False
+
+    def test_missing_confidence_fails_an_active_band(self, shared_page: Page):
+        # An absent confidence is not 0 — it must not fall into a low band.
+        for meta in ("null", "{}", "{other: 1}", "{confidence: null}", "{confidence: 'n/a'}"):
+            assert (
+                _eval(shared_page, f"bboxMatchesFilter(cbox({meta}), st({{confidenceMax: 0.9}}), labels)") is False
+            ), meta
+
+    def test_include_missing_opts_unscored_boxes_back_in(self, shared_page: Page):
+        state = "st({confidenceMax: 0.9, confidenceIncludeMissing: true})"
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox(null), {state}, labels)") is True
+        # Still a real filter for boxes that DO have a confidence.
+        assert _eval(shared_page, f"bboxMatchesFilter(cbox({{confidence: 0.95}}), {state}, labels)") is False
+
+    def test_ands_with_verification(self, shared_page: Page):
+        """The headline use case: unverified boxes the model was unsure about."""
+        state = "st({bboxVerification: 'unverified', confidenceMax: 0.5})"
+        low_unverified = "{...cbox({confidence: 0.2}), tags: [{uuid: UNVERIFIED}]}"
+        low_verified = "{...cbox({confidence: 0.2}), tags: [{uuid: VERIFIED}]}"
+        high_unverified = "{...cbox({confidence: 0.9}), tags: [{uuid: UNVERIFIED}]}"
+        assert _eval(shared_page, f"bboxMatchesFilter({low_unverified}, {state}, labels)") is True
+        assert _eval(shared_page, f"bboxMatchesFilter({low_verified}, {state}, labels)") is False
+        assert _eval(shared_page, f"bboxMatchesFilter({high_unverified}, {state}, labels)") is False
+
+    def test_image_with_no_bboxes_is_rejected_by_an_active_band(self, shared_page: Page):
+        # An active band is a bbox-scoped constraint, so hasActiveBboxFilter must
+        # see it — otherwise bbox-free images would leak through the filter.
+        assert (
+            _eval(shared_page, "imageMatchesFilter({uuid:'i1', bboxes:[]}, st({confidenceMin: 0.5}), labels)") is False
+        )
+        assert _eval(shared_page, "imageMatchesFilter({uuid:'i1', bboxes:[]}, st(), labels)") is True
+
+    def test_image_matches_when_any_bbox_is_in_band(self, shared_page: Page):
+        both = "{uuid:'i1', bboxes:[cbox({confidence: 0.1}), cbox({confidence: 0.9})]}"
+        assert _eval(shared_page, f"imageMatchesFilter({both}, st({{confidenceMin: 0.8}}), labels)") is True
+        assert _eval(shared_page, f"imageMatchesFilter({both}, st({{confidenceMin: 0.95}}), labels)") is False

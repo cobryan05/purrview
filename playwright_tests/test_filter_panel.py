@@ -1307,3 +1307,125 @@ class TestFetchReviewQueueFilenameDateNegateMapping:
         body = self._capture(page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": False})
         terms = [t for t in body["terms"] if t["kind"] == "date"]
         assert terms == [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z"}]
+
+
+class TestFilterPanelConfidenceRange:
+    """The confidence band control. The inputs talk PERCENT; the state the panel
+    emits is 0–1, the unit the bbox metadata stores — a mix-up here would send a
+    band of 50–80 to a filter whose values never exceed 1 and match nothing."""
+
+    def test_default_band_is_empty(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const s = panel.getState();
+            {_TEARDOWN}
+            return {{ min: s.confidenceMin, max: s.confidenceMax, missing: s.confidenceIncludeMissing }};
+        }}""")
+        assert result == {"min": None, "max": None, "missing": False}
+
+    def test_inputs_render_empty_and_are_not_default_filters(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const inputs = [...panel.element.querySelectorAll('.confidence-range-input')].map(i => i.value);
+            const isDefault = panel.isDefault();
+            const count = panel.getActiveFilterCount();
+            {_TEARDOWN}
+            return {{ inputs, isDefault, count }};
+        }}""")
+        assert result["inputs"] == ["", ""]
+        assert result["isDefault"] is True
+        assert result["count"] == 0
+
+    def test_percent_input_becomes_a_unit_state_value(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const [minEl, maxEl] = panel.element.querySelectorAll('.confidence-range-input');
+            minEl.value = '25';
+            minEl.dispatchEvent(new Event('change'));
+            maxEl.value = '80';
+            maxEl.dispatchEvent(new Event('change'));
+            const s = panel.getState();
+            const emitted = lastState;
+            {_TEARDOWN}
+            return {{ min: s.confidenceMin, max: s.confidenceMax, emittedMin: emitted?.confidenceMin }};
+        }}""")
+        assert result["min"] == pytest.approx(0.25)
+        assert result["max"] == pytest.approx(0.8)
+        assert result["emittedMin"] == pytest.approx(0.25)
+
+    def test_out_of_range_percent_clamps(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const [minEl, maxEl] = panel.element.querySelectorAll('.confidence-range-input');
+            minEl.value = '-10';
+            minEl.dispatchEvent(new Event('change'));
+            maxEl.value = '150';
+            maxEl.dispatchEvent(new Event('change'));
+            const s = panel.getState();
+            {_TEARDOWN}
+            return {{ min: s.confidenceMin, max: s.confidenceMax }};
+        }}""")
+        assert result["min"] == 0
+        assert result["max"] == 1
+
+    def test_setting_a_bound_counts_as_one_active_filter(self, shared_page: Page):
+        """Both bounds are one filter dimension, i.e. one chip, not two."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const before = panel.getActiveFilterCount();
+            const [minEl, maxEl] = panel.element.querySelectorAll('.confidence-range-input');
+            minEl.value = '25';
+            minEl.dispatchEvent(new Event('change'));
+            const afterOne = panel.getActiveFilterCount();
+            maxEl.value = '80';
+            maxEl.dispatchEvent(new Event('change'));
+            const afterBoth = panel.getActiveFilterCount();
+            const isDefault = panel.isDefault();
+            {_TEARDOWN}
+            return {{ before, afterOne, afterBoth, isDefault }};
+        }}""")
+        assert result == {"before": 0, "afterOne": 1, "afterBoth": 1, "isDefault": False}
+
+    def test_include_missing_checkbox_updates_state(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const cb = panel.element.querySelector('.confidence-range-missing input');
+            cb.checked = true;
+            cb.dispatchEvent(new Event('change'));
+            const s = panel.getState();
+            // On its own it widens nothing to narrow — with no bounds it matches
+            // every bbox, so it must not read as an active filter.
+            const count = panel.getActiveFilterCount();
+            {_TEARDOWN}
+            return {{ missing: s.confidenceIncludeMissing, count }};
+        }}""")
+        assert result["missing"] is True
+        assert result["count"] == 0
+
+    def test_set_state_writes_percent_back_into_the_inputs(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ confidenceMin: 0.25, confidenceMax: 0.9, confidenceIncludeMissing: true }});
+            const inputs = [...panel.element.querySelectorAll('.confidence-range-input')].map(i => i.value);
+            const checked = panel.element.querySelector('.confidence-range-missing input').checked;
+            {_TEARDOWN}
+            return {{ inputs, checked }};
+        }}""")
+        assert result["inputs"] == ["25", "90"]
+        assert result["checked"] is True
+
+    def test_chip_appears_and_removes_the_band(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ confidenceMin: 0.25, confidenceMax: 0.9 }});
+            const chip = panel.getChipDescriptors().find(c => c.key === 'confidence');
+            chip.onRemove();
+            const s = panel.getState();
+            const chipsAfter = panel.getChipDescriptors().filter(c => c.key === 'confidence').length;
+            {_TEARDOWN}
+            return {{ label: chip.label, min: s.confidenceMin, max: s.confidenceMax, chipsAfter }};
+        }}""")
+        assert result["label"] == "Conf: 25%–90%"
+        assert result["min"] is None
+        assert result["max"] is None
+        assert result["chipsAfter"] == 0

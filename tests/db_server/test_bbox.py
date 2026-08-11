@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text as sa_text
 
 from apps.db_server.manager import Manager
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
@@ -448,6 +449,310 @@ class TestBulkApplyBboxVerificationScope:
         meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
         remaining = sorted(b["uuid"] for b in meta_r.json()["image"]["bboxes"])
         assert remaining == sorted([tagged_verified, untagged_unverified])
+
+
+async def _add_bbox_only(http_client, label_uuid) -> str:
+    """One plain bbox on the shared test image; returns its uuid."""
+    bid = str(uuid.uuid4())
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {"uuid": bid, "labelUuid": label_uuid, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2, "tagUuids": []}
+            ],
+        },
+    )
+    assert r.status_code == 200
+    return bid
+
+
+async def _two_bboxes_one_low_confidence(http_client, label_uuid):
+    """One bbox at 20% confidence, one at 90%, on the same image.
+
+    Confidences go on as strings because that is what the canvas save path
+    writes (BoundingBoxMetadataModel.extra is Dict[str, str]); the SQL and the
+    in-memory matcher both cast, so this exercises the harder of the two shapes.
+    """
+    low_id = str(uuid.uuid4())
+    high_id = str(uuid.uuid4())
+    await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "bbox_test.png",
+            "boxes": [
+                {
+                    "uuid": low_id,
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                    "extra": {"confidence": "0.2"},
+                },
+                {
+                    "uuid": high_id,
+                    "labelUuid": label_uuid,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                    "extra": {"confidence": "0.9"},
+                },
+            ],
+        },
+    )
+    return low_id, high_id
+
+
+class TestBBoxConfidenceColumn:
+    """`bboxes.confidence` is a GENERATED column over metadata_json, indexed so
+    the confidence-band filter is a range seek instead of a full scan.
+
+    The whole point of generating it rather than having each writer maintain a
+    plain column is that it cannot fall out of sync — these tests pin that, plus
+    the two things a naive `CAST(json_extract(...))` gets wrong.
+    """
+
+    async def _confidence_of(self, db_client, bbox_uuid):
+        from sqlmodel import select
+
+        from apps.helpers.db.types import BBox
+
+        async with db_client._async_session_maker() as session:
+            result = await session.exec(select(BBox.confidence).where(BBox.uuid == bbox_uuid))
+            return result.one()
+
+    async def test_populated_from_either_key_and_either_json_type(self, http_client, db_client, image_file, label_uuid):
+        # String (canvas save path, extra is Dict[str, str]) under both keys.
+        bid_conf = str(uuid.uuid4())
+        bid_source = str(uuid.uuid4())
+        bid_none = str(uuid.uuid4())
+        await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "bbox_test.png",
+                "boxes": [
+                    {
+                        "uuid": bid_conf,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "extra": {"confidence": "0.25"},
+                    },
+                    {
+                        "uuid": bid_source,
+                        "labelUuid": label_uuid,
+                        "x": 0.3,
+                        "y": 0.1,
+                        "width": 0.1,
+                        "height": 0.1,
+                        "extra": {"source_confidence": "0.75"},
+                    },
+                    {"uuid": bid_none, "labelUuid": label_uuid, "x": 0.5, "y": 0.1, "width": 0.1, "height": 0.1},
+                ],
+            },
+        )
+        assert await self._confidence_of(db_client, bid_conf) == pytest.approx(0.25)
+        assert await self._confidence_of(db_client, bid_source) == pytest.approx(0.75)
+        # No confidence at all stays NULL — it is not 0.0.
+        assert await self._confidence_of(db_client, bid_none) is None
+
+        # Float (task / preview-run path, metadata_json is Dict[str, Any]).
+        r = await http_client.patch(f"/api/images/bbox/{bid_none}", json={"metadataJson": {"confidence": 0.5}})
+        assert r.status_code == 204
+        assert await self._confidence_of(db_client, bid_none) == pytest.approx(0.5)
+
+    async def test_confidence_key_wins_over_source_confidence(self, http_client, db_client, image_file, label_uuid):
+        """Same precedence as the Python and JS readers (newest key first)."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"metadataJson": {"confidence": 0.9, "source_confidence": 0.1}},
+        )
+        assert await self._confidence_of(db_client, bid) == pytest.approx(0.9)
+
+    async def test_tracks_metadata_edits_without_any_writer_setting_it(
+        self, http_client, db_client, image_file, label_uuid
+    ):
+        """The sync property: nothing in the app ever writes this column."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"metadataJson": {"confidence": 0.2}})
+        assert await self._confidence_of(db_client, bid) == pytest.approx(0.2)
+
+        # Re-write the metadata: the column must follow, not keep the old value.
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"metadataJson": {"confidence": 0.8}})
+        assert await self._confidence_of(db_client, bid) == pytest.approx(0.8)
+
+        # And clearing the confidence must take the column back to NULL, so the
+        # box stops matching bands rather than lingering at its last value.
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"metadataJson": {"other": "x"}})
+        assert await self._confidence_of(db_client, bid) is None
+
+    async def test_junk_text_is_null_not_zero(self, http_client, db_client, image_file, label_uuid):
+        """SQLite's CAST turns 'n/a' into 0.0, which would sweep junk into every
+        low-confidence band — exactly the boxes the filter exists to surface."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"metadataJson": {"confidence": "n/a"}})
+        assert await self._confidence_of(db_client, bid) is None
+
+        # A genuine zero, however, is a real confidence and must survive as 0.0.
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"metadataJson": {"confidence": "0.0"}})
+        assert await self._confidence_of(db_client, bid) == 0.0
+
+    async def test_band_query_uses_the_index(self, db_client):
+        """Without the index this filter is a full scan of bboxes — the whole
+        reason the column exists. Asserted on the query plan so a revert to a
+        json_extract predicate fails here rather than silently getting slower."""
+        async with db_client._async_session_maker() as session:
+            result = await session.exec(
+                sa_text(
+                    "EXPLAIN QUERY PLAN SELECT image_uuid FROM bboxes" " WHERE confidence >= 0.4 AND confidence <= 0.6"
+                )
+            )
+            plan = " ".join(str(cell) for row in result.all() for cell in row)
+        assert "ix_bboxes_confidence_image_uuid" in plan, plan
+        assert "SCAN bboxes" not in plan, plan
+
+
+class TestBulkApplyConfidenceScope:
+    """bulk-apply must narrow to the same *bboxes* the confidence-filtered grid
+    shows. The bboxConfidence filter TERM only selects images that have an
+    in-band bbox — on its own it would still let the action hit the out-of-band
+    boxes sharing those images, exactly the failure mode bboxVerification's
+    bbox-level field already exists to prevent.
+    """
+
+    async def test_band_skips_out_of_band_bboxes(self, http_client, image_file, label_uuid):
+        low_id, high_id = await _two_bboxes_one_low_confidence(http_client, label_uuid)
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+                "bboxConfidence": {"max": 0.5},
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1, r.json()
+
+        meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+        remaining = [b["uuid"] for b in meta_r.json()["image"]["bboxes"]]
+        assert remaining == [high_id], f"only the low-confidence bbox should be gone, got {remaining}"
+        assert low_id not in remaining
+
+    async def test_unscored_bbox_needs_include_missing(self, http_client, image_file, label_uuid):
+        """A hand-drawn box has no confidence; it is not 0 and must survive a
+        low band unless the caller opts unscored boxes in."""
+        scored_id = str(uuid.uuid4())
+        unscored_id = str(uuid.uuid4())
+        await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "bbox_test.png",
+                "boxes": [
+                    {
+                        "uuid": scored_id,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [],
+                        "extra": {"confidence": "0.2"},
+                    },
+                    {
+                        "uuid": unscored_id,
+                        "labelUuid": label_uuid,
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [],
+                    },
+                ],
+            },
+        )
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+                "bboxConfidence": {"max": 0.5},
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1, r.json()
+        meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+        assert [b["uuid"] for b in meta_r.json()["image"]["bboxes"]] == [unscored_id]
+
+        r2 = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+                "bboxConfidence": {"max": 0.5, "includeMissing": True},
+            },
+        )
+        assert r2.status_code == 200
+        assert r2.json()["modifiedCount"] == 1, r2.json()
+        meta_r2 = await http_client.post("/api/images/metadata/get", json={"imagePath": "bbox_test.png"})
+        assert meta_r2.json()["image"]["bboxes"] == []
+
+    async def test_omitted_band_hits_every_bbox(self, http_client, image_file, label_uuid):
+        """The narrowing is opt-in, like bboxVerification's."""
+        await _two_bboxes_one_low_confidence(http_client, label_uuid)
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply",
+            json={
+                "filter": {"showAllBboxes": True, "limit": 50},
+                "action": "delete",
+                "tagUuids": [],
+                "bboxTagFilter": [],
+                "bboxLabelFilter": [],
+                "showAllBboxes": True,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 2, r.json()
+
+    async def test_count_matches_what_bulk_apply_would_touch(self, http_client, image_file, label_uuid):
+        """The count on the Apply-to-All button and the action itself take the
+        same argument shape, so they must not disagree about the band."""
+        await _two_bboxes_one_low_confidence(http_client, label_uuid)
+
+        payload = {
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "bboxTagFilter": [],
+            "bboxLabelFilter": [],
+            "showAllBboxes": True,
+            "bboxConfidence": {"max": 0.5},
+        }
+        r_count = await http_client.post("/api/images/bbox/count", json=payload)
+        assert r_count.status_code == 200, r_count.text
+        assert r_count.json()["count"] == 1
+
+        r = await http_client.post("/api/images/bbox/bulk-apply", json={**payload, "action": "delete", "tagUuids": []})
+        assert r.json()["modifiedCount"] == 1
 
 
 async def test_manual_relabel_clears_filter_chain_revert_stash(http_client, image_file, label_uuid):

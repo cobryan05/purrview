@@ -20,6 +20,7 @@ from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.types import (
     ApiModel,
+    BBoxConfidenceRange,
     BBoxUpdate,
     DatasetCreate,
     DatasetFilterCriteria,
@@ -132,6 +133,10 @@ class BulkApplyAllPayload(ApiPayload):
     # None means "no narrowing"; 'any' is the UI's no-op value and is accepted
     # as the same thing.
     bbox_verification: Optional[str] = None  # verified | unverified
+    # Same image-vs-bbox split as bbox_verification above, for the confidence
+    # band: the filter's BBoxConfidenceTerm picks images that HAVE an in-band
+    # bbox; this narrows the action to the in-band bboxes themselves.
+    bbox_confidence: Optional[BBoxConfidenceRange] = None
 
 
 class CountBboxesPayload(ApiPayload):
@@ -142,6 +147,10 @@ class CountBboxesPayload(ApiPayload):
     bbox_label_filter: List[str] = Field(default_factory=list)
     show_all_bboxes: bool = False
     bbox_verification: Optional[str] = None  # verified | unverified
+    # Same image-vs-bbox split as bbox_verification above, for the confidence
+    # band: the filter's BBoxConfidenceTerm picks images that HAVE an in-band
+    # bbox; this narrows the action to the in-band bboxes themselves.
+    bbox_confidence: Optional[BBoxConfidenceRange] = None
 
 
 class CountBboxesResponse(StatusResponse):
@@ -1862,6 +1871,7 @@ class WebApp:
                     bbox_label_filter=payload.bbox_label_filter,
                     show_all_bboxes=payload.show_all_bboxes,
                     bbox_verification=payload.bbox_verification,
+                    bbox_confidence=payload.bbox_confidence,
                 )
                 return CountBboxesResponse(count=count)
             except Exception as e:
@@ -1888,6 +1898,7 @@ class WebApp:
                     bbox_label_filter=payload.bbox_label_filter,
                     show_all_bboxes=payload.show_all_bboxes,
                     bbox_verification=payload.bbox_verification,
+                    bbox_confidence=payload.bbox_confidence,
                 )
                 return BulkApplyAllResponse(modified_count=modified_count, fail_count=fail_count)
             except Exception as e:

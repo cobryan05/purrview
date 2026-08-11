@@ -44,7 +44,7 @@ import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
-import { expandLabelFilterSet, bboxHasAnyTag, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
+import { expandLabelFilterSet, bboxHasAnyTag, bboxMatchesConfidence, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
 import { openClassifierTagConfirmationModal } from '/app-static/js/app/review/runClassifierOnResults.js';
 import { labelChip as _labelChip } from '/app-static/js/app/review/labelChip.js';
 import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
@@ -98,7 +98,11 @@ export function makeBboxFilterPredicate({ fetchImagesMode, bboxFilterFn, fs, lab
       : showAll || (b.tags || []).some(t => tagSet.has(t.uuid));
     const labelMatch = !activeLabelUuids || activeLabelUuids.has(b.labelUuid);
     const verificationMatch = !wantVerificationTagUuid || bboxHasAnyTag(b, new Set([wantVerificationTagUuid]));
-    return baseMatch && labelMatch && verificationMatch;
+    // The server's bboxConfidence term only decides which IMAGES come back; the
+    // band still has to be re-applied per bbox here, or a matching image's
+    // out-of-band boxes would render as cards of their own.
+    const confidenceMatch = !fs || bboxMatchesConfidence(b, fs);
+    return baseMatch && labelMatch && verificationMatch && confidenceMatch;
   };
 }
 

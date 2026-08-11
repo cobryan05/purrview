@@ -42,6 +42,9 @@ _STATE = {
     "dateNegate": True,
     "verificationCheck": None,
     "bboxVerification": "verified",
+    "confidenceMin": 0.25,
+    "confidenceMax": 0.75,
+    "confidenceIncludeMissing": True,
 }
 
 
@@ -80,8 +83,7 @@ def _capture_body(page: Page, fn_name: str, state: dict) -> dict:
                 window.fetch = realFetch;
             }
             return captured;
-        }"""
-        % _MODULE,
+        }""" % _MODULE,
         {"fnName": fn_name, "state": state},
     )
 
@@ -106,6 +108,14 @@ class TestScopeResolverFilterParity:
         term = _term(body, "date")
         assert term is not None, f"{fn_name} dropped the date filter"
         assert term.get("negate") is True, f"{fn_name} sent the date filter un-negated: {term}"
+
+    def test_confidence_band_is_sent(self, shared_page: Page, fn_name: str):
+        body = _capture_body(shared_page, fn_name, _STATE)
+        term = _term(body, "bboxConfidence")
+        assert term is not None, f"{fn_name} dropped the confidence band"
+        assert term["min"] == pytest.approx(0.25)
+        assert term["max"] == pytest.approx(0.75)
+        assert term.get("includeMissing") is True
 
     def test_image_tag_conditions_are_sent(self, shared_page: Page, fn_name: str):
         body = _capture_body(shared_page, fn_name, _STATE)

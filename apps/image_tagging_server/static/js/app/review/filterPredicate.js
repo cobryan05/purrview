@@ -23,6 +23,7 @@
  * used throughout the review UI (see ui/labelList.js).
  */
 import { VERIFICATION_TAG_BY_STATE } from '/app-static/js/shared/api/review.js';
+import { readConfidence } from '/app-static/js/shared/domain/image/confidence.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 
 /**
@@ -48,6 +49,14 @@ export function defaultCuratedFilterState() {
     tagUuids: [],
     tagExcludeUuids: [],
     tagMatchMode: 'any', // 'any' | 'all'
+    // Model-confidence band, in the 0–1 unit the metadata stores (the UI control
+    // talks percent). Bounds are inclusive and independently optional; null is
+    // the no-op. Mirrors the server's BBoxConfidenceTerm.
+    confidenceMin: null,
+    confidenceMax: null,
+    // Whether a bbox carrying no confidence at all satisfies the band. Default
+    // false: an absent confidence is not 0.
+    confidenceIncludeMissing: false,
     // Image-scoped (NOT bbox-scoped — see `imageMatchesFilename`): a
     // case-insensitive substring test over `img.filename`. '' is the no-op.
     filenameSearch: '',
@@ -145,11 +154,49 @@ export function imageMatchesFilename(img, state) {
 export function hasActiveBboxFilter(state) {
   return !!(
     (state.bboxVerification && state.bboxVerification !== 'any') ||
+    hasActiveConfidenceFilter(state) ||
     state.labelUuids?.length > 0 ||
     state.labelExcludeUuids?.length > 0 ||
     state.tagUuids?.length > 0 ||
     state.tagExcludeUuids?.length > 0
   );
+}
+
+/**
+ * True when `state` carries an active confidence constraint. `includeMissing`
+ * alone is NOT active: with no bounds it would match every bbox, which is what
+ * the no-op default already does (and matches the server, where a bounds-less
+ * term with include_missing is `true()`).
+ *
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function hasActiveConfidenceFilter(state) {
+  return Number.isFinite(state?.confidenceMin) || Number.isFinite(state?.confidenceMax);
+}
+
+/**
+ * Per-bbox confidence-band test — the client-side counterpart of the server's
+ * `BBoxConfidenceTerm` (db_client `_bbox_confidence_expr`).
+ *
+ * `readConfidence` handles the same two things the SQL expression does: the two
+ * metadata keys a confidence may live under, and its being a string on some rows
+ * and a number on others. A bbox with no confidence has `undefined` here, which
+ * mirrors SQL NULL — it fails any active bound unless `confidenceIncludeMissing`
+ * opts it back in.
+ *
+ * @param {{metadataJson?: object}} bbox
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function bboxMatchesConfidence(bbox, state) {
+  if (!hasActiveConfidenceFilter(state)) return true;
+
+  const confidence = readConfidence(bbox?.metadataJson);
+  if (confidence === undefined) return !!state.confidenceIncludeMissing;
+  if (Number.isFinite(state.confidenceMin) && confidence < state.confidenceMin) return false;
+  if (Number.isFinite(state.confidenceMax) && confidence > state.confidenceMax) return false;
+  return true;
 }
 
 /**
@@ -205,6 +252,9 @@ export function bboxMatchesFilter(bbox, state, labels) {
     const wantTagUuid = VERIFICATION_TAG_BY_STATE[state.bboxVerification];
     if (!wantTagUuid || !bboxHasAnyTag(bbox, new Set([wantTagUuid]))) return false;
   }
+
+  // ── Model confidence band ────────────────────────────────────────────────
+  if (!bboxMatchesConfidence(bbox, state)) return false;
 
   // ── Label include ──────────────────────────────────────────────────────────
   if (state.labelUuids?.length > 0) {

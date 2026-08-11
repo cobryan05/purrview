@@ -5,7 +5,7 @@ filter fields exercised in test_review.py. These tests cover:
 
 - Round-trip serialisation, including the `from`/`from_` field naming and the
   `kind` discriminator (including rejection of an unknown kind).
-- Each of the 8 term kinds evaluating correctly (positive + negative).
+- Each of the 9 term kinds evaluating correctly (positive + negative).
 - `negate: true` inverting every kind.
 - Multiple terms ANDing together.
 - match_mode "any" vs "all" on objectLabel / bboxTag.
@@ -83,6 +83,27 @@ async def _add_bbox(http_client, image_path: str, label_uuid: str, tag_uuids: li
         },
     )
     assert r.status_code == 200
+    return bid
+
+
+async def _add_bbox_with_extra(http_client, image_path: str, label_uuid: str, extra, tag_uuids: list = None) -> str:
+    """Like _add_bbox, but carrying a metadata_json payload (`extra` on the wire).
+
+    `extra=None` means "no metadata at all" — the unscored-box case.
+
+    The metadata goes on via PATCH rather than the create call because
+    BoundingBoxMetadataModel.extra is a Dict[str, str] (the canvas save path),
+    which would reject the float confidences the task/preview-run paths write
+    straight through db_client. Both shapes are real rows in a live DB, and this
+    is the only way to produce the numeric one over HTTP.
+    """
+    bid = await _add_bbox(http_client, image_path, label_uuid, tag_uuids or [])
+    if extra is not None:
+        r = await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"tagUuids": tag_uuids or [], "metadataJson": extra},
+        )
+        assert r.status_code == 204
     return bid
 
 
@@ -175,6 +196,7 @@ class TestRoundTrip:
             {"kind": "bboxTag", "tagUuids": ["t1"], "matchMode": "any"},
             {"kind": "imageTag", "tagUuid": "t1", "state": "unreviewed"},
             {"kind": "bboxVerification", "state": "verified"},
+            {"kind": "bboxConfidence", "min": 0.25, "max": 0.75, "includeMissing": True},
             {"kind": "labelVerification", "check": "all_verified", "labelUuids": []},
             {"kind": "date", "field": "updated", "from": "2020-01-01T00:00:00"},
             {"kind": "filename", "patterns": ["foo", "bar"]},
@@ -186,6 +208,7 @@ class TestRoundTrip:
             "bboxTag",
             "imageTag",
             "bboxVerification",
+            "bboxConfidence",
             "labelVerification",
             "date",
             "filename",
@@ -193,7 +216,7 @@ class TestRoundTrip:
         dumped = params.model_dump(by_alias=True, mode="json")
         reparsed = ImageSearchParams.model_validate(dumped)
         assert [t.kind for t in reparsed.terms] == [t.kind for t in params.terms]
-        assert dumped["terms"][6]["from"] == "2020-01-01T00:00:00"
+        assert dumped["terms"][7]["from"] == "2020-01-01T00:00:00"
 
     def test_unknown_kind_rejected(self):
         with pytest.raises(Exception):
@@ -571,6 +594,132 @@ class TestBBoxVerificationTerm:
         )
         assert not any("state-ok.png" in f for f in images)
         assert any("state-pending.png" in f for f in images)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# bboxConfidence
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestBBoxConfidenceTerm:
+    """Confidence lives in bboxes.metadata_json, under either of two keys, as
+    either a float or a string — every one of those combinations has to filter.
+    """
+
+    async def _seed(self, http_client, files_root, label_uuid):
+        """One image per confidence flavour; returns their basenames."""
+        rows = {
+            "conf-low.png": {"confidence": 0.15},
+            "conf-mid.png": {"confidence": 0.55},
+            "conf-high.png": {"confidence": 0.95},
+            # The canvas writes String(detection.confidence) — same band, different
+            # JSON type. See _bbox_confidence_expr's CAST.
+            "conf-string.png": {"confidence": "0.60"},
+            # ApplyFilterChainTask's add_bbox step writes this key instead.
+            "conf-source-key.png": {"source_confidence": 0.65},
+            # A hand-drawn box: no confidence at all.
+            "conf-none.png": None,
+        }
+        for name, extra in rows.items():
+            _make_image(files_root, name)
+            await _add_bbox_with_extra(http_client, name, label_uuid, extra)
+        return rows
+
+    async def test_band_matches_both_keys_and_both_json_types(self, http_client, files_root, label_uuid):
+        await self._seed(http_client, files_root, label_uuid)
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "bboxConfidence", "min": 0.5, "max": 0.7}],
+            )
+        )
+        assert any("conf-mid.png" in f for f in images)
+        assert any("conf-string.png" in f for f in images)
+        assert any("conf-source-key.png" in f for f in images)
+        assert not any("conf-low.png" in f for f in images)
+        assert not any("conf-high.png" in f for f in images)
+        # An absent confidence is not 0.0 and must not fall into any band.
+        assert not any("conf-none.png" in f for f in images)
+
+    async def test_bounds_are_independently_optional_and_inclusive(self, http_client, files_root, label_uuid):
+        await self._seed(http_client, files_root, label_uuid)
+
+        min_only = _filenames(
+            await _review(http_client, show_all_bboxes=True, terms=[{"kind": "bboxConfidence", "min": 0.95}])
+        )
+        assert any("conf-high.png" in f for f in min_only)  # inclusive on the bound itself
+        assert not any("conf-mid.png" in f for f in min_only)
+
+        max_only = _filenames(
+            await _review(http_client, show_all_bboxes=True, terms=[{"kind": "bboxConfidence", "max": 0.15}])
+        )
+        assert any("conf-low.png" in f for f in max_only)
+        assert not any("conf-mid.png" in f for f in max_only)
+
+    async def test_include_missing_opts_unscored_boxes_in(self, http_client, files_root, label_uuid):
+        await self._seed(http_client, files_root, label_uuid)
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "bboxConfidence", "min": 0.5, "max": 0.7, "includeMissing": True}],
+            )
+        )
+        assert any("conf-none.png" in f for f in images)
+        assert any("conf-mid.png" in f for f in images)
+        assert not any("conf-low.png" in f for f in images)
+
+    async def test_no_bounds_means_has_any_confidence(self, http_client, files_root, label_uuid):
+        await self._seed(http_client, files_root, label_uuid)
+
+        images = _filenames(await _review(http_client, show_all_bboxes=True, terms=[{"kind": "bboxConfidence"}]))
+        assert any("conf-mid.png" in f for f in images)
+        assert not any("conf-none.png" in f for f in images)
+
+    async def test_negate_inverts(self, http_client, files_root, label_uuid):
+        await self._seed(http_client, files_root, label_uuid)
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "bboxConfidence", "min": 0.5, "max": 0.7, "negate": True}],
+            )
+        )
+        assert not any("conf-mid.png" in f for f in images)
+        assert any("conf-low.png" in f for f in images)
+        # Negation is "has no bbox in the band", so an unscored box passes.
+        assert any("conf-none.png" in f for f in images)
+
+    async def test_ands_with_bbox_verification(self, http_client, files_root, label_uuid):
+        """The headline use case: low-confidence boxes that still need review."""
+        _make_image(files_root, "pending-low.png")
+        _make_image(files_root, "pending-high.png")
+        _make_image(files_root, "ok-low.png")
+        await _add_bbox_with_extra(
+            http_client, "pending-low.png", label_uuid, {"confidence": 0.2}, [UNVERIFIED_TAG_UUID]
+        )
+        await _add_bbox_with_extra(
+            http_client, "pending-high.png", label_uuid, {"confidence": 0.9}, [UNVERIFIED_TAG_UUID]
+        )
+        await _add_bbox_with_extra(http_client, "ok-low.png", label_uuid, {"confidence": 0.2}, [VERIFIED_TAG_UUID])
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[
+                    {"kind": "bboxVerification", "state": "unverified"},
+                    {"kind": "bboxConfidence", "max": 0.5},
+                ],
+            )
+        )
+        assert any("pending-low.png" in f for f in images)
+        assert not any("pending-high.png" in f for f in images)
+        assert not any("ok-low.png" in f for f in images)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

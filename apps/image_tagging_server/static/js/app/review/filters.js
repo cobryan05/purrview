@@ -15,12 +15,14 @@
  * Layout:
  *   Toolbar (toolbarControls):  [Tags ▾]  [Labels ▾]
  *   Filter panel (element):     Date: [from]–[to]  |  File: [____]
- *                               Verification: [<select>]  |  Image Tag Filters: [condition list]
+ *                               Verification: [<select>]  |  Box status: [<select>]
+ *                               Confidence: [min%]–[max%]  |  Image Tag Filters: [condition list]
  */
 import { VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { createImageLabelConditions, createImageTagConditions } from '/app-static/js/ui/imageTagConditions.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
+import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { filterVisibleTags, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
@@ -55,6 +57,12 @@ const DEFAULT_STATE = () => ({
   // which is the whole-image label-completeness check. 'any' = no-op, same
   // as filterPredicate.js's defaultCuratedFilterState().
   bboxVerification: 'any',
+  // Model-confidence band on bboxes, 0–1 (the control talks percent). Both
+  // bounds independently optional; null is the no-op. Pairs naturally with
+  // bboxVerification: "unverified boxes the model was unsure about".
+  confidenceMin: null,
+  confidenceMax: null,
+  confidenceIncludeMissing: false,
 });
 
 /**
@@ -451,6 +459,22 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     },
   });
 
+  // Model-confidence band — filters bboxes by the inference confidence stored
+  // in their metadata. Sits next to the bbox verification control because the
+  // two are almost always used together (triage the low-confidence unverified
+  // boxes first).
+  const confidenceControl = createConfidenceRangeControl({
+    min: _state.confidenceMin,
+    max: _state.confidenceMax,
+    includeMissing: _state.confidenceIncludeMissing,
+    onChange: ({ min, max, includeMissing }) => {
+      _state.confidenceMin = min;
+      _state.confidenceMax = max;
+      _state.confidenceIncludeMissing = includeMissing;
+      emit();
+    },
+  });
+
   // Image label conditions section — filter by whole-image label status
   // (present / absent / uncertain) against the image_labels table.
   const imageLabelSection = document.createElement('div');
@@ -477,6 +501,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   secondaryRow.appendChild(verificationSection);
   secondaryRow.appendChild(bboxVerificationControl.element);
+  secondaryRow.appendChild(confidenceControl.element);
   secondaryRow.appendChild(imageLabelSection);
   secondaryRow.appendChild(imageTagSection);
   panel.appendChild(secondaryRow);
@@ -494,7 +519,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
       + (s.verificationCheck ? 1 : 0)
-      + (s.bboxVerification !== 'any' ? 1 : 0);
+      + (s.bboxVerification !== 'any' ? 1 : 0)
+      // One chip's worth regardless of whether one bound or both are set.
+      + (s.confidenceMin !== null || s.confidenceMax !== null ? 1 : 0);
   }
 
   // ── Filter chip bar (slice 3, PR 3.2) ───────────────────────────────────
@@ -577,6 +604,16 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       chips.push({ key: 'bboxVerification', label: `Bbox: ${s.bboxVerification}`, onRemove: () => setState({ bboxVerification: 'any' }) });
     }
 
+    if (s.confidenceMin !== null || s.confidenceMax !== null) {
+      const pct = v => (v === null ? '…' : `${Math.round(v * 100)}%`);
+      const missing = s.confidenceIncludeMissing ? ' +none' : '';
+      chips.push({
+        key: 'confidence',
+        label: `Conf: ${pct(s.confidenceMin)}–${pct(s.confidenceMax)}${missing}`,
+        onRemove: () => setState({ confidenceMin: null, confidenceMax: null, confidenceIncludeMissing: false }),
+      });
+    }
+
     return chips;
   }
 
@@ -598,6 +635,11 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && !s.dateNegate
       && !s.verificationCheck
       && s.bboxVerification === 'any'
+      && s.confidenceMin === null
+      && s.confidenceMax === null
+      // confidenceIncludeMissing is deliberately NOT checked: with no bounds it
+      // matches every bbox, so on its own it is not a filter — same rule
+      // getActiveFilterCount and the chip row use.
     );
   }
 
@@ -652,6 +694,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.bboxVerification !== undefined) {
       bboxVerificationControl.setValue(_state.bboxVerification);
     }
+    if (partial.confidenceMin !== undefined || partial.confidenceMax !== undefined
+        || partial.confidenceIncludeMissing !== undefined) {
+      confidenceControl.setValue({
+        min: _state.confidenceMin,
+        max: _state.confidenceMax,
+        includeMissing: _state.confidenceIncludeMissing,
+      });
+    }
 
     emit();
   }
@@ -662,6 +712,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     imageLabelConditionsComp.destroy();
     imageTagConditionsComp.destroy();
     bboxVerificationControl.destroy();
+    confidenceControl.destroy();
     _unsubAll();
   }
 

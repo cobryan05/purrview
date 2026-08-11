@@ -1517,6 +1517,35 @@ button.filter-active {
   border-radius: 3px;
 }
 
+/* ── Confidence range control (.confidence-range-*) ─────────────────────── */
+/* "Confidence: [min %] – [max %] [∅]" — sits beside the Box status select in
+   the secondary filter row. */
+.confidence-range-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.8em;
+  color: var(--text-faint);
+}
+
+.confidence-range-input {
+  /* Wide enough for "100" plus the spinner; without an explicit width a number
+     input inherits Pico's 100% and blows the row out. */
+  width: 4.5em;
+  font-size: 1em;
+  height: auto;
+  margin-bottom: 0;
+  padding: var(--pico-form-element-spacing-vertical)
+           var(--pico-form-element-spacing-horizontal);
+  border-radius: 3px;
+}
+
+/* ∅ = "also match boxes with no recorded confidence". Neutral, not danger —
+   it widens the match rather than negating it (unlike .itc-negate-label). */
+.confidence-range-missing {
+  color: var(--text-faint);
+}
+
 /* Config Ready section when disabled (no active training config, or bboxes view) */
 .filter-section--disabled .filter-section-label {
   opacity: 0.5;
@@ -2191,6 +2220,40 @@ button.filter-active {
   height: 100% !important;
   pointer-events: none;
 }
+/* Model confidence, overlaid on a bbox card's crop. Top-right because the
+   top-left corner is the selection checkbox on every card. Deliberately louder
+   than .bbox-count-badge — on the unverified queue this is the number the user
+   is actually triaging by. */
+.bbox-confidence-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 0.82em;
+  font-weight: 700;
+  line-height: 1.3;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text-on-solid);
+  background: #000a;
+  text-shadow: 0 1px 2px #0009;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.bbox-confidence-badge.conf-low {
+  background: var(--color-danger);
+}
+.bbox-confidence-badge.conf-mid {
+  background: var(--color-warning);
+  /* --color-warning is a light amber in dark mode; white ink on it fails
+     contrast, so this band alone takes dark ink. */
+  color: #1a1500;
+  text-shadow: none;
+}
+.bbox-confidence-badge.conf-high {
+  background: var(--color-success);
+}
+
 .bbox-count-badge {
   position: absolute;
   top: 6px;
