@@ -10,7 +10,9 @@ context and host-side arenas per call, and the process RSS grows monotonically
 
 import asyncio
 import json
+import os
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,10 +24,15 @@ MODEL_METADATA = {"yolo": 8, "classes": ["cat", "dog"], "class_map": {}}
 
 
 class _CountingProvider:
-    """Stands in for an ONNX provider, recording how many were constructed."""
+    """Stands in for an ONNX provider, recording how many were constructed.
 
-    def __init__(self, counter: list):
+    ``weights`` is whatever bytes were on disk at load time, so a test can tell
+    *which* version of a model file the live session was actually built from.
+    """
+
+    def __init__(self, counter: list, weights: bytes = b""):
         self._counter = counter
+        self.weights = weights
 
     async def processImage(self, image, **kwargs):
         return InferenceResult(source_width=1, source_height=1, detections=[], inference_time=0.01)
@@ -38,7 +45,7 @@ def load_counter(monkeypatch):
 
     def _fake_load(path):
         calls.append(path)
-        return _CountingProvider(calls)
+        return _CountingProvider(calls, weights=Path(path).read_bytes())
 
     monkeypatch.setattr("apps.inference_server.manager.load_yolo_onnx", _fake_load)
     return calls
@@ -118,6 +125,98 @@ class TestPinIdReuse:
 
         assert a != b
         assert len(keepwarm_manager._pinned_models["clf"].pins) == 2
+
+
+class TestRetrainedModelIsReloaded:
+    """Retraining a model writes new weights over `$MODELS_ROOT/<name>.onnx` from a
+    *different process* (tasks_server's `_training_job_runner._save_artifact`), so the
+    inference server gets no notification at all. If pin_model keeps serving the
+    session it loaded from the previous file, every request after a retrain answers
+    from the old weights — silently, until the implicit keep-warm pin happens to
+    idle out. Observed live: a retrained detector scored 0.0006 on an image its
+    new weights scored 0.94 on, so the UI showed zero detections.
+    """
+
+    @staticmethod
+    def _overwrite(tmp_path, content: bytes) -> None:
+        """Land new weights the way an out-of-process retrain does.
+
+        mtime is pushed forward explicitly: the writes in a test happen well
+        inside one filesystem timestamp granule, so relying on the natural mtime
+        would make this pass or fail on timing rather than on behaviour.
+        """
+        target = tmp_path / "clf.onnx"
+        target.write_bytes(content)
+        stat = target.stat()
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    async def test_recognize_after_overwrite_uses_new_weights(self, keepwarm_manager, tmp_path, load_counter):
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"fake onnx"
+
+        self._overwrite(tmp_path, b"retrained onnx")
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"retrained onnx", (
+            "recognize() served the session built from the pre-retrain file; the "
+            "model on disk changed but the loaded ort.InferenceSession did not"
+        )
+        assert len(load_counter) == 2, "new weights on disk must trigger exactly one reload"
+
+    async def test_unchanged_file_is_not_reloaded(self, keepwarm_manager, load_counter):
+        """The reload must be keyed on the file actually changing — otherwise this
+        undoes the keep-warm pin and rebuilds a CUDA session on every call."""
+        for _ in range(5):
+            await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        assert len(load_counter) == 1
+
+    async def test_caller_held_pin_also_sees_new_weights(self, keepwarm_manager, tmp_path):
+        pin_id = await keepwarm_manager.pin_model("clf")
+
+        self._overwrite(tmp_path, b"retrained onnx")
+        await keepwarm_manager.pin_model("clf", pin_id=pin_id)
+
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"retrained onnx"
+
+    async def test_torn_write_keeps_serving_old_session_then_recovers(
+        self, keepwarm_manager, tmp_path, load_counter, monkeypatch
+    ):
+        """_save_artifact lands new weights with a plain write_bytes(), so a request
+        can arrive while the file is a truncated ONNX. That must not fail the
+        request, and must not strand the model on the old weights either."""
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        self._overwrite(tmp_path, b"half-written on")
+        monkeypatch.setattr(
+            "apps.inference_server.manager.load_yolo_onnx",
+            lambda path: (_ for _ in ()).throw(ValueError("truncated onnx")),
+        )
+
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"fake onnx"
+
+        # The rest of the write lands, bumping mtime again — next call picks it up.
+        def _real_load(path):
+            load_counter.append(path)
+            return _CountingProvider(load_counter, weights=Path(path).read_bytes())
+
+        monkeypatch.setattr("apps.inference_server.manager.load_yolo_onnx", _real_load)
+        self._overwrite(tmp_path, b"retrained onnx")
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"retrained onnx"
+
+    async def test_stat_failure_keeps_serving_existing_session(self, keepwarm_manager, tmp_path, load_counter):
+        """A model file that has gone missing (mid-redeploy write, or unlinked) must
+        not take the loaded model down with it — keep answering from memory."""
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+        (tmp_path / "clf.onnx").unlink()
+
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"fake onnx"
+        assert len(load_counter) == 1
 
 
 class TestDeleteModelWithImplicitPin:

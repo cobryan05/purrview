@@ -65,6 +65,10 @@ class InferenceModel:
     path: str
     inference: Optional[InferenceProvider] = None
     pins: Dict[str, Pin] = field(default_factory=dict)  # {pin_id: Pin}
+    # mtime_ns of the .onnx this session was built from, so pin_model can tell a
+    # warm session apart from a stale one after the file is replaced underneath
+    # it. None only if the stat failed at load time.
+    weights_mtime_ns: Optional[int] = None
 
 
 class Manager:
@@ -213,6 +217,22 @@ class Manager:
         """
         try:
             return await asyncio.to_thread(lambda: os.stat(Path(model_path).with_suffix(".json")).st_mtime_ns)
+        except OSError:
+            return None
+
+    @staticmethod
+    async def _weights_mtime_ns(model_path: str) -> Optional[int]:
+        """mtime of the model's .onnx itself, or None if it can't be stat'ed.
+
+        None means "can't tell", and pin_model deliberately treats that as "keep
+        serving what's loaded": a file that has gone missing (unlinked, or a
+        redeploy mid-write) is no reason to tear down a working session.
+
+        Threaded for the same reason as _sidecar_mtime_ns — pin_model is on the
+        path of every pinless recognize().
+        """
+        try:
+            return await asyncio.to_thread(lambda: os.stat(model_path).st_mtime_ns)
         except OSError:
             return None
 
@@ -448,12 +468,56 @@ class Manager:
             if model_name not in self._avail_models:
                 raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
+            # Retraining lands new weights over $MODELS_ROOT/<name>.onnx from a
+            # different process entirely (tasks_server's
+            # _training_job_runner._save_artifact), so nothing here is told the file
+            # changed. Without this check a warm session outlives the file it was
+            # built from and keeps answering from the previous model's weights until
+            # its keep-warm pin happens to idle out — a retrained detector scored
+            # 0.0006 on an image its new weights scored 0.94 on. Compared on
+            # mtime_ns, matching how _class_map_cache invalidates sidecars.
+            existing = self._pinned_models.get(model_name)
+            if existing is not None:
+                # Stat before loading, never after: a write landing *during* the
+                # load would otherwise be recorded as already-loaded and stay
+                # stale. Re-reading once too often is harmless; missing a write
+                # is the bug this exists to prevent.
+                current_mtime = await self._weights_mtime_ns(model_path)
+                if current_mtime is not None and current_mtime != existing.weights_mtime_ns:
+                    logger.info(
+                        f"Model '{model_name}' changed on disk (mtime {existing.weights_mtime_ns} -> "
+                        f"{current_mtime}); reloading the in-memory session."
+                    )
+                    try:
+                        # Mutated in place rather than replaced so `pins` survives:
+                        # dropping the entry would invalidate every caller's pin id
+                        # and make their later unpin_model raise.
+                        existing.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
+                        existing.path = model_path
+                    except Exception:
+                        # _save_artifact lands the new weights with a plain
+                        # write_bytes(), so there is a window where the file is a
+                        # truncated ONNX. Keep answering from the session we already
+                        # have rather than failing the request outright — degraded
+                        # (stale) beats down. The mtime is still recorded so a
+                        # permanently broken file doesn't re-attempt a ~30MB load on
+                        # every call; the completing write bumps mtime again, which
+                        # is what makes the torn-write case self-heal on a later call.
+                        logger.warning(
+                            f"Model '{model_name}' changed on disk but the new file failed to load; "
+                            f"continuing with the previously loaded session.",
+                            exc_info=True,
+                        )
+                    existing.weights_mtime_ns = current_mtime
+
             if model_name not in self._pinned_models:
                 load_future: asyncio.Future = asyncio.get_running_loop().create_future()
                 self._loading_models[model_name] = load_future
                 try:
+                    mtime_at_load = await self._weights_mtime_ns(model_path)
                     new_model = InferenceModel(model_name=model_name, path=model_path)
                     new_model.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
+                    new_model.weights_mtime_ns = mtime_at_load
                     self._pinned_models[model_name] = new_model
                     logger.info(f"Model '{model_name}' loaded into memory.")
                     load_future.set_result(None)
