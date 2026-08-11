@@ -112,6 +112,11 @@ export function bboxReadToUI(bboxData) {
     selected: false,
     dirty: false,
     confidence,
+    // Deliberately NOT carried onto the UI model. The save payload's `extra` is
+    // typed Dict[str, str] server-side, so echoing real metadata back (which
+    // holds booleans and floats — run_model_added, source_confidence) would
+    // 422 the save. Metadata this client didn't author is preserved server-side
+    // instead, by omitting `extra` entirely; see Manager.update_image_metadata.
   });
 
   return uiBbox;

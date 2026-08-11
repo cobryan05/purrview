@@ -1001,3 +1001,116 @@ class TestCountBboxes:
         )
         assert r.status_code == 200
         assert r.json()["count"] == 0, r.json()
+
+
+class TestCanvasSaveMetadataPreservation:
+    """`POST /api/images/metadata/update` replaces the whole bbox list, and the
+    canvas save posts only geometry/label/tags — no `extra`.
+
+    That used to coerce to `{}` and wipe metadata_json on every bbox of the
+    image, taking source_model / source_confidence / run_model_added with it,
+    and relabel_prev_label_uuid, which "revert filter-chain relabel" reads back.
+    """
+
+    @staticmethod
+    async def _save(http_client, image_path, bbox_uuid, label_uuid, extra=...):
+        box = {
+            "uuid": bbox_uuid,
+            "labelUuid": label_uuid,
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.2,
+            "height": 0.2,
+            "tagUuids": [],
+        }
+        if extra is not ...:
+            box["extra"] = extra
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={"imagePath": image_path, "boxes": [box]},
+        )
+        assert r.status_code == 200, r.text
+        return r
+
+    @staticmethod
+    async def _metadata(http_client, image_path):
+        r = await http_client.post("/api/images/metadata/get", json={"imagePath": image_path})
+        return r.json()["image"]["bboxes"][0]["metadataJson"]
+
+    async def test_omitted_extra_preserves_stored_metadata(self, http_client, files_root):
+        (files_root / "meta_keep.png").write_bytes(make_png())
+        label_uuid = (await http_client.post("/api/labels", json={"name": "Cat", "color": "#f00"})).json()["label"][
+            "uuid"
+        ]
+        r = await http_client.post(
+            "/api/images/bbox",
+            json={
+                "imagePath": "meta_keep.png",
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
+                "tagUuids": [],
+                "metadataJson": {"source_model": "det-a", "source_confidence": 0.82, "run_model_added": True},
+            },
+        )
+        bbox_uuid = r.json()["bboxUuid"]
+
+        await self._save(http_client, "meta_keep.png", bbox_uuid, label_uuid)
+
+        metadata = await self._metadata(http_client, "meta_keep.png")
+        assert metadata["source_confidence"] == pytest.approx(0.82)
+        assert metadata["source_model"] == "det-a"
+        assert metadata["run_model_added"] is True
+
+    async def test_explicit_empty_extra_still_clears(self, http_client, files_root):
+        """`{}` and "omitted" must stay distinguishable, or nothing can ever
+        clear a bbox's metadata again."""
+        (files_root / "meta_clear.png").write_bytes(make_png())
+        label_uuid = (await http_client.post("/api/labels", json={"name": "Dog", "color": "#0f0"})).json()["label"][
+            "uuid"
+        ]
+        r = await http_client.post(
+            "/api/images/bbox",
+            json={
+                "imagePath": "meta_clear.png",
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
+                "tagUuids": [],
+                "metadataJson": {"source_model": "det-a"},
+            },
+        )
+        bbox_uuid = r.json()["bboxUuid"]
+
+        await self._save(http_client, "meta_clear.png", bbox_uuid, label_uuid, extra={})
+
+        assert await self._metadata(http_client, "meta_clear.png") == {}
+
+    async def test_supplied_extra_persists_and_round_trips(self, http_client, files_root):
+        """The canvas save path for a freshly-inferred box: it sends
+        source_confidence as a **string**, because `extra` is Dict[str, str]."""
+        (files_root / "meta_new.png").write_bytes(make_png())
+        label_uuid = (await http_client.post("/api/labels", json={"name": "Fox", "color": "#00f"})).json()["label"][
+            "uuid"
+        ]
+        r = await http_client.post(
+            "/api/images/bbox",
+            json={
+                "imagePath": "meta_new.png",
+                "labelUuid": label_uuid,
+                "x": 0.1,
+                "y": 0.1,
+                "width": 0.2,
+                "height": 0.2,
+                "tagUuids": [],
+            },
+        )
+        bbox_uuid = r.json()["bboxUuid"]
+
+        await self._save(http_client, "meta_new.png", bbox_uuid, label_uuid, extra={"source_confidence": "0.82"})
+
+        assert (await self._metadata(http_client, "meta_new.png"))["source_confidence"] == "0.82"

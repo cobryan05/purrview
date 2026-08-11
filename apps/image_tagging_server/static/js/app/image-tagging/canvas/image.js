@@ -2,7 +2,7 @@ import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
-import { formatConfidencePct } from '/app-static/js/shared/domain/image/confidence.js';
+import { SOURCE_CONFIDENCE_KEY } from '/app-static/js/shared/domain/image/confidence.js';
 import { Logger, toast, showUnsavedChangesModal } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
@@ -321,16 +321,16 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
     const { bbox } = detection;
 
     const labelData = bbox.labelUuid ? labelsMap.get(bbox.labelUuid) : null;
-    // Baked into the label text here because a freshly-inferred box is not yet
-    // persisted and so carries no `confidence` field for BboxView to render
-    // from — exactly one of the two paths applies per box, never both.
-    const confSuffix = ` (${formatConfidencePct(detection.confidence)})`;
+    // The confidence rides on the bbox rather than being baked into the label
+    // text: BboxView appends it for display, and metadataJson carries it into
+    // the save so it is still there after a reload. Baking it into the text
+    // meant the percentage existed only until you navigated away.
     const label = labelData
-      ? { uuid: labelData.uuid, text: labelData.name + confSuffix, color: labelData.color }
+      ? { uuid: labelData.uuid, text: labelData.name, color: labelData.color }
       : bbox.labelUuid
-        ? { uuid: bbox.labelUuid, text: (bbox.classStr ?? bbox.labelUuid) + confSuffix }
+        ? { uuid: bbox.labelUuid, text: bbox.classStr ?? bbox.labelUuid }
         : bbox.classStr
-          ? { text: bbox.classStr + confSuffix }
+          ? { text: bbox.classStr }
           : undefined;
 
     // Always include the UNVERIFIED tag on inference results
@@ -349,6 +349,12 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
       height: bbox.height,
       selected: false,
       dirty: true,
+      confidence: detection.confidence,
+      // Persisted on save, so the percentage survives a reload instead of
+      // living only in this canvas session. Stringified because the save
+      // payload's `extra` is Dict[str, str] server-side — a raw float is
+      // rejected. parseConfidence reads it back.
+      metadataJson: { [SOURCE_CONFIDENCE_KEY]: String(detection.confidence) },
     });
 
     let bestMatch = null;

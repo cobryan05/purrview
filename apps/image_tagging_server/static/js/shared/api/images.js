@@ -249,6 +249,12 @@ export async function updateImage(uiImage) {
       width: bbox.width,
       height: bbox.height,
       tagUuids: (bbox.tags ?? []).map(t => t.uuid),
+      // Omitted when empty rather than sent as {}: this endpoint replaces the
+      // whole bbox list, and the server reads a missing `extra` as "keep the
+      // stored metadata" but an explicit {} as "clear it".
+      ...(bbox.metadataJson && Object.keys(bbox.metadataJson).length > 0
+        ? { extra: bbox.metadataJson }
+        : {}),
     }));
 
   /** @type {import('@web_api').UpdateMetadataPayload} */

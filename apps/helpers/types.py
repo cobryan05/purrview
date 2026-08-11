@@ -91,8 +91,14 @@ class BoundingBoxMetadataModel(BaseModel):
     label_uuid: Optional[str] = None
     class_str: Optional[str] = None
     tag_uuids: List[str] = Field(default_factory=list)
-    extra: RawJsonDict = Field(
-        default_factory=dict,
+    # None (omitted) and {} mean different things on the update path: omitted =
+    # "I'm not telling you about metadata, keep whatever is stored", {} = "clear
+    # it". The canvas save never sends this field, so defaulting it to {} made
+    # every save wipe metadata_json on every bbox of the image — taking
+    # source_model / source_confidence / run_model_added with it, and
+    # relabel_prev_label_uuid, which "revert filter-chain relabel" needs.
+    extra: Optional[RawJsonDict] = Field(
+        default=None,
         validation_alias=AliasChoices("bbox_meta", "extra"),
         serialization_alias="extra",
     )

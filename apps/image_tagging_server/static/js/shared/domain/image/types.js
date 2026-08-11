@@ -25,7 +25,8 @@
  * @property {number} height
  * @property {boolean} selected
  * @property {boolean} dirty
- * @property {number} [confidence] - Inference confidence (0-1), persisted until the bbox is verified.
+ * @property {number} [confidence] - Inference confidence (0-1), shown on the label until the bbox is verified.
+ * @property {Object<string, any>} [metadataJson] - Raw bbox metadata, round-tripped on save so keys this client doesn't understand survive.
  */
 
 /**

@@ -581,6 +581,17 @@ class Manager:
         old_image_record = await self._db_client.get_image_by_uuid(image.uuid)
         old_bboxes = old_image_record.bboxes if old_image_record else []
 
+        # Carry each bbox's stored metadata_json across the DELETE+INSERT unless
+        # the caller explicitly supplied one. The canvas save posts only
+        # geometry/label/tags, so without this every save silently wiped
+        # source_model / source_confidence / run_model_added — and
+        # relabel_prev_label_uuid, which "revert filter-chain relabel" reads.
+        # `{}` still clears, so a caller can deliberately empty it.
+        old_metadata = {b.uuid: (b.metadata_json or {}) for b in old_bboxes}
+        for b in update.bboxes:
+            if b.metadata_json is None:
+                b.metadata_json = old_metadata.get(b.uuid, {})
+
         await self._db_client.write_image_metadata_to_db(image.uuid, update)
 
         # Tombstone all previous bbox entries from the hash index (covers

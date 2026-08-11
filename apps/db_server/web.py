@@ -1550,7 +1550,9 @@ class WebApp:
                         width=b.width,
                         height=b.height,
                         tag_uuids=b.tag_uuids or [],
-                        metadata_json=b.extra or {},
+                        # None is passed through, not coerced: the manager reads
+                        # it as "preserve what's stored for this bbox".
+                        metadata_json=b.extra,
                     )
                     for b in payload.boxes
                     if b.label_uuid

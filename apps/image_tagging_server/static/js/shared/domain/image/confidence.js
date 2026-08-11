@@ -21,10 +21,12 @@ export const SOURCE_CONFIDENCE_KEY = 'source_confidence';
 /**
  * Parse a persisted confidence into a 0–1 number, or `undefined` if absent or junk.
  *
- * It is stored as whatever JSON the writer put there — historically a string —
- * so this parses rather than trusting the type. The `Number.isFinite` guard is
- * the part that matters: `parseFloat(undefined)` is `NaN`, and an unguarded
- * `NaN` renders as "NaN%" on the label.
+ * ⚠️ The stored type genuinely varies by writer, so this parses rather than
+ * trusting it: the canvas save goes through `extra`, typed `Dict[str, str]`
+ * server-side, so it writes a **string**; the Python writers
+ * (ApplyFilterChainTask, preview-run apply) write a **float**. The
+ * `Number.isFinite` guard is the part that matters — `parseFloat(undefined)` is
+ * `NaN`, and an unguarded `NaN` renders as "NaN%" on the label.
  *
  * @param {unknown} raw
  * @returns {number|undefined}

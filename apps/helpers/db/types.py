@@ -531,7 +531,9 @@ class BBoxUpdate(ApiModel):
     width: float
     height: float
     tag_uuids: List[str] = []
-    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    # None = "preserve the stored metadata for this bbox"; {} = "clear it".
+    # See BoundingBoxMetadataModel.extra and Manager.update_image_metadata.
+    metadata_json: Optional[Dict[str, Any]] = Field(default=None)
     # Sidecar rebuild fallback: names are stored alongside UUIDs so that a DB
     # rebuild can resolve references even when UUIDs differ after re-generation.
     label_name: Optional[str] = None
