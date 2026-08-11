@@ -469,3 +469,157 @@ class TestLoadImageBytesResolvesFilesRoot:
         await task._init(task._params, None)
         with pytest.raises(FileNotFoundError):
             await task._load_image_bytes("../../etc/passwd", images_api=MagicMock())
+
+
+class TestPreviewRunPersistence:
+    """`preview_run_uuid` streams candidates into a persisted preview run instead
+    of shipping thousands of them back through the one-shot task result.
+
+    ⚠️ The task's "never writes to the DB" invariant is about *annotation*
+    tables. preview_candidates is scratch state; bboxes/labels/tags stay
+    untouched here.
+    """
+
+    @staticmethod
+    def _fake_api(monkeypatch):
+        """Captures AddPreviewCandidatesPayload calls without an HTTP round-trip."""
+        calls = []
+
+        class _FakeApi:
+            def __init__(self, _client):
+                pass
+
+            def add_preview_candidates(self, run_uuid, payload):
+                calls.append((run_uuid, payload))
+
+        monkeypatch.setattr(
+            "apps.tasks_server.tasks.PreviewModelRelabelTask.PreviewRunsApi",
+            _FakeApi,
+        )
+        return calls
+
+    async def test_without_a_run_uuid_nothing_is_written(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(_base_params())
+        await task._init(task._params, None)
+        task._candidates = [{"imageUuid": "img-1", "bboxUuid": "bbox-1", "proposedLabelUuid": "dog", "confidence": 0.9}]
+        await task._flush_candidates(force=True)
+        assert calls == []
+        # Untouched: the in-memory result path is still the only one.
+        assert len(task._candidates) == 1
+        assert task._build_result()["candidates"] == task._candidates
+
+    async def test_forced_flush_writes_and_clears_the_buffer(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(_base_params(preview_run_uuid="run-1"))
+        await task._init(task._params, None)
+        task._candidates = [
+            {
+                "imageUuid": "img-1",
+                "bboxUuid": "bbox-1",
+                "currentLabelUuid": "cat",
+                "proposedLabelUuid": "dog",
+                "confidence": 0.9,
+                "geometry": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},
+            }
+        ]
+        await task._flush_candidates(force=True)
+
+        assert len(calls) == 1
+        run_uuid, payload = calls[0]
+        assert run_uuid == "run-1"
+        assert payload.conflict_policy == "last"
+        assert len(payload.candidates) == 1
+        written = payload.candidates[0]
+        assert written.bbox_uuid == "bbox-1"
+        assert written.current_label_uuid == "cat"
+        assert written.proposed_label_uuid == "dog"
+        assert written.confidence == 0.9
+        assert written.geometry == {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}
+        # source_model records which model in a multi-model run produced this.
+        assert written.source_model == "my_detector"
+
+        # Buffer cleared so a resume cannot re-insert it, but the count survives.
+        assert task._candidates == []
+        assert task._candidates_written == 1
+
+    async def test_flush_is_batched_until_the_threshold(self, monkeypatch):
+        from apps.tasks_server.tasks.PreviewModelRelabelTask import _CANDIDATE_FLUSH_SIZE
+
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(_base_params(preview_run_uuid="run-1"))
+        await task._init(task._params, None)
+
+        task._candidates = [
+            {"imageUuid": f"img-{i}", "bboxUuid": f"bbox-{i}", "proposedLabelUuid": "dog", "confidence": 0.5}
+            for i in range(_CANDIDATE_FLUSH_SIZE - 1)
+        ]
+        await task._flush_candidates()
+        assert calls == [], "flushed before reaching the batch size"
+
+        task._candidates.append(
+            {"imageUuid": "img-x", "bboxUuid": "bbox-x", "proposedLabelUuid": "dog", "confidence": 0.5}
+        )
+        await task._flush_candidates()
+        assert len(calls) == 1
+        assert len(calls[0][1].candidates) == _CANDIDATE_FLUSH_SIZE
+
+    async def test_flushed_candidates_leave_the_checkpoint(self, monkeypatch):
+        """A resumed run must not re-insert what it already wrote."""
+        self._fake_api(monkeypatch)
+        task = _make_task(_base_params(preview_run_uuid="run-1"))
+        await task._init(task._params, None)
+        task._candidates = [{"imageUuid": "img-1", "bboxUuid": "bbox-1", "proposedLabelUuid": "dog", "confidence": 0.9}]
+        await task._flush_candidates(force=True)
+
+        resume = task._build_resume_data()
+        assert resume["candidates"] == []
+        assert resume["candidates_written"] == 1
+
+        resumed = _make_task(_base_params(preview_run_uuid="run-1"))
+        await resumed._init(resumed._params, resume)
+        assert resumed._candidates == []
+        assert resumed._candidates_written == 1
+
+    async def test_a_failed_flush_keeps_the_buffer_for_retry(self, monkeypatch):
+        class _BoomApi:
+            def __init__(self, _client):
+                pass
+
+            def add_preview_candidates(self, run_uuid, payload):
+                raise RuntimeError("db down")
+
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.PreviewRunsApi", _BoomApi)
+        task = _make_task(_base_params(preview_run_uuid="run-1"))
+        await task._init(task._params, None)
+        task._candidates = [{"imageUuid": "img-1", "bboxUuid": "bbox-1", "proposedLabelUuid": "dog", "confidence": 0.9}]
+        with pytest.raises(RuntimeError):
+            await task._flush_candidates(force=True)
+        assert len(task._candidates) == 1, "a failed flush dropped the candidates it could not write"
+        assert task._candidates_written == 0
+
+    async def test_result_carries_the_run_uuid_instead_of_the_candidates(self, monkeypatch):
+        self._fake_api(monkeypatch)
+        task = _make_task(_base_params(preview_run_uuid="run-1"))
+        await task._init(task._params, None)
+        task._candidates = [{"imageUuid": "img-1", "bboxUuid": "bbox-1", "proposedLabelUuid": "dog", "confidence": 0.9}]
+        await task._flush_candidates(force=True)
+
+        result = task._build_result()
+        assert result["preview_run_uuid"] == "run-1"
+        assert result["candidates"] == []
+        # The count still reflects everything written, not the empty buffer.
+        assert result["candidate_count"] == 1
+
+    async def test_conflict_policy_is_threaded_through(self, monkeypatch):
+        calls = self._fake_api(monkeypatch)
+        task = _make_task(_base_params(preview_run_uuid="run-1", conflict_policy="first"))
+        await task._init(task._params, None)
+        task._candidates = [{"imageUuid": "img-1", "bboxUuid": "bbox-1", "proposedLabelUuid": "dog", "confidence": 0.9}]
+        await task._flush_candidates(force=True)
+        assert calls[0][1].conflict_policy == "first"
+
+    async def test_invalid_conflict_policy_raises(self):
+        task = _make_task(_base_params(conflict_policy="middle"))
+        with pytest.raises(ValueError, match="conflict_policy"):
+            await task._init(task._params, None)

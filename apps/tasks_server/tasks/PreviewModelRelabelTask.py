@@ -24,6 +24,17 @@ Detections whose class isn't mapped to a label UUID (`det.label_uuid is None`)
 fall back to a name match against the project's label names (mirrors the
 manual single-image "Run Model" UI, which already tolerates unmapped classes
 by displaying the raw class string) before being discarded.
+
+Optional `preview_run_uuid`: when set, candidates are streamed into the
+`preview_candidates` table for that run as they are found and the one-shot
+result carries only `{preview_run_uuid, <stats>}` instead of the whole candidate
+array — so a 5,000-candidate run isn't serialized through the browser, and the
+result survives the modal being closed.
+
+⚠️ "This task never writes to the DB" above is about **annotation** tables —
+bboxes, labels and tags are still untouched, and nothing here changes an image.
+`preview_candidates` is scratch state describing a proposal; it becomes an
+annotation only when the user applies the run.
 """
 
 import asyncio
@@ -33,7 +44,10 @@ from typing import Any, Dict, List, Optional, Set
 
 from db_client.api.images_api import ImagesApi
 from db_client.api.labels_api import LabelsApi
+from db_client.api.preview_runs_api import PreviewRunsApi
+from db_client.models.add_preview_candidates_payload import AddPreviewCandidatesPayload
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
+from db_client.models.preview_candidate_create import PreviewCandidateCreate
 from inference_client.api.models_api import ModelsApi as InferenceModelsApi
 from inference_client.models.pin_model_payload import PinModelPayload
 
@@ -66,6 +80,11 @@ _SANITY_MAX_BBOX_UUIDS = 50_000
 
 # Images fetched per batch_images_by_uuids round-trip.
 _IMAGE_BATCH_SIZE = 32
+
+# Candidates buffered before being flushed into preview_candidates. Sized so a
+# large run makes tens of round-trips rather than thousands, while keeping the
+# in-memory buffer (and therefore what a crash loses) small.
+_CANDIDATE_FLUSH_SIZE = 500
 
 
 @register_task()
@@ -110,8 +129,22 @@ class PreviewModelRelabelTask(Task):
             )
         self._bbox_uuids: Set[str] = set(bbox_uuids)
 
+        # When set, candidates are written into this persisted preview run as the
+        # task goes and the result carries only the uuid + stats. See the module
+        # docstring for why this does not violate the "never writes to the DB"
+        # invariant.
+        self._preview_run_uuid: Optional[str] = params.get("preview_run_uuid") or None
+        self._conflict_policy: str = str(params.get("conflict_policy") or "last")
+        if self._conflict_policy not in ("last", "first"):
+            raise ValueError(f"conflict_policy must be 'last' or 'first', got {self._conflict_policy!r}")
+
         self._images_processed: int = resume_data.get("images_processed", 0) if resume_data else 0
+        # In preview-run mode this is only the *unflushed* tail: flushed
+        # candidates are dropped from memory (and from the checkpoint), so a
+        # resume cannot re-insert them. `_candidates_written` carries the count
+        # the result reports.
         self._candidates: List[Dict[str, Any]] = list(resume_data.get("candidates", [])) if resume_data else []
+        self._candidates_written: int = resume_data.get("candidates_written", 0) if resume_data else 0
         self._processed_image_uuids: set = set(resume_data.get("processed_image_uuids", [])) if resume_data else set()
 
         # Diagnostics so a run that finds zero candidates says *why* (image load
@@ -206,9 +239,19 @@ class PreviewModelRelabelTask(Task):
                 self._images_processed += 1
                 self._processed_image_uuids.add(image_uuid)
 
+            # Before the checkpoint below, so a resume never re-inserts what has
+            # already landed in the run.
+            try:
+                await self._flush_candidates()
+            except Exception as e:
+                logger.exception("Failed to flush preview candidates; will retry on the next batch")
+                if len(self._sample_errors) < 5:
+                    self._sample_errors.append(f"preview candidate flush: {e}")
+
+            found = self._candidates_written + len(self._candidates)
             progress = min(100.0, self._images_processed / max(total, 1) * 100.0)
             self._update_progress(progress)
-            self.log(f"Processed {self._images_processed}/{total} image(s), {len(self._candidates)} candidate(s)")
+            self.log(f"Processed {self._images_processed}/{total} image(s), {found} candidate(s)")
 
             if self._data_req_flag.is_set():
                 self._data_req_flag.clear()
@@ -218,10 +261,12 @@ class PreviewModelRelabelTask(Task):
             await self.heartbeat()
             await asyncio.sleep(0)
 
+        await self._flush_candidates(force=True)
         self._resume_data = self._build_resume_data()
         self._data_ready_flag.set()
         self.log(
-            f"Complete: {len(self._candidates)} candidate relabel(s) from {self._images_processed} image(s) "
+            f"Complete: {self._candidates_written + len(self._candidates)} candidate relabel(s) "
+            f"from {self._images_processed} image(s) "
             f"({self._images_failed} failed to load/process, {self._no_detection_count} bbox(es) unmatched, "
             f"{self._no_op_count} bbox(es) already correctly labeled)"
         )
@@ -468,10 +513,50 @@ class PreviewModelRelabelTask(Task):
     async def _load_image_bytes(self, filename: str, images_api: ImagesApi) -> bytes:
         return await load_image_bytes(filename, self._image_source, images_api, FILES_ROOT)
 
+    async def _flush_candidates(self, force: bool = False) -> None:
+        """Write the buffered candidates into the persisted preview run.
+
+        No-op unless `preview_run_uuid` was given — without it the task behaves
+        exactly as it always did, accumulating in memory and returning the whole
+        array.
+
+        Flushed candidates are removed from `self._candidates` so they leave the
+        checkpoint too: a resumed run must not re-insert what it already wrote.
+        A failed flush keeps the buffer, so the next flush (or the final forced
+        one) retries it rather than losing the work.
+        """
+        if not self._preview_run_uuid or not self._candidates:
+            return
+        if not force and len(self._candidates) < _CANDIDATE_FLUSH_SIZE:
+            return
+
+        batch = self._candidates
+        payload = AddPreviewCandidatesPayload(
+            candidates=[
+                PreviewCandidateCreate(
+                    image_uuid=c["imageUuid"],
+                    bbox_uuid=c.get("bboxUuid"),
+                    is_new=bool(c.get("isNew")),
+                    current_label_uuid=c.get("currentLabelUuid"),
+                    proposed_label_uuid=c["proposedLabelUuid"],
+                    confidence=float(c.get("confidence") or 0.0),
+                    geometry=c.get("geometry"),
+                    source_model=self._model_name,
+                )
+                for c in batch
+            ],
+            conflict_policy=self._conflict_policy,
+        )
+        api = PreviewRunsApi(self._manager.get_db_api_client())
+        await asyncio.to_thread(api.add_preview_candidates, self._preview_run_uuid, payload)
+        self._candidates_written += len(batch)
+        self._candidates = []
+
     def _build_resume_data(self) -> Dict[str, Any]:
         return {
             "images_processed": self._images_processed,
             "candidates": self._candidates,
+            "candidates_written": self._candidates_written,
             "processed_image_uuids": sorted(self._processed_image_uuids),
             "images_failed": self._images_failed,
             "sample_errors": self._sample_errors,
@@ -481,10 +566,10 @@ class PreviewModelRelabelTask(Task):
         }
 
     def _build_result(self) -> Dict[str, Any]:
-        return {
+        result = {
             "images_processed": self._images_processed,
             "bbox_count": len(self._bbox_uuids),
-            "candidate_count": len(self._candidates),
+            "candidate_count": self._candidates_written + len(self._candidates),
             "candidates": self._candidates,
             "images_failed": self._images_failed,
             "sample_errors": self._sample_errors,
@@ -492,6 +577,12 @@ class PreviewModelRelabelTask(Task):
             "no_op_count": self._no_op_count,
             "new_boxes_found": self._new_boxes_found,
         }
+        if self._preview_run_uuid:
+            # The candidates live in the DB now; shipping them through the
+            # one-shot result as well would defeat the point of persisting them.
+            result["preview_run_uuid"] = self._preview_run_uuid
+            result["candidates"] = []
+        return result
 
     async def _deinit(self) -> None:
         if not self._pin_id:
@@ -515,6 +606,8 @@ class PreviewModelRelabelTask(Task):
                     "iou_thresh",
                     "image_uuids",
                     "bbox_uuids",
+                    "preview_run_uuid",
+                    "conflict_policy",
                 ],
             },
             "model_name": {
@@ -574,6 +667,27 @@ class PreviewModelRelabelTask(Task):
                     "Explicit list of bbox UUIDs to preview relabels for. May be empty only when "
                     "crop_mode is 'image' and add_new is set — every candidate then comes from "
                     "new-box detection instead of relabeling an existing bbox."
+                ),
+            },
+            "preview_run_uuid": {
+                "type": "str",
+                "label": "Preview Run UUID",
+                "required": False,
+                "description": (
+                    "Persist candidates into this preview run as they are found, instead of "
+                    "returning them all in the one-shot result. Several models sharing one uuid "
+                    "land in the same run."
+                ),
+            },
+            "conflict_policy": {
+                "type": "str",
+                "label": "Multi-Model Conflict Policy",
+                "default": "last",
+                "options": ["last", "first"],
+                "description": (
+                    "When several models propose on the same bbox in one preview run, whether "
+                    "the later model overwrites the earlier one ('last') or the first proposal "
+                    "is kept ('first'). Only meaningful with preview_run_uuid set."
                 ),
             },
         }
