@@ -380,6 +380,16 @@ class TestBandNormalizationMatchesBackend:
         band = self._edit_and_save(page, base_url, 0.2, min_fill="5", max_fill="9")
         assert band == {"min": 1, "max": 1}, f"Out-of-range band should clamp into [0, 1], got {band}"
 
+    def test_max_zero_survives_save_as_review_disabled_not_clamped_to_min(self, page: Page, base_url: str):
+        """Setting max to 0 with a nonzero min means 'tag this label, but never
+        let it alone trigger a review' — a distinct signal from a genuine
+        inversion, which must not be coerced to `max = min` here."""
+        band = self._edit_and_save(page, base_url, 0.2, min_fill="0.6", max_fill="0")
+        assert band == {
+            "min": 0.6,
+            "max": 0,
+        }, f"max=0 should survive save as review-disabled, not collapse to max=min, got {band}"
+
     def test_saved_inverted_band_displays_as_backend_reads_it(self, page: Page, base_url: str):
         """Load side: an already-saved inverted band renders as the backend
         reads it, instead of the UI showing 0.9/0.1 forever while the task

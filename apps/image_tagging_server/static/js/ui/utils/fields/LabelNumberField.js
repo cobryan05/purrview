@@ -38,8 +38,18 @@ function normalizeBand(value) {
     max = 1;
   }
 
-  // Same defensive clamps as `_parse_confidence_band`, in the same order.
   min = Math.min(1, Math.max(0, min));
+
+  // max = 0 is a distinct signal from a merely-inverted band (max > 0 but
+  // max < min): the backend's `_parse_confidence_band` treats an explicit
+  // zero ceiling as its own state rather than clamping it up to min, so this
+  // must pass it through untouched too — a caller may give max=0 its own
+  // meaning, same as it already does for min=0.
+  if (max <= 0) {
+    return { min, max: 0 };
+  }
+
+  // Same defensive clamps as `_parse_confidence_band`, in the same order.
   max = Math.min(1, Math.max(0, max));
   if (max < min) max = min;
   return { min, max };

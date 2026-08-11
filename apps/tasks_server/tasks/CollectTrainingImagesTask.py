@@ -81,12 +81,21 @@ class ConfidenceBand:
     The wire format's bare scalar (`labelValues: {labelUuid: 0.25}`, every
     already-saved task config) means `{min: 0.25, max: 1.0}` — today's
     floor-only behaviour, unchanged. See `_parse_confidence_band`.
+
+    `review_disabled` is the mirror image of "min <= 0 disables the label":
+    an explicit `max` of 0 means "still tag this label, but never let it be
+    the reason a frame gets saved for review" — set when the UI's 'Review
+    up to' field is 0. `contains()` always returns False in that state,
+    regardless of `max_confidence` (which is otherwise unused/meaningless).
     """
 
     min_confidence: float
     max_confidence: float = 1.0
+    review_disabled: bool = False
 
     def contains(self, confidence: float) -> bool:
+        if self.review_disabled:
+            return False
         return self.min_confidence <= confidence <= self.max_confidence
 
 
@@ -108,6 +117,10 @@ def _parse_confidence_band(raw: Any) -> Optional[ConfidenceBand]:
     zero-confidence" convention, where the UI writes 0 to mean "not
     collecting this label") when the parsed floor is <= 0 or the value can't
     be parsed as a number at all.
+
+    An explicit `max` of 0 in the band dict means "review disabled" — the
+    label still gets tagged (min still applies in `_annotatable`), but it
+    can never itself trigger a frame save (see `ConfidenceBand.contains`).
     """
     if isinstance(raw, dict):
         try:
@@ -128,15 +141,23 @@ def _parse_confidence_band(raw: Any) -> Optional[ConfidenceBand]:
     if min_f <= 0:
         return None
 
-    # Defensive clamps: keep both bounds in [0, 1] and max >= min, so a
-    # malformed/inverted band (e.g. {"min": 0.6, "max": 0.2}) degrades to a
-    # single-point band rather than silently never matching or matching
-    # everything.
     min_f = max(0.0, min(1.0, min_f))
-    max_f = max(0.0, min(1.0, max_f))
-    if max_f < min_f:
-        max_f = min_f
-    return ConfidenceBand(min_confidence=min_f, max_confidence=max_f)
+
+    review_disabled = max_f <= 0
+    if review_disabled:
+        # max_confidence is meaningless while review is disabled (contains()
+        # short-circuits on the flag); keep it valid for the merge-union math
+        # in _init.
+        max_f = 1.0
+    else:
+        # Defensive clamps: keep both bounds in [0, 1] and max >= min, so a
+        # malformed/inverted band (e.g. {"min": 0.6, "max": 0.2}) degrades to
+        # a single-point band rather than silently never matching or
+        # matching everything.
+        max_f = max(0.0, min(1.0, max_f))
+        if max_f < min_f:
+            max_f = min_f
+    return ConfidenceBand(min_confidence=min_f, max_confidence=max_f, review_disabled=review_disabled)
 
 
 @register_task()
@@ -254,10 +275,13 @@ class CollectTrainingImagesTask(Task):
                     # (loosest min, loosest max) so a detection in-band for either
                     # config's range still counts. For the all-scalar case (max
                     # always 1.0) this reduces to the pre-Phase-5B behaviour of
-                    # taking the min of the two floors.
+                    # taking the min of the two floors. Review is only disabled
+                    # for the merged label if BOTH configs disabled it — one
+                    # config still wanting review for this label should win.
                     band = ConfidenceBand(
                         min_confidence=min(existing.min_confidence, band.min_confidence),
                         max_confidence=max(existing.max_confidence, band.max_confidence),
+                        review_disabled=existing.review_disabled and band.review_disabled,
                     )
                 label_bands[label_uuid] = band
         self._model_names: list[str] = ordered_model_names
@@ -2296,7 +2320,9 @@ class CollectTrainingImagesTask(Task):
                     "is saved, no matter how confident they are. Set to 0 to disable the label.\n"
                     "• Review up to — a frame is only collected when some detection falls at or below "
                     "this. Detections above it are still boxed on frames saved for something else; "
-                    "they just aren't a reason to save a frame on their own.\n\n"
+                    "they just aren't a reason to save a frame on their own. Set to 0 to tag the label "
+                    "without ever letting it trigger a review on its own — it'll still be boxed on any "
+                    "frame saved for another reason.\n\n"
                     "That split is the point: a detection your model is already certain about "
                     "(say a cat at 0.95) teaches you nothing at review time, while the 0.4 guesses are "
                     "where your labelling actually adds signal. Lower 'Review up to' to collect only "
@@ -2315,7 +2341,8 @@ class CollectTrainingImagesTask(Task):
                     "band_help": (
                         "Select a model, then set each label's range: tag anything at or above "
                         "'Tag from' (0 disables the label), but only save the frame for review when a "
-                        "detection is also at or below 'Review up to'."
+                        "detection is also at or below 'Review up to' (0 disables review for this label "
+                        "without disabling tagging)."
                     ),
                 },
             },

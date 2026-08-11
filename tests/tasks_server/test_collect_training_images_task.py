@@ -2598,6 +2598,18 @@ class TestParseConfidenceBand:
         band = _parse_confidence_band({"min": 0.3, "max": 5.0})
         assert band == ConfidenceBand(min_confidence=0.3, max_confidence=1.0)
 
+    def test_max_zero_means_review_disabled_not_a_single_point(self):
+        """Unlike a generic inverted band (max < min), an explicit max of 0 is
+        the UI's 'Review up to' = 0 convention: tag the label, but never let
+        it trigger a review on its own."""
+        band = _parse_confidence_band({"min": 0.6, "max": 0})
+        assert band.min_confidence == 0.6
+        assert band.review_disabled is True
+
+    def test_max_zero_with_low_min_is_also_review_disabled(self):
+        band = _parse_confidence_band({"min": 0.1, "max": 0.0})
+        assert band.review_disabled is True
+
 
 class TestConfidenceBandContains:
     def test_inclusive_at_min_and_max(self):
@@ -2610,6 +2622,12 @@ class TestConfidenceBandContains:
         band = ConfidenceBand(min_confidence=0.2, max_confidence=0.6)
         assert band.contains(0.2 - 1e-9) is False
         assert band.contains(0.6 + 1e-9) is False
+
+    def test_review_disabled_never_contains_anything(self):
+        band = ConfidenceBand(min_confidence=0.2, max_confidence=1.0, review_disabled=True)
+        assert band.contains(0.2) is False
+        assert band.contains(0.5) is False
+        assert band.contains(1.0) is False
 
 
 class TestConfidenceBandScalarBackCompat:
@@ -2839,6 +2857,111 @@ class TestConfidenceBandTriggerVsAnnotation:
         inference_api.detect.return_value.result.detections = [only_out_of_band]
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert matching == []
+
+
+class TestConfidenceBandReviewDisabled:
+    """'Review up to' = 0 tags a label without letting it trigger a review on
+    its own, mirroring 'Tag from' = 0 disabling the label outright."""
+
+    _LABEL_REVIEW_DISABLED = _LABEL_UUID
+    _LABEL_NORMAL = "label-normal-band"
+
+    async def test_in_band_detection_for_review_disabled_label_does_not_trigger_alone(self):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {self._LABEL_REVIEW_DISABLED: {"min": 0.3, "max": 0}},
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=0.9)
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [det]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        assert matching == []
+
+    async def test_review_disabled_label_is_still_annotated_when_another_label_triggers(self):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {
+                        self._LABEL_REVIEW_DISABLED: {"min": 0.3, "max": 0},
+                        self._LABEL_NORMAL: {"min": 0.2, "max": 0.8},
+                    },
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        review_disabled_det = _detection_at(
+            0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=0.9
+        )
+        triggering_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_NORMAL, confidence=0.5)
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [review_disabled_det, triggering_det]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        assert review_disabled_det in matching
+        assert triggering_det in matching
+
+    async def test_below_min_review_disabled_detection_is_not_annotated(self):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {
+                        self._LABEL_REVIEW_DISABLED: {"min": 0.3, "max": 0},
+                        self._LABEL_NORMAL: {"min": 0.2, "max": 0.8},
+                    },
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        below_min_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=0.1)
+        triggering_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_NORMAL, confidence=0.5)
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [below_min_det, triggering_det]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        assert matching == [triggering_det]
+
+    async def test_all_labels_review_disabled_never_saves_a_frame(self):
+        params = {
+            **_PARAMS,
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {self._LABEL_REVIEW_DISABLED: {"min": 0.3, "max": 0}},
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=1.0)
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [det]
+
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
         assert matching == []
 
 
