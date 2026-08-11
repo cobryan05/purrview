@@ -1114,3 +1114,45 @@ class TestCanvasSaveMetadataPreservation:
         await self._save(http_client, "meta_new.png", bbox_uuid, label_uuid, extra={"source_confidence": "0.82"})
 
         assert (await self._metadata(http_client, "meta_new.png"))["source_confidence"] == "0.82"
+
+
+class TestGeneratedClientBboxMetadataRoundTrip:
+    """The generated db_client is how background tasks write bboxes, and its
+    field name for metadata (`bbox_meta`) differs from the server model's
+    (`extra`). Asserting on the model object alone can't catch a mismatch here —
+    pydantic ignores unknown kwargs — so this drives the real endpoint.
+    """
+
+    async def test_task_shaped_payload_persists_metadata(self, http_client, files_root):
+        import json
+
+        from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+        from db_client.models.update_metadata_payload import UpdateMetadataPayload
+
+        (files_root / "collect.png").write_bytes(make_png())
+        label_uuid = (await http_client.post("/api/labels", json={"name": "Collected", "color": "#f00"})).json()[
+            "label"
+        ]["uuid"]
+
+        # Built exactly as CollectTrainingImagesTask builds it.
+        payload = UpdateMetadataPayload(
+            image_path="collect.png",
+            boxes=[
+                BoundingBoxMetadataModel(
+                    bbox_uuid="bbox-collect-1",
+                    x=0.1,
+                    y=0.1,
+                    width=0.2,
+                    height=0.2,
+                    label_uuid=label_uuid,
+                    tag_uuids=[UNVERIFIED_TAG_UUID],
+                    bbox_meta={"confidence": str(0.6231)},
+                )
+            ],
+        )
+
+        r = await http_client.post("/api/images/metadata/update", json=json.loads(payload.to_json()))
+        assert r.status_code == 200, r.text
+
+        r = await http_client.post("/api/images/metadata/get", json={"imagePath": "collect.png"})
+        assert r.json()["image"]["bboxes"][0]["metadataJson"] == {"confidence": "0.6231"}

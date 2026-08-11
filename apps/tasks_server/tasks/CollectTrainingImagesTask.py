@@ -1811,7 +1811,13 @@ class CollectTrainingImagesTask(Task):
                     label_uuid=det.bbox.label_uuid,
                     class_str=det.bbox.class_str,
                     tag_uuids=[self._unverified_tag_uuid, *extra_tags, *filter_chain_tags],
-                    extra={"confidence": str(det.confidence)},
+                    # ⚠️ `bbox_meta`, NOT `extra`. The server model declares
+                    # AliasChoices("bbox_meta", "extra") and the OpenAPI
+                    # generator takes the first choice as the generated field
+                    # name. Pydantic ignores unknown kwargs, so `extra=` was
+                    # accepted, silently dropped, and every bbox this task wrote
+                    # landed with metadata_json = {}.
+                    bbox_meta={"confidence": str(det.confidence)},
                 )
             )
             seed_bboxes.append(self._build_seed_bbox(det, bbox_uuid))

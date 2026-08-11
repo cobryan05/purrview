@@ -3787,3 +3787,66 @@ class TestTaskTagsAreAppliedAtImageLevel:
         await task._save_image(images_api, provided, [], tmp_path)
 
         assert [c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list] == ["tag-a"]
+
+
+class TestBboxConfidenceReachesTheWire:
+    """The confidence CollectTrainingImagesTask records must survive
+    serialization by the **generated** db_client.
+
+    ⚠️ The generated model's field is `bbox_meta`, not `extra` — the server-side
+    model declares `AliasChoices("bbox_meta", "extra")` and the OpenAPI generator
+    takes the *first* choice as the field name. Pydantic ignores unknown kwargs,
+    so passing `extra=` was accepted, silently dropped, and every bbox this task
+    wrote landed with `metadata_json = {}`. Nothing raised, so no test that
+    stopped at the model object could have caught it — this one asserts on the
+    serialized wire payload.
+    """
+
+    @staticmethod
+    def _box(**overrides):
+        from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+
+        kwargs = {
+            "bbox_uuid": "bbox-1",
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.2,
+            "height": 0.2,
+            "label_uuid": "lbl-1",
+            "tag_uuids": ["tag-1"],
+        }
+        kwargs.update(overrides)
+        return BoundingBoxMetadataModel(**kwargs)
+
+    def test_confidence_is_present_in_the_serialized_payload(self):
+        import json
+
+        from db_client.models.update_metadata_payload import UpdateMetadataPayload
+
+        box = self._box(bbox_meta={"confidence": "0.82"})
+        payload = UpdateMetadataPayload(image_path="x.jpg", boxes=[box])
+        wire = json.loads(payload.to_json())["boxes"][0]
+
+        assert "bbox_meta" in wire, f"confidence never reached the wire: {wire}"
+        assert wire["bbox_meta"] == {"confidence": "0.82"}
+
+    def test_server_model_parses_that_payload_back_into_extra(self):
+        """Closes the loop: the generated client's `bbox_meta` must land on the
+        server model's `extra`, which web.py maps onto metadata_json."""
+        import json
+
+        from db_client.models.update_metadata_payload import UpdateMetadataPayload
+
+        from apps.helpers.types import BoundingBoxMetadataModel as ServerModel
+
+        payload = UpdateMetadataPayload(image_path="x.jpg", boxes=[self._box(bbox_meta={"confidence": "0.82"})])
+        parsed = ServerModel.model_validate(json.loads(payload.to_json())["boxes"][0])
+
+        assert parsed.extra == {"confidence": "0.82"}
+
+    def test_the_extra_kwarg_is_silently_ignored(self):
+        """Documents the trap itself, so nobody "tidies" the call site back to
+        `extra=` — it does not error, it just quietly loses the data."""
+        box = self._box(extra={"confidence": "0.82"})
+        assert box.bbox_meta is None
+        assert not hasattr(box, "extra")
