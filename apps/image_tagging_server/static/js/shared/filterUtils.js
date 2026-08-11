@@ -147,3 +147,57 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     bboxVerification: bboxVerificationTerm?.state ?? 'any',
   };
 }
+
+/**
+ * Map a review filter-panel state to the option object the review-query APIs
+ * (`fetchReviewQueue`, `countMatchingBboxes`, the bulk-apply endpoints) take.
+ *
+ * The single source of truth for that mapping. Every call site used to spell it
+ * out inline, and the copies drifted: the "Run Model on Results" scope
+ * resolvers never picked up `filenameNegate`/`dateNegate`/`imageTagConditions`/
+ * the confidence band, so the modal resolved a *different* set than the toolbar
+ * counted — and for the negate flags it resolved the exact complement (a
+ * "filename does NOT contain office" filter reached the server as "filename
+ * contains office"). Add a new filter dimension here and every consumer gets it.
+ *
+ * Pagination (`afterUuid`/`afterSortValue`/`limit`), `requireBboxes` and
+ * `sortBy`/`sortOrder` are deliberately NOT included — they differ per call
+ * site and stay spelled out there.
+ *
+ * @param {object} reviewState - object from filterPanel.getState()
+ * @param {{viewFilter?: 'all'|'images'|'bboxes', trainingLabelUuids?: Iterable<string>}} [opts]
+ *   `viewFilter` gates the whole-image-only `verificationCheck` out of bbox
+ *   view (V2: the check is meaningless there, and sending it would silently
+ *   filter bbox results by it). `trainingLabelUuids` is the active training
+ *   config's target labels, which override `labelUuids` as the check's target.
+ * @returns {object} options for buildReviewFilterBody-backed API calls
+ */
+export function reviewStateToFilterOpts(reviewState, { viewFilter = 'all', trainingLabelUuids = [] } = {}) {
+  const fs = reviewState ?? {};
+  const verificationCheck = viewFilter === 'bboxes' ? null : (fs.verificationCheck ?? null);
+  return {
+    // Left possibly-undefined on purpose: fetchReviewQueue defaults an absent
+    // tagUuids to [UNVERIFIED_TAG_UUID], and `?? []` here would suppress that.
+    tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
+    tagExcludeUuids: fs.tagExcludeUuids ?? [],
+    showAllBboxes: fs.showAllBboxes,
+    tagMatchMode: fs.tagMatchMode,
+    labelUuids: fs.labelUuids,
+    labelExcludeUuids: fs.labelExcludeUuids ?? [],
+    labelMatchMode: fs.labelMatchMode,
+    labelIncludeChildren: fs.labelIncludeChildren,
+    imageLabelConditions: fs.imageLabelConditions ?? [],
+    imageTagConditions: fs.imageTagConditions ?? [],
+    filenameSearch: fs.filenameSearch || undefined,
+    filenameNegate: fs.filenameNegate ?? false,
+    dateFrom: fs.dateFrom || undefined,
+    dateTo: fs.dateTo || undefined,
+    dateNegate: fs.dateNegate ?? false,
+    verificationCheck,
+    verificationLabelUuids: verificationCheck ? [...trainingLabelUuids] : [],
+    bboxVerification: fs.bboxVerification,
+    confidenceMin: fs.confidenceMin ?? null,
+    confidenceMax: fs.confidenceMax ?? null,
+    confidenceIncludeMissing: fs.confidenceIncludeMissing ?? false,
+  };
+}

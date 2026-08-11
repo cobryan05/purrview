@@ -27,6 +27,7 @@ import {
   VERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
+import { reviewStateToFilterOpts } from '/app-static/js/shared/filterUtils.js';
 import { fetchModelsList, fetchModelsKinds, clearModelsCache } from '/app-static/js/shared/api/models.js';
 import { fetchModelGroups, clearModelGroupsCache } from '/app-static/js/shared/api/modelGroups.js';
 import { expandModelGroupMembers } from '/app-static/js/shared/modelGroups/expand.js';
@@ -160,6 +161,21 @@ export function truncateScope(scope, limit) {
 }
 
 /**
+ * The current filter state as review-query options, shared by both scope
+ * resolvers below. Delegates to the same mapping review/main.js's toolbar
+ * counts use, so "Run Model on Results" resolves exactly the set the toolbar
+ * counted. These call sites used to spell the mapping out inline and had
+ * drifted — dropping `filenameNegate`/`dateNegate` turned a "does NOT contain"
+ * filter into "contains", i.e. the complement of the user's filter.
+ */
+function _reviewFilterOpts(fs, viewFilter) {
+  return reviewStateToFilterOpts(fs, {
+    viewFilter,
+    trainingLabelUuids: activeTrainingConfig.getLabelUuids(),
+  });
+}
+
+/**
  * Resolves the candidate bbox/image scope for "Run Model on Results", mirroring
  * the existing Bulk Apply / Apply to All selection split:
  *   - bboxes selected  → those bboxes, in memory.
@@ -202,29 +218,10 @@ export async function resolveCandidateScope(ctx) {
 
   const fs = filterPanel.getState();
   const { images } = await fetchReviewQueue({
-    tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
-    tagExcludeUuids: fs.tagExcludeUuids ?? [],
-    showAllBboxes: fs.showAllBboxes,
-    tagMatchMode: fs.tagMatchMode,
-    labelUuids: fs.labelUuids,
-    labelExcludeUuids: fs.labelExcludeUuids ?? [],
-    labelMatchMode: fs.labelMatchMode,
-    labelIncludeChildren: fs.labelIncludeChildren,
-    imageLabelConditions: fs.imageLabelConditions ?? [],
+    ..._reviewFilterOpts(fs, viewFilter),
     requireBboxes: viewFilter === 'bboxes',
     sortBy,
     sortOrder,
-    filenameSearch: fs.filenameSearch || undefined,
-    dateFrom: fs.dateFrom || undefined,
-    dateTo: fs.dateTo || undefined,
-    // V2: "Config Ready" is whole-image-only — gate both the check itself and
-    // its label-uuids override out of the request in bboxes view (mirrors
-    // main.js's _verificationCheckFor / _verificationLabelUuidsFor).
-    verificationCheck: viewFilter === 'bboxes' ? null : fs.verificationCheck,
-    verificationLabelUuids: (fs.verificationCheck && viewFilter !== 'bboxes')
-      ? [...activeTrainingConfig.getLabelUuids()]
-      : [],
-    bboxVerification: fs.bboxVerification,
     limit: Number.MAX_SAFE_INTEGER,
   });
   const predicate = makeBboxFilterPredicate({ fetchImagesMode: false, bboxFilterFn, fs, labels });
@@ -271,26 +268,10 @@ export async function resolveImageScope(ctx) {
 
   const fs = filterPanel.getState();
   const { images } = await fetchReviewQueue({
-    tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
-    tagExcludeUuids: fs.tagExcludeUuids ?? [],
-    showAllBboxes: fs.showAllBboxes,
-    tagMatchMode: fs.tagMatchMode,
-    labelUuids: fs.labelUuids,
-    labelExcludeUuids: fs.labelExcludeUuids ?? [],
-    labelMatchMode: fs.labelMatchMode,
-    labelIncludeChildren: fs.labelIncludeChildren,
-    imageLabelConditions: fs.imageLabelConditions ?? [],
+    ..._reviewFilterOpts(fs, viewFilter),
     requireBboxes: viewFilter === 'bboxes',
     sortBy,
     sortOrder,
-    filenameSearch: fs.filenameSearch || undefined,
-    dateFrom: fs.dateFrom || undefined,
-    dateTo: fs.dateTo || undefined,
-    verificationCheck: viewFilter === 'bboxes' ? null : fs.verificationCheck,
-    verificationLabelUuids: (fs.verificationCheck && viewFilter !== 'bboxes')
-      ? [...activeTrainingConfig.getLabelUuids()]
-      : [],
-    bboxVerification: fs.bboxVerification,
     limit: Number.MAX_SAFE_INTEGER,
   });
   return _collectAllFromImages(images);

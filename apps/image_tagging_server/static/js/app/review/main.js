@@ -59,7 +59,7 @@ import { setupSidebarTabs } from '/app-static/js/app/utils/tabs.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
-import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
+import { reviewStateToDatasetForm, datasetFormToReviewState, reviewStateToFilterOpts } from '/app-static/js/shared/filterUtils.js';
 import { fetchViews, createDataset, updateDataset } from '/app-static/js/shared/api/datasets.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
@@ -1010,51 +1010,18 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     ...VERIFICATION_TAG_UUIDS,
   ]);
 
-  // V2: "Config Ready" (verificationCheck) is repointed from the Labels-dropdown
-  // selection to the active training config's target labels, and is whole-image
-  // (not meaningful in bboxes view). Returns [] when there's no verificationCheck
-  // to run, no active config, or we're in bboxes view — callers only attach
-  // verificationLabelUuids to the request when this is non-empty.
-  function _verificationLabelUuidsFor(fs) {
-    if (!fs.verificationCheck) return [];
-    if (_viewFilter === 'bboxes') return [];
-    return [...activeTrainingConfig.getLabelUuids()];
-  }
-
-  // Gate verificationCheck itself out of the request in bboxes view — the
-  // check is whole-image-only (V2), so sending it there would silently filter
-  // bbox-view results by a check that's meaningless in that context.
-  function _verificationCheckFor(fs) {
-    return _viewFilter === 'bboxes' ? null : fs.verificationCheck;
-  }
-
-  // Filter fields shared verbatim between the two fetchReviewQueue call sites
-  // below (_getFilteredImageUuids and the main render() query) — everything
+  // Filter fields shared by every review-query call site here — everything
   // except pagination (afterUuid/afterSortValue/limit), requireBboxes and
-  // sortBy/sortOrder, which differ per call site and stay inline at the
-  // call site. Extracted here (PR 1.5) purely to remove byte-identical
-  // duplication; the two blocks were already field-for-field identical.
+  // sortBy/sortOrder, which differ per call site and stay inline at the call
+  // site. The mapping itself lives in shared/filterUtils.js so the "Run Model
+  // on Results" scope resolvers (a separate module) resolve the same set these
+  // counts are built from — the inline copies had drifted, dropping the
+  // negate flags and inverting the filter (see reviewStateToFilterOpts).
   function _baseReviewFilterOpts(fs) {
-    return {
-      tagUuids: fs.showAllBboxes ? [] : fs.tagUuids,
-      tagExcludeUuids: fs.tagExcludeUuids ?? [],
-      showAllBboxes: fs.showAllBboxes,
-      tagMatchMode: fs.tagMatchMode,
-      labelUuids: fs.labelUuids,
-      labelExcludeUuids: fs.labelExcludeUuids ?? [],
-      labelMatchMode: fs.labelMatchMode,
-      labelIncludeChildren: fs.labelIncludeChildren,
-      imageLabelConditions: fs.imageLabelConditions ?? [],
-      imageTagConditions: fs.imageTagConditions ?? [],
-      filenameSearch: fs.filenameSearch || undefined,
-      filenameNegate: fs.filenameNegate ?? false,
-      dateFrom: fs.dateFrom || undefined,
-      dateTo: fs.dateTo || undefined,
-      dateNegate: fs.dateNegate ?? false,
-      verificationCheck: _verificationCheckFor(fs),
-      verificationLabelUuids: _verificationLabelUuidsFor(fs),
-      bboxVerification: fs.bboxVerification,
-    };
+    return reviewStateToFilterOpts(fs, {
+      viewFilter: _viewFilter,
+      trainingLabelUuids: activeTrainingConfig.getLabelUuids(),
+    });
   }
 
   // Bbox-level subset of the current filter — the same narrowing render()
@@ -2636,22 +2603,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     let last3 = [];
     try {
       const { images: lastImgs } = await fetchReviewQueue({
-        tagUuids: fs.showAllBboxes ? [] : (fs.tagUuids ?? []),
-        tagExcludeUuids: fs.tagExcludeUuids ?? [],
-        showAllBboxes: fs.showAllBboxes,
-        tagMatchMode: fs.tagMatchMode,
-        labelUuids: fs.labelUuids ?? [],
-        labelExcludeUuids: fs.labelExcludeUuids ?? [],
-        labelMatchMode: fs.labelMatchMode,
-        labelIncludeChildren: fs.labelIncludeChildren,
+        ..._baseReviewFilterOpts(fs),
         requireBboxes: true,
         sortBy,
         sortOrder: reversedOrder,
-        filenameSearch: fs.filenameSearch || undefined,
-        dateFrom: fs.dateFrom || undefined,
-        dateTo: fs.dateTo || undefined,
-        verificationCheck: _verificationCheckFor(fs),
-        verificationLabelUuids: _verificationLabelUuidsFor(fs),
         limit: 5,
       });
       const rawEntries = [];
