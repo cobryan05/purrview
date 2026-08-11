@@ -36,10 +36,10 @@ export const LABEL_ACTIONS = ['setPresent', 'setAbsent', 'setUncertain'];
 export async function showImageBulkActionModal(entries, labels, onConfirm, titleText = null, opts = {}) {
   const tags = await fetchTags().catch(() => new Map());
 
-  const _layer = acquireModalLayer({ dialog: true });
   const overlay = document.createElement('div');
-  overlay.style.cssText = `position:fixed;inset:0;background:#0008;display:flex;
-    align-items:center;justify-content:center;z-index:${_layer.zIndex};`;
+  overlay.className = 'bulk-modal-overlay';
+  const _layer = acquireModalLayer({ dialog: true, overlay });
+  overlay.style.zIndex = _layer.zIndex;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;

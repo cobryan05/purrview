@@ -1971,6 +1971,53 @@ button.filter-active {
 .card-state-badge.state-tagged {
   background: #aa44ff18; border: 1px solid #aa44ff; color: #cc88ff;
 }
+/* Preview-candidate decision states (cardGrid.js buildCandidateCard). Applied is
+   history; stale means the underlying bbox/image moved out from under the run. */
+.card-state-badge.state-applied {
+  background: #2288ff18; border: 1px solid var(--color-info); color: var(--color-info);
+}
+.card-state-badge.state-stale {
+  background: #ffaa0018; border: 1px solid var(--color-warning, #f0a030); color: var(--color-warning, #f0a030);
+}
+
+/* "This box's label changed after the model ran" — still applicable, but the
+   user should see it before accepting. */
+.label-chip.preview-changed-badge {
+  background: #ffaa0018;
+  border: 1px solid var(--color-warning, #f0a030);
+  color: var(--color-warning, #f0a030);
+}
+
+.label-chip.relabel-modal-new-badge {
+  background: #2e7d3233;
+  border: 1px solid #2e7d32;
+  color: #5cc45c;
+}
+
+/* A candidate the user rejected stays in the grid (so the decision is
+   reversible) but recedes. */
+.review-card[data-decision='rejected'],
+.review-card[data-decision='applied'] {
+  opacity: 0.55;
+}
+
+/* ── Preview triage panel (app/review/previewPanel.js) ──────────────────────
+   A run's toolbar/grid/footer inside the full-surface modal. The grid itself
+   is .review-grid — candidates are laid out exactly like review results. */
+.preview-panel__toolbar,
+.preview-panel__footer {
+  padding: 0.3em 0;
+  border-bottom: 1px solid var(--border);
+}
+.preview-panel__footer {
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5em;
+}
+
+.preview-run-row:last-child {
+  border-bottom: none !important;
+}
 
 .review-card .thumb {
   width: 100%;
@@ -2260,6 +2307,18 @@ button.filter-active {
   height: 100% !important;
 }
 
+/* ===== Shared modal backdrop arbitration (ui/utils/modalZIndex.js) =====
+   Every dialog still owns its own full-viewport overlay element, but only the
+   topmost one is allowed to dim: nested dialogs used to compound two or three
+   translucent black layers into a near-opaque page. acquireModalLayer() stamps
+   data-backdrop on each overlay that opts in.
+
+   !important because two overlays still set their background from inline
+   cssText, which no class or attribute selector can outrank. */
+[data-backdrop='clear'] {
+  background: transparent !important;
+}
+
 /* ===== Shared app modal shell (ui/utils/modalShell.js) ===== */
 .app-modal-overlay {
   position: fixed;
@@ -2276,10 +2335,31 @@ button.filter-active {
   border-radius: 8px;
   padding: 1.5em;
   min-width: 320px;
-  max-width: 480px;
+  max-width: var(--modal-w-sm);
   display: flex;
   flex-direction: column;
   gap: 1em;
+}
+
+/* Size modifiers — see the --modal-w-* scale in tokens.css. Use these instead
+   of overriding dialog.style at the call site. */
+.app-modal-dialog--md {
+  max-width: var(--modal-w-md);
+  width: 90vw;
+}
+
+.app-modal-dialog--lg {
+  max-width: var(--modal-w-lg);
+  width: 90vw;
+  max-height: 85vh;
+}
+
+/* Matches .compare-modal-dialog: a full working surface, not a dialog box. */
+.app-modal-dialog--full {
+  width: var(--modal-w-full);
+  height: var(--modal-h-full);
+  max-width: none;
+  overflow: hidden;
 }
 
 /* ===== File Browser (ui/fileBrowser.js) ===== */

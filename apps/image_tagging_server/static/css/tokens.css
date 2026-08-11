@@ -55,6 +55,19 @@
   --radius-lg: 6px;
   --radius-full: 999px;
 
+  /* ---- modal size scale ----
+   * Widths for .app-modal-dialog and its --md/--lg/--full modifiers. Before
+   * this scale every modal that needed more than the 480px base overrode
+   * `dialog.style.cssText` at its call site, so "how wide is a big modal"
+   * had as many answers as there were modals. --full deliberately matches
+   * .compare-modal-dialog (the search modal), which is the one that reads
+   * as correctly sized. */
+  --modal-w-sm: 560px;
+  --modal-w-md: 720px;
+  --modal-w-lg: 960px;
+  --modal-w-full: 92vw;
+  --modal-h-full: 90vh;
+
   /* ---- layer scale (z-index) ----
    * The single place the stacking order is decided (slice 6, PR 6.1). Before
    * this, six selectors each picked a number independently and the order was

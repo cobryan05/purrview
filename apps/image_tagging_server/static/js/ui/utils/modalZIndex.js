@@ -21,6 +21,15 @@
  * awaits (see the review canvas modal). Rewinding the band when the ESC stack
  * happened to empty therefore handed the same z-index to an overlay that had to
  * stack above one already on screen.
+ *
+ * ⚠️ Backdrop dimming is owned here too, for the same reason: every dialog used
+ * to append its **own** full-viewport dimmed overlay, so two nested dialogs
+ * compounded two translucent black layers into near-black and three were
+ * effectively opaque. Pass the overlay element to acquireModalLayer and only the
+ * topmost dialog overlay dims (`data-backdrop="dim"`); the ones below it go
+ * transparent (`data-backdrop="clear"`) and are re-dimmed as the stack unwinds.
+ * It is driven off acquire/release — the authoritative lifetime — not the ESC
+ * stack, so closing the top modal restores the one underneath it exactly.
  */
 
 /** Layer scale, read from tokens.css so the order lives in exactly one place. */
@@ -83,6 +92,17 @@ function _unlockBackgroundScroll() {
   }
 }
 
+// ── Backdrop stack ──────────────────────────────────────────────────────
+// Dialog overlays that opted in by passing themselves to acquireModalLayer,
+// in open order. Only the last one dims; see the module docstring.
+const _backdropStack = [];
+
+function _syncBackdrops() {
+  for (let i = 0; i < _backdropStack.length; i++) {
+    _backdropStack[i].dataset.backdrop = i === _backdropStack.length - 1 ? 'dim' : 'clear';
+  }
+}
+
 /**
  * Reserve a stacking slot strictly above every layer currently held.
  *
@@ -90,11 +110,15 @@ function _unlockBackgroundScroll() {
  * @param {boolean} [opts.dialog] - true for centred dialogs, which cascade off
  *   one another and lock background scroll. Popups, menus and flyouts are
  *   anchored to something and must not count toward that depth.
+ * @param {HTMLElement} [opts.overlay] - this dialog's full-viewport overlay. Pass
+ *   it to join the shared backdrop stack, so only the topmost dialog dims the
+ *   page. Optional: an overlay that doesn't pass one keeps whatever dimming its
+ *   own CSS gives it, exactly as before.
  * @returns {{ zIndex: number, depth: number, release: () => void }}
  *   `depth` is how many dialogs were already open; pass it to applyModalCascade.
  *   `release` is idempotent — call it from the overlay's close path.
  */
-export function acquireModalLayer({ dialog = false } = {}) {
+export function acquireModalLayer({ dialog = false, overlay = null } = {}) {
   // Clamp rather than wrap: at the top of the band successive overlays share
   // the ceiling, so DOM order decides. That is a cosmetic tie at absurd
   // nesting depth; escaping the band would put overlays over the bottom bars.
@@ -102,6 +126,10 @@ export function acquireModalLayer({ dialog = false } = {}) {
   _openLayers++;
   const depth = dialog ? _openDialogs++ : 0;
   if (dialog) _lockBackgroundScroll();
+  if (dialog && overlay) {
+    _backdropStack.push(overlay);
+    _syncBackdrops();
+  }
 
   let _released = false;
   return {
@@ -114,6 +142,13 @@ export function acquireModalLayer({ dialog = false } = {}) {
       if (dialog) {
         _openDialogs--;
         _unlockBackgroundScroll();
+      }
+      if (dialog && overlay) {
+        // Splice by identity rather than pop: modals do not always close in
+        // open order (a background one can be torn down programmatically).
+        const idx = _backdropStack.lastIndexOf(overlay);
+        if (idx !== -1) _backdropStack.splice(idx, 1);
+        _syncBackdrops();
       }
       // Nothing is open, so the band can start over — this is what keeps the
       // allocation bounded across a long session rather than only within one

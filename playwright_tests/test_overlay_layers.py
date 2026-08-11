@@ -144,6 +144,108 @@ class TestModalLayerBand:
 
 
 # ---------------------------------------------------------------------------
+# Backdrop stacking — only the topmost dialog dims
+# ---------------------------------------------------------------------------
+
+
+def _is_transparent(color: str) -> bool:
+    """getComputedStyle reports a fully-transparent background either way."""
+    return color in ("rgba(0, 0, 0, 0)", "transparent")
+
+
+class TestBackdropStacking:
+    def test_only_the_topmost_dialog_dims_the_page(self, shared_page: Page):
+        """Every dialog owns its own overlay, so dimming used to be additive.
+
+        Two nested dialogs compounded two translucent black layers into
+        near-black; three were effectively opaque. acquireModalLayer now
+        arbitrates, so the lower overlays go transparent.
+        """
+        result = shared_page.evaluate("""async () => {
+            const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const outer = createModalShell(); outer.open();
+            const inner = createModalShell(); inner.open();
+            const res = {
+                outerBackdrop: outer.overlay.dataset.backdrop,
+                innerBackdrop: inner.overlay.dataset.backdrop,
+                outerBg: getComputedStyle(outer.overlay).backgroundColor,
+                innerBg: getComputedStyle(inner.overlay).backgroundColor,
+            };
+            inner.close(); outer.close();
+            return res;
+        }""")
+        assert result["innerBackdrop"] == "dim"
+        assert result["outerBackdrop"] == "clear"
+        assert _is_transparent(result["outerBg"]), f"the covered overlay still dims ({result['outerBg']})"
+        assert not _is_transparent(result["innerBg"]), "the topmost overlay stopped dimming"
+
+    def test_closing_the_top_dialog_re_dims_the_one_beneath(self, shared_page: Page):
+        """Order matters in both directions — release() must restore the new top."""
+        result = shared_page.evaluate("""async () => {
+            const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const outer = createModalShell(); outer.open();
+            const inner = createModalShell(); inner.open();
+            inner.close();
+            const res = {
+                backdrop: outer.overlay.dataset.backdrop,
+                bg: getComputedStyle(outer.overlay).backgroundColor,
+            };
+            outer.close();
+            return res;
+        }""")
+        assert result["backdrop"] == "dim"
+        assert not _is_transparent(result["bg"]), "the page stayed undimmed after the top modal closed"
+
+    def test_a_dialog_closed_out_of_order_leaves_the_top_dimmed(self, shared_page: Page):
+        """Modals do not always close top-down — a background one can be torn
+        down programmatically, and that must not steal the top's dimming."""
+        result = shared_page.evaluate("""async () => {
+            const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const outer = createModalShell(); outer.open();
+            const inner = createModalShell(); inner.open();
+            outer.close();  // the one underneath goes first
+            const res = { backdrop: inner.overlay.dataset.backdrop };
+            inner.close();
+            return res;
+        }""")
+        assert result["backdrop"] == "dim"
+
+    def test_an_overlay_that_opts_out_is_untouched(self, shared_page: Page):
+        """The overlay param is optional — callers that skip it behave as before."""
+        result = shared_page.evaluate("""async () => {
+            const { acquireModalLayer } = await import('/app-static/js/ui/utils/modalZIndex.js');
+            const el = document.createElement('div');
+            el.className = 'app-modal-overlay';
+            document.body.appendChild(el);
+            const layer = acquireModalLayer({ dialog: true });
+            const res = {
+                backdrop: el.dataset.backdrop ?? null,
+                bg: getComputedStyle(el).backgroundColor,
+            };
+            layer.release(); el.remove();
+            return res;
+        }""")
+        assert result["backdrop"] is None
+        assert not _is_transparent(result["bg"])
+
+    def test_an_anchored_popup_does_not_take_over_the_backdrop(self, shared_page: Page):
+        """Only dialogs join the stack; a popup opened over a modal must not
+        undim the modal it is anchored inside."""
+        result = shared_page.evaluate("""async () => {
+            const { createModalShell } = await import('/app-static/js/ui/utils/modalShell.js');
+            const { openAnchoredPopup } = await import('/app-static/js/ui/utils/anchoredPopup.js');
+            const modal = createModalShell(); modal.open();
+            const anchor = document.createElement('button');
+            modal.dialog.appendChild(anchor);
+            const popup = openAnchoredPopup(anchor, document.createElement('div'));
+            const res = { backdrop: modal.overlay.dataset.backdrop };
+            popup.close(); modal.close();
+            return res;
+        }""")
+        assert result["backdrop"] == "dim"
+
+
+# ---------------------------------------------------------------------------
 # Anchored popups above the bottom bars
 # ---------------------------------------------------------------------------
 

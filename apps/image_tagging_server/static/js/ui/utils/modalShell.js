@@ -47,7 +47,7 @@ export function createModalShell({ onClose } = {}) {
   }
 
   function open() {
-    _layer = acquireModalLayer({ dialog: true });
+    _layer = acquireModalLayer({ dialog: true, overlay });
     overlay.style.zIndex = _layer.zIndex;
     document.body.appendChild(overlay);
     applyModalCascade(dialog, _layer.depth);

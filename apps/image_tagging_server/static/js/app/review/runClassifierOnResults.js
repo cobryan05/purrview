@@ -87,8 +87,7 @@ export function makeCandidateImageAdapter(candidate, cardEl, previewController) 
 export async function openClassifierTagConfirmationModal(candidates, ctx) {
   const hoverPreview = createHoverPreview();
   const { dialog, open, close } = createModalShell({ onClose: () => hoverPreview.destroy() });
-  dialog.style.cssText = 'max-width:900px;width:90vw;max-height:85vh;display:flex;flex-direction:column;';
-  dialog.classList.add('classifier-match-confirm-modal');
+  dialog.classList.add('app-modal-dialog--lg', 'classifier-match-confirm-modal');
 
   const sorted = [...candidates].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
 
