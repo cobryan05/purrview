@@ -1317,10 +1317,7 @@ class TestCanvasModalRoundTrip:
         modalZIndex.js), which this asserts against real page-level scroll,
         not a focus check — that's what let the first (focus-only) fix look
         complete while the bug was still fully reproducible."""
-        many_images = [
-            {"uuid": f"img-{i}", "filename": f"folder/image{i}.jpg", "bboxes": []}
-            for i in range(1, 60)
-        ]
+        many_images = [{"uuid": f"img-{i}", "filename": f"folder/image{i}.jpg", "bboxes": []} for i in range(1, 60)]
         many_images[0] = PAGE_1_IMAGES[0]  # img-1 keeps its real bboxes for _mock_canvas_modal_image
         _mock_review_queue(page, many_images)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])

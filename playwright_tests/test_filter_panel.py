@@ -1297,17 +1297,13 @@ class TestFetchReviewQueueFilenameDateNegateMapping:
         assert terms == [{"kind": "filename", "patterns": ["foo"], "negate": False}]
 
     def test_date_negate_true_is_sent(self, page: Page, base_url: str):
-        body = self._capture(
-            page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": True}
-        )
+        body = self._capture(page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": True})
         terms = [t for t in body["terms"] if t["kind"] == "date"]
         assert terms == [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z", "negate": True}]
 
     def test_date_negate_omitted_when_false(self, page: Page, base_url: str):
         """dateNegate defaults false — matches the omit-when-default pattern used
         elsewhere in buildReviewFilterBody rather than always sending the key."""
-        body = self._capture(
-            page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": False}
-        )
+        body = self._capture(page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": False})
         terms = [t for t in body["terms"] if t["kind"] == "date"]
         assert terms == [{"kind": "date", "field": "created", "from": "2026-01-01T00:00:00.000Z"}]

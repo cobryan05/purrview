@@ -550,12 +550,16 @@ class TestCanvasFallthrough:
                 },
             ],
         }
-        page.route("**/api/labels", lambda route: route.fulfill(
-            status=200, content_type="application/json", body=json.dumps(labels_payload)
-        ))
-        page.route("**/api/images/*/labels", lambda route: route.fulfill(
-            status=200, content_type="application/json", body=json.dumps({"status": "success", "labels": []})
-        ))
+        page.route(
+            "**/api/labels",
+            lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(labels_payload)),
+        )
+        page.route(
+            "**/api/images/*/labels",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"status": "success", "labels": []})
+            ),
+        )
 
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
