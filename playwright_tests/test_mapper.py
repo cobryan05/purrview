@@ -242,7 +242,7 @@ class TestConfidenceHelpers:
 
 
 class TestBboxReadToUIConfidence:
-    def test_source_confidence_parsed_onto_unverified_bbox(self, shared_page: Page):
+    def test_confidence_parsed_onto_unverified_bbox(self, shared_page: Page):
         """Written as a string by the add-bbox writers; must come back a number
         so it survives a reload instead of only existing on freshly-inferred boxes."""
         page = shared_page
@@ -252,7 +252,7 @@ class TestBboxReadToUIConfidence:
                 uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1,
                 label: {{ uuid: 'lbl', name: 'Cat', color: '#f00' }},
                 tags: [{{ uuid: '{UNVERIFIED_TAG_UUID}', icon: null }}],
-                metadataJson: {{ source_confidence: '0.82' }},
+                metadataJson: {{ confidence: '0.82' }},
             }};
             const ui = bboxReadToUI(raw);
             return {{ confidence: ui.confidence, type: typeof ui.confidence }};
@@ -270,7 +270,7 @@ class TestBboxReadToUIConfidence:
                 uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1,
                 label: { uuid: 'lbl', name: 'Cat', color: '#f00' },
                 tags: [],  // labelled + no verification tag => defaults to VERIFIED
-                metadataJson: { source_confidence: '0.82' },
+                metadataJson: { confidence: '0.82' },
             };
             return bboxReadToUI(raw).confidence ?? null;
         }""")
@@ -285,18 +285,25 @@ class TestBboxReadToUIConfidence:
         }""")
         assert result is None
 
-    def test_legacy_confidence_key_is_not_read(self, shared_page: Page):
-        """`metadata_json.confidence` was read for a while but never written by
-        anything — the live key is `source_confidence`. Asserted so a future
-        change doesn't quietly resurrect the dead one."""
+    @pytest.mark.parametrize("key", ["confidence", "source_confidence"])
+    def test_both_written_keys_are_read(self, shared_page: Page, key: str):
+        """Two writers, two names, both live in the data:
+        CollectTrainingImagesTask (the highest-volume producer) and the canvas
+        save write `confidence`; ApplyFilterChainTask's add_bbox and preview-run
+        apply write `source_confidence`. Reading only one silently blanks the
+        confidence on whole classes of bbox — which is exactly what happened.
+        """
         page = shared_page
-        result = page.evaluate(f"""async () => {{
+        result = page.evaluate(
+            f"""async (key) => {{
             const {{ bboxReadToUI }} = await import('/app-static/js/shared/domain/image/mapper.js');
             const raw = {{
                 uuid: 'b', x: 0, y: 0, width: 0.1, height: 0.1, label: null,
                 tags: [{{ uuid: '{UNVERIFIED_TAG_UUID}', icon: null }}],
-                metadataJson: {{ confidence: '0.99' }},
+                metadataJson: {{ [key]: '0.77' }},
             }};
             return bboxReadToUI(raw).confidence ?? null;
-        }}""")
-        assert result is None
+        }}""",
+            key,
+        )
+        assert result == pytest.approx(0.77)

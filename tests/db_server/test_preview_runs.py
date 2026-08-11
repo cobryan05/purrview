@@ -695,9 +695,9 @@ class TestApplyPreviewRun:
         assert UNVERIFIED_TAG_UUID in tag_uuids
         assert VERIFIED_TAG_UUID not in tag_uuids
 
-    async def test_apply_new_candidate_persists_source_confidence(self, http_client, image_file, label_uuid):
+    async def test_apply_new_candidate_persists_confidence(self, http_client, image_file, label_uuid):
         """The canvas label and the review card render the model's confidence
-        from `metadata_json.source_confidence` (the key ApplyFilterChainTask's
+        from `metadata_json.confidence` (the key CollectTrainingImagesTask
         add_bbox already uses). Without a writer the whole display path is inert,
         which is exactly how it shipped the first time.
         """
@@ -714,7 +714,7 @@ class TestApplyPreviewRun:
         # Read side is `metadataJson`; `extra` is only the *write*-side name that
         # web.py maps onto metadata_json (see CLAUDE.md).
         metadata = meta_r.json()["image"]["bboxes"][0]["metadataJson"]
-        assert metadata["source_confidence"] == pytest.approx(0.82)
+        assert metadata["confidence"] == pytest.approx(0.82)
         assert metadata["source_model"] == "model_a"
 
     async def test_apply_new_candidate_mark_verified_true(self, http_client, image_file, label_uuid):

@@ -3,7 +3,7 @@ import { Logger, generateUUID } from '/app-static/js/ui/utils/index.js';
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
-import { SOURCE_CONFIDENCE_KEY, parseConfidence } from '/app-static/js/shared/domain/image/confidence.js';
+import { readConfidence } from '/app-static/js/shared/domain/image/confidence.js';
 
 /**
  * @typedef {import('./types.js').UIImage} UIImage
@@ -96,9 +96,7 @@ export function bboxReadToUI(bboxData) {
   // Surfaced only while still unverified: once a human has confirmed the box,
   // what the model originally thought is noise on the label.
   const isUnverified = tags.some(t => t.uuid === UNVERIFIED_TAG_UUID);
-  const confidence = isUnverified
-    ? parseConfidence(bboxData.metadataJson?.[SOURCE_CONFIDENCE_KEY])
-    : undefined;
+  const confidence = isUnverified ? readConfidence(bboxData.metadataJson) : undefined;
 
   /** @type {import('./types.js').UIBbox} */
   const uiBbox = createUIBBbox({

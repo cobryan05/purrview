@@ -3357,14 +3357,16 @@ class Manager:
                     geo["width"],
                     geo["height"],
                     [VERIFIED_TAG_UUID if mark_verified else UNVERIFIED_TAG_UUID],
-                    # `source_confidence` matches what ApplyFilterChainTask's
-                    # add_bbox writes — one key for "the model's confidence when
-                    # this box was created", which the canvas label and the
-                    # review card both render until the box is verified.
+                    # `confidence` is the key CollectTrainingImagesTask (the
+                    # highest-volume producer) writes and the one the canvas
+                    # label and review card were built around.
+                    # ApplyFilterChainTask writes `source_confidence` instead —
+                    # readers accept both, see CONFIDENCE_KEYS in
+                    # static/js/shared/domain/image/confidence.js.
                     metadata_json={
                         "run_model_added": True,
                         "source_model": c.source_model,
-                        "source_confidence": c.confidence,
+                        "confidence": c.confidence,
                     },
                 )
             except Exception:

@@ -2,7 +2,7 @@ import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView
 import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
-import { SOURCE_CONFIDENCE_KEY } from '/app-static/js/shared/domain/image/confidence.js';
+import { CONFIDENCE_KEY } from '/app-static/js/shared/domain/image/confidence.js';
 import { Logger, toast, showUnsavedChangesModal } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
@@ -354,7 +354,7 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
       // living only in this canvas session. Stringified because the save
       // payload's `extra` is Dict[str, str] server-side — a raw float is
       // rejected. parseConfidence reads it back.
-      metadataJson: { [SOURCE_CONFIDENCE_KEY]: String(detection.confidence) },
+      metadataJson: { [CONFIDENCE_KEY]: String(detection.confidence) },
     });
 
     let bestMatch = null;

@@ -9,14 +9,41 @@
  */
 
 /**
- * Metadata key holding the model confidence a bbox was created with.
+ * Metadata key new writers use for the model confidence a bbox was created with.
  *
  * ⚠️ `metadata_json` is a raw JSON blob — its inner keys are NOT run through the
- * API's camelCase alias generator, so this stays snake_case on both sides.
- * Written by `ApplyFilterChainTask`'s add_bbox step and by preview-run apply
- * (`Manager.apply_preview_run`); read by the canvas label and the review card.
+ * API's camelCase alias generator, so these stay snake_case on both sides.
  */
-export const SOURCE_CONFIDENCE_KEY = 'source_confidence';
+export const CONFIDENCE_KEY = 'confidence';
+
+/**
+ * Every key a confidence has ever been written under, newest-preferred first.
+ *
+ * ⚠️ There are genuinely two, and readers must handle both — this is data
+ * compatibility, not a naming preference:
+ *   - `confidence` — CollectTrainingImagesTask (by far the highest-volume
+ *     producer) and the canvas save path.
+ *   - `source_confidence` — ApplyFilterChainTask's add_bbox step and
+ *     preview-run apply.
+ * Dropping either silently blanks the confidence on whole classes of bbox.
+ */
+export const CONFIDENCE_KEYS = [CONFIDENCE_KEY, 'source_confidence'];
+
+/**
+ * Pull the confidence out of a bbox's raw metadata, whichever key it was
+ * written under.
+ *
+ * @param {Object<string, any>|null|undefined} metadataJson
+ * @returns {number|undefined}
+ */
+export function readConfidence(metadataJson) {
+  if (!metadataJson) return undefined;
+  for (const key of CONFIDENCE_KEYS) {
+    const parsed = parseConfidence(metadataJson[key]);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
 
 /**
  * Parse a persisted confidence into a 0–1 number, or `undefined` if absent or junk.
