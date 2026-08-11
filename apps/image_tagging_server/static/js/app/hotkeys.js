@@ -34,8 +34,12 @@ function dispatchAction(action, runtime) {
   switch (action) {
     case 'action:select': setTool(runtime, 'select'); return true;
     case 'action:bbox': setTool(runtime, 'bbox'); return true;
-    case 'action:prevImage': prev_image(runtime); return true;
-    case 'action:nextImage': next_image(runtime); return true;
+    // A runtime with no FileNavigation cannot navigate at all (single-candidate
+    // editor modals, embedded read-only previews). prev_image/next_image no-op
+    // on it — reporting that as "handled" would preventDefault() a key nothing
+    // acted on, which is indistinguishable from the hotkeys being dead.
+    case 'action:prevImage': if (!runtime.fileNavigation) return false; prev_image(runtime); return true;
+    case 'action:nextImage': if (!runtime.fileNavigation) return false; next_image(runtime); return true;
     case 'action:delete': deleteSelected(runtime); return true;
     case 'action:deleteImage': deleteCurrentImage(runtime); return true;
     case 'action:undo': runtime.undo(); return true;
@@ -71,9 +75,29 @@ document.addEventListener('keydown', e => {
 });
 
 /**
+ * The runtime currently receiving hotkeys (top of the stack), or null.
+ *
+ * Exported for tests and for debugging "my hotkeys stopped working": that
+ * symptom is almost always this returning a runtime other than the canvas the
+ * user is looking at, because something attached after it. See attachHotkeys.
+ *
+ * @returns {import('@image_tagging_types').ImageTaggingRuntime|null}
+ */
+export function activeHotkeyRuntime() {
+  return _stack.length ? _stack[_stack.length - 1].runtime : null;
+}
+
+/**
  * Registers keyboard shortcuts for a canvas runtime instance.
  * The most recently attached runtime receives all hotkeys, so modal
  * canvases naturally preempt the main canvas while open.
+ *
+ * ⚠️ "Most recent wins" only behaves for canvases the user is actually driving.
+ * A canvas that appears without the user asking for it — an embedded preview
+ * inside a polled status card, say — must NOT attach, or it silently takes
+ * ownership of every hotkey away from whatever the user is working in, for as
+ * long as it lives. Such canvases pass `hotkeys: false` to createCanvasInstance
+ * and never reach this function.
  *
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @returns {{ destroy: () => void }}

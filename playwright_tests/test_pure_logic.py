@@ -552,6 +552,92 @@ class TestFilesNavigationGuard:
 
 
 # ---------------------------------------------------------------------------
+# app/hotkeys.js — who owns the hotkeys
+# ---------------------------------------------------------------------------
+
+
+class TestHotkeyOwnership:
+    # An `annotated_image` status widget builds a read-only canvas preview via
+    # createCanvasInstance, and ActiveTaskField rebuilds it on every 5s poll
+    # tick whose data changed — with no user action involved. attachHotkeys is
+    # "most recently attached wins", so each rebuild silently took ownership of
+    # every hotkey away from the canvas modal the user had open. The keys still
+    # fired and still called preventDefault(); they just drove an invisible
+    # 16em preview, which looked exactly like the hotkeys being dead.
+    def test_canvas_instance_opting_out_does_not_steal_ownership(self, shared_page: Page):
+        page = shared_page
+        stole = page.evaluate("""async () => {
+            const { createCanvasInstance } = await import('/app-static/js/app/image-tagging/canvas/instance.js');
+            const { attachHotkeys, activeHotkeyRuntime } = await import('/app-static/js/app/hotkeys.js');
+            const owner = { id: 'owner-probe', fileNavigation: null, state: {} };
+            const ownerHandle = attachHotkeys(owner);
+            const div = document.createElement('div');
+            div.style.cssText = 'position:fixed; left:-9999px; width:400px; height:300px;';
+            document.body.appendChild(div);
+            try {
+                const inst = await createCanvasInstance(
+                    div, { enhance: 'none', lockEnhance: true, hotkeys: false });
+                const stole = activeHotkeyRuntime() !== owner;
+                inst.destroy();
+                return stole;
+            } finally {
+                ownerHandle.destroy();
+                div.remove();
+            }
+        }""")
+        assert stole is False
+
+    # Guards the test above against passing for the wrong reason: prove that a
+    # canvas which does NOT opt out still takes ownership, so the assertion is
+    # measuring the opt-out and not a broken/no-op probe.
+    def test_canvas_instance_takes_ownership_by_default(self, shared_page: Page):
+        page = shared_page
+        stole = page.evaluate("""async () => {
+            const { createCanvasInstance } = await import('/app-static/js/app/image-tagging/canvas/instance.js');
+            const { attachHotkeys, activeHotkeyRuntime } = await import('/app-static/js/app/hotkeys.js');
+            const owner = { id: 'owner-probe', fileNavigation: null, state: {} };
+            const ownerHandle = attachHotkeys(owner);
+            const div = document.createElement('div');
+            div.style.cssText = 'position:fixed; left:-9999px; width:400px; height:300px;';
+            document.body.appendChild(div);
+            try {
+                const inst = await createCanvasInstance(div, { enhance: 'none', lockEnhance: true });
+                const stole = activeHotkeyRuntime() !== owner;
+                inst.destroy();
+                return stole;
+            } finally {
+                ownerHandle.destroy();
+                div.remove();
+            }
+        }""")
+        assert stole is True
+
+    # Second half of the same failure: a runtime with no FileNavigation can't
+    # navigate, so next_image/prev_image no-op on it — but dispatchAction still
+    # reported "handled" and called preventDefault(). That turned a misrouted
+    # hotkey into a completely silent one. Reporting it unhandled instead means
+    # the key falls through to its default action, which is at least visible.
+    def test_navigation_hotkey_is_not_swallowed_without_file_navigation(self, shared_page: Page):
+        page = shared_page
+        prevented = page.evaluate("""async () => {
+            const { attachHotkeys } = await import('/app-static/js/app/hotkeys.js');
+            const handle = attachHotkeys({ id: 'nav-less', fileNavigation: null, state: {} });
+            try {
+                const results = {};
+                for (const key of [']', '[']) {
+                    const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+                    document.dispatchEvent(ev);
+                    results[key] = ev.defaultPrevented;
+                }
+                return results;
+            } finally {
+                handle.destroy();
+            }
+        }""")
+        assert prevented == {"]": False, "[": False}
+
+
+# ---------------------------------------------------------------------------
 # ui/utils/utils.js — generateUUID
 # ---------------------------------------------------------------------------
 

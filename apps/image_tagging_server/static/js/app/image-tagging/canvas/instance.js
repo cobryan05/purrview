@@ -11,11 +11,13 @@ import { defaultEnhanceMode } from './enhance.js';
  * Call this after the runtime has a canvas (setCanvasContainer or setImageTaggingPane).
  *
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {{ hotkeys?: boolean }} [opts] - hotkeys: false for canvases the user
+ *   didn't open and isn't driving (see attachHotkeys' warning).
  * @returns {Promise<{ destroy: () => void }>}
  */
-export async function initCanvasCore(runtime) {
+export async function initCanvasCore(runtime, { hotkeys = true } = {}) {
   await initCanvasStage(runtime);
-  const hotkeyHandle = attachHotkeys(runtime);
+  const hotkeyHandle = hotkeys ? attachHotkeys(runtime) : null;
 
   const unsubTagsUpdated = events.subscribe(EventTypes.TAGS_UPDATED, async () => {
     const tagsMap = await fetchTags();
@@ -31,7 +33,7 @@ export async function initCanvasCore(runtime) {
 
   return {
     destroy() {
-      hotkeyHandle.destroy();
+      hotkeyHandle?.destroy();
       unsubTagsUpdated();
     },
   };
@@ -44,13 +46,17 @@ export async function initCanvasCore(runtime) {
  * the Konva stage will size itself to the container's current clientWidth/clientHeight.
  *
  * @param {HTMLElement} container
- * @param {{ tool?: string, enhance?: string, lockEnhance?: boolean }} [options]
+ * @param {{ tool?: string, enhance?: string, lockEnhance?: boolean, hotkeys?: boolean }} [options]
  *   enhance: initial display-enhancement mode id. Defaults to whatever mode the
  *   user last selected this session, so a modal opened while working through
  *   dark frames comes up already enhanced. Pass 'none' for canvases with no
  *   enhance control (read-only previews), which also skips the CPU cost.
  *   lockEnhance: pin that mode — the enhance hotkey becomes a no-op on this
  *   canvas, so a focused read-only preview can't change the session default.
+ *   hotkeys: false to skip attachHotkeys entirely. Required for any canvas that
+ *   appears on its own (embedded previews in polled status cards): attaching
+ *   puts it on top of the hotkey stack, stealing every key from the canvas the
+ *   user actually opened.
  * @returns {Promise<{ runtime: import('@image_tagging_types').ImageTaggingRuntime, loadImage: (path: string) => Promise<void>, destroy: () => void }>}
  */
 export async function createCanvasInstance(container, options = {}) {
@@ -60,7 +66,7 @@ export async function createCanvasInstance(container, options = {}) {
     runtime.canvas.enhanceMode = options.enhance ?? defaultEnhanceMode();
     runtime.canvas.enhanceLocked = !!options.lockEnhance;
   }
-  const coreHandle = await initCanvasCore(runtime);
+  const coreHandle = await initCanvasCore(runtime, { hotkeys: options.hotkeys !== false });
   runtime.setTool(options.tool ?? 'select');
 
   return {

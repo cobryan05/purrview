@@ -286,7 +286,17 @@ export const statusWidgets = {
         // 'none': these previews carry no enhance control, and several can be
         // on screen at once — don't spend CPU on an enhancement nobody asked
         // this widget for.
-        instance = await createCanvasInstance(canvasContainer, { tool: 'select', enhance: 'none', lockEnhance: true });
+        //
+        // hotkeys: false is load-bearing, not a tidiness flag. This canvas is
+        // rebuilt on every STATUS_DATA_POLL_MS tick whose data changed, with no
+        // user action involved. With hotkeys attached, each rebuild pushed this
+        // read-only thumbnail onto the top of the hotkey stack and took every
+        // shortcut away from whatever canvas the user had open — the keys still
+        // fired, they just drove an invisible 16em preview with no
+        // FileNavigation, so '[' / ']' looked completely dead.
+        instance = await createCanvasInstance(canvasContainer, {
+          tool: 'select', enhance: 'none', lockEnhance: true, hotkeys: false,
+        });
         await instance.loadImage(data.path);
         if (Array.isArray(data.bboxes) && data.bboxes.length) {
           seedRuntimeBboxes(instance.runtime, data.bboxes);
