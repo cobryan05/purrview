@@ -459,6 +459,64 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // Status message
   const statusMsg = document.createElement('span');
   statusMsg.className = 'review-toolbar__status';
+  statusMsg.dataset.testid = 'review-status';
+
+  /**
+   * Flash the status message for a bulk apply that the server does in one
+   * request (bulk-apply / bulk-apply-by-uuids and their bbox counterparts).
+   *
+   * The tab is only waiting for the reply — the handler runs to completion
+   * whether or not anyone is watching, so nobody has to sit in front of a
+   * pulsing "Applying…" for a run over tens of thousands of images. Say so.
+   * Only use this for paths that are a single request; the per-item loops
+   * (image removal, bbox selection apply) really do need the tab open, since
+   * the remaining calls are only ever issued from here.
+   */
+  function setServerSideApplyStatus(text) {
+    statusMsg.classList.add('review-toolbar__status--loading');
+    statusMsg.textContent = `${text} (running on the server — you can leave this page)`;
+  }
+
+  /**
+   * The counterpart of setServerSideApplyStatus for a run this tab drives
+   * itself, one request per item (bbox selection apply, image removal). Nobody
+   * else can finish it, so the message asks the user to wait and counts up
+   * instead of pulsing an opaque "Applying…".
+   */
+  function setClientSideApplyStatus(noun, done, total) {
+    statusMsg.classList.add('review-toolbar__status--loading');
+    statusMsg.textContent =
+      `Applying to ${done.toLocaleString()} of ${total.toLocaleString()} ${noun}… ` +
+      'please wait — this one runs from this browser tab';
+  }
+
+  /**
+   * Ask the browser to confirm a close/reload while a per-item run is in
+   * flight. The unsent items exist nowhere but in this tab, so leaving abandons
+   * the run part-applied — unlike the server-side bulk endpoints, which finish
+   * on their own and therefore get no guard.
+   *
+   * @returns {() => void} removes the guard; always call it from a `finally`.
+   */
+  function guardUnloadDuringRun() {
+    const onBeforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }
+
+  /**
+   * Aborted when the panel is torn down (tab closed, similarity modal closed,
+   * grid re-created). Per-item loops check it between items so a run whose UI
+   * no longer exists stops at the next boundary rather than writing on into a
+   * dead panel — the work already committed stands, the rest is simply not sent.
+   */
+  const _panelLifetime = new AbortController();
+
+  /** Note a run that stopped early, appended to whatever status lands after it. */
+  function appendStoppedEarlyNote(done, total, noun) {
+    statusMsg.textContent += ` (stopped after ${done.toLocaleString()} of ${total.toLocaleString()} ${noun}` +
+      ' — the rest were not applied)';
+  }
 
   // ── Entry view (grid only) ────────────────────────────────────────
   // Review results are thumbnails first — the list rendering carried no
@@ -2021,23 +2079,36 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         const confirmed = await confirmRemovalAction(action, imageEntries.length);
         if (!confirmed) return;
 
+        // One request per image, issued from here — see setClientSideApplyStatus.
         let failCount = 0;
-        for (const { img } of imageEntries) {
-          try {
-            await removeSingleImage(action, img.uuid);
-            const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
-            if (card) markCardStale(card, 'deleted');
-            events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
-          } catch (err) {
-            Logger.error(`${action} image failed for ${img.uuid}: ${err.message}`);
-            failCount++;
+        let processed = 0;
+        const releaseUnloadGuard = guardUnloadDuringRun();
+        try {
+          setClientSideApplyStatus('images', 0, imageEntries.length);
+          for (const { img } of imageEntries) {
+            if (_panelLifetime.signal.aborted) break;
+            try {
+              await removeSingleImage(action, img.uuid);
+              const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
+              if (card) markCardStale(card, 'deleted');
+              events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
+            } catch (err) {
+              Logger.error(`${action} image failed for ${img.uuid}: ${err.message}`);
+              failCount++;
+            }
+            setClientSideApplyStatus('images', ++processed, imageEntries.length);
           }
+        } finally {
+          releaseUnloadGuard();
+          statusMsg.classList.remove('review-toolbar__status--loading');
         }
+        if (_panelLifetime.signal.aborted) return;
         clearSelection();
         updateStatusMsg();
         if (failCount > 0) {
           statusMsg.textContent += ` (${failCount} removal${failCount === 1 ? '' : 's'} failed — check console)`;
         }
+        if (processed < imageEntries.length) appendStoppedEarlyNote(processed, imageEntries.length, 'images');
         return;
       }
 
@@ -2084,7 +2155,23 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       await _runImageBulkAction(selectedEntries);
     } else {
       await showBulkActionModal(selectedEntries, labels, async (action, newLabelUuid, selectedTagUuids, tagsMap) => {
-        const { failCount, succeededEntries } = await executeBulkAction(action, selectedEntries, newLabelUuid, selectedTagUuids, tagsMap);
+        const releaseUnloadGuard = guardUnloadDuringRun();
+        let failCount, succeededEntries, processed, stoppedEarly;
+        try {
+          setClientSideApplyStatus('bboxes', 0, selectedEntries.length);
+          ({ failCount, succeededEntries, processed, stoppedEarly } = await executeBulkAction(
+            action, selectedEntries, newLabelUuid, selectedTagUuids, tagsMap,
+            {
+              signal: _panelLifetime.signal,
+              onProgress: (done, total) => setClientSideApplyStatus('bboxes', done, total),
+            },
+          ));
+        } finally {
+          releaseUnloadGuard();
+          statusMsg.classList.remove('review-toolbar__status--loading');
+        }
+        // The panel this was updating is gone; its DOM work would land nowhere.
+        if (_panelLifetime.signal.aborted) return;
 
         for (const { bbox, img } of succeededEntries) {
           const card = grid.querySelector(`[data-bbox-uuid="${bbox.uuid}"]`);
@@ -2137,6 +2224,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         if (failCount > 0) {
           statusMsg.textContent += ` (${failCount} action${failCount === 1 ? '' : 's'} failed — check console)`;
         }
+        if (stoppedEarly) appendStoppedEarlyNote(processed, selectedEntries.length, 'bboxes');
       });
     }
   });
@@ -2192,8 +2280,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           const confirmed = await confirmRemovalAction(action, entries.length, 'from the full candidate list');
           if (!confirmed) return;
         }
-        statusMsg.classList.add('review-toolbar__status--loading');
-        statusMsg.textContent = `Applying to ${entries.length.toLocaleString()} images…`;
+        setServerSideApplyStatus(`Applying to ${entries.length.toLocaleString()} images…`);
         try {
           const { modifiedCount, failCount, skippedCount } = await bulkApplyImagesByUuids({
             imageUuids: entries.map(e => e.img.uuid),
@@ -2224,8 +2311,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         : `Apply to all ${entries.length.toLocaleString()} matched image${entries.length === 1 ? '' : 's'}`);
     } else {
       await showBulkActionModal(entries, labels, async (action, newLabelUuid, selectedTagUuids) => {
-        statusMsg.classList.add('review-toolbar__status--loading');
-        statusMsg.textContent = `Applying to ${entries.length.toLocaleString()} bboxes…`;
+        setServerSideApplyStatus(`Applying to ${entries.length.toLocaleString()} bboxes…`);
         try {
           const { modifiedCount, failCount } = await bulkApplyBboxesByUuids({
             bboxUuids: entries.map(e => e.bbox.uuid),
@@ -2311,8 +2397,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         const confirmed = await confirmRemovalAction(action, totalImageCount, 'matching the current filter, across all pages');
         if (!confirmed) return;
       }
-      statusMsg.classList.add('review-toolbar__status--loading');
-      statusMsg.textContent = 'Applying to all matching images…';
+      setServerSideApplyStatus('Applying to all matching images…');
       try {
         const { modifiedCount, failCount, skippedCount } = await bulkApplyImages({
           ..._baseReviewFilterOpts(fs),
@@ -2635,8 +2720,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         : (selectedAction === 'revertRelabel')
           ? (fs.tagUuids ?? []).filter(uuid => tags.get(uuid)?.kind === 'task_generated')
         : [];
-      statusMsg.textContent = `Applying to all${totalBboxStr} bboxes…`;
-      statusMsg.classList.add('review-toolbar__status--loading');
+      setServerSideApplyStatus(`Applying to all${totalBboxStr} bboxes…`);
       try {
         const { modifiedCount, failCount } = await bulkApplyAll({
           // Spread the shared opts rather than re-listing them: this call site
@@ -2712,6 +2796,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
   return {
     destroy() {
+      // Stops any per-item bulk loop still running against this panel.
+      _panelLifetime.abort();
       _drainCardUnsubs();
       _unsubImageSaved();
       _unsubImageDeleted();
@@ -2890,12 +2976,19 @@ const _VERIF_TAG_MAP = {
   markUnverified: UNVERIFIED_TAG_UUID,
 };
 
-async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = [], tagsMap = new Map()) {
+/**
+ * @param {{ signal?: AbortSignal, onProgress?: (done: number, total: number) => void }} [opts]
+ *   `signal` stops the loop at the next item boundary (panel torn down mid-run);
+ *   already-committed items are reported as succeeded and `stoppedEarly` is set.
+ */
+async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids = [], tagsMap = new Map(), { signal = null, onProgress = null } = {}) {
   const toInvalidate = [];
   const succeededEntries = [];
   let failCount = 0;
+  let processed = 0;
 
   for (const entry of entries) {
+    if (signal?.aborted) break;
     const { bbox } = entry;
     try {
       if (action === 'delete') {
@@ -2939,10 +3032,11 @@ async function executeBulkAction(action, entries, newLabelUuid, selectedTagUuids
       Logger.error(`Bulk action failed for bbox ${bbox.uuid}: ${err.message}`);
       failCount++;
     }
+    onProgress?.(++processed, entries.length);
   }
 
   if (toInvalidate.length) await invalidateBboxThumbnails(toInvalidate);
-  return { failCount, succeededEntries };
+  return { failCount, succeededEntries, processed, stoppedEarly: processed < entries.length };
 }
 
 // ── Canvas edit modal ─────────────────────────────────────────────────

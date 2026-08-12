@@ -630,6 +630,156 @@ class TestBulkApplyAllScope:
         assert {"kind": "bboxVerification", "state": "verified"} in body["filter"]["terms"], body
 
 
+def _record_status_and_unload_guard(page: Page):
+    """Record every status the toolbar shows, plus beforeunload add/remove.
+
+    Both are transient — the status is overwritten as soon as the run lands and
+    the guard is removed in a `finally` — so polling from the test client is
+    hopelessly racy; the page records them as they happen instead.
+    """
+    page.add_init_script("""
+        window.__reviewStatuses = [];
+        window.__unloadGuardLog = [];
+        const _add = window.addEventListener.bind(window);
+        const _remove = window.removeEventListener.bind(window);
+        window.addEventListener = (type, fn, opts) => {
+          if (type === 'beforeunload') window.__unloadGuardLog.push('add');
+          return _add(type, fn, opts);
+        };
+        window.removeEventListener = (type, fn, opts) => {
+          if (type === 'beforeunload') window.__unloadGuardLog.push('remove');
+          return _remove(type, fn, opts);
+        };
+        // Init scripts run before the document has a body, so arm the
+        // observer once there is something to observe.
+        document.addEventListener('DOMContentLoaded', () => {
+          new MutationObserver(() => {
+            const el = document.querySelector("[data-testid='review-status']");
+            if (el) window.__reviewStatuses.push(`${el.className}|${el.textContent}`);
+          }).observe(document.body, { subtree: true, childList: true, characterData: true });
+        });
+        """)
+
+
+class TestPerItemApplyAsksYouToWait:
+    """The per-item counterpart of TestBulkApplyAllStatusSaysItRunsOnTheServer.
+
+    "Apply to Selected" on bboxes is a loop of one PATCH per bbox issued from
+    the tab, so leaving really does abandon the rest — its status must read
+    differently from the server-side runs, count progress, and hold a
+    beforeunload guard for as long as the loop is in flight.
+    """
+
+    def _select_two_bboxes_and_relabel(self, page: Page, base_url: str):
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] input[type=checkbox]").click()
+        page.locator("#review-root [data-bbox-uuid='bbox-3'] input[type=checkbox]").click()
+        page.get_by_test_id("review-bulk-apply").click()
+
+        modal_locator = page.locator("div:has(> strong:text-is('Apply to 2 selected bboxes'))")
+        picker_input = modal_locator.locator("input[type=text]")
+        picker_input.click()
+        picker_input.fill("Dog")
+        modal_locator.get_by_text("Dog", exact=True).click()
+        page.locator("div:has(> strong:text-is('Apply to 2 selected bboxes')) button", has_text="Apply").click()
+
+    def test_status_says_please_wait_and_counts_progress(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _record_status_and_unload_guard(page)
+
+        self._select_two_bboxes_and_relabel(page, base_url)
+
+        status = page.get_by_test_id("review-status")
+        expect(status).not_to_have_class(re.compile(r"--loading"), timeout=6000)
+
+        seen = page.evaluate("window.__reviewStatuses")
+        applying = [s for s in seen if "Applying to" in s]
+        assert applying, f"No in-flight status was shown: {seen}"
+        assert all("please wait" in s for s in applying), applying
+        # Must never claim the server will finish it — nothing else will.
+        assert not any("you can leave this page" in s for s in applying), applying
+        # Progress is visible, not an opaque pulse.
+        assert any("of 2 bboxes" in s for s in applying), applying
+        assert any("Applying to 2 of 2 bboxes" in s for s in applying), applying
+
+    def test_unload_is_guarded_while_the_loop_runs_and_released_after(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _record_status_and_unload_guard(page)
+
+        self._select_two_bboxes_and_relabel(page, base_url)
+        expect(page.get_by_test_id("review-status")).not_to_have_class(re.compile(r"--loading"), timeout=6000)
+
+        log = page.evaluate("window.__unloadGuardLog")
+        assert log == ["add", "remove"], log
+
+
+class TestBulkApplyAllStatusSaysItRunsOnTheServer:
+    """The pulsing "Applying…" status reads as "don't touch anything", but
+    Apply to All is one request the server runs to completion — the tab is only
+    waiting for the reply. The in-flight message must say the page can be left,
+    so nobody sits watching a run over tens of thousands of rows.
+    """
+
+    def test_status_says_the_page_can_be_left_while_applying(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        page.route(
+            "**/api/images/bbox/bulk-apply",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "modifiedCount": 1, "failCount": 0}),
+            ),
+        )
+
+        # The in-flight message is replaced by the result (and then by render()'s
+        # own count) as soon as the request lands, which is far too fast to catch
+        # by polling from here — record every status the element ever shows.
+        page.add_init_script("""
+            window.__reviewStatuses = [];
+            // Init scripts run before the document has a body, so arm the
+            // observer once there is something to observe.
+            document.addEventListener('DOMContentLoaded', () => {
+              new MutationObserver(() => {
+                const el = document.querySelector("[data-testid='review-status']");
+                if (el) window.__reviewStatuses.push(`${el.className}|${el.textContent}`);
+              }).observe(document.body, { subtree: true, childList: true, characterData: true });
+            });
+            """)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        page.get_by_test_id("review-bulk-apply-all").click()
+        page.locator("input[type=radio][name='bulk-all-action'][value='markVerified']").click()
+        page.locator("button", has_text="Apply to All").last.click()
+
+        status = page.get_by_test_id("review-status")
+        # The result message is itself replaced by render()'s page count moments
+        # later, so wait on the busy state clearing rather than on any one text.
+        expect(status).not_to_have_class(re.compile(r"--loading"), timeout=6000)
+
+        seen = page.evaluate("window.__reviewStatuses")
+        applying = [s for s in seen if "Applying to all" in s]
+        assert applying, f"No in-flight 'Applying to all' status was shown: {seen}"
+        assert all("you can leave this page" in s for s in applying), applying
+        # It is the busy/pulsing message that carries the hint, not a leftover.
+        assert all("review-toolbar__status--loading" in s for s in applying), applying
+
+        # Once it lands, the hint goes away with the rest of the busy state.
+        expect(status).not_to_contain_text("you can leave this page")
+
+
 class TestFilenameDateNegateReachesTheGridQuery:
     """_baseReviewFilterOpts is the single hand-picked field list every real
     grid query goes through (main render, bulk-apply-all, bulk-apply-images,
