@@ -194,11 +194,16 @@ export async function findDissimilarBboxesByUuid(bboxUuid, count = 100, labelUui
   }));
 }
 
-export async function findDissimilarGlobal(count = 100, seedImageUuid = null) {
+/**
+ * Most visually distinct images. With no `candidateUuids` the server scopes the
+ * walk to unverified images; pass a filtered UUID set to scope it to that instead.
+ * An empty array means "the filter matched nothing" and returns no matches.
+ */
+export async function findDissimilarGlobal(count = 100, seedImageUuid = null, candidateUuids = null) {
   const res = await apiFetch('/api/images/find-dissimilar-global', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ count, seedImageUuid }),
+    body: JSON.stringify({ count, seedImageUuid, candidateUuids }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Failed to find most unique images');

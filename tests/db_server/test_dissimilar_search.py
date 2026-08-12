@@ -232,6 +232,64 @@ async def written_image(http_client, image_file, label_uuid):
 
 
 @pytest.fixture
+async def two_unverified_images(http_client, written_image, files_root, label_uuid):
+    """Two distinct images, each with one unverified bbox, with the index rebuilt.
+
+    Returns (first_image_uuid, second_image_uuid).
+    """
+    first_uuid, _ = written_image
+    (files_root / "dissimilar_test_2.png").write_bytes(_make_png(r=10, g=20, b=30))
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "dissimilar_test_2.png",
+            "boxes": [
+                {
+                    "uuid": str(uuid_mod.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.2,
+                    "y": 0.2,
+                    "width": 0.5,
+                    "height": 0.5,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200
+    meta = await http_client.post("/api/images/metadata/get", json={"imagePath": "dissimilar_test_2.png"})
+    second_uuid = meta.json()["image"]["uuid"]
+    assert (await http_client.post("/api/images/phash/rebuild-index")).json()["status"] == "success"
+    return first_uuid, second_uuid
+
+
+@pytest.fixture
+async def verified_image(http_client, files_root, label_uuid):
+    """One image whose only bbox carries no unverified tag."""
+    (files_root / "dissimilar_verified.png").write_bytes(_make_png(r=200, g=30, b=90))
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "dissimilar_verified.png",
+            "boxes": [
+                {
+                    "uuid": str(uuid_mod.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.3,
+                    "y": 0.3,
+                    "width": 0.4,
+                    "height": 0.4,
+                    "tagUuids": [],
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200
+    meta = await http_client.post("/api/images/metadata/get", json={"imagePath": "dissimilar_verified.png"})
+    return meta.json()["image"]["uuid"]
+
+
+@pytest.fixture
 async def index_built(http_client, written_image):
     r = await http_client.post("/api/images/phash/rebuild-index")
     assert r.json()["status"] == "success"
@@ -359,3 +417,51 @@ class TestFindDissimilarGlobal:
         r = await http_client.post("/api/images/find-dissimilar-global", json={"count": 10})
         assert r.status_code == 200
         assert r.json()["status"] == "success"
+
+
+class TestFindDissimilarGlobalCandidates:
+    """`candidateUuids` scopes the global diversity walk to the caller's filtered set.
+
+    Without it the endpoint always walked every unverified image, so the Review
+    tab's "★ Most Unique First" ignored the active filters.
+    """
+
+    async def test_candidate_uuids_restrict_results(self, http_client, two_unverified_images):
+        keep_uuid, other_uuid = two_unverified_images
+        r = await http_client.post(
+            "/api/images/find-dissimilar-global",
+            json={"count": 50, "candidateUuids": [keep_uuid]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        returned = {m["imageUuid"] for m in body["matches"]}
+        assert returned == {keep_uuid}
+        assert other_uuid not in returned
+
+    async def test_omitted_candidates_keep_full_unverified_scope(self, http_client, two_unverified_images):
+        keep_uuid, other_uuid = two_unverified_images
+        r = await http_client.post("/api/images/find-dissimilar-global", json={"count": 50})
+        returned = {m["imageUuid"] for m in r.json()["matches"]}
+        assert {keep_uuid, other_uuid} <= returned
+
+    async def test_empty_candidate_list_returns_no_matches(self, http_client, two_unverified_images):
+        """An empty filtered set means "nothing matched" — not "fall back to everything"."""
+        r = await http_client.post(
+            "/api/images/find-dissimilar-global",
+            json={"count": 50, "candidateUuids": []},
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "success"
+        assert r.json()["matches"] == []
+
+    async def test_candidates_with_no_unverified_bboxes_still_ranked(self, http_client, verified_image, index_built):
+        """Filtering to verified-only images must still rank them, not fall back to
+        the unverified pool the filter deliberately excluded."""
+        verified_uuid = verified_image
+        r = await http_client.post(
+            "/api/images/find-dissimilar-global",
+            json={"count": 50, "candidateUuids": [verified_uuid]},
+        )
+        assert r.json()["status"] == "success"
+        assert {m["imageUuid"] for m in r.json()["matches"]} == {verified_uuid}

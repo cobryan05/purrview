@@ -2042,24 +2042,46 @@ class Manager:
         image_uuid_map = await self._db_client.get_image_uuids_for_bboxes([b for b, _ in ranked])
         return [(b_uuid, image_uuid_map.get(b_uuid), lbl) for b_uuid, lbl in ranked]
 
-    async def get_most_unique_images(self, count: int, seed_uuid: Optional[str] = None) -> List[str]:
-        """Return up to *count* unverified image UUIDs ranked by visual diversity.
+    async def get_most_unique_images(
+        self,
+        count: int,
+        seed_uuid: Optional[str] = None,
+        candidate_uuids: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Return up to *count* image UUIDs ranked by visual diversity.
 
-        Scope: images that have at least one bbox tagged UNVERIFIED_TAG_UUID.
+        Default scope: images that have at least one bbox tagged UNVERIFIED_TAG_UUID.
         Falls back to all images if no unverified images exist.
+
+        When *candidate_uuids* is given (the caller's already-filtered set, e.g. the
+        Review tab's active filters), that set is the scope instead — an explicit
+        filter wins over the unverified default, otherwise filtering to, say,
+        verified-only images would silently return unverified ones. An empty list
+        means "nothing matched the filter" and yields no results.
         """
-        candidate_uuids = await self._db_client.get_image_uuids_by_bbox_tag(UNVERIFIED_TAG_UUID)
-        if len(candidate_uuids) > HashIndex.MAX_DIVERSITY_CANDIDATES:
-            # The unverified-tag query has no LIMIT (truncating it would bias which
-            # images are even eligible, e.g. always favoring lower-rowid images).
-            # Random-sampling down to the index's documented capacity keeps the
-            # candidate pool representative instead of order-biased.
-            candidate_uuids = set(random.sample(sorted(candidate_uuids), HashIndex.MAX_DIVERSITY_CANDIDATES))
+        if candidate_uuids is not None:
+            if not candidate_uuids:
+                return []
+            return await self.rank_images_by_diversity(seed_uuid, self._cap_candidates(set(candidate_uuids)), count)
+
+        unverified_uuids = self._cap_candidates(await self._db_client.get_image_uuids_by_bbox_tag(UNVERIFIED_TAG_UUID))
         return await self.rank_images_by_diversity(
             seed_uuid,
-            candidate_uuids if candidate_uuids else None,
+            unverified_uuids if unverified_uuids else None,
             count,
         )
+
+    @staticmethod
+    def _cap_candidates(uuids: Set[str]) -> Set[str]:
+        """Bound a diversity candidate pool to the hash index's documented capacity.
+
+        Truncating the query itself would bias which images are even eligible (e.g.
+        always favoring lower-rowid images), so sample randomly instead to keep the
+        pool representative.
+        """
+        if len(uuids) <= HashIndex.MAX_DIVERSITY_CANDIDATES:
+            return uuids
+        return set(random.sample(sorted(uuids), HashIndex.MAX_DIVERSITY_CANDIDATES))
 
     async def find_similar_bboxes_by_coords(
         self,

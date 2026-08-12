@@ -955,6 +955,9 @@ class FindDissimilarBboxesResponse(StatusResponse):
 class FindDissimilarGlobalPayload(ApiPayload):
     count: int = 100
     seed_image_uuid: Optional[str] = None
+    # When set, scopes the walk to the caller's filtered image set instead of the
+    # default unverified-bbox scope. An empty list means "nothing matched".
+    candidate_uuids: Optional[List[str]] = None
 
 
 class RebuildHashIndexResponse(StatusResponse):
@@ -2391,7 +2394,9 @@ class WebApp:
             payload: FindDissimilarGlobalPayload,
         ) -> FindDissimilarImagesResponse:
             try:
-                ranked = await self._manager.get_most_unique_images(payload.count, payload.seed_image_uuid)
+                ranked = await self._manager.get_most_unique_images(
+                    payload.count, payload.seed_image_uuid, payload.candidate_uuids
+                )
                 return FindDissimilarImagesResponse(
                     status=JsonValues.SUCCESS,
                     matches=[DissimilarImageMatch(image_uuid=uuid, rank=i) for i, uuid in enumerate(ranked)],

@@ -761,8 +761,32 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const uniqueFirstBtn = document.createElement('button');
     uniqueFirstBtn.className = 'review-toolbar__btn';
     uniqueFirstBtn.textContent = '★ Most Unique First';
-    uniqueFirstBtn.title = 'Open the most visually distinct unverified images in a review panel (farthest-point sampling)';
-    uniqueFirstBtn.addEventListener('click', () => openDissimilarGlobalModal());
+    uniqueFirstBtn.title = 'Open the most visually distinct images in a review panel (farthest-point sampling). '
+      + 'Scoped to the current filters, or to unverified images when no filter is active.';
+    // With no filter active the server keeps its own unverified-only scope; once
+    // the user has filtered, the walk must cover exactly what the grid shows, so
+    // the filtered UUID set is pushed down as the candidate pool.
+    uniqueFirstBtn.addEventListener('click', async () => {
+      let candidateUuids = null;
+      if (!filterPanel.isDefault()) {
+        // Resolving the filtered set is a full unpaged review query, so the modal
+        // can be a second or more away on a large filter — disable the button and
+        // say so rather than leaving the click looking like it did nothing.
+        const label = uniqueFirstBtn.textContent;
+        uniqueFirstBtn.disabled = true;
+        uniqueFirstBtn.textContent = '★ Loading…';
+        try {
+          candidateUuids = await _getFilteredImageUuids();
+        } catch (err) {
+          toast(err.message || 'Failed to read current filters', 5000, 'error');
+          return;
+        } finally {
+          uniqueFirstBtn.disabled = false;
+          uniqueFirstBtn.textContent = label;
+        }
+      }
+      openDissimilarGlobalModal({ candidateUuids });
+    });
     // Insert before exportToDatasetBtn so the group reads Refresh → ★ Most
     // Unique First → ⊞ Open in Datasets Tab, matching creation-order-independent
     // display order (UI_REDESIGN_PLAN.md, slice 3, PR 3.1).
