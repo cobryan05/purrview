@@ -62,6 +62,13 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         tc_config = training_client.Configuration(host=self._training_base_url)
         self._api_client = training_client.ApiClient(tc_config)
 
+        # ── Per-epoch metric history (drives the training-curve widgets) ─────
+        # Seeded from resume_data so a job that is interrupted and resumed keeps
+        # the curve it had already drawn. Set before the resume early-return
+        # below: both paths need it.
+        self._epoch_history: list[dict[str, Any]] = list((resume_data or {}).get("epoch_history") or [])
+        self._total_epochs: Optional[int] = None
+
         # ── Resume from a previous run ───────────────────────────────────────
         self._job_id: Optional[str] = resume_data.get("job_id") if resume_data else None
         if self._job_id:
@@ -390,6 +397,99 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     async def _deinit(self) -> None:
         pass
+
+    @classmethod
+    def status_schema(cls) -> list[dict[str, Any]]:
+        """Progress + live epoch stats + the two training curves + logs.
+
+        Loss and accuracy get a chart each rather than sharing one with two
+        y-axes: they have unrelated scales (loss is unbounded, accuracy is a
+        0–1 fraction), and a dual-scale plot lets the reader "see" crossings
+        and gaps that are pure artefacts of how the two axes were zeroed.
+        """
+        return [
+            {"id": "progress", "type": "progress_bar", "source": "summary"},
+            {"id": "statusMessage", "type": "text", "source": "summary"},
+            {
+                "id": "epoch_stats",
+                "type": "stat_grid",
+                "source": "status",
+                "label": "Latest epoch",
+                # Superset of what any trainer can report. get_status_data() omits
+                # keys the current trainer doesn't produce (e.g. val_loss for the
+                # detection trainers) and the grid renders those as "—" rather
+                # than a misleading 0.
+                "fields": {
+                    "epoch": "Epoch",
+                    "train_loss": "Train loss",
+                    "val_loss": "Val loss",
+                    "val_accuracy": "Val accuracy",
+                    "best_val_accuracy": "Best val acc.",
+                    "best_val_loss": "Best val loss",
+                },
+            },
+            {
+                "id": "loss_curve",
+                "type": "line_chart",
+                "source": "status",
+                "label": "Loss by epoch",
+                "x": "epoch",
+                "xLabel": "Epoch",
+                "yMin": 0,
+                "series": [
+                    {"key": "train_loss", "label": "Train loss"},
+                    {"key": "val_loss", "label": "Val loss"},
+                ],
+            },
+            {
+                "id": "accuracy_curve",
+                "type": "line_chart",
+                "source": "status",
+                "label": "Validation accuracy by epoch",
+                "x": "epoch",
+                "xLabel": "Epoch",
+                "yMin": 0,
+                "yMax": 1,
+                "valueFormat": "percent",
+                # One label for two different measures: the classifiers report a
+                # plain accuracy, the detection trainers put mAP50 in the same
+                # field. status_schema() is static per typename, so it can't name
+                # whichever one this instance actually produced.
+                "series": [{"key": "val_accuracy", "label": "Val accuracy / mAP50"}],
+            },
+            {"id": "log", "type": "log_tail", "source": "summary", "lines": 5},
+        ]
+
+    def get_status_data(self) -> dict[str, Any]:
+        """Live epoch stats + curve points. Pure in-memory reads, no I/O."""
+        history: list[dict[str, Any]] = getattr(self, "_epoch_history", None) or []
+        if not history:
+            return {}
+
+        latest = history[-1]
+        total_epochs = getattr(self, "_total_epochs", None)
+        stats: dict[str, Any] = {
+            "epoch": f"{latest['epoch']} / {total_epochs}" if total_epochs else str(latest["epoch"]),
+        }
+        if "train_loss" in latest:
+            stats["train_loss"] = f"{latest['train_loss']:.4f}"
+        if "val_loss" in latest:
+            stats["val_loss"] = f"{latest['val_loss']:.4f}"
+        if "val_accuracy" in latest:
+            stats["val_accuracy"] = f"{latest['val_accuracy'] * 100:.1f}%"
+
+        accuracies = [s["val_accuracy"] for s in history if "val_accuracy" in s]
+        if accuracies:
+            stats["best_val_accuracy"] = f"{max(accuracies) * 100:.1f}%"
+        val_losses = [s["val_loss"] for s in history if "val_loss" in s]
+        if val_losses:
+            stats["best_val_loss"] = f"{min(val_losses):.4f}"
+
+        # Both charts read the same sample list and pick their own series out of
+        # it — the payload is a few hundred small dicts, so serialising it twice
+        # is cheaper than the bookkeeping to split it.
+        points = {"points": history}
+        return {"epoch_stats": stats, "loss_curve": points, "accuracy_curve": points}
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

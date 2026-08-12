@@ -1088,3 +1088,236 @@ class TestExpandedCardFitsItsBox:
                 return Math.round(worst);
             }""")
         assert spill <= 1, f"widget content spills {spill}px past the card's right edge"
+
+
+class TestLineChartWidget:
+    """The training curves. A line chart that renders but misplaces a point is
+    worse than no chart, so these assert on the geometry the SVG actually
+    produced — not merely that an <svg> appeared."""
+
+    _SCHEMA = [
+        {
+            "id": "loss_curve",
+            "type": "line_chart",
+            "source": "status",
+            "label": "Loss by epoch",
+            "x": "epoch",
+            "xLabel": "Epoch",
+            "yMin": 0,
+            "series": [
+                {"key": "train_loss", "label": "Train loss"},
+                {"key": "val_loss", "label": "Val loss"},
+            ],
+        }
+    ]
+
+    def _open(self, page: Page, base_url: str, task_id: str, data: dict, schema=None):
+        _mock_status_schema(page, schema if schema is not None else self._SCHEMA)
+        _mock_status_data(page, {task_id: data})
+        _setup_base_mocks(page, {task_id: _make_task(task_id)})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.locator(f"[data-task-uuid='{task_id}'] summary").click()
+        return page.locator(f"[data-task-uuid='{task_id}']")
+
+    @staticmethod
+    def _points(card, index=0):
+        """The nth polyline's points, as [(x, y), ...] in viewBox units."""
+        raw = card.locator("svg polyline").nth(index).get_attribute("points")
+        return [tuple(float(v) for v in pair.split(",")) for pair in raw.split()]
+
+    def test_draws_one_polyline_per_series(self, page: Page, base_url: str):
+        task_id = "task-chart-1"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.0, "val_loss": 0.9},
+                        {"epoch": 2, "train_loss": 0.5, "val_loss": 0.6},
+                        {"epoch": 3, "train_loss": 0.0, "val_loss": 0.3},
+                    ]
+                }
+            },
+        )
+        expect(card).to_contain_text("Loss by epoch")
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected two series lines")
+
+    def test_y_positions_are_proportional_to_the_values(self, page: Page, base_url: str):
+        """The real risk: an off-by-one in the scale that still "looks like" a curve.
+        With yMin=0 pinned and a max of 1.0, the 0.5 sample must land exactly
+        halfway between the 1.0 and 0.0 samples."""
+        task_id = "task-chart-2"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.0, "val_loss": 0.5},
+                        {"epoch": 2, "train_loss": 0.5, "val_loss": 0.5},
+                        {"epoch": 3, "train_loss": 0.0, "val_loss": 0.5},
+                    ]
+                }
+            },
+        )
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected two series lines")
+        pts = self._points(card, 0)
+        assert len(pts) == 3
+        top, mid, bottom = (p[1] for p in pts)
+        assert bottom > mid > top, f"y must increase downward as loss falls: {pts}"
+        assert mid == pytest.approx((top + bottom) / 2, abs=0.51), f"0.5 is not halfway: {pts}"
+        # x is evenly spaced across three equally-spaced epochs.
+        xs = [p[0] for p in pts]
+        assert xs[1] == pytest.approx((xs[0] + xs[2]) / 2, abs=0.51), f"x spacing is uneven: {xs}"
+
+    def test_a_missing_metric_breaks_the_line_instead_of_plotting_zero(self, page: Page, base_url: str):
+        """The detection trainers report no val_loss. Drawing the gap as 0 would
+        invent a measurement — and a very flattering one, for a loss curve."""
+        task_id = "task-chart-3"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.0},
+                        {"epoch": 2, "train_loss": 0.8},
+                        {"epoch": 3, "train_loss": 0.6},
+                    ]
+                }
+            },
+        )
+        # Only train_loss has data, so only one line is drawn — no flat zero line,
+        # and no legend entry promising a series that isn't there.
+        wait_until(page, lambda: card.locator("svg polyline").count() == 1, "Expected only the train_loss line")
+        expect(card).not_to_contain_text("Val loss")
+
+    def test_series_are_named_in_text_not_colour_alone(self, page: Page, base_url: str):
+        task_id = "task-chart-4"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.0, "val_loss": 0.9},
+                        {"epoch": 2, "train_loss": 0.5, "val_loss": 0.6},
+                    ]
+                }
+            },
+        )
+        expect(card).to_contain_text("Train loss")
+        expect(card).to_contain_text("Val loss")
+        # The latest value rides in the legend, so the headline number is
+        # readable without hovering anything.
+        expect(card).to_contain_text("0.5")
+
+    def test_percent_format_renders_fractions_as_percentages(self, page: Page, base_url: str):
+        task_id = "task-chart-5"
+        schema = [
+            {
+                "id": "acc",
+                "type": "line_chart",
+                "source": "status",
+                "label": "Validation accuracy by epoch",
+                "x": "epoch",
+                "xLabel": "Epoch",
+                "yMin": 0,
+                "yMax": 1,
+                "valueFormat": "percent",
+                "series": [{"key": "val_accuracy", "label": "Val accuracy"}],
+            }
+        ]
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {"acc": {"points": [{"epoch": 1, "val_accuracy": 0.5}, {"epoch": 2, "val_accuracy": 0.875}]}},
+            schema=schema,
+        )
+        expect(card).to_contain_text("87.5%")
+
+    def test_data_table_carries_the_same_numbers(self, page: Page, base_url: str):
+        """Colour-free access to the data — the chart is never the only way to read it."""
+        task_id = "task-chart-6"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.25, "val_loss": 0.9},
+                        {"epoch": 2, "train_loss": 0.75, "val_loss": 0.6},
+                    ]
+                }
+            },
+        )
+        table_toggle = card.locator("summary", has_text="Data table")
+        expect(table_toggle).to_contain_text("2 points")
+        table_toggle.click()
+        expect(card.locator("table")).to_contain_text("1.25")
+        expect(card.locator("table")).to_contain_text("0.75")
+
+    def test_hovering_the_plot_shows_the_sample_under_the_cursor(self, page: Page, base_url: str):
+        task_id = "task-chart-7"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.0, "val_loss": 0.9},
+                        {"epoch": 2, "train_loss": 0.5, "val_loss": 0.6},
+                        {"epoch": 3, "train_loss": 0.25, "val_loss": 0.3},
+                    ]
+                }
+            },
+        )
+        svg = card.locator("svg").first
+        wait_until(page, lambda: svg.count() == 1, "Expected the chart svg")
+        box = svg.bounding_box()
+        # Hover hard right — the nearest sample is the last epoch.
+        svg.hover(position={"x": box["width"] - 4, "y": box["height"] / 2})
+        tooltip = card.locator("div", has_text="Epoch 3").last
+        wait_until(page, lambda: "0.25" in (tooltip.text_content() or ""), "Tooltip did not report epoch 3")
+
+    def test_empty_points_show_an_empty_state(self, page: Page, base_url: str):
+        task_id = "task-chart-8"
+        card = self._open(page, base_url, task_id, {"loss_curve": {"points": []}})
+        expect(card).to_contain_text("No epoch data yet.")
+
+    def test_missing_data_does_not_break_the_card(self, page: Page, base_url: str):
+        """Before the first status-data fetch lands the widget gets undefined."""
+        task_id = "task-chart-9"
+        card = self._open(page, base_url, task_id, {})
+        expect(card).to_contain_text("No epoch data yet.")
+
+    def test_series_colours_come_from_theme_tokens(self, page: Page, base_url: str):
+        """Same rule as every other widget: no hardcoded hex, so marks and the
+        chart surface move together across themes."""
+        task_id = "task-chart-10"
+        card = self._open(
+            page,
+            base_url,
+            task_id,
+            {
+                "loss_curve": {
+                    "points": [
+                        {"epoch": 1, "train_loss": 1.0, "val_loss": 0.9},
+                        {"epoch": 2, "train_loss": 0.5, "val_loss": 0.6},
+                    ]
+                }
+            },
+        )
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected two series lines")
+        strokes = [card.locator("svg polyline").nth(i).evaluate("el => getComputedStyle(el).stroke") for i in range(2)]
+        assert all(s.startswith("rgb") for s in strokes), f"series stroke did not resolve: {strokes}"
+        assert strokes[0] != strokes[1], "the two series resolved to the same colour"

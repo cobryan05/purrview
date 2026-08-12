@@ -110,6 +110,19 @@
   --color-danger: #ff7a5c;
   --color-danger-soft: #3a1c14;
   --color-info: #6ea8ff;
+
+  /* ---- chart series (categorical) ----
+   * Data-mark colours, assigned to series in this fixed order and never
+   * cycled. Deliberately NOT the --color-* semantic tokens: those are tuned to
+   * read as UI accents against --surface and sit above the lightness band a
+   * mark wants against --surface-sunken, and success/warning next to each other
+   * fail colourblind separation. This order was validated per theme (CVD
+   * separation, chroma floor, lightness band, contrast vs the chart surface) —
+   * re-validate before changing a value. */
+  --chart-series-1: #4385e4;
+  --chart-series-2: #c96805;
+  --chart-series-3: #a366cd;
+  --chart-series-4: #20a04e;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -236,6 +249,10 @@
     --color-danger: #c93a24;
     --color-danger-soft: #fbe4de;
     --color-info: #0b62d6;
+    --chart-series-1: #3672c9;
+    --chart-series-2: #a85504;
+    --chart-series-3: #8a4fb0;
+    --chart-series-4: #1a8442;
     --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
   }
 }
@@ -263,6 +280,10 @@
   --color-danger: #ff7a5c;
   --color-danger-soft: #3a1c14;
   --color-info: #6ea8ff;
+  --chart-series-1: #4385e4;
+  --chart-series-2: #c96805;
+  --chart-series-3: #a366cd;
+  --chart-series-4: #20a04e;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -286,5 +307,9 @@
   --color-danger: #c93a24;
   --color-danger-soft: #fbe4de;
   --color-info: #0b62d6;
+  --chart-series-1: #3672c9;
+  --chart-series-2: #a85504;
+  --chart-series-3: #8a4fb0;
+  --chart-series-4: #1a8442;
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
 }

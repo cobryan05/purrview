@@ -788,3 +788,142 @@ class TestSaveArtifact:
         tar = self._make_tar({"mymodel.onnx": b"onnx", "checkpoint.pt": b"pt"})
         written = await self._run_save_artifact(tar, tmp_path)
         assert "checkpoint.pt" not in written
+
+
+def _task_with_history(samples: list[dict]) -> TrainModelTask:
+    """A task with `_epoch_history` populated by replaying progress-event dicts.
+
+    Exercises the real recorder rather than assigning the list directly, so the
+    dedup/filter rules stay covered by every status-data assertion below.
+    """
+    task = _make_task({"trainer_type": "binary_image_classifier"})
+    task._epoch_history = []
+    task._total_epochs = None
+    task._resume_data = {}
+    for sample in samples:
+        task._record_epoch_metrics(sample)
+    return task
+
+
+class TestEpochHistory:
+    """_record_epoch_metrics — the per-epoch series behind the training curves."""
+
+    def test_records_metrics_from_progress_event(self):
+        task = _task_with_history(
+            [{"progress": 0.1, "epoch": 1, "total_epochs": 10, "train_loss": 0.9, "val_loss": 0.8, "val_accuracy": 0.5}]
+        )
+        assert task._epoch_history == [{"epoch": 1, "train_loss": 0.9, "val_loss": 0.8, "val_accuracy": 0.5}]
+        assert task._total_epochs == 10
+
+    def test_ignores_events_without_an_epoch(self):
+        """Phase messages ("Loading dataset...") are progress events too."""
+        task = _task_with_history([{"progress": 0.0, "log": "Loading dataset..."}])
+        assert task._epoch_history == []
+
+    def test_zero_val_loss_is_dropped(self):
+        """The detection trainers send val_loss=0.0 as a "not reported" placeholder;
+        charting it would invent a flat zero line."""
+        task = _task_with_history([{"epoch": 1, "train_loss": 2.0, "val_loss": 0.0, "val_accuracy": 0.1}])
+        assert "val_loss" not in task._epoch_history[0]
+        assert task._epoch_history[0]["train_loss"] == 2.0
+
+    def test_replayed_epochs_truncate_rather_than_append(self):
+        """A restarted job resumes from its checkpoint and replays epoch numbers.
+        The series must stay monotonic in x, not zig-zag backwards."""
+        task = _task_with_history(
+            [
+                {"epoch": 1, "train_loss": 1.0},
+                {"epoch": 2, "train_loss": 0.9},
+                {"epoch": 3, "train_loss": 0.8},
+                # ── restart: training resumes from the epoch-2 checkpoint ──
+                {"epoch": 3, "train_loss": 0.7},
+                {"epoch": 4, "train_loss": 0.6},
+            ]
+        )
+        assert [s["epoch"] for s in task._epoch_history] == [1, 2, 3, 4]
+        assert task._epoch_history[2]["train_loss"] == 0.7
+
+    def test_history_is_bounded(self):
+        from apps.tasks_server.tasks._training_job_runner import _MAX_EPOCH_HISTORY
+
+        task = _task_with_history([{"epoch": i, "train_loss": 1.0} for i in range(_MAX_EPOCH_HISTORY + 50)])
+        assert len(task._epoch_history) == _MAX_EPOCH_HISTORY
+        # The oldest samples are the ones dropped.
+        assert task._epoch_history[-1]["epoch"] == _MAX_EPOCH_HISTORY + 49
+
+    def test_history_rides_along_in_resume_data(self):
+        """So an interrupted-and-resumed run keeps the curve it already drew."""
+        task = _task_with_history([{"epoch": 1, "train_loss": 1.0}])
+        assert task._resume_data["epoch_history"] == task._epoch_history
+
+    async def test_sse_progress_events_populate_history(self):
+        """End-to-end through the real SSE relay, not just the recorder."""
+        task = _make_task({"trainer_type": "binary_image_classifier", "label_uuid": "l", "model_name": "m1"})
+        events = [
+            ("progress", {"progress": 0.5, "epoch": 1, "total_epochs": 2, "train_loss": 0.5, "val_accuracy": 0.7}),
+            ("progress", {"progress": 1.0, "epoch": 2, "total_epochs": 2, "train_loss": 0.3, "val_accuracy": 0.8}),
+            ("done", {"model_path": "/models/m1.onnx"}),
+        ]
+        runner = TestRun()
+        await runner._run_task_with_sse(task, runner._make_sse_stream(events))
+        assert [s["epoch"] for s in task._epoch_history] == [1, 2]
+        assert task._epoch_history[1]["val_accuracy"] == 0.8
+
+
+class TestTrainingCurveStatus:
+    """status_schema() / get_status_data() — what the task card renders."""
+
+    def test_schema_declares_two_separate_curves(self):
+        """Loss and accuracy have unrelated scales, so they never share an axis."""
+        schema = {w["id"]: w for w in TrainModelTask.status_schema()}
+        assert schema["loss_curve"]["type"] == "line_chart"
+        assert schema["accuracy_curve"]["type"] == "line_chart"
+        assert [s["key"] for s in schema["loss_curve"]["series"]] == ["train_loss", "val_loss"]
+        assert [s["key"] for s in schema["accuracy_curve"]["series"]] == ["val_accuracy"]
+        assert schema["accuracy_curve"]["valueFormat"] == "percent"
+
+    def test_schema_keeps_progress_and_logs(self):
+        ids = [w["id"] for w in TrainModelTask.status_schema()]
+        assert ids[0] == "progress"
+        assert "log" in ids
+
+    def test_status_data_empty_before_any_epoch(self):
+        task = _task_with_history([])
+        assert task.get_status_data() == {}
+
+    def test_status_data_carries_points_for_both_curves(self):
+        task = _task_with_history(
+            [
+                {"epoch": 1, "total_epochs": 3, "train_loss": 0.9, "val_loss": 0.8, "val_accuracy": 0.50},
+                {"epoch": 2, "total_epochs": 3, "train_loss": 0.7, "val_loss": 0.6, "val_accuracy": 0.75},
+            ]
+        )
+        data = task.get_status_data()
+        assert data["loss_curve"]["points"] == task._epoch_history
+        assert data["accuracy_curve"]["points"] == task._epoch_history
+
+    def test_status_data_stats_report_latest_and_best(self):
+        task = _task_with_history(
+            [
+                {"epoch": 1, "total_epochs": 3, "train_loss": 0.9, "val_loss": 0.6, "val_accuracy": 0.90},
+                {"epoch": 2, "total_epochs": 3, "train_loss": 0.7, "val_loss": 0.8, "val_accuracy": 0.75},
+            ]
+        )
+        stats = task.get_status_data()["epoch_stats"]
+        assert stats["epoch"] == "2 / 3"
+        assert stats["val_accuracy"] == "75.0%"
+        # Best is over the whole run, not the last epoch.
+        assert stats["best_val_accuracy"] == "90.0%"
+        assert stats["best_val_loss"] == "0.6000"
+
+    def test_status_data_omits_metrics_the_trainer_never_reported(self):
+        """A detection run has no val_loss — the stat grid must show "—", not 0."""
+        task = _task_with_history([{"epoch": 1, "train_loss": 1.5, "val_loss": 0.0, "val_accuracy": 0.4}])
+        stats = task.get_status_data()["epoch_stats"]
+        assert "val_loss" not in stats
+        assert "best_val_loss" not in stats
+        assert stats["train_loss"] == "1.5000"
+
+    def test_status_data_epoch_without_total(self):
+        task = _task_with_history([{"epoch": 7, "train_loss": 1.0}])
+        assert task.get_status_data()["epoch_stats"]["epoch"] == "7"

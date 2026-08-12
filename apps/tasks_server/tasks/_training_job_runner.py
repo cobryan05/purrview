@@ -13,6 +13,10 @@ The host Task class must set up, before calling
   - self._job_id / self._manifest / self._model_name / self._config
     — mutable instance attributes describing the CURRENT job; _run_one_job
       reads and updates them (including on resume) for exactly one job.
+  - self._epoch_history — list of per-epoch metric dicts, seeded from
+      resume_data; appended to by _record_epoch_metrics as progress events
+      arrive, and read by the host task's get_status_data() to draw the
+      training curves.
 """
 
 from __future__ import annotations
@@ -39,6 +43,17 @@ logger = logging.getLogger(__file__)
 
 _MODELS_DIR = Path(os.environ.get("MODELS_ROOT", "/models"))
 _TAR_BATCH_SIZE = 500  # max images per tar POST
+
+# Hard cap on retained per-epoch metric samples. Real runs are tens-to-hundreds of
+# epochs, but the history is persisted into resume_data (and snapshotted into the
+# task instance row on completion), so a runaway trainer must not grow it without
+# bound.
+_MAX_EPOCH_HISTORY = 2000
+
+# Metric keys every trainer's progress event carries alongside `epoch`. Kept as a
+# tuple rather than "whatever's in the event" so a trainer adding a private
+# debugging key doesn't silently start riding along in the persisted history.
+_EPOCH_METRIC_KEYS = ("train_loss", "val_loss", "val_accuracy")
 
 
 class TrainingJobRunnerMixin:
@@ -305,12 +320,58 @@ class TrainingJobRunnerMixin:
 
         raise RuntimeError(f"Training job {job_id} stream ended without a terminal event")
 
+    def _record_epoch_metrics(self, data: dict) -> None:
+        """Append one per-epoch metric sample from a progress event to the history.
+
+        Not every progress event is an epoch boundary — the trainers also emit
+        phase messages ("Loading dataset...") with no `epoch` — so an event
+        without a numeric epoch is simply ignored.
+
+        Re-runs are the interesting case: a job that is interrupted and restarted
+        resumes from its last checkpoint and replays epoch numbers we already have.
+        Truncating everything at or after the incoming epoch (rather than
+        appending) keeps the series monotonic in x, so the chart shows one curve
+        per run instead of a sawtooth.
+        """
+        epoch = data.get("epoch")
+        if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
+            return
+        epoch = int(epoch)
+
+        sample: dict[str, Any] = {"epoch": epoch}
+        for key in _EPOCH_METRIC_KEYS:
+            value = data.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            # A hard 0.0 val_loss means "this trainer doesn't report it" — the
+            # detection trainers send it as a placeholder. Charting that as a flat
+            # zero line would invent a metric, so drop it and let the series be
+            # absent (same rule the training server's own status view applies).
+            if key == "val_loss" and value == 0.0:
+                continue
+            sample[key] = float(value)
+
+        history: list[dict[str, Any]] = self._epoch_history
+        while history and history[-1]["epoch"] >= epoch:
+            history.pop()
+        history.append(sample)
+        del history[:-_MAX_EPOCH_HISTORY]
+
+        total_epochs = data.get("total_epochs")
+        if isinstance(total_epochs, (int, float)) and not isinstance(total_epochs, bool):
+            self._total_epochs = int(total_epochs)
+
+        # Ride along with the existing job_id/manifest persistence so an
+        # interrupted-and-resumed run keeps the curve it has drawn so far.
+        self._resume_data["epoch_history"] = history
+
     async def _handle_event(self, event_type: Optional[str], data: dict) -> Optional[dict[str, Any]]:
         """Process one SSE event. Returns a result dict if terminal, else None."""
         if event_type == "progress":
             progress = float(data.get("progress", 0.0))
             # Offset by 50 to account for image-push phase (0–50%) + training phase (50–100%).
             self._update_progress(50.0 + progress * 50.0)
+            self._record_epoch_metrics(data)
             log_msg = data.get("log", "")
             if log_msg:
                 self.log(log_msg)

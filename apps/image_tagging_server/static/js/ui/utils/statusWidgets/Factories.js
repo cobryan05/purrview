@@ -41,6 +41,54 @@ function labelWrap(label) {
   return div;
 }
 
+// Categorical series colours, assigned in this fixed order and never cycled —
+// a chart that wants a 5th series wants to be two charts.
+//
+// Defined per theme in tokens.css (--chart-series-*), not as the --color-*
+// semantic tokens: see the comment there for why a data mark can't wear a UI
+// accent colour.
+const SERIES_COLORS = [
+  'var(--chart-series-1)',
+  'var(--chart-series-2)',
+  'var(--chart-series-3)',
+  'var(--chart-series-4)',
+];
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const svgEl = (name, attrs = {}) => {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  return el;
+};
+
+/** Format a metric value for display. `percent` renders a 0–1 fraction as %. */
+function formatValue(value, valueFormat) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  if (valueFormat === 'percent') return `${(value * 100).toFixed(1)}%`;
+  if (Math.abs(value) >= 1000 || (value !== 0 && Math.abs(value) < 0.001)) return value.toExponential(2);
+  return String(Math.round(value * 10000) / 10000);
+}
+
+/** Axis-tick formatting: shorter than the tooltip's, to fit a 4-char gutter. */
+function formatTick(value, valueFormat) {
+  if (valueFormat === 'percent') return `${Math.round(value * 100)}%`;
+  if (value === 0) return '0';
+  const abs = Math.abs(value);
+  if (abs >= 100 || abs < 0.01) return value.toExponential(0);
+  return String(Math.round(value * 100) / 100);
+}
+
+/** "Nice" axis bounds: pad the data range out to a round step. */
+function niceBounds(min, max) {
+  if (!(max > min)) {
+    // A flat series still needs a band to draw in.
+    const pad = Math.abs(max) > 0 ? Math.abs(max) * 0.1 : 1;
+    return [min - pad, max + pad];
+  }
+  const step = 10 ** Math.floor(Math.log10(max - min)) / 2;
+  return [Math.floor(min / step) * step, Math.ceil(max / step) * step];
+}
+
 export const statusWidgets = {
   // data: number (0-100), null (indeterminate — no known denominator), or
   // undefined (nothing to show, e.g. the task isn't running).
@@ -144,6 +192,271 @@ export const statusWidgets = {
       grid.appendChild(cell);
     }
     wrap.appendChild(grid);
+    return wrap;
+  },
+
+  // config: { label, x, xLabel, series: [{ key, label, colorIndex? }],
+  //           yMin?, yMax?, valueFormat?: 'percent', height? }
+  // data:   { points: [ { <x>: number, <seriesKey>: number, ... }, ... ] }
+  //
+  // One y-scale, always. A metric on a second scale gets its own line_chart
+  // widget — a shared plot with two axes lets the reader see crossings and
+  // convergences that are artefacts of where each axis was zeroed.
+  //
+  // A point missing a series key is a gap in that series' line, not a zero:
+  // trainers legitimately don't report every metric (the detection trainers
+  // send no val_loss), and drawing the absence as 0 invents a measurement.
+  async line_chart(config, data) {
+    const wrap = labelWrap(config.label);
+    const points = Array.isArray(data?.points) ? data.points : [];
+    const xKey = config.x || 'x';
+    const valueFormat = config.valueFormat;
+
+    const seriesDefs = (config.series ?? []).map((s, i) => ({
+      key: s.key ?? s.id,
+      label: s.label ?? s.key ?? s.id,
+      color: SERIES_COLORS[(s.colorIndex ?? i) % SERIES_COLORS.length],
+    }));
+
+    // A series with no numeric samples anywhere is dropped outright rather than
+    // drawn as an empty line with a legend entry promising data that never comes.
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const series = seriesDefs
+      .map(def => ({
+        ...def,
+        values: points.map(p => num(p?.[def.key])),
+      }))
+      .filter(s => s.values.some(v => v !== null));
+
+    if (points.length === 0 || series.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No epoch data yet.';
+      empty.style.cssText = 'color:var(--text-faint);';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    const xs = points.map(p => num(p?.[xKey]) ?? 0);
+    const allY = series.flatMap(s => s.values.filter(v => v !== null));
+    let yLo = config.yMin ?? Math.min(...allY);
+    let yHi = config.yMax ?? Math.max(...allY);
+    if (config.yMin === undefined || config.yMax === undefined) {
+      const [nLo, nHi] = niceBounds(Math.min(...allY), Math.max(...allY));
+      if (config.yMin === undefined) yLo = nLo;
+      if (config.yMax === undefined) yHi = nHi;
+    }
+    if (yHi === yLo) yHi = yLo + 1;
+    const xLo = Math.min(...xs);
+    const xHi = Math.max(...xs);
+
+    // Fixed viewBox scaled to the card's width. Strokes are pinned with
+    // vector-effect so line weight stays 2px however wide the card is.
+    const W = 400, H = 170;
+    const PAD = { top: 10, right: 12, bottom: 26, left: 42 };
+    const plotW = W - PAD.left - PAD.right;
+    const plotH = H - PAD.top - PAD.bottom;
+    const sx = x => PAD.left + (xHi === xLo ? plotW / 2 : ((x - xLo) / (xHi - xLo)) * plotW);
+    const sy = y => PAD.top + plotH - ((y - yLo) / (yHi - yLo)) * plotH;
+
+    const frame = document.createElement('div');
+    frame.style.cssText = 'position:relative; background:var(--surface-sunken); border-radius:3px; padding:0.2em;';
+    const svg = svgEl('svg', {
+      viewBox: `0 0 ${W} ${H}`,
+      width: '100%',
+      role: 'img',
+      'aria-label': `${config.label || 'Chart'}: ${series.map(s => s.label).join(', ')} by ${config.xLabel || xKey}`,
+    });
+    // The viewBox gives the SVG its own aspect ratio, so width:100% is enough to
+    // size it; config.height only overrides that when a card wants a taller plot.
+    svg.style.cssText = `display:block; overflow:visible; touch-action:none;${config.height ? ` height:${config.height};` : ''}`;
+
+    // ── Grid + y ticks (recessive: hairlines, muted ink) ──────────────────
+    for (let i = 0; i <= 4; i++) {
+      const value = yLo + ((yHi - yLo) * i) / 4;
+      const y = sy(value);
+      svg.appendChild(svgEl('line', {
+        x1: PAD.left, x2: W - PAD.right, y1: y, y2: y,
+        stroke: 'var(--border)', 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke',
+      }));
+      const tick = svgEl('text', {
+        x: PAD.left - 5, y: y + 3, 'text-anchor': 'end', fill: 'var(--text-muted)', 'font-size': 9,
+      });
+      tick.textContent = formatTick(value, valueFormat);
+      svg.appendChild(tick);
+    }
+
+    // ── X ticks: ends plus up to 3 interior, snapped to real samples ──────
+    const tickIdxs = [...new Set(
+      Array.from({ length: Math.min(5, points.length) }, (_, i) =>
+        Math.round((i * (points.length - 1)) / Math.max(1, Math.min(5, points.length) - 1)))
+    )];
+    for (const idx of tickIdxs) {
+      const label = svgEl('text', {
+        x: sx(xs[idx]), y: H - PAD.bottom + 12, 'text-anchor': 'middle',
+        fill: 'var(--text-muted)', 'font-size': 9,
+      });
+      label.textContent = String(xs[idx]);
+      svg.appendChild(label);
+    }
+    if (config.xLabel) {
+      const axisLabel = svgEl('text', {
+        x: PAD.left + plotW / 2, y: H - 2, 'text-anchor': 'middle',
+        fill: 'var(--text-faint)', 'font-size': 9,
+      });
+      axisLabel.textContent = config.xLabel;
+      svg.appendChild(axisLabel);
+    }
+
+    // ── Series lines. Nulls break the path into segments (gaps, not zeros) ─
+    const showDots = points.length <= 25;
+    for (const s of series) {
+      let run = [];
+      const flush = () => {
+        if (run.length === 0) return;
+        if (run.length === 1) {
+          // A lone sample between two gaps has no line to be seen on — give it
+          // a dot regardless of the dot threshold, or the series vanishes.
+          svg.appendChild(svgEl('circle', {
+            cx: run[0][0], cy: run[0][1], r: 3, fill: s.color,
+            stroke: 'var(--surface-sunken)', 'stroke-width': 1.5,
+          }));
+        } else {
+          svg.appendChild(svgEl('polyline', {
+            points: run.map(([x, y]) => `${x},${y}`).join(' '),
+            fill: 'none', stroke: s.color, 'stroke-width': 2,
+            'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+            'vector-effect': 'non-scaling-stroke',
+          }));
+        }
+        run = [];
+      };
+      s.values.forEach((v, i) => (v === null ? flush() : run.push([sx(xs[i]), sy(v)])));
+      flush();
+
+      if (showDots) {
+        s.values.forEach((v, i) => {
+          if (v === null) return;
+          svg.appendChild(svgEl('circle', {
+            cx: sx(xs[i]), cy: sy(v), r: 3, fill: s.color,
+            // A surface-coloured ring keeps overlapping marks legible where
+            // two series cross.
+            stroke: 'var(--surface-sunken)', 'stroke-width': 1.5,
+          }));
+        });
+      }
+    }
+
+    // ── Hover layer: crosshair + nearest-sample tooltip ───────────────────
+    const crosshair = svgEl('line', {
+      y1: PAD.top, y2: PAD.top + plotH, stroke: 'var(--border-strong)',
+      'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', visibility: 'hidden',
+    });
+    svg.appendChild(crosshair);
+    const markers = series.map(s => {
+      const dot = svgEl('circle', {
+        r: 4, fill: s.color, stroke: 'var(--surface-sunken)', 'stroke-width': 2, visibility: 'hidden',
+      });
+      svg.appendChild(dot);
+      return dot;
+    });
+
+    const tooltip = document.createElement('div');
+    tooltip.style.cssText = 'position:absolute; pointer-events:none; display:none; z-index:2; background:var(--surface-elevated); color:var(--text); border:1px solid var(--border-strong); border-radius:3px; padding:0.25em 0.45em; font-size:0.75em; white-space:nowrap; box-shadow:var(--shadow);';
+
+    const hideHover = () => {
+      crosshair.setAttribute('visibility', 'hidden');
+      markers.forEach(m => m.setAttribute('visibility', 'hidden'));
+      tooltip.style.display = 'none';
+    };
+
+    const showHover = (clientX) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width) return;
+      // Pointer px -> viewBox units, then -> nearest sample index.
+      const vbX = ((clientX - rect.left) / rect.width) * W;
+      let best = 0;
+      for (let i = 1; i < xs.length; i++) {
+        if (Math.abs(sx(xs[i]) - vbX) < Math.abs(sx(xs[best]) - vbX)) best = i;
+      }
+      const px = sx(xs[best]);
+      crosshair.setAttribute('x1', px);
+      crosshair.setAttribute('x2', px);
+      crosshair.setAttribute('visibility', 'visible');
+
+      const rows = [`${config.xLabel || xKey} ${xs[best]}`];
+      series.forEach((s, i) => {
+        const v = s.values[best];
+        if (v === null) {
+          markers[i].setAttribute('visibility', 'hidden');
+          return;
+        }
+        markers[i].setAttribute('cx', px);
+        markers[i].setAttribute('cy', sy(v));
+        markers[i].setAttribute('visibility', 'visible');
+        rows.push(`${s.label}: ${formatValue(v, valueFormat)}`);
+      });
+      tooltip.textContent = rows.join('  ·  ');
+      tooltip.style.display = 'block';
+      // Flip the tooltip to the left of the crosshair past the halfway mark so
+      // it never runs off the right edge of a narrow card.
+      const leftPct = (px / W) * 100;
+      tooltip.style.left = leftPct > 55 ? 'auto' : `calc(${leftPct}% + 8px)`;
+      tooltip.style.right = leftPct > 55 ? `calc(${100 - leftPct}% + 8px)` : 'auto';
+      tooltip.style.top = '2px';
+    };
+
+    svg.addEventListener('pointermove', e => showHover(e.clientX));
+    svg.addEventListener('pointerleave', hideHover);
+    frame.append(svg, tooltip);
+    wrap.appendChild(frame);
+
+    // ── Legend (>=2 series) + direct end-labels ───────────────────────────
+    if (series.length >= 2) {
+      const legend = document.createElement('div');
+      legend.style.cssText = 'display:flex; flex-wrap:wrap; gap:0.75em; margin:0.25em 0 0.3em; font-size:0.75em; color:var(--text-muted);';
+      for (const s of series) {
+        const item = document.createElement('span');
+        item.style.cssText = 'display:inline-flex; align-items:center; gap:0.3em;';
+        const swatch = document.createElement('span');
+        swatch.style.cssText = `width:0.7em; height:0.7em; border-radius:2px; background:${s.color}; flex:none;`;
+        const text = document.createElement('span');
+        // Identity is never colour alone: the swatch is always paired with the
+        // series name, and the value below it repeats in the data table.
+        text.textContent = `${s.label} — ${formatValue(s.values.filter(v => v !== null).at(-1), valueFormat)}`;
+        item.append(swatch, text);
+        legend.appendChild(item);
+      }
+      wrap.appendChild(legend);
+    } else {
+      const caption = document.createElement('div');
+      caption.style.cssText = 'margin:0.25em 0 0.3em; font-size:0.75em; color:var(--text-muted);';
+      caption.textContent = `${series[0].label} — latest ${formatValue(series[0].values.filter(v => v !== null).at(-1), valueFormat)}`;
+      wrap.appendChild(caption);
+    }
+
+    // ── Table view: the same numbers, reachable without reading the chart ──
+    const details = document.createElement('details');
+    details.style.cssText = 'font-size:0.8em;';
+    const summary = document.createElement('summary');
+    summary.textContent = `Data table (${points.length} points)`;
+    summary.style.cssText = 'color:var(--text-muted); cursor:pointer;';
+    details.appendChild(summary);
+    const table = await statusWidgets.table(
+      {
+        columns: [
+          { key: xKey, label: config.xLabel || xKey },
+          ...series.map(s => ({ key: s.key, label: s.label })),
+        ],
+      },
+      points.map(p => {
+        const row = { [xKey]: p?.[xKey] };
+        for (const s of series) row[s.key] = formatValue(num(p?.[s.key]), valueFormat);
+        return row;
+      }),
+    );
+    details.appendChild(table);
+    wrap.appendChild(details);
+
     return wrap;
   },
 
