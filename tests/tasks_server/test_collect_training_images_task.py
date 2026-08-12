@@ -2904,9 +2904,7 @@ class TestConfidenceBandReviewDisabled:
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
 
-        review_disabled_det = _detection_at(
-            0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=0.9
-        )
+        review_disabled_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=0.9)
         triggering_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_NORMAL, confidence=0.5)
 
         inference_api = MagicMock(spec=InferenceApi)
