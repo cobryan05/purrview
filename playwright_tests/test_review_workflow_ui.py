@@ -1332,7 +1332,7 @@ class TestCanvasModalRoundTrip:
         # rather than sleeping and hoping — a no-op delete would otherwise sail
         # through to a no-op save and only fail at the very last assertion.
         modal.locator("button[data-toolbar-key='delete']").click()
-        save_btn = modal.locator("button", has_text="Save & Close")
+        save_btn = modal.get_by_test_id("canvas-edit-modal-save-close")
         expect(save_btn).to_have_class("save-btn--dirty")
         save_btn.click()
 
@@ -1413,7 +1413,7 @@ class TestCanvasModalRoundTrip:
         page.mouse.move(x1, y1)
         page.mouse.up()
 
-        save_btn = modal.locator("button", has_text="Save & Close")
+        save_btn = modal.get_by_test_id("canvas-edit-modal-save-close")
         expect(save_btn).to_have_class("save-btn--dirty")
         save_btn.click()
         expect(modal).to_have_count(0, timeout=8000)
@@ -1449,7 +1449,7 @@ class TestCanvasModalRoundTrip:
         modal.locator("button[data-toolbar-key='delete']").click()
         page.wait_for_timeout(300)
 
-        save_btn = modal.locator("button", has_text="Save & Close")
+        save_btn = modal.get_by_test_id("canvas-edit-modal-save-close")
         expect(save_btn).not_to_have_class(re.compile(r"\bsave-btn--dirty\b"))
 
     def test_arrow_keys_do_not_scroll_the_background_grid(self, page: Page, base_url: str):
@@ -1534,7 +1534,7 @@ class TestCanvasModalRoundTrip:
         # Click Delete the instant Playwright considers the button actionable —
         # i.e. exactly what a fast machine (or a fast test) does.
         modal.locator("button[data-toolbar-key='delete']").click(timeout=8000)
-        modal.locator("button", has_text="Save & Close").click()
+        modal.get_by_test_id("canvas-edit-modal-save-close").click()
 
         expect(modal).to_have_count(0, timeout=8000)
         expect(card).to_have_class("review-card stale-deleted")
@@ -2143,3 +2143,162 @@ class TestCanvasNavPrefetch:
 
         after = len([c for c in calls if c.endswith("image2.jpg")])
         assert after == before, f"navigation re-fetched a prefetched image: {calls}"
+
+
+# ---------------------------------------------------------------------------
+# 15. Pre-highlighted bbox is a real selection
+# ---------------------------------------------------------------------------
+
+
+class TestOpenedBboxIsProperlySelected:
+    """Opening the canvas modal from a bbox card highlights that bbox, which
+    puts live resize anchors on screen before the user has clicked anything.
+
+    Those anchors have to behave like anchors on a box the user selected by
+    hand: the highlight attaches the transformer directly, so unless it also
+    does the rest of the selection bookkeeping, dragging them silently mutates
+    the box without marking the canvas dirty — the edit then looks saved but is
+    discarded on close.
+    """
+
+    def _open_modal(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        page.wait_for_function(
+            """() => {
+                const stages = (window.Konva && window.Konva.stages) || [];
+                for (const stage of stages) {
+                    if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+                    if (stage.findOne('#bbox-1')) return true;
+                }
+                return false;
+            }""",
+            timeout=8000,
+        )
+        return modal
+
+    _RESIZE = """() => {
+        const stages = (window.Konva && window.Konva.stages) || [];
+        for (const stage of stages) {
+            if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+            const node = stage.findOne('#bbox-1');
+            if (!node) continue;
+            // Grow the node the way an anchor drag does, then fire the event
+            // Konva's Transformer fires on the attached node when the drag ends.
+            node.width(node.width() * 1.5);
+            node.height(node.height() * 1.5);
+            node.fire('transformend', { target: node }, true);
+            return true;
+        }
+        return false;
+    }"""
+
+    def test_the_opened_bbox_is_attached_to_the_transformer(self, page: Page, base_url: str):
+        """The premise of the bug: anchors really are live before any click."""
+        self._open_modal(page, base_url)
+        attached = page.evaluate("""() => {
+                const stages = (window.Konva && window.Konva.stages) || [];
+                for (const stage of stages) {
+                    if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+                    const tr = stage.findOne('Transformer');
+                    if (tr) return tr.nodes().map(n => n.id());
+                }
+                return [];
+            }""")
+        assert attached == ["bbox-1"], attached
+
+    def test_resizing_the_pre_highlighted_bbox_enables_save(self, page: Page, base_url: str):
+        modal = self._open_modal(page, base_url)
+        save_btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+        expect(save_btn).to_have_class("save-btn--clean")
+
+        assert page.evaluate(self._RESIZE), "modal canvas stage / bbox-1 node not found"
+
+        expect(save_btn).to_have_class("save-btn--dirty")
+
+
+# ---------------------------------------------------------------------------
+# 16. Save & Close reads "Close" with nothing to save
+# ---------------------------------------------------------------------------
+
+
+class TestSaveAndCloseBecomesClose:
+    """With a clean canvas there is nothing to save, so the footer's primary
+    button says "Close" and closes. It used to keep the save wording and return
+    early on click — the most prominent button in the footer was dead whenever
+    the user was only looking at an image."""
+
+    def _open_modal(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        return modal
+
+    def test_a_clean_canvas_offers_close_and_closes(self, page: Page, base_url: str):
+        modal = self._open_modal(page, base_url)
+        btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+        expect(btn).to_have_text("Close")
+
+        btn.click()
+        expect(modal).to_have_count(0, timeout=5000)
+
+    def test_the_label_follows_the_dirty_state_both_ways(self, page: Page, base_url: str):
+        """It must go back to "Close" once the changes are saved, or the button
+        would keep promising a save it no longer has anything to do.
+
+        Note the reverse direction is driven by an actual save, not by undo:
+        `runtime.undo()` sets `_dirty` unconditionally, so dirty means "edited
+        since load or save", not "differs from the loaded state".
+        """
+        modal = self._open_modal(page, base_url)
+        page.route(
+            "**/api/images/metadata/update",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"status": "success"})
+            ),
+        )
+        btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+
+        modal.locator("button[data-toolbar-key='delete']").click()
+        expect(btn).to_have_text("Save & Close")
+
+        # Save-only keeps the modal open and marks the canvas clean.
+        modal.locator("button", has_text=re.compile(r"^Save$")).click()
+        expect(btn).to_have_text("Close")
+
+    def test_a_dirty_canvas_still_saves_before_closing(self, page: Page, base_url: str):
+        """The save path must survive the label switch."""
+        saves: list[dict] = []
+
+        def handle_update(route: Route):
+            saves.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        modal = self._open_modal(page, base_url)
+        page.route("**/api/images/metadata/update", handle_update)
+
+        modal.locator("button[data-toolbar-key='delete']").click()
+        btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+        expect(btn).to_have_text("Save & Close")
+        btn.click()
+
+        expect(modal).to_have_count(0, timeout=8000)
+        assert len(saves) == 1, f"expected exactly one save, got {saves}"

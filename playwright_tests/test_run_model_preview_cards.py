@@ -330,7 +330,7 @@ class TestPreviewCardBehavior:
         assert moved is not None, "modal canvas stage / bbox-1 node not found"
 
         # Save & Close persists (in-memory) and closes the editor.
-        dialog.locator("button", has_text="Save & Close").click()
+        dialog.get_by_test_id("canvas-edit-modal-save-close").click()
         expect(dialog).to_have_count(0, timeout=5000)
 
         # Apply the (single) candidate — relabel mode by default.

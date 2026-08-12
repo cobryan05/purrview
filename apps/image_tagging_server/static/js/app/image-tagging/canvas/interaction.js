@@ -367,6 +367,48 @@ export async function handleWheel(e, runtime) {
 }
 
 /**
+ * Make `bboxGroup` the canvas's selected bbox: attach the transformer, record
+ * it as the selection, and wire the resize handler that keeps a transform from
+ * being lost.
+ *
+ * ⚠️ The ONLY supported way to put the transformer on a bbox. Calling
+ * `transformer.nodes([view])` directly renders live resize anchors while
+ * skipping this bookkeeping, so dragging them mutates the box without ever
+ * marking the canvas dirty — the edit looks applied, the Save button stays
+ * clean, and it is discarded on close. That is exactly the bug the review
+ * modal's open-on-a-bbox highlight shipped with.
+ *
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {import('./views/bboxView.js').BboxView} bboxGroup
+ */
+export function selectBboxView(runtime, bboxGroup) {
+  if (!runtime.canvas || !bboxGroup) return;
+  const { transformer } = runtime.canvas;
+  const ist = runtime.canvas.interactionState;
+
+  if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
+    ist.selectedBbox.off('transformend.transformer');
+  }
+  ist.selectedBbox = bboxGroup;
+  transformer.nodes([bboxGroup]);
+  transformer.moveToTop();
+
+  // Konva .on() with a namespace appends rather than replaces, so re-selecting
+  // the same bbox would stack a duplicate handler (N undo pushes per resize).
+  // Clear unconditionally before wiring.
+  bboxGroup.off('transformend.transformer');
+
+  // Resize handler: Konva fires transformend from the Transformer node (not the
+  // BboxView group), so the stage-level bubbling guard won't catch it. Wire it
+  // directly on the group so we reliably get pushState + dirty notification.
+  bboxGroup.on('transformend.transformer', () => {
+    transformer.forceUpdate();
+    runtime.pushState();
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
+  });
+}
+
+/**
  * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime - The image tagging runtime for this canvas.
  * @returns {Promise<void>}
@@ -413,26 +455,7 @@ export function handleClick(e, runtime) {
   // Used below to decide between tool-switch and inspector-open on double-click.
   const wasAlreadySelected = (ist.selectedBbox === bboxGroup);
 
-  if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
-    ist.selectedBbox.off('transformend.transformer');
-  }
-  ist.selectedBbox = bboxGroup;
-  transformer.nodes([bboxGroup]);
-  transformer.moveToTop();
-
-  // Konva .on() with a namespace appends rather than replaces, so re-selecting
-  // the same bbox would stack a duplicate handler (N undo pushes per resize).
-  // Clear unconditionally before wiring.
-  bboxGroup.off('transformend.transformer');
-
-  // Resize handler: Konva fires transformend from the Transformer node (not the
-  // BboxView group), so the stage-level bubbling guard won't catch it. Wire it
-  // directly on the group so we reliably get pushState + dirty notification.
-  bboxGroup.on('transformend.transformer', () => {
-    transformer.forceUpdate();
-    runtime.pushState();
-    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-  });
+  selectBboxView(runtime, bboxGroup);
 
   events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: bboxGroup.id(), bboxView: bboxGroup, runtimeId: runtime.id });
 

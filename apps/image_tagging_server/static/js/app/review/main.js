@@ -44,6 +44,7 @@ import { bindOutsideDismiss } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { trapModalFocus } from '/app-static/js/ui/utils/modalShell.js';
 import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
+import { selectBboxView } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 import { next_image, prev_image } from '/app-static/js/app/image-tagging/files.js';
 import { saveAnnotations, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
 import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
@@ -3164,6 +3165,9 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save & Close';
   saveBtn.className = 'save-btn--clean';
+  // Its label switches to 'Close' whenever the canvas is clean, so anything
+  // that needs to find this button must go through the testid, not the text.
+  saveBtn.dataset.testid = 'canvas-edit-modal-save-close';
   footer.append(cancelBtn, saveOnlyBtn, saveBtn);
 
   // The overlay goes into the DOM immediately below, but these buttons' click
@@ -3254,7 +3258,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     const layer = instance.runtime.canvas.layer;
     const view = layer.findOne('#' + bboxUuid);
     if (view) {
-      instance.runtime.canvas.transformer.nodes([view]);
+      // Goes through the shared selection path rather than attaching the
+      // transformer directly: the highlight puts live resize anchors on screen
+      // before the user has clicked anything, and those anchors have to mark
+      // the canvas dirty like any other selection's would.
+      selectBboxView(instance.runtime, view);
       layer.draw();
     }
   }
@@ -3285,10 +3293,15 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   });
 
   // ── Save button state: highlight only when there are unsaved changes ──
+  // With nothing to save, "Save & Close" becomes plain "Close" and does just
+  // that. It used to keep the save wording and return early on click, so the
+  // most obvious button in the footer was a dead control whenever the canvas
+  // was clean — which is most of the time when browsing.
   function _updateSaveBtn() {
     if (saveBtn.disabled) return; // don't override while saving
     const dirty = instance.runtime.isDirty;
     saveBtn.className = dirty ? 'save-btn--dirty' : 'save-btn--clean';
+    saveBtn.textContent = dirty ? 'Save & Close' : 'Close';
     saveOnlyBtn.className = dirty ? 'save-btn--dirty' : 'save-btn--clean';
   }
   const unsubDirty = events.subscribeToCanvas(
@@ -3619,7 +3632,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
   // ── Save & Close button ────────────────────────────────────────────
   saveBtn.addEventListener('click', async () => {
-    if (!instance.runtime.isDirty) return; // nothing to save — button is dimmed
+    // Reads "Close" in this state. Routed through tryClose rather than
+    // closeModal so it behaves exactly like Cancel — including re-prompting if
+    // the canvas turned dirty between the label update and the click.
+    if (!instance.runtime.isDirty) {
+      await tryClose();
+      return;
+    }
     _setAllButtonsDisabled(true);
     saveBtn.textContent = 'Saving…';
 
@@ -3633,9 +3652,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     if (saved) {
       await _doSaveAndClose();
     } else {
+      // _updateSaveBtn owns the label — a failed save leaves the canvas dirty,
+      // so it restores 'Save & Close' itself.
       _setAllButtonsDisabled(false);
       _updateSaveBtn();
-      saveBtn.textContent = 'Save & Close';
     }
   });
 
