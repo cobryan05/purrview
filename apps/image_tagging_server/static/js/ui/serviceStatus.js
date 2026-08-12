@@ -20,6 +20,23 @@ import { showTrainingServerModal } from '/app-static/js/ui/trainingServerModal.j
 const EXPANDED_PREF_KEY = 'ww.operations.serviceStatusExpanded';
 const OPEN_ROWS_PREF_KEY = 'ww.operations.serviceStatusOpenRows';
 
+/**
+ * Statuses that mean "the probe hasn't finished yet", not "the service is bad".
+ *
+ * The backend answers immediately with one of these when a service's /status is
+ * still in flight (manager.py: PROBE_INLINE_WAIT / PROBE_SOFT_TIMEOUT) and keeps
+ * the probe running in the background, so the *next* request gets the real
+ * answer. Nothing about that resolves itself in this panel — it has to ask
+ * again, which is what the retry below is for.
+ */
+const PROVISIONAL_STATUSES = new Set(['checking', 'waiting']);
+const PROVISIONAL_LABELS = { checking: 'checking…', waiting: 'still waiting…' };
+/** How soon to re-ask while any service is still being probed. The backend gives
+ *  up after 30s (PROBE_HARD_TIMEOUT), so this always terminates. */
+const PROVISIONAL_RETRY_MS = 2000;
+
+const _isProvisional = (svc) => PROVISIONAL_STATUSES.has(svc.status);
+
 const SERVICE_DISPLAY = {
   db_server:           { label: 'DB Server',          icon: '🗄' },
   inference_server:    { label: 'Inference Server',   icon: '🤖' },
@@ -31,6 +48,9 @@ const SERVICE_DISPLAY = {
 function _statusColor(status) {
   if (status === 'ok')          return 'var(--pico-ins-color,#4b8)';
   if (status === 'unreachable') return 'var(--pico-muted-color,#888)';
+  // A probe still in flight is not a failure — painting it in the error colour
+  // reported every slow-starting service as broken.
+  if (PROVISIONAL_STATUSES.has(status)) return 'var(--pico-muted-color,#888)';
   return 'var(--pico-del-color,#e55)';
 }
 
@@ -161,7 +181,11 @@ function _renderServiceRow(svc, { openServices, onToggle } = {}) {
 
   const indicator = document.createElement('span');
   indicator.style.cssText = `color:${_statusColor(svc.status)};font-size:1.1em;flex-shrink:0;`;
-  indicator.textContent = svc.status === 'ok' ? '●' : svc.status === 'unreachable' ? '○' : '✕';
+  indicator.textContent = svc.status === 'ok'
+    ? '●'
+    : svc.status === 'unreachable'
+      ? '○'
+      : _isProvisional(svc) ? '◌' : '✕';
   indicator.title = svc.status;
 
   const name = document.createElement('span');
@@ -173,6 +197,9 @@ function _renderServiceRow(svc, { openServices, onToggle } = {}) {
 
   if (svc.status === 'ok') {
     detail.textContent = _summaryLine(svc);
+  } else if (_isProvisional(svc)) {
+    detail.textContent = PROVISIONAL_LABELS[svc.status] ?? svc.status;
+    detail.style.color = _statusColor(svc.status);
   } else {
     detail.textContent = svc.message ?? svc.status;
     detail.style.color = _statusColor(svc.status);
@@ -181,10 +208,16 @@ function _renderServiceRow(svc, { openServices, onToggle } = {}) {
   const twisty = document.createElement('span');
   twisty.className = 'service-status-row__twisty';
   twisty.dataset.testid = `service-status-twisty-${svc.service}`;
-  twisty.style.cssText = `font-size:0.8em;color:var(--pico-muted-color,#888);flex-shrink:0;visibility:${expandable ? 'visible' : 'hidden'};`;
+  twisty.style.visibility = expandable ? 'visible' : 'hidden';
   twisty.textContent = '▸';
 
-  row.append(indicator, name, detail, twisty);
+  // The twisty leads the row rather than trailing it. Appended last it landed
+  // hard against the panel's right edge — a whole row's width away from the
+  // text it discloses — where nobody found it. On the left it sits in one
+  // column with the panel's own caret, so "this opens" reads the same at both
+  // levels. It keeps its slot (visibility, not display) when a row has no
+  // details, so the status dots stay aligned down the list.
+  row.append(twisty, indicator, name, detail);
 
   if (onClick) {
     // A real button: inside a <summary>, a plain click would also toggle the
@@ -227,7 +260,8 @@ function _renderServiceRow(svc, { openServices, onToggle } = {}) {
 function _summarize(services) {
   if (!services.length) return { text: 'No services found', tone: 'warn' };
 
-  const bad = services.filter(s => s.status !== 'ok' && s.status !== 'unreachable');
+  const pending = services.filter(_isProvisional);
+  const bad = services.filter(s => s.status !== 'ok' && s.status !== 'unreachable' && !_isProvisional(s));
   const unreachable = services.filter(s => s.status === 'unreachable');
 
   const counters = [];
@@ -248,6 +282,11 @@ function _summarize(services) {
     tone = 'bad';
   } else if (unreachable.length) {
     head = `${unreachable.map(nameOf).join(', ')} unreachable`;
+    tone = 'warn';
+  } else if (pending.length) {
+    // Only when nothing is actually wrong: a real failure elsewhere outranks
+    // "still asking".
+    head = `Checking ${pending.map(nameOf).join(', ')}…`;
     tone = 'warn';
   } else {
     head = `All ${services.length} services OK`;
@@ -305,7 +344,30 @@ export function createServiceStatusPanel() {
     prefs.write(OPEN_ROWS_PREF_KEY, [...openServices]);
   };
 
+  let _retryTimer = null;
+
+  /**
+   * Ask again while any service is still being probed.
+   *
+   * Without this the panel asked exactly once, so a service that hadn't
+   * answered yet sat at "checking…" permanently — the state was never wrong,
+   * it just never got updated, and only a manual Refresh could move it.
+   *
+   * The timer is only armed while the panel is in the document: renderServiceStatus()
+   * replaces the container's contents, and a detached panel's retry would keep
+   * firing forever, writing into DOM nobody can see.
+   */
+  function _scheduleRetry(services) {
+    clearTimeout(_retryTimer);
+    _retryTimer = null;
+    if (!services.some(_isProvisional)) return;
+    if (!section.isConnected) return;
+    _retryTimer = setTimeout(refresh, PROVISIONAL_RETRY_MS);
+  }
+
   async function refresh() {
+    clearTimeout(_retryTimer);
+    _retryTimer = null;
     refreshBtn.disabled = true;
     refreshBtn.textContent = '↻ Refreshing…';
     body.innerHTML = '';
@@ -323,6 +385,7 @@ export function createServiceStatusPanel() {
       const { text, tone } = _summarize(services);
       summary.textContent = text;
       summary.dataset.tone = tone;
+      _scheduleRetry(services);
     } catch (e) {
       body.textContent = `Error: ${e.message}`;
       body.style.color = 'var(--pico-del-color,#e55)';

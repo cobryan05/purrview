@@ -4325,12 +4325,20 @@ button.filter-active {
 /* Hide the native marker in both engines; the caret is drawn below. */
 .service-status-panel__header::-webkit-details-marker { display: none; }
 
+/* The caret is the only thing saying this strip opens, so it is sized and inked
+   to be seen — at --text-2xs/--text-faint it was a smudge nobody clicked. */
 .service-status-panel__header::before {
   content: '▸';
   flex-shrink: 0;
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
+  width: 1em;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
   transition: transform 0.12s;
+}
+
+.service-status-panel__header:hover::before {
+  color: var(--text);
 }
 
 .service-status-panel[open] .service-status-panel__header::before {
@@ -4375,8 +4383,18 @@ button.filter-active {
 }
 .service-status-row__line::-webkit-details-marker { display: none; }
 
+/* Leads the row (see serviceStatus.js), in the same column as the panel caret
+   above it. Fixed width so rows without details keep the alignment. */
 .service-status-row__twisty {
+  flex-shrink: 0;
+  width: 1em;
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
   transition: transform 0.12s;
+}
+.service-status-row__line:hover .service-status-row__twisty {
+  color: var(--text);
 }
 .service-status-row[open] .service-status-row__twisty {
   transform: rotate(90deg);

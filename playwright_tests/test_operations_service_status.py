@@ -315,3 +315,206 @@ class TestServiceStatusNotInSettings:
         page.wait_for_selector("#tab-settings .settings-wrap", timeout=4000)
 
         expect(page.locator("#tab-settings [data-testid='service-status-panel']")).to_have_count(0)
+
+
+class TestServiceStatusWhileProbing:
+    """A service whose /status hasn't answered yet.
+
+    The backend answers immediately with a provisional `checking`/`waiting`
+    status and keeps probing in the background (manager.py: PROBE_INLINE_WAIT /
+    PROBE_SOFT_TIMEOUT), so the real answer only arrives on a *later* request.
+    """
+
+    @staticmethod
+    def _mock_settling(page: Page, provisional_status="checking"):
+        """First response has db_server still being probed; every later one has it up.
+
+        Returns the call counter so a test can prove the panel asked again on its
+        own rather than being nudged.
+        """
+        calls = {"n": 0}
+
+        def handle(route):
+            calls["n"] += 1
+            first = calls["n"] == 1
+            services = [
+                {
+                    "service": "db_server",
+                    "status": provisional_status if first else "ok",
+                    **({} if first else {"hash_index": {"image_valid": 7, "needs_rebuild": False}}),
+                },
+                {"service": "tasks_server", "status": "ok", "tasks": {"running": 1}},
+            ]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "services": services}),
+            )
+
+        page.route("**/api/service-status", handle)
+        return calls
+
+    def test_a_probe_in_flight_is_not_reported_as_down(self, page: Page, base_url: str):
+        """`checking` fell through to the error branch: red ✕, and the collapsed
+        summary said "DB Server down" for a service that was merely slow."""
+        page.route(
+            "**/api/service-status",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "services": [
+                            {"service": "db_server", "status": "checking"},
+                            {"service": "tasks_server", "status": "ok"},
+                        ],
+                    }
+                ),
+            ),
+        )
+        _navigate_to_operations(page, base_url)
+        summary = page.locator("[data-testid='service-status-summary']")
+        expect(summary).to_be_visible()
+        expect(summary).not_to_contain_text("down")
+        expect(summary).to_contain_text("Checking")
+        assert summary.get_attribute("data-tone") != "bad"
+
+    def test_the_panel_asks_again_until_the_probe_settles(self, page: Page, base_url: str):
+        """The actual complaint: it said "checking…" forever. The panel refreshed
+        exactly once, so a provisional status was never revisited and only a
+        manual Refresh could move it."""
+        calls = self._mock_settling(page)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        row = page.locator("[data-testid='service-status-row-db_server']")
+        expect(row).to_contain_text("checking")
+        # No refresh click anywhere in this test.
+        wait_until(
+            page,
+            lambda: "checking" not in (row.text_content() or ""),
+            "Service stayed at 'checking' — the panel never asked again",
+            timeout=10000,
+        )
+        expect(row).to_contain_text("index: 7")
+        assert calls["n"] >= 2, f"expected a follow-up request, saw {calls['n']}"
+
+    def test_polling_stops_once_everything_is_settled(self, page: Page, base_url: str):
+        """The retry is for probes in flight only — a settled panel must not sit
+        there re-requesting forever."""
+        calls = self._mock_settling(page)
+        _navigate_to_operations(page, base_url)
+        row = page.locator("[data-testid='service-status-row-db_server']")
+        _expand_service_status(page)
+        wait_until(
+            page,
+            lambda: "checking" not in (row.text_content() or ""),
+            "Service never settled",
+            timeout=10000,
+        )
+        settled = calls["n"]
+        page.wait_for_timeout(3000)
+        assert calls["n"] == settled, f"panel kept polling after settling ({settled} → {calls['n']})"
+
+    def test_a_genuinely_broken_service_still_reads_as_down(self, page: Page, base_url: str):
+        """Guard on the summary rewrite: 'checking' is not a blanket amnesty."""
+        page.route(
+            "**/api/service-status",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "services": [
+                            {"service": "db_server", "status": "checking"},
+                            {"service": "tasks_server", "status": "error", "message": "boom"},
+                        ],
+                    }
+                ),
+            ),
+        )
+        _navigate_to_operations(page, base_url)
+        summary = page.locator("[data-testid='service-status-summary']")
+        expect(summary).to_contain_text("Tasks Server down")
+        assert summary.get_attribute("data-tone") == "bad"
+
+
+class TestDisclosureAffordanceIsFindable:
+    """Both carets were easy to miss — the row's sat hard against the panel's
+    right edge, a full row away from the text it discloses."""
+
+    def test_row_twisty_leads_the_row_instead_of_trailing_it(self, page: Page, base_url: str):
+        _mock_service_status(
+            page,
+            [
+                {
+                    "service": "inference_server",
+                    "status": "ok",
+                    "summary": "2 loaded",
+                    "details": [{"title": "Models", "rows": [{"label": "a.onnx", "value": "pinned"}]}],
+                }
+            ],
+        )
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        line = page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line")
+        twisty = page.locator("[data-testid='service-status-twisty-inference_server']")
+        expect(twisty).to_be_visible()
+
+        line_box = line.bounding_box()
+        twisty_box = twisty.bounding_box()
+        offset = twisty_box["x"] - line_box["x"]
+        assert offset < 24, f"twisty is {offset:.0f}px from the row's left edge — it used to be at the far right"
+        # And it leads the status dot rather than trailing the summary text.
+        assert twisty_box["x"] < line_box["x"] + line_box["width"] / 2
+
+    def test_row_twisty_shares_a_column_with_the_panel_caret(self, page: Page, base_url: str):
+        """They read as the same affordance at two levels, so they line up."""
+        _mock_service_status(
+            page,
+            [
+                {
+                    "service": "inference_server",
+                    "status": "ok",
+                    "details": [{"title": "Models", "rows": [{"label": "a.onnx", "value": "pinned"}]}],
+                }
+            ],
+        )
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        caret_x = page.locator(".service-status-panel__header").evaluate(
+            "el => el.getBoundingClientRect().x + parseFloat(getComputedStyle(el, '::before').width) / 2"
+        )
+        twisty_box = page.locator("[data-testid='service-status-twisty-inference_server']").bounding_box()
+        twisty_centre = twisty_box["x"] + twisty_box["width"] / 2
+        assert (
+            abs(twisty_centre - caret_x) < 40
+        ), f"row caret at {twisty_centre:.0f} is not in the same column as the panel caret at {caret_x:.0f}"
+
+    def test_carets_are_legible_not_a_smudge(self, page: Page, base_url: str):
+        """They were --text-2xs/--text-faint: present, but nobody saw them."""
+        _mock_service_status(
+            page,
+            [
+                {
+                    "service": "inference_server",
+                    "status": "ok",
+                    "details": [{"title": "Models", "rows": [{"label": "a.onnx", "value": "pinned"}]}],
+                }
+            ],
+        )
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        size = page.locator("[data-testid='service-status-twisty-inference_server']").evaluate(
+            "el => parseFloat(getComputedStyle(el).fontSize)"
+        )
+        assert size >= 12, f"row caret renders at {size}px — too small to notice"
+        header_size = page.locator(".service-status-panel__header").evaluate(
+            "el => parseFloat(getComputedStyle(el, '::before').fontSize)"
+        )
+        assert header_size >= 12, f"panel caret renders at {header_size}px — too small to notice"
