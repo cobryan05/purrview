@@ -7,12 +7,13 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from apps import APPS, FILES_ROOT
 from apps.helpers.model_type_map import resolve_trainer_type
+from apps.helpers.serviceStatus import fmt_duration, row, section
 
 from .image_cache import ImageCache
 from .job_queue import Job, JobQueue
@@ -260,3 +261,81 @@ class Manager:
 
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._queue.get_job(job_id)
+
+    def get_status(self) -> Dict[str, Any]:
+        """Service health plus per-job training stats for the Service Status panel.
+
+        Reads the in-memory job queue only — no artifact-dir or cache I/O, since
+        /status is polled by the notices loop every few seconds.
+        """
+        jobs = self._queue.list_jobs()
+        running = [j for j in jobs if j.status == "running"]
+        queued = [j for j in jobs if j.status == "queued"]
+        awaiting = [j for j in jobs if j.status == "awaiting_data"]
+
+        summary_parts = [f"training: {len(running)}"]
+        if queued:
+            summary_parts.append(f"{len(queued)} queued")
+        if awaiting:
+            summary_parts.append(f"{len(awaiting)} awaiting data")
+        if not running and not queued and not awaiting:
+            summary_parts = ["idle"]
+
+        now = datetime.now(timezone.utc)
+
+        def _job_label(job: Job) -> str:
+            config = job.config or {}
+            return config.get("model_name") or job.job_id[:8]
+
+        running_rows = []
+        for job in running:
+            progress = job.last_progress or {}
+            parts = []
+            epoch, total_epochs = progress.get("epoch"), progress.get("total_epochs")
+            if epoch is not None and total_epochs:
+                parts.append(f"epoch {epoch}/{total_epochs}")
+            frac = progress.get("progress")
+            if isinstance(frac, (int, float)):
+                parts.append(f"{frac * 100:.0f}%")
+            if progress.get("train_loss") is not None:
+                parts.append(f"loss {progress['train_loss']}")
+            # val_loss is 0.0 for the detection trainers, which don't expose it
+            # separately — reporting a hard zero as a metric would be a lie.
+            if progress.get("val_loss"):
+                parts.append(f"val_loss {progress['val_loss']}")
+            if progress.get("val_accuracy") is not None:
+                parts.append(f"val_acc {progress['val_accuracy']}")
+            if job.started_at is not None:
+                parts.append(f"elapsed {fmt_duration((now - job.started_at).total_seconds())}")
+            if not parts:
+                parts.append("starting…")
+            trainer_type = (job.config or {}).get("trainer_type")
+            if trainer_type:
+                parts.append(trainer_type)
+            running_rows.append(row(_job_label(job), "  ·  ".join(parts)))
+
+        details = [
+            section(f"Training now ({len(running)})", running_rows, empty="No training running"),
+        ]
+        pending = queued + awaiting
+        if pending:
+            pending_rows = [
+                row(
+                    _job_label(job),
+                    (f"#{job.queue_position} queued" if job.status == "queued" else "awaiting data"),
+                )
+                for job in pending
+            ]
+            details.append(section(f"Waiting ({len(pending)})", pending_rows))
+
+        return {
+            "service": "training_server",
+            "status": "ok",
+            "training": {
+                "running": len(running),
+                "queued": len(queued),
+                "awaiting_data": len(awaiting),
+            },
+            "summary": "  ·  ".join(summary_parts),
+            "details": details,
+        }

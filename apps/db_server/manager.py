@@ -92,6 +92,7 @@ from apps.helpers.hashUtils import (
     phash_from_numpy_crop,
 )
 from apps.helpers.imageProviders.Registry import image_provider_registry
+from apps.helpers.serviceStatus import row, section
 from apps.helpers.types import FileEntryRead
 
 logging.basicConfig(stream=sys.stdout)
@@ -2172,11 +2173,38 @@ class Manager:
                     "message": "Hash index rebuilding — similar search may return stale results",
                 }
             )
+        stats = self._hash_index.stats()
+
+        summary = f"index: {stats.get('image_valid', 0):,} imgs"
+        if stats.get("needs_rebuild"):
+            summary += " ⚠rebuild"
+
+        # Bbox trees are keyed by label *uuid*, and resolving those to names means
+        # a DB round-trip — which /status can't afford, since the notices loop
+        # polls it every few seconds. Aggregate instead: a list of 28 raw uuids
+        # tells a reader nothing anyway.
+        bbox_sizes = stats.get("bbox_tree_sizes_by_label", {}) or {}
+        tombstones = stats.get("bbox_tombstones_by_label", {}) or {}
+        bbox_total = sum(bbox_sizes.values())
+        bbox_dead = sum(tombstones.values())
+
+        index_rows = [
+            row("Images indexed", f"{stats.get('image_valid', 0):,}"),
+            row("Image tree size", f"{stats.get('image_tree_size', 0):,} ({stats.get('image_tombstones', 0):,} dead)"),
+            row("Bbox trees", f"{len(bbox_sizes):,} labels, {bbox_total:,} entries ({bbox_dead:,} dead)"),
+            row("Largest bbox tree", f"{max(bbox_sizes.values()):,}" if bbox_sizes else "—"),
+            row("Build phase", self._build_phase or "—"),
+            row("Ready", "yes" if self._hash_index_ready else "no"),
+            row("Needs rebuild", "yes" if stats.get("needs_rebuild") else "no"),
+        ]
+
         return {
             "service": "db_server",
             "status": "ok",
-            "hash_index": self._hash_index.stats(),
+            "hash_index": stats,
+            "summary": summary,
             "notices": notices,
+            "details": [section("Similarity index", index_rows)],
         }
 
     async def get_image_filename_by_uuid(self, image_uuid: str) -> Optional[str]:

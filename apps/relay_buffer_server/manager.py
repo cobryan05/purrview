@@ -40,6 +40,7 @@ from mediamtx_client.models.path_conf import PathConf
 
 from apps import STREAM_BUFFER_DIR, STREAM_BUFFER_SIZE
 from apps.helpers.recordings.playbackClient import PlaybackClient, PlaybackError
+from apps.helpers.serviceStatus import fmt_duration, row, section
 from apps.helpers.streams.bufferBudget import (
     COMMIT_HEADROOM,
     DEFAULT_ASSUMED_BITRATE_BPS,
@@ -669,6 +670,66 @@ class Manager:
             d["readers"] = readers.get(k, 0)
             ret[k] = d
         return ret
+
+    def get_status(self) -> Dict[str, Any]:
+        """Service health, one-line summary, and per-stream detail rows.
+
+        Reads the cached stream table (``refresh_streams`` does the MediaMTX call
+        on its own poll), so this stays cheap enough for the notices loop.
+        """
+        streams = self.get_streams()
+        recording = sum(1 for s in streams.values() if s.get("recording"))
+        readers = sum(int(s.get("readers") or 0) for s in streams.values())
+        usage = self.buffer_usage()
+
+        summary_parts = [f"streams: {len(streams)}"]
+        if recording:
+            summary_parts.append(f"{recording} recording")
+        if readers:
+            summary_parts.append(f"{readers} reader{'' if readers == 1 else 's'}")
+
+        rows = []
+        for name, s in sorted(streams.items()):
+            mtx = s.get("mtx_path") or {}
+            parts = []
+            # ``active`` is our view; MediaMTX's ``ready`` is whether the path is
+            # actually publishing. They disagree while a source is reconnecting,
+            # and that disagreement is the thing worth seeing here.
+            parts.append("ready" if mtx.get("ready") else ("active" if s.get("active") else "idle"))
+            reader_count = int(s.get("readers") or 0)
+            if reader_count:
+                parts.append(f"{reader_count} reader{'' if reader_count == 1 else 's'}")
+            if s.get("recording"):
+                retention = s.get("retention_s") or 0
+                parts.append(f"recording ({fmt_duration(retention)} retention)" if retention else "recording")
+            tracks = mtx.get("tracks")
+            if tracks:
+                parts.append("/".join(str(t) for t in tracks))
+            received = mtx.get("bytes_received")
+            if received:
+                parts.append(f"{received / 1e6:.0f} MB in")
+            source = s.get("source_url") or s.get("url")
+            if source:
+                parts.append(str(source))
+            rows.append(row(name, "  ·  ".join(parts)))
+
+        buffer_rows = [
+            row("Committed", f"{usage.committed_bytes / 1e6:.0f} MB"),
+            row("Used on disk", f"{usage.used_bytes / 1e6:.0f} MB"),
+            row("Cap", f"{usage.cap_bytes / 1e6:.0f} MB"),
+        ]
+
+        return {
+            "service": "relay_buffer_server",
+            "status": "ok",
+            "streams": {"active": len(streams), "recording": recording, "readers": readers},
+            "buffer": usage.to_dict(),
+            "summary": "  ·  ".join(summary_parts),
+            "details": [
+                section(f"Streams ({len(streams)})", rows, empty="No streams"),
+                section("Buffer", buffer_rows),
+            ],
+        }
 
     async def refresh_streams(self) -> None:
         """Retrieve the current list of streams, updating the cached list"""

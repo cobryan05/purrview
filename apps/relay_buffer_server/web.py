@@ -118,15 +118,7 @@ class WebApp:
             response_class=JSONResponse,
         )
         async def relay_buffer_server_status():
-            streams = self._manager.get_streams()
-            return JSONResponse(
-                content={
-                    "service": "relay_buffer_server",
-                    "status": "ok",
-                    "streams": {"active": len(streams)},
-                    "buffer": self._manager.buffer_usage().to_dict(),
-                }
-            )
+            return JSONResponse(content=self._manager.get_status())
 
         @self._app.post(
             "/api/streams/create",

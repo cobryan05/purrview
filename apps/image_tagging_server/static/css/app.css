@@ -4368,6 +4368,93 @@ button.filter-active {
   padding: var(--space-2) var(--space-2) var(--space-1);
 }
 
+/* A service that returns `details` renders as a <details> row: the summary line
+   keeps the same geometry as a plain row, and its sections drop underneath. */
+.service-status-row > .service-status-row__line {
+  list-style: none;
+}
+.service-status-row__line::-webkit-details-marker { display: none; }
+
+.service-status-row__twisty {
+  transition: transform 0.12s;
+}
+.service-status-row[open] .service-status-row__twisty {
+  transform: rotate(90deg);
+}
+
+/* Chevron button opening a service's own modal. Sits inside the summary, so it
+   is styled as bare text rather than inheriting the button chrome. */
+.service-status-row__open {
+  flex-shrink: 0;
+  width: auto;
+  margin: 0;
+  padding: 0 var(--space-1);
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+.service-status-row__open:hover {
+  background: none;
+  color: var(--text-muted);
+}
+
+.service-status-row__details {
+  /* Indent to the summary text, not the status dot, so sections read as
+     belonging to the row above them. */
+  padding: var(--space-1) 0 var(--space-2) var(--space-4);
+  border-left: 1px solid var(--pico-muted-border-color, var(--border-strong));
+  margin-left: var(--space-2);
+}
+
+.service-status-detail-section + .service-status-detail-section {
+  margin-top: var(--space-2);
+}
+
+.service-status-detail-section__title {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin-bottom: var(--space-1);
+}
+
+.service-status-detail-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: 1px 0;
+  font-size: var(--text-xs);
+}
+
+.service-status-detail-row__label {
+  flex-shrink: 0;
+  min-width: 11em;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.service-status-detail-row__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.service-status-detail-empty {
+  font-size: var(--text-xs);
+  font-style: italic;
+  color: var(--text-faint);
+}
+
 /* ===== Settings tab =====
    Panels flow into as many ~360px columns as the window gives, instead of the
    single 560px column the tab used to be — that column left the right-hand ~60%

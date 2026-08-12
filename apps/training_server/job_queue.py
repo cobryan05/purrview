@@ -39,6 +39,13 @@ class Job:
     _subscribers: list = field(default_factory=list)
     # Path to the job state JSON file on disk (set by Manager after artifact_dir is known).
     state_path: Optional[Path] = None
+    # Latest payload passed to the trainer's progress_cb (epoch, losses, val_accuracy,
+    # …) and the wall-clock moment the worker picked the job up. Both feed the
+    # Service Status detail view, which needs "how is training going right now"
+    # without replaying the whole SSE event log. In-memory only: a restored
+    # (interrupted) job has no live progress to report.
+    last_progress: Optional[dict[str, Any]] = None
+    started_at: Optional[datetime] = None
 
     def _persist(self) -> None:
         """Atomically write job state to disk for crash recovery."""
@@ -247,6 +254,7 @@ class JobQueue:
     async def _run_job(self, job: Job) -> None:
         job.status = "running"
         job.queue_position = 0
+        job.started_at = datetime.now(timezone.utc)
         job.emit("status", {"status": "running"})
 
         trainer_type = job.config.get("trainer_type", "")
@@ -260,6 +268,7 @@ class JobQueue:
             return
 
         def progress_cb(data: dict) -> None:
+            job.last_progress = data
             job.emit("progress", data)
 
         try:

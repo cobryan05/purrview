@@ -14,6 +14,7 @@ from db_client.api.tasks_api import TasksApi
 
 from apps import TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
 from apps.helpers.consts import TaskStatus
+from apps.helpers.serviceStatus import row, section
 from apps.tasks_server.types import TaskInfo
 
 from .tasks.Registry import task_registry
@@ -941,14 +942,47 @@ class Manager:
             logger.info("Periodic task cleanup.")
 
     def get_status(self) -> dict:
-        """Return service health and diagnostic info."""
+        """Return service health and diagnostic info.
+
+        ``details`` names the running tasks. That is redundant with the task list
+        on the same Operations page, but it is still the answer to "what is this
+        service busy with" — which is what the panel is read for.
+        """
         notices: list[dict] = []
         for ti in self._running_tasks.values():
             if ti.task:
                 notices.extend(ti.task.get_notices())
+
+        rows = []
+        paused = 0
+        for ti in sorted(self._running_tasks.values(), key=lambda t: t.config.name.lower()):
+            parts = []
+            if ti.task and ti.task.is_paused_in_place():
+                parts.append("paused")
+                paused += 1
+            elif ti.instance is not None:
+                parts.append(ti.instance.status)
+            progress = ti.task.get_progress() if ti.task else None
+            # None is indeterminate progress, not 0% — don't render it as a number.
+            if progress is not None:
+                parts.append(f"{progress * 100:.0f}%")
+            message = ti.task.get_status_message() if ti.task else ""
+            if message:
+                parts.append(message)
+            rows.append(row(f"{ti.config.name} ({ti.config.typename})", "  ·  ".join(p for p in parts if p)))
+
+        running = len(self._running_tasks)
+        summary = f"running: {running}"
+        if paused:
+            summary += f" ({paused} paused)"
+
         return {
             "service": "tasks_server",
             "status": "ok",
-            "tasks": {"running": len(self._running_tasks)},
+            "tasks": {"running": running, "paused": paused},
+            "summary": summary,
             "notices": notices,
+            "details": [
+                section(f"Running tasks ({running})", rows, empty="No tasks running"),
+            ],
         }

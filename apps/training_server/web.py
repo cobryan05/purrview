@@ -440,4 +440,4 @@ class WebApp:
             response_class=JSONResponse,
         )
         async def status(request: Request):
-            return JSONResponse({"status": "ok", "service": "training_server"})
+            return JSONResponse(self._manager.get_status())

@@ -98,8 +98,10 @@ class TestServiceStatusInOperations:
         assert len(calls) > before, "Refresh did not re-request /api/service-status"
 
     def test_training_server_row_opens_the_job_modal(self, page: Page, base_url: str):
-        """The training-server row is the one clickable row, and its modal holds a
-        per-job DELETE — the piece most easily lost when moving this panel."""
+        """The training-server row is the one row that opens something, and its
+        modal holds a per-job DELETE — the piece most easily lost when this
+        panel is reworked. The `›` button is its trigger: the row body itself
+        now belongs to the details disclosure."""
         _mock_service_status(page)
         page.route(
             "**/api/training/jobs",
@@ -112,8 +114,161 @@ class TestServiceStatusInOperations:
         _navigate_to_operations(page, base_url)
 
         _expand_service_status(page)
-        page.locator("[data-testid='service-status-row-training_server']").click()
+        page.locator("[data-testid='service-status-open-training_server']").click()
         expect(page.locator("[data-testid='modal-shell-dialog']")).to_be_visible()
+
+
+DETAILED_SERVICES = [
+    {
+        "service": "inference_server",
+        "status": "ok",
+        "models": {"loaded": 1, "available": 3, "pins": 2},
+        "summary": "loaded: 1/3  ·  2 pins",
+        "details": [
+            {
+                "title": "Loaded models (1)",
+                "rows": [{"label": "yolo_cats", "value": "2 pins  ·  next expiry in 4m 10s"}],
+                "empty": "No models loaded",
+            }
+        ],
+    },
+    {
+        "service": "tasks_server",
+        "status": "ok",
+        "tasks": {"running": 0, "paused": 0},
+        "summary": "running: 0",
+        "details": [{"title": "Running tasks (0)", "rows": [], "empty": "No tasks running"}],
+    },
+    {
+        "service": "training_server",
+        "status": "ok",
+        "summary": "training: 1",
+        "details": [
+            {
+                "title": "Training now (1)",
+                "rows": [{"label": "cats-v3", "value": "epoch 4/10  ·  40%"}],
+                "empty": "No training running",
+            }
+        ],
+    },
+    # Down services must not render a detail body: the payload is either absent
+    # or stale, and either way it would read as live.
+    {
+        "service": "relay_buffer_server",
+        "status": "unreachable",
+        "message": "connection refused",
+        "details": [{"title": "Streams (9)", "rows": [{"label": "ghost", "value": "ready"}]}],
+    },
+]
+
+
+class TestServiceStatusDetails:
+    """Services may return `details` sections; those rows expand in place."""
+
+    def test_service_summary_string_is_used_verbatim(self, page: Page, base_url: str):
+        _mock_service_status(page, DETAILED_SERVICES)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        expect(page.locator("[data-testid='service-status-row-inference_server']")).to_contain_text(
+            "loaded: 1/3  ·  2 pins"
+        )
+
+    def test_detail_rows_are_hidden_until_the_row_is_expanded(self, page: Page, base_url: str):
+        _mock_service_status(page, DETAILED_SERVICES)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        details = page.locator("[data-testid='service-status-details-inference_server']")
+        expect(details).not_to_be_visible()
+
+        page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line").click()
+        expect(details).to_be_visible()
+        expect(details).to_contain_text("yolo_cats")
+        expect(details).to_contain_text("next expiry in 4m 10s")
+        expect(details).to_contain_text("Loaded models (1)")
+
+    def test_a_section_with_no_rows_shows_its_empty_text(self, page: Page, base_url: str):
+        _mock_service_status(page, DETAILED_SERVICES)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        page.locator("[data-testid='service-status-row-tasks_server'] .service-status-row__line").click()
+        expect(page.locator("[data-testid='service-status-details-tasks_server']")).to_contain_text("No tasks running")
+
+    def test_a_service_without_details_is_not_expandable(self, page: Page, base_url: str):
+        _mock_service_status(page)  # the plain SERVICES payload
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        expect(page.locator("[data-testid='service-status-details-db_server']")).to_have_count(0)
+        expect(page.locator("[data-testid='service-status-twisty-db_server']")).to_be_hidden()
+
+    def test_an_unreachable_service_does_not_render_stale_details(self, page: Page, base_url: str):
+        _mock_service_status(page, DETAILED_SERVICES)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        row = page.locator("[data-testid='service-status-row-relay_buffer_server']")
+        expect(row).to_contain_text("connection refused")
+        expect(page.locator("[data-testid='service-status-details-relay_buffer_server']")).to_have_count(0)
+
+    def test_the_open_button_does_not_toggle_the_disclosure(self, page: Page, base_url: str):
+        """Training Server both expands and opens a modal; the `›` must do only
+        the latter, or opening the modal silently expands the row behind it."""
+        _mock_service_status(page, DETAILED_SERVICES)
+        page.route(
+            "**/api/training/jobs",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"jobs": []}),
+            ),
+        )
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        row = page.locator("[data-testid='service-status-row-training_server']")
+        page.locator("[data-testid='service-status-open-training_server']").click()
+
+        expect(page.locator("[data-testid='modal-shell-dialog']")).to_be_visible()
+        assert row.evaluate("el => el.open") is False
+
+    def test_an_expanded_row_survives_a_refresh(self, page: Page, base_url: str):
+        """Refresh rebuilds every row, so which ones are open has to live
+        outside the DOM — otherwise refreshing collapses what you opened."""
+        _mock_service_status(page, DETAILED_SERVICES)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+
+        page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line").click()
+        details = page.locator("[data-testid='service-status-details-inference_server']")
+        expect(details).to_be_visible()
+        wait_until(
+            page,
+            lambda: "inference_server"
+            in (page.evaluate("localStorage.getItem('ww.operations.serviceStatusOpenRows')") or ""),
+            "Open-row state was never persisted",
+        )
+
+        page.locator("[data-testid='service-status-refresh']").click()
+        expect(page.locator("[data-testid='service-status-details-inference_server']")).to_be_visible()
+
+    def test_an_expanded_row_survives_a_reload(self, page: Page, base_url: str):
+        _mock_service_status(page, DETAILED_SERVICES)
+        _navigate_to_operations(page, base_url)
+        _expand_service_status(page)
+        page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line").click()
+        wait_until(
+            page,
+            lambda: "inference_server"
+            in (page.evaluate("localStorage.getItem('ww.operations.serviceStatusOpenRows')") or ""),
+            "Open-row state was never persisted",
+        )
+
+        _navigate_to_operations(page, base_url)
+
+        expect(page.locator("[data-testid='service-status-details-inference_server']")).to_be_visible()
 
 
 class TestServiceStatusCollapsedSummary:

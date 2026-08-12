@@ -32,6 +32,7 @@ from apps.helpers.modelFormat import (
     is_conversion_candidate,
 )
 from apps.helpers.modelStaging import STAGING_SUBDIR
+from apps.helpers.serviceStatus import fmt_duration, row, section
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
@@ -669,12 +670,53 @@ class Manager:
             logger.info("Periodic task cleanup.")  # Perform cleanup when the task is stopped
 
     def get_status(self) -> dict:
-        """Return service health and diagnostic info."""
+        """Return service health and diagnostic info.
+
+        ``details`` lists the models actually resident in memory with their pin
+        counts — the question this panel gets asked is "what is holding the GPU
+        right now", which the loaded/available counters alone can't answer.
+        """
+        loaded = len(self._pinned_models)
+        available = len(self._avail_models)
+        total_pins = sum(len(m.pins) for m in self._pinned_models.values())
+
+        summary = f"loaded: {loaded}/{available}"
+        if total_pins:
+            summary += f"  ·  {total_pins} pin{'' if total_pins == 1 else 's'}"
+
+        now = time.time()
+        rows = []
+        for name, model in sorted(self._pinned_models.items()):
+            pins = model.pins
+            explicit = [p for pid, p in pins.items() if pid != Manager.IMPLICIT_PIN_ID]
+            parts = [f"{len(pins)} pin{'' if len(pins) == 1 else 's'}"]
+            if len(explicit) != len(pins):
+                # An implicit pin means nobody is holding this model — it is only
+                # kept warm between pinless recognize() calls and will drop on
+                # expiry. Worth distinguishing from a held model that won't.
+                parts.append(f"{len(explicit)} held + keep-warm")
+            if pins:
+                # Soonest expiry: the model unloads when its *last* pin goes, but
+                # the next thing to happen is the earliest one expiring.
+                parts.append(f"next expiry in {fmt_duration(min(p.expiry for p in pins.values()) - now)}")
+            if model.inference is None:
+                parts.append("session not built")
+            rows.append(row(name, "  ·  ".join(parts)))
+
         return {
             "service": "inference_server",
             "status": "ok",
             "models": {
-                "loaded": len(self._pinned_models),
-                "available": len(self._avail_models),
+                "loaded": loaded,
+                "available": available,
+                "pins": total_pins,
             },
+            "summary": summary,
+            "details": [
+                section(
+                    f"Loaded models ({loaded})",
+                    rows,
+                    empty="No models loaded — nothing is holding the GPU",
+                ),
+            ],
         }

@@ -138,3 +138,43 @@ class TestStartupGateMiddleware:
         assert r.status_code == 503
         body = r.json()
         assert "detail" in body
+
+
+class TestGetStatusDetails:
+    """The Service Status panel's expandable detail view for db_server."""
+
+    async def test_summary_reports_the_indexed_image_count(self, manager):
+        status = await manager.get_status()
+        assert status["summary"].startswith("index: ")
+
+    async def test_summary_flags_a_needed_rebuild(self, manager):
+        manager._hash_index._needs_rebuild = True
+        status = await manager.get_status()
+        assert "rebuild" in status["summary"]
+
+    async def test_index_section_reports_phase_and_readiness(self, manager):
+        manager._hash_index_ready = True
+        manager._build_phase = "constructing"
+        status = await manager.get_status()
+        rows = {r["label"]: r["value"] for r in status["details"][0]["rows"]}
+        assert rows["Build phase"] == "constructing"
+        assert rows["Ready"] == "yes"
+        assert rows["Needs rebuild"] == "no"
+
+    async def test_bbox_trees_are_aggregated_not_listed_by_uuid(self, manager):
+        """Trees are keyed by label uuid, and resolving those to names would
+        cost a DB round-trip on every notices poll — so the section reports
+        totals rather than rows of raw uuids, which tell a reader nothing."""
+        manager._hash_index._bbox_trees = {"cat-uuid": None, "dog-uuid": None}
+        manager._hash_index._valid_bboxes = {"cat-uuid": {"a"}, "dog-uuid": {"b", "c", "d"}}
+        status = await manager.get_status()
+        rows = {r["label"]: r["value"] for r in status["details"][0]["rows"]}
+        assert rows["Bbox trees"] == "2 labels, 4 entries (0 dead)"
+        assert rows["Largest bbox tree"] == "3"
+        assert "cat-uuid" not in str(status["details"])
+
+    async def test_largest_bbox_tree_is_a_dash_when_there_are_none(self, manager):
+        status = await manager.get_status()
+        rows = {r["label"]: r["value"] for r in status["details"][0]["rows"]}
+        assert rows["Largest bbox tree"] == "—"
+        assert rows["Bbox trees"] == "0 labels, 0 entries (0 dead)"
