@@ -71,7 +71,7 @@ export async function createCanvasInstance(container, options = {}) {
 
   return {
     runtime,
-    loadImage: (path) => loadImageOntoCanvas(runtime, path),
+    loadImage: (path, opts) => loadImageOntoCanvas(runtime, path, opts),
     destroy() {
       coreHandle.destroy();
       runtime.destroyCanvas();

@@ -37,7 +37,7 @@ import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 import { getPrimaryRuntimeId } from '/app-static/js/app/image-tagging/runtime.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 import { showUnsavedChangesModal, showExternalChangesModal, showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
-import { deleteImage } from '/app-static/js/shared/api/images.js';
+import { deleteImage, prefetchImage } from '/app-static/js/shared/api/images.js';
 import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tagging/canvas/manager.js';
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { bindOutsideDismiss } from '/app-static/js/ui/utils/anchoredPopup.js';
@@ -74,6 +74,13 @@ import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_ENTRIES = 1000; // hard cap on total cards per page
 const SCROLL_LOAD_MARGIN_PX = 400; // infinite-scroll (M2) preload distance from the bottom of the scroll container
+
+// How far around the canvas modal's current position to prefetch images, as
+// offsets from _navIndex. Two each way rather than one so a second keypress
+// arriving before the first load finishes still lands warm; kept small because
+// each entry pins a decoded full-resolution image (see IMAGE_CACHE_MAX, which
+// must stay >= this window plus the current image or the window evicts itself).
+const NAV_PREFETCH_OFFSETS = [1, -1, 2, -2];
 
 /**
  * Loads thumbnail images with a concurrency cap and cancellation support.
@@ -3291,6 +3298,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   // ── Navigation: wire [ ] hotkeys to navigate within the results page ──
   let unsubNavLoad = null;
   let _updateNavButtons = () => {};
+  let _prefetchNavNeighbours = () => {};
   if (_allowNavigation && navContext?.items?.length) {
     // Duck-typed FileNavigation used by files.js's next_image / prev_image.
     // Those functions also call guardUnsavedChanges before advancing, so the
@@ -3337,6 +3345,20 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     prevBtn.addEventListener('click', () => prev_image(instance.runtime));
     nextBtn.addEventListener('click', () => next_image(instance.runtime));
 
+    // Warm the images on either side of where we are, so a `]` press on a slow
+    // DB reads an already-decoded copy instead of paying the full
+    // read-file + base64 + metadata-query round trip again.
+    //
+    // Both directions, not just forward: back-stepping through a run of boxes
+    // is as common as forward, and the cache is shared, so a step that reverses
+    // direction still lands on something warm.
+    _prefetchNavNeighbours = () => {
+      for (const offset of NAV_PREFETCH_OFFSETS) {
+        prefetchImage(navContext.items[_navIndex + offset]?.img.filename);
+      }
+    };
+    _prefetchNavNeighbours();
+
     // When files.js publishes LOAD_IMAGE_ONTO_CANVAS for our runtime, load the
     // new image into this same modal canvas.
     unsubNavLoad = events.subscribeToCanvas(
@@ -3356,7 +3378,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
         prevBtn.classList.add('review-toolbar__status--loading');
         nextBtn.classList.add('review-toolbar__status--loading');
         try {
-          await instance.loadImage(item.img.filename);
+          // The only load allowed to come from cache: stepping through a list
+          // resolved when the modal opened, where a prefetched copy is still
+          // what the server would return. Save/external-change reloads below
+          // stay uncached on purpose.
+          await instance.loadImage(item.img.filename, { allowCached: true });
         } catch (err) {
           Logger.error('Canvas modal: failed to load image during navigation', err);
           toast('Failed to load image', 3000, 'error');
@@ -3370,6 +3396,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
         _currentImg = item.img;
         _currentBbox = targetBbox;
         if (_currentBbox) _highlightBbox(_currentBbox.uuid);
+        // Slide the prefetch window along AFTER the visible load has settled,
+        // so speculative fetches never compete with the one the user is waiting
+        // on for a connection.
+        _prefetchNavNeighbours();
       },
     );
   }

@@ -1,5 +1,5 @@
 import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView.js';
-import { fetchImage, updateImage } from '/app-static/js/shared/api/images.js';
+import { fetchImage, updateImage, invalidateCachedImage } from '/app-static/js/shared/api/images.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { createUIBBbox } from '/app-static/js/shared/domain/image/mapper.js';
 import { CONFIDENCE_KEY } from '/app-static/js/shared/domain/image/confidence.js';
@@ -37,8 +37,12 @@ export async function reloadImage(runtime) {
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {string} imageName
+ * @param {{allowCached?: boolean}} [opts] - `allowCached` serves the image from
+ *   the prefetch cache when it is warm. Opt-in: only stepping through a known
+ *   list (review-modal next/prev) knows the copy is still current. `reloadImage`
+ *   and every save-driven reload deliberately stay uncached.
  */
-export async function loadImageOntoCanvas(runtime, imageName) {
+export async function loadImageOntoCanvas(runtime, imageName, { allowCached = false } = {}) {
   Logger.debug('loadImageOntoCanvas called with imageName:', imageName);
 
   if (!runtime.canvas) return;
@@ -49,7 +53,7 @@ export async function loadImageOntoCanvas(runtime, imageName) {
   // Create a new load id and invalidate all previous loads for this canvas instance
   const loadId = ++runtime.canvas.activeImageLoadId;
   /** @type {import('@domain_image').UIImage} */
-  const imageInfo = await fetchImage(imageName);
+  const imageInfo = await fetchImage(imageName, { allowCached });
 
   // Abort if canvas was destroyed or a newer load started while we waited
   if (!runtime.canvas || loadId !== runtime.canvas.activeImageLoadId) {
@@ -151,6 +155,11 @@ export async function saveAnnotations(runtime) {
 
   try {
     await updateImage(runtime.state.image);
+    // Drop the prefetched copy here, at the write, rather than relying on a
+    // save event: the modal's IMAGE_ANNOTATIONS_SAVED is gated on `_broadcast`,
+    // so a non-broadcasting save would otherwise leave a pre-save copy cached
+    // and navigating back would show the edit undone.
+    invalidateCachedImage(runtime.state.image.image_path);
     runtime.markClean();
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     events.publish(EventTypes.CANVAS_ANNOTATIONS_SAVED, { runtimeId: runtime.id });

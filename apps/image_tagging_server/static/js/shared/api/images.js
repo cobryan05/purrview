@@ -1,6 +1,7 @@
 // imagesApi.js
 import { apiFetch } from './apiUtils.js';
 import { imageRecordToUI } from '/app-static/js/shared/domain/image/mapper.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 /**
  * Fetch a page of files from the API.
@@ -62,13 +63,16 @@ export async function createDirectory(path) {
 }
 
 /**
- * Fetch an image and its metadata from the server using the new GET endpoint.
+ * Fetch + decode one image, with no caching. The expensive half of `fetchImage`.
  *
- * @param {string} path - Relative path of the image to fetch.
- * @returns {Promise<import('@domain_image').UIImage>}
- * @throws {Error} If the fetch fails or the API response is invalid.
+ * `/file` is a single request that reads the whole file, base64s it into the
+ * JSON body AND does the image-metadata DB read, so its latency is the sum of
+ * both — which is what makes it worth prefetching over a slow DB.
+ *
+ * @param {string} path
+ * @returns {Promise<{imageRes: import('@web_api').GetFileResponse, img: HTMLImageElement}>}
  */
-export async function fetchImage(path) {
+async function _fetchImageRaw(path) {
   const url = `/api/images/${encodeURIComponent(path)}/file`;
 
   const res = await apiFetch(url, {
@@ -97,8 +101,100 @@ export async function fetchImage(path) {
     img.onerror = () => reject(new Error(`Failed to decode base64 image for ${path}`));
   });
 
-  const ret = imageRecordToUI(imageRes.image, img, path);
-  return ret;
+  return { imageRes, img };
+}
+
+/**
+ * Bounded LRU of in-flight-or-settled `_fetchImageRaw` promises, keyed by path.
+ *
+ * Deliberately holds the RAW response + decoded element rather than the mapped
+ * `UIImage`: a canvas mutates the UIBbox objects it is handed, so serving two
+ * loads the same mapped object would let an edit in one canvas appear in the
+ * other. `fetchImage` re-maps per call, giving every caller its own boxes while
+ * still sharing the one expensive thing — the decoded bitmap.
+ *
+ * Small on purpose: entries pin full-resolution decoded images, not thumbnails.
+ * That bound is also why this is not `createCachedFetcher` — that helper never
+ * evicts, which is fine for labels and tags and not for decoded bitmaps.
+ */
+const IMAGE_CACHE_MAX = 5;
+/** @type {Map<string, Promise<{imageRes: object, img: HTMLImageElement}>>} */
+const _imageCache = new Map();
+
+function _cachedFetchImage(path) {
+  const hit = _imageCache.get(path);
+  if (hit) {
+    // Re-insert so Map iteration order stays least-recent-first for eviction.
+    _imageCache.delete(path);
+    _imageCache.set(path, hit);
+    return hit;
+  }
+
+  const pending = _fetchImageRaw(path);
+  _imageCache.set(path, pending);
+  // A failure must not be cached, or one transient error makes the path
+  // permanently unloadable for as long as the entry survives.
+  pending.catch(() => {
+    if (_imageCache.get(path) === pending) _imageCache.delete(path);
+  });
+
+  for (const oldest of _imageCache.keys()) {
+    if (_imageCache.size <= IMAGE_CACHE_MAX) break;
+    _imageCache.delete(oldest);
+  }
+  return pending;
+}
+
+/**
+ * Drop a path's cached image (or the whole cache when called with no path).
+ *
+ * Anything that changes what `/file` would return for an image MUST call this,
+ * or navigation can land back on a pre-edit copy. The mutation events below
+ * cover the app's own writes; callers doing an explicit "reload from server"
+ * should pass `allowCached: false` instead of relying on invalidation ordering.
+ *
+ * @param {string} [path]
+ */
+export function invalidateCachedImage(path) {
+  if (path === undefined) _imageCache.clear();
+  else _imageCache.delete(path);
+}
+
+/**
+ * Warm the cache for a path without blocking or throwing.
+ *
+ * Errors are swallowed on purpose: a prefetch is speculative, and a failure
+ * here must not surface a toast for an image the user may never open. The real
+ * load re-fetches and reports the error itself.
+ *
+ * @param {string} path
+ */
+export function prefetchImage(path) {
+  if (!path) return;
+  _cachedFetchImage(path).catch(() => {});
+}
+
+// Invalidate on every committed change to an image's boxes, and on deletion.
+// IMAGE_ANNOTATIONS_SAVED / IMAGE_BBOXES_CHANGED both carry `imageFilename`,
+// which is the same key `loadImage` uses.
+events.subscribe(EventTypes.IMAGE_ANNOTATIONS_SAVED, ({ imageFilename } = {}) => invalidateCachedImage(imageFilename));
+events.subscribe(EventTypes.IMAGE_BBOXES_CHANGED, ({ imageFilename } = {}) => invalidateCachedImage(imageFilename));
+events.subscribe(EventTypes.IMAGE_DELETED, ({ imagePath } = {}) => invalidateCachedImage(imagePath));
+
+/**
+ * Fetch an image and its metadata from the server using the new GET endpoint.
+ *
+ * @param {string} path - Relative path of the image to fetch.
+ * @param {{allowCached?: boolean}} [opts] - `allowCached` lets the call be
+ *   served from (and populate) the prefetch cache. Off by default: an explicit
+ *   reload — after a save, or on an external-change refresh — must see the
+ *   server's current state, not a copy taken before the write.
+ * @returns {Promise<import('@domain_image').UIImage>}
+ * @throws {Error} If the fetch fails or the API response is invalid.
+ */
+export async function fetchImage(path, { allowCached = false } = {}) {
+  const { imageRes, img } = allowCached ? await _cachedFetchImage(path) : await _fetchImageRaw(path);
+  return imageRecordToUI(imageRes.image, img, path);
 }
 
 /**

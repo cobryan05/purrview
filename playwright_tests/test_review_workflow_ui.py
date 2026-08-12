@@ -21,6 +21,7 @@ Run with:
 import base64
 import json
 import re
+import urllib.parse
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -2057,3 +2058,88 @@ class TestCanvasModalHotkeys:
         page.keyboard.press("r")
 
         expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
+
+
+# ---------------------------------------------------------------------------
+# 14. Canvas modal next/prev prefetch
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasNavPrefetch:
+    """Stepping through the canvas modal must not pay a full round trip per step.
+
+    `/file` reads the whole image, base64s it AND does the metadata DB read in
+    one request, so on a slow DB that latency is the entire cost of a `]` press.
+    The modal knows the whole nav list up front, so the neighbours can be warmed
+    while the user is looking at the current image.
+    """
+
+    def _mock_files(self, page: Page):
+        """Serve a distinct body per image path and count requests per path."""
+        calls: list[str] = []
+
+        def handle(route: Route):
+            # ".../api/images/<urlencoded path>/file"
+            path = urllib.parse.unquote(route.request.url.split("/api/images/")[1].rsplit("/file", 1)[0])
+            calls.append(path)
+            uuid = "img-1" if path.endswith("image1.jpg") else "img-2"
+            bboxes = [BBOX_1, BBOX_2] if uuid == "img-1" else [BBOX_3]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "imageBase64": TINY_PNG_B64,
+                        "mimeType": "image/png",
+                        "image": {"uuid": uuid, "filename": path, "bboxes": bboxes},
+                    }
+                ),
+            )
+
+        page.route("**/api/images/*/file", handle)
+        return calls
+
+    def _open_modal_on_first_bbox(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        png_bytes = base64.b64decode(TINY_PNG_B64)
+        page.route(
+            "**/thumbnail?*",
+            lambda route: route.fulfill(status=200, content_type="image/png", body=png_bytes),
+        )
+        calls = self._mock_files(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        return modal, calls
+
+    def test_the_next_image_is_fetched_before_the_user_asks_for_it(self, page: Page, base_url: str):
+        modal, calls = self._open_modal_on_first_bbox(page, base_url)
+
+        # No navigation has happened — image2 is fetched purely speculatively.
+        wait_until(
+            page,
+            lambda: any(c.endswith("image2.jpg") for c in calls),
+            lambda: f"Expected a prefetch of the next image, got {calls}",
+        )
+
+    def test_navigating_to_a_prefetched_image_issues_no_new_request(self, page: Page, base_url: str):
+        modal, calls = self._open_modal_on_first_bbox(page, base_url)
+        wait_until(
+            page,
+            lambda: any(c.endswith("image2.jpg") for c in calls),
+            lambda: f"Expected a prefetch of the next image, got {calls}",
+        )
+        before = len([c for c in calls if c.endswith("image2.jpg")])
+
+        modal.get_by_test_id("canvas-edit-modal-next").click()
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_have_text("Edit: folder/image2.jpg")
+
+        after = len([c for c in calls if c.endswith("image2.jpg")])
+        assert after == before, f"navigation re-fetched a prefetched image: {calls}"
