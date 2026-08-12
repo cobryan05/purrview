@@ -2302,3 +2302,110 @@ class TestSaveAndCloseBecomesClose:
 
         expect(modal).to_have_count(0, timeout=8000)
         assert len(saves) == 1, f"expected exactly one save, got {saves}"
+
+
+# ---------------------------------------------------------------------------
+# 17. Dirty means "differs from what was loaded/saved"
+# ---------------------------------------------------------------------------
+
+
+class TestUndoneEditIsNotDirty:
+    """Editing and then undoing back to the loaded state must count as never
+    modified — no unsaved-changes prompt, and the footer offers plain "Close".
+
+    Dirty is compared against the loaded/saved annotation content rather than
+    tracked as a latch, so anything that ends up back where it started is
+    clean however it got there.
+    """
+
+    def _open_modal(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+        page.locator("#review-root [data-bbox-uuid='bbox-1'] img.thumb").dblclick()
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        page.wait_for_function(
+            """() => {
+                const stages = (window.Konva && window.Konva.stages) || [];
+                for (const stage of stages) {
+                    if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+                    if (stage.findOne('#bbox-1')) return true;
+                }
+                return false;
+            }""",
+            timeout=8000,
+        )
+        return modal
+
+    def _bbox_count(self, page: Page) -> int:
+        return page.evaluate("""() => {
+                const stages = (window.Konva && window.Konva.stages) || [];
+                for (const stage of stages) {
+                    if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+                    return stage.find('.bbox').length;
+                }
+                return -1;
+            }""")
+
+    def test_undoing_a_delete_returns_the_canvas_to_clean(self, page: Page, base_url: str):
+        modal = self._open_modal(page, base_url)
+        btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+        assert self._bbox_count(page) == 2
+
+        modal.locator("button[data-toolbar-key='delete']").click()
+        expect(btn).to_have_text("Save & Close")
+
+        page.keyboard.press("Control+z")
+        # Assert the undo actually happened, so a dead hotkey can't make the
+        # dirty assertion below pass for the wrong reason.
+        assert self._bbox_count(page) == 2
+        expect(btn).to_have_text("Close")
+
+    def test_moving_a_box_and_putting_it_back_is_clean(self, page: Page, base_url: str):
+        """Not undo-specific: the comparison is against content, so a manual
+        revert counts too."""
+        modal = self._open_modal(page, base_url)
+        btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+
+        move = """(dx) => {
+            const stages = (window.Konva && window.Konva.stages) || [];
+            for (const stage of stages) {
+                if (!stage.container()?.closest('.canvas-modal-canvas')) continue;
+                const node = stage.findOne('#bbox-1');
+                if (!node) continue;
+                node.x(node.x() + dx);
+                node.fire('dragend', { target: node }, true);
+                return true;
+            }
+            return false;
+        }"""
+        assert page.evaluate(move, 40)
+        expect(btn).to_have_text("Save & Close")
+
+        assert page.evaluate(move, -40)
+        expect(btn).to_have_text("Close")
+
+    def test_an_image_level_label_change_still_marks_dirty(self, page: Page, base_url: str):
+        """Image-level label presence lives outside `bboxes`, so no bbox
+        comparison can see it — it goes through markDirty and must stay dirty
+        even though the boxes themselves are untouched."""
+        modal = self._open_modal(page, base_url)
+        btn = modal.get_by_test_id("canvas-edit-modal-save-close")
+        expect(btn).to_have_text("Close")
+
+        # The Labels sidebar tab's status button is the real path into markDirty.
+        clicked = page.evaluate("""() => {
+                const row = document.querySelector('.canvas-modal-sidebar .label-panel-row');
+                const btn = row?.querySelector('.label-status-btn');
+                if (!btn) return false;
+                btn.click();
+                return true;
+            }""")
+        assert clicked, "no label row in the modal sidebar"
+        expect(btn).to_have_text("Save & Close")

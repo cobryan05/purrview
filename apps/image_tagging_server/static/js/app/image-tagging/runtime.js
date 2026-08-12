@@ -5,6 +5,60 @@ import { createCanvasState } from './canvas/state.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { generateUUID } from '/app-static/js/ui/utils/utils.js';
 
+/**
+ * Canonical fingerprint of the annotation state of a bbox map.
+ *
+ * Covers exactly the fields `updateImage` persists — geometry, label, tags and
+ * metadata — so two states with the same fingerprint save identically. Sorted
+ * by uuid, with tag lists and metadata keys sorted too, so pure reordering is
+ * not mistaken for an edit.
+ *
+ * ⚠️ If a new persisted bbox field is added, it MUST be added here. A field the
+ * fingerprint cannot see is a change that reads as "no changes" — the canvas
+ * would close without prompting and the edit would be lost.
+ *
+ * Unlabeled boxes are included even though `updateImage` filters them out of
+ * the payload: drawing one is still work the user would be surprised to lose
+ * silently.
+ *
+ * @param {Map<string, import('@image_tagging_types').UIBbox>|null|undefined} bboxes
+ * @returns {string}
+ */
+function _annotationSignature(bboxes) {
+  if (!bboxes) return '';
+  const rows = [...bboxes.values()].map(b => [
+    b.uuid,
+    b.label?.uuid ?? null,
+    _roundCoord(b.x), _roundCoord(b.y), _roundCoord(b.width), _roundCoord(b.height),
+    [...(b.tags ?? []).map(t => t.uuid)].sort(),
+    _canonicalMetadata(b.metadataJson),
+  ]);
+  rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return JSON.stringify(rows);
+}
+
+/**
+ * Coordinates are compared at 1e-9, not exactly.
+ *
+ * Dragging a box away and back returns the Konva node to the same pixel, but
+ * the normalized value is recomputed as `(nodeX - offsetX) / scaledWidth` each
+ * time, so it comes back as e.g. 0.10000000000000005 rather than 0.1. Compared
+ * exactly, a box put back where it started would read as modified forever.
+ *
+ * 1e-9 of a normalized coordinate is ~1/125000 of a pixel on an 8K-wide image —
+ * far below any change a user can make, and far above the ~1e-17 drift.
+ */
+function _roundCoord(value) {
+  return typeof value === 'number' ? Math.round(value * 1e9) / 1e9 : value;
+}
+
+/** Metadata as sorted key/value pairs; empty and absent are the same thing
+ *  (updateImage omits `extra` entirely when there are no keys). */
+function _canonicalMetadata(metadataJson) {
+  const keys = Object.keys(metadataJson ?? {}).sort();
+  return keys.length ? keys.map(k => [k, metadataJson[k]]) : null;
+}
+
 /** @param {Map<string, import('@image_tagging_types').UIBbox>} bboxes */
 function _cloneBboxes(bboxes) {
   return new Map([...bboxes].map(([k, v]) => [k, {
@@ -45,8 +99,23 @@ export function createImageTaggingRuntime() {
   /** @type {Array<Map<string, import('@image_tagging_types').UIBbox>>} */
   let _redoStack = [];
 
-  /** True when the current image has unsaved annotation changes. */
-  let _dirty = false;
+  // ── Unsaved-changes tracking ─────────────────────────────────────────────
+  // Dirty is DERIVED: the current annotations are compared against a
+  // fingerprint of the last loaded or saved state. It used to be a latch that
+  // every mutation set and only a save cleared, which meant an edit that was
+  // undone still counted as unsaved — the canvas prompted on close and offered
+  // to save a state identical to the one on the server.
+  //
+  // Deriving it also covers a manual revert (drag a box away and back), not
+  // just undo, since neither ends up differing from what was loaded.
+  /** Fingerprint of the last loaded/saved annotations; null = no image yet. */
+  let _cleanSignature = null;
+  /**
+   * Sticky flag for pending changes that do NOT live in `bboxes` — image-level
+   * label and tag presence, set via markDirty by the label list and inspector.
+   * No bbox comparison can see those, so they stay dirty until saved.
+   */
+  let _forcedDirty = false;
 
   /** Re-sync which bboxes are draggable for the current tool/canvas. */
   function _syncDraggable() {
@@ -59,7 +128,6 @@ export function createImageTaggingRuntime() {
     _undoStack.push(_cloneBboxes(_imgTaggingState.image.bboxes));
     if (_undoStack.length > 101) _undoStack.shift();
     _redoStack = [];
-    _dirty = true;
   }
 
   function undo() {
@@ -69,7 +137,6 @@ export function createImageTaggingRuntime() {
     _imgTaggingState.image.bboxes = _cloneBboxes(prev);     // restore (clone keeps stack clean)
     rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
     _syncDraggable();
-    _dirty = true;
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
@@ -80,19 +147,23 @@ export function createImageTaggingRuntime() {
     _imgTaggingState.image.bboxes = _cloneBboxes(next);
     rerenderBboxViews(_canvasState, _imgTaggingState.image.bboxes);
     _syncDraggable();
-    _dirty = true;
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
-  /** Set the unsaved-changes flag (e.g. when label presence changes outside bbox edits). */
+  /**
+   * Force the dirty state on, for pending changes the bbox comparison cannot
+   * see (image-level label / tag presence). Sticky until the next save or image
+   * load — unlike a bbox edit, there is nothing to compare it back against.
+   */
   function markDirty() {
-    _dirty = true;
+    _forcedDirty = true;
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
-  /** Clear the unsaved-changes flag (call after a successful save). */
+  /** Adopt the current annotations as the clean state (call after a successful save). */
   function markClean() {
-    _dirty = false;
+    _cleanSignature = _annotationSignature(_imgTaggingState?.image?.bboxes);
+    _forcedDirty = false;
   }
 
   function clearHistory() {
@@ -150,7 +221,7 @@ export function createImageTaggingRuntime() {
     _syncDraggable();
     clearHistory();
     pushState();  // baseline — the "can't undo past this" floor
-    _dirty = false;  // a freshly loaded image starts clean
+    markClean();  // a freshly loaded image starts clean, and sets the comparison baseline
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
@@ -187,7 +258,18 @@ export function createImageTaggingRuntime() {
     get labelUuid() { return _currentLabelUuid; },
     get canUndo() { return _undoStack.length > 1; },
     get canRedo() { return _redoStack.length > 0; },
-    get isDirty() { return _dirty; },
+    /**
+     * True when the annotations differ from the last loaded/saved state, or a
+     * non-bbox change is pending. Computed on read rather than latched, so an
+     * edit that is undone (or manually reverted) reports clean again. Cheap
+     * enough to compute here: every caller reads it at event time — button
+     * state, close guards — never in a render loop.
+     */
+    get isDirty() {
+      if (_forcedDirty) return true;
+      if (_cleanSignature === null) return false;  // no image loaded yet
+      return _annotationSignature(_imgTaggingState?.image?.bboxes) !== _cleanSignature;
+    },
     /** The baseline bbox snapshot taken at image load — used for conflict detection. */
     get undoBaseline() { return _undoStack.length > 0 ? _undoStack[0] : null; },
 
