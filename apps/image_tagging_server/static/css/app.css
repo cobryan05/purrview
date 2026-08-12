@@ -2721,6 +2721,13 @@ button.filter-active {
   cursor: default;
 }
 
+.canvas-modal-header .canvas-modal-nav-btn.review-toolbar__status--loading {
+  /* Mid-navigation: pulse instead of the flat disabled dimming so it reads as
+     "working" rather than "unavailable". */
+  animation: status-loading-pulse 1.1s ease-in-out infinite;
+  opacity: 1;
+}
+
 .canvas-modal-header .canvas-modal-delete-btn {
   background: none;
   border: 1px solid var(--border-strong);

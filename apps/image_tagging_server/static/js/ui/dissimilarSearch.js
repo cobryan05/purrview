@@ -19,6 +19,7 @@ import {
   fetchImagesByUuids,
 } from '/app-static/js/shared/api/images.js';
 import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
+import { toast } from '/app-static/js/ui/utils/logging.js';
 
 // ── Multi-anchor query helpers ─────────────────────────────────────────────────
 
@@ -156,6 +157,8 @@ export async function openDissimilarImagesModal({ imageUuid = null, imageUuids =
   const anchorUuids = imageUuids ?? (imageUuid ? [imageUuid] : []);
   if (!anchorUuids.length) return;
 
+  toast('Searching for the most distinct images…', 2000, 'info');
+
   const similarBtn = buildSwitchModeButton('← Most Similar', async () => {
     const { openSimilarImagesModal } = await import('/app-static/js/ui/similarSearch.js');
     openSimilarImagesModal({ imageUuids: anchorUuids, candidateUuids });
@@ -186,6 +189,8 @@ export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null
     ? bboxes.map(b => b.bboxUuid).filter(Boolean)
     : (bboxUuid ? [bboxUuid] : []);
   if (!anchorBboxUuids.length) return;
+
+  toast('Searching for the most distinct bboxes…', 2000, 'info');
 
   let _count = 100;
   let _refresh = null;
@@ -289,12 +294,17 @@ export async function openDissimilarBboxesModal({ bboxUuid = null, bboxes = null
 }
 
 /**
- * Open a review modal showing the most visually distinct unverified images.
- * Uses server-side unverified-tag scoping; no anchor image needed.
+ * Open a review modal showing the most visually distinct images. No anchor needed.
+ *
+ * With no `candidateUuids` the server scopes the walk to unverified images.
+ * Callers that have an active filter (the Review tab's filter panel) pass their
+ * filtered UUID set so the ranking covers exactly what the grid shows.
+ *
+ * @param {{ candidateUuids?: string[]|null }} [params]
  */
-export async function openDissimilarGlobalModal() {
+export async function openDissimilarGlobalModal({ candidateUuids = null } = {}) {
   return _openRankedImagesModal({
-    title: 'Label Most Unique First',
-    makeFetchFn: count => findDissimilarGlobal(count),
+    title: candidateUuids ? 'Label Most Unique First (filtered)' : 'Label Most Unique First',
+    makeFetchFn: count => findDissimilarGlobal(count, null, candidateUuids),
   });
 }

@@ -1,5 +1,9 @@
-import pytest
+from pathlib import Path
 
+import pytest
+from sqlalchemy import text
+
+from apps.helpers.db.db_client import DbClient
 from tests.conftest import make_png
 
 
@@ -221,3 +225,24 @@ async def test_delete_image_db_only_keeps_file(http_client, image_file, files_ro
     # DB record must be gone: by-uuid lookup returns 404 without triggering re-sync.
     r2 = await http_client.get(f"/api/images/by-uuid/{image_uuid}/meta")
     assert r2.status_code == 404
+
+
+async def test_bulk_delete_over_threshold_reclaims_freed_pages(tmp_path, files_root):
+    """A large delete (e.g. an accidental mass-ingest cleanup) must not leave its
+    freed pages sitting on the freelist forever — that's what silently balloons
+    db.sqlite until next/prev and other paginated queries degrade. Uses a real
+    file-backed DbClient (not the in-memory test fixture) since freelist_count
+    is only meaningful on disk."""
+    client = DbClient(db_dir=tmp_path, memory=False, files_root=files_root)
+    await client.init_db()
+    client._INCREMENTAL_VACUUM_THRESHOLD = 5  # keep the test fast
+
+    images = [await client.add_image(Path(f"img-{i}.jpg")) for i in range(10)]
+    deleted = await client.delete_images_bulk([img.uuid for img in images])
+    assert deleted == 10
+
+    async with client._engine.connect() as conn:
+        result = await conn.execute(text("PRAGMA freelist_count"))
+        assert result.scalar() == 0, "freed pages should have been reclaimed by incremental_vacuum"
+
+    await client.close()

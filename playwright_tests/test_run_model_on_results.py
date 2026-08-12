@@ -169,6 +169,40 @@ def _mock_add_bbox(page: Page):
     return calls
 
 
+def _mock_preview_runs(page: Page, run_uuid="run-1"):
+    """Mocks POST /api/preview-runs (create) and DELETE /api/preview-runs/{uuid}.
+    Returns dicts of captured calls: {"created": [...], "deleted": [...]}."""
+    calls = {"created": [], "deleted": []}
+
+    def handle_collection(route: Route):
+        if route.request.method == "POST":
+            calls["created"].append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "run": {"uuid": run_uuid, "name": None, "modelName": "", "pinned": False, "stats": {}},
+                    }
+                ),
+            )
+        else:
+            route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"status": "success", "runs": []})
+            )
+
+    page.route("**/api/preview-runs", handle_collection)
+
+    def handle_item(route: Route):
+        if route.request.method == "DELETE":
+            calls["deleted"].append(route.request.url)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+    page.route(re.compile(r".*/api/preview-runs/[\w-]+$"), handle_item)
+    return calls
+
+
 def _mock_invalidate_thumbnails(page: Page):
     calls = []
 
@@ -189,7 +223,7 @@ class _FakeTask:
         self.create_bodies = []
         self.poll_count = 0
 
-    def install(self, page: Page, candidates: list, stats: dict = None):
+    def install(self, page: Page, candidates: list, stats: dict = None, error_message: str = None):
         def handle_create(route: Route):
             body = json.loads(route.request.post_data or "{}")
             self.create_bodies.append(body)
@@ -212,8 +246,14 @@ class _FakeTask:
 
         def handle_get(route: Route):
             self.poll_count += 1
-            status = "running" if self.poll_count < 2 else "completed"
+            if error_message is not None:
+                status = "running" if self.poll_count < 2 else "error"
+            else:
+                status = "running" if self.poll_count < 2 else "completed"
             progress = 50.0 if status == "running" else 100.0
+            instance = {"uuid": self.task_uuid, "status": status}
+            if status == "error":
+                instance["errorMessage"] = error_message
             route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -228,7 +268,7 @@ class _FakeTask:
                                     "name": "x",
                                     "params": {},
                                 },
-                                "instance": {"uuid": self.task_uuid, "status": status},
+                                "instance": instance,
                                 "progress": progress,
                                 "statusMessage": "",
                                 "statusActions": [],
@@ -346,6 +386,26 @@ class TestRunModelButton:
         # Both bboxes (bbox-1, bbox-2) are candidates in the default (Unverified) filter.
         expect(dialog).to_contain_text("2 candidate bbox")
         expect(dialog).to_contain_text("2 image")
+
+    def test_button_is_restored_after_scope_resolves(self, page: Page, base_url: str):
+        """Scope resolution (counting candidates before the dialog can even open) is a
+        real round trip; the toolbar button must show it's working and not stay stuck
+        disabled/relabeled once the dialog is up."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+        fake_task = _FakeTask()
+        fake_task.install(page, CANDIDATES)
+
+        _navigate_to_review(page, base_url)
+        btn = _run_model_btn(page)
+        original_text = btn.text_content()
+        btn.click()
+
+        expect(page.locator(".run-model-on-results-dialog")).to_be_visible()
+        expect(btn).to_be_enabled()
+        expect(btn).to_have_text(original_text)
 
     def test_no_candidates_toasts_and_skips_dialog(self, page: Page, base_url: str):
         _mock_review_queue(page, [{"uuid": "img-9", "filename": "x.jpg", "bboxes": []}])
@@ -757,6 +817,43 @@ class TestRunModelFullFlow:
         assert len(fake_task.create_bodies) == 1
         params = fake_task.create_bodies[0]["params"]
         assert params["crop_mode"] == "bbox"
+
+    def test_task_error_cleans_up_preview_run_and_resets_dialog(self, page: Page, base_url: str):
+        """A task that errors out (e.g. exceeding the server-side sanity cap) must
+        both reset the dialog's own controls AND delete the persisted preview run
+        it created up front — otherwise a failed run lingers as an indistinguishable
+        empty/ghost entry in the Saved Previews list for up to 24h."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+        _mock_thumbnails(page)
+        preview_calls = _mock_preview_runs(page)
+        fake_task = _FakeTask()
+        fake_task.install(
+            page,
+            CANDIDATES,
+            error_message="ValueError: bbox_uuids has 60000 entries, exceeding the sanity cap of 50000",
+        )
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        run_btn = dialog.locator("button", has_text="Run")
+        run_btn.click()
+
+        # Dialog stays open (no confirmation modal on failure) and re-enables its
+        # controls once the task resolves to ERROR.
+        expect(run_btn).to_be_enabled(timeout=5000)
+        expect(dialog.locator(".run-model-on-results-model-list input[type=checkbox]").first).to_be_enabled()
+
+        assert len(preview_calls["created"]) == 1
+        assert any(
+            "run-1" in url for url in preview_calls["deleted"]
+        ), f"expected the failed preview run to be deleted, got: {preview_calls['deleted']}"
 
     def test_cancel_stops_polling_and_closes_dialog(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)

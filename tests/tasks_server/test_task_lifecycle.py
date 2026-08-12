@@ -263,3 +263,52 @@ async def test_failed_task_persists_its_error_message(manager, tasks_api_mock):
     error_writes = [c for c in tasks_api_mock.set_task_instance_status.call_args_list if c.args[1].status == "error"]
     assert error_writes, "a raising task must write status='error'"
     assert error_writes[-1].args[1].error_message == "ValueError: deliberate error"
+
+
+async def test_start_task_persists_running_before_starting_execution(manager, tasks_api_mock, monkeypatch):
+    """_start_task must persist status='running' to the DB (and register the
+    completion handler) BEFORE calling task.start().
+
+    A task whose _init()/_run() fails entirely synchronously (no real await —
+    e.g. ErrorTask) can run to completion, and have _on_task_complete write its
+    terminal ERROR status, before this RUNNING write's own thread-pool call
+    would otherwise have landed. If task.start() ran first (the old order),
+    the late RUNNING write can then clobber the terminal status: the task is
+    popped from the in-memory running-tasks registry (so Stop/Suspend become
+    silent no-ops and the active-task count excludes it) while the DB/UI is
+    left showing "running" forever.
+    """
+    import tests.tasks_server.test_real_task_execution  # noqa: F401 (registers ErrorTask)
+
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].typename = "ErrorTask"
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {}
+
+    order = []
+
+    def _record_status(uuid, payload):
+        if payload.status == "running":
+            order.append("running_write")
+        return MagicMock()
+
+    tasks_api_mock.set_task_instance_status.side_effect = _record_status
+
+    from apps.tasks_server.tasks.Task import Task
+
+    orig_start = Task.start
+
+    async def _tracked_start(self):
+        order.append("task_start")
+        return await orig_start(self)
+
+    monkeypatch.setattr(Task, "start", _tracked_start)
+
+    await manager.start_new_task(CONFIG_UUID)
+    for _ in range(50):
+        if "task_start" in order:
+            break
+        await asyncio.sleep(0.01)
+
+    assert order[:2] == [
+        "running_write",
+        "task_start",
+    ], f"the RUNNING status write must be persisted before task.start() is called, got: {order}"

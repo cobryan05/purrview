@@ -124,6 +124,21 @@ class TestSimilarImagesCountControl:
         # Below the default cap (100) — all 20 matches should be visible.
         expect(page.locator("[data-image-uuid]")).to_have_count(N_MATCHES)
 
+    def test_opening_the_modal_shows_a_searching_toast(self, page: Page, base_url: str):
+        """The hash-size/threshold lookups and first match query are real round trips
+        before the modal shell appears; a toast must fire immediately so the click
+        isn't a silent wait with no indication anything happened."""
+        _mock_settings_404(page)
+        _mock_find_similar(page)
+        _mock_batch_by_uuids(page)
+        _mock_labels(page)
+        _mock_tags(page)
+        _mock_image_labels_batch(page)
+
+        _open_similar_images_modal(page, base_url)
+
+        expect(page.locator("#toast-container")).to_contain_text("Searching for similar images")
+
     def test_lowering_count_caps_visible_results(self, page: Page, base_url: str):
         _mock_settings_404(page)
         _mock_find_similar(page)

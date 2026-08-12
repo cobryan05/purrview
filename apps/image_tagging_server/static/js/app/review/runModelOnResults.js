@@ -48,7 +48,7 @@ import { expandLabelFilterSet, bboxHasAnyTag, bboxMatchesConfidence, VERIFICATIO
 import { openClassifierTagConfirmationModal } from '/app-static/js/app/review/runClassifierOnResults.js';
 import { labelChip as _labelChip } from '/app-static/js/app/review/labelChip.js';
 import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
-import { createPreviewRun, updatePreviewRun } from '/app-static/js/shared/api/previewRuns.js';
+import { createPreviewRun, updatePreviewRun, deletePreviewRun } from '/app-static/js/shared/api/previewRuns.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 
 const _CLASSIFIER_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
@@ -1662,6 +1662,7 @@ async function _showRunDialog(bboxScope, ctx) {
           const msg = finalInfo?.instance?.errorMessage || `Task ended with status: ${status}`;
           toast(`Run failed on ${modelName}: ${msg}`, 5000, 'error');
           await deleteTasks({ taskUuids: [taskUuid] }).catch(() => {});
+          if (previewRun) await deletePreviewRun(previewRun.uuid).catch(() => {});
           _resetRunUI();
           return;
         }
@@ -1753,6 +1754,7 @@ async function _showRunDialog(bboxScope, ctx) {
     } catch (err) {
       Logger.error('Run Model on Results failed:', err);
       toast(`Run failed: ${err.message}`, 5000, 'error');
+      if (previewRun) await deletePreviewRun(previewRun.uuid).catch(() => {});
       _resetRunUI();
     }
   });

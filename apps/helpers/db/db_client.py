@@ -652,6 +652,10 @@ def _keyset_start_index(
 class DbClient:
     """Helper class for SQLModel interactions for image annotations."""
 
+    # Below this, a delete's freed pages are left for the next big cleanup to
+    # reclaim rather than paying incremental_vacuum's I/O on every request.
+    _INCREMENTAL_VACUUM_THRESHOLD = 500
+
     def __init__(
         self,
         db_dir: Union[str, Path],
@@ -697,6 +701,11 @@ class DbClient:
             # 64 MB page cache per connection; reduces repeated disk I/O on
             # image/bbox index scans (default is only ~2 MB).
             cursor.execute("PRAGMA cache_size=-65536")
+            # Only takes effect on a brand-new (empty) DB file; an existing DB
+            # created before this needs a one-time `PRAGMA auto_vacuum=INCREMENTAL;
+            # VACUUM;` to convert. Without it, deleted rows just sit on a freelist
+            # forever instead of being reclaimed by incremental_vacuum() below.
+            cursor.execute("PRAGMA auto_vacuum=INCREMENTAL")
             cursor.close()
 
         self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
@@ -1853,7 +1862,18 @@ class DbClient:
         async with self._async_session_maker() as session:
             result = await session.exec(delete(ImageRecord).where(ImageRecord.uuid.in_(uuids)))
             await session.commit()
-            return result.rowcount or 0
+            deleted_count = result.rowcount or 0
+
+        # A large delete leaves that many pages on the freelist; auto_vacuum=INCREMENTAL
+        # (set in _set_sqlite_pragma) doesn't reclaim them on its own, only on request.
+        # Reclaiming inline keeps the file from silently ballooning after big cleanups
+        # like an accidental mass-ingest, without paying VACUUM's full-file-rewrite cost
+        # on every small delete.
+        if not self._memory and deleted_count >= self._INCREMENTAL_VACUUM_THRESHOLD:
+            async with self._engine.connect() as conn:
+                await conn.execute(text("PRAGMA incremental_vacuum"))
+
+        return deleted_count
 
     async def get_image_stubs_needing_phash(self, image_hex_len: int, bbox_hex_len: int) -> List[Dict[str, str]]:
         """Return [{uuid, filename}] for images that are missing a phash or have one at the wrong size.

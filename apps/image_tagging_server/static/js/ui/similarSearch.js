@@ -28,6 +28,7 @@ import {
 import { getSetting } from '/app-static/js/shared/api/settings.js';
 import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
 import { openDissimilarImagesModal, openDissimilarBboxesModal } from '/app-static/js/ui/dissimilarSearch.js';
+import { toast } from '/app-static/js/ui/utils/logging.js';
 
 /** @returns {Promise<number>} */
 export async function getImageHashMax() {
@@ -135,6 +136,12 @@ function buildThresholdSlider(initial, { min = 0, max = 64, onChange }) {
  */
 export async function openSimilarImagesModal({ imageUuids, threshold = null, candidateUuids = null }) {
   if (!imageUuids?.length) return;
+
+  // Everything below this point is a blank wait until the modal shell
+  // appears — the hash-size/threshold lookups and the first match query are
+  // both real network round trips, so give immediate feedback that the click
+  // registered.
+  toast('Searching for similar images…', 2000, 'info');
 
   const candidateSet = candidateUuids ? new Set(candidateUuids) : null;
   const sliderMax = await getImageHashMax();
@@ -252,6 +259,8 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
   // bboxCoords present means the bbox is dirty (moved/resized since save); use coords path.
   // bboxUuid-only uses the saved UUID path, which ensures the source appears at distance 0.
   if (!bboxes?.length) return;
+
+  toast('Searching for similar bboxes…', 2000, 'info');
 
   const sliderMax = await getBboxHashMax();
   let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);

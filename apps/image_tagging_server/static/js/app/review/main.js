@@ -334,19 +334,32 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   runModelBtn.className = 'review-toolbar__btn';
   runModelBtn.dataset.testid = 'review-run-model-on-results';
   runModelBtn.textContent = 'Run Model on Results…';
-  runModelBtn.addEventListener('click', () => runModelOnResultsFlow({
-    fetchImages,
-    filterPanel,
-    viewFilter: _viewFilter,
-    selectionKind: cardGrid.selectionKind,
-    selected: cardGrid.selected,
-    visibleEntries: _visibleEntries,
-    bboxFilterFn,
-    labels,
-    sortBy: sortBySelect.value,
-    sortOrder: sortOrderSelect.value,
-    refresh: () => render(),
-  }));
+  runModelBtn.addEventListener('click', async () => {
+    // Scope resolution (counting the filter/selection before the dialog can
+    // even open) can take a moment on a large review set — otherwise the
+    // button just sits there with no feedback until the dialog appears.
+    const label = runModelBtn.textContent;
+    runModelBtn.disabled = true;
+    runModelBtn.textContent = 'Run Model on Results… (loading)';
+    try {
+      await runModelOnResultsFlow({
+        fetchImages,
+        filterPanel,
+        viewFilter: _viewFilter,
+        selectionKind: cardGrid.selectionKind,
+        selected: cardGrid.selected,
+        visibleEntries: _visibleEntries,
+        bboxFilterFn,
+        labels,
+        sortBy: sortBySelect.value,
+        sortOrder: sortOrderSelect.value,
+        refresh: () => render(),
+      });
+    } finally {
+      runModelBtn.disabled = false;
+      runModelBtn.textContent = label;
+    }
+  });
 
   // Saved Previews — every persisted "Run Model on Results" run, so a large
   // triage can be picked up later instead of having to finish in one sitting.
@@ -3294,7 +3307,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
         // matches the card the user double-clicked, not the first occurrence in navItems.
         const targetBbox = (_navIndex === navContext.startIndex) ? bbox : (item.bbox ?? null);
         titleEl.textContent = `Edit: ${item.img.filename.split('/').slice(-2).join('/')}`;
-        _updateNavButtons();
+        // Nav buttons already reflect the new _navIndex's boundary state via
+        // _updateNavButtons(); force both disabled during the load itself so a
+        // slow fetch (large DB, cold thumbnail cache) can't be double-clicked.
+        prevBtn.disabled = true;
+        nextBtn.disabled = true;
+        prevBtn.classList.add('review-toolbar__status--loading');
+        nextBtn.classList.add('review-toolbar__status--loading');
         try {
           await instance.loadImage(item.img.filename);
         } catch (err) {
@@ -3302,6 +3321,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
           toast('Failed to load image', 3000, 'error');
           titleEl.textContent = `Edit: ${_currentImg.filename.split('/').slice(-2).join('/')}`;
           return; // Don't update state — canvas and _currentImg stay in sync
+        } finally {
+          prevBtn.classList.remove('review-toolbar__status--loading');
+          nextBtn.classList.remove('review-toolbar__status--loading');
+          _updateNavButtons();
         }
         _currentImg = item.img;
         _currentBbox = targetBbox;

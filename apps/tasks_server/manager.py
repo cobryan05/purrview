@@ -569,15 +569,16 @@ class Manager:
 
         task.set_instance_uuid(instance.uuid)
         self._running_tasks[instance.uuid] = task_info
-        await task.start()
         instance.status = TaskStatus.RUNNING
         started_at = datetime.now(timezone.utc)
-        # Register the completion handler before the DB write so that a DB
-        # failure cannot leave the task running with no completion handler.
-        t = asyncio.create_task(self._on_task_complete(task_info))
-        self._completion_tasks.add(t)
-        t.add_done_callback(self._completion_tasks.discard)
-        # Persist the running status and start timestamp immediately.
+        # Persist the running status and start timestamp, and register the
+        # completion handler, BEFORE actually starting the task. A task whose
+        # _init()/_run() fails entirely synchronously can finish — and have
+        # _on_task_complete write its terminal ERROR status — before this
+        # RUNNING write's thread-pool call would otherwise have landed; if
+        # task.start() ran first, the late RUNNING write could then clobber
+        # the terminal status, leaving the task stuck as "running" forever
+        # with no in-memory entry left for Stop/Suspend/Cancel to act on.
         await asyncio.gather(
             asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_status,
@@ -590,6 +591,10 @@ class Manager:
                 db_models.SetTaskTimestampsPayload(started_at=started_at),
             ),
         )
+        t = asyncio.create_task(self._on_task_complete(task_info))
+        self._completion_tasks.add(t)
+        t.add_done_callback(self._completion_tasks.discard)
+        await task.start()
         return task_info
 
     def start(self):
