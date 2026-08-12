@@ -57,6 +57,9 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
   let _visible = false;
   let _token = 0;
   let _destroyed = false;
+  /** The element the visible popover is anchored to, and a watcher for its removal. */
+  let _anchorEl = null;
+  let _anchorObserver = null;
 
   function ensurePopover() {
     if (popover) return;
@@ -82,9 +85,38 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
     clearTimeout(_timer);
     _timer = null;
     _token++;
+    _stopWatchingAnchor();
     if (!_visible) return;
     popover.classList.remove('visible');
     _visible = false;
+  }
+
+  function _stopWatchingAnchor() {
+    _anchorObserver?.disconnect();
+    _anchorObserver = null;
+    _anchorEl = null;
+  }
+
+  /**
+   * Dismiss the popover if the card it is anchored to leaves the document.
+   *
+   * `hide()` is driven by `mouseleave` on that card — so removing the card while
+   * the popover is up (deleting an image from the search modal's grid, a
+   * re-render dropping the row) fires no `mouseleave` at all, and the popover
+   * was left floating with nothing left to un-hover. There was no other way to
+   * dismiss it.
+   *
+   * Observed only while a popover is actually visible, and the callback is one
+   * `isConnected` read, so a busy grid re-render costs effectively nothing.
+   */
+  function _watchAnchor(el) {
+    _stopWatchingAnchor();
+    _anchorEl = el;
+    _anchorObserver = new MutationObserver(() => {
+      if (!_anchorEl || _anchorEl.isConnected) return;
+      hide();
+    });
+    _anchorObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   function positionNear(el) {
@@ -234,6 +266,7 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
     positionNear(el);
     popover.classList.add('visible');
     _visible = true;
+    _watchAnchor(el);
   }
 
   function attach(el, meta) {
@@ -251,6 +284,7 @@ export function createHoverPreview({ imageCache, thumbWidth = DEFAULT_THUMB_WIDT
     _destroyed = true;
     clearTimeout(_timer);
     _token++;
+    _stopWatchingAnchor();
     if (imageCache) {
       for (const { objectUrl } of imageCache.values()) {
         URL.revokeObjectURL(objectUrl);
