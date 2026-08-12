@@ -68,6 +68,13 @@ PART_DURATION = "500ms"
 # Where leases survive a relay restart. Under /data because that is bind-mounted;
 # /buffer itself is container-local and evaporates with the process (by design).
 LEASE_FILE = Path(os.environ.get("RELAY_LEASE_FILE", "/data/relay/leases.json"))
+# How long a lease survives without its holder checking in. MediaMTX will retry a dead
+# camera forever — correctly, since a camera that is merely offline must come back on
+# its own — so nothing below this layer ever concludes that a *consumer* has died. That
+# is what the TTL is for: it reaps the holder, not the camera. Generous relative to
+# LEASE_RENEW_INTERVAL_S (see ffmpegImageProvider) so a busy event loop or a brief relay
+# outage can never expire a lease whose holder is alive and trying.
+LEASE_TTL_S = float(os.environ.get("RELAY_LEASE_TTL_S", "300"))
 
 
 def master_path_name(source_url: str) -> str:
@@ -99,9 +106,16 @@ class Lease:
     record: bool
     assumed_bitrate_bps: int = DEFAULT_ASSUMED_BITRATE_BPS
     created_at: float = field(default_factory=time.time)
+    # Last time the holder said it was still there. A holder that stops renewing has
+    # died, and its lease is reaped — see ``Manager._expire_stale_leases``. Defaults to
+    # now so a lease is always born healthy, including one restored from disk.
+    last_seen: float = field(default_factory=time.time)
 
     def committed_bytes(self) -> int:
         return bytes_for(self.assumed_bitrate_bps, self.retention_s) if self.record else 0
+
+    def is_stale(self, now: float, ttl_s: float) -> bool:
+        return (now - self.last_seen) > ttl_s
 
 
 @dataclass
@@ -254,6 +268,12 @@ class Manager:
             except TypeError as exc:
                 logger.warning(f"Skipping unreadable lease {entry!r}: {exc}")
                 continue
+            # Restart the liveness clock rather than trusting the persisted value: the
+            # holders are in other processes and have had no chance to check in yet, so
+            # a stored `last_seen` from before a long shutdown would reap every lease
+            # the instant the relay came back. A genuinely dead holder simply fails to
+            # renew and is reaped one TTL later instead.
+            lease.last_seen = time.time()
             self._leases[lease.lease_id] = lease
         logger.info(f"Loaded {len(self._leases)} lease(s) from {self._lease_file}")
 
@@ -272,6 +292,47 @@ class Manager:
 
     def leases_for(self, source_url: str) -> List[Lease]:
         return [lease for lease in self._leases.values() if lease.source_url == source_url]
+
+    def _find_lease(self, source_url: str, holder: str) -> Optional[Lease]:
+        """The lease this holder already has on this source, if any."""
+        for lease in self._leases.values():
+            if lease.source_url == source_url and lease.holder == holder:
+                return lease
+        return None
+
+    def renew_lease(self, lease_id: str) -> bool:
+        """Mark a holder as still alive. Returns False for an unknown lease.
+
+        A False here is a holder's cue to re-``ensure``: it means the relay no longer
+        believes in this lease (it was reaped, or the lease file was lost), so the path
+        it is reading may be gone.
+        """
+        lease = self._leases.get(lease_id)
+        if lease is None:
+            return False
+        lease.last_seen = time.time()
+        # Deliberately not persisted on every renew: a heartbeat per holder per minute
+        # would rewrite the file constantly for information that is only meaningful
+        # while this process is alive. `_load_leases` re-arms the clock on restart.
+        return True
+
+    async def _expire_stale_leases(self) -> None:
+        """Reap leases whose holder stopped checking in.
+
+        This is the only thing in the stack that concludes a consumer is gone. It must
+        never be confused with the camera being unreachable: an offline camera with a
+        live watcher keeps its lease and its path, because MediaMTX reconnecting when
+        the camera returns is exactly the behaviour a 24/7 watcher wants.
+        """
+        now = time.time()
+        stale = [lease for lease in self._leases.values() if lease.is_stale(now, LEASE_TTL_S)]
+        for lease in stale:
+            logger.warning(
+                f"Reaping lease {lease.lease_id} on {lease.source_url}: holder "
+                f"{lease.holder!r} last seen {now - lease.last_seen:.0f}s ago "
+                f"(ttl {LEASE_TTL_S:.0f}s)"
+            )
+            await self.release_lease(lease.lease_id)
 
     def reader_counts(self) -> Dict[str, int]:
         """Holders per master path — the status panel's "who is watching this camera"."""
@@ -313,15 +374,27 @@ class Manager:
             self._check_commit(bytes_for(DEFAULT_ASSUMED_BITRATE_BPS, retention))
             await self._patch_recording(name, source_url, retention)
 
-        lease = Lease(
-            lease_id=str(uuid.uuid4()),
-            source_url=source_url,
-            holder=holder or "anonymous",
-            retention_s=retention,
-            record=record,
-        )
-        self._leases[lease.lease_id] = lease
-        self._save_leases()
+        # A named holder re-ensuring the same source is checking in, not asking for a
+        # second claim: refresh the lease it already has. Without this, the plan's
+        # "provider-side re-ensure on read timeout" would mint a fresh lease on every
+        # retry and inflate the refcount until nothing could ever release the path.
+        # Anonymous callers are exempt — they are indistinguishable from one another,
+        # so collapsing them would let one caller's release free another's path.
+        existing_lease = self._find_lease(source_url, holder) if holder else None
+        if existing_lease is not None:
+            existing_lease.last_seen = time.time()
+            self._save_leases()
+            lease = existing_lease
+        else:
+            lease = Lease(
+                lease_id=str(uuid.uuid4()),
+                source_url=source_url,
+                holder=holder or "anonymous",
+                retention_s=retention,
+                record=record,
+            )
+            self._leases[lease.lease_id] = lease
+            self._save_leases()
 
         info = self._streams.get(name)
         relay = self._source_relays.get(source_url)
@@ -796,6 +869,12 @@ class Manager:
             while True:
                 await asyncio.sleep(Manager.POLLING_INTERVAL)
                 await self.refresh_streams()
+                try:
+                    await self._expire_stale_leases()
+                except Exception as exc:
+                    # A failed reap must not kill the poll loop that also feeds the
+                    # status panel; the next tick will try again.
+                    logger.error(f"Lease expiry sweep failed: {exc}")
         except asyncio.CancelledError:
             print("Periodic task was cancelled.")
         finally:

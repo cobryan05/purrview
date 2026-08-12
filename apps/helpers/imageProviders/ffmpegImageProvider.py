@@ -28,6 +28,11 @@ logger.setLevel(logging.DEBUG)
 if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
     import relay_buffer_client
 
+# How often a live provider tells the relay it is still there. Must stay comfortably
+# under the relay's RELAY_LEASE_TTL_S (default 300s) so a slow event loop or a brief
+# relay restart costs a few missed beats rather than the lease.
+LEASE_RENEW_INTERVAL_S = 60.0
+
 STREAM_START_TIMEOUT = 10.0
 STREAM_READ_TIMEOUT = 10.0
 FFMPEG_START_TIMEOUT = 30.0
@@ -86,6 +91,11 @@ class FfmpegImageProvider(ImageProvider):
         self._frame_idx: int = 0
         self._restart_count: int = 0
         self._lease_id: str = ""
+        self._renew_task: Optional[asyncio.Task] = None
+        # Set once the lease has been handed back, so a caller's defensive `stop()`
+        # after a failed `start()` doesn't fall through to destroying the shared path
+        # that other watchers may still be reading.
+        self._lease_returned: bool = False
         # Relay whenever the resolved ingest tier can actually be got into a MediaMTX
         # path — not just for `rtsp:`. Recording is a property of the path, so this one
         # condition is what makes MJPEG cameras, V4L2 devices and other ffmpeg-readable
@@ -127,17 +137,76 @@ class FfmpegImageProvider(ImageProvider):
             self.buffered = bool(ensured.get("recording"))
             self.ingest_tier_name = ensured.get("ingestTier", self._ingest_plan.tier.value)
 
-            if not await self._wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT):
-                raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to become ready on the relay")
-            stream_url = ensured.get("rtspUrl") or (
-                f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:"
-                f"{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
-            )
-        else:
-            stream_url = self._video_path
+            # From here on the lease is ours, and only `stop()` gives it back. A caller
+            # whose `start()` raises never receives the provider, so it can never call
+            # `stop()` — the lease would outlive the process, persist to the lease file
+            # and get re-armed on every relay restart. Hand it back ourselves.
+            try:
+                if not await self._wait_for_stream(api, self._relayed_name, STREAM_START_TIMEOUT):
+                    raise TimeoutError(f"Timed out waiting for '{self._relayed_name}' to become ready on the relay")
+                stream_url = ensured.get("rtspUrl") or (
+                    f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:"
+                    f"{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
+                )
+                self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
+                await self._stream.astart()
+            except BaseException:
+                await self._release_lease_quietly()
+                raise
+            # Only once the stream is genuinely up: a heartbeat started earlier would
+            # keep a lease alive on behalf of a provider that never actually ran.
+            self._renew_task = asyncio.get_running_loop().create_task(self._renew_lease_forever())
+            return
 
-        self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
+        self._stream = FFmpegStreamerIn(self._video_path, output_args=self._ffmpeg_args)
         await self._stream.astart()
+
+    async def _renew_lease_forever(self) -> None:
+        """Heartbeat the relay for as long as this provider is reading.
+
+        The relay cannot otherwise tell a live watcher from a crashed one — MediaMTX
+        retries a dead camera forever by design, so an idle path proves nothing about
+        its holder. Silence here is what marks this provider as gone.
+        """
+        while True:
+            await self._sleep(LEASE_RENEW_INTERVAL_S)
+            if not self._lease_id:
+                return
+            try:
+                api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+                result = await asyncio.to_thread(api.renew_stream, self._lease_id)
+                if not result.get("renewed"):
+                    # The relay has forgotten us: reaped, or its lease file was lost.
+                    # The path we are reading may already be gone, so say so loudly
+                    # rather than heartbeating a lease that no longer exists.
+                    logger.warning(
+                        f"Relay does not recognise lease {self._lease_id} for {self._relayed_name}; "
+                        "the path may have been torn down"
+                    )
+            except Exception as e:
+                # A transient relay outage must not kill the heartbeat — the TTL has
+                # room for several missed beats, and giving up here would guarantee
+                # the reap that retrying avoids.
+                logger.warning(f"Lease renewal failed for {self._relayed_name}: {e}")
+
+    async def _release_lease_quietly(self) -> None:
+        """Hand the lease back without letting the cleanup replace the real failure.
+
+        Releases rather than destroys: another watcher may be reading the same camera,
+        and the relay's refcount is what decides whether the path goes away.
+        """
+        if not self._lease_id:
+            return
+        lease_id, self._lease_id = self._lease_id, ""
+        self._lease_returned = True
+        try:
+            api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+            await asyncio.to_thread(api.release_stream, lease_id)
+        except Exception as e:
+            # Swallowed on purpose: the caller needs to see why the *stream* failed,
+            # not why the tidy-up did. A relay that is down here will have dropped its
+            # in-memory leases anyway.
+            logger.error(f"Failed to release relay lease {lease_id} for {self._relayed_name}: {e}")
 
     @staticmethod
     async def _wait_for_stream(api, stream_name: str, timeout: float, poll_interval: float = 0.5) -> bool:
@@ -162,19 +231,32 @@ class FfmpegImageProvider(ImageProvider):
         return False
 
     async def stop(self) -> None:
+        # Before releasing: a heartbeat still in flight could otherwise resurrect the
+        # lease we are about to hand back.
+        if self._renew_task is not None:
+            self._renew_task.cancel()
+            try:
+                await self._renew_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._renew_task = None
         if self._stream is not None:
             await self._stream.astop()
         if self._rtsp_relay_api:
-            try:
-                api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
-                if self._lease_id:
-                    # Release the lease, not the path: another watcher may still be
-                    # reading this camera, and the relay's refcount decides.
-                    await asyncio.to_thread(api.release_stream, self._lease_id)
-                else:
+            if self._lease_id:
+                # Release the lease, not the path: another watcher may still be
+                # reading this camera, and the relay's refcount decides.
+                await self._release_lease_quietly()
+            elif not self._lease_returned:
+                # No lease was ever issued, so there is no refcount to decrement and the
+                # path is ours alone to tear down. Skipped once the lease *has* been
+                # returned — a failed `start()` already did the right thing, and
+                # destroying here would yank the path out from under other holders.
+                try:
+                    api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
                     await asyncio.to_thread(api.destroy_stream, self._relayed_name)
-            except Exception as e:
-                logger.error(f"Failed to destroy relay stream {self._relayed_name}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to destroy relay stream {self._relayed_name}: {e}")
 
     async def getNextImage(self) -> Optional[ImageWithProviderMetadata]:
         if self._frame_size is None:

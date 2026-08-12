@@ -238,6 +238,28 @@ class WebApp:
                 logging.exception(f"Stream release failed: {e}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
+        @self._app.post(
+            "/api/streams/renew",
+            response_class=JSONResponse,
+            operation_id="renewStream",
+            tags=[WebApp.STREAM_API_TAG_NAME],
+        )
+        async def renew_stream_api(
+            lease_id: str = Form(..., description="Lease id returned by ensure"),
+        ) -> JSONResponse:
+            """Heartbeat: tell the relay this holder is still alive.
+
+            A lease that stops being renewed is reaped, so a holder that intends to keep
+            reading must call this well inside the TTL. `renewed: false` means the relay
+            has forgotten the lease and the caller should re-`ensure`.
+            """
+            try:
+                renewed = self._manager.renew_lease(lease_id)
+                return JSONResponse(content={WebApp.SUCCESS_KEY: True, "renewed": renewed})
+            except Exception as e:
+                logging.exception(f"Stream renew failed: {e}")
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
+
         @self._app.get(
             "/api/streams/{name}/ranges",
             response_class=JSONResponse,

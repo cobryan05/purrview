@@ -148,6 +148,45 @@ def fake_camera(require_media_stack):
         httpx.post(f"{api}/delete/{path}", timeout=10)
 
 
+@pytest.fixture(autouse=True)
+def no_leaked_leases(provider_relay_url):
+    """Fail (and clean up) if a test leaves a lease on the relay.
+
+    Leases outlive the process that took them: they persist to the relay's lease file,
+    which is bind-mounted so a restart can re-arm paths that still have holders. A test
+    that dies between `ensure` and `stop` therefore leaves an idle path retrying against
+    a `localhost` URL that stopped existing the moment ffmpeg was killed — and every
+    relay restart faithfully brings it back. Four of those accumulated in the dev
+    environment before anyone noticed, which is what this guard exists to prevent.
+
+    Asserting in teardown is deliberate: the leak is the failure, so it should be
+    reported rather than quietly swept up. The sweep still happens so one bad test
+    can't poison every later run.
+    """
+
+    def relay_paths():
+        try:
+            with httpx.Client(base_url=provider_relay_url, timeout=10) as client:
+                return {s["name"] for s in client.get("/api/streams/list").json().get("results", [])}
+        except httpx.HTTPError:
+            return set()
+
+    before = relay_paths()
+    yield
+    leaked = relay_paths() - before
+    if not leaked:
+        return
+
+    with httpx.Client(base_url=provider_relay_url, timeout=10) as client:
+        for path in leaked:
+            client.post("/api/streams/destroy", data={"stream_name": path})
+
+    pytest.fail(
+        f"Test leaked {len(leaked)} relay path(s): {sorted(leaked)}. Every provider that "
+        "reached start() must be stopped, including when start() itself raised."
+    )
+
+
 class TestRtspIngest:
     async def test_provider_reads_frames_from_a_real_rtsp_stream(self, fake_camera):
         """The core claim of item #2: an RTSP URL yields decoded numpy frames."""
