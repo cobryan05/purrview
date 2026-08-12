@@ -86,3 +86,27 @@ def test_collect_training_images_shaped_bbox_shows_its_confidence(page: Page, ba
         return view.findOne('Text').text();
     }""")
     assert label == "Cat (62%)", label
+
+
+def test_verified_bbox_shows_no_confidence_on_its_review_card(page: Page, base_url: str):
+    """A verified box shows no model confidence anywhere. The DB drops the key
+    on verify, but a card whose chip was just toggled still holds the old
+    metadata in memory — and that is precisely the card the user is looking at.
+    """
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+
+    values = page.evaluate("""async () => {
+        const { displayConfidence } = await import('/app-static/js/app/review/cardGrid.js');
+        const metadataJson = { confidence: '0.82' };
+        return {
+            unverified: displayConfidence({ metadataJson, tags: [{ uuid: '00000000-0000-0000-0000-000000000001' }] }),
+            verified: displayConfidence({ metadataJson, tags: [{ uuid: '00000000-0000-0000-0000-000000000005' }] }),
+            untagged: displayConfidence({ metadataJson, tags: [] }),
+        };
+    }""")
+    assert values["unverified"] == 0.82, values
+    assert values["verified"] is None, values
+    # A box with no verification tag at all is not verified — the review grid
+    # renders it as "? Unverified", so its confidence still shows.
+    assert values["untagged"] == 0.82, values

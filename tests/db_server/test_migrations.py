@@ -596,3 +596,79 @@ class TestLegacyDatasetFilterJson:
         self._insert(pre_redesign_copy, "empty-1", {})
         _run_migrations(pre_redesign_copy)
         assert self._filter_json(pre_redesign_copy, "empty-1") == {}
+
+
+class TestVerifiedBBoxConfidenceCleanup:
+    """c4e7a1b93f52 clears the model confidence off boxes that were verified
+    before "verified boxes store no confidence" became an invariant.
+
+    Without it those rows keep a stale confidence badge in the review grid and
+    keep matching the confidence-band filter until some later edit happens to
+    rewrite them — which for a verified box may be never.
+    """
+
+    def _insert_bbox(self, engine, uuid: str, metadata_json: str, verified: bool) -> None:
+        from apps.helpers.db.types import UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID
+
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO images (uuid, filename, created_at, updated_at) "
+                "VALUES (?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                (f"img-{uuid}", f"/data/{uuid}.png"),
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO bboxes (uuid, image_uuid, label_uuid, x, y, width, height, metadata_json,"
+                " created_at, updated_at)"
+                " VALUES (?, ?, ?, 0.1, 0.1, 0.2, 0.2, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                (uuid, f"img-{uuid}", "lbl-1", metadata_json),
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO bbox_tags (bbox_uuid, tag_uuid) VALUES (?, ?)",
+                (uuid, VERIFIED_TAG_UUID if verified else UNVERIFIED_TAG_UUID),
+            )
+            conn.commit()
+
+    def _metadata(self, engine, uuid: str) -> dict:
+        import json as _json
+
+        with engine.connect() as conn:
+            raw = conn.exec_driver_sql("SELECT metadata_json FROM bboxes WHERE uuid = ?", (uuid,)).scalar()
+        return _json.loads(raw) if isinstance(raw, str) else raw
+
+    def _label_row(self, engine) -> None:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO labels (uuid, name, color, created_at, updated_at) "
+                "VALUES ('lbl-1', 'thing', '#abcdef', '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+            )
+            conn.commit()
+
+    def test_verified_bbox_loses_confidence_but_keeps_everything_else(self, pre_redesign_copy):
+        self._label_row(pre_redesign_copy)
+        self._insert_bbox(
+            pre_redesign_copy,
+            "verified-1",
+            '{"confidence": 0.42, "source_confidence": 0.1, "run_model_added": true}',
+            verified=True,
+        )
+        _run_migrations(pre_redesign_copy)
+
+        assert self._metadata(pre_redesign_copy, "verified-1") == {"run_model_added": True}
+
+    def test_unverified_bbox_keeps_its_confidence(self, pre_redesign_copy):
+        self._label_row(pre_redesign_copy)
+        self._insert_bbox(pre_redesign_copy, "unverified-1", '{"confidence": 0.42}', verified=False)
+        _run_migrations(pre_redesign_copy)
+
+        assert self._metadata(pre_redesign_copy, "unverified-1") == {"confidence": 0.42}
+
+    def test_generated_column_follows_the_cleanup(self, pre_redesign_copy):
+        """The band filter reads bboxes.confidence, not the JSON — if the column
+        did not follow, the row would still match every band."""
+        self._label_row(pre_redesign_copy)
+        self._insert_bbox(pre_redesign_copy, "verified-2", '{"confidence": 0.42}', verified=True)
+        _run_migrations(pre_redesign_copy)
+
+        with pre_redesign_copy.connect() as conn:
+            value = conn.exec_driver_sql("SELECT confidence FROM bboxes WHERE uuid = 'verified-2'").scalar()
+        assert value is None

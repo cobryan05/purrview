@@ -40,6 +40,17 @@ WHOLE_DATABASE_DATASET_UUID = "00000000-0000-0000-0000-000000000002"
 BBOX_CONFIDENCE_METADATA_KEYS = ("confidence", "source_confidence")
 
 
+def strip_bbox_confidence(metadata_json: "Optional[Dict[str, Any]]") -> "Dict[str, Any]":
+    """Return *metadata_json* without any model-confidence key.
+
+    A confidence describes what a MODEL guessed. Once a human has verified the
+    box that guess is settled history, not live information, so a verified box
+    stores none — see `db_client._apply_verified_confidence_rule`, the single
+    enforcement point. Every other metadata key is preserved.
+    """
+    return {k: v for k, v in (metadata_json or {}).items() if k not in BBOX_CONFIDENCE_METADATA_KEYS}
+
+
 import jstyleson
 import numpy as np
 import sqlalchemy as sa

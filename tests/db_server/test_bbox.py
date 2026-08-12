@@ -619,6 +619,165 @@ class TestBBoxConfidenceColumn:
         assert "SCAN bboxes" not in plan, plan
 
 
+class TestVerifiedBBoxDropsConfidence:
+    """A confidence is what a MODEL guessed; once a human verifies the box it is
+    settled history, so a verified bbox stores none.
+
+    Enforced in db_client at every bbox write, because the trigger is usually a
+    TAG change rather than a metadata change — marking an existing inferred box
+    Verified has to drop the confidence it was created with. `bboxes.confidence`
+    is generated over those JSON keys, so dropping them is also what takes the
+    box out of the confidence-band filter.
+    """
+
+    async def _metadata_of(self, db_client, bbox_uuid):
+        from sqlmodel import select
+
+        from apps.helpers.db.types import BBox
+
+        async with db_client._async_session_maker() as session:
+            result = await session.exec(select(BBox.metadata_json).where(BBox.uuid == bbox_uuid))
+            return result.one()
+
+    async def _confidence_of(self, db_client, bbox_uuid):
+        from sqlmodel import select
+
+        from apps.helpers.db.types import BBox
+
+        async with db_client._async_session_maker() as session:
+            result = await session.exec(select(BBox.confidence).where(BBox.uuid == bbox_uuid))
+            return result.one()
+
+    async def test_verifying_an_existing_bbox_drops_its_stored_confidence(
+        self, http_client, db_client, image_file, label_uuid
+    ):
+        """The core case: nothing about the metadata changes in this request —
+        only the tag — so a metadata-triggered rule alone would miss it."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"tagUuids": [UNVERIFIED_TAG_UUID], "metadataJson": {"confidence": 0.42}},
+        )
+        assert await self._confidence_of(db_client, bid) == pytest.approx(0.42)
+
+        r = await http_client.patch(f"/api/images/bbox/{bid}", json={"tagUuids": [VERIFIED_TAG_UUID]})
+        assert r.status_code == 204
+
+        assert await self._confidence_of(db_client, bid) is None
+        assert "confidence" not in (await self._metadata_of(db_client, bid) or {})
+
+    async def test_other_metadata_keys_survive(self, http_client, db_client, image_file, label_uuid):
+        """Only the confidence keys go — the rest of the blob is unrelated state."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={
+                "tagUuids": [UNVERIFIED_TAG_UUID],
+                "metadataJson": {"confidence": 0.3, "source_confidence": 0.2, "run_model_added": True},
+            },
+        )
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"tagUuids": [VERIFIED_TAG_UUID]})
+
+        metadata = await self._metadata_of(db_client, bid) or {}
+        assert metadata == {"run_model_added": True}
+
+    async def test_unverified_bbox_keeps_its_confidence(self, http_client, db_client, image_file, label_uuid):
+        """Control: the rule must not blank every box it touches."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"tagUuids": [UNVERIFIED_TAG_UUID], "metadataJson": {"confidence": 0.42}},
+        )
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"tagUuids": [UNVERIFIED_TAG_UUID]})
+        assert await self._confidence_of(db_client, bid) == pytest.approx(0.42)
+
+    async def test_a_confidence_written_onto_an_already_verified_bbox_is_refused(
+        self, http_client, db_client, image_file, label_uuid
+    ):
+        """Otherwise a later writer (a task re-scoring the box) puts one back."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"tagUuids": [VERIFIED_TAG_UUID], "metadataJson": {"confidence": 0.9}},
+        )
+        assert await self._confidence_of(db_client, bid) is None
+
+    async def test_canvas_save_of_a_verified_box_stores_no_confidence(
+        self, http_client, db_client, image_file, label_uuid
+    ):
+        """The canvas save is a full DELETE+INSERT replace through a different
+        db_client path than the single-bbox patch, so it needs its own cover."""
+        bid = str(uuid.uuid4())
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": "bbox_test.png",
+                "boxes": [
+                    {
+                        "uuid": bid,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tagUuids": [VERIFIED_TAG_UUID],
+                        "extra": {"confidence": "0.77"},
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 200
+        assert await self._confidence_of(db_client, bid) is None
+
+    async def test_bulk_relabel_drops_the_confidence_it_verifies_away(
+        self, http_client, db_client, image_file, label_uuid
+    ):
+        """A bulk relabel promotes the box to VERIFIED — the confidence must go
+        with it, on the bulk path as much as the single-bbox one."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"tagUuids": [UNVERIFIED_TAG_UUID], "metadataJson": {"confidence": 0.31}},
+        )
+        r = await http_client.post("/api/labels", json={"name": "other-thing", "color": "#123456"})
+        other_label = r.json()["label"]["uuid"]
+
+        r = await http_client.post(
+            "/api/images/bbox/bulk-apply-by-uuids",
+            json={"bboxUuids": [bid], "action": "relabel", "labelUuid": other_label, "tagUuids": []},
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1
+
+        assert await self._confidence_of(db_client, bid) is None
+
+    async def test_a_verified_bbox_falls_out_of_the_confidence_band_filter(
+        self, http_client, db_client, image_file, label_uuid
+    ):
+        """The user-visible consequence: verified boxes stop matching any band
+        (they now match only `includeMissing`), which is what keeps the band
+        filter pointed at the un-reviewed detections it exists to surface."""
+        bid = await _add_bbox_only(http_client, label_uuid)
+        await http_client.patch(
+            f"/api/images/bbox/{bid}",
+            json={"tagUuids": [UNVERIFIED_TAG_UUID], "metadataJson": {"confidence": 0.2}},
+        )
+        count_body = {
+            "filter": {"showAllBboxes": True, "limit": 50},
+            "bboxTagFilter": [],
+            "bboxLabelFilter": [],
+            "showAllBboxes": True,
+            "bboxConfidence": {"max": 0.5},
+        }
+        r = await http_client.post("/api/images/bbox/count", json=count_body)
+        assert r.json()["count"] == 1
+
+        await http_client.patch(f"/api/images/bbox/{bid}", json={"tagUuids": [VERIFIED_TAG_UUID]})
+
+        r = await http_client.post("/api/images/bbox/count", json=count_body)
+        assert r.json()["count"] == 0
+
+
 class TestBulkApplyConfidenceScope:
     """bulk-apply must narrow to the same *bboxes* the confidence-filtered grid
     shows. The bboxConfidence filter TERM only selects images that have an

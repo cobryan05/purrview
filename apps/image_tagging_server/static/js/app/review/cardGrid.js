@@ -423,6 +423,24 @@ const CONFIDENCE_LOW = 0.5;
 const CONFIDENCE_HIGH = 0.8;
 
 /**
+ * The confidence to SHOW for a bbox, which is not always the one stored.
+ *
+ * A verified box shows none: once a human has confirmed the box, what the
+ * model originally guessed is noise. The DB enforces the same rule by dropping
+ * the metadata key on verify (`db_client._apply_verified_confidence_rule`), so
+ * this guard only matters for the window between toggling a card's verify chip
+ * and the next fetch — but in that window the badge is exactly what the user
+ * is looking at.
+ *
+ * @param {{metadataJson?: object, tags?: Array<{uuid: string}>}} bbox
+ * @returns {number|undefined}
+ */
+export function displayConfidence(bbox) {
+  if ((bbox.tags ?? []).some(t => t.uuid === VERIFIED_TAG_UUID)) return undefined;
+  return readConfidence(bbox.metadataJson);
+}
+
+/**
  * Badge showing a bbox's model confidence, overlaid on the crop thumbnail.
  *
  * Positioned against `.review-card` (which is `position: relative`), top-right,
@@ -433,7 +451,7 @@ const CONFIDENCE_HIGH = 0.8;
  * @returns {HTMLElement}
  */
 export function buildConfidenceBadge(bbox) {
-  const value = readConfidence(bbox.metadataJson);
+  const value = displayConfidence(bbox);
   const badge = document.createElement('div');
   const band = value < CONFIDENCE_LOW ? 'low' : (value < CONFIDENCE_HIGH ? 'mid' : 'high');
   badge.className = `bbox-confidence-badge conf-${band}`;
@@ -458,7 +476,7 @@ export function buildBboxCard(controller, entry, opts) {
   const bboxTagUuids = (bbox.tags ?? []).map(t => t.uuid);
   // Both keys, because both are in the data — see CONFIDENCE_KEYS. Reading only
   // one silently blanks the confidence on whole classes of bbox.
-  const confidence = formatConfidencePct(readConfidence(bbox.metadataJson));
+  const confidence = formatConfidencePct(displayConfidence(bbox));
 
   const card = document.createElement('div');
   card.className = 'review-card';
@@ -626,7 +644,7 @@ export function buildImageCard(controller, entry, opts) {
       // Per-box confidence, drawn on the box itself — on an image card the
       // card-info line below is whole-image, so this is the only place a
       // multi-box image can show which box scored what.
-      label: formatConfidencePct(readConfidence(bbox.metadataJson)),
+      label: formatConfidencePct(displayConfidence(bbox)),
     })));
   }
 

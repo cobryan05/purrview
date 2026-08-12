@@ -31,6 +31,7 @@ from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
 
 from .types import (
+    BBOX_CONFIDENCE_METADATA_KEYS,
     MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
     RETIRED_TAG_UUIDS,
@@ -122,6 +123,7 @@ from .types import (
     WatchProfileUpdate,
     WatchZone,
     WatchZoneWrite,
+    strip_bbox_confidence,
 )
 
 _SYSTEM_TAGS = [
@@ -1683,6 +1685,11 @@ class DbClient:
                 tags_by_uuid = {}
             final_uuids = self._resolve_exclusive_groups(tag_uuids, tags_by_uuid)
 
+            # After the tag list is final, and after any metadata replacement
+            # above: a box that ends this write Verified keeps no confidence,
+            # whether it was verified by this call or already was.
+            bbox.metadata_json = self._apply_verified_confidence_rule(bbox.metadata_json, final_uuids)
+
             await session.exec(delete(BBoxTagLink).where(BBoxTagLink.bbox_uuid == bbox_uuid))
             for tag_uuid in final_uuids:
                 session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
@@ -1726,6 +1733,34 @@ class DbClient:
             resolved.append(uuid)
         return resolved
 
+    @staticmethod
+    def _apply_verified_confidence_rule(
+        metadata_json: Optional[Dict[str, Any]],
+        final_tag_uuids: Sequence[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Enforce "a verified bbox stores no model confidence" on one bbox's metadata.
+
+        Returns the metadata to persist: the input unchanged when the box is not
+        verified (or carries no confidence anyway), a new dict without the
+        confidence keys when it is. Returning a NEW dict matters — SQLModel's
+        JSON column only detects a reassignment, not an in-place mutation.
+
+        Called at every point that writes a bbox's tags, since the trigger is a
+        tag change as often as a metadata change: marking an existing inferred
+        box Verified must drop the confidence it was created with, not just
+        hide it. `BBox.confidence` is a generated column over these same keys,
+        so removing them is what actually takes the box out of the confidence
+        band filter and off the cards.
+
+        NOTE: this is a one-way door by design. Un-verifying a box later does
+        not bring the old confidence back — it is gone from the row.
+        """
+        if VERIFIED_TAG_UUID not in final_tag_uuids:
+            return metadata_json
+        if not any(key in (metadata_json or {}) for key in BBOX_CONFIDENCE_METADATA_KEYS):
+            return metadata_json
+        return strip_bbox_confidence(metadata_json)
+
     async def add_single_bbox(
         self,
         image_uuid: str,
@@ -1747,6 +1782,13 @@ class DbClient:
         conflicts among tag_uuids are resolved the same way update_single_bbox does.
         """
         async with self._async_session_maker() as session:
+            final_uuids: List[str] = []
+            if tag_uuids:
+                tag_rows = await session.exec(select(Tag).where(Tag.uuid.in_(tag_uuids)))
+                tags_by_uuid = {t.uuid: t for t in tag_rows.all()}
+                final_uuids = self._resolve_exclusive_groups(tag_uuids, tags_by_uuid)
+            # Resolve the tags BEFORE building the row: a box inserted already
+            # Verified must not carry a confidence in the first place.
             session.add(
                 BBox(
                     uuid=bbox_uuid,
@@ -1756,14 +1798,11 @@ class DbClient:
                     y=y,
                     width=width,
                     height=height,
-                    metadata_json=metadata_json or {},
+                    metadata_json=self._apply_verified_confidence_rule(metadata_json, final_uuids) or {},
                 )
             )
-            if tag_uuids:
-                tag_rows = await session.exec(select(Tag).where(Tag.uuid.in_(tag_uuids)))
-                tags_by_uuid = {t.uuid: t for t in tag_rows.all()}
-                for tag_uuid in self._resolve_exclusive_groups(tag_uuids, tags_by_uuid):
-                    session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
+            for tag_uuid in final_uuids:
+                session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
             await self._touch_image(session, image_uuid)
             await session.commit()
 
@@ -1948,6 +1987,7 @@ class DbClient:
                 tags_by_uuid = {}
 
             for b in update.bboxes:
+                final_uuids = self._resolve_exclusive_groups(b.tag_uuids, tags_by_uuid)
                 session.add(
                     BBox(
                         uuid=b.uuid,
@@ -1957,10 +1997,10 @@ class DbClient:
                         y=b.y,
                         width=b.width,
                         height=b.height,
-                        metadata_json=b.metadata_json or {},
+                        metadata_json=self._apply_verified_confidence_rule(b.metadata_json, final_uuids) or {},
                     )
                 )
-                for tag_uuid in self._resolve_exclusive_groups(b.tag_uuids, tags_by_uuid):
+                for tag_uuid in final_uuids:
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
             # Touch the image so updated_at reflects the full bbox replacement.
             await self._touch_image(session, image_uuid)
