@@ -331,3 +331,59 @@ class TestGroupInsertEdgeCases:
         # model_label_config), not one per array field.
         insert_btns = page.locator("#task-config-list button", has_text="Insert models from stack")
         expect(insert_btns).to_have_count(1, timeout=5000)
+
+
+class TestArrayStructuralEditsMarkDirty:
+    """Structural edits to an array field (delete / reorder / add / group
+    insert) change what would be saved, so the editor bar must go dirty and
+    enable Save.
+
+    Regression: the task-config editor tracks dirty state by delegating native
+    `input`/`change` events on the form (`watchForEdits` in ui/tasks.js), and
+    these edits are button clicks that fire neither — so deleting or
+    rearranging entire models left the form looking pristine and Save
+    disabled, with no way to persist the change.
+    """
+
+    ENTRIES = [
+        {"modelName": MODEL_A, "labelValues": {CAT_UUID: 0.5}},
+        {"modelName": MODEL_B, "labelValues": {CAT_UUID: 0.5}},
+    ]
+
+    def _open(self, page: Page, base_url: str, entries=None, groups=None):
+        _mock_apis(
+            page,
+            configs={FAKE_CONFIG_UUID: _config(entries if entries is not None else self.ENTRIES)},
+            groups=groups if groups is not None else [],
+        )
+        _navigate_to_tasks(page, base_url)
+        _open_edit(page)
+        # Freshly opened form is clean.
+        expect(page.locator("[data-testid='panel-dirty-label']")).to_be_hidden()
+
+    def _expect_dirty(self, page: Page):
+        expect(page.locator("[data-testid='panel-dirty-label']")).to_be_visible(timeout=5000)
+        expect(page.locator("#task-config-list button", has_text="Save").first).to_be_enabled()
+
+    def test_deleting_an_entry_marks_dirty(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        page.locator("#task-config-list .array-field button[title='Delete']").first.click()
+        self._expect_dirty(page)
+
+    def test_reordering_entries_marks_dirty(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        # Second row's "Move up" is the first enabled one (row 0's is disabled).
+        page.locator("#task-config-list .array-field button[title='Move up']").nth(1).click()
+        self._expect_dirty(page)
+
+    def test_adding_an_entry_marks_dirty(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        page.locator("#task-config-list .array-field button[title='Add']").first.click()
+        self._expect_dirty(page)
+
+    def test_group_insert_marks_dirty(self, page: Page, base_url: str):
+        self._open(page, base_url, entries=[], groups=[_group(GROUP_UUID, "My Group", [MODEL_A])])
+        insert_btn = page.locator("#task-config-list button", has_text="Insert models from stack")
+        insert_btn.locator("xpath=preceding-sibling::select[1]").select_option(GROUP_UUID)
+        insert_btn.click()
+        self._expect_dirty(page)

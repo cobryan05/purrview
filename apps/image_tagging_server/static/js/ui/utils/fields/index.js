@@ -5,7 +5,7 @@ export { BboxInfoField } from './BboxInfoField.js';
 export { ColorSwatchField } from './ColorSwatchField.js';
 export { DropDownField } from './DropDownField.js';
 export { EditableField } from './EditableField.js';
-export { Field } from './Field.js';
+export { Field, FIELD_EDIT_EVENT, notifyFieldEdit } from './Field.js';
 export { GroupField } from './GroupField.js';
 export { LabelDropDownField } from './LabelDropDownField.js';
 export { ModelLabelSelectField } from './ModelLabelSelectField.js';

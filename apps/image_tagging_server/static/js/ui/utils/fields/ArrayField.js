@@ -1,4 +1,4 @@
-import { Field } from './Field.js';
+import { Field, notifyFieldEdit } from './Field.js';
 import { fieldFactories } from './Factories.js';
 
 import { createEmojiButton } from '/app-static/js/ui/utils/index.js';
@@ -38,9 +38,20 @@ export class ArrayField extends Field {
     return subfield;
   }
 
+  /**
+   * Structural edits (add / delete / reorder / group insert) happen on button
+   * clicks, which fire no native input/change event — so the form's dirty
+   * tracking never sees them unless the field announces the edit itself.
+   */
+  _emitStructuralEdit() {
+    this._onChange?.(this._value);
+    notifyFieldEdit(this._containerEl);
+  }
+
   async renderEdit() {
     const container = document.createElement('div');
     container.classList.add('array-field');
+    this._containerEl = container;
 
     // Ensure fields array matches value array
     this._fields = this._fields || [];
@@ -52,7 +63,7 @@ export class ArrayField extends Field {
       [this._value[from], this._value[to]] = [this._value[to], this._value[from]];
       [this._fields[from], this._fields[to]] = [this._fields[to], this._fields[from]];
       await renderItems();
-      this._onChange?.(this._value);
+      this._emitStructuralEdit();
     };
 
     const renderItems = async () => {
@@ -72,7 +83,7 @@ export class ArrayField extends Field {
             this._value.splice(idx, 1);
             this._fields.splice(idx, 1); // also remove corresponding subfield
             await renderItems();
-            this._onChange?.(this._value);
+            this._emitStructuralEdit();
           }
         });
         row.appendChild(deleteBtn);
@@ -105,7 +116,7 @@ export class ArrayField extends Field {
           this._value.push(null);
           this._fields.push(await this._makeSubfield(null));
           await renderItems();
-          this._onChange?.(this._value);
+          this._emitStructuralEdit();
         }
       });
 
@@ -198,7 +209,7 @@ export class ArrayField extends Field {
         this._fields.push(await this._makeSubfield(seed));
       }
       await renderItems();
-      this._onChange?.(this._value);
+      this._emitStructuralEdit();
     });
 
     row.appendChild(select);

@@ -2,7 +2,9 @@ import {
   cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus,
   pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig,
 } from '/app-static/js/shared/api/tasks.js';
-import { ActiveTaskField, TaskConfigField, TERMINAL_STATUSES } from '/app-static/js/ui/utils/fields/index.js';
+import {
+  ActiveTaskField, FIELD_EDIT_EVENT, TaskConfigField, TERMINAL_STATUSES,
+} from '/app-static/js/ui/utils/fields/index.js';
 import { confirmStartIfDirty, createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
@@ -23,12 +25,17 @@ let _navGuardController = null;
  * there is no single hook that fires for all of them, and the task-type dropdown
  * swaps the whole schema form out mid-edit.
  *
+ * Delegation only sees edits that fire a native event, so button-driven ones
+ * (ArrayField's add/delete/reorder/group-insert — e.g. rearranging the models on
+ * a CollectTrainingImagesTask) dispatch FIELD_EDIT_EVENT instead.
+ *
  * @param {HTMLElement} root
  * @param {() => void} onEdit
  */
 function watchForEdits(root, onEdit) {
   root.addEventListener('input', onEdit);
   root.addEventListener('change', onEdit);
+  root.addEventListener(FIELD_EDIT_EVENT, onEdit);
 }
 
 /**

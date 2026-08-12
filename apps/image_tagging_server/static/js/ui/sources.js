@@ -14,7 +14,7 @@ import { runPreviewSourceTest, showPaneError, toast } from './utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { createSource, deleteSources, fetchSourceList, updateSource } from '/app-static/js/shared/api/sources.js';
-import { SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
+import { FIELD_EDIT_EVENT, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -30,12 +30,16 @@ let _navGuardController = null;
  * `<textarea>`, so delegation catches all of them, including controls added
  * later when the provider dropdown swaps the schema.
  *
+ * The exception is button-driven edits (ArrayField's add/delete/reorder), which
+ * fire no native event — those fields dispatch FIELD_EDIT_EVENT themselves.
+ *
  * @param {HTMLElement} root
  * @param {() => void} onEdit
  */
 function watchForEdits(root, onEdit) {
   root.addEventListener('input', onEdit);
   root.addEventListener('change', onEdit);
+  root.addEventListener(FIELD_EDIT_EVENT, onEdit);
 }
 
 /**

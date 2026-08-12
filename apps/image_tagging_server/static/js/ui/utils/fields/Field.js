@@ -1,3 +1,19 @@
+/**
+ * Bubbling event a field fires when it changes its value without any native
+ * `input`/`change` event happening — button-driven edits like deleting,
+ * reordering or appending array rows.
+ *
+ * Form-level dirty tracking (`watchForEdits` in ui/tasks.js and ui/sources.js)
+ * is event delegation on the form root, so an edit that fires no event is
+ * invisible to it and the Save button stays disabled.
+ */
+export const FIELD_EDIT_EVENT = 'field-edit';
+
+/** Announce a non-native edit to whatever is watching the enclosing form. */
+export function notifyFieldEdit(el) {
+  el?.dispatchEvent(new CustomEvent(FIELD_EDIT_EVENT, { bubbles: true }));
+}
+
 export class Field {
   constructor({ value = null, options = [], placeholder = '', onChange = null, editMode = false } = {}) {
     this._value = value;
