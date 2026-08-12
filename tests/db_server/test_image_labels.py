@@ -1092,3 +1092,109 @@ class TestConcurrentSetImageLabelStatus:
         matching = [r for r in rows if r.label_uuid == label.uuid]
         assert len(matching) == 1
         assert matching[0].status in (ImageItemStatus.PRESENT, ImageItemStatus.ABSENT)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Removal actions — "delete" (file goes too) vs "removeFromDb" (file stays)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestBulkApplyImagesRemovalActions:
+    """The two removal actions differ only in what happens to the file on disk.
+
+    Both must drop the DB record, its bboxes and its JSON sidecar — dropping the
+    record while leaving the sidecar would let the next reconcile resurrect it.
+    """
+
+    async def _make_image(self, http_client, files_root, name, label_uuid=None):
+        (files_root / name).write_bytes(make_png())
+        boxes = (
+            []
+            if label_uuid is None
+            else [
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "labelUuid": label_uuid,
+                    "x": 0.1,
+                    "y": 0.1,
+                    "width": 0.2,
+                    "height": 0.2,
+                    "tagUuids": [VERIFIED_TAG_UUID],
+                }
+            ]
+        )
+        r = await _update_bboxes(http_client, name, boxes)
+        return r["image"]["uuid"]
+
+    async def test_remove_from_db_by_uuids_keeps_the_file(self, http_client, files_root, db_client, label_uuid):
+        name = "bulk_remove_keep.png"
+        image_uuid = await self._make_image(http_client, files_root, name, label_uuid)
+        img_path = files_root / name
+        sidecar = img_path.with_suffix(".json")
+        assert sidecar.exists()
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "removeFromDb"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["modifiedCount"] == 1
+        assert body["failCount"] == 0
+
+        assert await db_client.get_image_by_uuid(image_uuid) is None
+        assert img_path.exists(), "removeFromDb must leave the image file on disk"
+        assert not sidecar.exists(), "sidecar must go, or reconcile resurrects the record"
+
+    async def test_delete_by_uuids_removes_the_file(self, http_client, files_root, db_client, label_uuid):
+        """Contrast case, so a regression that aliases the two actions is caught."""
+        name = "bulk_remove_delete.png"
+        image_uuid = await self._make_image(http_client, files_root, name, label_uuid)
+        img_path = files_root / name
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "delete"},
+        )
+        assert r.status_code == 200
+        assert r.json()["modifiedCount"] == 1
+
+        assert await db_client.get_image_by_uuid(image_uuid) is None
+        assert not img_path.exists(), "delete must remove the image file"
+
+    async def test_remove_from_db_by_uuids_counts_a_missing_image_as_failed(self, http_client):
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [str(uuid.uuid4())], "action": "removeFromDb"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == 0
+        assert body["failCount"] == 1
+
+    async def test_remove_from_db_by_filter_keeps_the_files(self, http_client, files_root, db_client):
+        matching = ["remdb_match_a.png", "remdb_match_b.png"]
+        other = "remdb_other.png"
+        uuids = {}
+        for name in (*matching, other):
+            uuids[name] = await self._make_image(http_client, files_root, name)
+
+        r = await http_client.post(
+            "/api/images/bulk-apply",
+            json={
+                "filter": {"terms": [{"kind": "filename", "patterns": ["remdb_match"]}]},
+                "action": "removeFromDb",
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success"
+        assert body["modifiedCount"] == len(matching)
+        assert body["failCount"] == 0
+
+        for name in matching:
+            assert await db_client.get_image_by_uuid(uuids[name]) is None
+            assert (files_root / name).exists()
+            assert not (files_root / name).with_suffix(".json").exists()
+        assert await db_client.get_image_by_uuid(uuids[other]) is not None

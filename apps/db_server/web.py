@@ -180,7 +180,9 @@ class BulkApplyBboxesByUuidsPayload(ApiPayload):
 class BulkApplyImagesByUuidsPayload(ApiPayload):
     image_uuids: List[str]
     action: (
-        str  # setPresent | setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
+        # setPresent | setAbsent | setUncertain | delete | removeFromDb
+        # | addTags | removeTags | setTagAbsent | setTagUncertain
+        str
     )
     # A label action may target several labels in one pass.
     label_uuids: List[str] = Field(default_factory=list)
@@ -190,7 +192,9 @@ class BulkApplyImagesByUuidsPayload(ApiPayload):
 class BulkApplyImagesPayload(ApiPayload):
     filter: ImageSearchParams
     action: (
-        str  # setPresent | setAbsent | setUncertain | delete | addTags | removeTags | setTagAbsent | setTagUncertain
+        # setPresent | setAbsent | setUncertain | delete | removeFromDb
+        # | addTags | removeTags | setTagAbsent | setTagUncertain
+        str
     )
     label_uuids: List[str] = Field(default_factory=list)
     tag_uuids: List[str] = Field(default_factory=list)

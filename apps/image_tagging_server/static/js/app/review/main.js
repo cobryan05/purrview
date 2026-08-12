@@ -64,7 +64,7 @@ import { fetchViews, createDataset, updateDataset } from '/app-static/js/shared/
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
 import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
-import { showImageBulkActionModal, executeBulkImageAction } from '/app-static/js/app/review/imageBulkActionModal.js';
+import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, removeSingleImage } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
@@ -1359,22 +1359,31 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       // advisory (and may be pending or have failed), and "no matching images"
       // already implies no matching bboxes.
       bulkAllBtn.disabled = _totalCount === 0;
-      bulkAllImagesBtn.textContent = `Apply to Filtered Images (${imgCountStr})`;
+      // In bboxes view the same button acts on the images *containing* the
+      // matched bboxes (the filter already carries requireBboxes), so it is
+      // labelled for that scope rather than implying it acts on the bboxes.
+      bulkAllImagesBtn.textContent = _viewFilter === 'bboxes'
+        ? `Apply to Images Containing Filtered Bboxes (${imgCountStr})`
+        : `Apply to Filtered Images (${imgCountStr})`;
       bulkAllImagesBtn.disabled = _totalCount === 0;
-      // Each button is shown only in the view whose entries it acts on, so the
-      // action level always matches what's on screen; 'all' view offers both.
+      // bulkAllBtn is only shown in the view whose entries it acts on; the
+      // image-level button is offered everywhere, since acting on the images
+      // behind the visible bboxes is a legitimate move in bboxes view too.
       bulkAllBtn.hidden = _viewFilter === 'images';
-      bulkAllImagesBtn.hidden = _viewFilter === 'bboxes';
+      bulkAllImagesBtn.hidden = false;
     } else {
       // No server-side total in custom-fetchImages mode — the full candidate
       // count is only known once showApplyToAllCandidatesModal fetches it.
-      // That path resolves image-vs-bbox scope from the current view itself,
-      // so it stays visible in every view (and is the only bulk-all button
-      // there — the filter-based images one has no filter to reuse).
+      // That path resolves image-vs-bbox scope from the current view itself.
       bulkAllBtn.textContent = 'Apply to All';
       bulkAllBtn.disabled = _visibleEntries.length === 0;
       bulkAllBtn.hidden = false;
-      bulkAllImagesBtn.hidden = true;
+      // The filter-based path has no filter to reuse here, but the candidate
+      // list itself can still be collapsed to its distinct parent images, so
+      // bboxes view gets the image-level option in this mode too.
+      bulkAllImagesBtn.textContent = 'Apply to Images Containing Bboxes';
+      bulkAllImagesBtn.disabled = _visibleEntries.length === 0;
+      bulkAllImagesBtn.hidden = _viewFilter !== 'bboxes';
     }
   }
 
@@ -1997,33 +2006,29 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // never implies it's acting on bboxes.
   async function _runImageBulkAction(imageEntries, titleText = null) {
     await showImageBulkActionModal(imageEntries, labels, async (action, labelUuids, tagUuids) => {
-      if (action === 'delete') {
-        const n = imageEntries.length;
-        const noun = n === 1 ? 'image' : 'images';
-        const confirmed = await showConfirmModal({
-          title: `Delete ${n} ${noun}`,
-          message: `Permanently delete ${n} ${noun}? This removes the files and all their annotations from disk. This cannot be undone.`,
-          confirmText: 'Delete',
-          danger: true,
-        });
+      if (isRemovalAction(action)) {
+        // 'delete' takes the file with it; 'removeFromDb' leaves it on disk.
+        // Everything downstream (card staleness, IMAGE_DELETED) is identical —
+        // as far as the rest of the app is concerned the image is gone.
+        const confirmed = await confirmRemovalAction(action, imageEntries.length);
         if (!confirmed) return;
 
         let failCount = 0;
         for (const { img } of imageEntries) {
           try {
-            await deleteImage(img.uuid);
+            await removeSingleImage(action, img.uuid);
             const card = grid.querySelector(`[data-image-uuid="${img.uuid}"][data-kind="image"]`);
             if (card) markCardStale(card, 'deleted');
             events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
           } catch (err) {
-            Logger.error(`Delete image failed for ${img.uuid}: ${err.message}`);
+            Logger.error(`${action} image failed for ${img.uuid}: ${err.message}`);
             failCount++;
           }
         }
         clearSelection();
         updateStatusMsg();
         if (failCount > 0) {
-          statusMsg.textContent += ` (${failCount} deletion${failCount === 1 ? '' : 's'} failed — check console)`;
+          statusMsg.textContent += ` (${failCount} removal${failCount === 1 ? '' : 's'} failed — check console)`;
         }
         return;
       }
@@ -2134,7 +2139,11 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // All" instead fetches the already-known full candidate list in one call
   // and applies the action via a single bulk-by-uuid-list backend request —
   // not a loop of one HTTP call per item.
-  async function applyToAllCandidates() {
+  //
+  // With `parentImagesOfBboxes`, the candidate bboxes are resolved to their
+  // DISTINCT parent images and an image-level action is applied to those
+  // instead — the "Apply to Images Containing Bboxes" button in bboxes view.
+  async function applyToAllCandidates({ parentImagesOfBboxes = false } = {}) {
     statusMsg.classList.add('review-toolbar__status--loading');
     statusMsg.textContent = 'Loading candidates…';
     let images;
@@ -2151,13 +2160,18 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // render() uses) so the count + first-3/last-3 preview below reflect the
     // *filtered* candidate set, not the raw unfiltered fetch.
     const curatedImages = images.filter(img => imageMatchesFilter(img, _curated, labels));
-    const kind = cardGrid.selectionKind ?? (_viewFilter === 'images' ? 'image' : 'bbox');
-    const entries = kind === 'image'
-      ? curatedImages.map(img => ({ kind: 'image', img }))
-      : curatedImages.flatMap(img =>
-          (img.bboxes || [])
-            .filter(b => (!bboxFilterFn || bboxFilterFn(b)) && bboxMatchesFilter(b, _curated, labels))
-            .map(bbox => ({ kind: 'bbox', bbox, img })));
+    const kind = parentImagesOfBboxes
+      ? 'image'
+      : (cardGrid.selectionKind ?? (_viewFilter === 'images' ? 'image' : 'bbox'));
+    const bboxEntries = (!parentImagesOfBboxes && kind === 'image') ? [] : curatedImages.flatMap(img =>
+      (img.bboxes || [])
+        .filter(b => (!bboxFilterFn || bboxFilterFn(b)) && bboxMatchesFilter(b, _curated, labels))
+        .map(bbox => ({ kind: 'bbox', bbox, img })));
+    const entries = parentImagesOfBboxes
+      ? _distinctParentImageEntries(bboxEntries)
+      : kind === 'image'
+        ? curatedImages.map(img => ({ kind: 'image', img }))
+        : bboxEntries;
 
     if (entries.length === 0) {
       statusMsg.textContent = 'No candidates to apply to.';
@@ -2166,15 +2180,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     if (kind === 'image') {
       await showImageBulkActionModal(entries, labels, async (action, labelUuids, tagUuids) => {
-        if (action === 'delete') {
-          const n = entries.length;
-          const noun = n === 1 ? 'image' : 'images';
-          const confirmed = await showConfirmModal({
-            title: `Delete ${n} ${noun}`,
-            message: `Permanently delete ${n} ${noun} from the full candidate list? This removes the files and all their annotations from disk. This cannot be undone.`,
-            confirmText: 'Delete',
-            danger: true,
-          });
+        if (isRemovalAction(action)) {
+          const confirmed = await confirmRemovalAction(action, entries.length, 'from the full candidate list');
           if (!confirmed) return;
         }
         statusMsg.classList.add('review-toolbar__status--loading');
@@ -2186,7 +2193,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             labelUuids,
             tagUuids,
           });
-          if (action === 'delete') {
+          if (isRemovalAction(action)) {
             for (const { img } of entries) {
               events.publish(EventTypes.IMAGE_DELETED, { imageUuid: img.uuid, imagePath: img.filename });
             }
@@ -2201,7 +2208,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
           Logger.error('applyToAllCandidates (images) failed:', err);
         }
         await render();
-      }, `Apply to all ${entries.length.toLocaleString()} matched image${entries.length === 1 ? '' : 's'}`);
+      }, parentImagesOfBboxes
+        // Must never read as "N bboxes" — the two counts differ whenever an
+        // image holds more than one matched bbox.
+        ? `Apply to ${entries.length.toLocaleString()} distinct image${entries.length === 1 ? '' : 's'} `
+          + `(behind ${bboxEntries.length.toLocaleString()} matched bbox${bboxEntries.length === 1 ? '' : 'es'})`
+        : `Apply to all ${entries.length.toLocaleString()} matched image${entries.length === 1 ? '' : 's'}`);
     } else {
       await showBulkActionModal(entries, labels, async (action, newLabelUuid, selectedTagUuids) => {
         statusMsg.classList.add('review-toolbar__status--loading');
@@ -2243,7 +2255,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const sortBy = sortBySelect.value;
     const sortOrder = sortOrderSelect.value;
     const totalImageCount = _totalCount;
-    const titleText = `Apply to All ${totalImageCount.toLocaleString()} Filtered Image${totalImageCount === 1 ? '' : 's'}`;
+    // In bboxes view the scope is still images — the ones containing the
+    // matched bboxes (requireBboxes is already part of the filter below) — so
+    // the title says so rather than implying a bbox-level action.
+    const plural = totalImageCount === 1 ? '' : 's';
+    const titleText = _viewFilter === 'bboxes'
+      ? `Apply to All ${totalImageCount.toLocaleString()} Image${plural} Containing Filtered Bboxes`
+      : `Apply to All ${totalImageCount.toLocaleString()} Filtered Image${plural}`;
 
     // ── Preview section: first 3 / last 3 images of the filtered range ────
     // Fetched from the server rather than read off _visibleEntries so it shows
@@ -2281,14 +2299,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     });
 
     await showImageBulkActionModal([], labels, async (action, labelUuids, tagUuids) => {
-      if (action === 'delete') {
-        const confirmed = await showConfirmModal({
-          title: 'Delete All Matching Images',
-          message: `Permanently delete all ${totalImageCount.toLocaleString()} images matching the current filter, across all pages? `
-            + 'This removes the files and all their annotations from disk. This cannot be undone.',
-          confirmText: 'Delete',
-          danger: true,
-        });
+      if (isRemovalAction(action)) {
+        const confirmed = await confirmRemovalAction(action, totalImageCount, 'matching the current filter, across all pages');
         if (!confirmed) return;
       }
       statusMsg.classList.add('review-toolbar__status--loading');
@@ -2319,7 +2331,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     _populateImagePreviewRow(previewRow, first, last);
   }
 
-  bulkAllImagesBtn.addEventListener('click', applyToAllImagesByFilter);
+  bulkAllImagesBtn.addEventListener('click', () => {
+    // Same scope resolution as bulkAllBtn: filter mode re-derives the set
+    // server-side, candidate mode collapses the known bbox list to its images.
+    if (fetchImages) applyToAllCandidates({ parentImagesOfBboxes: true });
+    else applyToAllImagesByFilter();
+  });
 
   // ── Pagination ────────────────────────────────────────────────────
   prevBtn.addEventListener('click', () => {

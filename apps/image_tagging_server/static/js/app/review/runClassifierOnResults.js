@@ -12,11 +12,9 @@
 
 import { getImageThumbnailUrl } from '/app-static/js/shared/api/review.js';
 import { labelChip as _labelChip } from '/app-static/js/app/review/labelChip.js';
-import { showImageBulkActionModal, executeBulkImageAction } from '/app-static/js/app/review/imageBulkActionModal.js';
+import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, removeSingleImage, removalVerb } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
-import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
-import { deleteImage } from '/app-static/js/shared/api/images.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { createCardGrid } from '/app-static/js/app/review/cardGrid.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
@@ -353,29 +351,23 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
 
     await showImageBulkActionModal(entries, ctx.labels, async (action, labelUuids, tagUuids) => {
       try {
-        if (action === 'delete') {
-          const n = entries.length;
-          const noun = n === 1 ? 'image' : 'images';
-          const confirmed = await showConfirmModal({
-            title: `Delete ${n} ${noun}`,
-            message: `Permanently delete ${n} selected ${noun}? This removes the files and all their annotations from disk. This cannot be undone.`,
-            confirmText: 'Delete',
-            danger: true,
-          });
+        if (isRemovalAction(action)) {
+          const confirmed = await confirmRemovalAction(action, entries.length);
           if (!confirmed) return;
 
           let failCount = 0;
           for (const { img } of entries) {
             try {
-              await deleteImage(img.uuid);
+              await removeSingleImage(action, img.uuid);
             } catch (err) {
-              Logger.error(`Delete image failed for ${img.uuid}: ${err.message}`);
+              Logger.error(`${action} image failed for ${img.uuid}: ${err.message}`);
               failCount++;
             }
           }
           const succeeded = entries.length - failCount;
+          const verb = removalVerb(action);
           toast(
-            failCount > 0 ? `Deleted ${succeeded}/${entries.length} image(s), ${failCount} failed` : `Deleted ${succeeded} image(s)`,
+            failCount > 0 ? `${verb} ${succeeded}/${entries.length} image(s), ${failCount} failed` : `${verb} ${succeeded} image(s)`,
             4000,
             failCount > 0 ? 'warning' : 'success',
           );

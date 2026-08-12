@@ -782,9 +782,10 @@ class TestConfidenceBandReachesTheGridQuery:
 
 
 class TestBulkAllButtonViewGating:
-    """Each filter-scoped bulk button appears only in the view whose entries it
-    acts on — the bbox one applies bbox-level actions no matter what's on
-    screen, which is exactly the confusion the gating removes."""
+    """The bbox bulk button appears only in a view that shows bboxes — it applies
+    bbox-level actions no matter what's on screen, which is exactly the confusion
+    the gating removes. The image one is offered everywhere: in bboxes view it
+    acts on the images CONTAINING the matched bboxes, and says so."""
 
     def _setup(self, page: Page, base_url: str, bbox_count: int = 7):
         _mock_review_queue(page, PAGE_1_IMAGES, total_count=2)
@@ -809,12 +810,18 @@ class TestBulkAllButtonViewGating:
 
         expect(page.get_by_test_id("review-bulk-apply-all")).to_have_text("Apply to All Filtered Bboxes (7)")
 
-    def test_only_the_bbox_button_shows_in_bboxes_view(self, page: Page, base_url: str):
+    def test_bboxes_view_offers_both_buttons_with_a_containing_images_label(self, page: Page, base_url: str):
+        """The image button stays available in bboxes view (acting on the images
+        behind the matched bboxes), but must never read as if it acts on the
+        bboxes themselves — hence the distinct label and the image count (2),
+        not the bbox count (7)."""
         self._setup(page, base_url)
         _switch_view(page, "bboxes")
 
         expect(page.get_by_test_id("review-bulk-apply-all")).to_be_visible()
-        expect(page.get_by_test_id("review-bulk-apply-filtered-images")).to_be_hidden()
+        images_btn = page.get_by_test_id("review-bulk-apply-filtered-images")
+        expect(images_btn).to_be_visible()
+        expect(images_btn).to_have_text("Apply to Images Containing Filtered Bboxes (2)")
 
     def test_only_the_images_button_shows_in_images_view(self, page: Page, base_url: str):
         self._setup(page, base_url)
@@ -998,6 +1005,65 @@ class TestBulkImageAction:
         assert call["action"] == "setAbsent"
         assert call["labelUuids"] == ["lbl-cat"]
         assert sorted(call["imageUuids"]) == ["img-1", "img-2"]
+
+    def test_remove_from_db_hits_the_db_only_endpoint_not_the_destructive_delete(self, page: Page, base_url: str):
+        """'Remove Images from Database' must go to DELETE /api/images/<uuid>/db-only.
+        Falling through to the plain DELETE would silently erase the files the
+        user explicitly chose to keep."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+
+        db_only_calls = []
+        hard_delete_calls = []
+
+        def handle_db_only(route: Route):
+            db_only_calls.append(route.request.url)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "imageUuid": "x", "filename": "x.png"}),
+            )
+
+        def handle_hard_delete(route: Route):
+            hard_delete_calls.append(route.request.url)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "imageUuid": "x", "filename": "x.png"}),
+            )
+
+        page.route("**/api/images/*/db-only", handle_db_only)
+        page.route(
+            "**/api/images/*",
+            lambda route: (handle_hard_delete(route) if route.request.method == "DELETE" else route.fallback()),
+        )
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "images")
+
+        cards = page.locator("#review-root [data-testid='review-card']")
+        expect(cards).to_have_count(2)
+        for i in range(2):
+            cards.nth(i).locator("input[type=checkbox]").click()
+
+        page.get_by_test_id("review-bulk-apply").click()
+        page.locator("input[type=radio][value=removeFromDb]").click()
+        page.locator("div:has(> strong:text-is('Apply to 2 selected images')) button", has_text="Apply").click()
+
+        # Confirmation spells out that the files stay on disk.
+        confirm = page.locator("div", has_text="the image files stay on disk").last
+        expect(confirm).to_be_visible()
+        page.locator("button", has_text="Remove from DB").last.click()
+
+        wait_until(
+            page,
+            lambda: len(db_only_calls) >= 2,
+            lambda: f"Expected 2 db-only deletes, got {db_only_calls}",
+        )
+        assert sorted(u.rsplit("/", 2)[-2] for u in db_only_calls) == ["img-1", "img-2"]
+        assert hard_delete_calls == [], f"must not hit the file-deleting endpoint: {hard_delete_calls}"
 
 
 # ---------------------------------------------------------------------------

@@ -1078,6 +1078,13 @@ class Manager:
             rel_path = await self.delete_image_permanently(image_uuid)
             if rel_path is None:
                 raise ValueError(f"image {image_uuid} not found or already deleted")
+        elif action == "removeFromDb":
+            # Forget the image without touching the file: DB record + bboxes go
+            # away, the sidecar goes with them (otherwise reconcile resurrects
+            # the record), and the image file itself stays on disk.
+            rel_path = await self.delete_image_db_only(image_uuid)
+            if rel_path is None:
+                raise ValueError(f"image {image_uuid} not found or already removed")
         elif action == "setUncertain":
             await self._db_client.delete_image_labels(image_uuid, list(label_uuids))
         elif action == "addTags":

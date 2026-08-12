@@ -4,9 +4,12 @@
  * (e.g. runClassifierOnResults.js's classifier-match confirmation step).
  *
  * Supports the full image-level action set: label status (setPresent/setAbsent/
- * setUncertain), tags (addTags/removeTags/setTagAbsent/setTagUncertain), and delete.
+ * setUncertain), tags (addTags/removeTags/setTagAbsent/setTagUncertain), and the
+ * two removal actions (delete / removeFromDb).
  */
 
+import { deleteImage, deleteImageDbOnly } from '/app-static/js/shared/api/images.js';
+import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
@@ -20,6 +23,59 @@ import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSe
 
 export const TAG_ACTIONS = ['addTags', 'removeTags', 'setTagAbsent', 'setTagUncertain'];
 export const LABEL_ACTIONS = ['setPresent', 'setAbsent', 'setUncertain'];
+/**
+ * Actions that make the image disappear from the review set. Both drop the DB
+ * record (and its bboxes, tags and sidecar); they differ only in whether the
+ * image file on disk goes with it. Callers treat them alike for card staleness
+ * and IMAGE_DELETED bookkeeping, so they're grouped rather than special-cased
+ * one at a time.
+ */
+export const REMOVAL_ACTIONS = ['delete', 'removeFromDb'];
+
+export function isRemovalAction(action) {
+  return REMOVAL_ACTIONS.includes(action);
+}
+
+/**
+ * Confirm-modal for a removal action, with copy that spells out the disk-file
+ * consequence — the only difference between the two, and the one the user has
+ * to get right.
+ *
+ * @param {string} action  'delete' | 'removeFromDb'
+ * @param {number} count   how many images the action will hit
+ * @param {string} [scopeNote]  extra clause naming the scope, e.g.
+ *   'from the full candidate list' or 'matching the current filter, across all pages'
+ * @returns {Promise<boolean>}
+ */
+export function confirmRemovalAction(action, count, scopeNote = '') {
+  const n = count.toLocaleString();
+  const noun = count === 1 ? 'image' : 'images';
+  const scope = scopeNote ? ` ${scopeNote}` : '';
+  return action === 'delete'
+    ? showConfirmModal({
+        title: `Delete ${n} ${noun}`,
+        message: `Permanently delete ${n} ${noun}${scope}? This removes the files and all their annotations from disk. This cannot be undone.`,
+        confirmText: 'Delete',
+        danger: true,
+      })
+    : showConfirmModal({
+        title: `Remove ${n} ${noun} from Database`,
+        message: `Remove ${n} ${noun}${scope} from the database? Their bboxes, tags and label status are deleted `
+          + 'and the JSON sidecars are removed, but the image files stay on disk. This cannot be undone.',
+        confirmText: 'Remove from DB',
+        danger: true,
+      });
+}
+
+/** Per-image API call behind a removal action. */
+export function removeSingleImage(action, imageUuid) {
+  return action === 'delete' ? deleteImage(imageUuid) : deleteImageDbOnly(imageUuid);
+}
+
+/** Past-tense verb for status/toast copy after a removal action ran. */
+export function removalVerb(action) {
+  return action === 'delete' ? 'Deleted' : 'Removed from DB';
+}
 
 /**
  * @param {Array<{img: object}>} entries
@@ -42,8 +98,13 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
   overlay.style.zIndex = _layer.zIndex;
 
   const dialog = document.createElement('div');
+  // max-height/overflow are load-bearing, not cosmetic: #bottom-bars is fixed
+  // ABOVE the modal z-index band, so a dialog tall enough to reach the bottom
+  // of the viewport has its Apply row covered by the active-model bar and
+  // becomes unclickable. Bounding the height keeps the footer clear of it.
   dialog.style.cssText = `background:#222;border:1px solid #555;border-radius:6px;
-    padding:1.5em;min-width:380px;display:flex;flex-direction:column;gap:0.8em;`;
+    padding:1.5em;min-width:380px;display:flex;flex-direction:column;gap:0.8em;
+    max-height:85vh;overflow-y:auto;`;
 
   const title = document.createElement('strong');
   title.textContent = titleText ?? `Apply to ${entries.length} selected image${entries.length === 1 ? '' : 's'}`;
@@ -56,7 +117,8 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
     { value: 'removeTags', label: 'Remove Tags' },
     { value: 'setTagAbsent', label: 'Mark Tag Verified Absent' },
     { value: 'setTagUncertain', label: 'Clear Tag Verification → Uncertain' },
-    { value: 'delete', label: 'Delete Images' },
+    { value: 'delete', label: 'Delete Images (removes the files from disk)' },
+    { value: 'removeFromDb', label: 'Remove Images from Database (keeps the files on disk)' },
   ];
 
   const radioGroup = document.createElement('div');
