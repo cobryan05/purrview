@@ -6,7 +6,8 @@ directly into `_process_image` — no real inference server or db_client HTTP
 round-trip involved (mirrors ApplyFilterChainTask's test pattern).
 """
 
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -623,3 +624,208 @@ class TestPreviewRunPersistence:
         task = _make_task(_base_params(conflict_policy="middle"))
         with pytest.raises(ValueError, match="conflict_policy"):
             await task._init(task._params, None)
+
+
+class TestBatchConcurrency:
+    """The batch loop runs images concurrently (Semaphore + gather), mirroring
+    ApplyFilterChainTask. Inference is ~97% of the per-image cost and only ~2/3
+    of that round-trip is actual model work, so a serial loop leaves the shared
+    inference server idle between requests.
+    """
+
+    @staticmethod
+    def _patched_run(task, images, detect, monkeypatch, batch_size=None):
+        """Drive `_run()` with the DB/inference edges faked out.
+
+        Returns a context manager; `images` is the list of camelCase image dicts
+        `batch_images_by_uuids` should hand back, `detect` the coroutine standing
+        in for `_HttpInferenceBackend.detect`.
+        """
+        if batch_size is not None:
+            monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask._IMAGE_BATCH_SIZE", batch_size)
+
+        by_uuid = {img["uuid"]: img for img in images}
+
+        class _FakeImagesApi:
+            def __init__(self, _client):
+                pass
+
+            def batch_images_by_uuids(self, payload):
+                return MagicMock(images=[by_uuid[u] for u in payload.image_uuids if u in by_uuid])
+
+        class _FakeLabelsApi:
+            def __init__(self, _client):
+                pass
+
+            def list_labels(self):
+                return MagicMock(labels=[MagicMock(uuid="cat", name="Cat"), MagicMock(uuid="dog", name="Dog")])
+
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.ImagesApi", _FakeImagesApi)
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.LabelsApi", _FakeLabelsApi)
+        # Reads the model's sidecar off disk; nothing on disk in a unit test.
+        monkeypatch.setattr(
+            "apps.tasks_server.tasks.PreviewModelRelabelTask._read_model_kind", lambda _n: "object_detector"
+        )
+        task._pin_model = AsyncMock()
+        task._load_image_bytes = AsyncMock(return_value=b"fake-jpeg")
+        return patch("apps.tasks_server.tasks.PreviewModelRelabelTask._HttpInferenceBackend.detect", new=detect)
+
+    @staticmethod
+    def _images(count):
+        return [
+            _image(uuid=f"img-{i}", filename=f"img_{i}.jpg", bboxes=[_bbox(uuid=f"bbox-{i}", label_uuid="cat")])
+            for i in range(count)
+        ]
+
+    async def test_counters_match_serial_over_many_images(self, monkeypatch):
+        """Out-of-order completion must not disturb the totals, including across
+        a batch boundary that isn't a divisor of the image count."""
+        count = 12
+        images = self._images(count)
+
+        async def _detect(self, model_name, image_bytes, conf_thresh):
+            return [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="dog", class_str=None)]
+
+        task = _make_task(
+            _base_params(
+                image_uuids=[f"img-{i}" for i in range(count)],
+                bbox_uuids=[f"bbox-{i}" for i in range(count)],
+                concurrency=4,
+            )
+        )
+        await task._init(task._params, None)
+        with self._patched_run(task, images, _detect, monkeypatch, batch_size=5):
+            result = await task._run()
+
+        assert result["images_processed"] == count
+        assert result["images_failed"] == 0
+        # Every bbox is labelled "cat" and every detection proposes "dog", so
+        # each image yields exactly one candidate relabel.
+        assert result["candidate_count"] == count
+        assert len(task._processed_image_uuids) == count
+
+    async def test_images_actually_overlap(self, monkeypatch):
+        """The point of the change: prove more than one image is in flight at
+        once, so this can't silently regress to serial and still pass."""
+        count = 8
+        images = self._images(count)
+
+        in_flight = 0
+        max_in_flight = 0
+
+        async def _slow_detect(self, model_name, image_bytes, conf_thresh):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            try:
+                await asyncio.sleep(0.01)  # a yield point, standing in for the HTTP round-trip
+                return []
+            finally:
+                in_flight -= 1
+
+        task = _make_task(
+            _base_params(
+                image_uuids=[f"img-{i}" for i in range(count)],
+                bbox_uuids=[f"bbox-{i}" for i in range(count)],
+                concurrency=4,
+            )
+        )
+        await task._init(task._params, None)
+        with self._patched_run(task, images, _slow_detect, monkeypatch, batch_size=8):
+            result = await task._run()
+
+        assert result["images_processed"] == count
+        assert max_in_flight > 1, "images ran serially — the concurrency change has regressed"
+        assert max_in_flight <= 4, f"semaphore breached: {max_in_flight} in flight with concurrency=4"
+
+    async def test_concurrency_is_clamped_to_at_least_one(self, monkeypatch):
+        """A 0 or negative param would make asyncio.Semaphore(0) block forever,
+        hanging the batch loop with no way out."""
+        images = self._images(2)
+
+        async def _detect(self, model_name, image_bytes, conf_thresh):
+            return []
+
+        task = _make_task(_base_params(image_uuids=["img-0", "img-1"], bbox_uuids=["bbox-0", "bbox-1"], concurrency=0))
+        await task._init(task._params, None)
+        assert task._concurrency == 1
+        with self._patched_run(task, images, _detect, monkeypatch):
+            result = await asyncio.wait_for(task._run(), timeout=10)
+
+        assert result["images_processed"] == 2
+
+    async def test_defaults_to_the_shared_concurrency(self):
+        from apps.tasks_server.tasks.PreviewModelRelabelTask import _DEFAULT_CONCURRENCY
+
+        task = _make_task(_base_params())
+        await task._init(task._params, None)
+        assert task._concurrency == _DEFAULT_CONCURRENCY
+
+    async def test_one_failing_image_does_not_abort_its_batch(self, monkeypatch):
+        """gather() would propagate the first exception and lose the rest of the
+        batch — each image has to catch its own."""
+        count = 6
+        images = self._images(count)
+
+        async def _detect(self, model_name, image_bytes, conf_thresh):
+            return []
+
+        task = _make_task(
+            _base_params(
+                image_uuids=[f"img-{i}" for i in range(count)],
+                bbox_uuids=[f"bbox-{i}" for i in range(count)],
+                concurrency=4,
+            )
+        )
+        await task._init(task._params, None)
+
+        real_load = task._load_image_bytes
+
+        async def _load(filename, images_api):
+            if filename == "img_3.jpg":
+                raise FileNotFoundError(filename)
+            return b"fake-jpeg"
+
+        with self._patched_run(task, images, _detect, monkeypatch, batch_size=6):
+            task._load_image_bytes = _load
+            result = await task._run()
+
+        assert result["images_failed"] == 1
+        # Still visited (and checkpointed) — a failure is not a reason to retry
+        # the image forever on every resume.
+        assert result["images_processed"] == count
+        assert any("img_3.jpg" in e for e in result["sample_errors"])
+
+    async def test_cancel_mid_batch_leaves_unvisited_images_out_of_the_checkpoint(self, monkeypatch):
+        """Images skipped by the cancel check must not be marked processed, or a
+        resumed run would silently never look at them."""
+        count = 8
+        images = self._images(count)
+
+        started = 0
+
+        async def _detect(self, model_name, image_bytes, conf_thresh):
+            nonlocal started
+            started += 1
+            if started == 1:
+                task._cancel_flag.set()
+            await asyncio.sleep(0)
+            return []
+
+        task = _make_task(
+            _base_params(
+                image_uuids=[f"img-{i}" for i in range(count)],
+                bbox_uuids=[f"bbox-{i}" for i in range(count)],
+                concurrency=2,
+            )
+        )
+        await task._init(task._params, None)
+        with self._patched_run(task, images, _detect, monkeypatch, batch_size=8):
+            result = await task._run()
+
+        assert result["images_processed"] < count, "cancel did not stop the batch"
+        # The two invariants a resume depends on: the counter and the visited set
+        # agree, and nothing unvisited was checkpointed.
+        assert result["images_processed"] == len(task._processed_image_uuids)
+        resume = task._build_resume_data()
+        assert len(resume["processed_image_uuids"]) == result["images_processed"]

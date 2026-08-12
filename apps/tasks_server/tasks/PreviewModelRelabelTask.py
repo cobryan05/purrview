@@ -86,6 +86,16 @@ _IMAGE_BATCH_SIZE = 32
 # in-memory buffer (and therefore what a crash loses) small.
 _CANDIDATE_FLUSH_SIZE = 500
 
+# Images in flight at once (see self._concurrency). Same default, and for the
+# same reason, as ApplyFilterChainTask: inference is ~97% of the per-image cost
+# here (a measured ~35ms round-trip against ~1ms of file read + base64), and
+# only ~22ms of that round-trip is ONNX work, so a serial loop leaves the
+# inference server idle between requests. Measured against the live server,
+# throughput goes 30 -> 62 -> 72 img/s at concurrency 1 -> 2 -> 4 and then
+# plateaus (8 gives no further gain) — 4 is the knee, past which the shared
+# inference server, not this task, is the limit.
+_DEFAULT_CONCURRENCY = 4
+
 
 @register_task()
 class PreviewModelRelabelTask(Task):
@@ -134,6 +144,9 @@ class PreviewModelRelabelTask(Task):
         # docstring for why this does not violate the "never writes to the DB"
         # invariant.
         self._preview_run_uuid: Optional[str] = params.get("preview_run_uuid") or None
+        # Clamped to >= 1: asyncio.Semaphore(0) would block the batch loop forever.
+        self._concurrency: int = max(1, int(params.get("concurrency", _DEFAULT_CONCURRENCY)))
+
         self._conflict_policy: str = str(params.get("conflict_policy") or "last")
         if self._conflict_policy not in ("last", "first"):
             raise ValueError(f"conflict_policy must be 'last' or 'first', got {self._conflict_policy!r}")
@@ -220,11 +233,34 @@ class PreviewModelRelabelTask(Task):
                 continue
 
             images_by_uuid = {img.get("uuid"): img for img in images_data}
-            for image_uuid in batch:
-                if self._cancel_flag.is_set():
-                    break
-                img = images_by_uuid.get(image_uuid)
-                if img is not None:
+
+            # Images within a batch are independent (each one only reads its own
+            # bboxes and appends its own candidates), so they run concurrently to
+            # keep several requests queued at the inference server instead of
+            # leaving it idle between round-trips. The batch boundary stays a hard
+            # sync point: every image finishes before the flush + checkpoint below,
+            # so resume semantics are unchanged by the out-of-order completion.
+            #
+            # Candidates therefore accumulate in completion order rather than
+            # image order. That is safe for `conflict_policy`, which arbitrates
+            # between *different models* sharing one preview run — within a single
+            # run each candidate bbox is visited exactly once (it belongs to one
+            # image), so no two candidates here contend for the same row.
+            semaphore = asyncio.Semaphore(self._concurrency)
+
+            async def _run_one(image_uuid: str) -> bool:
+                """True = this image was visited (count it as processed); False =
+                skipped because the task was cancelled mid-batch, so it must stay
+                out of the checkpoint and be retried on resume."""
+                async with semaphore:
+                    if self._cancel_flag.is_set():
+                        return False
+                    img = images_by_uuid.get(image_uuid)
+                    if img is None:
+                        self._images_failed += 1
+                        if len(self._sample_errors) < 5:
+                            self._sample_errors.append(f"{image_uuid}: not found in batch_images_by_uuids response")
+                        return True
                     try:
                         await self._process_image(images_api, backend, img, label_names)
                     except Exception as e:
@@ -232,12 +268,13 @@ class PreviewModelRelabelTask(Task):
                         self._images_failed += 1
                         if len(self._sample_errors) < 5:
                             self._sample_errors.append(f"{image_uuid}: {e}")
-                else:
-                    self._images_failed += 1
-                    if len(self._sample_errors) < 5:
-                        self._sample_errors.append(f"{image_uuid}: not found in batch_images_by_uuids response")
-                self._images_processed += 1
-                self._processed_image_uuids.add(image_uuid)
+                    return True
+
+            visited = await asyncio.gather(*(_run_one(u) for u in batch))
+            for image_uuid, was_visited in zip(batch, visited):
+                if was_visited:
+                    self._images_processed += 1
+                    self._processed_image_uuids.add(image_uuid)
 
             # Before the checkpoint below, so a resume never re-inserts what has
             # already landed in the run.
@@ -604,6 +641,7 @@ class PreviewModelRelabelTask(Task):
                     "add_new",
                     "conf_thresh",
                     "iou_thresh",
+                    "concurrency",
                     "image_uuids",
                     "bbox_uuids",
                     "preview_run_uuid",
@@ -652,6 +690,15 @@ class PreviewModelRelabelTask(Task):
                 "max": 1.0,
                 "step": 0.05,
                 "description": "Minimum IoU for a detection to match an existing bbox. Ignored in 'bbox' crop_mode.",
+            },
+            "concurrency": {
+                "type": "int",
+                "label": "Concurrency",
+                "default": _DEFAULT_CONCURRENCY,
+                "description": (
+                    "Images processed in parallel. Higher keeps the GPU busier, up to what the "
+                    "inference server can absorb."
+                ),
             },
             "image_uuids": {
                 "type": "list",
