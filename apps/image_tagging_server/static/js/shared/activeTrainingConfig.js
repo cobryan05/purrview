@@ -1,8 +1,15 @@
 /**
- * Active Training Config — session-scoped singleton.
+ * Active Training Config — app-wide singleton.
  *
- * Tracks which training config the user is working toward during a session,
- * driving label-list filtering and the coverage stats popup in the bottom bar.
+ * Tracks which training config the user is working toward, driving label-list
+ * filtering and the coverage stats popup in the bottom bar.
+ *
+ * The active config and the *target* preset (plus the hand-picked selection
+ * behind 'custom') persist across browser sessions: together they decide what
+ * the bulk "Mark absent" / "Reset" buttons hit, and silently widening that back
+ * to every label at the start of each session makes the first bulk op of the
+ * day mark more than the user lined up. Label *visibility* stays per-tab —
+ * it hides rows, it doesn't change what an action touches.
  *
  * Usage:
  *   import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
@@ -21,7 +28,7 @@
  */
 
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { sessionPrefs } from '/app-static/js/shared/prefs.js';
+import { prefs, sessionPrefs } from '/app-static/js/shared/prefs.js';
 import {
   fetchTrainingConfigs,
   fetchTrainingConfigLabelStats,
@@ -29,11 +36,18 @@ import {
 } from '/app-static/js/shared/api/trainingConfigs.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 
-const SESSION_UUID_KEY = 'wtch_active_tc_uuid';
 const SESSION_FILTER_KEY = 'wtch_tc_filter_enabled';   // legacy 3-mode value — read once for migration
 const SESSION_VIS_KEY = 'wtch_tc_visibility_preset';
-const SESSION_TARGET_KEY = 'wtch_tc_target_preset';
-const SESSION_CUSTOM_KEY = 'wtch_tc_custom_targeted';  // JSON array of hand-picked targeted UUIDs (custom preset)
+// The active run and targeting live in localStorage, not sessionStorage: what
+// "Apply to all" covers is a destructive-op blast radius, and silently
+// reverting it to "every label" at the start of each session means the first
+// bulk op of the day marks more than the user intends. The 'training-run'
+// target preset in particular is only meaningful while its run is active, so
+// the two have to persist together. Same key names as the old session-scoped
+// ones, which are read once as a migration path.
+const TC_UUID_KEY = 'wtch_active_tc_uuid';
+const TARGET_KEY = 'wtch_tc_target_preset';
+const CUSTOM_KEY = 'wtch_tc_custom_targeted';          // JSON array of hand-picked targeted UUIDs (custom preset)
 
 /**
  * The two independent axes that used to be conflated in a single 3-way toggle:
@@ -130,31 +144,52 @@ function _publish({ statsUpdated = false } = {}) {
 /** Initialise from sessionStorage. Call once at app startup before rendering. */
 export async function init() {
   // Presets are stored as bare strings ('all', 'training-run', …), not JSON.
+  // The two axes are read independently — visibility is per-tab, targeting is
+  // persistent — so a missing one never discards the other.
+  // Legacy 3-mode toggle (all | focus | filtered, plus the even-older
+  // true/false boolean), decomposed into the two axes when neither is set.
+  const legacy = sessionPrefs.readRaw(SESSION_FILTER_KEY);
+  const legacyMode = legacy === 'true' ? 'filtered' : legacy === 'false' ? 'all' : legacy;
+
   const savedVis = sessionPrefs.readRaw(SESSION_VIS_KEY);
-  const savedTarget = sessionPrefs.readRaw(SESSION_TARGET_KEY);
-  if (VISIBILITY_PRESETS.includes(savedVis) && TARGET_PRESETS.includes(savedTarget)) {
-    _visibilityPreset = savedVis;
+  if (VISIBILITY_PRESETS.includes(savedVis)) _visibilityPreset = savedVis;
+  else _visibilityPreset = legacyMode === 'filtered' ? 'training-run' : 'all';
+
+  let savedTarget = prefs.readRaw(TARGET_KEY);
+  let savedCustom = prefs.read(CUSTOM_KEY, null);
+  if (!TARGET_PRESETS.includes(savedTarget)) {
+    // One-time migration from when targeting was session-scoped.
+    const priorTarget = sessionPrefs.readRaw(TARGET_KEY);
+    if (TARGET_PRESETS.includes(priorTarget)) {
+      savedTarget = priorTarget;
+      savedCustom = sessionPrefs.read(CUSTOM_KEY, null);
+      prefs.writeRaw(TARGET_KEY, savedTarget);
+      if (Array.isArray(savedCustom)) prefs.write(CUSTOM_KEY, savedCustom);
+    }
+  }
+  if (TARGET_PRESETS.includes(savedTarget)) {
     _targetPreset = savedTarget;
     if (_targetPreset === 'custom') {
-      const arr = sessionPrefs.read(SESSION_CUSTOM_KEY, []);
-      _customTargeted = Array.isArray(arr) ? new Set(arr) : new Set();
+      _customTargeted = Array.isArray(savedCustom) ? new Set(savedCustom) : new Set();
     }
   } else {
-    // Migrate from the legacy 3-mode toggle (all | focus | filtered, plus the
-    // even-older true/false boolean). Decompose it into the two new axes.
-    const legacy = sessionPrefs.readRaw(SESSION_FILTER_KEY);
-    const mode = legacy === 'true' ? 'filtered' : legacy === 'false' ? 'all' : legacy;
-    if (mode === 'filtered') { _visibilityPreset = 'training-run'; _targetPreset = 'training-run'; }
-    else if (mode === 'focus') { _visibilityPreset = 'all'; _targetPreset = 'training-run'; }
-    else { _visibilityPreset = 'all'; _targetPreset = 'all'; }
+    _targetPreset = (legacyMode === 'filtered' || legacyMode === 'focus') ? 'training-run' : 'all';
   }
-  const savedUuid = sessionPrefs.readRaw(SESSION_UUID_KEY);
+  // Same one-time migration as the target preset: an older build parked the
+  // active run in sessionStorage.
+  let savedUuid = prefs.readRaw(TC_UUID_KEY);
+  if (!savedUuid) {
+    savedUuid = sessionPrefs.readRaw(TC_UUID_KEY);
+    if (savedUuid) prefs.writeRaw(TC_UUID_KEY, savedUuid);
+  }
   if (savedUuid) {
     try {
       const configsMap = await fetchTrainingConfigs();
       _config = configsMap.get(savedUuid) ?? null;
       if (!_config) {
-        sessionPrefs.remove(SESSION_UUID_KEY);
+        // The run was deleted since it was picked — drop the stale pointer so
+        // it doesn't get retried on every boot from here on.
+        prefs.remove(TC_UUID_KEY);
       } else {
         _labelUuids = await _computeLabelUuids(_config);
         // Kick off stats fetch in the background after init
@@ -182,13 +217,16 @@ export async function setActive(tcOrNull) {
   _readiness = null;
   _readinessFailed = false;
   if (_config) {
-    sessionPrefs.writeRaw(SESSION_UUID_KEY, _config.uuid);
+    prefs.writeRaw(TC_UUID_KEY, _config.uuid);
     _labelUuids = await _computeLabelUuids(_config);
     _publish();
     _doFetchStats(); // fire-and-forget; will publish again when done
   } else {
     _labelUuids = new Set();
-    sessionPrefs.remove(SESSION_UUID_KEY);
+    prefs.remove(TC_UUID_KEY);
+    // A run explicitly deactivated must not come back on the next boot via the
+    // sessionStorage migration path.
+    sessionPrefs.remove(TC_UUID_KEY);
     _publish();
   }
 }
@@ -211,11 +249,11 @@ export function getTargetPreset() { return _targetPreset; }
 export function setTargetPreset(preset) {
   if (!TARGET_PRESETS.includes(preset)) return;
   _targetPreset = preset;
-  sessionPrefs.writeRaw(SESSION_TARGET_KEY, preset);
+  prefs.writeRaw(TARGET_KEY, preset);
   // Picking any named preset discards a prior hand-picked selection.
   if (preset !== 'custom') {
     _customTargeted = new Set();
-    sessionPrefs.remove(SESSION_CUSTOM_KEY);
+    prefs.remove(CUSTOM_KEY);
   }
   _publish();
 }
@@ -225,16 +263,17 @@ export function getCustomTargeted() { return new Set(_customTargeted); }
 
 /**
  * Record a hand-picked targeting selection and switch to the 'custom' preset.
- * Persists to sessionStorage so it survives remounts, but intentionally does
- * NOT publish ACTIVE_TRAINING_CONFIG_CHANGED — toggling a single row must not
- * trigger a label-list remount (which would wipe in-progress interaction).
+ * Persists to localStorage so it survives both remounts and browser sessions,
+ * but intentionally does NOT publish ACTIVE_TRAINING_CONFIG_CHANGED — toggling
+ * a single row must not trigger a label-list remount (which would wipe
+ * in-progress interaction).
  * @param {Iterable<string>} uuids  UUIDs currently targeted
  */
 export function applyCustomTargeting(uuids) {
   _customTargeted = new Set(uuids);
   _targetPreset = 'custom';
-  sessionPrefs.writeRaw(SESSION_TARGET_KEY, 'custom');
-  sessionPrefs.write(SESSION_CUSTOM_KEY, [..._customTargeted]);
+  prefs.writeRaw(TARGET_KEY, 'custom');
+  prefs.write(CUSTOM_KEY, [..._customTargeted]);
 }
 
 /** Returns cached label stats, or null if not yet fetched. */
