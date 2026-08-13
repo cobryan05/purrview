@@ -366,3 +366,12 @@ export const fieldFactories = {
 // "Unhandled type" text field in SchemaField._createInputField.
 fieldFactories.number = fieldFactories.int;
 fieldFactories.float = fieldFactories.int;
+
+// Python-spelled aliases. `params_schema()` is written in Python, so schema authors
+// reach for the builtin's name — StreamWatcherTask's DRY_RUN was declared `bool` and
+// rendered as a *text box* reading "Unhandled type: bool", which silently coerces to a
+// truthy string. `str` had the same mismatch (TrainModelTask, RunClassifierTask); its
+// fallback happened to be a text input too, so it only ever looked ugly.
+// Accepting both spellings is cheaper than policing the naming across every task.
+fieldFactories.bool = fieldFactories.boolean;
+fieldFactories.str = fieldFactories.string;

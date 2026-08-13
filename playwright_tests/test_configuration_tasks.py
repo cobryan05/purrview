@@ -1332,3 +1332,49 @@ class TestTagsSchemaField:
         editor.locator(".ms-dropdown__trigger").click()
         expect(editor.locator(".ms-dropdown__empty")).to_be_visible()
         expect(editor.locator(".ms-dropdown__empty")).to_contain_text("No tags defined yet")
+
+
+# Python spells these types `bool` and `str`; the JS factory table was keyed only on
+# `boolean` and `string`. StreamWatcherTask declares `dry_run` as `bool`, so its config
+# form rendered a *text box* placeheld "Unhandled type: bool" — which then round-trips a
+# truthy string into a flag meant to suppress every MQTT publish and clip write.
+PY_SPELLED_SCHEMA = {
+    "meta": {"order": ["dry_run", "note"]},
+    "dry_run": {
+        "type": "bool",
+        "label": "Dry run",
+        "description": "Evaluate rules but perform no actions.",
+        "default": False,
+    },
+    "note": {"type": "str", "label": "Note", "description": "Free text."},
+}
+
+
+class TestPythonSpelledSchemaTypes:
+    def _open_form(self, page: Page, base_url: str):
+        _mock_task_types(page)
+        _mock_task_schema(page, PY_SPELLED_SCHEMA)
+        _mock_task_configs(page, {})
+        _mock_active_tasks(page, {})
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        _type_select(page).select_option(TASK_TYPE)
+        page.wait_for_timeout(1000)
+        return page.locator("#task-config-list .le-editor")
+
+    def test_bool_renders_a_checkbox_not_a_text_box(self, page: Page, base_url: str):
+        editor = self._open_form(page, base_url)
+        expect(editor.locator(".schema-form input[type='checkbox']")).to_have_count(1)
+
+    def test_no_unhandled_type_placeholder_is_shown(self, page: Page, base_url: str):
+        """The fallback field advertises the bug in its own placeholder."""
+        editor = self._open_form(page, base_url)
+        placeholders = editor.locator(".schema-form [placeholder*='Unhandled type']")
+        expect(placeholders).to_have_count(0)
+
+    def test_bool_is_not_double_labelled(self, page: Page, base_url: str):
+        """`bool` must join `boolean` in SELF_LABELLING_TYPES, or the checkbox comes
+        back as the three-line block that set has always existed to prevent."""
+        editor = self._open_form(page, base_url)
+        expect(editor.locator(".schema-field--self-labelled")).to_have_count(1)
+        expect(editor.locator(".schema-field--self-labelled .schema-field__label")).to_have_count(0)

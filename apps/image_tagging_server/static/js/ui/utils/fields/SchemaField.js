@@ -67,8 +67,13 @@ export class SchemaField extends Field {
    * BooleanCheckboxField, which draws that text beside the checkbox — the
    * schema-level label above it was a duplicate, and turned every one-line
    * toggle into a three-line block.
+   *
+   * 'bool' is the Python-spelled alias of 'boolean' (see the alias block at the
+   * foot of Factories.js) and must appear here too — routing it to the checkbox
+   * factory while omitting it from this set is exactly how it would come back as
+   * the three-line block described above.
    */
-  static SELF_LABELLING_TYPES = new Set(['boolean', 'bbox_info']);
+  static SELF_LABELLING_TYPES = new Set(['boolean', 'bool', 'bbox_info']);
 
   /**
    * Renders the form children using the callback for each item.
