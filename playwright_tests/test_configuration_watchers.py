@@ -345,3 +345,110 @@ class TestZonesModal:
 
         page.locator("[data-testid='watch-zones-save']").click()
         expect(zones_btn).to_contain_text("Zones (2)")
+
+
+class TestWatcherEditorDensity:
+    """The editor's controls are bare Pico form elements, and Pico ships
+    `input, select { width: 100% }`. Left alone, every control in a row claims the
+    full width and drops onto its own line: the rule sentence — five short words —
+    became five stacked lines, and one rule filled the viewport with whitespace.
+
+    These bounds are deliberately loose. They are not pixel-perfect design assertions;
+    they fail only if a control goes full-width again, which is the one regression that
+    made this pane unusable.
+    """
+
+    def _open_profile(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_the_rule_sentence_sits_on_one_line(self, page: Page, base_url: str):
+        """ "When [cat] [is inside] [Zone] [litter box]" reads as a sentence only while
+        its selects share a line — the whole point of the sentence layout."""
+        self._open_profile(page, base_url)
+        tops = page.locator(".watch-rule-sentence select").evaluate_all(
+            "els => els.map(e => Math.round(e.getBoundingClientRect().top))"
+        )
+        assert len(tops) >= 3, f"expected the sentence's selects, got {tops}"
+        assert len(set(tops)) == 1, f"the rule sentence wrapped onto several lines: tops={tops}"
+
+    def test_a_rule_row_does_not_fill_the_screen(self, page: Page, base_url: str):
+        self._open_profile(page, base_url)
+        box = page.locator("[data-testid='watch-rule-row']").first.bounding_box()
+        assert box["height"] < 150, f"a single rule row is {box['height']}px tall"
+
+    def test_source_and_action_rows_are_single_line(self, page: Page, base_url: str):
+        self._open_profile(page, base_url)
+        for testid in ("watch-source-row", "watch-action-row"):
+            box = page.locator(f"[data-testid='{testid}']").first.bounding_box()
+            assert box["height"] < 90, f"{testid} is {box['height']}px tall"
+
+    def test_a_small_profile_fits_without_scrolling(self, page: Page, base_url: str):
+        """One source, one rule and one action used to overflow the editor pane."""
+        self._open_profile(page, base_url)
+        body = page.locator("#watcher-management-box .le-editor-body").first
+        overflow = body.evaluate("e => e.scrollHeight - e.clientHeight")
+        assert overflow <= 2, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
+
+    def test_checkboxes_keep_their_box(self, page: Page, base_url: str):
+        """Overriding Pico's explicit checkbox width collapses it to a thin bar."""
+        self._open_profile(page, base_url)
+        box = page.locator(".watch-identity input[type='checkbox']").first.bounding_box()
+        assert box["width"] > 8, f"the Enabled checkbox is {box['width']}px wide"
+        assert abs(box["width"] - box["height"]) < 4, f"checkbox is not square: {box}"
+
+
+class TestZonesReachTheRules:
+    """A zone is drawn on a source but referenced by a rule, so the two lists have to
+    stay in step while the editor is open — the profile is not reloaded in between."""
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def _draw_a_zone(self, page: Page):
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        canvas = page.locator("[data-testid='watch-zones-canvas']")
+        box = canvas.bounding_box()
+        page.mouse.move(box["x"] + 40, box["y"] + 40)
+        page.mouse.down()
+        page.mouse.move(box["x"] + 200, box["y"] + 160, steps=5)
+        page.mouse.up()
+        page.locator("[data-testid='watch-zones-save']").click()
+
+    def test_a_new_zone_becomes_selectable_in_an_existing_rule(self, page: Page, base_url: str):
+        """Drawing a zone and then being unable to point a rule at it without saving
+        and reopening the whole watcher is the wrong order to build a rule in."""
+        self._open(page, base_url)
+        subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
+        expect(subject_b.locator("option")).to_have_count(1)
+
+        self._draw_a_zone(page)
+
+        expect(subject_b.locator("option")).to_have_count(2)
+
+    def test_the_rules_existing_zone_choice_survives_the_refresh(self, page: Page, base_url: str):
+        """Re-populating the dropdown must not silently repoint the rule at zone #1."""
+        self._open(page, base_url)
+        subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
+        expect(subject_b).to_have_value(ZONE_UUID)
+
+        self._draw_a_zone(page)
+
+        expect(subject_b).to_have_value(ZONE_UUID)
+
+    def test_removing_a_source_drops_its_zones_from_the_rules(self, page: Page, base_url: str):
+        """The same staleness in the other direction: a rule must not keep offering a
+        zone belonging to a source that is no longer in the profile."""
+        self._open(page, base_url)
+        subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
+        expect(subject_b.locator("option")).to_have_count(1)
+
+        page.locator("[data-testid='watch-source-row'] .watch-row-remove").first.click()
+
+        expect(subject_b.locator("option")).to_have_count(1)
+        expect(subject_b.locator("option").first).to_have_text("(no zones defined)")

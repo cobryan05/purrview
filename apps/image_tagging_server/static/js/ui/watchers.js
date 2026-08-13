@@ -5,7 +5,7 @@ import {
   fetchWatchProfiles, createWatchProfile, updateWatchProfile, deleteWatchProfile,
   validateWatchProfile,
 } from '/app-static/js/shared/api/watchProfiles.js';
-import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
+import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { openZonesModal } from '/app-static/js/ui/watchZonesModal.js';
 
@@ -80,39 +80,74 @@ function numberInput(value, { step = '1', min = null, placeholder = '' } = {}) {
   return input;
 }
 
-function sectionLabel(text) {
-  return el('div', 'panel-section-label', text);
+/**
+ * A compact inline `label: control` pair.
+ *
+ * Deliberately not `makeFieldRow`: that helper pins its label to a fixed 100px column
+ * and gives the control `flex: 1`, which is right for a stacked settings panel and
+ * wrong here — it turned a four-field row into four full-width lines. These pairs size
+ * to their content and flow along the row instead.
+ */
+function wfield(labelText, control, { width = null } = {}) {
+  const wrap = el('label', 'watch-field');
+  wrap.appendChild(el('span', 'watch-field__label', labelText));
+  if (width) control.style.width = width;
+  wrap.appendChild(control);
+  return wrap;
+}
+
+/** The small ✕ that ends every row. Full-width "Remove" buttons cost a line each. */
+function removeButton(onDelete, title) {
+  const btn = el('button', 'watch-row-remove', '✕');
+  btn.type = 'button';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.addEventListener('click', onDelete);
+  return btn;
+}
+
+/**
+ * A section heading with its "+ Add" button on the same line.
+ *
+ * The add button used to sit on its own line below the list, so every section spent
+ * two lines on chrome before showing any content.
+ */
+function sectionHeader(text, addButton) {
+  const head = el('div', 'watch-section-head');
+  head.appendChild(el('span', 'panel-section-label', text));
+  if (addButton) head.appendChild(addButton);
+  return head;
 }
 
 // ── Source row ──────────────────────────────────────────────────────────────
 function buildSourceRow(src, ctx) {
-  const row = el('div', 'watch-source-row');
+  const row = el('div', 'watch-source-row watch-row');
   row.dataset.testid = 'watch-source-row';
 
-  const head = el('div', 'watch-row-head');
   const sourceSel = select(ctx.sourceOptions, src.sourceUuid, ctx.onAnyChange);
   sourceSel.dataset.testid = 'watch-source-select';
-  head.appendChild(makeFieldRow('Source', sourceSel));
+  row.appendChild(wfield('Source', sourceSel));
 
   const modelSel = select(
     [{ key: '', text: '(profile default)' }, ...ctx.modelGroupOptions],
     src.modelGroupUuid || '',
     ctx.onAnyChange,
   );
-  head.appendChild(makeFieldRow('Models', modelSel));
-  row.appendChild(head);
+  row.appendChild(wfield('Models', modelSel));
 
+  // The three rate fields are numeric and short; the units live in the label so the
+  // inputs can stay narrow enough to sit on the same line as the selects.
   const rates = el('div', 'watch-row-rates');
-  const fps = numberInput(src.analysisFps ?? '', { step: '0.5', min: 0, placeholder: 'default' });
+  const fps = numberInput(src.analysisFps ?? '', { step: '0.5', min: 0, placeholder: 'auto' });
   fps.dataset.testid = 'watch-analysis-fps';
-  const width = numberInput(src.analysisWidth ?? '', { step: '16', min: 0, placeholder: 'default' });
-  const retention = numberInput(src.recordRetentionS ?? '', { step: '5', min: 0, placeholder: 'default' });
+  const width = numberInput(src.analysisWidth ?? '', { step: '16', min: 0, placeholder: 'auto' });
+  const retention = numberInput(src.recordRetentionS ?? '', { step: '5', min: 0, placeholder: 'auto' });
   fps.addEventListener('input', ctx.onAnyChange);
   width.addEventListener('input', ctx.onAnyChange);
   retention.addEventListener('input', ctx.onAnyChange);
-  rates.appendChild(makeFieldRow('Analysis fps', fps));
-  rates.appendChild(makeFieldRow('Analysis width (px)', width));
-  rates.appendChild(makeFieldRow('Buffer seconds', retention));
+  rates.appendChild(wfield('fps', fps, { width: '4.5rem' }));
+  rates.appendChild(wfield('width px', width, { width: '5rem' }));
+  rates.appendChild(wfield('buffer s', retention, { width: '4.5rem' }));
   row.appendChild(rates);
 
   // Zones live behind a modal because they need a video frame as a backdrop, which
@@ -131,15 +166,15 @@ function buildSourceRow(src, ctx) {
     if (result) {
       zones = result;
       zonesBtn.textContent = `Zones (${zones.length})…`;
+      // The rules' zone dropdowns are derived from these zones, so they have to be
+      // rebuilt here. Marking the editor dirty is not enough — nothing re-reads the
+      // zone list until the profile is saved and reopened.
+      ctx.onZonesChanged?.();
       ctx.onAnyChange();
     }
   });
   actions.appendChild(zonesBtn);
-
-  const removeBtn = el('button', 'panel-btn panel-btn--danger', 'Remove');
-  removeBtn.type = 'button';
-  removeBtn.addEventListener('click', () => ctx.onDelete());
-  actions.appendChild(removeBtn);
+  actions.appendChild(removeButton(() => ctx.onDelete(), 'Remove source'));
   row.appendChild(actions);
 
   return {
@@ -167,7 +202,7 @@ function buildSourceRow(src, ctx) {
 
 // ── Rule row ────────────────────────────────────────────────────────────────
 function buildRuleRow(rule, ctx) {
-  const row = el('div', 'watch-rule-row');
+  const row = el('div', 'watch-rule-row watch-row');
   row.dataset.testid = 'watch-rule-row';
 
   const nameInput = document.createElement('input');
@@ -176,7 +211,7 @@ function buildRuleRow(rule, ctx) {
   nameInput.placeholder = 'e.g. cat using litter box';
   nameInput.dataset.testid = 'watch-rule-name';
   nameInput.addEventListener('input', ctx.onAnyChange);
-  row.appendChild(makeFieldRow('Name', nameInput));
+  row.appendChild(wfield('Rule', nameInput));
 
   // The sentence: [subject A] [relation] [subject B].
   const sentence = el('div', 'watch-rule-sentence');
@@ -218,6 +253,10 @@ function buildRuleRow(rule, ctx) {
     subjectB.hidden = isUnary;
   }
 
+  // Tuning keeps its four inputs in threshold / start / clear / max order — the
+  // Playwright defaults test indexes `.watch-rule-tuning input` positionally.
+  // The long labels ("Ends after clear (s)") became units-in-the-label plus a
+  // tooltip: spelled out, the four of them alone filled a line.
   const tuning = el('div', 'watch-rule-tuning');
   const threshold = numberInput(rule.threshold ?? 0.6, { step: '0.05', min: 0 });
   const minDuration = numberInput(rule.minDurationS ?? 2, { step: '0.5', min: 0 });
@@ -226,22 +265,42 @@ function buildRuleRow(rule, ctx) {
   for (const input of [threshold, minDuration, rearm, maxDuration]) {
     input.addEventListener('input', ctx.onAnyChange);
   }
-  tuning.appendChild(makeFieldRow('Threshold', threshold));
-  tuning.appendChild(makeFieldRow('Starts after (s)', minDuration));
-  tuning.appendChild(makeFieldRow('Ends after clear (s)', rearm));
-  tuning.appendChild(makeFieldRow('Max duration (s)', maxDuration));
+  const tuningFields = [
+    ['match', threshold, 'Match threshold — how strongly the relation must hold'],
+    ['starts after', minDuration, 'Seconds the relation must hold before the event starts'],
+    ['ends after', rearm, 'Seconds the relation must stay clear before the event ends'],
+    ['max', maxDuration, 'Hard cap on event length, in seconds'],
+  ];
+  for (const [label, input, title] of tuningFields) {
+    const field = wfield(label, input, { width: '4.5rem' });
+    field.title = title;
+    tuning.appendChild(field);
+  }
   row.appendChild(tuning);
 
-  const removeBtn = el('button', 'panel-btn panel-btn--danger', 'Remove');
-  removeBtn.type = 'button';
-  removeBtn.addEventListener('click', () => ctx.onDelete());
-  row.appendChild(removeBtn);
+  row.appendChild(removeButton(() => ctx.onDelete(), 'Remove rule'));
 
   syncSubjectB();
   syncArity();
 
   return {
     element: row,
+    /**
+     * Adopt a new set of zone options.
+     *
+     * `refreshZoneOptions()` has always called this, but the row never returned it and
+     * the `?.` on the call site swallowed the miss — so a zone drawn in the modal was
+     * unreachable from any rule until the whole watcher was saved and reopened, which
+     * is the wrong order to build a rule in.
+     *
+     * `syncSubjectB` re-selects the current value when it is still on offer, so a rule
+     * already pointing at a zone keeps it; only a rule whose zone genuinely went away
+     * falls back to the first option.
+     */
+    refreshZones: (options) => {
+      ctx.zoneOptions = options;
+      if (subjectBKind.value !== 'label') syncSubjectB();
+    },
     getRule: () => {
       const isUnary = relation.value === 'present';
       return {
@@ -267,7 +326,7 @@ function buildRuleRow(rule, ctx) {
 
 // ── Action row ──────────────────────────────────────────────────────────────
 function buildActionRow(action, ctx) {
-  const row = el('div', 'watch-action-row');
+  const row = el('div', 'watch-action-row watch-row');
   row.dataset.testid = 'watch-action-row';
 
   const kind = select(ACTION_KINDS, action.kind || 'publish_mqtt', () => { syncParams(); ctx.onAnyChange(); });
@@ -279,11 +338,9 @@ function buildActionRow(action, ctx) {
     ctx.onAnyChange,
   );
 
-  const head = el('div', 'watch-row-head');
-  head.appendChild(makeFieldRow('Action', kind));
-  head.appendChild(makeFieldRow('For', ruleSel));
-  head.appendChild(makeFieldRow('On', trigger));
-  row.appendChild(head);
+  row.appendChild(wfield('Action', kind));
+  row.appendChild(wfield('for', ruleSel));
+  row.appendChild(wfield('on', trigger));
 
   const params = el('div', 'watch-action-params');
   row.appendChild(params);
@@ -298,9 +355,9 @@ function buildActionRow(action, ctx) {
       const postroll = numberInput(stored.postroll_s ?? 5, { step: '1', min: 0 });
       const maxLength = numberInput(stored.max_length_s ?? 180, { step: '10', min: 1 });
       for (const i of [preroll, postroll, maxLength]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(makeFieldRow('Pre-roll (s)', preroll));
-      params.appendChild(makeFieldRow('Post-roll (s)', postroll));
-      params.appendChild(makeFieldRow('Max length (s)', maxLength));
+      params.appendChild(wfield('Pre-roll s', preroll, { width: '4.5rem' }));
+      params.appendChild(wfield('post-roll s', postroll, { width: '4.5rem' }));
+      params.appendChild(wfield('max s', maxLength, { width: '4.5rem' }));
       readParams = () => ({
         preroll_s: num(preroll, 10),
         postroll_s: num(postroll, 5),
@@ -311,9 +368,11 @@ function buildActionRow(action, ctx) {
       retain.type = 'checkbox';
       retain.checked = Boolean(stored.retain);
       retain.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(makeFieldRow('Retain', retain));
-      const hint = el('div', 'panel-hint',
-        'Topic: <prefix>/<watcher>/<source>/event/<rule>. Broker is configured in Settings.');
+      params.appendChild(wfield('Retain', retain));
+      // The topic pattern is reference material, not a control — a tooltip keeps it
+      // available without spending a full line under every MQTT action.
+      const hint = el('span', 'watch-hint', 'topic pattern');
+      hint.title = 'Topic: <prefix>/<watcher>/<source>/event/<rule>. Broker is configured in Settings.';
       params.appendChild(hint);
       readParams = () => ({ retain: retain.checked, qos: 0 });
     } else {
@@ -322,15 +381,12 @@ function buildActionRow(action, ctx) {
       dir.value = stored.output_dir || '';
       dir.placeholder = 'default snapshot directory';
       dir.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(makeFieldRow('Output dir', dir));
+      params.appendChild(wfield('Output dir', dir, { width: '14rem' }));
       readParams = () => (dir.value.trim() ? { output_dir: dir.value.trim() } : {});
     }
   }
 
-  const removeBtn = el('button', 'panel-btn panel-btn--danger', 'Remove');
-  removeBtn.type = 'button';
-  removeBtn.addEventListener('click', () => ctx.onDelete());
-  row.appendChild(removeBtn);
+  row.appendChild(removeButton(() => ctx.onDelete(), 'Remove action'));
 
   syncParams();
 
@@ -426,36 +482,43 @@ export async function renderWatchProfileManager({ target }) {
       const onAnyChange = () => bar.setDirty(true);
 
       // ── Identity ──
-      screen.editorBody.appendChild(sectionLabel('Identity'));
+      // Four stacked full-width fields became one wrapping strip: the whole identity
+      // block is now roughly the height a single one of them used to occupy.
+      const identity = el('div', 'watch-identity');
       const nameInput = document.createElement('input');
       nameInput.type = 'text';
       nameInput.value = profile?.name || '';
       nameInput.placeholder = 'e.g. House cams';
       nameInput.dataset.testid = 'watcher-name';
       nameInput.addEventListener('input', onAnyChange);
-      screen.editorBody.appendChild(makeFieldRow('Name', nameInput));
+      identity.appendChild(wfield('Name', nameInput));
 
       const enabled = document.createElement('input');
       enabled.type = 'checkbox';
       enabled.checked = profile ? profile.enabled !== false : true;
       enabled.addEventListener('change', onAnyChange);
-      screen.editorBody.appendChild(makeFieldRow('Enabled', enabled));
+      identity.appendChild(wfield('Enabled', enabled));
 
       const description = document.createElement('input');
       description.type = 'text';
       description.value = profile?.description || '';
+      description.placeholder = 'optional';
       description.addEventListener('input', onAnyChange);
-      screen.editorBody.appendChild(makeFieldRow('Description', description));
+      identity.appendChild(wfield('Description', description));
 
       const defaultModels = select(
         [{ key: '', text: '(none)' }, ...modelGroupOptions],
         profile?.defaultModelGroupUuid || '',
         onAnyChange,
       );
-      screen.editorBody.appendChild(makeFieldRow('Default models', defaultModels));
+      identity.appendChild(wfield('Default models', defaultModels));
+      screen.editorBody.appendChild(identity);
 
       // ── Sources ──
-      screen.editorBody.appendChild(sectionLabel('Sources'));
+      const addSourceBtn = el('button', 'panel-btn', '+ Add source');
+      addSourceBtn.type = 'button';
+      addSourceBtn.dataset.testid = 'watch-add-source';
+      screen.editorBody.appendChild(sectionHeader('Sources', addSourceBtn));
       const sourcesBox = el('div', 'watch-rows');
       sourcesBox.dataset.testid = 'watch-sources-box';
       screen.editorBody.appendChild(sourcesBox);
@@ -465,6 +528,7 @@ export async function renderWatchProfileManager({ target }) {
           sourceOptions,
           modelGroupOptions,
           sourceNameFor,
+          onZonesChanged: () => refreshZoneOptions(),
           onAnyChange,
           onDelete: () => {
             entry.element.remove();
@@ -478,17 +542,16 @@ export async function renderWatchProfileManager({ target }) {
         refreshZoneOptions();
       }
 
-      const addSourceBtn = el('button', 'panel-btn', '+ Add source');
-      addSourceBtn.type = 'button';
-      addSourceBtn.dataset.testid = 'watch-add-source';
       addSourceBtn.addEventListener('click', () => {
         addSource({ sourceUuid: sourceOptions[0]?.key, zones: [] });
         onAnyChange();
       });
-      screen.editorBody.appendChild(addSourceBtn);
 
       // ── Rules ──
-      screen.editorBody.appendChild(sectionLabel('Rules'));
+      const addRuleBtn = el('button', 'panel-btn', '+ Add rule');
+      addRuleBtn.type = 'button';
+      addRuleBtn.dataset.testid = 'watch-add-rule';
+      screen.editorBody.appendChild(sectionHeader('Rules', addRuleBtn));
       const rulesBox = el('div', 'watch-rows');
       rulesBox.dataset.testid = 'watch-rules-box';
       screen.editorBody.appendChild(rulesBox);
@@ -524,14 +587,13 @@ export async function renderWatchProfileManager({ target }) {
         rulesBox.appendChild(entry.element);
       }
 
-      const addRuleBtn = el('button', 'panel-btn', '+ Add rule');
-      addRuleBtn.type = 'button';
-      addRuleBtn.dataset.testid = 'watch-add-rule';
       addRuleBtn.addEventListener('click', () => { addRule({}); onAnyChange(); });
-      screen.editorBody.appendChild(addRuleBtn);
 
       // ── Actions ──
-      screen.editorBody.appendChild(sectionLabel('Actions'));
+      const addActionBtn = el('button', 'panel-btn', '+ Add action');
+      addActionBtn.type = 'button';
+      addActionBtn.dataset.testid = 'watch-add-action';
+      screen.editorBody.appendChild(sectionHeader('Actions', addActionBtn));
       const actionsBox = el('div', 'watch-rows');
       actionsBox.dataset.testid = 'watch-actions-box';
       screen.editorBody.appendChild(actionsBox);
@@ -550,11 +612,7 @@ export async function renderWatchProfileManager({ target }) {
         actionsBox.appendChild(entry.element);
       }
 
-      const addActionBtn = el('button', 'panel-btn', '+ Add action');
-      addActionBtn.type = 'button';
-      addActionBtn.dataset.testid = 'watch-add-action';
       addActionBtn.addEventListener('click', () => { addAction({}); onAnyChange(); });
-      screen.editorBody.appendChild(addActionBtn);
 
       // ── Validation report ──
       const report = el('div', 'watch-validation');

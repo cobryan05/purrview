@@ -5260,46 +5260,150 @@ progress.progress-indeterminate:indeterminate {
  * the editor's own row layouts live here. */
 .wp-list-panel { width: 240px; }
 
+/* Density note. Every control in this editor is a bare Pico form element, and Pico
+   ships `input, select { width: 100% }` plus a ~1rem bottom margin. So each row's
+   flex-wrap containers got a stack of full-width controls: the rule sentence alone
+   ("When [cat] [is inside] [Zone] [litter box]") broke onto five lines even though it
+   is five short words. One rule filled the viewport, nearly all of it whitespace.
+   The rules below take the width back — controls size to their content and rows read
+   left-to-right — so a rule is one or two lines and a profile fits on a screen. */
+
 .watch-rows {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2, 0.5rem);
+  gap: var(--space-1, 0.25rem);
   margin-bottom: var(--space-2, 0.5rem);
 }
 
-.watch-source-row,
-.watch-rule-row,
-.watch-action-row {
-  border: 1px solid var(--pico-muted-border-color, #444);
-  border-radius: var(--radius-sm, 4px);
-  padding: var(--space-3, 0.75rem);
+/* Section heading and its "+ Add" button share a line. */
+.watch-section-head {
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  justify-content: space-between;
   gap: var(--space-2, 0.5rem);
+  margin-top: var(--space-2, 0.5rem);
+}
+.watch-section-head .panel-section-label {
+  margin: 0;
 }
 
-.watch-row-head,
-.watch-row-rates,
-.watch-rule-tuning,
-.watch-action-params {
+.watch-identity {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3, 0.75rem);
-  align-items: flex-end;
+  align-items: center;
+  gap: var(--space-1, 0.25rem) var(--space-3, 0.75rem);
+  margin-bottom: var(--space-1, 0.25rem);
+}
+/* The name carries the row: it gets the slack, the rest stay intrinsic. */
+.watch-identity > .watch-field:first-child { flex: 1 1 14rem; }
+.watch-identity > .watch-field:first-child input { flex: 1; }
+
+.watch-row {
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  padding: 0.3rem 0.45rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+}
+.watch-row:hover {
+  border-color: var(--pico-primary-border, var(--pico-muted-border-color, #666));
+}
+
+/* Sub-groups keep their own tighter spacing but no longer force a line break. */
+.watch-row-rates,
+.watch-rule-tuning,
+.watch-action-params,
+.watch-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
 }
 
 /* The rule reads as a sentence — "[Cat] [is inside] [Zone: litter box]" — which is
-   the only layout that makes containment-vs-IoU legible to a non-expert. */
+   the only layout that makes containment-vs-IoU legible to a non-expert. It only
+   reads that way while the selects are intrinsically sized; see the density note. */
 .watch-rule-sentence {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2, 0.5rem);
+  gap: 0.3rem;
   align-items: center;
+  font-size: 0.85em;
+}
+.watch-rule-sentence > span {
+  color: var(--pico-muted-color, var(--text-muted));
 }
 
-.watch-row-actions {
-  display: flex;
-  gap: var(--space-2, 0.5rem);
+/* Compact `label: control` pair (ui/watchers.js::wfield). */
+.watch-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  font-size: 0.85em;
+}
+.watch-field__label {
+  color: var(--pico-muted-color, var(--text-muted));
+  white-space: nowrap;
+}
+
+/* Undo Pico's full-width + margin defaults for every control inside a watcher row.
+   Without this the compaction above achieves nothing.
+
+   Checkboxes are excluded deliberately: Pico sizes them with an explicit
+   `width: 1.25em`, and overriding that to `auto` collapses the box to a thin
+   vertical bar (the same trap `.panel-field-row` documents). They only need their
+   margin cleared. */
+.watch-row input:not([type='checkbox']),
+.watch-row select,
+.watch-identity input:not([type='checkbox']),
+.watch-identity select,
+.watch-rule-sentence select {
+  width: auto;
+  margin-bottom: 0;
+  font-size: inherit;
+  --pico-form-element-spacing-vertical: 0.2em;
+  --pico-form-element-spacing-horizontal: 0.4em;
+  background-position: center right 0.4em;
+}
+.watch-row input[type='checkbox'],
+.watch-identity input[type='checkbox'] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+/* `hidden` must beat the flex display the sentence would otherwise impose —
+   `present` is arity 1 and hides its second subject. */
+.watch-rule-sentence [hidden] { display: none !important; }
+
+/* Trailing ✕ on each row. A full-width "Remove" button cost a line per row. */
+.watch-row-remove {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0.1em 0.45em !important;
+  font-size: 0.8em !important;
+  line-height: 1.2;
+  min-height: unset !important;
+  margin-bottom: 0 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--pico-muted-color, var(--text-muted)) !important;
+}
+.watch-row-remove:hover {
+  color: var(--app-danger-color, #e5534b) !important;
+  border-color: currentColor !important;
+}
+/* The source row ends with Zones + ✕ as a unit, so the group takes the auto margin. */
+.watch-row-actions { margin-left: auto; }
+.watch-row-actions .watch-row-remove { margin-left: 0; }
+
+.watch-hint {
+  font-size: 0.8em;
+  color: var(--pico-muted-color, var(--text-muted));
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
 }
 
 .watch-validation {
