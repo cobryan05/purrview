@@ -1368,10 +1368,11 @@ class TestRelabelConfirmationModal:
         expect(modal).to_contain_text("3 image(s) failed to load/process")
         expect(modal).to_contain_text("FileNotFoundError")
 
-    def test_new_box_candidate_draws_geometry_overlay(self, page: Page, base_url: str):
-        """New-box candidates have no bboxUuid, so the preview falls back to a
-        whole-image thumbnail — it must still draw the proposed geometry so the
-        user can see where the box will land, not just that a box exists."""
+    def test_new_box_candidate_thumb_is_a_region_crop(self, page: Page, base_url: str):
+        """New-box candidates have no bboxUuid to crop by, but they do carry the
+        proposed geometry — the card crops to it, the way every other card in the
+        app shows a box. (This used to show the whole frame with the box drawn as
+        an overlay, which made a small proposal a few pixels wide.)"""
         self._setup(page, base_url)
         _mock_image_thumbnails(page)
         candidate = {
@@ -1393,12 +1394,9 @@ class TestRelabelConfirmationModal:
         card = modal.locator(".relabel-modal-card").first
         expect(card).to_contain_text("＋ NEW")
 
-        overlay = card.locator("canvas.thumb-overlay")
-        expect(overlay).to_have_count(1)
-        # The overlay only gets sized once the thumb image has loaded and
-        # laid out — wait for that instead of asserting immediately.
-        overlay.page.wait_for_function("el => el.width > 0", arg=overlay.element_handle())
-        assert overlay.evaluate("el => el.height") > 0
+        src = card.locator("img.thumb").get_attribute("src")
+        assert "/region/thumbnail" in src, src
+        assert "x=0.2" in src and "width_frac=0.4" in src and "height_frac=0.1" in src, src
 
     def test_new_box_verification_tag_follows_mark_verified(self, page: Page, base_url: str):
         """A box the model invented lands UNVERIFIED by default, and VERIFIED only

@@ -1022,8 +1022,9 @@ class PreviewCandidateQuery(ApiModel):
     source_models: List[str] = Field(default_factory=list)
     # image_confidence groups every candidate from one image together, ranked by
     # that image's best candidate — the modal did this client-side, which does
-    # not survive pagination.
-    sort_by: Literal["confidence", "image_confidence", "created_at"] = "image_confidence"
+    # not survive pagination. label_confidence is the same trick keyed on the
+    # proposed label, so a whole class can be triaged as a block.
+    sort_by: Literal["confidence", "image_confidence", "label_confidence", "created_at"] = "image_confidence"
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = 100
     offset: int = 0

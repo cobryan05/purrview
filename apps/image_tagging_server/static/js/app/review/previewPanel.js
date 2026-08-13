@@ -39,6 +39,8 @@ import {
   PreviewDecisionAction,
 } from '/app-static/js/shared/api/previewRuns.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
+import { expandLabelFilterSet } from '/app-static/js/app/review/filterPredicate.js';
 import { buildCandidateCard, createCardGrid } from '/app-static/js/app/review/cardGrid.js';
 import { labelChip } from '/app-static/js/app/review/labelChip.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
@@ -59,6 +61,20 @@ const DECISION_FILTER_ITEMS = [
   { uuid: PreviewDecision.REJECTED, name: 'Rejected' },
   { uuid: PreviewDecision.APPLIED, name: 'Applied' },
   { uuid: PreviewDecision.STALE, name: 'Stale' },
+];
+
+/**
+ * Ordering modes. The two `*_confidence` modes are *groupings*: the server
+ * keeps every candidate of one image / one proposed label contiguous, ranked by
+ * that group's best candidate, so a group survives page boundaries. Label
+ * grouping additionally gets a header per class in the grid — triaging "all the
+ * cats the model found" is the case the flat confidence sort could not serve.
+ */
+const SORT_MODES = [
+  { value: 'label_confidence', text: 'Group: label', group: 'label' },
+  { value: 'image_confidence', text: 'Group: image', group: 'image' },
+  { value: 'confidence', text: 'Sort: confidence', group: null },
+  { value: 'created_at', text: 'Sort: found order', group: null },
 ];
 
 /**
@@ -128,28 +144,28 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   }
 
   // ── Layout ─────────────────────────────────────────────────────────────
+  // Layout/spacing lives in app.css (.preview-panel*): the chrome around the
+  // grid is the scarce resource here — every row of toolbar is a row of
+  // candidates the user cannot see — so it is styled in one place that can be
+  // tightened, not spread across inline cssText.
   const root = document.createElement('div');
   root.className = 'preview-panel';
   root.dataset.testid = 'preview-panel';
-  root.style.cssText = 'display:flex;flex-direction:column;gap:0.5em;flex:1;min-height:0;';
   container.appendChild(root);
 
   const toolbar = document.createElement('div');
   toolbar.className = 'preview-panel__toolbar';
-  toolbar.style.cssText = 'display:flex;align-items:center;gap:0.6em;flex-wrap:wrap;flex-shrink:0;';
   root.appendChild(toolbar);
 
   const grid = document.createElement('div');
   grid.className = 'preview-panel__grid relabel-modal-grid review-grid';
   const body = document.createElement('div');
   body.className = 'preview-panel__body';
-  body.style.cssText = 'flex:1;overflow-y:auto;min-height:0;';
   body.appendChild(grid);
   root.appendChild(body);
 
   const footer = document.createElement('div');
   footer.className = 'preview-panel__footer';
-  footer.style.cssText = 'display:flex;align-items:center;gap:0.5em;flex-shrink:0;flex-wrap:wrap;';
   root.appendChild(footer);
 
   // ── Filter bar (candidate filters — see §3 for why not createFilterPanel) ──
@@ -159,9 +175,17 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     confidenceMin: null,
     confidenceMax: null,
     isNew: null,
-    sortBy: 'image_confidence',
+    // Label grouping is the default view: triage is per class far more often
+    // than per frame, and the grouped grid reads as "all the cats, then all the
+    // dogs" rather than a confidence-ordered mix.
+    sortBy: 'label_confidence',
     sortOrder: 'desc',
   };
+
+  /** The grouping the current sort implies, or null for a flat ordering. */
+  function _activeGrouping() {
+    return SORT_MODES.find(m => m.value === filterState.sortBy)?.group ?? null;
+  }
 
   const decisionDd = createMultiSelectDropdown({
     label: 'Decision',
@@ -174,14 +198,43 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   decisionDd.element.dataset.testid = 'preview-filter-decision';
   toolbar.appendChild(decisionDd.element);
 
+  // Hierarchical, with "include child labels" — the same contract the review
+  // filter panel's Labels dropdown has. Picking a parent and getting only its
+  // own boxes is the surprising answer when the vocabulary is a tree.
+  //
+  // The expansion is done here rather than server-side: the candidates endpoint
+  // filters on `proposedLabelUuids` membership, so the panel sends the already
+  // expanded set. `expandLabelFilterSet` is the same helper the review grid's
+  // predicate uses, so the two can't drift on what "include children" means.
+  let _labelSelection = [];
+  let _labelIncludeChildren = false;
+
+  function _applyLabelFilter() {
+    filterState.proposedLabelUuids = _labelSelection.length > 0
+      ? [...expandLabelFilterSet(_labelSelection, _labels, _labelIncludeChildren)]
+      : [];
+    _reload(0);
+  }
+
   const labelDd = createMultiSelectDropdown({
-    label: 'Proposed label',
-    items: [..._labels.values()].map(l => ({ uuid: l.uuid, name: l.name, color: l.color })),
+    label: 'Label',
+    items: flattenHierarchy(_labels).map(l => ({
+      uuid: l.uuid,
+      name: l.name,
+      color: l.color || null,
+      depth: l.depth,
+      parentUuid: l.parentUuid ?? null,
+    })),
     showModeToggle: false,
     allowExclude: false,
     searchable: true,
     filterKey: 'preview-proposed-label',
-    onChange: (selected) => { filterState.proposedLabelUuids = selected; _reload(0); },
+    hierarchyToggle: {
+      label: 'Include child labels',
+      default: false,
+      onChange: (val) => { _labelIncludeChildren = val; _applyLabelFilter(); },
+    },
+    onChange: (selected) => { _labelSelection = selected; _applyLabelFilter(); },
   });
   labelDd.element.dataset.testid = 'preview-filter-label';
   toolbar.appendChild(labelDd.element);
@@ -190,7 +243,8 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   // "everything above 90%" or "the uncertain 40–60% band", both of which are
   // typed faster than dragged.
   const confWrap = document.createElement('label');
-  confWrap.style.cssText = 'display:flex;align-items:center;gap:0.3em;font-size:0.85em;';
+  confWrap.className = 'preview-panel__conf';
+  confWrap.title = 'Confidence band (%)';
   confWrap.appendChild(document.createTextNode('Conf'));
   const confMin = document.createElement('input');
   const confMax = document.createElement('input');
@@ -201,7 +255,6 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     el.step = '5';
     el.placeholder = placeholder;
     el.dataset.testid = testid;
-    el.style.cssText = 'width:4.5em;padding:0.1em 0.3em;';
   }
   const _readConfidence = () => {
     const lo = confMin.value === '' ? null : Number(confMin.value) / 100;
@@ -212,13 +265,13 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   };
   confMin.addEventListener('change', _readConfidence);
   confMax.addEventListener('change', _readConfidence);
-  confWrap.append(confMin, document.createTextNode('–'), confMax, document.createTextNode('%'));
+  confWrap.append(confMin, document.createTextNode('–'), confMax);
   toolbar.appendChild(confWrap);
 
   const kindSelect = document.createElement('select');
   kindSelect.dataset.testid = 'preview-filter-kind';
-  kindSelect.style.cssText = 'padding:0.1em 0.3em;font-size:0.85em;';
-  for (const [value, text] of [['', 'All boxes'], ['existing', 'Existing only'], ['new', 'New only']]) {
+  kindSelect.title = 'Show existing boxes, proposed new boxes, or both';
+  for (const [value, text] of [['', 'All boxes'], ['existing', 'Existing'], ['new', 'New']]) {
     const opt = document.createElement('option');
     opt.value = value;
     opt.textContent = text;
@@ -232,23 +285,21 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
 
   const sortSelect = document.createElement('select');
   sortSelect.dataset.testid = 'preview-sort';
-  sortSelect.style.cssText = 'padding:0.1em 0.3em;font-size:0.85em;';
-  for (const [value, text] of [
-    ['image_confidence', 'Group by image'],
-    ['confidence', 'Confidence'],
-    ['created_at', 'Found order'],
-  ]) {
+  sortSelect.title = 'Grouping / ordering. Grouped modes keep a whole image or a '
+    + 'whole class together, across pages.';
+  for (const { value, text } of SORT_MODES) {
     const opt = document.createElement('option');
     opt.value = value;
     opt.textContent = text;
     sortSelect.appendChild(opt);
   }
+  sortSelect.value = filterState.sortBy;
   sortSelect.addEventListener('change', () => { filterState.sortBy = sortSelect.value; _reload(0); });
   toolbar.appendChild(sortSelect);
 
   const countLabel = document.createElement('span');
   countLabel.dataset.testid = 'preview-count';
-  countLabel.style.cssText = 'margin-left:auto;font-size:0.85em;color:#aaa;';
+  countLabel.className = 'preview-panel__count';
   toolbar.appendChild(countLabel);
 
   // ── Selection controller (click / shift-range, shared with the review grid) ──
@@ -293,30 +344,86 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     _renderPage();
   }
 
-  function _decisionButton(text, testid, onClick) {
+  // The selection count lives here once, rather than being appended to all four
+  // button labels — four widening buttons is what wrapped the footer onto a
+  // second row mid-triage, and a row of footer is a row of candidates.
+  const selCount = document.createElement('span');
+  selCount.className = 'preview-panel__selcount';
+  selCount.dataset.testid = 'preview-selection-count';
+  footer.appendChild(selCount);
+
+  /**
+   * Select (or deselect) a set of entries, keeping the controller's Set, the
+   * card class and the card checkbox in step — the three things `applySelect`
+   * normally updates together. Shared by the select-all/none buttons and the
+   * per-label group header's "Select group".
+   */
+  function _setSelection(entries, selected) {
+    for (const en of entries) {
+      if (selected) cardGrid.selected.add(en.id);
+      else cardGrid.selected.delete(en.id);
+      en.card?.classList.toggle('selected', selected);
+      const cb = en.card?.querySelector('input[type=checkbox]');
+      if (cb && !cb.disabled) cb.checked = selected;
+    }
+    if (selected) cardGrid.selectionKind = 'bbox';
+    _updateDecisionButtons();
+  }
+
+  // Select-all / deselect-all over the current page. Page-scoped on purpose:
+  // decisions apply to what you can see, and the whole-run equivalent is the
+  // filter plus "Accept all", which is right next to these.
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.className = 'secondary';
+  selectAllBtn.dataset.testid = 'preview-select-all';
+  selectAllBtn.textContent = 'All';
+  selectAllBtn.title = 'Select every candidate on this page';
+  selectAllBtn.addEventListener('click', () => _setSelection(_visibleEntries, true));
+  footer.appendChild(selectAllBtn);
+
+  const selectNoneBtn = document.createElement('button');
+  selectNoneBtn.className = 'secondary';
+  selectNoneBtn.dataset.testid = 'preview-select-none';
+  selectNoneBtn.textContent = 'None';
+  selectNoneBtn.title = 'Clear the selection';
+  selectNoneBtn.addEventListener('click', () => {
+    // clearSelection also resets the controller's select-all checkbox state and
+    // type fading (and fires onSelectionChange, which refreshes the buttons) —
+    // a bare Set.clear() would leave all of that stale.
+    cardGrid.clearSelection();
+  });
+  footer.appendChild(selectNoneBtn);
+
+  function _decisionButton(text, testid, title, onClick) {
     const btn = document.createElement('button');
     btn.className = 'secondary';
     btn.dataset.testid = testid;
     btn.textContent = text;
+    btn.title = title;
     btn.addEventListener('click', onClick);
     footer.appendChild(btn);
     return btn;
   }
 
-  const acceptBtn = _decisionButton('Accept', 'preview-accept', () =>
-    _setDecision(_targets(), PreviewDecision.ACCEPTED, PreviewDecisionAction.RELABEL));
-  const acceptDeleteBtn = _decisionButton('Accept as delete', 'preview-accept-delete', () =>
-    _setDecision(_targets(), PreviewDecision.ACCEPTED, PreviewDecisionAction.DELETE));
-  const rejectBtn = _decisionButton('Reject', 'preview-reject', () =>
-    _setDecision(_targets(), PreviewDecision.REJECTED));
-  const resetBtn = _decisionButton('Unreview', 'preview-reset', () =>
-    _setDecision(_targets(), PreviewDecision.PENDING));
+  const acceptBtn = _decisionButton('Accept', 'preview-accept',
+    'Accept the selected candidates as relabels', () =>
+      _setDecision(_targets(), PreviewDecision.ACCEPTED, PreviewDecisionAction.RELABEL));
+  const acceptDeleteBtn = _decisionButton('Accept ⌫', 'preview-accept-delete',
+    'Accept as delete: applying will delete these boxes instead of relabeling them', () =>
+      _setDecision(_targets(), PreviewDecision.ACCEPTED, PreviewDecisionAction.DELETE));
+  const rejectBtn = _decisionButton('Reject', 'preview-reject',
+    'Reject the selected candidates (reversible)', () =>
+      _setDecision(_targets(), PreviewDecision.REJECTED));
+  const resetBtn = _decisionButton('Unreview', 'preview-reset',
+    'Put the selected candidates back to unreviewed', () =>
+      _setDecision(_targets(), PreviewDecision.PENDING));
 
   // Bulk over the *filter*, not the page: "accept everything above 90%" should
   // not require paging through 40 pages checking boxes.
   const bulkBtn = document.createElement('button');
   bulkBtn.className = 'secondary';
   bulkBtn.dataset.testid = 'preview-accept-all-filtered';
+  bulkBtn.title = 'Accept every candidate matching the current filter, not just this page';
   bulkBtn.addEventListener('click', async () => {
     const confirmed = await showConfirmModal({
       title: 'Accept all filtered',
@@ -352,13 +459,13 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
 
   // Off by default: a model's suggestion isn't a human verification.
   const verifyLabel = document.createElement('label');
-  verifyLabel.style.cssText = 'display:flex;align-items:center;gap:0.3em;font-size:0.85em;margin-left:auto;';
+  verifyLabel.className = 'preview-panel__verify';
   verifyLabel.title = 'Off: applied boxes keep their current verification state (still reviewable). '
     + 'On: treat this apply as a human decision and mark the boxes verified.';
   const verifyCheckbox = document.createElement('input');
   verifyCheckbox.type = 'checkbox';
   verifyCheckbox.className = 'relabel-modal-mark-verified';
-  verifyLabel.append(verifyCheckbox, document.createTextNode('Mark as verified'));
+  verifyLabel.append(verifyCheckbox, document.createTextNode('Verified'));
   footer.appendChild(verifyLabel);
 
   const applyBtn = document.createElement('button');
@@ -402,7 +509,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
 
   // ── Pagination ─────────────────────────────────────────────────────────
   const pager = document.createElement('div');
-  pager.style.cssText = 'display:flex;align-items:center;gap:0.4em;font-size:0.85em;';
+  pager.className = 'preview-panel__pager';
   const prevBtn = document.createElement('button');
   prevBtn.className = 'secondary';
   prevBtn.dataset.testid = 'preview-prev-page';
@@ -506,26 +613,67 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
 
   function _updateDecisionButtons() {
     const n = cardGrid.selected.size;
-    const suffix = n > 0 ? ` (${n})` : '';
-    acceptBtn.textContent = `Accept${suffix}`;
-    acceptDeleteBtn.textContent = `Accept as delete${suffix}`;
-    rejectBtn.textContent = `Reject${suffix}`;
-    resetBtn.textContent = `Unreview${suffix}`;
+    selCount.textContent = n > 0 ? `${n.toLocaleString()} selected` : 'none selected';
+    selCount.classList.toggle('preview-panel__selcount--active', n > 0);
     for (const btn of [acceptBtn, acceptDeleteBtn, rejectBtn, resetBtn]) btn.disabled = n === 0;
-    bulkBtn.textContent = `Accept all ${totalCount.toLocaleString()} filtered`;
+    bulkBtn.textContent = `Accept all (${totalCount.toLocaleString()})`;
     bulkBtn.disabled = totalCount === 0;
     const accepted = run?.decisionCounts?.[PreviewDecision.ACCEPTED] ?? 0;
-    applyBtn.textContent = `Apply ${accepted.toLocaleString()} accepted`;
+    applyBtn.textContent = `Apply ${accepted.toLocaleString()}`;
+    applyBtn.title = `Write the ${accepted.toLocaleString()} accepted candidate(s) to the database`;
     applyBtn.disabled = accepted === 0;
+  }
+
+  /**
+   * Header for one label group in the grid, spanning the full row. Only drawn
+   * in label-grouping mode: image groups are usually one or two candidates, so
+   * a header each would cost more grid rows than the grouping saves.
+   *
+   * `Select group` acts on this page's members of the group — the whole-run
+   * equivalent is the label filter plus "Accept all", which is already there.
+   */
+  function _buildGroupHeader(labelUuid, entries) {
+    const header = document.createElement('div');
+    header.className = 'preview-panel__group-header';
+    header.dataset.testid = 'preview-group-header';
+    header.dataset.labelUuid = labelUuid ?? '';
+
+    const chip = labelChip(_labels.get(labelUuid)?.name, labelUuid, _labels);
+    // `entries` is filled as the group's cards are built, so the count is
+    // written once the page is complete (see the end of _renderPage).
+    const count = document.createElement('span');
+    count.className = 'preview-panel__group-count';
+    header._countEl = count;
+    header._entries = entries;
+
+    const selectBtn = document.createElement('button');
+    selectBtn.className = 'secondary preview-panel__group-select';
+    selectBtn.dataset.testid = 'preview-group-select';
+    selectBtn.textContent = 'Select group';
+    selectBtn.addEventListener('click', () => _setSelection(entries, true));
+
+    header.append(chip, count, selectBtn);
+    return header;
   }
 
   function _renderPage() {
     grid.innerHTML = '';
     _visibleEntries.length = 0;
+    const grouping = _activeGrouping();
+    // Candidates arrive already contiguous per group (the server orders them
+    // that way), so a header is due whenever the key changes.
+    let groupKey;
+    let groupEntries = null;
     let index = 0;
     for (const candidate of candidates) {
       const entry = { id: candidate.uuid, kind: 'bbox', candidate };
       _visibleEntries.push(entry);
+      if (grouping === 'label' && candidate.proposedLabelUuid !== groupKey) {
+        groupKey = candidate.proposedLabelUuid;
+        groupEntries = [];
+        grid.appendChild(_buildGroupHeader(groupKey, groupEntries));
+      }
+      groupEntries?.push(entry);
       const card = buildCandidateCard(cardGrid, entry, {
         gridEl: grid,
         labels: _labels,
@@ -546,6 +694,11 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
       }
       grid.appendChild(card);
       index += 1;
+    }
+
+    for (const header of grid.querySelectorAll('.preview-panel__group-header')) {
+      const n = header._entries?.length ?? 0;
+      header._countEl.textContent = `${n} on this page`;
     }
 
     const first = totalCount === 0 ? 0 : page * PAGE_SIZE + 1;
@@ -620,33 +773,42 @@ export async function openPreviewRunModal({ runUuid, labels = null, onApplied = 
   const { dialog, open, close } = createModalShell({ onClose: () => panel?.destroy() });
   dialog.classList.add('app-modal-dialog--full', 'preview-run-modal', 'relabel-confirm-modal');
 
+  // One header row instead of a tall title row plus a footer row that held a
+  // single Close button: both were pure chrome around the grid, which is the
+  // only thing in this modal worth vertical space.
+  const header = document.createElement('div');
+  header.className = 'preview-run-modal__header';
+
   const title = document.createElement('h3');
-  title.className = 'app-modal-title';
-  title.style.flexShrink = '0';
+  title.className = 'app-modal-title preview-run-modal__title';
   title.dataset.testid = 'preview-run-title';
-  dialog.appendChild(title);
+
+  const subtitle = document.createElement('span');
+  subtitle.className = 'preview-run-modal__subtitle';
+  subtitle.dataset.testid = 'preview-run-subtitle';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'secondary preview-run-modal__close';
+  closeBtn.dataset.testid = 'preview-run-close';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close (decisions are already saved)';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.addEventListener('click', close);
+
+  header.append(title, subtitle, closeBtn);
+  dialog.appendChild(header);
 
   open();
 
   try {
     panel = await createPreviewPanel(dialog, { runUuid, labels, onApplied });
     title.textContent = panel.run?.name ?? 'Preview run';
+    subtitle.textContent = panel.run?.modelName ?? '';
   } catch (err) {
     Logger.error('Failed to open preview run:', err);
     title.textContent = 'Failed to load preview run';
     toast(`Failed to open preview run: ${err.message}`, 5000, 'error');
   }
-
-  const footer = document.createElement('div');
-  footer.className = 'classify-modal-footer';
-  footer.style.cssText = 'display:flex;justify-content:flex-end;flex-shrink:0;';
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'secondary';
-  closeBtn.dataset.testid = 'preview-run-close';
-  closeBtn.textContent = 'Close';
-  closeBtn.addEventListener('click', close);
-  footer.appendChild(closeBtn);
-  dialog.appendChild(footer);
 
   return { close };
 }

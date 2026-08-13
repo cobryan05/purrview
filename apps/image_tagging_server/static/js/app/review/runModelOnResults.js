@@ -20,6 +20,7 @@ import {
   fetchReviewQueue,
   getBboxThumbnailUrl,
   getImageThumbnailUrl,
+  getRegionThumbnailUrl,
   bulkApplyBboxesByUuids,
   invalidateBboxThumbnails,
   addBbox,
@@ -42,7 +43,6 @@ import {
 } from '/app-static/js/shared/api/tasks.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
-import { drawLetterboxedBboxes } from '/app-static/js/ui/utils/bboxThumbOverlay.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { expandLabelFilterSet, bboxHasAnyTag, bboxMatchesConfidence, VERIFICATION_TAG_BY_STATE } from '/app-static/js/app/review/filterPredicate.js';
 import { openClassifierTagConfirmationModal } from '/app-static/js/app/review/runClassifierOnResults.js';
@@ -315,9 +315,13 @@ export function makeCandidateBboxAdapter(candidate, cardEl, previewController) {
     getLabelColor() { return labels.get(candidate.proposedLabelUuid)?.color ?? null; },
     getConfidence() { return candidate.confidence ?? null; },
     getThumbnailUrl() {
-      return candidate.isNew
-        ? getImageThumbnailUrl(candidate.imagePath, 300)
-        : getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+      if (!candidate.isNew) return getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+      return candidate.geometry
+        ? getRegionThumbnailUrl(candidate.imagePath, candidate.geometry, {
+            width: 300,
+            color: labels.get(candidate.proposedLabelUuid)?.color ?? null,
+          })
+        : getImageThumbnailUrl(candidate.imagePath, 300);
     },
 
     // ── Relabel (no DB) ────────────────────────────────────────────────────
@@ -664,29 +668,16 @@ export async function openRelabelConfirmationModal(candidates, ctx) {
     thumb.className = 'thumb';
     thumb.loading = 'lazy';
     if (candidate.isNew) {
-      // A new box has no bbox uuid to crop yet — show the whole image for
-      // context, with the proposed geometry drawn as a canvas overlay (same
-      // letterbox-aware approach as review/main.js's buildImageCard).
-      thumb.src = getImageThumbnailUrl(candidate.imagePath, 300);
-      const thumbWrap = document.createElement('div');
-      thumbWrap.style.cssText = 'position:relative;';
-      const overlay = document.createElement('canvas');
-      overlay.className = 'thumb-overlay';
-      overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
-
-      const drawOverlay = () => {
-        if (!candidate.geometry) return;
-        drawLetterboxedBboxes(thumb, overlay, [{ ...candidate.geometry, color: '#5cc45c' }]);
-      };
-
-      if (thumb.complete && thumb.naturalWidth) {
-        drawOverlay();
-      } else {
-        thumb.onload = drawOverlay;
-      }
-
-      thumbWrap.append(thumb, overlay);
-      card.appendChild(thumbWrap);
+      // A new box has no bbox uuid to crop by, but its proposed geometry is
+      // enough for a region crop — the whole frame this used to show left a
+      // small proposal invisible. Hovering still gives the whole frame.
+      thumb.src = candidate.geometry
+        ? getRegionThumbnailUrl(candidate.imagePath, candidate.geometry, {
+            width: 300,
+            color: ctx.labels.get(candidate.proposedLabelUuid)?.color ?? '#5cc45c',
+          })
+        : getImageThumbnailUrl(candidate.imagePath, 300);
+      card.appendChild(thumb);
     } else {
       thumb.src = getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
       card.appendChild(thumb);

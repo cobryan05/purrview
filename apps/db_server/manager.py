@@ -2649,6 +2649,112 @@ class Manager:
         key = hashlib.sha1(image_path.encode()).hexdigest()
         return self._thumb_cache_dir() / f"img_{key}_{width}.png"
 
+    def _region_thumb_cache_path(self, image_path: str, region: Tuple[float, float, float, float], width: int) -> Path:
+        # The region is part of the key, so moving a proposed box simply misses
+        # the cache rather than needing an invalidation hook.
+        key = hashlib.sha1(f"{image_path}|{region[0]:.6f},{region[1]:.6f},{region[2]:.6f},{region[3]:.6f}".encode())
+        return self._thumb_cache_dir() / f"rgn_{key.hexdigest()}_{width}.png"
+
+    async def get_region_thumbnail(
+        self,
+        image_path: str,
+        x: float,
+        y: float,
+        width_frac: float,
+        height_frac: float,
+        width: int = 200,
+        color: Optional[str] = None,
+    ) -> Optional[bytes]:
+        """PNG bytes for a cropped+resized thumbnail of an arbitrary normalized
+        region of an image, with the region outlined.
+
+        This is `get_bbox_thumbnail` for a box that has no bbox row: a preview
+        run's proposed *new* boxes exist only as candidate geometry, so a card
+        for one had to fall back to the whole frame — in which a small proposed
+        box is invisible. Same 20% context padding as the bbox crop.
+        """
+        from PIL import Image as PILImage
+        from PIL import ImageDraw
+
+        bx = min(max(x, 0.0), 1.0)
+        by = min(max(y, 0.0), 1.0)
+        bw = min(max(width_frac, 0.0), 1.0 - bx)
+        bh = min(max(height_frac, 0.0), 1.0 - by)
+        if bw <= 0 or bh <= 0:
+            return None
+
+        cache_path = self._region_thumb_cache_path(image_path, (bx, by, bw, bh), width)
+        if cache_path.exists():
+            try:
+                cache_path.touch()  # update mtime for LRU tracking
+                async with aiofiles.open(cache_path, "rb") as f:
+                    return await f.read()
+            except OSError:
+                pass
+
+        safe_path = self._resolve_image_file_path(image_path)
+        if safe_path is None:
+            return None
+
+        outline: Tuple[int, int, int] = (92, 196, 92)  # the "new box" green
+        if color:
+            try:
+                h = color.lstrip("#")
+                outline = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+            except (ValueError, IndexError):
+                pass
+
+        def _generate() -> Optional[bytes]:
+            try:
+                with PILImage.open(safe_path) as img:
+                    img = img.convert("RGB")
+                    img_w, img_h = img.size
+                    pad_x = bw * img_w * 0.2
+                    pad_y = bh * img_h * 0.2
+                    left = max(0, bx * img_w - pad_x)
+                    top = max(0, by * img_h - pad_y)
+                    right = min(img_w, (bx + bw) * img_w + pad_x)
+                    bottom = min(img_h, (by + bh) * img_h + pad_y)
+                    # A box smaller than a pixel (or an image only a few pixels
+                    # across) would otherwise crop to nothing; keep at least one
+                    # pixel so the crop is a real image, as the bbox crop does.
+                    right = max(right, min(img_w, left + 1))
+                    bottom = max(bottom, min(img_h, top + 1))
+                    cropped = img.crop((left, top, right, bottom))
+                    draw = ImageDraw.Draw(cropped)
+                    draw.rectangle(
+                        [
+                            bx * img_w - left,
+                            by * img_h - top,
+                            (bx + bw) * img_w - left,
+                            (by + bh) * img_h - top,
+                        ],
+                        outline=outline,
+                        width=3,
+                    )
+                    del draw
+                    aspect = cropped.width / cropped.height if cropped.height else 1
+                    height = max(1, round(width / aspect))
+                    cropped = cropped.resize((width, height), PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    cropped.save(buf, format="PNG")
+                    return buf.getvalue()
+            except Exception as e:
+                logger.warning(f"Failed to generate region thumbnail for {image_path}: {e}")
+                return None
+
+        async with self._thumb_decode_sem:
+            png_bytes = await asyncio.to_thread(_generate)
+        if png_bytes is None:
+            return None
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(cache_path, "wb") as f:
+            await f.write(png_bytes)
+
+        self._schedule_thumb_cache_trim()
+        return png_bytes
+
     async def get_image_thumbnail(self, image_path: str, width: int = 640) -> Optional[bytes]:
         """Return PNG bytes for a full-image thumbnail, resized to `width` px.
         Serves from disk cache if available, otherwise generates and caches it.

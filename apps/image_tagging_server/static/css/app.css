@@ -2032,16 +2032,197 @@ button.filter-active {
 
 /* ── Preview triage panel (app/review/previewPanel.js) ──────────────────────
    A run's toolbar/grid/footer inside the full-surface modal. The grid itself
-   is .review-grid — candidates are laid out exactly like review results. */
+   is .review-grid — candidates are laid out exactly like review results.
+
+   ⚠️ Chrome here is deliberately *tight*. This modal exists to look at
+   candidates; at Pico's default control metrics the header, a wrapped filter
+   bar and a wrapped action bar ate most of the viewport and left roughly one
+   row of cards visible. Keep the toolbar and footer to one row each. */
+.preview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  flex: 1;
+  min-height: 0;
+}
+
 .preview-panel__toolbar,
 .preview-panel__footer {
-  padding: 0.3em 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 0.2em 0;
   border-bottom: 1px solid var(--border);
 }
+
 .preview-panel__footer {
   border-bottom: none;
   border-top: 1px solid var(--border);
-  padding-top: 0.5em;
+  padding-top: 0.3em;
+}
+
+.preview-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Denser than the review grid: this modal is a triage queue, so rows of
+   candidates per screen is the whole point. */
+.preview-panel__grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.5em;
+  padding: 0.3em 0 1em;
+}
+
+.preview-panel__grid .card-info {
+  padding: 0.25em 0.35em;
+  font-size: 0.75em;
+}
+
+.preview-panel__grid .preview-card-source {
+  margin-top: 0;
+}
+
+/* Compact form controls — same --pico-* bridge the review toolbar uses. */
+.preview-panel__toolbar select,
+.preview-panel__toolbar input,
+.preview-panel__footer button,
+.preview-panel__footer input {
+  --pico-form-element-spacing-vertical: 0.15em;
+  --pico-form-element-spacing-horizontal: 0.5em;
+  font-size: 0.85em;
+  height: auto;
+  width: auto;
+  margin-bottom: 0;
+}
+
+.preview-panel__conf {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.preview-panel__conf input {
+  width: 4em;
+}
+
+.preview-panel__count,
+.preview-panel__pager {
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.preview-panel__count {
+  margin-left: auto;
+}
+
+.preview-panel__pager {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.preview-panel__pager button {
+  --pico-form-element-spacing-vertical: 0.1em;
+  --pico-form-element-spacing-horizontal: 0.45em;
+  font-size: 0.95em;
+  height: auto;
+  width: auto;
+  margin-bottom: 0;
+}
+
+.preview-panel__selcount {
+  font-size: 0.8em;
+  color: var(--text-faint);
+  white-space: nowrap;
+  min-width: 6.5em;
+}
+
+.preview-panel__selcount--active {
+  color: var(--color-accent);
+}
+
+.preview-panel__verify {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* ── Label-group headers in the grid (Group: label) ─────────────────────── */
+.preview-panel__group-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.15em 0;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--pico-background-color, var(--bg));
+}
+
+.preview-panel__group-count {
+  font-size: 0.75em;
+  color: var(--text-faint);
+}
+
+.preview-panel__group-select {
+  --pico-form-element-spacing-vertical: 0.1em;
+  --pico-form-element-spacing-horizontal: 0.45em;
+  font-size: 0.75em;
+  height: auto;
+  width: auto;
+  margin-bottom: 0;
+  margin-left: auto;
+}
+
+/* ── Full-surface run modal chrome ──────────────────────────────────────── */
+.preview-run-modal {
+  padding: 0.7em 0.9em;
+  gap: 0.35em;
+}
+
+.preview-run-modal__header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  flex-shrink: 0;
+}
+
+.preview-run-modal__title {
+  font-size: 1em;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-run-modal__subtitle {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-run-modal__close {
+  --pico-form-element-spacing-vertical: 0.1em;
+  --pico-form-element-spacing-horizontal: 0.5em;
+  font-size: 0.9em;
+  height: auto;
+  width: auto;
+  margin: 0 0 0 auto;
 }
 
 .preview-run-row:last-child {

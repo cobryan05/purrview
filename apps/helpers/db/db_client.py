@@ -6328,7 +6328,9 @@ class DbClient:
         `image_confidence` (the default) reproduces the modal's client-side
         grouping — every candidate from one image adjacent, images ranked by
         their best candidate — which is exactly the part that did not survive
-        being paginated.
+        being paginated. `label_confidence` is the same grouping keyed on the
+        proposed label instead, so every candidate of one class is contiguous
+        (and stays contiguous across page boundaries).
         """
         clauses = self._preview_candidate_filters(run_uuid, q)
         desc = q.sort_order == "desc"
@@ -6341,22 +6343,26 @@ class DbClient:
             total_count = total.one()
 
             stmt = select(PreviewCandidate).where(*clauses)
-            if q.sort_by == "image_confidence":
-                # Rank images by their best candidate *within the current filter*,
+            group_col = {
+                "image_confidence": PreviewCandidate.image_uuid,
+                "label_confidence": PreviewCandidate.proposed_label_uuid,
+            }.get(q.sort_by)
+            if group_col is not None:
+                # Rank groups by their best candidate *within the current filter*,
                 # so filtering to one label doesn't leave images ordered by a
                 # candidate the user filtered away.
-                image_rank = (
+                rank = (
                     select(
-                        PreviewCandidate.image_uuid.label("image_uuid"),
+                        group_col.label("group_key"),
                         func.max(PreviewCandidate.confidence).label("best"),
                     )
                     .where(*clauses)
-                    .group_by(PreviewCandidate.image_uuid)
+                    .group_by(group_col)
                     .subquery()
                 )
-                stmt = stmt.join(image_rank, image_rank.c.image_uuid == PreviewCandidate.image_uuid).order_by(
-                    _dir(image_rank.c.best),
-                    PreviewCandidate.image_uuid.asc(),
+                stmt = stmt.join(rank, rank.c.group_key == group_col).order_by(
+                    _dir(rank.c.best),
+                    group_col.asc(),
                     _dir(PreviewCandidate.confidence),
                     PreviewCandidate.uuid.asc(),
                 )

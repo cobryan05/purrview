@@ -343,6 +343,31 @@ export function getBboxThumbnailUrl(imagePath, bboxUuid, width = 200) {
   return `/api/images/${encodedPath}/bbox/${bboxUuid}/thumbnail?width=${width}`;
 }
 
+/**
+ * Crop thumbnail for an arbitrary normalized region — `getBboxThumbnailUrl` for
+ * a box that has no bbox row yet (a preview run's proposed *new* boxes). The
+ * whole-image thumbnail these cards used to show made a small proposal
+ * invisible; the crop is what the rest of the review UI shows for a box.
+ *
+ * @param {string} imagePath
+ * @param {{x: number, y: number, width: number, height: number}} geometry - normalized 0-1.
+ * @param {{width?: number, color?: ?string}} [opts] - `width` is the output px
+ *   width; `color` is the outline colour (hex, with or without '#').
+ * @returns {string}
+ */
+export function getRegionThumbnailUrl(imagePath, geometry, { width = 200, color = null } = {}) {
+  const encodedPath = imagePath.split('/').map(encodeURIComponent).join('/');
+  const params = new URLSearchParams({
+    x: String(geometry.x ?? 0),
+    y: String(geometry.y ?? 0),
+    width_frac: String(geometry.width ?? 0),
+    height_frac: String(geometry.height ?? 0),
+    width: String(width),
+  });
+  if (color) params.set('color', color.replace('#', ''));
+  return `/api/images/${encodedPath}/region/thumbnail?${params.toString()}`;
+}
+
 export function getImageThumbnailUrl(imagePath, width = 200) {
   const encodedPath = imagePath.split('/').map(encodeURIComponent).join('/');
   return `/api/images/${encodedPath}/thumbnail?width=${width}`;

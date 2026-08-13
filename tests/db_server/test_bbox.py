@@ -198,6 +198,57 @@ async def test_thumbnail_nonexistent_bbox_returns_404(http_client, monkeypatch, 
     assert r.status_code == 404
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Region thumbnail — the crop for a box that has no bbox row yet (a preview
+# run's proposed *new* boxes), GET /api/images/{path}/region/thumbnail
+# ──────────────────────────────────────────────────────────────────────────────
+
+REGION_QS = "x=0.1&y=0.1&width_frac=0.3&height_frac=0.3"
+
+
+async def test_region_thumbnail_returns_png_bytes(http_client, image_file, monkeypatch, tmp_path):
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+    r = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:4] == b"\x89PNG"
+
+
+async def test_region_thumbnail_is_cached_per_region(http_client, image_file, monkeypatch, tmp_path):
+    """The region is part of the cache key, so moving a proposed box misses the
+    cache instead of serving the old crop."""
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+
+    url = f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}"
+    r1 = await http_client.get(url)
+    assert r1.status_code == 200
+    cache_files = list((tmp_path / "thumb_cache").glob("rgn_*.png"))
+    assert len(cache_files) == 1
+
+    r2 = await http_client.get(url)
+    assert r2.content == r1.content
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 1
+
+    moved = await http_client.get(
+        "/api/images/bbox_test.png/region/thumbnail?x=0.5&y=0.5&width_frac=0.3&height_frac=0.3"
+    )
+    assert moved.status_code == 200
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+
+
+async def test_region_thumbnail_missing_image_returns_404(http_client, monkeypatch, tmp_path):
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+    r = await http_client.get(f"/api/images/no_such_image.png/region/thumbnail?{REGION_QS}")
+    assert r.status_code == 404
+
+
+async def test_region_thumbnail_zero_sized_region_returns_404(http_client, image_file, monkeypatch, tmp_path):
+    """A degenerate region has nothing to crop — 404 beats a 1px image or a 500."""
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+    r = await http_client.get("/api/images/bbox_test.png/region/thumbnail?x=0.1&y=0.1&width_frac=0&height_frac=0.3")
+    assert r.status_code == 404
+
+
 async def test_invalidate_thumbnails(http_client, setup_image_with_bbox, monkeypatch, tmp_path):
     """Invalidating thumbnails removes cached files."""
     monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)

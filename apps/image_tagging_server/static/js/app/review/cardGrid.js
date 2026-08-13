@@ -3,6 +3,7 @@ import {
   VERIFIED_TAG_UUID,
   getBboxThumbnailUrl,
   getImageThumbnailUrl,
+  getRegionThumbnailUrl,
 } from '/app-static/js/shared/api/review.js';
 import { formatConfidencePct, readConfidence } from '/app-static/js/shared/domain/image/confidence.js';
 import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
@@ -967,28 +968,31 @@ export function buildCandidateCard(controller, entry, opts) {
 
   const proposedColor = labels.get(candidate.proposedLabelUuid)?.color ?? '#5cc45c';
 
-  if (candidate.isNew) {
-    // No bbox to crop yet — show the whole image with the proposed geometry
-    // drawn over it (same letterbox-aware overlay as buildImageCard).
-    const thumbWrap = document.createElement('div');
-    thumbWrap.style.cssText = 'position:relative;';
+  if (candidate.isNew && candidate.geometry) {
+    // A proposed new box has no bbox row to crop by uuid, but it does have
+    // geometry — so crop by region. Showing the whole frame instead (which this
+    // did) makes a small proposal a handful of pixels; the hover preview is
+    // where the whole frame belongs, same as every other card in the app.
+    const thumbImg = document.createElement('img');
+    thumbImg.className = 'thumb';
+    thumbImg.loading = 'lazy';
+    thumbImg.title = 'Double-click to edit in canvas';
+    thumbImg.src = getRegionThumbnailUrl(candidate.imageFilename, candidate.geometry, {
+      width: 300,
+      color: proposedColor,
+    });
+    thumbImg.addEventListener('dblclick', () => { clearTimer(); onOpenEditor(entry); });
+    card.append(cb, thumbImg);
+  } else if (candidate.isNew) {
+    // Geometry-less new candidate (shouldn't happen, but the card must still
+    // render): whole frame, nothing to outline.
     const thumbImg = document.createElement('img');
     thumbImg.className = 'thumb';
     thumbImg.loading = 'lazy';
     thumbImg.title = 'Double-click to edit in canvas';
     thumbImg.src = getImageThumbnailUrl(candidate.imageFilename, 300);
-    const overlay = document.createElement('canvas');
-    overlay.className = 'thumb-overlay';
-    overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
-    const drawOverlay = () => {
-      if (!candidate.geometry) return;
-      drawLetterboxedBboxes(thumbImg, overlay, [{ ...candidate.geometry, color: proposedColor }]);
-    };
-    if (thumbImg.complete && thumbImg.naturalWidth) drawOverlay();
-    else thumbImg.onload = drawOverlay;
     thumbImg.addEventListener('dblclick', () => { clearTimer(); onOpenEditor(entry); });
-    thumbWrap.append(thumbImg, overlay);
-    card.append(cb, thumbWrap);
+    card.append(cb, thumbImg);
   } else {
     const thumbImg = document.createElement('img');
     thumbImg.className = 'thumb';

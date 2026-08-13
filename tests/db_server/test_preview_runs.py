@@ -456,6 +456,71 @@ class TestQueryPreviewCandidates:
         assert seen_images[0] == image_b
         assert seen_images[1] == image_a
 
+    async def test_sort_label_confidence_groups_by_proposed_label(
+        self, http_client, files_root, label_uuid, other_label_uuid
+    ):
+        """label_confidence keeps every candidate of one proposed label
+        contiguous, labels ordered by their own best candidate — the "triage a
+        whole class at once" grouping in the preview panel."""
+        (files_root / "lbl_a.png").write_bytes(make_png())
+        (files_root / "lbl_b.png").write_bytes(make_png())
+
+        run = await _create_run(http_client)
+        image_a = await _get_image_uuid(http_client, "lbl_a.png")
+        image_b = await _get_image_uuid(http_client, "lbl_b.png")
+
+        # Interleaved across images, so only the label grouping can make each
+        # label's candidates adjacent. Label A's best is 0.4, label B's is 0.95.
+        candidates = [
+            _candidate(image_a, label_uuid, confidence=0.4, is_new=True),
+            _candidate(image_b, other_label_uuid, confidence=0.95, is_new=True),
+            _candidate(image_b, label_uuid, confidence=0.1, is_new=True),
+            _candidate(image_a, other_label_uuid, confidence=0.3, is_new=True),
+        ]
+        await _add_candidates(http_client, run["uuid"], candidates)
+
+        results, total = await _query_candidates(http_client, run["uuid"], sortBy="label_confidence", sortOrder="desc")
+        assert total == 4
+
+        seen_labels = []
+        for c in results:
+            if not seen_labels or seen_labels[-1] != c["proposedLabelUuid"]:
+                seen_labels.append(c["proposedLabelUuid"])
+        assert len(seen_labels) == 2, seen_labels  # one contiguous block per label
+
+        # Ranking: label B (best 0.95) before label A (best 0.4) under desc.
+        assert seen_labels[0] == other_label_uuid
+        assert seen_labels[1] == label_uuid
+
+    async def test_sort_label_confidence_ranks_within_the_filter(
+        self, http_client, files_root, label_uuid, other_label_uuid
+    ):
+        """A label's rank comes from its best candidate *among the filtered
+        rows* — filtering away the top candidate must re-rank its label,
+        otherwise a page opens on a group whose lead candidate isn't shown."""
+        (files_root / "lbl_c.png").write_bytes(make_png())
+        run = await _create_run(http_client)
+        image_uuid = await _get_image_uuid(http_client, "lbl_c.png")
+
+        await _add_candidates(
+            http_client,
+            run["uuid"],
+            [
+                # Label A: 0.95 (filtered out below) and 0.2.
+                _candidate(image_uuid, label_uuid, confidence=0.95, is_new=True),
+                _candidate(image_uuid, label_uuid, confidence=0.2, is_new=True),
+                # Label B: 0.5, which wins once A's 0.95 is filtered away.
+                _candidate(image_uuid, other_label_uuid, confidence=0.5, is_new=True),
+            ],
+        )
+
+        results, total = await _query_candidates(
+            http_client, run["uuid"], sortBy="label_confidence", sortOrder="desc", confidenceMax=0.6
+        )
+        assert total == 2
+        assert results[0]["proposedLabelUuid"] == other_label_uuid
+        assert results[1]["proposedLabelUuid"] == label_uuid
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Bulk PATCH of candidates

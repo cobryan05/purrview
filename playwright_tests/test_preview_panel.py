@@ -22,6 +22,8 @@ from playwright.sync_api import Page, Route, expect
 
 LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
 LABEL_DOG = {"uuid": "lbl-dog", "name": "Dog", "color": "#00ff00", "parentUuid": None}
+# Child of Cat — used by the label-filter hierarchy test.
+LABEL_KITTEN = {"uuid": "lbl-kitten", "name": "Kitten", "color": "#ff8800", "parentUuid": "lbl-cat"}
 
 _TINY_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
@@ -270,6 +272,20 @@ class FakePreviewApi:
             if is_new is not None:
                 cands = [c for c in cands if bool(c.get("isNew")) == is_new]
 
+            # The two grouping sorts are what keep a whole image / a whole class
+            # contiguous across pages; the panel draws its label-group headers
+            # on the assumption that the server already did this.
+            sort_by = body.get("sortBy")
+            group_key = {"image_confidence": "imageUuid", "label_confidence": "proposedLabelUuid"}.get(sort_by)
+            if group_key:
+                best = {}
+                for c in cands:
+                    k = c.get(group_key)
+                    best[k] = max(best.get(k, 0.0), c.get("confidence") or 0.0)
+                cands.sort(key=lambda c: (-best[c.get(group_key)], str(c.get(group_key)), -(c.get("confidence") or 0)))
+            elif sort_by == "confidence":
+                cands.sort(key=lambda c: -(c.get("confidence") or 0))
+
             total = len(cands)
             offset = body.get("offset", 0)
             limit = body.get("limit", 100)
@@ -406,6 +422,43 @@ class TestCandidateCardContent:
         card = page.locator('[data-candidate-uuid="c-new"]')
         expect(card).to_contain_text("NEW")
 
+    def test_new_candidate_thumb_is_a_region_crop_not_the_whole_frame(self, page: Page, base_url: str):
+        """A proposed new box has no bbox row to crop by uuid, but it does have
+        geometry — the card must show that crop, or a small proposal is a few
+        pixels in the middle of the frame."""
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(
+            _make_run(),
+            [
+                _make_candidate(
+                    "c-new",
+                    is_new=True,
+                    proposed_label="lbl-dog",
+                    geometry={"x": 0.25, "y": 0.5, "width": 0.1, "height": 0.2},
+                )
+            ],
+        )
+        api.install(page)
+
+        _open_panel(page, "run-1")
+
+        src = page.locator('[data-candidate-uuid="c-new"] img.thumb').get_attribute("src")
+        assert "/region/thumbnail" in src, src
+        assert "x=0.25" in src and "width_frac=0.1" in src and "height_frac=0.2" in src, src
+
+    def test_new_candidate_without_geometry_falls_back_to_whole_image(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), [_make_candidate("c-new", is_new=True, geometry=None)])
+        api.install(page)
+
+        _open_panel(page, "run-1")
+
+        src = page.locator('[data-candidate-uuid="c-new"] img.thumb').get_attribute("src")
+        assert "/region/thumbnail" not in src, src
+        assert "/thumbnail" in src, src
+
     def test_changed_since_run_shows_badge(self, page: Page, base_url: str):
         _setup_common(page, base_url)
         api = FakePreviewApi()
@@ -506,6 +559,62 @@ class TestDecisionActions:
         assert body["decision"] == "pending"
 
 
+class TestSelectAllNone:
+    def _run(self, api: FakePreviewApi, n=4):
+        api.add_run(_make_run(), [_make_candidate(f"c{i}") for i in range(n)])
+
+    def test_select_all_selects_every_card_on_the_page(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        self._run(api)
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        page.get_by_test_id("preview-select-all").click()
+
+        expect(page.get_by_test_id("preview-selection-count")).to_have_text("4 selected")
+        expect(page.locator(".review-card.selected")).to_have_count(4)
+
+        page.get_by_test_id("preview-accept").click()
+        _wait_for_patch(page, api)
+        _, body = api.patch_bodies[-1]
+        assert sorted(body["candidateUuids"]) == ["c0", "c1", "c2", "c3"]
+
+    def test_select_none_clears_the_selection(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        self._run(api)
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        page.get_by_test_id("preview-select-all").click()
+        expect(page.get_by_test_id("preview-selection-count")).to_have_text("4 selected")
+
+        page.get_by_test_id("preview-select-none").click()
+
+        expect(page.get_by_test_id("preview-selection-count")).to_have_text("none selected")
+        expect(page.locator(".review-card.selected")).to_have_count(0)
+        expect(page.locator(".review-card input[type=checkbox]:checked")).to_have_count(0)
+        # With nothing selected the decision buttons have no target.
+        expect(page.get_by_test_id("preview-accept")).to_be_disabled()
+
+    def test_select_none_clears_a_click_selection_too(self, page: Page, base_url: str):
+        """Deselect must also undo cards selected by clicking, not just ones the
+        select-all button added."""
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        self._run(api)
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        _select_card(page, "c1")
+        expect(page.get_by_test_id("preview-selection-count")).to_have_text("1 selected")
+
+        page.get_by_test_id("preview-select-none").click()
+        expect(page.get_by_test_id("preview-selection-count")).to_have_text("none selected")
+        expect(page.locator(".review-card.selected")).to_have_count(0)
+
+
 class TestDecisionCoalescing:
     def test_rubber_banding_decisions_send_one_patch(self, page: Page, base_url: str):
         """Accept -> Reject -> Accept in quick succession (all within the
@@ -604,6 +713,55 @@ class TestFiltering:
         assert last_query["decisions"] == ["accepted"]
         assert last_query["offset"] == 0
 
+    def test_label_filter_is_hierarchical_and_expands_children_on_demand(self, page: Page, base_url: str):
+        """The Label dropdown mirrors the review filter panel: the vocabulary is
+        a tree, and "Include child labels" widens a parent pick to its
+        descendants (expanded client-side, since the candidates endpoint filters
+        on plain uuid membership)."""
+        _mock_review_queue(page)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG, LABEL_KITTEN])
+        _mock_tags(page)
+        _mock_thumbnails(page)
+        _mock_image_thumbnails(page)
+        _navigate_to_review(page, base_url)
+
+        api = FakePreviewApi()
+        api.add_run(
+            _make_run(),
+            [
+                _make_candidate("c-cat", proposed_label="lbl-cat"),
+                _make_candidate("c-kitten", proposed_label="lbl-kitten"),
+                _make_candidate("c-dog", proposed_label="lbl-dog"),
+            ],
+        )
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        page.get_by_test_id("preview-filter-label").locator(".ms-dropdown__trigger").click()
+        panel = page.locator(".ms-dropdown[data-filter-key='preview-proposed-label']")
+
+        # The child is rendered under its parent with a depth indent, not as a
+        # flat sibling.
+        expect(panel.locator(".ms-item--child input[value='lbl-kitten']")).to_have_count(1)
+
+        panel.locator("input[value='lbl-cat']").click()
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(1)
+        _, q = api.query_bodies[-1]
+        assert q["proposedLabelUuids"] == ["lbl-cat"]
+
+        # Toggle on → the parent's descendants come along.
+        panel.locator(".ms-hierarchy-toggle input[type=checkbox]").click()
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(2)
+        _, q = api.query_bodies[-1]
+        assert sorted(q["proposedLabelUuids"]) == ["lbl-cat", "lbl-kitten"]
+        assert q["offset"] == 0
+
+        # Toggle back off → parent only again.
+        panel.locator(".ms-hierarchy-toggle input[type=checkbox]").click()
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(1)
+        _, q = api.query_bodies[-1]
+        assert q["proposedLabelUuids"] == ["lbl-cat"]
+
     def test_confidence_min_requeries_and_resets_offset(self, page: Page, base_url: str):
         _setup_common(page, base_url)
         api = FakePreviewApi()
@@ -624,6 +782,70 @@ class TestFiltering:
         _, last_query = api.query_bodies[-1]
         assert abs(last_query["confidenceMin"] - 0.9) < 1e-9
         assert last_query["offset"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 6b. Grouping (Group: label)
+# ---------------------------------------------------------------------------
+
+
+class TestLabelGrouping:
+    def _mixed_run(self, api: FakePreviewApi):
+        api.add_run(
+            _make_run(),
+            [
+                _make_candidate("c1", proposed_label="lbl-dog", confidence=0.9),
+                _make_candidate("c2", proposed_label="lbl-cat", confidence=0.8),
+                _make_candidate("c3", proposed_label="lbl-dog", confidence=0.4),
+                _make_candidate("c4", proposed_label="lbl-cat", confidence=0.3),
+            ],
+        )
+
+    def test_label_grouping_is_the_default_and_draws_one_header_per_label(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        self._mixed_run(api)
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        expect(page.get_by_test_id("preview-sort")).to_have_value("label_confidence")
+        expect(page.get_by_test_id("preview-group-header")).to_have_count(2)
+        _, last_query = api.query_bodies[-1]
+        assert last_query["sortBy"] == "label_confidence"
+
+        headers = page.get_by_test_id("preview-group-header")
+        # Dog's best candidate (0.9) outranks Cat's (0.8), so Dog leads.
+        expect(headers.nth(0)).to_contain_text("Dog")
+        expect(headers.nth(0)).to_contain_text("2 on this page")
+        expect(headers.nth(1)).to_contain_text("Cat")
+
+    def test_no_group_headers_in_a_flat_sort(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        self._mixed_run(api)
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        page.get_by_test_id("preview-sort").select_option("confidence")
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(4)
+        expect(page.get_by_test_id("preview-group-header")).to_have_count(0)
+
+    def test_select_group_selects_only_that_label(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        self._mixed_run(api)
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        expect(page.get_by_test_id("preview-group-header")).to_have_count(2)
+
+        page.get_by_test_id("preview-group-select").nth(0).click()
+        expect(page.get_by_test_id("preview-selection-count")).to_have_text("2 selected")
+
+        page.get_by_test_id("preview-accept").click()
+        _wait_for_patch(page, api)
+        _, body = api.patch_bodies[-1]
+        assert sorted(body["candidateUuids"]) == ["c1", "c3"]  # the two Dogs
 
 
 # ---------------------------------------------------------------------------

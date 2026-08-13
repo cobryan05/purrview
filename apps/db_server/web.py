@@ -2036,6 +2036,38 @@ class WebApp:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
             return Response(content=png_bytes, media_type="image/png")
 
+        # Same greedy-path caveat as the bbox route above: this must precede the
+        # generic image thumbnail route or {image_path:path} eats "/region/thumbnail".
+        @self._app.get(
+            "/api/images/{image_path:path}/region/thumbnail",
+            tags=[ApiTags.IMAGES],
+            operation_id="get_region_thumbnail",
+        )
+        async def get_region_thumbnail(
+            image_path: str,
+            x: float,
+            y: float,
+            width_frac: float,
+            height_frac: float,
+            width: int = 200,
+            color: Optional[str] = None,
+        ) -> Response:
+            """Cropped thumbnail of an arbitrary normalized region — the bbox
+            thumbnail's sibling for boxes that have no bbox row yet (a preview
+            run's proposed *new* boxes)."""
+            png_bytes = await self._manager.get_region_thumbnail(
+                image_path,
+                x=x,
+                y=y,
+                width_frac=width_frac,
+                height_frac=height_frac,
+                width=width,
+                color=color,
+            )
+            if png_bytes is None:
+                raise HTTPException(status_code=404, detail="Thumbnail not available")
+            return Response(content=png_bytes, media_type="image/png")
+
         @self._app.get(
             "/api/images/{image_path:path}/thumbnail",
             tags=[ApiTags.IMAGES],
