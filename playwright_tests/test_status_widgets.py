@@ -1321,3 +1321,125 @@ class TestLineChartWidget:
         strokes = [card.locator("svg polyline").nth(i).evaluate("el => getComputedStyle(el).stroke") for i in range(2)]
         assert all(s.startswith("rgb") for s in strokes), f"series stroke did not resolve: {strokes}"
         assert strokes[0] != strokes[1], "the two series resolved to the same colour"
+
+
+class TestLineChartDualAxisAndHold:
+    """Loss and a 0–1 accuracy on one plot: two y-scales, colour-coded, with the
+    sparse series carrying its last measurement forward.
+
+    The detection trainers validate on an interval (libreyolo's default is every
+    10th epoch), so val_accuracy arrives on a fraction of the epochs train_loss
+    does. Left alone that draws a line that spends most of its length at nothing.
+    """
+
+    _SCHEMA = [
+        {
+            "id": "loss_curve",
+            "type": "line_chart",
+            "source": "status",
+            "label": "Training curves by epoch",
+            "x": "epoch",
+            "xLabel": "Epoch",
+            "yMin": 0,
+            "yRight": {"min": 0, "max": 1, "valueFormat": "percent"},
+            "series": [
+                {"key": "train_loss", "label": "Train loss"},
+                {"key": "val_accuracy", "label": "Val accuracy", "axis": "right", "hold": True},
+            ],
+        }
+    ]
+
+    # Deliberately not a subclass of TestLineChartWidget: inheriting would re-run
+    # every single-axis test against this schema, which has no val_loss series.
+    _open = TestLineChartWidget._open
+    _points = staticmethod(TestLineChartWidget._points)
+
+    # Epochs 1-5, validated on 1 and 4 only.
+    _SPARSE = {
+        "loss_curve": {
+            "points": [
+                {"epoch": 1, "train_loss": 2.0, "val_accuracy": 0.2},
+                {"epoch": 2, "train_loss": 1.6},
+                {"epoch": 3, "train_loss": 1.4},
+                {"epoch": 4, "train_loss": 1.1, "val_accuracy": 0.8},
+                {"epoch": 5, "train_loss": 1.0},
+            ]
+        }
+    }
+
+    def test_the_held_series_spans_the_whole_run(self, page: Page, base_url: str):
+        """Without the hold it would be two lone dots; with it, one step line
+        that reaches the last epoch."""
+        card = self._open(page, base_url, "task-chart-dual-1", self._SPARSE)
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected loss + held accuracy lines")
+
+        held = self._points(card, 1)
+        xs = [p[0] for p in held]
+        loss_xs = [p[0] for p in self._points(card, 0)]
+        assert min(xs) == pytest.approx(min(loss_xs), abs=0.51), "held line does not start at the first sample"
+        assert max(xs) == pytest.approx(max(loss_xs), abs=0.51), "held line stops short of the last epoch"
+
+    def test_the_hold_is_a_step_not_a_ramp(self, page: Page, base_url: str):
+        """Carrying a value forward must look like carrying it forward: flat
+        until the next measurement, then a jump. A diagonal would read as
+        gradual improvement nobody measured."""
+        card = self._open(page, base_url, "task-chart-dual-2", self._SPARSE)
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected loss + held accuracy lines")
+
+        held = self._points(card, 1)
+        ys = [p[1] for p in held]
+        # Only two distinct levels were ever measured, so the whole line sits at
+        # one of exactly two heights.
+        assert len(set(round(y, 3) for y in ys)) == 2, f"held line has intermediate levels: {held}"
+
+    def test_the_held_run_is_dashed_and_the_measurements_are_dotted(self, page: Page, base_url: str):
+        card = self._open(page, base_url, "task-chart-dual-3", self._SPARSE)
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected loss + held accuracy lines")
+
+        dash = card.locator("svg polyline").nth(1).get_attribute("stroke-dasharray")
+        assert dash, "the inferred (held) run is not visually distinguished from measured data"
+        assert not card.locator("svg polyline").nth(0).get_attribute("stroke-dasharray")
+
+    def test_the_right_axis_has_its_own_scale(self, page: Page, base_url: str):
+        """0.8 accuracy must sit at 80% of the right axis, not be squashed
+        against the floor of a loss axis that runs to 2.0."""
+        card = self._open(page, base_url, "task-chart-dual-4", self._SPARSE)
+        wait_until(page, lambda: card.locator("svg polyline").count() == 2, "Expected loss + held accuracy lines")
+
+        held = self._points(card, 1)
+        top = min(p[1] for p in held)
+        bottom = max(p[1] for p in held)
+        loss = self._points(card, 0)
+        plot_top = min(p[1] for p in loss)  # the 2.0 loss sample, at the top of a 0–2 axis
+        plot_bottom = max(p[1] for p in loss)
+        plot_h = plot_bottom - plot_top
+        # 0.8 on a 0–1 axis sits far above 0.8/2.0 on the loss axis would.
+        assert (plot_bottom - top) > plot_h * 0.5, f"held series appears squashed onto the left scale: {held}"
+        assert bottom > top, "the two measurements did not separate vertically"
+
+    def test_percent_ticks_appear_for_the_right_axis(self, page: Page, base_url: str):
+        card = self._open(page, base_url, "task-chart-dual-5", self._SPARSE)
+        wait_until(page, lambda: card.locator("svg text").count() > 0, "Expected axis ticks")
+        ticks = card.locator("svg text").all_text_contents()
+        assert any(t.strip().endswith("%") for t in ticks), f"no percent ticks on the right axis: {ticks}"
+        # The left axis keeps plain loss numbers.
+        assert any(t.strip() in {"0", "2", "1"} for t in ticks), f"left axis ticks missing: {ticks}"
+
+    def test_each_axis_is_named_in_the_legend_not_colour_alone(self, page: Page, base_url: str):
+        card = self._open(page, base_url, "task-chart-dual-6", self._SPARSE)
+        expect(card).to_contain_text("Train loss (left)")
+        expect(card).to_contain_text("Val accuracy (right)")
+        # And the accuracy legend value reads as a percentage, from the right
+        # axis' own format rather than the chart-wide one.
+        expect(card).to_contain_text("80.0%")
+
+    def test_the_data_table_shows_gaps_not_held_values(self, page: Page, base_url: str):
+        """The chart may infer; the table stays the record of what was measured."""
+        card = self._open(page, base_url, "task-chart-dual-7", self._SPARSE)
+        table_toggle = card.locator("summary", has_text="Data table")
+        table_toggle.click()
+        rows = card.locator("table tbody tr")
+        wait_until(page, lambda: rows.count() == 5, "Expected one row per epoch")
+        # Epoch 2 was not validated.
+        assert "—" in (rows.nth(1).text_content() or ""), rows.nth(1).text_content()
+        assert "20.0%" in (rows.nth(0).text_content() or ""), rows.nth(0).text_content()

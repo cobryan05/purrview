@@ -19,7 +19,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
@@ -129,19 +129,28 @@ class ObjectDetectionTrainer(Trainer):
             def _epoch_cb(event) -> None:
                 epoch: int = event.epoch
                 total: int = event.total_epochs
-                map50: float = float(event.val_metrics.get("metrics/mAP50", 0.0))
                 loss: float = float(event.train_loss)
-                progress_cb(
-                    {
-                        "progress": epoch / max(total, 1),
-                        "epoch": epoch,
-                        "total_epochs": total,
-                        "val_accuracy": round(map50, 4),
-                        "train_loss": round(loss, 4),
-                        "val_loss": 0.0,  # libreyolo doesn't expose val_loss separately
-                        "log": (f"Epoch {epoch}/{total}  loss={loss:.4f}  " f"mAP50={map50:.4f}"),
-                    }
-                )
+                # libreyolo validates every `eval_interval` epochs (10 by
+                # default), so most epochs carry no mAP50 at all. Reporting the
+                # missing measurement as 0.0 drew a chart that was mostly zeros
+                # with a spike wherever validation actually ran — omit the key
+                # instead and let the consumer show a gap. val_loss is likewise
+                # omitted: libreyolo doesn't expose it separately.
+                map50_raw = event.val_metrics.get("metrics/mAP50")
+                map50: Optional[float] = float(map50_raw) if isinstance(map50_raw, (int, float)) else None
+                payload: dict[str, Any] = {
+                    "progress": epoch / max(total, 1),
+                    "epoch": epoch,
+                    "total_epochs": total,
+                    "train_loss": round(loss, 4),
+                    "log": (
+                        f"Epoch {epoch}/{total}  loss={loss:.4f}  "
+                        f"mAP50={f'{map50:.4f}' if map50 is not None else 'n/a'}"
+                    ),
+                }
+                if map50 is not None:
+                    payload["val_accuracy"] = round(map50, 4)
+                progress_cb(payload)
                 if cancel_event.is_set():
                     raise RuntimeError("Training cancelled by user")
 

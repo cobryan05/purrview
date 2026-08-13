@@ -195,27 +195,38 @@ export const statusWidgets = {
     return wrap;
   },
 
-  // config: { label, x, xLabel, series: [{ key, label, colorIndex? }],
-  //           yMin?, yMax?, valueFormat?: 'percent', height? }
+  // config: { label, x, xLabel, valueFormat?: 'percent', yMin?, yMax?, height?,
+  //           yRight?: { label?, min?, max?, valueFormat? },
+  //           series: [{ key, label, colorIndex?, axis?: 'left'|'right', hold? }] }
   // data:   { points: [ { <x>: number, <seriesKey>: number, ... }, ... ] }
   //
-  // One y-scale, always. A metric on a second scale gets its own line_chart
-  // widget — a shared plot with two axes lets the reader see crossings and
-  // convergences that are artefacts of where each axis was zeroed.
-  //
   // A point missing a series key is a gap in that series' line, not a zero:
-  // trainers legitimately don't report every metric (the detection trainers
-  // send no val_loss), and drawing the absence as 0 invents a measurement.
+  // trainers legitimately don't report every metric on every epoch (validation
+  // runs on an interval), and drawing the absence as 0 invents a measurement.
+  //
+  // `axis: 'right'` puts a series on a second y-scale so unrelated measures
+  // (unbounded loss, 0–1 accuracy) can share one plot. The cost is real: where
+  // two differently-zeroed scales cross means nothing, so each axis' ticks are
+  // painted in its own series' colour to keep "which scale am I reading" a
+  // one-glance question rather than an inference.
+  //
+  // `hold: true` carries a sparse series' last measurement forward to the next
+  // one, as a dashed step. The dashes and the measurement dots keep the
+  // distinction visible: solid dot = measured, dashed run = last known value.
   async line_chart(config, data) {
     const wrap = labelWrap(config.label);
     const points = Array.isArray(data?.points) ? data.points : [];
     const xKey = config.x || 'x';
     const valueFormat = config.valueFormat;
+    const rightCfg = config.yRight ?? null;
+    const axisFormat = axis => (axis === 'right' ? (rightCfg?.valueFormat ?? valueFormat) : valueFormat);
 
     const seriesDefs = (config.series ?? []).map((s, i) => ({
       key: s.key ?? s.id,
       label: s.label ?? s.key ?? s.id,
       color: SERIES_COLORS[(s.colorIndex ?? i) % SERIES_COLORS.length],
+      axis: s.axis === 'right' && rightCfg ? 'right' : 'left',
+      hold: !!s.hold,
     }));
 
     // A series with no numeric samples anywhere is dropped outright rather than
@@ -236,27 +247,56 @@ export const statusWidgets = {
       return wrap;
     }
 
-    const xs = points.map(p => num(p?.[xKey]) ?? 0);
-    const allY = series.flatMap(s => s.values.filter(v => v !== null));
-    let yLo = config.yMin ?? Math.min(...allY);
-    let yHi = config.yMax ?? Math.max(...allY);
-    if (config.yMin === undefined || config.yMax === undefined) {
-      const [nLo, nHi] = niceBounds(Math.min(...allY), Math.max(...allY));
-      if (config.yMin === undefined) yLo = nLo;
-      if (config.yMax === undefined) yHi = nHi;
+    // `values` stays the measured truth (nulls and all) for the table and the
+    // legend; `plot` is what the line follows, which for a held series carries
+    // the last measurement forward.
+    for (const s of series) {
+      if (!s.hold) {
+        s.plot = s.values;
+        continue;
+      }
+      let last = null;
+      s.plot = s.values.map(v => (v === null ? last : (last = v)));
     }
-    if (yHi === yLo) yHi = yLo + 1;
+
+    const hasRight = series.some(s => s.axis === 'right');
+    const axisColor = axis => series.find(s => s.axis === axis)?.color ?? 'var(--text-muted)';
+
+    /** Bounds for one axis, from its own series only. */
+    const boundsFor = (axis) => {
+      const vals = series.filter(s => s.axis === axis).flatMap(s => s.values.filter(v => v !== null));
+      const cfgMin = axis === 'right' ? rightCfg?.min : config.yMin;
+      const cfgMax = axis === 'right' ? rightCfg?.max : config.yMax;
+      if (vals.length === 0) return [cfgMin ?? 0, cfgMax ?? 1];
+      let lo = cfgMin ?? Math.min(...vals);
+      let hi = cfgMax ?? Math.max(...vals);
+      if (cfgMin === undefined || cfgMax === undefined) {
+        const [nLo, nHi] = niceBounds(Math.min(...vals), Math.max(...vals));
+        if (cfgMin === undefined) lo = nLo;
+        if (cfgMax === undefined) hi = nHi;
+      }
+      if (hi === lo) hi = lo + 1;
+      return [lo, hi];
+    };
+    const [yLo, yHi] = boundsFor('left');
+    const [rLo, rHi] = hasRight ? boundsFor('right') : [0, 1];
+
+    const xs = points.map(p => num(p?.[xKey]) ?? 0);
     const xLo = Math.min(...xs);
     const xHi = Math.max(...xs);
 
     // Fixed viewBox scaled to the card's width. Strokes are pinned with
     // vector-effect so line weight stays 2px however wide the card is.
     const W = 400, H = 170;
-    const PAD = { top: 10, right: 12, bottom: 26, left: 42 };
+    const PAD = { top: 10, right: hasRight ? 44 : 12, bottom: 26, left: 42 };
     const plotW = W - PAD.left - PAD.right;
     const plotH = H - PAD.top - PAD.bottom;
     const sx = x => PAD.left + (xHi === xLo ? plotW / 2 : ((x - xLo) / (xHi - xLo)) * plotW);
-    const sy = y => PAD.top + plotH - ((y - yLo) / (yHi - yLo)) * plotH;
+    const syAxis = (axis, y) => {
+      const [lo, hi] = axis === 'right' ? [rLo, rHi] : [yLo, yHi];
+      return PAD.top + plotH - ((y - lo) / (hi - lo)) * plotH;
+    };
+    const sy = y => syAxis('left', y);
 
     const frame = document.createElement('div');
     frame.style.cssText = 'position:relative; background:var(--surface-sunken); border-radius:3px; padding:0.2em;';
@@ -271,6 +311,8 @@ export const statusWidgets = {
     svg.style.cssText = `display:block; overflow:visible; touch-action:none;${config.height ? ` height:${config.height};` : ''}`;
 
     // ── Grid + y ticks (recessive: hairlines, muted ink) ──────────────────
+    // Both axes are linear over the same 5 divisions, so one gridline serves
+    // both: tick i is fraction i/4 of each axis' own range.
     for (let i = 0; i <= 4; i++) {
       const value = yLo + ((yHi - yLo) * i) / 4;
       const y = sy(value);
@@ -279,10 +321,20 @@ export const statusWidgets = {
         stroke: 'var(--border)', 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke',
       }));
       const tick = svgEl('text', {
-        x: PAD.left - 5, y: y + 3, 'text-anchor': 'end', fill: 'var(--text-muted)', 'font-size': 9,
+        x: PAD.left - 5, y: y + 3, 'text-anchor': 'end',
+        fill: hasRight ? axisColor('left') : 'var(--text-muted)', 'font-size': 9,
       });
       tick.textContent = formatTick(value, valueFormat);
       svg.appendChild(tick);
+
+      if (hasRight) {
+        const rTick = svgEl('text', {
+          x: W - PAD.right + 5, y: y + 3, 'text-anchor': 'start',
+          fill: axisColor('right'), 'font-size': 9,
+        });
+        rTick.textContent = formatTick(rLo + ((rHi - rLo) * i) / 4, axisFormat('right'));
+        svg.appendChild(rTick);
+      }
     }
 
     // ── X ticks: ends plus up to 3 interior, snapped to real samples ──────
@@ -309,17 +361,54 @@ export const statusWidgets = {
 
     // ── Series lines. Nulls break the path into segments (gaps, not zeros) ─
     const showDots = points.length <= 25;
+    const dot = (cx, cy, color) => svgEl('circle', {
+      cx, cy, r: 3, fill: color,
+      // A surface-coloured ring keeps overlapping marks legible where two
+      // series cross.
+      stroke: 'var(--surface-sunken)', 'stroke-width': 1.5,
+    });
+
     for (const s of series) {
+      if (s.hold) {
+        // A step: horizontal at the last measured level until the next
+        // measurement, then a vertical jump to it. Dashed, because every
+        // segment between two dots is inference rather than data.
+        const path = [];
+        let lastY = null;
+        s.values.forEach((v, i) => {
+          const x = sx(xs[i]);
+          if (v === null) {
+            if (lastY !== null) path.push([x, lastY]);
+            return;
+          }
+          const y = syAxis(s.axis, v);
+          if (lastY !== null) path.push([x, lastY]);
+          path.push([x, y]);
+          lastY = y;
+        });
+        if (path.length >= 2) {
+          svg.appendChild(svgEl('polyline', {
+            points: path.map(([x, y]) => `${x},${y}`).join(' '),
+            fill: 'none', stroke: s.color, 'stroke-width': 2,
+            'stroke-dasharray': '4 3', 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+            'vector-effect': 'non-scaling-stroke',
+          }));
+        }
+        // Measurements always get a dot here, whatever the run length: they are
+        // the only thing on this line that was actually observed.
+        s.values.forEach((v, i) => {
+          if (v !== null) svg.appendChild(dot(sx(xs[i]), syAxis(s.axis, v), s.color));
+        });
+        continue;
+      }
+
       let run = [];
       const flush = () => {
         if (run.length === 0) return;
         if (run.length === 1) {
           // A lone sample between two gaps has no line to be seen on — give it
           // a dot regardless of the dot threshold, or the series vanishes.
-          svg.appendChild(svgEl('circle', {
-            cx: run[0][0], cy: run[0][1], r: 3, fill: s.color,
-            stroke: 'var(--surface-sunken)', 'stroke-width': 1.5,
-          }));
+          svg.appendChild(dot(run[0][0], run[0][1], s.color));
         } else {
           svg.appendChild(svgEl('polyline', {
             points: run.map(([x, y]) => `${x},${y}`).join(' '),
@@ -330,18 +419,13 @@ export const statusWidgets = {
         }
         run = [];
       };
-      s.values.forEach((v, i) => (v === null ? flush() : run.push([sx(xs[i]), sy(v)])));
+      s.values.forEach((v, i) => (v === null ? flush() : run.push([sx(xs[i]), syAxis(s.axis, v)])));
       flush();
 
       if (showDots) {
         s.values.forEach((v, i) => {
           if (v === null) return;
-          svg.appendChild(svgEl('circle', {
-            cx: sx(xs[i]), cy: sy(v), r: 3, fill: s.color,
-            // A surface-coloured ring keeps overlapping marks legible where
-            // two series cross.
-            stroke: 'var(--surface-sunken)', 'stroke-width': 1.5,
-          }));
+          svg.appendChild(dot(sx(xs[i]), syAxis(s.axis, v), s.color));
         });
       }
     }
@@ -385,15 +469,19 @@ export const statusWidgets = {
 
       const rows = [`${config.xLabel || xKey} ${xs[best]}`];
       series.forEach((s, i) => {
-        const v = s.values[best];
-        if (v === null) {
+        // A held series reports its carried value here — flagged as held, so
+        // the tooltip never passes off last week's number as this epoch's.
+        const measured = s.values[best];
+        const v = measured === null ? (s.hold ? s.plot[best] : null) : measured;
+        if (v === null || v === undefined) {
           markers[i].setAttribute('visibility', 'hidden');
           return;
         }
         markers[i].setAttribute('cx', px);
-        markers[i].setAttribute('cy', sy(v));
+        markers[i].setAttribute('cy', syAxis(s.axis, v));
         markers[i].setAttribute('visibility', 'visible');
-        rows.push(`${s.label}: ${formatValue(v, valueFormat)}`);
+        const shown = formatValue(v, axisFormat(s.axis));
+        rows.push(`${s.label}: ${measured === null ? `${shown} (held)` : shown}`);
       });
       tooltip.textContent = rows.join('  ·  ');
       tooltip.style.display = 'block';
@@ -421,8 +509,11 @@ export const statusWidgets = {
         swatch.style.cssText = `width:0.7em; height:0.7em; border-radius:2px; background:${s.color}; flex:none;`;
         const text = document.createElement('span');
         // Identity is never colour alone: the swatch is always paired with the
-        // series name, and the value below it repeats in the data table.
-        text.textContent = `${s.label} — ${formatValue(s.values.filter(v => v !== null).at(-1), valueFormat)}`;
+        // series name, and the value below it repeats in the data table. With
+        // two axes the name also says which one it is read against, since the
+        // colour match to the tick gutter is a hint, not the answer.
+        const axisNote = hasRight ? (s.axis === 'right' ? ' (right)' : ' (left)') : '';
+        text.textContent = `${s.label}${axisNote} — ${formatValue(s.values.filter(v => v !== null).at(-1), axisFormat(s.axis))}`;
         item.append(swatch, text);
         legend.appendChild(item);
       }
@@ -430,7 +521,7 @@ export const statusWidgets = {
     } else {
       const caption = document.createElement('div');
       caption.style.cssText = 'margin:0.25em 0 0.3em; font-size:0.75em; color:var(--text-muted);';
-      caption.textContent = `${series[0].label} — latest ${formatValue(series[0].values.filter(v => v !== null).at(-1), valueFormat)}`;
+      caption.textContent = `${series[0].label} — latest ${formatValue(series[0].values.filter(v => v !== null).at(-1), axisFormat(series[0].axis))}`;
       wrap.appendChild(caption);
     }
 
@@ -448,9 +539,11 @@ export const statusWidgets = {
           ...series.map(s => ({ key: s.key, label: s.label })),
         ],
       },
+      // Measured values only — a held series shows "—" on the epochs it wasn't
+      // measured, so the table stays the record of what the run reported.
       points.map(p => {
         const row = { [xKey]: p?.[xKey] };
-        for (const s of series) row[s.key] = formatValue(num(p?.[s.key]), valueFormat);
+        for (const s of series) row[s.key] = formatValue(num(p?.[s.key]), axisFormat(s.axis));
         return row;
       }),
     );

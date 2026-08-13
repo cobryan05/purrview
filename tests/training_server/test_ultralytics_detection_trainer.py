@@ -138,9 +138,14 @@ class TestHyperparamDefaults:
         assert "early_stopping_patience" not in d
 
 
-def _make_fake_ultralytics_module(fake_results_dict, exported_path):
+def _make_fake_ultralytics_module(fake_results_dict, exported_path, epoch_metrics=None):
     """Build a fake `ultralytics` module exposing a YOLO class whose .train()/
-    .export() behave like the real API just enough for the trainer to run."""
+    .export() behave like the real API just enough for the trainer to run.
+
+    `epoch_metrics` is the per-epoch `trainer.metrics` dict, one entry per
+    simulated epoch. Ultralytics leaves it empty on epochs it didn't validate,
+    which is what drives the "no mAP50 this epoch" path.
+    """
     fake_module = MagicMock()
 
     class FakeYOLO:
@@ -152,16 +157,19 @@ def _make_fake_ultralytics_module(fake_results_dict, exported_path):
             self._callbacks[event] = fn
 
         def train(self, **kwargs):
-            # Simulate one epoch completing.
+            per_epoch = epoch_metrics
+            if per_epoch is None:
+                per_epoch = [{"metrics/mAP50(B)": fake_results_dict.get("metrics/mAP50(B)", 0.0)}]
             cb = self._callbacks.get("on_train_epoch_end")
             if cb is not None:
-                fake_trainer = SimpleNamespace(
-                    epoch=0,
-                    metrics={"metrics/mAP50(B)": fake_results_dict.get("metrics/mAP50(B)", 0.0)},
-                    loss_items=None,
-                    stop_training=False,
-                )
-                cb(fake_trainer)
+                for i, metrics in enumerate(per_epoch):
+                    fake_trainer = SimpleNamespace(
+                        epoch=i,
+                        metrics=metrics,
+                        loss_items=None,
+                        stop_training=False,
+                    )
+                    cb(fake_trainer)
             return SimpleNamespace(results_dict=fake_results_dict)
 
         def export(self, format="onnx"):
@@ -376,3 +384,52 @@ class TestTrainHappyPath:
         with open(sidecar_path) as f:
             sidecar = json.load(f)
         assert "yolo" not in sidecar
+
+
+class TestEpochProgressMetrics:
+    """What each epoch-boundary progress event claims to have measured.
+
+    Ultralytics only populates `trainer.metrics` on the epochs it validates.
+    Reporting the un-measured ones as val_accuracy=0.0 produced a training
+    chart that was mostly zeros with a spike wherever validation ran — a real
+    measurement of "the model detects nothing", which it never was.
+    """
+
+    async def _events(self, trainer, base_config, epoch_metrics):
+        artifact_dir = base_config["artifact_dir"]
+        fake_exported = f"{artifact_dir}/exported.onnx"
+        with open(fake_exported, "wb") as f:
+            f.write(b"x")
+        fake_ultralytics = _make_fake_ultralytics_module(
+            fake_results_dict={"metrics/mAP50(B)": 0.5},
+            exported_path=fake_exported,
+            epoch_metrics=epoch_metrics,
+        )
+        events = []
+        with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+            await trainer.train(base_config, progress_cb=events.append, cancel_event=asyncio.Event())
+        return [e for e in events if "epoch" in e]
+
+    async def test_an_unvalidated_epoch_omits_val_accuracy(self, trainer, base_config):
+        events = await self._events(trainer, base_config, [{}])
+        assert len(events) == 1
+        assert "val_accuracy" not in events[0]
+        # train_loss is per-epoch and always reported, so the loss curve stays dense.
+        assert "train_loss" in events[0]
+        assert "mAP50=n/a" in events[0]["log"]
+
+    async def test_a_validated_epoch_reports_the_measurement(self, trainer, base_config):
+        events = await self._events(trainer, base_config, [{"metrics/mAP50(B)": 0.42}])
+        assert events[0]["val_accuracy"] == pytest.approx(0.42)
+        assert "mAP50=0.4200" in events[0]["log"]
+
+    async def test_val_loss_is_never_claimed(self, trainer, base_config):
+        """This trainer has no val_loss at all; it used to send 0.0."""
+        events = await self._events(trainer, base_config, [{"metrics/mAP50(B)": 0.42}])
+        assert "val_loss" not in events[0]
+
+    async def test_a_validation_interval_leaves_gaps_not_zeros(self, trainer, base_config):
+        """Three epochs, validation on the last one only."""
+        events = await self._events(trainer, base_config, [{}, {}, {"metrics/mAP50(B)": 0.6}])
+        assert [("val_accuracy" in e) for e in events] == [False, False, True]
+        assert events[-1]["val_accuracy"] == pytest.approx(0.6)

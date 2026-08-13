@@ -827,6 +827,23 @@ class TestEpochHistory:
         assert "val_loss" not in task._epoch_history[0]
         assert task._epoch_history[0]["train_loss"] == 2.0
 
+    def test_an_unvalidated_epoch_leaves_a_gap_not_a_zero(self):
+        """The detection trainers validate on an interval and omit val_accuracy
+        on the epochs in between. Those epochs keep their train_loss and simply
+        carry no accuracy sample — a real 0.0 (a model detecting nothing) still
+        records, so absence and zero stay distinguishable."""
+        task = _task_with_history(
+            [
+                {"epoch": 1, "train_loss": 2.0, "val_accuracy": 0.0},
+                {"epoch": 2, "train_loss": 1.5},
+                {"epoch": 3, "train_loss": 1.2, "val_accuracy": 0.4},
+            ]
+        )
+        assert task._epoch_history[0]["val_accuracy"] == 0.0
+        assert "val_accuracy" not in task._epoch_history[1]
+        assert task._epoch_history[1]["train_loss"] == 1.5
+        assert task._epoch_history[2]["val_accuracy"] == 0.4
+
     def test_replayed_epochs_truncate_rather_than_append(self):
         """A restarted job resumes from its checkpoint and replays epoch numbers.
         The series must stay monotonic in x, not zig-zag backwards."""
@@ -873,14 +890,22 @@ class TestEpochHistory:
 class TestTrainingCurveStatus:
     """status_schema() / get_status_data() — what the task card renders."""
 
-    def test_schema_declares_two_separate_curves(self):
-        """Loss and accuracy have unrelated scales, so they never share an axis."""
+    def test_schema_declares_one_curve_with_two_axes(self):
+        """Loss and accuracy share a plot, but not a scale: accuracy is a 0–1
+        fraction on its own right-hand axis, loss is unbounded on the left."""
         schema = {w["id"]: w for w in TrainModelTask.status_schema()}
-        assert schema["loss_curve"]["type"] == "line_chart"
-        assert schema["accuracy_curve"]["type"] == "line_chart"
-        assert [s["key"] for s in schema["loss_curve"]["series"]] == ["train_loss", "val_loss"]
-        assert [s["key"] for s in schema["accuracy_curve"]["series"]] == ["val_accuracy"]
-        assert schema["accuracy_curve"]["valueFormat"] == "percent"
+        assert "accuracy_curve" not in schema
+        chart = schema["loss_curve"]
+        assert chart["type"] == "line_chart"
+        assert [s["key"] for s in chart["series"]] == ["train_loss", "val_loss", "val_accuracy"]
+
+        by_key = {s["key"]: s for s in chart["series"]}
+        assert by_key["val_accuracy"]["axis"] == "right"
+        assert by_key["train_loss"].get("axis") in (None, "left")
+        # Validation runs on an interval for the detection trainers, so the
+        # sparse series carries its last measurement forward.
+        assert by_key["val_accuracy"]["hold"] is True
+        assert chart["yRight"] == {"min": 0, "max": 1, "valueFormat": "percent"}
 
     def test_schema_keeps_progress_and_logs(self):
         ids = [w["id"] for w in TrainModelTask.status_schema()]
@@ -891,7 +916,7 @@ class TestTrainingCurveStatus:
         task = _task_with_history([])
         assert task.get_status_data() == {}
 
-    def test_status_data_carries_points_for_both_curves(self):
+    def test_status_data_carries_the_whole_history_to_the_curve(self):
         task = _task_with_history(
             [
                 {"epoch": 1, "total_epochs": 3, "train_loss": 0.9, "val_loss": 0.8, "val_accuracy": 0.50},
@@ -900,7 +925,6 @@ class TestTrainingCurveStatus:
         )
         data = task.get_status_data()
         assert data["loss_curve"]["points"] == task._epoch_history
-        assert data["accuracy_curve"]["points"] == task._epoch_history
 
     def test_status_data_stats_report_latest_and_best(self):
         task = _task_with_history(

@@ -400,12 +400,19 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     @classmethod
     def status_schema(cls) -> list[dict[str, Any]]:
-        """Progress + live epoch stats + the two training curves + logs.
+        """Progress + live epoch stats + the training curve + logs.
 
-        Loss and accuracy get a chart each rather than sharing one with two
-        y-axes: they have unrelated scales (loss is unbounded, accuracy is a
-        0–1 fraction), and a dual-scale plot lets the reader "see" crossings
-        and gaps that are pure artefacts of how the two axes were zeroed.
+        Loss and accuracy share one plot with two y-axes. They have unrelated
+        scales (loss is unbounded, accuracy is a 0–1 fraction), so where the
+        curves cross is an artefact of how each axis was zeroed and means
+        nothing — the widget answers that by painting each axis' ticks in its
+        own series' colour and naming the axis in the legend, rather than by
+        splitting the run across two charts you have to read in alternation.
+
+        val_accuracy is held: the detection trainers validate on an interval
+        (libreyolo's default is every 10th epoch), so it is measured far more
+        rarely than train_loss and the chart carries its last measurement
+        forward as a dashed step between dots.
         """
         return [
             {"id": "progress", "type": "progress_bar", "source": "summary"},
@@ -432,30 +439,25 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 "id": "loss_curve",
                 "type": "line_chart",
                 "source": "status",
-                "label": "Loss by epoch",
+                "label": "Training curves by epoch",
                 "x": "epoch",
                 "xLabel": "Epoch",
                 "yMin": 0,
+                "yRight": {"min": 0, "max": 1, "valueFormat": "percent"},
                 "series": [
                     {"key": "train_loss", "label": "Train loss"},
                     {"key": "val_loss", "label": "Val loss"},
+                    # One label for two different measures: the classifiers
+                    # report a plain accuracy, the detection trainers put mAP50
+                    # in the same field. status_schema() is static per typename,
+                    # so it can't name whichever one this instance produced.
+                    {
+                        "key": "val_accuracy",
+                        "label": "Val accuracy / mAP50",
+                        "axis": "right",
+                        "hold": True,
+                    },
                 ],
-            },
-            {
-                "id": "accuracy_curve",
-                "type": "line_chart",
-                "source": "status",
-                "label": "Validation accuracy by epoch",
-                "x": "epoch",
-                "xLabel": "Epoch",
-                "yMin": 0,
-                "yMax": 1,
-                "valueFormat": "percent",
-                # One label for two different measures: the classifiers report a
-                # plain accuracy, the detection trainers put mAP50 in the same
-                # field. status_schema() is static per typename, so it can't name
-                # whichever one this instance actually produced.
-                "series": [{"key": "val_accuracy", "label": "Val accuracy / mAP50"}],
             },
             {"id": "log", "type": "log_tail", "source": "summary", "lines": 5},
         ]
@@ -485,11 +487,11 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         if val_losses:
             stats["best_val_loss"] = f"{min(val_losses):.4f}"
 
-        # Both charts read the same sample list and pick their own series out of
-        # it — the payload is a few hundred small dicts, so serialising it twice
-        # is cheaper than the bookkeeping to split it.
-        points = {"points": history}
-        return {"epoch_stats": stats, "loss_curve": points, "accuracy_curve": points}
+        # One chart now, reading the whole sample list and picking its own series
+        # out of it. Older instances' persisted snapshots still carry a separate
+        # accuracy_curve key; the schema no longer asks for it, and an extra key
+        # in the data is ignored.
+        return {"epoch_stats": stats, "loss_curve": {"points": history}}
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

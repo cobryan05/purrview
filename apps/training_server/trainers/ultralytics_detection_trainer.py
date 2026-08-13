@@ -191,23 +191,30 @@ class UltralyticsDetectionTrainer(Trainer):
                 epoch = int(getattr(trainer, "epoch", 0)) + 1
                 total = int(progress_state["total_epochs"])
                 metrics = dict(getattr(trainer, "metrics", None) or {})
-                map50 = float(metrics.get("metrics/mAP50(B)", 0.0))
+                # Absent on any epoch ultralytics didn't validate. Sending 0.0
+                # for those drew a chart of zeros spiked at the validation
+                # epochs, so the key is omitted instead and the consumer shows a
+                # gap. val_loss is likewise omitted — this trainer never has it.
+                map50_raw = metrics.get("metrics/mAP50(B)")
+                map50 = float(map50_raw) if isinstance(map50_raw, (int, float)) else None
                 loss_items = getattr(trainer, "loss_items", None)
                 try:
                     train_loss = float(loss_items.mean()) if loss_items is not None else 0.0
                 except Exception:
                     train_loss = 0.0
-                progress_cb(
-                    {
-                        "progress": epoch / max(total, 1),
-                        "epoch": epoch,
-                        "total_epochs": total,
-                        "val_accuracy": round(map50, 4),
-                        "train_loss": round(train_loss, 4),
-                        "val_loss": 0.0,
-                        "log": (f"Epoch {epoch}/{total}  loss={train_loss:.4f}  " f"mAP50={map50:.4f}"),
-                    }
-                )
+                payload: dict[str, Any] = {
+                    "progress": epoch / max(total, 1),
+                    "epoch": epoch,
+                    "total_epochs": total,
+                    "train_loss": round(train_loss, 4),
+                    "log": (
+                        f"Epoch {epoch}/{total}  loss={train_loss:.4f}  "
+                        f"mAP50={f'{map50:.4f}' if map50 is not None else 'n/a'}"
+                    ),
+                }
+                if map50 is not None:
+                    payload["val_accuracy"] = round(map50, 4)
+                progress_cb(payload)
                 if cancel_event.is_set():
                     trainer.stop_training = True
 
