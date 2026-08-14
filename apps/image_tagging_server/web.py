@@ -105,6 +105,35 @@ class TestServerPayload(BaseModel):
     server_type: str  # "inference_server" or "training_server"
 
 
+# Task SSE polling cadence. The stream is a poll loop behind a push-shaped API, so
+# every connected browser costs a full image_tagging → tasks → db round trip per tick,
+# forever. 2 Hz is only worth paying while something is actually moving: a task that
+# is running or about to run changes its progress between ticks. Nothing live means
+# nothing to animate, and the next change is user-initiated, so a slower tick just
+# costs a little start-up latency on a card that was idle anyway.
+TASKS_STREAM_ACTIVE_POLL_S = 0.5
+TASKS_STREAM_IDLE_POLL_S = 3.0
+_TASKS_STREAM_ACTIVE_STATUSES = frozenset({"new", "pending", "running"})
+
+
+def _tasks_poll_interval(data: dict) -> float:
+    """Poll fast while any task is live, slowly when the task list is at rest.
+
+    Paused/completed/error instances are deliberately not "live" — they hold still
+    until the user acts, and a user action re-renders from its own response.
+    """
+    try:
+        tasks = (data or {}).get("tasks") or {}
+        for entry in tasks.values():
+            status = ((entry or {}).get("instance") or {}).get("status")
+            if status in _TASKS_STREAM_ACTIVE_STATUSES:
+                return TASKS_STREAM_ACTIVE_POLL_S
+    except (AttributeError, TypeError):
+        # A shape we don't recognise shouldn't silently pin the loop at 2 Hz.
+        return TASKS_STREAM_IDLE_POLL_S
+    return TASKS_STREAM_IDLE_POLL_S
+
+
 class WebApp:
     SUCCESS_KEY = "success"
     FAILURE_KEY = "failure"
@@ -215,6 +244,7 @@ class WebApp:
                             data = await self._manager.get_tasks_for_stream()
                             j = json.dumps(data)
                         except Exception:
+                            data = {}
                             j = "{}"
                         now = asyncio.get_running_loop().time()
                         if j != last_json:
@@ -224,7 +254,7 @@ class WebApp:
                         elif now - last_hb > 15:
                             last_hb = now
                             yield ":\n\n"  # keep-alive comment
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(_tasks_poll_interval(data))
                 except asyncio.CancelledError:
                     pass
 

@@ -279,9 +279,12 @@ class Manager:
         if not uuids_to_check:
             return []
 
+        # One of the two paths that actually restarts a task, so it needs the
+        # checkpoint — the listing omits resume_data unless asked (see below).
         instances_resp = await asyncio.to_thread(
             TasksApi(self._db_api_client).list_task_instances,
             uuids=uuids_to_check,
+            include_resume_data=True,
         )
         instances = instances_resp.instances or []
 
@@ -604,8 +607,12 @@ class Manager:
         self._task = asyncio.get_running_loop().create_task(self._worker_task())
 
     async def _init(self):
+        # Startup recovery inspects each interrupted instance's checkpoint to decide
+        # paused-and-resumable vs. error, and hands it to the auto-restart path, so
+        # this is the other listing that must opt into resume_data.
         resp = await asyncio.to_thread(
             TasksApi(self._db_api_client).list_task_instances,
+            include_resume_data=True,
         )
         all_instances = resp.instances or []
 

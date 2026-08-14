@@ -3,6 +3,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { ACTIVITY_TAB_ID, countRunningTasks, renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
+import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
 
 export async function init() {
@@ -10,7 +11,7 @@ export async function init() {
   // not to Sources, Tasks or Activity individually.
   renderServiceStatus({ target: 'service-status-box' });
 
-  let taskEventSource = null;
+  let unsubscribeTaskStream = null;
   let activeSubTab = null;
 
   const badge = document.getElementById('task-activity-badge');
@@ -53,27 +54,26 @@ export async function init() {
   };
 
   function closeTaskStream() {
-    if (taskEventSource !== null) {
-      taskEventSource.close();
-      taskEventSource = null;
+    if (unsubscribeTaskStream !== null) {
+      unsubscribeTaskStream();
+      unsubscribeTaskStream = null;
     }
   }
 
   function openTaskStream() {
-    if (taskEventSource !== null) return;
-    // SSE stream for live task updates — server pushes on change.
-    taskEventSource = new EventSource('/api/tasks/stream');
-    taskEventSource.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data?.tasks) {
-          updateBadge(data.tasks);
-          // renderActiveTasks no-ops unless its pane is visible, so this keeps
-          // the badge live while the user is on Sources or Tasks.
-          renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
-        }
-      } catch {}
-    };
+    if (unsubscribeTaskStream !== null) return;
+    // Shared SSE stream for live task updates — server pushes on change. The
+    // handle is the unsubscribe fn; the underlying connection is shared with any
+    // other subscriber (e.g. an open preview modal) rather than opened twice.
+    unsubscribeTaskStream = subscribeTaskStream({
+      onMessage: (data) => {
+        if (!data?.tasks) return;
+        updateBadge(data.tasks);
+        // renderActiveTasks no-ops unless its pane is visible, so this keeps
+        // the badge live while the user is on Sources or Tasks.
+        renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
+      },
+    });
     // EventSource reconnects automatically on error; no extra handling needed.
   }
 

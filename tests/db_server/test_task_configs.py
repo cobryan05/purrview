@@ -232,7 +232,9 @@ async def test_set_and_get_resume_data(http_client, config_uuid):
     )
     assert r.status_code == 200
 
-    list_r = await http_client.get("/api/task-instances")
+    # The listing omits checkpoints unless asked (they are big and only the resume
+    # paths read them) — this asserts the PATCH persisted, so it opts in.
+    list_r = await http_client.get("/api/task-instances", params={"include_resume_data": "true"})
     instances = {i["uuid"]: i for i in list_r.json()["instances"]}
     resume = instances[inst_uuid]["resumeData"]
     assert resume["checkpoint"] == 7

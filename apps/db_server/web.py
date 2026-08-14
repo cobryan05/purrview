@@ -2676,15 +2676,25 @@ class WebApp:
         async def list_task_instances(
             uuids: List[str] = Query(default=[]),
             resumable: Optional[bool] = None,
+            include_resume_data: bool = False,
         ) -> ListTaskInstancesResponse:
             try:
                 instances = await self._manager.list_task_instances(
                     task_uuids=uuids or None,
                     resumable=resumable,
                 )
+                reads = [TaskInstanceRead.model_validate(i) for i in instances]
+                if not include_resume_data:
+                    # A checkpoint is internal state — only the tasks_server paths that
+                    # actually restart a task read it, and it is the heaviest field on an
+                    # instance (~500 KB for a finished TrainModelTask). This listing is
+                    # polled twice a second by the task SSE stream, so shipping checkpoints
+                    # by default cost megabytes of JSON per frame across three services.
+                    # Dropping it from the response only; the column itself is untouched.
+                    reads = [r.model_copy(update={"resume_data": None}) for r in reads]
                 return ListTaskInstancesResponse(
                     status=JsonValues.SUCCESS,
-                    instances=[TaskInstanceRead.model_validate(i) for i in instances],
+                    instances=reads,
                 )
             except Exception as e:
                 logger.error(e, exc_info=True)

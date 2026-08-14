@@ -15,6 +15,7 @@
 import { TaskStatus, cancelTasks, createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 import { toast } from '/app-static/js/ui/utils/logging.js';
+import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 
 /**
  * @param {Object} opts
@@ -142,39 +143,33 @@ export function createTaskRunnerSection({ buttonLabel, runningLabel, buildStartA
       cancelBtn.style.display = '';
 
       await new Promise((resolve, reject) => {
-        const evtSource = new EventSource('/api/tasks/stream');
         let settled = false;
+        let unsubscribe = null;
 
         const _settle = (fn, ...args) => {
           if (settled) return;
           settled = true;
-          evtSource.close();
+          unsubscribe?.();
           fn(...args);
         };
 
         _abortSSE = () => _settle(resolve);
 
-        evtSource.onmessage = async (e) => {
-          let data;
-          try { data = JSON.parse(e.data); } catch { return; }
+        unsubscribe = subscribeTaskStream({
+          onMessage: async (data) => {
+            const taskInfo = data.tasks?.[taskUuid];
+            if (!taskInfo) return;
 
-          const taskInfo = data.tasks?.[taskUuid];
-          if (!taskInfo) return;
+            await _renderTaskStatus(taskInfo);
 
-          await _renderTaskStatus(taskInfo);
-
-          const status = taskInfo.instance?.status;
-          if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR || status === TaskStatus.CANCELLED) {
-            finalTaskInfo = taskInfo;
-            _settle(resolve);
-          }
-        };
-
-        evtSource.onerror = () => {
-          if (evtSource.readyState === EventSource.CLOSED) {
-            _settle(reject, new Error('SSE connection closed unexpectedly'));
-          }
-        };
+            const status = taskInfo.instance?.status;
+            if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR || status === TaskStatus.CANCELLED) {
+              finalTaskInfo = taskInfo;
+              _settle(resolve);
+            }
+          },
+          onError: (err) => _settle(reject, err),
+        });
       });
     } catch (err) {
       toast(err.message || 'Failed to start task', 5000, 'error');

@@ -1,6 +1,7 @@
 import { TaskStatus, cancelTasks, createTaskConfig, deleteTasks, fetchTasksResult, startTask } from '/app-static/js/shared/api/tasks.js';
 import { decodeBase64JsonImage, toast } from '/app-static/js/ui/utils/index.js';
 import { ActiveTaskField } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
+import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 
 // Global guard for only one running preview task
 let previewTaskActive = false;
@@ -120,15 +121,15 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
       // immediately rather than starting the SSE stream and waiting up to 30 s.
       if (cancelled) { resolve(); return; }
 
-      const evtSource = new EventSource('/api/tasks/stream');
       let timeoutId;
       let settled = false;
+      let unsubscribe = null;
 
       const _settle = (fn, ...args) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutId);
-        evtSource.close();
+        unsubscribe?.();
         fn(...args);
       };
 
@@ -143,29 +144,24 @@ export async function runPreviewSourceTest({ provider, providerParams, target = 
         _settle(resolve);
       }, 30_000);
 
-      evtSource.onmessage = async (e) => {
-        if (cancelled) { _settle(resolve); return; }
-        let data;
-        try { data = JSON.parse(e.data); } catch { return; }
+      unsubscribe = subscribeTaskStream({
+        onMessage: async (data) => {
+          if (cancelled) { _settle(resolve); return; }
 
-        const taskInfo = data.tasks?.[taskUuid];
-        if (!taskInfo) return;
+          const taskInfo = data.tasks?.[taskUuid];
+          if (!taskInfo) return;
 
-        await renderTaskStatus(taskInfo);
+          await renderTaskStatus(taskInfo);
 
-        const status = taskInfo.instance?.status;
-        if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR) {
-          _settle(resolve);
-        }
-      };
-
-      evtSource.onerror = () => {
-        // EventSource auto-reconnects on transient errors (readyState CONNECTING).
-        // Only treat it as fatal if the connection is fully closed.
-        if (evtSource.readyState === EventSource.CLOSED) {
-          _settle(reject, new Error('SSE connection closed unexpectedly'));
-        }
-      };
+          const status = taskInfo.instance?.status;
+          if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR) {
+            _settle(resolve);
+          }
+        },
+        // Transient drops are absorbed by EventSource's own reconnect; this only
+        // fires once the shared connection is fully closed.
+        onError: (err) => _settle(reject, err),
+      });
     });
 
     if (!cancelled && lastTaskInfo?.instance?.status === TaskStatus.COMPLETED) {
