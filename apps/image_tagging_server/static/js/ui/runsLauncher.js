@@ -55,39 +55,70 @@ async function settle(fn) {
 }
 
 /**
- * One launchable thing.
+ * One launchable thing: a big Start target, plus a link to what defines it.
+ *
+ * The card is a `<div>` holding two buttons rather than one big `<button>`,
+ * because a button inside a button is invalid HTML — browsers recover by
+ * hoisting the inner one out, which loses the click handler.
  *
  * @param {Object} opts
  * @param {string} opts.name
  * @param {string} opts.hint - what it will do, in the user's terms
  * @param {() => Promise<string>} opts.start - resolves to the task instance uuid
  * @param {() => void} opts.onStarted
+ * @param {string} opts.configTab - Configuration sub-tab that defines this thing
  * @param {?{title: string, message: string}} [opts.confirm] - gate the start
  *   behind a confirmation, for runs that are destructive or unscoped.
  * @returns {HTMLElement}
  */
-function launchCard({ name, hint, start, onStarted, confirm = null }) {
-  const card = document.createElement('button');
-  card.type = 'button';
+function launchCard({ name, hint, start, onStarted, configTab, confirm = null }) {
+  const card = document.createElement('div');
   card.className = 'runs-launch-card';
   card.dataset.tour = 'runs.launchCard';
   card.dataset.runName = name;
 
+  const startBtn = document.createElement('button');
+  startBtn.type = 'button';
+  startBtn.className = 'runs-launch-card__start';
+  startBtn.dataset.testid = 'runs-launch-start';
+
   const top = document.createElement('span');
   top.className = 'runs-launch-card__name';
   top.textContent = name;
-  card.appendChild(top);
+  startBtn.appendChild(top);
 
   const sub = document.createElement('span');
   sub.className = 'runs-launch-card__hint';
   sub.textContent = hint;
-  card.appendChild(sub);
+  startBtn.appendChild(sub);
 
-  card.addEventListener('click', async () => {
+  card.appendChild(startBtn);
+
+  // Starting something you have not looked at in a while is exactly when you
+  // want to check its settings first — and this is the only screen listing all
+  // of them, so it is the natural jumping-off point.
+  const configBtn = document.createElement('button');
+  configBtn.type = 'button';
+  configBtn.className = 'runs-launch-card__config';
+  configBtn.dataset.testid = 'runs-launch-config';
+  configBtn.dataset.tour = 'runs.launchCardConfig';
+  configBtn.textContent = '⚙';
+  configBtn.title = `Configure ${name}`;
+  configBtn.setAttribute('aria-label', `Configure ${name}`);
+  configBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigateTabs('tab-configuration', configTab);
+  });
+  card.appendChild(configBtn);
+
+  startBtn.addEventListener('click', async () => {
     // Held for the whole round trip — including the confirm — because a second
     // click would otherwise stack a second modal, and past it start the run
     // twice. A training is expensive enough that that matters.
-    card.disabled = true;
+    //
+    // Disabling the *button*, not the card: the card is a div now, where
+    // `disabled` is an inert unknown property that silently does nothing.
+    startBtn.disabled = true;
     const original = top.textContent;
     try {
       if (confirm && !await showConfirmModal({
@@ -108,7 +139,7 @@ function launchCard({ name, hint, start, onStarted, confirm = null }) {
       toast(err.message || `Could not start ${name}`, 5000, 'error');
     } finally {
       top.textContent = original;
-      card.disabled = false;
+      startBtn.disabled = false;
     }
   });
 
@@ -195,6 +226,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           name: `Train ${cfg.name}`,
           params: { training_config_uuid: cfg.uuid },
         }),
+        configTab: 'tab-training-management',
         onStarted,
       })),
       trainings === null ? 'Could not load training configs.' : 'No training configs yet —',
@@ -220,6 +252,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           name: `Run ${chain.name}`,
           params: { filter_chain_uuid: chain.uuid },
         }),
+        configTab: 'tab-filterchain-management',
         onStarted,
       })),
       chains === null ? 'Could not load filter chains.' : 'No filter chains yet —',
@@ -236,6 +269,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           name: `Watch ${profile.name}`,
           params: { watch_profile_uuid: profile.uuid },
         }),
+        configTab: 'tab-watcher-management',
         onStarted,
       })),
       watchers === null ? 'Could not load watch profiles.' : 'No watch profiles yet —',
@@ -251,6 +285,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         name: cfg.name,
         hint: cfg.typename,
         start: () => launchSavedConfig(cfg.uuid),
+        configTab: 'tab-task-management',
         onStarted,
       })),
       taskConfigs === null ? 'Could not load task configs.' : 'No saved tasks yet —',

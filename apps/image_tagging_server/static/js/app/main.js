@@ -138,7 +138,9 @@ export async function init(appState) {
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
   });
 
-  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids, imageTagUuids, labelUuids, verificationCheck }) => {
+  events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({
+    tagUuids, imageTagUuids, labelUuids, verificationCheck, bboxVerification,
+  }) => {
     activateReview(container);
     // applyFilterWhenReady applies immediately if the panel is already up, or
     // queues the state so init() applies it once createReviewPanel resolves.
@@ -151,6 +153,10 @@ export async function init(appState) {
     state.imageTagConditions = (imageTagUuids ?? []).map(uuid => ({ tagUuid: uuid, state: 'present' }));
     if (labelUuids !== undefined) state.labelUuids = labelUuids;
     if (verificationCheck !== undefined) state.verificationCheck = verificationCheck;
+    // 'any' | 'verified' | 'unverified' — the bbox verification *tag*, not the
+    // whole-image label-completeness check above. Passing it through lets a
+    // caller open Review already narrowed to what still needs annotating.
+    if (bboxVerification !== undefined) state.bboxVerification = bboxVerification;
     applyFilterWhenReady(state);
   });
 

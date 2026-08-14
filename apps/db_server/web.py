@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -410,6 +410,29 @@ class ListFilesResponse(StatusResponse):
 
 class CreateDirectoryPayload(ApiPayload):
     path: str
+
+
+class UploadedImageRead(ApiModel):
+    """One file's outcome. Reported per-file rather than as a single overall
+    status, because a mixed result is the normal case for a multi-file drop and
+    the user needs to know *which* ones landed."""
+
+    filename: str
+    ok: bool
+    path: Optional[str] = None
+    uuid: Optional[str] = None
+    message: Optional[str] = None
+    # Set when the file resembles an image already in the DB. Advisory only —
+    # the upload still happened. See Manager.save_uploaded_image.
+    duplicate_of: Optional[str] = None
+    duplicate_distance: Optional[int] = None
+    # Set when a name collision forced a new name, so the UI can say so rather
+    # than leaving the user to wonder where "snapshot.jpg" went.
+    renamed_from: Optional[str] = None
+
+
+class UploadImagesResponse(StatusResponse):
+    results: List[UploadedImageRead] = []
 
 
 class GetImageMetadataPayload(ApiPayload):
@@ -1626,6 +1649,62 @@ class WebApp:
             except Exception as e:
                 logger.exception("Failed to create directory")
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/upload",
+            response_model=UploadImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="upload_images",
+        )
+        async def upload_images(
+            files: List[UploadFile] = File(...),
+            path: str = Form(""),
+            overwrite: bool = Form(False),
+        ) -> UploadImagesResponse:
+            """Import images from the user's machine into FILES_ROOT.
+
+            Registered on arrival so they are searchable immediately, rather than
+            only once something annotates them.
+
+            One bad file does not fail the batch: dropping twenty images and
+            getting nothing because the nineteenth was a PDF would be worse than
+            useless, so each is reported on its own.
+            """
+            results: List[UploadedImageRead] = []
+            for upload in files:
+                name = upload.filename or "(unnamed)"
+                try:
+                    data = await upload.read()
+                    saved = await self._manager.save_uploaded_image(
+                        rel_dir=path,
+                        filename=name,
+                        data=data,
+                        overwrite=overwrite,
+                    )
+                    results.append(
+                        UploadedImageRead(
+                            filename=name,
+                            ok=True,
+                            path=saved["path"],
+                            uuid=saved["uuid"],
+                            duplicate_of=saved["duplicate_of"],
+                            duplicate_distance=saved["duplicate_distance"],
+                            renamed_from=saved["renamed_from"],
+                        )
+                    )
+                except ValueError as e:
+                    # Rejected input (bad name, wrong type, undecodable): the
+                    # message is written for the user, so pass it through.
+                    results.append(UploadedImageRead(filename=name, ok=False, message=str(e)))
+                except Exception as e:
+                    logger.exception("Failed to save uploaded image %r", name)
+                    results.append(UploadedImageRead(filename=name, ok=False, message=str(e)))
+                finally:
+                    await upload.close()
+
+            # SUCCESS as long as the request was handled; per-file outcomes carry
+            # the detail. A partial failure is not a failed request.
+            return UploadImagesResponse(status=JsonValues.SUCCESS, results=results)
 
         @self._app.get(
             "/api/images/{image_path:path}/file",

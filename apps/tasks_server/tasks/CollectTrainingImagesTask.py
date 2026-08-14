@@ -1063,21 +1063,7 @@ class CollectTrainingImagesTask(Task):
             result["filtered_tagged"] = self._filtered_tagged
             result["filtered_stripped"] = self._filtered_stripped
         if self._task_tag_uuid:
-            result["actions"] = [
-                {
-                    "type": "open_review",
-                    "label": "See results",
-                    # image_tag_uuids is what actually finds every collected frame:
-                    # the tag is written to the image record, so it matches whether
-                    # or not the frame ended up with bboxes. tag_uuids (a bbox-tag
-                    # filter) is kept for annotated runs, where narrowing to the
-                    # tagged bboxes is the more useful view.
-                    "payload": {
-                        "tag_uuids": [] if self._collect_all else [self._task_tag_uuid],
-                        "image_tag_uuids": [self._task_tag_uuid],
-                    },
-                }
-            ]
+            result["actions"] = self._review_actions()
         return result
 
     def _elapsed_duration_s(self) -> float:
@@ -2243,21 +2229,46 @@ class CollectTrainingImagesTask(Task):
     def get_status_message(self) -> str:
         return self._status_msg
 
+    def _review_actions(self) -> list[dict]:
+        """Two ways into Review over this run's images: everything, or only the
+        part still needing a human.
+
+        The collector auto-annotates with its models and tags what it draws
+        UNVERIFIED, so after a long run "what did I collect" and "what do I
+        still have to look at" are different, and usually very different,
+        questions. One button could only answer the first.
+
+        Shared by the live status card and the completion result so the two
+        cannot drift apart.
+        """
+        if not self._task_tag_uuid:
+            return []
+
+        # image_tag_uuids is what actually finds every collected frame: the tag
+        # is written to the image record, so it matches whether or not the frame
+        # ended up with bboxes. tag_uuids (a bbox-tag filter) is kept for
+        # annotated runs, where narrowing to the tagged bboxes is more useful.
+        scope = {
+            "tag_uuids": [] if self._collect_all else [self._task_tag_uuid],
+            "image_tag_uuids": [self._task_tag_uuid],
+        }
+        return [
+            {
+                "type": "open_review",
+                "label": "Browse all results",
+                # Sent explicitly rather than omitted so this also *clears* an
+                # 'unverified' filter left over from the button next to it.
+                "payload": {**scope, "bbox_verification": "any"},
+            },
+            {
+                "type": "open_review",
+                "label": "Browse unverified",
+                "payload": {**scope, "bbox_verification": "unverified"},
+            },
+        ]
+
     def get_status_actions(self) -> list[dict]:
-        if self._task_tag_uuid:
-            return [
-                {
-                    "type": "open_review",
-                    "label": "Browse results",
-                    # See _result()'s action for why both are sent: the image tag
-                    # is the one that matches every collected frame, bboxes or not.
-                    "payload": {
-                        "tag_uuids": [] if self._collect_all else [self._task_tag_uuid],
-                        "image_tag_uuids": [self._task_tag_uuid],
-                    },
-                }
-            ]
-        return []
+        return self._review_actions()
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

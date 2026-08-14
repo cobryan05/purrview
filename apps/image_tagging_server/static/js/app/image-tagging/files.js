@@ -71,6 +71,9 @@ export async function init(runtime) {
     fileNavigation: runtime.fileNavigation,
     showDbStatus: true,
     showThumbnails: true,
+    // Import from the user's machine. The Files list is where you already go to
+    // find an image, so it is where you would look to add one.
+    allowUpload: true,
     filter: entry => entry.isDir || entry.name.match(/\.(jpg|jpeg|png)$/i),
     onFileClick: async (entry, dirPath) => {
       const imageName =

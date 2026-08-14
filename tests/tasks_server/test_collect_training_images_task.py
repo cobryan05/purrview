@@ -531,20 +531,52 @@ def test_get_status_actions_no_tag_uuid():
     assert task.get_status_actions() == []
 
 
-def test_get_status_actions_with_tag_uuid():
-    """get_status_actions returns an open_review action when a tag UUID is set."""
+def test_get_status_actions_offers_all_and_unverified():
+    """Two ways in, not one.
+
+    The collector auto-annotates with its models and tags what it draws
+    UNVERIFIED, so after a long run "what did I collect" and "what still needs
+    me" are different questions, and usually very different counts.
+    """
     task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
     task._task_tag_uuid = "some-tag-uuid"
     task._collect_all = False
+
     actions = task.get_status_actions()
-    assert len(actions) == 1
-    action = actions[0]
-    assert action["type"] == "open_review"
-    assert action["label"] == "Browse results"
-    assert action["payload"] == {
+
+    assert [a["label"] for a in actions] == ["Browse all results", "Browse unverified"]
+    assert {a["type"] for a in actions} == {"open_review"}
+    assert actions[0]["payload"] == {
         "tag_uuids": ["some-tag-uuid"],
         "image_tag_uuids": ["some-tag-uuid"],
+        "bbox_verification": "any",
     }
+    assert actions[1]["payload"] == {
+        "tag_uuids": ["some-tag-uuid"],
+        "image_tag_uuids": ["some-tag-uuid"],
+        "bbox_verification": "unverified",
+    }
+
+
+def test_browse_all_states_its_filter_rather_than_omitting_it():
+    """ "Any" is sent explicitly so it *clears* the unverified filter left behind
+    by the button beside it. Omitting it would leave Review still narrowed, and
+    "Browse all results" would silently show a subset."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    task._task_tag_uuid = "some-tag-uuid"
+    task._collect_all = False
+
+    assert task.get_status_actions()[0]["payload"]["bbox_verification"] == "any"
+
+
+def test_status_and_result_actions_do_not_drift():
+    """The live card and the completion result offer the same two entry points,
+    from one definition."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    task._task_tag_uuid = "some-tag-uuid"
+    task._collect_all = False
+
+    assert task.get_status_actions() == task._review_actions()
 
 
 def test_get_status_actions_in_collect_all_mode_filters_on_the_image_tag_only():
@@ -553,8 +585,10 @@ def test_get_status_actions_in_collect_all_mode_filters_on_the_image_tag_only():
     task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
     task._task_tag_uuid = "some-tag-uuid"
     task._collect_all = True
-    payload = task.get_status_actions()[0]["payload"]
-    assert payload == {"tag_uuids": [], "image_tag_uuids": ["some-tag-uuid"]}
+
+    for action in task.get_status_actions():
+        assert action["payload"]["tag_uuids"] == []
+        assert action["payload"]["image_tag_uuids"] == ["some-tag-uuid"]
 
 
 async def test_run_inference_runs_all_models_even_when_first_has_no_detections():

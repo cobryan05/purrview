@@ -2,6 +2,7 @@ import { fetchImageList, createDirectory } from '/app-static/js/shared/api/image
 import { toast } from '/app-static/js/ui/utils/logging.js';
 import { attachFileEntryHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createEntryView } from '/app-static/js/ui/entryView.js';
+import { createUploadControls } from '/app-static/js/ui/imageUpload.js';
 
 /**
  * @typedef {import('@ui_types').FileNavigation} FileNavigation
@@ -19,6 +20,10 @@ import { createEntryView } from '/app-static/js/ui/entryView.js';
  *   showThumbnails  — enables a grid/list view toggle; image files render as thumbnails.
  *   showDbStatus    — shows a "DB" badge on entries whose uuid is populated from the server.
  *   allowCreateDir  — shows an inline "New Folder" affordance in the toolbar.
+ *   allowUpload     — shows an "Import images" affordance in the toolbar, which
+ *                     writes files from the user's machine into the CURRENT
+ *                     directory's tree (destination is asked for once, then
+ *                     remembered as a user setting).
  */
 export class FileBrowser {
   /**
@@ -34,6 +39,8 @@ export class FileBrowser {
    *   showThumbnails?: boolean,
    *   showDbStatus?: boolean,
    *   allowCreateDir?: boolean,
+   *   allowUpload?: boolean,
+   *   onUploaded?: () => (void|Promise<void>),
    * }} options
    */
   constructor({
@@ -48,6 +55,8 @@ export class FileBrowser {
     showThumbnails = false,
     showDbStatus = false,
     allowCreateDir = false,
+    allowUpload = false,
+    onUploaded,
   }) {
     this.container = container;
     this.currentPath = initialPath;
@@ -59,6 +68,8 @@ export class FileBrowser {
     this.mode = mode;
     this.showThumbnails = showThumbnails;
     this.showDbStatus = showDbStatus;
+    this.allowUpload = allowUpload;
+    this.onUploaded = onUploaded;
     this.allowCreateDir = allowCreateDir;
     this._entries = [];
     this._offset = 0;
@@ -265,6 +276,19 @@ export class FileBrowser {
 
       toolbar.appendChild(newBtn);
       toolbar.appendChild(inputRow);
+    }
+
+    // Import affordance. Reads the browser's location at click time (not at
+    // build time) so it follows the user as they navigate — the toolbar is only
+    // rebuilt on a full rerender.
+    if (this.allowUpload) {
+      toolbar.appendChild(createUploadControls({
+        getCurrentPath: () => this.currentPath,
+        onUploaded: async () => {
+          await this.load(this.currentPath);
+          await this.onUploaded?.();
+        },
+      }));
     }
 
     if (toolbar.childElementCount > 0) {

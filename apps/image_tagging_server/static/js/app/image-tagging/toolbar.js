@@ -6,8 +6,12 @@ import { deleteCurrentImage } from './files.js';
 import { makeCanvasSurfaceAdapter } from './canvas/contextTargets.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/index.js';
 import { cycleCanvasEnhancement, getEnhanceMode, defaultEnhanceMode } from './canvas/enhance.js';
+import { importImages } from '/app-static/js/ui/imageUpload.js';
 
-const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'enhance', 'resetZoom', 'deleteImage', 'search'];
+// 'import' is in the default set, so the main canvas gets it. Editor modals
+// (Review's card editor) pass an explicit `buttons` list and therefore do not —
+// importing files from inside a modal about one existing image makes no sense.
+const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'enhance', 'resetZoom', 'deleteImage', 'search', 'import'];
 
 /**
  * Initialises a canvas toolbar into an explicit container element.
@@ -37,6 +41,15 @@ export function init(runtime, container, options = {}) {
   });
 
   const buttonDefs = [
+    {
+      key: 'import',
+      label: '⬆ Import',
+      flex: '0 0 auto',
+      title: 'Import images from this computer',
+      // Opens the imported image straight onto the canvas — importing from here
+      // means you want to annotate it now.
+      onClick: () => importImages({ openFirst: true }),
+    },
     { key: 'reload', label: 'Reload',  onClick: () => reloadImage(runtime) },
     { key: 'undo',   label: 'Undo',    onClick: () => runtime.undo() },
     { key: 'redo',   label: 'Redo',    onClick: () => runtime.redo() },

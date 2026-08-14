@@ -525,10 +525,18 @@ export class ActiveTaskField extends Field {
 
   async _handleAction(action) {
     if (action.type === 'open_review') {
-      events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, {
+      const payload = {
         tagUuids: action.payload?.tag_uuids ?? [],
         imageTagUuids: action.payload?.image_tag_uuids ?? [],
-      });
+      };
+      // Only forwarded when the action asks for it, because the subscriber
+      // treats `undefined` as "leave whatever the panel already had" — which is
+      // what a plain "browse results" wants, and what an explicit
+      // "browse unverified" must override.
+      if (action.payload?.bbox_verification !== undefined) {
+        payload.bboxVerification = action.payload.bbox_verification;
+      }
+      events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, payload);
       return;
     }
     if (action.type === 'task_command') {

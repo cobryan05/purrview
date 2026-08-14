@@ -113,6 +113,28 @@ _OUTLINE_WIDTH_RATIO = 0.01
 _OUTLINE_MIN_PX = 2
 
 
+def _decode_image_bytes(data: bytes):
+    """Decode uploaded bytes, or None if they are not a readable image.
+
+    Deliberately decodes with the same library that will later read the file
+    off disk, rather than trusting the extension or sniffing magic bytes: the
+    question worth answering is not "is this a PNG?" but "can this app open
+    it?", and those differ for truncated or subtly-corrupt files.
+
+    Runs on a worker thread (see the caller) — decoding a large image is slow
+    enough to stall the event loop.
+    """
+    import cv2
+    import numpy as np
+
+    try:
+        buffer = np.frombuffer(data, dtype=np.uint8)
+        return cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
+    except Exception:
+        logger.exception("Uploaded bytes could not be decoded")
+        return None
+
+
 class Manager:
     """Manages interactions with the database"""
 
@@ -1636,6 +1658,125 @@ class Manager:
         if safe_path.exists() and not safe_path.is_dir():
             raise ValueError(f"Path already exists as a file: {rel_path!r}")
         safe_path.mkdir(parents=True, exist_ok=True)
+
+    # Extensions accepted on upload. An allowlist, not a denylist: the file is
+    # written under FILES_ROOT where the browser and every scan will pick it up,
+    # so "anything not obviously bad" is the wrong default.
+    UPLOAD_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+
+    async def save_uploaded_image(
+        self,
+        rel_dir: str,
+        filename: str,
+        data: bytes,
+        *,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        """Write an uploaded image under FILES_ROOT and register it.
+
+        Registering here rather than leaving it to lazy registration is what
+        makes an upload immediately findable in Review: a record only appears on
+        its own once something writes annotations to the image, so an untouched
+        upload would otherwise be invisible to every search that matters.
+
+        Near-duplicates are reported, never rejected. Re-importing an image you
+        already have is a real thing to want to do (a better scan of the same
+        frame, say), so the caller is told and decides.
+
+        Args:
+            rel_dir: Destination directory, relative to FILES_ROOT.
+            filename: Client-supplied name; only its basename is honoured.
+            data: Raw file bytes.
+            overwrite: Replace an existing file instead of uniquifying the name.
+
+        Returns:
+            {path, uuid, duplicate_of, duplicate_distance, renamed_from}
+
+        Raises:
+            ValueError: unusable destination, rejected extension, or undecodable image.
+        """
+        if not self._files_root or not self._files_root.is_dir():
+            raise ValueError("FILES_ROOT is not configured")
+
+        # Path components in the *filename* are the classic traversal vector, and
+        # get_safe_path below would reject them anyway — but silently dropping
+        # them here means "../../etc/passwd.jpg" uploads as "passwd.jpg" rather
+        # than failing confusingly.
+        base_name = Path(filename).name
+        if not base_name or base_name in {".", ".."}:
+            raise ValueError(f"Unusable filename: {filename!r}")
+
+        suffix = Path(base_name).suffix.lower()
+        if suffix not in self.UPLOAD_EXTENSIONS:
+            allowed = ", ".join(sorted(self.UPLOAD_EXTENSIONS))
+            raise ValueError(f"{base_name!r} is not an image this app reads (accepts: {allowed})")
+
+        dest_dir = get_safe_path(self._files_root, rel_dir or "")
+        if dest_dir is None:
+            raise ValueError(f"Path is outside FILES_ROOT: {rel_dir!r}")
+        if dest_dir.exists() and not dest_dir.is_dir():
+            raise ValueError(f"Upload destination is a file, not a folder: {rel_dir!r}")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        target = dest_dir / base_name
+        renamed_from = None
+        if target.exists() and not overwrite:
+            # Uniquify rather than clobber: two cameras happily produce the same
+            # "snapshot.jpg", and silently replacing the first one loses both the
+            # file and every annotation already made against that path.
+            stem, ext = Path(base_name).stem, Path(base_name).suffix
+            for n in range(1, 1000):
+                candidate = dest_dir / f"{stem}_{n}{ext}"
+                if not candidate.exists():
+                    renamed_from, target = base_name, candidate
+                    break
+            else:
+                raise ValueError(f"Too many files named like {base_name!r} in {rel_dir!r}")
+
+        # Decode before writing: an unreadable file under FILES_ROOT is worse
+        # than a rejected upload, because every later scan trips over it.
+        frame = await asyncio.to_thread(_decode_image_bytes, data)
+        if frame is None:
+            raise ValueError(f"{base_name!r} could not be decoded as an image")
+
+        await asyncio.to_thread(target.write_bytes, data)
+
+        try:
+            image = await self._db_client.add_image(target)
+        except Exception:
+            # Do not leave a file the DB does not know about — it would show in
+            # the browser and be missing from every search.
+            await asyncio.to_thread(target.unlink, True)
+            raise
+
+        duplicate_of, duplicate_distance = await self._find_upload_duplicate(image.uuid, target)
+
+        return {
+            "path": self._image_rel_path(str(target)),
+            "uuid": image.uuid,
+            "duplicate_of": duplicate_of,
+            "duplicate_distance": duplicate_distance,
+            "renamed_from": renamed_from,
+        }
+
+    async def _find_upload_duplicate(self, image_uuid: str, path: Path) -> Tuple[Optional[str], Optional[int]]:
+        """Nearest already-known image within the configured dedup threshold.
+
+        Best-effort: a hash index that is cold, rebuilding, or sized differently
+        must not fail the upload — the file is already written and registered,
+        and "we could not check" is not the same as "it is a duplicate".
+        """
+        try:
+            threshold_raw = await self._db_client.get_setting("dedup_image_threshold")
+            threshold = int(threshold_raw) if threshold_raw is not None else 5
+            phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index._image_hash_size)
+            self._hash_index.add_image(image_uuid, phash)
+            for other_uuid, distance in self._hash_index.find_similar_images(phash, threshold):
+                if other_uuid != image_uuid:
+                    return other_uuid, distance
+        except Exception:
+            logger.exception("Duplicate check failed for %s; treating as not-a-duplicate", path)
+        return None, None
 
     ################################################################################
     # Image Reconciliation API

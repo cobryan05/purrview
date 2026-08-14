@@ -11,6 +11,23 @@ main.container {
   box-sizing: border-box;
 }
 
+/* Checkboxes and radios are intrinsically sized, but as flex children they
+   default to `flex-shrink: 1` — so any flex row pairing one with a long label
+   squeezes it toward zero width, and Pico fills a checked box, leaving a 2px
+   sliver that reads as a rendering bug rather than a control.
+   Pico compounds it: its `input { width: 100% }` makes them stretch in the
+   other direction elsewhere.
+
+   This had been patched locally at least three times (.ms-item,
+   .panel-field-row, .inference-model-item) before being fixed here. A global
+   rule is right because there is no case where a checkbox should grow or
+   shrink: its size is its size. Deliberately low specificity (element +
+   attribute), so the existing local rules that set an explicit size still win. */
+input[type='checkbox'],
+input[type='radio'] {
+  flex: 0 0 auto;
+}
+
 /* ===== Top-level tabs ===== */
 /* Pinned to the top of the page scroll: on a long results page (Review search,
    Configuration tables) switching tabs used to mean scrolling all the way back
@@ -120,16 +137,68 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 }
 
 /* Thin drag handle between #workspace and #sidebar */
+/* The handle has to *look* draggable at rest. It was `transparent` until
+   hover, which made a resizable split indistinguishable from a fixed one —
+   you had to already know it was there to find it. The grip is drawn as a
+   centred vertical rule plus a short dotted ridge, so it reads as a control
+   rather than as a border, and it still lights up on hover/drag. */
 .split-resize-handle {
-  width: 5px;
+  position: relative;
+  width: 7px;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
   transition: background 0.15s;
 }
+
+/* The always-visible rule. */
+.split-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background: var(--border-strong);
+}
+
+/* The grip ridge: a short dashed run at the vertical midpoint. A repeating
+   gradient rather than glyphs so it cannot be selected or picked up by a
+   text search of the page. */
+.split-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--text-faint) 0 2px,
+    transparent 2px 5px
+  );
+}
+
 .split-resize-handle:hover,
 .split-resize-handle--active {
   background: var(--surface-elevated);
+}
+
+.split-resize-handle:hover::before,
+.split-resize-handle--active::before {
+  background: var(--color-accent);
+}
+
+.split-resize-handle:hover::after,
+.split-resize-handle--active::after {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--text) 0 2px,
+    transparent 2px 5px
+  );
 }
 
 #sidebar {
@@ -341,7 +410,30 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   gap: var(--space-3);
 }
 
+/* Card = start target + a link to what defines it. The card itself is a plain
+   div (a button cannot legally contain the config button), so the border and
+   hover live here while the click targets sit inside. */
 .runs-launch-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.runs-launch-card:hover {
+  border-color: var(--color-accent);
+  background: var(--surface);
+}
+
+/* The start target takes the whole card except the config button, so the
+   obvious click still starts the run. */
+.runs-launch-card__start {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -349,20 +441,13 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   text-align: left;
   padding: var(--space-3);
   margin: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  border: none;
+  background: none;
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
 }
 
-.runs-launch-card:hover:not(:disabled) {
-  border-color: var(--color-accent);
-  background: var(--surface);
-}
-
-.runs-launch-card:disabled {
+.runs-launch-card__start:disabled {
   opacity: 0.6;
   cursor: progress;
 }
@@ -375,6 +460,34 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .runs-launch-card__hint {
   font-size: var(--text-xs);
   color: var(--text-faint);
+}
+
+/* Quiet until wanted: a gear this size competing with the run name would make
+   every card look like a settings row. */
+.runs-launch-card__config {
+  flex: 0 0 auto;
+  width: 2.2rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: none;
+  color: var(--text-faint);
+  font-size: var(--text-base);
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.runs-launch-card__config:hover {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+
+.runs-launch-card__start:focus-visible,
+.runs-launch-card__config:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .runs-launch-empty {
@@ -397,6 +510,83 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .training-start-run__hint {
   font-size: var(--text-xs);
   color: var(--text-faint);
+}
+
+/* ===== Image import ===== */
+.fb-upload-controls {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 1px;
+}
+
+.fb-upload-btn,
+.fb-upload-target-btn {
+  margin: 0;
+  padding: 0.25em 0.6em;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.fb-upload-target-btn {
+  padding: 0.25em 0.5em;
+}
+
+.upload-remember {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.upload-remember h4 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+/* The chosen folder is the one thing to double-check before committing, so it
+   is set apart rather than run into the prose. */
+.upload-remember__path {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-sm);
+  word-break: break-all;
+}
+
+.upload-remember__check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+/* Sizing only — the flex:0 0 auto that keeps it from collapsing is global
+   (see the base layer near the top of this file). */
+.upload-remember__check input {
+  margin: 0;
+  width: 1em;
+  height: 1em;
+}
+
+.upload-remember__hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.upload-remember__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.upload-remember__actions button {
+  margin: 0;
 }
 
 /* ===== NVR ===== */
