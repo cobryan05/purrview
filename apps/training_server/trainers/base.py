@@ -93,6 +93,66 @@ class Trainer(ABC):
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
+    @staticmethod
+    def shutdown_dataloaders(*loaders: Any) -> None:
+        """Release a DataLoader's worker processes and the pipes they hold.
+
+        Needed for the same reason ``release_gpu_memory`` is: the
+        training_server process outlives every job it runs, so whatever a job
+        fails to hand back is leaked for the life of the server rather than
+        reclaimed at exit. Each worker costs file descriptors, and at the
+        default ``ulimit -n`` of 1024 the *next* job then dies on an
+        unrelated-looking ``[Errno 24] Too many open files`` while opening a
+        temp file — nowhere near the actual cause.
+
+        Which loaders actually leak is worth being precise about, because it is
+        not all of them:
+
+        - A plain ``torch`` ``DataLoader`` with ``persistent_workers=False``
+          (the default, and what our classifier trainers use) builds a fresh
+          iterator per ``__iter__`` and keeps **no** reference to it — its
+          ``_iterator`` attribute stays ``None``. The iterator is a local of the
+          training loop, so refcounting frees it on loop exit (``break``
+          included) and its ``__del__`` stops the workers. Nothing to do; these
+          are passed in only so the gc pass below can catch one held alive by a
+          lingering exception traceback.
+        - Ultralytics' ``InfiniteDataLoader`` assigns
+          ``self.iterator = super().__iter__()`` in ``__init__`` and holds that
+          strong reference for the object's whole life, deliberately, to reuse
+          workers across epochs. Its workers therefore live exactly as long as
+          the loader does — and ultralytics parks the loader on the trainer it
+          hangs off the model. That is the real leak, and it is why this exists.
+
+        Uses each loader's own public ``close()`` where it has one — that is
+        ultralytics' documented "shut down persistent workers when the
+        DataLoader is no longer needed", and it handles unregistering the
+        workers from torch's SIGCHLD watchdog too. No torch internals are
+        touched here: for plain loaders the supported mechanism is simply
+        dropping the last reference, which the ``gc.collect()`` below forces.
+
+        Best-effort throughout. Cleanup runs in a ``finally`` and must never be
+        the thing that fails a training run that otherwise succeeded.
+        """
+        import gc
+
+        for loader in loaders:
+            if loader is None:
+                continue
+            close = getattr(loader, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception:  # noqa: BLE001 — see docstring: never fail the job
+                # Module-local logger: this file imports `logging` but defines no
+                # module-level logger, and each trainer makes its own.
+                logging.getLogger(__name__).exception("Failed to close a DataLoader")
+
+        # Backstop for loaders with no close(): frees any iterator still held by
+        # a reference cycle or an exception traceback, whose __del__ is torch's
+        # own supported worker shutdown.
+        gc.collect()
+
     @abstractmethod
     async def train(
         self,

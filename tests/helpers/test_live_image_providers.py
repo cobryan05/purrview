@@ -23,6 +23,7 @@ running tests.
 """
 
 import asyncio
+import ssl
 
 import numpy as np
 import pytest
@@ -182,6 +183,55 @@ class TestUrlImageProviderDownloadFailure:
                 provider._downloadImage()
 
         assert any("example.invalid" in record.message for record in caplog.records)
+
+
+class TestUrlImageProviderSslVerification:
+    """Certificate verification is disabled only by explicit opt-in.
+
+    IP cameras ship self-signed certs for their LAN addresses, so
+    `ignore_ssl_errors` is a real need — but it is the kind of switch that must
+    stay exactly as narrow as it looks, hence asserting both directions.
+    """
+
+    def _captured_context(self, monkeypatch, **provider_kwargs):
+        captured = {}
+
+        def fake_urlopen(request, *args, **kwargs):
+            captured["context"] = kwargs.get("context")
+            raise OSError("stop here — the context is all this test wants")
+
+        monkeypatch.setattr(url_provider_module.urllib.request, "urlopen", fake_urlopen)
+        provider = UrlImageProvider(url="https://example.invalid/img.jpg", **provider_kwargs)
+        with pytest.raises(OSError):
+            provider._downloadImage()
+        return captured["context"]
+
+    def test_verification_stays_on_by_default(self, monkeypatch):
+        """No context passed means urllib's default, which verifies."""
+        assert self._captured_context(monkeypatch, ignore_ssl_errors=False) is None
+
+    def test_opting_out_disables_both_checks(self, monkeypatch):
+        """Hostname checking and cert verification both have to go: leaving
+        check_hostname on would still reject a self-signed LAN cert.
+        """
+        context = self._captured_context(monkeypatch, ignore_ssl_errors=True)
+
+        assert context is not None
+        assert context.check_hostname is False
+        assert context.verify_mode is ssl.CERT_NONE
+
+    def test_built_from_the_public_api(self, monkeypatch):
+        """Regression guard: this used to call the private
+        `ssl._create_unverified_context()`. The public path is
+        `create_default_context()` plus the two explicit relaxations, and its
+        assignment order is load-bearing — setting verify_mode before
+        check_hostname raises ValueError, which would break image collection
+        for every camera on a self-signed cert.
+        """
+        context = url_provider_module._unverified_ssl_context()
+
+        assert isinstance(context, ssl.SSLContext)
+        assert (context.check_hostname, context.verify_mode) == (False, ssl.CERT_NONE)
 
 
 # ─── FfmpegImageProvider ────────────────────────────────────────────────────────

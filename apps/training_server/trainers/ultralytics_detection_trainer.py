@@ -242,6 +242,30 @@ class UltralyticsDetectionTrainer(Trainer):
                     exported = model.export(format="onnx")
                     return {"exported_path": str(exported), "best_map50": best_map50}
                 finally:
+                    # Ultralytics' InfiniteDataLoader keeps its iterator alive
+                    # for the loader's whole life (`self.iterator =
+                    # super().__iter__()` in __init__), on purpose, so workers
+                    # are reused across epochs. Its workers therefore outlive
+                    # `model.train()` returning, and ultralytics parks the
+                    # loaders on the trainer hanging off the model — so in a
+                    # server that outlives the job, every run strands another
+                    # set of worker processes and their pipes until the process
+                    # hits its descriptor limit.
+                    #
+                    # shutdown_dataloaders calls their public `close()`, which
+                    # is documented for exactly this ("shut down persistent
+                    # workers when the DataLoader is no longer needed").
+                    #
+                    # Reading the loaders off the trainer is best-effort: they
+                    # are absent if training raised before building them, and
+                    # free to be renamed by a version bump.
+                    ul_trainer = getattr(model, "trainer", None)
+                    ul_validator = getattr(model, "validator", None)
+                    self.shutdown_dataloaders(
+                        getattr(ul_trainer, "train_loader", None),
+                        getattr(ul_trainer, "test_loader", None),
+                        getattr(ul_validator, "dataloader", None),
+                    )
                     del model
                     self.release_gpu_memory()
 

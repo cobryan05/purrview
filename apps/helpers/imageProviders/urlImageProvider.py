@@ -27,6 +27,28 @@ logger.setLevel(logging.DEBUG)
 DOWNLOAD_TIMEOUT = 10.0
 
 
+def _unverified_ssl_context() -> ssl.SSLContext:
+    """An SSL context that accepts any certificate.
+
+    Only reachable through a source's explicit ``ignore_ssl_errors`` opt-in,
+    which exists because IP cameras ship self-signed certs for their LAN
+    addresses and there is nothing to validate them against.
+
+    Built from the public ``create_default_context()`` rather than
+    ``ssl._create_unverified_context()``: that helper is private, and the docs
+    describe it as being for stdlib modules' own use. This is the documented
+    way to say the same thing, and it says it in the open — the two disabling
+    lines are visible at the call site instead of hidden behind a name.
+
+    Assignment order is load-bearing: ``check_hostname`` must go False *before*
+    ``verify_mode`` is relaxed, or CPython raises ValueError.
+    """
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 @register_image_provider()
 class UrlImageProvider(ImageProvider):
     # Injectable seams for tests (patch on the class/instance instead of the global
@@ -86,8 +108,7 @@ class UrlImageProvider(ImageProvider):
         logger.debug(f"Downloading image from {self._url}")
         try:
             if self._ignore_ssl_errors:
-                ssl_context = ssl._create_unverified_context()
-                req = urllib.request.urlopen(self._request, timeout=DOWNLOAD_TIMEOUT, context=ssl_context)
+                req = urllib.request.urlopen(self._request, timeout=DOWNLOAD_TIMEOUT, context=_unverified_ssl_context())
             else:
                 req = urllib.request.urlopen(self._request, timeout=DOWNLOAD_TIMEOUT)
 

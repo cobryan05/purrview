@@ -294,6 +294,12 @@ class MultiLabelClassifier(Trainer):
             export_and_validate_onnx(model, onnx_path, timm_model)
             checkpoint_path.unlink(missing_ok=True)
         finally:
+            # These use persistent_workers=False, so torch keeps no reference to
+            # their iterators and the loop's own local is freed on exit — they do
+            # not leak the way ultralytics' InfiniteDataLoader does. Passed in
+            # anyway so the gc pass inside reaps one still pinned by an exception
+            # traceback, which is exactly the path a failed run takes to get here.
+            self.shutdown_dataloaders(loader_train, loader_val)
             del model
             self.release_gpu_memory()
 

@@ -235,6 +235,17 @@ services:
   mono-dev:
     container_name: whiskerwatcher_mono_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
+    # Docker's default soft limit is 1024, which the training server can reach
+    # on its own: every DataLoader worker costs descriptors, and this container
+    # runs training alongside the watcher, the collectors and the browser test
+    # suite. When it is hit, the failure surfaces as an unrelated-looking
+    # "[Errno 24] Too many open files" while opening a temp file, killing a
+    # training that was minutes from finishing. The trainers now reap their own
+    # workers; this is the headroom that keeps one leak from being fatal.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     <<: *gpu
     build:
       context: .
