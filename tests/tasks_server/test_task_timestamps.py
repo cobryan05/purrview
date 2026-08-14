@@ -83,3 +83,32 @@ async def test_is_paused_in_place_false_for_running_task(manager, tasks_api_mock
     assert task_info.task.is_paused_in_place() is False
 
     await manager.cancel_tasks([TASK_UUID])
+
+
+class TestResumeClearsPreviousRunResult:
+    """Resuming reuses the instance row, so the previous run's one-shot result
+    must not survive into the new run — otherwise the instance reports status
+    "running" while carrying a "completed" result that is never consumed, and
+    every task poll ships that dead payload to the UI forever.
+    """
+
+    async def test_resume_clears_the_previous_runs_result(self, manager, tasks_api_mock):
+        stale_result = {"status": "completed", "data": {"images_saved": 561}}
+        paused = db_models.TaskInstanceRead(
+            uuid=TASK_UUID,
+            config_uuid=CONFIG_UUID,
+            status=TaskStatus.PAUSED,
+            resume_data={},
+            result=stale_result,
+            error_message=None,
+        )
+        tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[paused])
+
+        resumed = await manager.resume_tasks([TASK_UUID])
+        assert resumed == [TASK_UUID]
+
+        cleared = [c for c in tasks_api_mock.set_task_instance_result.call_args_list if not c.args[1].result]
+        assert cleared, "resuming must clear the previous run's result"
+        assert not paused.result, "the in-memory instance must not keep serving the stale result"
+
+        await manager.cancel_tasks([TASK_UUID])

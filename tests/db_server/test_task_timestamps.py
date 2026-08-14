@@ -187,3 +187,50 @@ class TestStatusDataPersistence:
         inst = await _create_instance(http_client, cfg)
         instance = (await http_client.get("/api/task-instances", params={"uuids": [inst]})).json()["instances"][0]
         assert instance["statusData"] is None
+
+
+class TestRestartClearsEndedAt:
+    """A new run's started_at write must retire the previous run's ended_at.
+
+    Resuming or auto-restarting an instance reuses the same row, so an ended_at
+    left over from the previous run outlives it — producing an instance that is
+    running while claiming to have ended, with ended_at *before* started_at.
+    """
+
+    async def test_started_at_clears_a_previous_runs_ended_at(self, http_client):
+        cfg = await _create_config(http_client, "ts-task-restart")
+        inst = await _create_instance(http_client, cfg)
+
+        first_run_end = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        await http_client.patch(
+            f"/api/task-instances/{inst}/timestamps",
+            json={"endedAt": first_run_end.isoformat()},
+        )
+
+        second_run_start = datetime(2026, 1, 2, 9, 0, 0, tzinfo=timezone.utc)
+        r = await http_client.patch(
+            f"/api/task-instances/{inst}/timestamps",
+            json={"startedAt": second_run_start.isoformat()},
+        )
+        assert r.status_code == 200
+
+        instance = (await http_client.get("/api/task-instances", params={"uuids": [inst]})).json()["instances"][0]
+        assert instance["startedAt"] is not None
+        assert instance["endedAt"] is None, "a restarted instance must not keep the previous run's ended_at"
+
+    async def test_ended_at_still_persists_when_written_after_started_at(self, http_client):
+        """Clearing on start must not stop a run from recording its own end."""
+        cfg = await _create_config(http_client, "ts-task-restart-end")
+        inst = await _create_instance(http_client, cfg)
+
+        await http_client.patch(
+            f"/api/task-instances/{inst}/timestamps",
+            json={"startedAt": datetime(2026, 1, 2, 9, 0, 0, tzinfo=timezone.utc).isoformat()},
+        )
+        await http_client.patch(
+            f"/api/task-instances/{inst}/timestamps",
+            json={"endedAt": datetime(2026, 1, 2, 10, 0, 0, tzinfo=timezone.utc).isoformat()},
+        )
+
+        instance = (await http_client.get("/api/task-instances", params={"uuids": [inst]})).json()["instances"][0]
+        assert instance["endedAt"] is not None

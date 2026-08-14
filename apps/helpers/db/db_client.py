@@ -3173,6 +3173,12 @@ class DbClient:
             if instance:
                 if started_at is not None:
                     instance.started_at = started_at
+                    # A resume/auto-restart reuses the same row, and only the start
+                    # of a run writes started_at. Without this, the previous run's
+                    # ended_at outlives it and the instance reads as running while
+                    # claiming to have ended *before* it started. Callers never send
+                    # both in one call, so this can't discard an end being recorded.
+                    instance.ended_at = None
                 if ended_at is not None:
                     instance.ended_at = ended_at
                 if log_json is not None:

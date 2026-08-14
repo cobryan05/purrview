@@ -563,6 +563,12 @@ class Manager:
         if resume_instance:
             instance = resume_instance
             task.set_resume_data(resume_instance.resume_data or {})
+            # The row is reused across runs, so the previous run's one-shot result
+            # would otherwise ride along into this one — leaving a "running" task
+            # advertising a "completed" result nothing ever consumes, and shipping
+            # that dead payload on every poll. Cleared in memory too, so polls
+            # answered from _running_tasks don't keep serving it.
+            instance.result = None
         else:
             resp = await asyncio.to_thread(
                 TasksApi(self._db_api_client).create_task_instance,
@@ -583,18 +589,30 @@ class Manager:
         # task.start() ran first, the late RUNNING write could then clobber
         # the terminal status, leaving the task stuck as "running" forever
         # with no in-memory entry left for Stop/Suspend/Cancel to act on.
-        await asyncio.gather(
+        start_writes = [
             asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_status,
                 instance.uuid,
                 db_models.SetTaskStatusPayload(status=TaskStatus.RUNNING),
             ),
+            # This write also retires the previous run's ended_at (see
+            # set_task_timestamps_and_logs) so a resumed row can't read as
+            # having ended before it started.
             asyncio.to_thread(
                 TasksApi(self._db_api_client).set_task_instance_timestamps,
                 instance.uuid,
                 db_models.SetTaskTimestampsPayload(started_at=started_at),
             ),
-        )
+        ]
+        if resume_instance:
+            start_writes.append(
+                asyncio.to_thread(
+                    TasksApi(self._db_api_client).set_task_instance_result,
+                    instance.uuid,
+                    db_models.SetTaskResultPayload(result={}),
+                )
+            )
+        await asyncio.gather(*start_writes)
         t = asyncio.create_task(self._on_task_complete(task_info))
         self._completion_tasks.add(t)
         t.add_done_callback(self._completion_tasks.discard)
