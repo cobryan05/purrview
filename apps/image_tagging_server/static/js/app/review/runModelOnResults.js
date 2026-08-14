@@ -304,6 +304,17 @@ export async function resolveImageScope(ctx) {
  */
 export function makeCandidateBboxAdapter(candidate, cardEl, previewController) {
   const { labels, removeCandidate, rerenderProposedChip, openEditor } = previewController;
+
+  function thumbnailUrl() {
+    if (!candidate.isNew) return getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
+    return candidate.geometry
+      ? getRegionThumbnailUrl(candidate.imagePath, candidate.geometry, {
+          width: 300,
+          color: labels.get(candidate.proposedLabelUuid)?.color ?? null,
+        })
+      : getImageThumbnailUrl(candidate.imagePath, 300);
+  }
+
   return {
     // ── Display getters (used by the context menu / any card builder) ──────
     // New-box candidates have no real uuid — return null so the similar-search
@@ -314,15 +325,7 @@ export function makeCandidateBboxAdapter(candidate, cardEl, previewController) {
     getLabelName() { return candidate.proposedLabelName ?? null; },
     getLabelColor() { return labels.get(candidate.proposedLabelUuid)?.color ?? null; },
     getConfidence() { return candidate.confidence ?? null; },
-    getThumbnailUrl() {
-      if (!candidate.isNew) return getBboxThumbnailUrl(candidate.imagePath, candidate.bboxUuid, 300);
-      return candidate.geometry
-        ? getRegionThumbnailUrl(candidate.imagePath, candidate.geometry, {
-            width: 300,
-            color: labels.get(candidate.proposedLabelUuid)?.color ?? null,
-          })
-        : getImageThumbnailUrl(candidate.imagePath, 300);
-    },
+    getThumbnailUrl: thumbnailUrl,
 
     // ── Relabel (no DB) ────────────────────────────────────────────────────
     // Sets the proposed label on the candidate and re-renders its chip in place.
@@ -331,6 +334,14 @@ export function makeCandidateBboxAdapter(candidate, cardEl, previewController) {
       candidate.proposedLabelUuid = labelUuid;
       candidate.proposedLabelName = labelUuid ? (labels.get(labelUuid)?.name ?? null) : null;
       rerenderProposedChip(candidate);
+      // A proposed NEW box is outlined in the proposed label's colour, and that
+      // colour is baked into the crop URL (the box has no row for the server to
+      // read a label off). Without this the chip said one label and the crop
+      // stayed outlined in the previous one — most visible when relabelling a
+      // multi-selection, where every card but the chip row looked untouched.
+      const thumb = cardEl?.querySelector('.thumb');
+      const url = thumbnailUrl();
+      if (thumb && thumb.getAttribute('src') !== url) thumb.src = url;
     },
 
     // ── Remove from preview (no DB) ────────────────────────────────────────

@@ -348,3 +348,63 @@ class TestPreviewCardBehavior:
         assert abs(geom["y"] - 0.6) < 1e-3
         assert abs(geom["width"] - 0.25) < 1e-3
         assert abs(geom["height"] - 0.15) < 1e-3
+
+
+# One proposed NEW box — no bbox row exists, so its crop is a region crop with
+# the proposed label's colour baked into the URL.
+NEW_CANDIDATE = {
+    "bboxUuid": None,
+    "isNew": True,
+    "imageUuid": "img-1",
+    "imagePath": "folder/image1.jpg",
+    "currentLabelUuid": None,
+    "currentLabelName": None,
+    "proposedLabelUuid": "lbl-dog",
+    "proposedLabelName": "Dog",
+    "confidence": 0.77,
+    "geometry": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},
+}
+
+
+class TestPreviewCardRelabelRecolorsTheCrop:
+    """Relabelling a proposed new box must re-request its crop.
+
+    Regression: `applyLabel` re-rendered the proposed chip only, so the card
+    kept the outline colour of the label the model had originally proposed —
+    the chip said one class and the box was drawn in another's colour.
+    """
+
+    def _setup(self, page: Page, base_url: str):
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_thumbnails(page)
+        page.route(
+            "**/region/thumbnail*",
+            lambda route: route.fulfill(status=200, content_type="image/png", body=_TINY_PNG),
+        )
+        _navigate_to_review(page, base_url)
+
+    def test_relabel_rerequests_the_crop_in_the_new_colour(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_confirm_modal(page, [NEW_CANDIDATE])
+
+        modal = page.locator(".relabel-confirm-modal")
+        thumb = modal.locator(".relabel-modal-card .thumb").first
+        expect(thumb).to_be_visible(timeout=2000)
+        before = thumb.get_attribute("src")
+        assert "00ff00" in before, f"crop should start outlined in Dog's colour, got {before}"
+
+        card = modal.locator(".relabel-modal-card").first
+        card.locator(".card-info").click(button="right")
+        menu = page.locator(".ctx-menu").first
+        expect(menu).to_be_visible(timeout=2000)
+        menu.locator(".ctx-menu-item", has_text="Apply label").hover()
+        picker_input = page.locator(".ctx-menu input").first
+        expect(picker_input).to_be_visible(timeout=2000)
+        picker_input.fill("Cat")
+        page.locator(".ctx-menu").last.get_by_text("Cat", exact=False).first.click()
+
+        expect(modal.locator(".relabel-modal-proposed-chip").first).to_have_text("Cat", timeout=2000)
+        after = thumb.get_attribute("src")
+        assert "ff0000" in after, f"crop should be re-requested outlined in Cat's colour, got {after}"
