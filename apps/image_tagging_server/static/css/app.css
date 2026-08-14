@@ -4969,6 +4969,56 @@ button.filter-active {
   flex: 1;
 }
 
+/* The bar is fixed above the whole app, and an outage posts one notice per
+   unreachable service — uncapped, the strip grows over the app it is reporting
+   on. The list scrolls instead; the header stays put as the handle for it. */
+.notices-bar__list {
+  max-height: min(28vh, 220px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Carries the level modifier for its colour, but not `.notices-bar__item` —
+   that class is the count of actual notices — so it repeats the row metrics. */
+.notices-bar__header {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.3em 0.8em 0.3em 1.2em;
+  font-size: 0.82em;
+  font-weight: 600;
+  border-top: 1px solid transparent;
+}
+
+.notices-bar__summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pico gives buttons display:block, width:100% and a border — left alone the
+   toggle claims its own full-width line inside the header. */
+.notices-bar__toggle {
+  flex-shrink: 0;
+  width: auto;
+  margin: 0;
+  padding: 0 0.4em;
+  line-height: 1.2;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1em;
+  cursor: pointer;
+}
+
+.notices-bar__toggle:hover,
+.notices-bar__toggle:focus {
+  background: none;
+  color: inherit;
+  opacity: 0.75;
+}
+
 /* ===== Active Model Bar ===== */
 #active-model-bar {
   /* positioned by #bottom-bars flex container */

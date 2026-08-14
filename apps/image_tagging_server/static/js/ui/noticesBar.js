@@ -10,6 +10,11 @@
  * hidden when there are no active notices and shown automatically when any arrive.
  *
  * Notice shape: { key: string, level: "info"|"warning"|"error", message: string }
+ *
+ * The bar is fixed to the bottom above the whole app, so its height is capped
+ * and the list scrolls inside it: an outage produces one notice per unreachable
+ * service, which is exactly when an unbounded strip would grow over the app it
+ * is reporting on. A header line summarises the notices and collapses them.
  */
 
 const LEVEL_ICONS = {
@@ -17,6 +22,25 @@ const LEVEL_ICONS = {
   warning: '⚠',
   error: '✕',
 };
+
+// Worst-first: the header borrows the highest level present, since a collapsed
+// bar reporting an error in info blue reads as "all fine".
+const LEVEL_RANK = ['error', 'warning', 'info'];
+
+const COLLAPSED_KEY = 'ww_notices_bar_collapsed';
+
+function _readCollapsed() {
+  try { return localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { return false; }
+}
+
+function _writeCollapsed(collapsed) {
+  try { localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* private mode */ }
+}
+
+function _worstLevel(notices) {
+  const present = new Set(notices.map(n => n.level || 'info'));
+  return LEVEL_RANK.find(level => present.has(level)) ?? 'info';
+}
 
 /**
  * @param {string} containerId  id of the mount <div>
@@ -26,32 +50,96 @@ export function mountNoticesBar(containerId = 'notices-bar') {
   const container = document.getElementById(containerId);
   if (!container) return { destroy() {} };
 
+  // Collapse lives outside the DOM because render() rebuilds the bar from
+  // scratch on every frame — held in the markup it would be undone by the next
+  // poll, and during an outage the next poll is always seconds away. It is
+  // persisted for the same reason at a longer timescale: an outage outlives a
+  // page load, and re-collapsing on every reload is the same annoyance as not
+  // being able to collapse at all.
+  let collapsed = _readCollapsed();
+  let lastNotices = [];
+
+  function buildHeader(notices) {
+    const level = _worstLevel(notices);
+    const header = document.createElement('div');
+    // Takes the level *modifier* for its colour but not the base item class:
+    // `.notices-bar__item` counts notices, and a header that answered to it
+    // would report one row more than there are notices.
+    header.className = `notices-bar__header notices-bar__item--${level}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'notices-bar__icon';
+    icon.textContent = LEVEL_ICONS[level] ?? 'ℹ';
+    header.appendChild(icon);
+
+    const summary = document.createElement('span');
+    summary.className = 'notices-bar__summary';
+    const count = `${notices.length} ${notices.length === 1 ? 'notice' : 'notices'}`;
+    // Collapsed, this line is the whole bar, so it has to stay a status bar
+    // rather than a chevron hiding an outage: it names the first notice too.
+    summary.textContent = collapsed ? `${count} — ${notices[0]?.message ?? ''}` : count;
+    header.appendChild(summary);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'notices-bar__toggle';
+    toggle.textContent = collapsed ? '▴' : '▾';
+    toggle.title = collapsed ? 'Show notices' : 'Hide notices';
+    toggle.setAttribute('aria-label', toggle.title);
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    toggle.addEventListener('click', () => {
+      collapsed = !collapsed;
+      _writeCollapsed(collapsed);
+      render(lastNotices);
+    });
+    header.appendChild(toggle);
+
+    return header;
+  }
+
+  function buildItem(notice) {
+    const level = notice.level || 'info';
+    const item = document.createElement('div');
+    item.className = `notices-bar__item notices-bar__item--${level}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'notices-bar__icon';
+    icon.textContent = LEVEL_ICONS[level] ?? 'ℹ';
+    item.appendChild(icon);
+
+    const msg = document.createElement('span');
+    msg.className = 'notices-bar__message';
+    msg.textContent = notice.message || '';
+    item.appendChild(msg);
+
+    return item;
+  }
+
   function render(notices) {
+    lastNotices = Array.isArray(notices) ? notices : [];
+
+    // Rebuilding throws away where the user had scrolled to; during an outage
+    // that would yank the list back to the top every time a frame arrives.
+    const scrollTop = container.querySelector('.notices-bar__list')?.scrollTop ?? 0;
     container.innerHTML = '';
 
-    if (!notices || notices.length === 0) {
+    if (lastNotices.length === 0) {
       container.style.display = 'none';
+      container.classList.remove('is-collapsed');
       return;
     }
 
     container.style.display = '';
-    for (const notice of notices) {
-      const level = notice.level || 'info';
-      const item = document.createElement('div');
-      item.className = `notices-bar__item notices-bar__item--${level}`;
+    container.classList.toggle('is-collapsed', collapsed);
+    container.appendChild(buildHeader(lastNotices));
 
-      const icon = document.createElement('span');
-      icon.className = 'notices-bar__icon';
-      icon.textContent = LEVEL_ICONS[level] ?? 'ℹ';
-      item.appendChild(icon);
+    if (collapsed) return;
 
-      const msg = document.createElement('span');
-      msg.className = 'notices-bar__message';
-      msg.textContent = notice.message || '';
-      item.appendChild(msg);
-
-      container.appendChild(item);
-    }
+    const list = document.createElement('div');
+    list.className = 'notices-bar__list';
+    for (const notice of lastNotices) list.appendChild(buildItem(notice));
+    container.appendChild(list);
+    list.scrollTop = scrollTop;
   }
 
   let _source = null;
