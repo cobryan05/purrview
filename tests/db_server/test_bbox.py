@@ -1671,3 +1671,133 @@ class TestGeneratedClientBboxMetadataRoundTrip:
 
         r = await http_client.post("/api/images/metadata/get", json={"imagePath": "collect.png"})
         assert r.json()["image"]["bboxes"][0]["metadataJson"] == {"confidence": "0.6231"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Crop framing — the outline must not scale with the source box
+# ──────────────────────────────────────────────────────────────────────────────
+
+THUMB_WIDTH = 300
+
+
+@pytest.fixture
+def framing_image(files_root):
+    """A plain 1000x1000 frame — big enough that a 2% box is only 20 source px."""
+    from PIL import Image as PILImage
+
+    path = files_root / "framing.png"
+    PILImage.new("RGB", (1000, 1000), (30, 30, 30)).save(path)
+    return path
+
+
+async def _make_bboxes(http_client, label, boxes):
+    """Create every box in ONE metadata update — the endpoint replaces the
+    image's box list wholesale, so a second call would delete the first box."""
+    uuids = [str(uuid.uuid4()) for _ in boxes]
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={
+            "imagePath": "framing.png",
+            "boxes": [
+                {
+                    "uuid": bid,
+                    "labelUuid": label,
+                    "x": x,
+                    "y": y,
+                    "width": w,
+                    "height": h,
+                    "tagUuids": [UNVERIFIED_TAG_UUID],
+                }
+                for bid, (x, y, w, h) in zip(uuids, boxes)
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    return uuids
+
+
+def _outline_runs(png_bytes):
+    """Lengths of the runs of outline-coloured pixels across the crop's middle row.
+
+    The label is pure red on a grey frame, so a run is one vertical edge of the
+    drawn rectangle. Two runs = the left and right edges of the box.
+    """
+    import io as _io
+
+    from PIL import Image as PILImage
+
+    im = PILImage.open(_io.BytesIO(png_bytes)).convert("RGB")
+    row = [im.getpixel((x, im.height // 2)) for x in range(im.width)]
+    runs = []
+    current = 0
+    for r, g, b in row:
+        if r > 150 and g < 100 and b < 100:
+            current += 1
+        elif current:
+            runs.append(current)
+            current = 0
+    if current:
+        runs.append(current)
+    return runs, im.size
+
+
+async def test_crop_outline_width_is_independent_of_box_size(http_client, framing_image, monkeypatch, tmp_path):
+    """A 20px box and a 600px box get the same outline weight in the thumbnail.
+
+    Regression: the outline was stroked at a fixed 3 *source* pixels before the
+    resize, so it came out ~36px thick on a tiny box's upscaled crop (eating the
+    box until it read as a small box floating in context) and under a pixel on a
+    large box's downscaled one (where LANCZOS then blurred it away).
+    """
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+    r = await http_client.post("/api/labels", json={"name": "framing", "color": "#ff0000"})
+    label = r.json()["label"]["uuid"]
+
+    tiny, large = await _make_bboxes(http_client, label, [(0.4, 0.4, 0.02, 0.02), (0.2, 0.2, 0.6, 0.6)])
+
+    tiny_runs, tiny_size = _outline_runs(
+        (await http_client.get(f"/api/images/framing.png/bbox/{tiny}/thumbnail?width={THUMB_WIDTH}")).content
+    )
+    large_runs, large_size = _outline_runs(
+        (await http_client.get(f"/api/images/framing.png/bbox/{large}/thumbnail?width={THUMB_WIDTH}")).content
+    )
+
+    assert tiny_size == large_size == (THUMB_WIDTH, THUMB_WIDTH)
+    assert len(tiny_runs) == 2, f"expected two vertical edges, got {tiny_runs}"
+    assert len(large_runs) == 2, f"expected two vertical edges, got {large_runs}"
+    for run in tiny_runs + large_runs:
+        assert 2 <= run <= 5, f"outline should be ~3px at width={THUMB_WIDTH}, got {tiny_runs} / {large_runs}"
+
+
+async def test_crop_fills_the_same_share_of_the_thumbnail_at_any_box_size(
+    http_client, framing_image, monkeypatch, tmp_path
+):
+    """The box's *interior* spans ~1/1.4 of the crop (20% context each side) either way.
+
+    This is the user-visible half of the same regression: with a 32px outline
+    stroked around a tiny box, only ~50% of the card was image, so a small box
+    read as "zoomed to half the card with context around it" next to a large one.
+    """
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+    r = await http_client.post("/api/labels", json={"name": "framing2", "color": "#ff0000"})
+    label = r.json()["label"]["uuid"]
+
+    tiny, large = await _make_bboxes(http_client, label, [(0.4, 0.4, 0.02, 0.02), (0.2, 0.2, 0.6, 0.6)])
+
+    spans = {}
+    for name, bid in (("tiny", tiny), ("large", large)):
+        png = (await http_client.get(f"/api/images/framing.png/bbox/{bid}/thumbnail?width={THUMB_WIDTH}")).content
+        import io as _io
+
+        from PIL import Image as PILImage
+
+        im = PILImage.open(_io.BytesIO(png)).convert("RGB")
+        row = [im.getpixel((x, im.height // 2)) for x in range(im.width)]
+        reds = [i for i, (rr, gg, bb) in enumerate(row) if rr > 150 and gg < 100 and bb < 100]
+        # Inner edges of the two strokes: what the user actually sees of the box.
+        first_gap = next(i for i in range(len(reds) - 1) if reds[i + 1] != reds[i] + 1)
+        spans[name] = (reds[-1] - reds[first_gap]) / im.width
+
+    assert abs(spans["tiny"] - spans["large"]) < 0.05, f"box fills different shares of the card: {spans}"
+    for name, span in spans.items():
+        assert span > 0.6, f"{name} box only fills {span:.0%} of the crop"

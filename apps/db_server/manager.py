@@ -106,6 +106,12 @@ _BBOX_VERIFIED_TAG = VERIFIED_TAG_UUID
 # meaningful value there (promote to root), so it can't also mean "not supplied".
 _PARENT_UUID_NOT_SET = object()
 
+# Crop-thumbnail outline weight, as a fraction of the RENDERED width (3px on the
+# 300px crops the review grid asks for). See Manager._render_outlined_crop for
+# why it can't be a source-pixel constant.
+_OUTLINE_WIDTH_RATIO = 0.01
+_OUTLINE_MIN_PX = 2
+
 
 class Manager:
     """Manages interactions with the database"""
@@ -2538,6 +2544,70 @@ class Manager:
         )
         return None
 
+    @staticmethod
+    def _render_outlined_crop(
+        img,
+        box: Tuple[float, float, float, float],
+        out_width: int,
+        color: Tuple[int, int, int],
+        pad_frac: float = 0.2,
+    ) -> bytes:
+        """Crop `img` around `box`, resize to `out_width`, then stroke the box.
+
+        `box` is (left, top, right, bottom) in source pixels; `pad_frac` is the
+        context padding as a fraction of the box's own size, so the box occupies
+        the same share of the thumbnail whatever its source size.
+
+        The stroke is drawn AFTER the resize, at a width proportional to the
+        output. Drawn before (at a fixed 3 source px) it was a third of the crop
+        for a 20px box — which reads as a small box floating in context rather
+        than a filled card — and less than one pixel for a 900px box, which the
+        LANCZOS downscale then blurred into the background.
+
+        Returns PNG bytes.
+        """
+        from PIL import Image as PILImage
+        from PIL import ImageDraw
+
+        img_w, img_h = img.size
+        bl, bt, br, bb = box
+        pad_x = (br - bl) * pad_frac
+        pad_y = (bb - bt) * pad_frac
+        left = max(0, bl - pad_x)
+        top = max(0, bt - pad_y)
+        right = min(img_w, br + pad_x)
+        bottom = min(img_h, bb + pad_y)
+        # A box smaller than a pixel (or an image only a few pixels across) would
+        # otherwise crop to nothing, and a zero-size crop cannot be resized.
+        right = max(right, min(img_w, left + 1))
+        bottom = max(bottom, min(img_h, top + 1))
+
+        cropped = img.crop((left, top, right, bottom))
+        crop_w, crop_h = cropped.size
+        aspect = crop_w / crop_h if crop_h else 1
+        out_height = max(1, round(out_width / aspect))
+        cropped = cropped.resize((out_width, out_height), PILImage.LANCZOS)
+
+        sx = out_width / crop_w if crop_w else 1
+        sy = out_height / crop_h if crop_h else 1
+        stroke = max(_OUTLINE_MIN_PX, round(out_width * _OUTLINE_WIDTH_RATIO))
+        draw = ImageDraw.Draw(cropped)
+        draw.rectangle(
+            [
+                (bl - left) * sx,
+                (bt - top) * sy,
+                (br - left) * sx,
+                (bb - top) * sy,
+            ],
+            outline=color,
+            width=stroke,
+        )
+        del draw
+
+        buf = io.BytesIO()
+        cropped.save(buf, format="PNG")
+        return buf.getvalue()
+
     async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:
         """
         Return JPEG bytes for a cropped+resized thumbnail of the given bbox.
@@ -2546,7 +2616,6 @@ class Manager:
         review page (e.g. from the image-tagging canvas) are always reflected.
         """
         from PIL import Image as PILImage
-        from PIL import ImageDraw
 
         # Fetch bbox first so we can validate cache freshness against bbox.updated_at.
         result = await self._db_client.get_bbox_with_image(bbox_uuid)
@@ -2590,31 +2659,12 @@ class Manager:
                 with PILImage.open(safe_path) as img:
                     img = img.convert("RGB")
                     img_w, img_h = img.size
-                    pad_x = bw * img_w * 0.2
-                    pad_y = bh * img_h * 0.2
-                    left = max(0, bx * img_w - pad_x)
-                    top = max(0, by * img_h - pad_y)
-                    right = min(img_w, (bx + bw) * img_w + pad_x)
-                    bottom = min(img_h, (by + bh) * img_h + pad_y)
-                    cropped = img.crop((left, top, right, bottom))
-                    draw = ImageDraw.Draw(cropped)
-                    draw.rectangle(
-                        [
-                            bx * img_w - left,
-                            by * img_h - top,
-                            (bx + bw) * img_w - left,
-                            (by + bh) * img_h - top,
-                        ],
-                        outline=label_color,
-                        width=3,
+                    return self._render_outlined_crop(
+                        img,
+                        (bx * img_w, by * img_h, (bx + bw) * img_w, (by + bh) * img_h),
+                        width,
+                        label_color,
                     )
-                    del draw
-                    aspect = cropped.width / cropped.height if cropped.height else 1
-                    height = max(1, round(width / aspect))
-                    cropped = cropped.resize((width, height), PILImage.LANCZOS)
-                    buf = io.BytesIO()
-                    cropped.save(buf, format="PNG")
-                    return buf.getvalue()
             except Exception as e:
                 logger.warning(f"Failed to generate thumbnail for bbox {bbox_uuid}: {e}")
                 return None
@@ -2674,7 +2724,6 @@ class Manager:
         box is invisible. Same 20% context padding as the bbox crop.
         """
         from PIL import Image as PILImage
-        from PIL import ImageDraw
 
         bx = min(max(x, 0.0), 1.0)
         by = min(max(y, 0.0), 1.0)
@@ -2709,36 +2758,12 @@ class Manager:
                 with PILImage.open(safe_path) as img:
                     img = img.convert("RGB")
                     img_w, img_h = img.size
-                    pad_x = bw * img_w * 0.2
-                    pad_y = bh * img_h * 0.2
-                    left = max(0, bx * img_w - pad_x)
-                    top = max(0, by * img_h - pad_y)
-                    right = min(img_w, (bx + bw) * img_w + pad_x)
-                    bottom = min(img_h, (by + bh) * img_h + pad_y)
-                    # A box smaller than a pixel (or an image only a few pixels
-                    # across) would otherwise crop to nothing; keep at least one
-                    # pixel so the crop is a real image, as the bbox crop does.
-                    right = max(right, min(img_w, left + 1))
-                    bottom = max(bottom, min(img_h, top + 1))
-                    cropped = img.crop((left, top, right, bottom))
-                    draw = ImageDraw.Draw(cropped)
-                    draw.rectangle(
-                        [
-                            bx * img_w - left,
-                            by * img_h - top,
-                            (bx + bw) * img_w - left,
-                            (by + bh) * img_h - top,
-                        ],
-                        outline=outline,
-                        width=3,
+                    return self._render_outlined_crop(
+                        img,
+                        (bx * img_w, by * img_h, (bx + bw) * img_w, (by + bh) * img_h),
+                        width,
+                        outline,
                     )
-                    del draw
-                    aspect = cropped.width / cropped.height if cropped.height else 1
-                    height = max(1, round(width / aspect))
-                    cropped = cropped.resize((width, height), PILImage.LANCZOS)
-                    buf = io.BytesIO()
-                    cropped.save(buf, format="PNG")
-                    return buf.getvalue()
             except Exception as e:
                 logger.warning(f"Failed to generate region thumbnail for {image_path}: {e}")
                 return None
