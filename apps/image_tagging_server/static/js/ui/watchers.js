@@ -226,7 +226,13 @@ function buildRuleRow(rule, ctx) {
     rule.subjectBKind === 'label' ? 'label' : 'zone',
     () => { syncSubjectB(); ctx.onAnyChange(); },
   );
-  const subjectB = select(ctx.zoneOptions, rule.subjectBRef || ctx.zoneOptions[0]?.key, ctx.onAnyChange);
+  // Build the second subject from the option set its *own* kind implies. Seeding it
+  // from the zone options regardless meant a label uuid never matched an <option>,
+  // the select fell back to the first zone, and the later syncSubjectB() — which only
+  // preserves a value still on offer — landed it on the first label instead: a saved
+  // "is inside Litter Box" silently reopened, and re-saved, as "is inside Cat".
+  const subjectBOptions = subjectBKind.value === 'label' ? ctx.labelOptions : ctx.zoneOptions;
+  const subjectB = select(subjectBOptions, rule.subjectBRef || subjectBOptions[0]?.key, ctx.onAnyChange);
   subjectB.dataset.testid = 'watch-rule-subject-b';
 
   sentence.append(el('span', null, 'When'), subjectA, relation, subjectBKind, subjectB);

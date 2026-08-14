@@ -94,8 +94,53 @@ FAKE_PROFILE = {
 }
 
 
-def _mock_watch_apis(page: Page, profiles: list | None = None, on_create=None):
+LABELS = [
+    {"uuid": "label-cat", "name": "Cat"},
+    {"uuid": "label-tabby", "name": "Tabby"},
+    {"uuid": "label-litterbox", "name": "Litter Box"},
+]
+
+# Same profile, but the rule's second subject is a *label* rather than a zone —
+# "Tabby is inside Litter Box".
+LABEL_SUBJECT_PROFILE = {
+    **FAKE_PROFILE,
+    "rules": [
+        {
+            **FAKE_PROFILE["rules"][0],
+            "name": "Tabby using litter box",
+            "subjectARef": "label-tabby",
+            "subjectBKind": "label",
+            "subjectBRef": "label-litterbox",
+        }
+    ],
+}
+
+
+def _mock_watch_apis(page: Page, profiles: list | None = None, on_create=None, on_update=None):
     profiles = profiles or []
+
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/labels"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "labels": LABELS}),
+        ),
+    )
+
+    def handle_single(route: Route):
+        if route.request.method in ("PUT", "PATCH", "POST") and on_update:
+            on_update(json.loads(route.request.post_data or "{}"))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "profile": profiles[0] if profiles else FAKE_PROFILE}),
+        )
+
+    page.route(
+        lambda url: "/api/watch-profiles/" in url and not url.endswith("/validate"),
+        handle_single,
+    )
 
     def handle_collection(route: Route):
         if route.request.method == "POST":
@@ -231,6 +276,33 @@ class TestWatcherEditor:
         page.locator("[data-testid='watcher-list-item']").first.click()
         iou_option = page.locator("[data-testid='watch-rule-relation'] option[value='iou']")
         expect(iou_option).to_have_text("closely matches (same size)")
+
+    def test_a_label_subject_b_loads_its_own_label(self, page: Page, base_url: str):
+        """A rule whose second subject is a label must reopen showing *that* label.
+
+        The select was built from the zone options, so a label uuid never matched and
+        the row silently fell back to the first label — "Litter Box" became "Cat".
+        """
+        _mock_watch_apis(page, profiles=[LABEL_SUBJECT_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        subject_b = page.locator("[data-testid='watch-rule-subject-b']")
+        expect(subject_b).to_have_value("label-litterbox")
+
+    def test_saving_keeps_a_label_subject_b(self, page: Page, base_url: str):
+        """Round-trip: the payload sent back must still name the chosen label."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[LABEL_SUBJECT_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        # Save is disabled until the editor is dirty; an unrelated edit arms it.
+        page.locator("[data-testid='watch-rule-name']").first.fill("Tabby using litter box!")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        rule = saved["rules"][0]
+        assert rule["subjectBKind"] == "label", rule
+        assert rule["subjectBRef"] == "label-litterbox", rule
 
     def test_adding_a_rule_appends_a_row(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
