@@ -67,11 +67,13 @@ async function settle(fn) {
  * @param {() => Promise<string>} opts.start - resolves to the task instance uuid
  * @param {() => void} opts.onStarted
  * @param {string} opts.configTab - Configuration sub-tab that defines this thing
+ * @param {?string} [opts.configUuid] - the definition this card launches, so the
+ *   Configuration screen opens on it rather than on whatever was last edited
  * @param {?{title: string, message: string}} [opts.confirm] - gate the start
  *   behind a confirmation, for runs that are destructive or unscoped.
  * @returns {HTMLElement}
  */
-function launchCard({ name, hint, start, onStarted, configTab, confirm = null }) {
+function launchCard({ name, hint, start, onStarted, configTab, configUuid = null, confirm = null }) {
   const card = document.createElement('div');
   card.className = 'runs-launch-card';
   card.dataset.tour = 'runs.launchCard';
@@ -107,7 +109,7 @@ function launchCard({ name, hint, start, onStarted, configTab, confirm = null })
   configBtn.setAttribute('aria-label', `Configure ${name}`);
   configBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    navigateTabs('tab-configuration', configTab);
+    navigateTabs('tab-configuration', configTab, { selectUuid: configUuid });
   });
   card.appendChild(configBtn);
 
@@ -227,6 +229,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           params: { training_config_uuid: cfg.uuid },
         }),
         configTab: 'tab-training-management',
+        configUuid: cfg.uuid,
         onStarted,
       })),
       trainings === null ? 'Could not load training configs.' : 'No training configs yet —',
@@ -253,6 +256,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           params: { filter_chain_uuid: chain.uuid },
         }),
         configTab: 'tab-filterchain-management',
+        configUuid: chain.uuid,
         onStarted,
       })),
       chains === null ? 'Could not load filter chains.' : 'No filter chains yet —',
@@ -270,6 +274,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           params: { watch_profile_uuid: profile.uuid },
         }),
         configTab: 'tab-watcher-management',
+        configUuid: profile.uuid,
         onStarted,
       })),
       watchers === null ? 'Could not load watch profiles.' : 'No watch profiles yet —',
@@ -286,6 +291,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         hint: cfg.typename,
         start: () => launchSavedConfig(cfg.uuid),
         configTab: 'tab-task-management',
+        configUuid: cfg.uuid,
         onStarted,
       })),
       taskConfigs === null ? 'Could not load task configs.' : 'No saved tasks yet —',

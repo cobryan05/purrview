@@ -384,6 +384,9 @@ function buildCuratedForm({ target, editable }) {
 
   const dropdownDiv = document.createElement('div');
   dropdownDiv.style.marginBottom = '0.5em';
+  // The pane already holds the "Choose a model..." picker, so a bare
+  // `#model-labels-box select` matches two elements — this names the curated one.
+  dropdownDiv.dataset.testid = 'curated-model-picker';
   wrap.appendChild(dropdownDiv);
 
   const conversionBadge = document.createElement('span');

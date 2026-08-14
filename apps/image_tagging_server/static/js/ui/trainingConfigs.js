@@ -29,7 +29,7 @@ import {
 import { renderCoverageStats, renderReadinessStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
 import { loadPreviousRun } from '/app-static/js/ui/utils/previousTrainingRun.js';
 import { makeFieldRow, buildPanelEditorBar, confirmStartIfDirty, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
-import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
@@ -664,7 +664,10 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
     }
 
     const configsMap = await refreshList();
-    const autoConfig = _lastSelectedUuid ? configsMap.get(_lastSelectedUuid) ?? null : null;
+    // An explicit "configure this one" (the ⚙ on a Runs launch card) wins over
+    // the remembered selection — it is the reason this screen was opened.
+    const wantedUuid = takePendingSelection('tab-training-management') ?? _lastSelectedUuid;
+    const autoConfig = wantedUuid ? configsMap.get(wantedUuid) ?? null : null;
     await _showForm(autoConfig, { force: true });
   } catch (err) {
     showPaneError(container, `Error loading training runs: ${err.message}`);

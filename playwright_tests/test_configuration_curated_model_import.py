@@ -44,7 +44,7 @@ def _navigate_to_curated_form(page: Page, base_url: str):
     page.wait_for_selector("#model-labels-box input[type=file]", timeout=4000)
 
     page.locator("#model-labels-box button", has_text=re.compile(r"^Curated$")).click()
-    page.wait_for_selector("#model-labels-box select", timeout=4000)
+    page.wait_for_selector("#model-labels-box [data-testid=curated-model-picker] select", timeout=4000)
 
 
 def _mock_curated_models(page: Page, response: dict = None):
@@ -72,7 +72,7 @@ class TestCuratedFormConversionBadgeAndHealthGate:
 
         _navigate_to_curated_form(page, base_url)
 
-        select = page.locator("#model-labels-box select")
+        select = page.locator("#model-labels-box [data-testid=curated-model-picker] select")
         select.select_option(label="Direct ONNX Model")
 
         download_btn = page.locator("#model-labels-box button", has_text=_DOWNLOAD_BUTTON_TEXT)
@@ -84,7 +84,7 @@ class TestCuratedFormConversionBadgeAndHealthGate:
 
         _navigate_to_curated_form(page, base_url)
 
-        select = page.locator("#model-labels-box select")
+        select = page.locator("#model-labels-box [data-testid=curated-model-picker] select")
         select.select_option(label="Needs Conversion Model (via training server)")
 
         download_btn = page.locator("#model-labels-box button", has_text=_DOWNLOAD_BUTTON_TEXT)
@@ -96,7 +96,7 @@ class TestCuratedFormConversionBadgeAndHealthGate:
 
         _navigate_to_curated_form(page, base_url)
 
-        select = page.locator("#model-labels-box select")
+        select = page.locator("#model-labels-box [data-testid=curated-model-picker] select")
         select.select_option(label="Needs Conversion Model (via training server)")
 
         download_btn = page.locator("#model-labels-box button", has_text=_DOWNLOAD_BUTTON_TEXT)
@@ -152,7 +152,7 @@ class TestCuratedFormConversionBadgeAndHealthGate:
 
         _navigate_to_curated_form(page, base_url)
 
-        select = page.locator("#model-labels-box select")
+        select = page.locator("#model-labels-box [data-testid=curated-model-picker] select")
         select.select_option(label="Needs Conversion Model (via training server)")
         page.locator("#model-labels-box input[type=text]").first.fill("my-converted-model")
 

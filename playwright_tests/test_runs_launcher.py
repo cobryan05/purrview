@@ -259,6 +259,21 @@ class TestConfigLink:
             expect(page.locator("#tab-configuration")).to_have_class(re.compile(r"\bactive\b"))
             expect(page.locator(f"#{expected_tab}")).to_have_class(re.compile(r"\bactive\b"))
 
+    def test_the_clicked_card_arrives_selected(self, page: Page, base_url: str):
+        """Landing on the right pane is not enough — the ⚙ names one recipe, so
+        that recipe must be the one open, not whatever was last edited."""
+        cases = [
+            ("Primary Model", "tab-training-management", "config-uuid", "tc-1"),
+            ("Remove Corrupt Images", "tab-filterchain-management", "chain-uuid", "fc-1"),
+            ("Test", "tab-watcher-management", "watch-uuid", "wp-1"),
+            ("Clean Database", "tab-task-management", "config-uuid", "task-cfg-1"),
+        ]
+        for name, tab, attr, uuid in cases:
+            _open_launcher(page, base_url)
+            _config(page, name).click()
+
+            expect(page.locator(f"#{tab} [data-{attr}='{uuid}']")).to_have_class(re.compile(r"\bactive\b"))
+
     def test_the_config_link_does_not_start_anything(self, page: Page, base_url: str):
         """The two controls sit in one card, so the gear must not fall through
         to the start target underneath it."""

@@ -8,6 +8,7 @@ import {
 import { confirmStartIfDirty, createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
+import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
 /** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
@@ -257,8 +258,15 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
       return configs;
     }
 
-    await refreshList();
-    await _showForm(null, { force: true });
+    const configs = await refreshList();
+    // Arriving from a Runs launch card's ⚙ means "show me *this* config".
+    // The uuid is the map key, not a field on the record — mirror the list
+    // rows' click handler and put it back on the object.
+    const wantedUuid = takePendingSelection(CONFIG_TAB_ID);
+    const wanted = wantedUuid && configs.has(wantedUuid)
+      ? { ...configs.get(wantedUuid), uuid: wantedUuid }
+      : null;
+    await _showForm(wanted, { force: true });
   } catch (err) {
     showPaneError(container, err.message);
   } finally {

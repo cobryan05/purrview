@@ -44,7 +44,14 @@ def _make_tag_mock():
 
 def _make_models_mock():
     async def handle(path: str, request):
-        return JSONResponse(content={"status": "success", "models": {}})
+        # This one handler stands in for the whole inference proxy, and `models`
+        # is not the same shape at every path: GET /api/models (path "") is a
+        # List[str] of model names, while the bulk class endpoints return a
+        # dict keyed by model name. A dict at the list endpoint makes
+        # shared/api/models.js die on `models.map is not a function`, which
+        # takes down every screen that offers a model picker.
+        models = [] if path.strip("/") == "" else {}
+        return JSONResponse(content={"status": "success", "models": models})
 
     return handle
 
@@ -59,7 +66,9 @@ def _make_sources_mock():
 def _make_tasks_mock():
     async def handle(path: str, request):
         if path == "types/list":
-            return JSONResponse(content={"status": "success", "task_types": []})
+            # ListTaskTypesResponse.types — `task_types` left the JS reading
+            # `undefined` and failing with "taskTypes is not iterable".
+            return JSONResponse(content={"status": "success", "types": []})
         if path == "types/status-schema":
             # Phase 3 status_schema() endpoint. Empty by default — callers
             # that need a specific schema override this route with page.route().
@@ -71,7 +80,9 @@ def _make_tasks_mock():
         if path == "instances/command":
             return JSONResponse(content={"status": "success", "message": "ok"})
         if path.startswith("configs/"):
-            return JSONResponse(content={"status": "success", "task_configs": []})
+            # GetTaskConfigResponse.configs is a {uuid: config} object, not a
+            # list under `task_configs`.
+            return JSONResponse(content={"status": "success", "configs": {}})
         if path.startswith("instances/"):
             return JSONResponse(content={"status": "success", "tasks": []})
         return JSONResponse(content={"status": "success"})
@@ -88,7 +99,11 @@ def _make_datasets_mock():
 
 def _make_model_configs_mock():
     async def handle(path: str, request):
-        return JSONResponse(content={"status": "success", "model_configs": []})
+        # The real endpoint returns `configs` (ListModelConfigsResponse), and
+        # shared/api/modelConfigs.js reads `data.configs.map(...)` — the old
+        # `model_configs` key made every screen that loads model shapes die on
+        # "Cannot read properties of undefined (reading 'map')".
+        return JSONResponse(content={"status": "success", "configs": []})
 
     return handle
 

@@ -80,16 +80,47 @@ export function setupSidebarTabs(containerOrSelector, onTabChange) {
 }
 
 /**
+ * Item a workspace tab should open with selected, keyed by that tab's id.
+ *
+ * Navigation is a DOM click, so there is no call chain to hand an argument
+ * down: the pane's render runs later, from the tab's own onTabChange. This is
+ * the drop box between the two. Entries are consumed once — a later plain
+ * visit to the same tab must not resurrect a stale selection.
+ */
+const _pendingSelections = new Map();
+
+/**
+ * Read and clear the item a caller asked this tab to open with.
+ *
+ * @param {string} tabId  the workspace tab's data-tab value
+ * @returns {?string} uuid, or null if the tab was opened without one
+ */
+export function takePendingSelection(tabId) {
+  const uuid = _pendingSelections.get(tabId) ?? null;
+  _pendingSelections.delete(tabId);
+  return uuid;
+}
+
+/**
  * Navigate to a main tab then, after a short delay, to a workspace sub-tab.
  * The delay lets the main-tab's lazy-init mount its pane before the workspace
  * click fires.  Pass the bare tab id (data-tab value) for each argument.
  *
  * @param {string} mainTabId       e.g. 'tab-configuration'
  * @param {string} workspaceTabId  e.g. 'tab-dataset-management'
+ * @param {Object} [opts]
+ * @param {?string} [opts.selectUuid] - item the destination pane should open
+ *   with selected, for panes that support it (the list-editor screens).
  */
-export function navigateTabs(mainTabId, workspaceTabId) {
+export function navigateTabs(mainTabId, workspaceTabId, { selectUuid = null } = {}) {
+  if (selectUuid) _pendingSelections.set(workspaceTabId, selectUuid);
   document.querySelector(`.main-tab-button[data-tab="${mainTabId}"]`)?.click();
   setTimeout(() => {
-    document.querySelector(`#${mainTabId} [data-tab="${workspaceTabId}"]`)?.click();
+    const button = document.querySelector(`#${mainTabId} [data-tab="${workspaceTabId}"]`);
+    // Clicking the already-active tab is a no-op, so the pane would never
+    // re-render and the pending selection would sit unconsumed until some
+    // later visit picked it up. Drop `active` first to force the re-render.
+    if (selectUuid) button?.classList.remove('active');
+    button?.click();
   }, 50);
 }

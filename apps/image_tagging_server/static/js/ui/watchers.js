@@ -8,6 +8,7 @@ import {
 import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { openZonesModal } from '/app-static/js/ui/watchZonesModal.js';
+import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
 let _rendering = false;
 
@@ -698,7 +699,11 @@ export async function renderWatchProfileManager({ target }) {
       if (profile) showValidation(profile.uuid);
     }
 
-    renderList(null);
+    // Arriving from a Runs launch card's ⚙ means "show me *this* watcher".
+    const wantedUuid = takePendingSelection('tab-watcher-management');
+    const wanted = wantedUuid ? profilesMap.get(wantedUuid) ?? null : null;
+    renderList(wanted?.uuid ?? null);
+    if (wanted) openEditor(wanted);
   } finally {
     _rendering = false;
   }

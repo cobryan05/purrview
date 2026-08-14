@@ -7,6 +7,7 @@ import {
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { DropDownField } from '/app-static/js/ui/utils/fields/index.js';
+import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -460,10 +461,13 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
 
       screen.applyFilter();
       _updateListSelection(_selectedUuid);
+      return chainsMap;
     }
 
-    await refreshList();
-    await _showForm(null, { force: true });
+    const chainsMap = await refreshList();
+    // Arriving from a Runs launch card's ⚙ means "show me *this* chain".
+    const wantedUuid = takePendingSelection('tab-filterchain-management');
+    await _showForm(wantedUuid ? chainsMap.get(wantedUuid) ?? null : null, { force: true });
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';
