@@ -1027,14 +1027,14 @@ class TestModelTreePreview:
 
 
 # ---------------------------------------------------------------------------
-# Unsaved changes vs. "Start Training"
+# Unsaved changes vs. "Start run"
 # ---------------------------------------------------------------------------
 
 
-class TestUnsavedChangesBeforeStartTraining:
+class TestUnsavedChangesBeforeStartRun:
     """The trainer reads the config from the server, so starting with a dirty
     form would train the previous settings. Editing must be visible, and
-    "Start Training" must ask before launching."""
+    "Start run" must ask before launching."""
 
     @staticmethod
     def _open_existing(page: Page, base_url: str):
@@ -1055,7 +1055,7 @@ class TestUnsavedChangesBeforeStartTraining:
 
     @staticmethod
     def _start_btn(page: Page):
-        return _editor_body(page).locator("button", has_text="Start Training")
+        return _editor_body(page).locator("[data-testid='training-start-run']")
 
     def test_editing_shows_unsaved_badge_and_lights_save(self, page: Page, base_url: str):
         self._open_existing(page, base_url)
@@ -1094,7 +1094,7 @@ class TestUnsavedChangesBeforeStartTraining:
         expect(self._start_btn(page)).to_be_enabled()
 
     def test_save_and_start_saves_before_launching(self, page: Page, base_url: str):
-        """'Save & start training' PUTs the config first, then starts the task."""
+        """'Save & start run' PUTs the config first, then starts the task."""
         calls: list[str] = []
 
         def _record(name: str, body: dict, methods=None):
@@ -1157,6 +1157,43 @@ class TestUnsavedChangesBeforeStartTraining:
 
         self._start_btn(page).click()
         wait_until(page, lambda: "start" in calls, "Expected an immediate start with no prompt")
+
+    def test_editor_does_not_embed_job_monitoring(self, page: Page, base_url: str):
+        """A configuration screen must not host a progress bar, a log tail or a
+        Cancel — that is what made Configuration own job monitoring.
+
+        Those belong to Runs, which owns every running thing uniformly.
+        """
+        self._open_existing(page, base_url)
+
+        body = _editor_body(page)
+        expect(body.locator("[data-testid='training-start-run']")).to_be_visible()
+        expect(body.locator("progress")).to_have_count(0)
+        expect(body.locator("button", has_text="Cancel")).to_have_count(0)
+
+    def test_start_hands_off_to_runs(self, page: Page, base_url: str):
+        """After starting, the user lands on Runs, where the run is visible."""
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "tmp-cfg"}),
+            ),
+        )
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+            ),
+        )
+        self._open_existing(page, base_url)
+
+        self._start_btn(page).click()
+
+        expect(page.locator("#tab-runs")).to_have_class(re.compile(r"\bactive\b"))
 
 
 # ---------------------------------------------------------------------------

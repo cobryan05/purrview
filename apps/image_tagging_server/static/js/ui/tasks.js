@@ -12,13 +12,14 @@ import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen
 /** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
 /**
- * Main tab that hosts the running/completed instances.
+ * Runs sub-tab that hosts the running/completed instances.
  *
- * This used to be an Operations sub-tab (`tab-task-activity`). Runs is a main
- * tab now, so the instance list is no longer nested and there is only one
- * visibility check to make rather than two.
+ * This used to be the Operations sub-tab `tab-task-activity`. Runs is a main
+ * tab now, and its Active pane holds the list — its sibling is the launcher.
  */
-export const ACTIVITY_TAB_ID = 'tab-runs';
+export const ACTIVITY_TAB_ID = 'tab-runs-active';
+/** Main tab enclosing it. */
+const RUNS_TAB_ID = 'tab-runs';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -303,13 +304,34 @@ function _scrollParent(el) {
 // polling on it) so the card and this list can't disagree about what "finished" means.
 
 /**
- * Count tasks that are still live, for the Activity tab's badge.
+ * Count live *jobs*, for the Runs tab's badge.
+ *
+ * Continuous tasks are deliberately excluded. A watcher is meant to stay armed
+ * for weeks, so counting it would pin the badge at ≥1 permanently — and a badge
+ * that never clears has stopped being a signal about anything. The badge answers
+ * "is something still working?", which is a question only jobs can answer.
+ *
  * @param {Record<string, any>} tasks
  * @returns {number}
  */
 export function countRunningTasks(tasks) {
   return Object.values(tasks || {})
-    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status))
+    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status) && !t.continuous)
+    .length;
+}
+
+/**
+ * Count armed continuous tasks — watchers and other run-until-stopped work.
+ *
+ * Separate from the badge so the two can be shown differently: a job count is
+ * transient and worth a loud badge, an armed count is steady state.
+ *
+ * @param {Record<string, any>} tasks
+ * @returns {number}
+ */
+export function countContinuousTasks(tasks) {
+  return Object.values(tasks || {})
+    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status) && t.continuous)
     .length;
 }
 
@@ -329,8 +351,11 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   const container = document.getElementById(target);
   if (!container) return;
 
-  // Skip when the Runs tab is not visible.
-  if (!document.getElementById(ACTIVITY_TAB_ID)?.classList.contains('active')) {
+  // Skip when the Runs tab, or its Active pane, is not visible. The SSE stream
+  // stays open across both Runs sub-tabs to keep the badge counting, so this
+  // has to check the pane too rather than just the main tab.
+  if (!document.getElementById(RUNS_TAB_ID)?.classList.contains('active') ||
+      !document.getElementById(ACTIVITY_TAB_ID)?.classList.contains('active')) {
     return;
   }
 
@@ -497,23 +522,32 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         return {
           row,
           isCompleted: TERMINAL_STATUSES.has(status),
+          isContinuous: Boolean(task.continuous),
           endedAt: task.instance?.endedAt ?? null,
         };
       }));
 
-      // Partition into Active (running/pending/paused) and Completed (completed/error)
-      // sections. Active preserves server-provided order; Completed is sorted by
-      // endedAt descending so the most recently finished task appears first.
+      // Three sections, because two of them are different kinds of thing.
+      //
+      // Continuous tasks run until stopped (Task.CONTINUOUS) — a watcher has no
+      // progress toward a 100% that never arrives, and listing it among jobs
+      // makes "what is running?" unanswerable, since the answer is always
+      // "at least the watcher". Jobs run to completion; Completed is their
+      // history, sorted most-recently-finished first.
+      //
+      // A continuous task that has stopped is history like any other job, so it
+      // falls through to Completed rather than lingering as a dead "service".
       const newListDiv = document.createElement('div');
-      const activeRows = built.filter(b => !b.isCompleted).map(b => b.row);
+      const continuousRows = built.filter(b => !b.isCompleted && b.isContinuous).map(b => b.row);
+      const activeRows = built.filter(b => !b.isCompleted && !b.isContinuous).map(b => b.row);
       const completedRows = built.filter(b => b.isCompleted)
         .sort((a, b) => new Date(b.endedAt ?? 0) - new Date(a.endedAt ?? 0))
         .map(b => b.row);
 
-      if (!activeRows.length && !completedRows.length) {
+      if (!continuousRows.length && !activeRows.length && !completedRows.length) {
         const empty = document.createElement('p');
         empty.className = 'le-list-empty';
-        empty.textContent = 'No tasks have run yet. Start one from the Tasks tab.';
+        empty.textContent = 'No tasks have run yet. Start one from the "Start a run" tab.';
         newListDiv.appendChild(empty);
       }
 
@@ -540,7 +574,8 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         rows.forEach(row => grid.appendChild(row));
         newListDiv.appendChild(grid);
       };
-      appendSection('Active', activeRows);
+      appendSection('Continuous', continuousRows);
+      appendSection('Jobs', activeRows);
 
       if (completedRows.length) {
         const clearBtn = document.createElement('button');

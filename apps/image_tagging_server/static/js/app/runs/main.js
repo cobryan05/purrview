@@ -7,14 +7,17 @@
  * everything launched anywhere in the app reports here, and because service
  * health belongs beside what is running rather than above two config editors.
  *
- * No sub-tabs: with Tasks and Sources gone there is exactly one pane, so the
- * task list gets the full width the old Activity sub-tab already had.
+ * Two panes: Active (what is running, plus service health) and Start a run
+ * (everything launchable). Starting lives here rather than in the Configuration
+ * editors, so a config screen defines a recipe and never runs or monitors one.
  */
+import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { countRunningTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
+import { renderRunsLauncher } from '/app-static/js/ui/runsLauncher.js';
 
 export async function init() {
   // Service health sits above the task list — it applies to the whole surface.
@@ -91,8 +94,29 @@ export async function init() {
     }
   });
 
-  // Initial render via fetch so the pane feels instant on first open.
-  renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
+  /**
+   * Land the user on Active after starting something, so the run they just
+   * kicked off is visible rather than leaving them on the launcher wondering
+   * whether the click took.
+   */
+  function showActiveAfterStart() {
+    tabs?.activateTab('tab-runs-active');
+    seedBadge();
+    renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
+  }
+
+  const tabs = setupWorkspaceTabs('#tab-runs', async (tabName) => {
+    if (tabName === 'tab-runs-active') {
+      renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
+    } else if (tabName === 'tab-runs-launch') {
+      await renderRunsLauncher({ target: 'runs-launcher-box', onStarted: showActiveAfterStart });
+    }
+  });
+
+  // activate default Runs tab
+  const defaultTabBtn = tabs.container?.querySelector('.workspace-tab-button');
+  if (defaultTabBtn) defaultTabBtn.click();
+
   openTaskStream();
   seedBadge();
 }

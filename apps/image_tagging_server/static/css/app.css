@@ -322,6 +322,83 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   }
 }
 
+/* ===== Runs → Start a run ===== */
+.runs-launch-group {
+  margin-bottom: var(--space-5);
+}
+
+.runs-launch-group__heading {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.runs-launch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--space-3);
+}
+
+.runs-launch-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+  text-align: left;
+  padding: var(--space-3);
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.runs-launch-card:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--surface);
+}
+
+.runs-launch-card:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.runs-launch-card__name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.runs-launch-card__hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.runs-launch-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+/* Start-run affordance in the Training config editor. Not a runner: the run it
+   starts is watched in Runs. */
+.training-start-run {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.training-start-run__hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
 /* ===== NVR ===== */
 .nvr-live-list {
   display: flex;

@@ -6,10 +6,13 @@
  * start/stream/cancel/render sequence against a different task typename
  * without duplicating the SSE plumbing.
  *
- * That second caller — Model Configs' "Train all → bundle" — has since been
- * removed, so this is single-consumer today. Kept as its own module anyway:
- * the SSE plumbing is worth having in one place, and re-inlining it would be
- * a refactor riding along with an unrelated removal.
+ * Training no longer uses it: a run started from a config editor put progress,
+ * logs and cancel inside a *configuration* screen, so training now starts via
+ * launchRun and is watched in Runs.
+ *
+ * Its remaining callers are ui/models.js — model import and conversion. Those
+ * are infrastructure actions on the model itself rather than jobs you would go
+ * to Runs to supervise, and they stay inline deliberately.
  */
 
 import { TaskStatus, cancelTasks, createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js';

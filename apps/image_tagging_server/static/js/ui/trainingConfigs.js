@@ -31,7 +31,7 @@ import { loadPreviousRun } from '/app-static/js/ui/utils/previousTrainingRun.js'
 import { makeFieldRow, buildPanelEditorBar, confirmStartIfDirty, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
-import { createTaskRunnerSection } from '/app-static/js/ui/utils/taskRunnerSection.js';
+import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
 import { createDatasetChecklist } from '/app-static/js/ui/utils/datasetChecklist.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -55,6 +55,59 @@ function makeNavHint(text, linkText, workspaceTabId) {
   link.addEventListener('click', (e) => { e.preventDefault(); navigateTabs('tab-configuration', workspaceTabId); });
   hint.appendChild(link);
   return hint;
+}
+
+/**
+ * "Start run" affordance for a saved training config.
+ *
+ * Deliberately not a task runner: it saves any pending edits (a run of a stale
+ * recipe is never what was meant), starts the run, and hands the user to Runs,
+ * which owns progress, logs and cancel for everything the app runs.
+ *
+ * @param {Object} opts
+ * @param {Object} opts.config - the saved training config
+ * @param {() => boolean} opts.getDirty
+ * @param {() => Promise<boolean>} opts.save
+ * @returns {HTMLElement}
+ */
+function buildStartRunLink({ config, getDirty, save }) {
+  const section = document.createElement('div');
+  section.className = 'training-start-run';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'panel-btn';
+  btn.textContent = '▶ Start run';
+  btn.dataset.testid = 'training-start-run';
+  btn.dataset.tour = 'config.training.startRun';
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const proceed = await confirmStartIfDirty({ getDirty, save, actionText: 'Start run' });
+      if (!proceed) return;
+
+      await launchRun({
+        typename: 'TrainModelTask',
+        name: `Train ${config.name}`,
+        params: { training_config_uuid: config.uuid },
+      });
+      toast(`Started Train ${config.name}`, 3000);
+      // Runs is where it can actually be watched.
+      document.querySelector('.main-tab-button[data-tab="tab-runs"]')?.click();
+    } catch (err) {
+      toast(err.message || 'Could not start the run', 5000, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const hint = document.createElement('span');
+  hint.className = 'training-start-run__hint';
+  hint.textContent = 'Progress, logs and cancel live in Runs.';
+
+  section.append(btn, hint);
+  return section;
 }
 
 // ── Form ─────────────────────────────────────────────────────────────────────
@@ -551,26 +604,19 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         };
         screen.setDoSave(_doSave);
 
-        // Train button + inline progress card (only for fully-configured existing configs)
+        // Start-run link (only for fully-configured existing configs).
+        //
+        // This used to be the whole task runner: a Start button plus a live
+        // progress bar, a log tail and a Cancel, embedded in the editor. That
+        // made a *configuration* screen own job monitoring, which is the same
+        // miscategorisation that had task definitions filed under Operations.
+        // The recipe is defined here; the run starts and is watched in Runs.
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
-          const { el: trainSection } = createTaskRunnerSection({
-            buttonLabel: '▶ Start Training',
-            runningLabel: 'Training…',
-            buildStartArgs: async () => {
-              const proceed = await confirmStartIfDirty({
-                getDirty: barHandle.getDirty,
-                save: _doSave,
-                actionText: 'Start Training',
-              });
-              if (!proceed) return null;
-              return {
-                typename: 'TrainModelTask',
-                name: `Train ${config.name}`,
-                params: { training_config_uuid: config.uuid },
-              };
-            },
-          });
-          editorBody.appendChild(trainSection);
+          editorBody.appendChild(buildStartRunLink({
+            config,
+            getDirty: barHandle.getDirty,
+            save: _doSave,
+          }));
         }
 
         _updateListSelection(config?.uuid ?? null);

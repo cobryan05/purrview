@@ -41,6 +41,21 @@ class Task(ABC):
     # complete quickly on their own can leave the default alone.
     CHECKPOINT_INTERVAL: int = 300
 
+    # Does this task run until something stops it, rather than to completion?
+    #
+    # A training runs a fixed number of epochs and finishes; a stream watcher is
+    # `while not self._cancel_flag.is_set()` and never does. They need different
+    # controls (arm/disarm and uptime, not a progress bar toward a 100% that
+    # never arrives) and they must be counted differently: a permanently running
+    # watcher folded into a "1 running" badge makes that badge meaningless.
+    #
+    # Declared here rather than inferred, because nothing observable distinguishes
+    # them. Indeterminate progress does not: CollectTrainingImagesTask reports
+    # None the whole way and still completes. PERSISTENT does not either -- that
+    # is about auto-restart, and the watcher is continuous *without* being
+    # persistent.
+    CONTINUOUS: bool = False
+
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid
         self._instance_uuid: Optional[str] = None

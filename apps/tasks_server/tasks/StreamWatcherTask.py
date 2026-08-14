@@ -66,6 +66,10 @@ class StreamWatcherTask(Task):
     # a restart loses seconds of open-event state, not minutes.
     CHECKPOINT_INTERVAL: int = 60
 
+    # `_run` is `while not self._cancel_flag.is_set()`: this ends when the user
+    # ends it, never on its own.
+    CONTINUOUS: bool = True
+
     _PIN_DURATION_S: int = 3600
     _PIN_RENEWAL_INTERVAL_S: float = _PIN_DURATION_S / 2
     _FETCH_TIMEOUT_S: float = 30.0
