@@ -200,3 +200,25 @@ class TestUrlConstruction:
             await client.get(f"/{req_path.lstrip('/')}")
 
         assert seen["path"] == expected_suffix
+
+
+class TestTimeouts:
+    """The proxy is built with timeout=None everywhere, which also disables the
+    *pool* timeout: once the connection pool is saturated, every further proxied
+    request waits for a free slot forever instead of failing. The browser shows a
+    request that never resolves and no error is ever logged.
+
+    Read must stay unbounded — SSE streams (/api/tasks/stream, /api/notices/stream)
+    and large image downloads are legitimately long-lived — but connecting,
+    writing, and waiting for a pool slot are all bounded operations.
+    """
+
+    def test_read_timeout_stays_unbounded_for_sse(self):
+        timeout = ReverseProxy(base_url="http://upstream").client.timeout
+        assert timeout.read is None, "a finite read timeout would sever long-lived SSE streams"
+
+    def test_pool_and_connect_timeouts_are_finite(self):
+        timeout = ReverseProxy(base_url="http://upstream").client.timeout
+        assert timeout.pool is not None, "an unbounded pool timeout hangs forever once the pool saturates"
+        assert timeout.connect is not None, "an unbounded connect timeout hangs on an unreachable upstream"
+        assert timeout.write is not None

@@ -35,7 +35,15 @@ class ReverseProxy:
             self.target_base_url = base_url.rstrip("/") + path_part
         else:
             self.target_base_url = f"http://{host}:{port}{path_part}"
-        self.client = httpx.AsyncClient(timeout=None)
+        # read=None because SSE streams (/api/tasks/stream, /api/notices/stream) and
+        # large image downloads are legitimately long-lived. Everything else is
+        # bounded: a blanket timeout=None also disables the *pool* timeout, so once
+        # the pool saturates — leaked upstream connections pile up as CLOSE_WAIT —
+        # every later request waits for a slot forever. That surfaces as a browser
+        # request that never resolves, with nothing logged to explain it.
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(None, connect=10.0, write=30.0, pool=30.0),
+        )
 
     async def handle_request(self, path: str, request: Request):
         url = f"{self.target_base_url}"
