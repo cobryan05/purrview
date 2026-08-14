@@ -57,10 +57,16 @@ class TestTabInitRace:
         page.wait_for_load_state("networkidle")
 
         # Racy: bounce back onto Review while its first init is still awaiting.
+        # Review is a section tab inside Annotate now, so the race to guard is
+        # the section-tier one — Canvas→Review→Canvas→Review before the first
+        # init resolves — plus Annotate's own lazy init underneath it.
         page.evaluate("""() => {
-            document.querySelector(".main-tab-button[data-tab='tab-review']").click();
             document.querySelector(".main-tab-button[data-tab='tab-image-tagging']").click();
-            document.querySelector(".main-tab-button[data-tab='tab-review']").click();
+            const sect = t => document.querySelector(
+                `#tab-image-tagging .section-tab-button[data-tab='${t}']`);
+            sect('tab-review')?.click();
+            sect('tab-annotate-workspace')?.click();
+            sect('tab-review')?.click();
         }""")
         page.wait_for_timeout(2500)
         racy = _listener_count(page)
@@ -68,7 +74,8 @@ class TestTabInitRace:
         # Clean baseline: fresh page, single deliberate Review activation.
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        page.locator(".main-tab-button[data-tab='tab-review']").click()
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
         page.wait_for_timeout(2500)
         clean = _listener_count(page)
 
@@ -77,11 +84,18 @@ class TestTabInitRace:
         ), f"racy tab switching left {racy} listeners vs {clean} after a clean init — feature init() ran twice"
 
 
-class TestConfigTaskStreamLifecycle:
-    def test_task_stream_closed_when_leaving_configuration_tab(self, page: Page, base_url: str):
-        """The task SSE stream opened by the Task Management sub-tab must be
-        closed when the user leaves the Configuration main tab — otherwise the
-        server keeps pushing to a hidden tab forever."""
+class TestRunsTaskStreamLifecycle:
+    def test_task_stream_closed_when_leaving_runs_tab(self, page: Page, base_url: str):
+        """The task SSE stream opened by Runs must be closed when the user
+        leaves it — otherwise the server keeps pushing to a hidden tab forever.
+
+        This used to be asserted against Configuration > Task Management, back
+        when Operations opened one tab-wide stream to feed its Activity badge
+        and the Tasks sub-tab sat inside it. The stream moved with the thing
+        that consumes it: the task-config editor never read it (ActiveTaskField
+        polls on its own timer, and taskRunnerSection opens its own stream when
+        a task is actually started), so Runs is now its only owner.
+        """
         page.add_init_script("""
             window.__taskStreams = [];
             const OrigES = window.EventSource;
@@ -95,18 +109,42 @@ class TestConfigTaskStreamLifecycle:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
 
-        page.locator(".main-tab-button[data-tab='tab-operations']").click()
-        page.wait_for_timeout(300)
-        page.locator("#tab-operations [data-tab='tab-task-management']").click()
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
         page.wait_for_timeout(500)
         opened = page.evaluate("() => window.__taskStreams.length")
-        assert opened >= 1, "task SSE stream never opened on Task Management sub-tab"
+        assert opened >= 1, "task SSE stream never opened on the Runs tab"
 
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
         page.wait_for_timeout(300)
         states = page.evaluate("() => window.__taskStreams.map(es => es.readyState)")
         # readyState 2 = CLOSED
-        assert all(s == 2 for s in states), f"task SSE stream left open after leaving Configuration tab: {states}"
+        assert all(s == 2 for s in states), f"task SSE stream left open after leaving Runs tab: {states}"
+
+    def test_configuration_tasks_pane_opens_no_stream(self, page: Page, base_url: str):
+        """Editing task configs must not open an SSE stream of its own.
+
+        The pane has no consumer for it, and opening one per visit is how the
+        leak this class guards against comes back.
+        """
+        page.add_init_script("""
+            window.__taskStreams = [];
+            const OrigES = window.EventSource;
+            window.EventSource = function(url, opts) {
+                const es = new OrigES(url, opts);
+                if (String(url).includes('/api/tasks/stream')) window.__taskStreams.push(es);
+                return es;
+            };
+            window.EventSource.prototype = OrigES.prototype;
+        """)
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+        page.wait_for_timeout(300)
+        page.locator("#tab-configuration [data-tab='tab-task-management']").click()
+        page.wait_for_timeout(500)
+
+        assert page.evaluate("() => window.__taskStreams.length") == 0
 
 
 class TestAsyncRenderReentrancy:
@@ -281,7 +319,8 @@ class TestImageLabelChipsBatch:
 
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        page.locator(".main-tab-button[data-tab='tab-review']").click()
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
         page.wait_for_selector("#review-root .review-grid", timeout=5000)
         wait_until(
             page, lambda: len(batch_calls) >= 1, lambda: f"expected exactly one batch call, got {len(batch_calls)}"
@@ -317,7 +356,8 @@ class TestViewToggleSubscriptionLeak:
 
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        page.locator(".main-tab-button[data-tab='tab-review']").click()
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
         page.wait_for_selector("#review-root .review-grid", timeout=5000)
         page.wait_for_timeout(500)
 

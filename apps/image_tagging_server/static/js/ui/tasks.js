@@ -9,10 +9,16 @@ import { confirmStartIfDirty, createGenericRow, Logger, showPaneError, toast } f
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 
-/** Sub-tab that hosts the config list-editor; used by the nav guard. */
+/** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
-/** Sub-tab that hosts the running/completed instances. */
-export const ACTIVITY_TAB_ID = 'tab-task-activity';
+/**
+ * Main tab that hosts the running/completed instances.
+ *
+ * This used to be an Operations sub-tab (`tab-task-activity`). Runs is a main
+ * tab now, so the instance list is no longer nested and there is only one
+ * visibility check to make rather than two.
+ */
+export const ACTIVITY_TAB_ID = 'tab-runs';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -323,9 +329,8 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   const container = document.getElementById(target);
   if (!container) return;
 
-  // Skip when the Operations main tab or the Activity sub-tab is not visible.
-  if (!document.getElementById('tab-operations')?.classList.contains('active') ||
-      !document.getElementById(ACTIVITY_TAB_ID)?.classList.contains('active')) {
+  // Skip when the Runs tab is not visible.
+  if (!document.getElementById(ACTIVITY_TAB_ID)?.classList.contains('active')) {
     return;
   }
 

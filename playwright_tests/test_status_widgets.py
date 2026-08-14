@@ -68,10 +68,7 @@ def _make_task(uuid, name="Live Collector", **overrides):
 def _navigate_to_tasks(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    page.locator(".main-tab-button[data-tab='tab-operations']").click()
-    page.wait_for_load_state("networkidle")
-    # Task *instances* live on the Activity sub-tab; Tasks holds the config editor.
-    page.locator("#tab-operations .workspace-tab-button[data-tab='tab-task-activity']").click()
+    page.locator(".main-tab-button[data-tab='tab-runs']").click()
     page.wait_for_load_state("networkidle")
 
 

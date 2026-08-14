@@ -52,23 +52,41 @@ def test_switch_to_configuration_tab(page: Page, base_url: str):
     expect(page.locator("#tab-image-tagging")).not_to_have_class(re.compile(r"\bactive\b"))
 
 
-def test_switch_to_review_tab(page: Page, base_url: str):
-    """Clicking Review activates the Review pane."""
+def test_switch_to_review_section_tab(page: Page, base_url: str):
+    """Review is a section tab inside Annotate, not a main tab.
+
+    It shares canvas/, files.js and inferencePanel.js with Canvas by direct
+    import — it is the same annotation work at grid zoom.
+    """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    page.locator(".main-tab-button[data-tab='tab-review']").click()
+    page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+    page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
 
-    expect(page.locator(".main-tab-button[data-tab='tab-review']")).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator(".section-tab-button[data-tab='tab-review']")).to_have_class(re.compile(r"\bactive\b"))
     expect(page.locator("#tab-review")).to_have_class(re.compile(r"\bactive\b"))
+    # Review is no longer its own top-level destination.
+    expect(page.locator(".main-tab-button[data-tab='tab-review']")).to_have_count(0)
+
+
+def test_annotate_section_tabs_are_canvas_and_review(page: Page, base_url: str):
+    """Annotate holds exactly Canvas and Review at the section tier."""
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+
+    header = page.locator("#tab-image-tagging .section-tab-header")
+    expect(header.locator(".section-tab-button")).to_have_count(2)
+    for tab in ["tab-annotate-workspace", "tab-review"]:
+        expect(header.locator(f".section-tab-button[data-tab='{tab}']")).to_have_count(1)
 
 
 def test_switch_tabs_and_back(page: Page, base_url: str):
-    """Navigate between all main tabs and return to Image Tagging."""
+    """Navigate between all main tabs and return to Annotate."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    for tab in ["tab-configuration", "tab-review", "tab-operations", "tab-image-tagging"]:
+    for tab in ["tab-configuration", "tab-nvr", "tab-runs", "tab-image-tagging"]:
         page.locator(f".main-tab-button[data-tab='{tab}']").click()
         expect(page.locator(f"#{tab}")).to_have_class(re.compile(r"\bactive\b"))
 
@@ -109,6 +127,8 @@ def test_configuration_subtab_switching(page: Page, base_url: str):
         "tab-training-management",
         "tab-filterchain-management",
         "tab-tag-management",
+        "tab-source-management",
+        "tab-task-management",
         "tab-config-overview",
     ]
     for tab in sub_tabs:
@@ -117,49 +137,61 @@ def test_configuration_subtab_switching(page: Page, base_url: str):
 
 
 # ---------------------------------------------------------------------------
-# Operations tab — Sources and Tasks moved here out of Configuration
+# Runs tab — Operations dissolved into Configuration + Runs
 # ---------------------------------------------------------------------------
 
 
-def test_operations_default_subtab_is_tasks(page: Page, base_url: str):
-    """Tasks is the first Operations sub-tab, so it is the one active on arrival."""
+def test_runs_holds_the_task_instance_list(page: Page, base_url: str):
+    """Runs is a main tab holding the instance list directly, with no sub-tabs.
+
+    It was Operations > Activity. Operations' other two panes (Tasks, Sources)
+    were definition editors and moved to Configuration, leaving the one pane
+    that was genuinely about running.
+    """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    page.locator(".main-tab-button[data-tab='tab-operations']").click()
+    page.locator(".main-tab-button[data-tab='tab-runs']").click()
 
-    tasks_btn = page.locator("#tab-operations .workspace-tab-button[data-tab='tab-task-management']")
-    expect(tasks_btn).to_have_class(re.compile(r"\bactive\b"))
-    expect(page.locator("#tab-task-management")).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#tab-runs")).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#active-tasks-list")).to_be_visible()
+    # Service health rides with what is running.
+    expect(page.locator("#service-status-box")).to_be_attached()
+    # Operations is gone entirely.
+    expect(page.locator(".main-tab-button[data-tab='tab-operations']")).to_have_count(0)
 
 
-def test_operations_subtab_switching(page: Page, base_url: str):
-    """Each operations sub-tab can be activated."""
+def test_nvr_tab_has_live_and_events(page: Page, base_url: str):
+    """NVR exists with both sub-tabs, even though Events is a placeholder."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    page.locator(".main-tab-button[data-tab='tab-operations']").click()
+    page.locator(".main-tab-button[data-tab='tab-nvr']").click()
+    expect(page.locator("#tab-nvr")).to_have_class(re.compile(r"\bactive\b"))
 
-    for tab in ["tab-task-management", "tab-task-activity", "tab-source-management"]:
-        page.locator(f"#tab-operations .workspace-tab-button[data-tab='{tab}']").click()
+    for tab in ["tab-nvr-live", "tab-nvr-events"]:
+        page.locator(f"#tab-nvr .workspace-tab-button[data-tab='{tab}']").click()
         expect(page.locator(f"#{tab}")).to_have_class(re.compile(r"\bactive\b"))
 
 
-def test_sources_and_tasks_are_not_in_configuration(page: Page, base_url: str):
-    """Sources and Tasks moved to Operations; Configuration keeps its setup sub-tabs.
+def test_sources_and_tasks_are_in_configuration(page: Page, base_url: str):
+    """Sources and Tasks are definition editors, so they live in Configuration.
 
-    6 setup panes plus the Overview landing (PR 5.4); Model Stacks added in PR 7.2;
-    Watchers added by the StreamWatcher work.
+    They were under Operations, which put two config editors on a surface named
+    for running things — the mirror of Training's Start button living in
+    Configuration. Ten rail destinations: Overview, Labels & Tags, Datasets,
+    Sources, Model Shapes, Model Stacks, Training, Filter Chains, Tasks,
+    Watch Rules.
     """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
 
-    header = page.locator("#tab-configuration .workspace-tab-header")
-    expect(header.locator(".workspace-tab-button")).to_have_count(8)
+    rail = page.locator("#tab-configuration .config-rail")
+    expect(rail.locator(".workspace-tab-button")).to_have_count(10)
     for tab in ["tab-source-management", "tab-task-management"]:
-        expect(header.locator(f".workspace-tab-button[data-tab='{tab}']")).to_have_count(0)
+        expect(rail.locator(f".workspace-tab-button[data-tab='{tab}']")).to_have_count(1)
 
 
 def test_labels_api_called_when_entering_configuration(page: Page, base_url: str):
@@ -213,8 +245,13 @@ def test_no_console_errors_switching_tabs(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
 
-    for tab in ["tab-configuration", "tab-review", "tab-operations", "tab-image-tagging"]:
+    for tab in ["tab-configuration", "tab-nvr", "tab-runs", "tab-image-tagging"]:
         page.locator(f".main-tab-button[data-tab='{tab}']").click()
         page.wait_for_load_state("networkidle")
+
+    # Review is a section tab now, and is the tab most likely to throw on a
+    # structural change — it is lazily initialised one tier deeper than before.
+    page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
+    page.wait_for_load_state("networkidle")
 
     assert errors == [], f"Console errors while switching tabs: {errors}"

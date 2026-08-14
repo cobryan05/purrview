@@ -9,6 +9,9 @@ import { renderDatasetManager } from '/app-static/js/ui/datasets.js';
 import { renderTrainingConfigManager } from '/app-static/js/ui/trainingConfigs.js';
 import { renderFilterChainManager } from '/app-static/js/ui/filterChains.js';
 import { renderWatchProfileManager } from '/app-static/js/ui/watchers.js';
+import { renderSourceManager } from '/app-static/js/ui/sources.js';
+import { renderTaskConfigs } from '/app-static/js/ui/tasks.js';
+import { refreshListEditorHeights } from '/app-static/js/app/utils/listEditorHeight.js';
 
 export async function init() {
   // Declared first so the onTabChange callback can reach activateTab: setupTabs
@@ -38,7 +41,19 @@ export async function init() {
       await renderFilterChainManager({ target: 'filter-chain-management-box' });
     } else if (tabName === 'tab-watcher-management') {
       await renderWatchProfileManager({ target: 'watcher-management-box' });
+    } else if (tabName === 'tab-source-management') {
+      // Moved in from the dissolved Operations tab — both of these are
+      // definition editors of the same list-beside-editor shape as their
+      // neighbours here. Running what they define is the Runs tab's job.
+      await renderSourceManager({ target: 'source-management-box' });
+    } else if (tabName === 'tab-task-management') {
+      const refresh = () => renderTaskConfigs({ target: 'task-config-list', refresh });
+      await renderTaskConfigs({ target: 'task-config-list', refresh });
     }
+
+    // These panes mount a .list-editor-split whose height is measured, not
+    // hard-coded; it can only be measured once the pane is laid out.
+    refreshListEditorHeights();
   });
 
   // activate default configuration tab

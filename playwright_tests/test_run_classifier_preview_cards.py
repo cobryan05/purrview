@@ -114,7 +114,8 @@ def _mock_image_thumbnails(page: Page):
 def _navigate_to_review(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    page.locator(".main-tab-button[data-tab='tab-review']").click()
+    page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+    page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
     page.wait_for_load_state("networkidle")
     page.wait_for_selector("#review-root .review-grid", timeout=4000)
 

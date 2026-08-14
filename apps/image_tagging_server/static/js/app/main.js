@@ -1,10 +1,12 @@
 import { init as initImageTagging } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
 import { init as initReview, applyFilterWhenReady } from './review/main.js';
-import { init as initOperations } from './operations/main.js';
+import { init as initRuns } from './runs/main.js';
+import { init as initNvr } from './nvr/main.js';
 import { init as initSettings } from './settings/main.js';
-import { setupMainTabs, navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { setupMainTabs, setupSectionTabs, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { initScrollChrome, showChrome } from '/app-static/js/app/utils/scrollChrome.js';
+import { initListEditorHeights, refreshListEditorHeights } from '/app-static/js/app/utils/listEditorHeight.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createImageTaggingRuntime, setPrimaryRuntimeId } from './image-tagging/runtime.js';
 import { initContextMenus } from '/app-static/js/ui/contextMenu/index.js';
@@ -15,6 +17,60 @@ import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
 
 const initializedFeatures = new Set();
+
+/** Section tabs inside Annotate; kept so activateReview can reach activateTab. */
+let _annotateTabs = null;
+
+/**
+ * Wire Annotate's two section tabs (Canvas / Review) and lazy-init whichever is
+ * focused. Both features are heavy — Canvas mounts a Konva stage, Review builds
+ * a full filter panel and card grid — so neither is built until it is looked at.
+ *
+ * The same "mark before await" guard the main-tab callback uses applies here for
+ * the same reason: a fast Canvas→Review→Canvas bounce re-enters this callback
+ * while the first init is still in flight, and a post-await add() would start a
+ * second concurrent init (duplicate Konva stage, leaked subscriptions).
+ *
+ * @param {AppState} appState
+ */
+async function initAnnotate(appState) {
+  const initializedSections = new Set();
+
+  _annotateTabs = setupSectionTabs('#tab-image-tagging', async (tabName, button, pane) => {
+    if (initializedSections.has(tabName)) return;
+    initializedSections.add(tabName);
+
+    if (tabName === 'tab-annotate-workspace') {
+      await initImageTagging(appState.imgRuntime, pane);
+    } else if (tabName === 'tab-review') {
+      await initReview?.();
+    }
+  });
+
+  // Activate the default section tab. setupSectionTabs already activates the
+  // first one on setup, so this only matters if none carried `active` markup.
+  const defaultSectionBtn = document.querySelector('#tab-image-tagging .section-tab-button');
+  if (defaultSectionBtn && !defaultSectionBtn.classList.contains('active')) defaultSectionBtn.click();
+}
+
+/**
+ * Focus Annotate → Review from anywhere, initialising both tiers on the way.
+ *
+ * Review is no longer a main tab, so reaching it means activating Annotate
+ * first and its Review section tab second — and the second click has to happen
+ * after Annotate's lazy init has built the section tabs, hence the await.
+ *
+ * @param {Element|null} container - the main-tabs container
+ */
+async function activateReview(container) {
+  activateMainTab(container, 'tab-image-tagging');
+  // Annotate's init is kicked off synchronously by the click above but resolves
+  // later; yield until the section tabs exist rather than racing them.
+  for (let i = 0; i < 50 && !_annotateTabs; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  _annotateTabs?.activateTab('tab-review');
+}
 
 /**
  * @typedef {Object} AppState
@@ -50,13 +106,13 @@ export async function init(appState) {
       // (duplicate Konva stage / review panel, leaked subscriptions).
       initializedFeatures.add(tabName);
       if (tabName === 'tab-image-tagging') {
-        await initImageTagging(appState.imgRuntime, pane);
+        await initAnnotate(appState);
       } else if (tabName === 'tab-configuration') {
         await initConfiguration?.();
-      } else if (tabName === 'tab-review') {
-        await initReview?.();
-      } else if (tabName === 'tab-operations') {
-        await initOperations?.();
+      } else if (tabName === 'tab-nvr') {
+        await initNvr?.();
+      } else if (tabName === 'tab-runs') {
+        await initRuns?.();
       } else if (tabName === 'tab-settings') {
         await initSettings?.();
       }
@@ -65,19 +121,25 @@ export async function init(appState) {
     // canvas "back to review" path) while the chrome is scrolled out of view —
     // land on the new tab with it showing rather than seemingly headerless.
     showChrome();
-    // Let features react to main-tab focus changes (e.g. the Operations
-    // tab closes its task SSE stream when it loses focus).
+    // Let features react to main-tab focus changes (e.g. the Runs tab closes
+    // its task SSE stream when it loses focus).
     events.publish(EventTypes.MAIN_TAB_CHANGED, { tabName });
+    // The pane that just became visible may hold a list-editor split, which can
+    // only be measured once it is actually laid out.
+    refreshListEditorHeights();
   });
 
 
   events.subscribeToCanvas(_appState.imgRuntime.id, EventTypes.SHOW_MAIN_CANVAS, () => {
     activateMainTab(container, 'tab-image-tagging');
+    // Canvas now sits one tier deeper: Annotate's section tab, then the
+    // Canvas/Files workspace tab inside it.
+    _annotateTabs?.activateTab('tab-annotate-workspace');
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
   });
 
   events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({ tagUuids, imageTagUuids, labelUuids, verificationCheck }) => {
-    activateMainTab(container, 'tab-review');
+    activateReview(container);
     // applyFilterWhenReady applies immediately if the panel is already up, or
     // queues the state so init() applies it once createReviewPanel resolves.
     const state = { tagUuids: tagUuids ?? [] };
@@ -105,6 +167,7 @@ export async function init(appState) {
 
   trackMainTabsHeight(container);
   initScrollChrome();
+  initListEditorHeights();
 
   // Activate default top-level tab
   const defaultTabBtn = container?.querySelector('.main-tab-button.active');

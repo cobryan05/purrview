@@ -62,6 +62,18 @@ export function setupWorkspaceTabs(containerOrSelector, onTabChange) {
   return setupTabs(containerOrSelector, '.workspace-tab-button', '.workspace-tab-pane', onTabChange);
 }
 
+/**
+ * Section tabs — the tier between main tabs and workspace tabs.
+ *
+ * Only Annotate needs it, and only because it nests: its Canvas pane contains a
+ * *second* workspace-tab level (Canvas / Files beside the sidebar). `setupTabs`
+ * matches every descendant, so reusing `.workspace-tab-*` for both would make
+ * the outer row toggle the inner panes as well.
+ */
+export function setupSectionTabs(containerOrSelector, onTabChange) {
+  return setupTabs(containerOrSelector, '.section-tab-button', '.section-tab-pane', onTabChange);
+}
+
 /** Sidebar tabs (Models / Classes / Inspector) */
 export function setupSidebarTabs(containerOrSelector, onTabChange) {
   return setupTabs(containerOrSelector, '.sidebar-tab-button', '.sidebar-tab-pane', onTabChange);

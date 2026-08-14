@@ -185,6 +185,209 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   display: block;
 }
 
+/* ===== Section tabs (Annotate: Canvas / Review) =====
+   The tier between main tabs and workspace tabs. Only Annotate has one, and
+   only because it nests: its Canvas pane holds a second workspace-tab level, so
+   the two tiers cannot share a class (setupTabs matches all descendants).
+   Styled as the workspace row it visually is. */
+.section-tab-header {
+  display: flex;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 0.5em;
+}
+
+.section-tab-button {
+  width: 100%;
+  text-align: center;
+  padding: 0.3em 0;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-weight: normal;
+  color: var(--pico-color);
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.2s;
+  font-size: 0.95em;
+}
+
+.section-tab-button:hover {
+  color: var(--pico-primary);
+}
+
+.section-tab-button.active {
+  font-weight: bold;
+  border-bottom: 2px solid var(--color-accent);
+}
+
+.section-tab-pane {
+  display: none;
+}
+
+.section-tab-pane.active {
+  display: block;
+}
+
+/* ===== Configuration left rail =====
+   Eleven destinations grouped by purpose, replacing a flat row that wrapped to
+   two lines once Sources and Tasks moved in. The groups are the ones
+   configuration/landing.js already used on the Overview pane; this makes them
+   permanent rather than only visible there.
+
+   The items keep .workspace-tab-button (and their data-tab ids) so
+   setupWorkspaceTabs and every existing selector still resolve — the rail is a
+   restyling of the same buttons, not a new mechanism. */
+.config-rail-layout {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.config-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-right: var(--space-3);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: calc(var(--main-tabs-h, 44px) + var(--space-2));
+}
+
+.config-rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.config-rail__heading {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 0 var(--space-2) var(--space-1);
+}
+
+/* Overrides the flat-row .workspace-tab-button geometry: in a rail the items are
+   left-aligned rows with an accent bar, not centred cells with an underline.
+   Specificity (two classes) beats the base rule without !important. */
+.config-rail .config-rail__item {
+  width: 100%;
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: none;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.config-rail .config-rail__item:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.config-rail .config-rail__item.active {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-left-color: var(--color-accent);
+  border-bottom: none;
+  font-weight: 600;
+}
+
+.config-rail-body {
+  min-width: 0;
+}
+
+/* Below this the rail would leave the editor too little room to be usable, so
+   it becomes a wrapping row above the pane instead. */
+@media (max-width: 800px) {
+  .config-rail-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .config-rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: var(--space-2);
+  }
+
+  .config-rail__heading {
+    display: none;
+  }
+}
+
+/* ===== NVR ===== */
+.nvr-live-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.nvr-profile-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nvr-profile-card__meta {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.nvr-rule-row {
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.nvr-rule-row:hover {
+  background: var(--surface-raised);
+}
+
+.nvr-state-pill {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 0.4em;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.nvr-state-pill--running {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.nvr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-7) var(--space-4);
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-faint);
+}
+
+.nvr-empty strong {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.nvr-empty p {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--text-sm);
+}
+
 /* ===== Toolbar / Canvas ===== */
 .canvas-toolbar button {
   flex: 1 1 0;
@@ -4294,8 +4497,14 @@ button.filter-active {
    ⚠️ Re-measure these if the root font size changes: the headers above the
    split are em/rem-sized, so pinning --pico-font-size (tokens.css) from Pico's
    131.25% to 100% moved these from 180/253 to the values below. */
-#tab-configuration { --le-chrome-h: 139px; }
-#tab-operations { --le-chrome-h: 195px; }
+/* These are fallbacks only. app/utils/listEditorHeight.js measures the real
+   chrome above each visible split and sets --le-chrome-h on the element, which
+   wins over these. Measuring replaced two hand-tuned numbers that the
+   Configuration left rail invalidated by removing the sub-tab row above the
+   pane — and that the comment above already warned had to be redone by hand
+   whenever the chrome moved. */
+#tab-configuration { --le-chrome-h: 109px; }
+#tab-runs { --le-chrome-h: 165px; }
 
 /* Count badge on the Activity sub-tab button */
 .tab-badge {

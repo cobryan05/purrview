@@ -26,66 +26,152 @@
   <!-- Top-level tabs wrapper -->
   <div id="main-tabs">
     <div class="main-tab-header">
-      <span class="main-tab-button" data-tab="tab-image-tagging">Image Tagging</span>
-      <span class="main-tab-button" data-tab="tab-configuration">Configuration</span>
-      <span class="main-tab-button" data-tab="tab-review">Review</span>
-      <span class="main-tab-button" data-tab="tab-operations">Operations</span>
-      <span class="main-tab-button main-tab-button--icon" data-tab="tab-settings" title="Settings">⚙</span>
+      <span class="main-tab-button" data-tab="tab-image-tagging" data-tour="nav.annotate">Annotate</span>
+      <span class="main-tab-button" data-tab="tab-nvr" data-testid="nvr-tab" data-tour="nav.nvr">NVR</span>
+      <span class="main-tab-button" data-tab="tab-configuration" data-tour="nav.configuration">Configuration</span>
+      <span class="main-tab-button" data-tab="tab-runs" data-testid="runs-tab" data-tour="nav.runs">Runs<span
+          id="task-activity-badge" class="tab-badge" hidden></span></span>
+      <span class="main-tab-button main-tab-button--icon" data-tab="tab-settings" title="Settings"
+        data-tour="nav.settings">⚙</span>
     </div>
 
     <!-- Main panes -->
+    <!-- ══ Annotate ══════════════════════════════════════════════════════
+         Canvas, the file browser and Review are three zoom levels on the same
+         job. Review used to be a top-level tab; it shares canvas/, files.js and
+         inferencePanel.js with Canvas by direct import, so it belongs here. -->
     <div id="tab-image-tagging" class="main-tab-pane">
-      <div class="workspace-container">
+      <!-- Section tabs are their own tier, not workspace tabs: the pane below
+           contains a *second*, nested workspace-tab level (Canvas / Files inside
+           #workspace), and setupTabs matches all descendants — one shared class
+           would make the outer row toggle the inner panes. -->
+      <div class="section-tab-header" id="annotate-tab-header">
+        <span class="section-tab-button" data-tab="tab-annotate-workspace"
+          data-tour="annotate.canvas">Canvas</span>
+        <span class="section-tab-button" data-tab="tab-review" data-tour="annotate.review">Review</span>
+      </div>
 
-        <!-- Workspace tabs -->
-        <div id="workspace">
-          <div class="workspace-tab-header">
-            <span class="workspace-tab-button" data-tab="tab-canvas">Canvas</span>
-            <span class="workspace-tab-button" data-tab="tab-files">Files</span>
+      <div id="tab-annotate-workspace" class="section-tab-pane">
+        <div class="workspace-container">
+
+          <!-- Workspace tabs -->
+          <div id="workspace">
+            <div class="workspace-tab-header">
+              <span class="workspace-tab-button" data-tab="tab-canvas">Canvas</span>
+              <span class="workspace-tab-button" data-tab="tab-files">Files</span>
+            </div>
+
+            <div id="tab-canvas" class="workspace-tab-pane">
+              <nav id="canvas-toolbar" class="canvas-toolbar"></nav>
+              <div id="draw-container" class="canvas-container"></div>
+            </div>
+
+            <div id="tab-files" class="workspace-tab-pane">Files</div>
           </div>
 
-          <div id="tab-canvas" class="workspace-tab-pane">
-            <nav id="canvas-toolbar" class="canvas-toolbar"></nav>
-            <div id="draw-container" class="canvas-container"></div>
-          </div>
+          <!-- Drag handle for resizing the sidebar -->
+          <div class="split-resize-handle" id="sidebar-resize-handle"></div>
 
-          <div id="tab-files" class="workspace-tab-pane">Files</div>
+          <!-- Sidebar tabs -->
+          <div id="sidebar">
+            <div class="sidebar-tab-header">
+              <span class="sidebar-tab-button" data-tab="tab-labels-tool">Labels</span>
+              <span class="sidebar-tab-button" data-tab="tab-inference">Inference</span>
+              <span class="sidebar-tab-button" data-tab="tab-inspector">Tags</span>
+            </div>
+
+            <div id="tab-inference" class="sidebar-tab-pane">
+              <div id="inference-panel-container"></div>
+            </div>
+
+            <div id="tab-labels-tool" class="sidebar-tab-pane">
+              <div id="labels-tool-list"></div>
+            </div>
+            <div id="tab-inspector" class="sidebar-tab-pane"></div>
+          </div>
         </div>
+      </div>
 
-        <!-- Drag handle for resizing the sidebar -->
-        <div class="split-resize-handle" id="sidebar-resize-handle"></div>
-
-        <!-- Sidebar tabs -->
-        <div id="sidebar">
-          <div class="sidebar-tab-header">
-            <span class="sidebar-tab-button" data-tab="tab-labels-tool">Labels</span>
-            <span class="sidebar-tab-button" data-tab="tab-inference">Inference</span>
-            <span class="sidebar-tab-button" data-tab="tab-inspector">Tags</span>
-          </div>
-
-          <div id="tab-inference" class="sidebar-tab-pane">
-            <div id="inference-panel-container"></div>
-          </div>
-
-          <div id="tab-labels-tool" class="sidebar-tab-pane">
-            <div id="labels-tool-list"></div>
-          </div>
-          <div id="tab-inspector" class="sidebar-tab-pane"></div>
-        </div>
+      <div id="tab-review" class="section-tab-pane">
+        <div id="review-root"></div>
       </div>
     </div>
 
-    <div id="tab-configuration" class="main-tab-pane">
+    <!-- ══ NVR ═══════════════════════════════════════════════════════════
+         Placeholders for now. Live will host running watchers (the same task
+         instances Runs shows, presented as rules + status); Events is the media
+         browser from STREAM_WATCHER_PLAN §7.5, which is not built. -->
+    <div id="tab-nvr" class="main-tab-pane" data-testid="tab-nvr">
       <div class="workspace-tab-header">
-        <span class="workspace-tab-button" data-tab="tab-config-overview" data-testid="config-overview-tab">Overview</span>
-        <span class="workspace-tab-button" data-tab="tab-tag-management">Labels & Tags</span>
-        <span class="workspace-tab-button" data-tab="tab-dataset-management">Datasets</span>
-        <span class="workspace-tab-button" data-tab="tab-model-management">Model Shapes</span>
-        <span class="workspace-tab-button" data-tab="tab-modelstack-management">Model Stacks</span>
-        <span class="workspace-tab-button" data-tab="tab-training-management">Training Runs</span>
-        <span class="workspace-tab-button" data-tab="tab-filterchain-management">Filter Chains</span>
-        <span class="workspace-tab-button" data-tab="tab-watcher-management" data-testid="watchers-tab">Watchers</span>
+        <span class="workspace-tab-button" data-tab="tab-nvr-live" data-tour="nvr.live">Live</span>
+        <span class="workspace-tab-button" data-tab="tab-nvr-events" data-tour="nvr.events">Events</span>
       </div>
+
+      <div id="tab-nvr-live" class="workspace-tab-pane">
+        <div id="nvr-live-box"></div>
+      </div>
+
+      <div id="tab-nvr-events" class="workspace-tab-pane">
+        <div id="nvr-events-box"></div>
+      </div>
+    </div>
+
+    <!-- ══ Configuration ═════════════════════════════════════════════════
+         A grouped left rail rather than a flat tab row: this is 11 destinations
+         now that Sources and Tasks have moved in, which wraps to two lines as a
+         row. The groups are the ones configuration/landing.js already uses on
+         the Overview pane — made permanent rather than living only there.
+
+         The buttons keep .workspace-tab-button and their data-tab ids, so
+         setupWorkspaceTabs and every existing selector still resolve. -->
+    <div id="tab-configuration" class="main-tab-pane">
+      <div class="config-rail-layout">
+        <nav class="config-rail" aria-label="Configuration sections">
+          <div class="config-rail__group">
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-config-overview"
+              data-testid="config-overview-tab" data-tour="config.overview">Overview</span>
+          </div>
+
+          <div class="config-rail__group">
+            <span class="config-rail__heading">Vocabulary</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-tag-management"
+              data-tour="config.labelsAndTags">Labels &amp; Tags</span>
+          </div>
+
+          <div class="config-rail__group">
+            <span class="config-rail__heading">Data</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-dataset-management"
+              data-tour="config.datasets">Datasets</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-source-management"
+              data-tour="config.sources">Sources</span>
+          </div>
+
+          <div class="config-rail__group">
+            <span class="config-rail__heading">Models</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-model-management"
+              data-tour="config.modelShapes">Model Shapes</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-modelstack-management"
+              data-tour="config.modelStacks">Model Stacks</span>
+          </div>
+
+          <div class="config-rail__group">
+            <span class="config-rail__heading">Pipelines</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-training-management"
+              data-tour="config.training">Training</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-filterchain-management"
+              data-tour="config.filterChains">Filter Chains</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-task-management"
+              data-tour="config.tasks">Tasks</span>
+          </div>
+
+          <div class="config-rail__group">
+            <span class="config-rail__heading">NVR</span>
+            <span class="workspace-tab-button config-rail__item" data-tab="tab-watcher-management"
+              data-testid="watchers-tab" data-tour="config.watchRules">Watch Rules</span>
+          </div>
+        </nav>
+
+        <div class="config-rail-body">
 
       <div id="tab-config-overview" class="workspace-tab-pane">
         <div id="config-overview-box"></div>
@@ -131,38 +217,29 @@
       <div id="tab-watcher-management" class="workspace-tab-pane">
         <div id="watcher-management-box"></div>
       </div>
-    </div>
 
-    <div id="tab-review" class="main-tab-pane">
-      <div id="review-root"></div>
-    </div>
-
-    <div id="tab-operations" class="main-tab-pane" data-testid="tab-operations">
-      <div id="service-status-box"></div>
-
-      <div class="workspace-tab-header">
-        <span class="workspace-tab-button" data-tab="tab-task-management">Tasks</span>
-        <span class="workspace-tab-button" data-tab="tab-source-management">Sources</span>
-        <!-- Task instances get their own pane rather than sharing the Tasks split:
-             a running task's card carries a progress bar and a log tail, and the
-             config editor beside it needs the full width for its schema form.
-             The badge reports live task count so leaving this pane doesn't mean
-             losing sight of what's running. -->
-        <span class="workspace-tab-button" data-tab="tab-task-activity">Activity<span
-            id="task-activity-badge" class="tab-badge" hidden></span></span>
+      <!-- Moved in from the dissolved Operations tab: both are definition
+           editors of exactly the same list-beside-editor shape as their new
+           neighbours. Starting and watching what they define is Runs' job. -->
+      <div id="tab-source-management" class="workspace-tab-pane">
+        <div id="source-management-box"></div>
       </div>
 
       <div id="tab-task-management" class="workspace-tab-pane">
         <div id="task-config-list"></div>
       </div>
 
-      <div id="tab-source-management" class="workspace-tab-pane">
-        <div id="source-management-box"></div>
+        </div>
       </div>
+    </div>
 
-      <div id="tab-task-activity" class="workspace-tab-pane">
-        <div id="active-tasks-list"></div>
-      </div>
+    <!-- ══ Runs ══════════════════════════════════════════════════════════
+         Was Operations › Activity. Promoted because it is the app's only
+         runtime surface: everything launched from anywhere reports here, and
+         service health belongs next to what is running. -->
+    <div id="tab-runs" class="main-tab-pane" data-testid="tab-runs">
+      <div id="service-status-box"></div>
+      <div id="active-tasks-list"></div>
     </div>
 
     <div id="tab-settings" class="main-tab-pane"></div>

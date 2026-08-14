@@ -348,7 +348,8 @@ class TestGapsInTheCanvasModalSidebar:
 
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        page.locator(".main-tab-button[data-tab='tab-review']").click()
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
         page.wait_for_selector("#review-root .review-grid", timeout=5000)
         page.locator("#review-root .view-btn[data-view-key='images']").click()
 

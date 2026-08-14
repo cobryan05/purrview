@@ -120,24 +120,29 @@ COMPLETED_TASK = {
 # ---------------------------------------------------------------------------
 
 
-def _navigate_to_operations(page: Page, base_url: str):
+def _navigate_to_configuration(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    page.locator(".main-tab-button[data-tab='tab-operations']").click()
+    page.locator(".main-tab-button[data-tab='tab-configuration']").click()
     page.wait_for_load_state("networkidle")
 
 
 def _navigate_to_tasks(page: Page, base_url: str):
-    """Open the app and activate Operations > Tasks (the config editor)."""
-    _navigate_to_operations(page, base_url)
-    page.locator("#tab-operations .workspace-tab-button[data-tab='tab-task-management']").click()
+    """Open the app and activate Configuration > Tasks (the config editor)."""
+    _navigate_to_configuration(page, base_url)
+    page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-task-management']").click()
     page.wait_for_load_state("networkidle")
 
 
 def _navigate_to_activity(page: Page, base_url: str):
-    """Open the app and activate Operations > Activity (the instance list)."""
-    _navigate_to_operations(page, base_url)
-    page.locator("#tab-operations .workspace-tab-button[data-tab='tab-task-activity']").click()
+    """Open the app and activate Runs (the task-instance list).
+
+    Task instances used to be an Operations sub-tab. Runs is a main tab now and
+    holds the instance list directly, so there is no sub-tab to click.
+    """
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+    page.locator(".main-tab-button[data-tab='tab-runs']").click()
     page.wait_for_load_state("networkidle")
 
 

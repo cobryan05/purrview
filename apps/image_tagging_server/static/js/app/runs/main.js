@@ -1,24 +1,32 @@
-import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
+/**
+ * Runs — the app's single runtime surface.
+ *
+ * Was Operations › Activity. Operations dissolved: its Tasks and Sources panes
+ * were definition editors and moved to Configuration, leaving the one thing
+ * that was genuinely about *running* behind. It is a main tab now because
+ * everything launched anywhere in the app reports here, and because service
+ * health belongs beside what is running rather than above two config editors.
+ *
+ * No sub-tabs: with Tasks and Sources gone there is exactly one pane, so the
+ * task list gets the full width the old Activity sub-tab already had.
+ */
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { renderSourceManager } from '/app-static/js/ui/sources.js';
-import { ACTIVITY_TAB_ID, countRunningTasks, renderActiveTasks, renderTaskConfigs } from '/app-static/js/ui/tasks.js';
+import { countRunningTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
 
 export async function init() {
-  // Service health sits above the sub-tabs — it applies to the whole surface,
-  // not to Sources, Tasks or Activity individually.
+  // Service health sits above the task list — it applies to the whole surface.
   renderServiceStatus({ target: 'service-status-box' });
 
   let unsubscribeTaskStream = null;
-  let activeSubTab = null;
 
   const badge = document.getElementById('task-activity-badge');
 
   /**
-   * Show how many tasks are still live on the Activity tab button. Hidden at
-   * zero rather than showing "0": a permanent badge stops being a signal.
+   * Show how many tasks are still live on the Runs tab button. Hidden at zero
+   * rather than showing "0": a permanent badge stops being a signal.
    */
   function updateBadge(tasks) {
     if (!badge) return;
@@ -28,7 +36,7 @@ export async function init() {
   }
 
   /**
-   * Seed the badge from a one-off fetch when the Operations tab opens.
+   * Seed the badge from a one-off fetch when the Runs tab opens.
    *
    * SSE keeps it fresh afterwards, but the stream only pushes *on change* — so
    * without this the badge stays blank on arrival until something happens to a
@@ -45,12 +53,6 @@ export async function init() {
 
   const refreshTaskTab = () => {
     renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
-    // Only rebuild the config editor when its own pane is showing — it is a
-    // full list-editor screen now, and rebuilding it under the user would drop
-    // an in-progress edit.
-    if (activeSubTab === 'tab-task-management') {
-      renderTaskConfigs({ target: 'task-config-list', refresh: refreshTaskTab });
-    }
   };
 
   function closeTaskStream() {
@@ -70,43 +72,27 @@ export async function init() {
         if (!data?.tasks) return;
         updateBadge(data.tasks);
         // renderActiveTasks no-ops unless its pane is visible, so this keeps
-        // the badge live while the user is on Sources or Tasks.
+        // the badge live while the user is on another tab.
         renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
       },
     });
     // EventSource reconnects automatically on error; no extra handling needed.
   }
 
-  // The stream must not outlive Operations-tab focus: close it whenever another
-  // main tab takes over, and reopen it when the user returns. It now stays open
-  // across all three sub-tabs, because the Activity badge has to keep counting
-  // while the user is editing a config or a source.
+  // The stream must not outlive Runs-tab focus: close it whenever another main
+  // tab takes over, and reopen it when the user returns.
   events.subscribe(EventTypes.MAIN_TAB_CHANGED, ({ tabName }) => {
-    if (tabName !== 'tab-operations') {
+    if (tabName !== 'tab-runs') {
       closeTaskStream();
     } else {
       openTaskStream();
       seedBadge();
-      if (activeSubTab === ACTIVITY_TAB_ID) renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
-    }
-  });
-
-  const { container } = setupWorkspaceTabs("#tab-operations", async (tabName, button, pane) => {
-    activeSubTab = tabName;
-
-    if (tabName === 'tab-source-management') {
-      await renderSourceManager({ target: "source-management-box" });
-    } else if (tabName === 'tab-task-management') {
-      await renderTaskConfigs({ target: 'task-config-list', refresh: refreshTaskTab });
-    } else if (tabName === ACTIVITY_TAB_ID) {
-      // Initial render via fetch so the pane feels instant on first open.
       renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
     }
-    openTaskStream();
-    seedBadge();
   });
 
-  // activate default operations tab
-  const defaultTabBtn = container?.querySelector('.workspace-tab-button');
-  if (defaultTabBtn) defaultTabBtn.click();
+  // Initial render via fetch so the pane feels instant on first open.
+  renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });
+  openTaskStream();
+  seedBadge();
 }
