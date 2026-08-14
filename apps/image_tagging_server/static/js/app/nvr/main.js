@@ -149,7 +149,9 @@ function _profileCard(profile, task) {
   // this pane is read-only until the watcher control surface is built out.
   bar.appendChild(_panelButton(
     'Show in Runs',
-    () => document.querySelector('.main-tab-button[data-tab="tab-runs"]')?.click(),
+    // Active, not just the Runs tab: "show in Runs" means the running watcher,
+    // and the bare main-tab click lands on whichever sub-tab was last open.
+    () => navigateTabs('tab-runs', 'tab-runs-active'),
   ));
 
   card.appendChild(bar);

@@ -93,8 +93,11 @@ function buildStartRunLink({ config, getDirty, save }) {
         params: { training_config_uuid: config.uuid },
       });
       toast(`Started Train ${config.name}`, 3000);
-      // Runs is where it can actually be watched.
-      document.querySelector('.main-tab-button[data-tab="tab-runs"]')?.click();
+      // Runs is where it can actually be watched — and specifically Active.
+      // Clicking the main tab alone lands on whichever Runs sub-tab was last
+      // open, which is "Start a run" for anyone who got here from a launch
+      // card's ⚙: you press Start and arrive at a launcher, not your run.
+      navigateTabs('tab-runs', 'tab-runs-active');
     } catch (err) {
       toast(err.message || 'Could not start the run', 5000, 'error');
     } finally {

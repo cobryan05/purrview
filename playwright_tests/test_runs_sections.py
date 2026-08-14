@@ -119,3 +119,16 @@ class TestBadge:
         must not permanently light the badge."""
         _open_runs(page, base_url, {"t-watch": WATCHER})
         expect(self._badge(page)).to_be_hidden()
+
+    def _active_tab_badge(self, page: Page):
+        return page.locator("#task-activity-badge-active")
+
+    def test_the_active_sub_tab_carries_the_same_count(self, page: Page, base_url: str):
+        """From inside Runs the main-tab badge is out of the eyeline, and the
+        count is about the Active pane — so it belongs beside it too."""
+        _open_runs(page, base_url, {"t-watch": WATCHER, "t-train": TRAINING})
+        expect(self._active_tab_badge(page)).to_have_text("1")
+
+    def test_the_active_sub_tab_badge_hides_at_zero(self, page: Page, base_url: str):
+        _open_runs(page, base_url, {"t-watch": WATCHER})
+        expect(self._active_tab_badge(page)).to_be_hidden()

@@ -1194,6 +1194,40 @@ class TestUnsavedChangesBeforeStartRun:
         self._start_btn(page).click()
 
         expect(page.locator("#tab-runs")).to_have_class(re.compile(r"\bactive\b"))
+        expect(page.locator("#tab-runs-active")).to_have_class(re.compile(r"\bactive\b"))
+
+    def test_start_lands_on_active_even_after_a_visit_to_the_launcher(self, page: Page, base_url: str):
+        """Runs remembers its sub-tab, so clicking the main tab alone lands on
+        the launcher for anyone who reached this editor from a launch card's ⚙ —
+        you press Start and arrive at a list of things to start."""
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "tmp-cfg"}),
+            ),
+        )
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+            ),
+        )
+        self._open_existing(page, base_url)
+
+        # Leave Runs sitting on "Start a run", the way the ⚙ round trip does.
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
+        page.locator("#tab-runs .workspace-tab-button[data-tab='tab-runs-launch']").click()
+        expect(page.locator("#tab-runs-launch")).to_have_class(re.compile(r"\bactive\b"))
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+
+        self._start_btn(page).click()
+
+        expect(page.locator("#tab-runs-active")).to_have_class(re.compile(r"\bactive\b"))
+        expect(page.locator("#tab-runs-launch")).not_to_have_class(re.compile(r"\bactive\b"))
 
 
 # ---------------------------------------------------------------------------

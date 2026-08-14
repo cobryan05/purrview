@@ -25,17 +25,25 @@ export async function init() {
 
   let unsubscribeTaskStream = null;
 
-  const badge = document.getElementById('task-activity-badge');
+  // Two badges, one count: the main Runs tab (visible from anywhere in the app)
+  // and the Active sub-tab, which is the pane the count is actually about — from
+  // inside Runs the main-tab badge is out of the eyeline, and a count next to
+  // "Start a run"'s sibling is what says where the running things are.
+  const badges = [
+    document.getElementById('task-activity-badge'),
+    document.getElementById('task-activity-badge-active'),
+  ].filter(Boolean);
 
   /**
-   * Show how many tasks are still live on the Runs tab button. Hidden at zero
+   * Show how many tasks are still live on the Runs tab buttons. Hidden at zero
    * rather than showing "0": a permanent badge stops being a signal.
    */
   function updateBadge(tasks) {
-    if (!badge) return;
     const n = countRunningTasks(tasks);
-    badge.textContent = String(n);
-    badge.hidden = n === 0;
+    for (const badge of badges) {
+      badge.textContent = String(n);
+      badge.hidden = n === 0;
+    }
   }
 
   /**
