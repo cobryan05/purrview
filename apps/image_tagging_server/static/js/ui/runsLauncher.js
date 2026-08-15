@@ -13,7 +13,10 @@
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
 import { fetchFilterChains } from '/app-static/js/shared/api/filterChains.js';
 import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
-import { fetchTaskConfigs } from '/app-static/js/shared/api/tasks.js';
+import { fetchTaskConfigs, fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
+// Straight from the module rather than the fields barrel: one Set is not worth
+// pulling every field widget into the launcher's import graph.
+import { TERMINAL_STATUSES } from '/app-static/js/ui/utils/fields/ActiveTaskField.js';
 import {
   fetchTrainingConfigReadiness,
   fetchTrainingConfigReadinessForImages,
@@ -170,6 +173,81 @@ async function trainingDelta(config) {
   return value;
 }
 
+// ── "Training in progress" on training cards ─────────────────────────────────
+//
+// A recipe whose model is training right now is the one card you should not be
+// pressing, and the launcher had no way to say so: the run is visible on Active,
+// one sub-tab away, and nowhere else.
+//
+// This deliberately owns no SSE stream. Runs already holds exactly one (opened
+// in app/runs/main.js, closed when the last job ends off-tab — the leak
+// test_leaks_and_races.py guards), so the launcher is *pushed* the task list
+// that stream already delivers rather than subscribing to it a second time.
+
+/** Live training runs by training-config uuid, rebuilt on every render. */
+let _runStateByConfig = new Map();
+
+/**
+ * How a live TrainModelTask should read on the card that launches it.
+ * Anything not terminal counts: a queued run is as much a reason not to press
+ * Start as a running one.
+ *
+ * @param {string} status
+ * @returns {?{text: string, tone: string}}
+ */
+function _runLabel(status) {
+  if (TERMINAL_STATUSES.has(status)) return null;
+  if (status === 'paused') return { text: 'Training paused', tone: 'paused' };
+  if (status === 'running') return { text: 'Training in progress', tone: 'running' };
+  // 'new'/'pending', plus any status this UI has not been taught yet — treating
+  // an unknown state as live is the safe direction.
+  return { text: 'Queued', tone: 'queued' };
+}
+
+/**
+ * Index the live training runs in a task-status payload by the training config
+ * they were launched from.
+ *
+ * @param {Record<string, any>} tasks - `tasks` from fetchTasksStatus / the stream
+ * @returns {Map<string, {text: string, tone: string}>}
+ */
+function indexTrainingRuns(tasks) {
+  const byConfig = new Map();
+  for (const entry of Object.values(tasks || {})) {
+    if (entry?.config?.typename !== 'TrainModelTask') continue;
+    // The launcher starts trainings through a throwaway task config carrying the
+    // recipe's uuid, so this is what ties a running job back to a card.
+    const configUuid = entry.config?.params?.training_config_uuid;
+    if (!configUuid) continue;
+    const label = _runLabel(entry.instance?.status);
+    if (!label) continue;
+    // Running beats queued when a recipe has both in flight — the stronger
+    // statement is the true one, and two badges do not fit on a card.
+    const current = byConfig.get(configUuid);
+    if (current && current.tone === 'running') continue;
+    byConfig.set(configUuid, label);
+  }
+  return byConfig;
+}
+
+/**
+ * Paint the live-run badges from a task-status payload.
+ *
+ * Exported so the Runs tab can hand over the task list its own SSE subscription
+ * already receives. No-ops once the launcher has been re-rendered or was never
+ * rendered, so a stream message that arrives while the user is elsewhere costs
+ * a Map lookup and nothing else.
+ *
+ * @param {Record<string, any>} tasks
+ */
+export function applyRunsLauncherTaskState(tasks) {
+  if (_runStateByConfig.size === 0) return;
+  const live = indexTrainingRuns(tasks);
+  for (const [configUuid, setBadge] of _runStateByConfig) {
+    setBadge(live.get(configUuid) ?? null);
+  }
+}
+
 /**
  * One launchable thing: a big Start target, plus a link to what defines it.
  *
@@ -192,6 +270,9 @@ async function trainingDelta(config) {
  *   third line is reserved on the card and filled in when this resolves.
  * @param {?(reload: () => Promise<void>) => void} [opts.registerDetail] - handed
  *   the card's reload function, so the group can re-run every card's detail.
+ * @param {?(setBadge: (label: ?{text: string, tone: string}) => void) => void} [opts.registerRunState] -
+ *   handed a setter for the card's live-run badge, so task-status updates can
+ *   reach this card without re-rendering the launcher.
  * @returns {HTMLElement}
  */
 function launchCard({
@@ -204,6 +285,7 @@ function launchCard({
   confirm = null,
   detail = null,
   registerDetail = null,
+  registerRunState = null,
 }) {
   const card = document.createElement('div');
   card.className = 'runs-launch-card';
@@ -224,6 +306,24 @@ function launchCard({
   sub.className = 'runs-launch-card__hint';
   sub.textContent = hint;
   startBtn.appendChild(sub);
+
+  if (registerRunState) {
+    // Sits above the name so it reads first — the point of the badge is to be
+    // seen before the card is pressed, not after.
+    const badge = document.createElement('span');
+    badge.className = 'runs-launch-card__run-badge';
+    badge.dataset.testid = 'runs-launch-run-badge';
+    badge.hidden = true;
+    startBtn.insertBefore(badge, top);
+
+    registerRunState((label) => {
+      badge.hidden = label === null;
+      card.classList.toggle('is-live', label !== null);
+      if (label === null) return;
+      badge.className = `runs-launch-card__run-badge is-${label.tone}`;
+      badge.textContent = label.text;
+    });
+  }
 
   if (detail) {
     // The slot is appended now and filled later: the launcher must paint at the
@@ -409,6 +509,8 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
 
     /** @type {Array<() => Promise<void>>} */
     const deltaLoaders = [];
+    /** Replaced wholesale, so a stream message can never paint a stale card. */
+    const runStateSetters = new Map();
 
     frag.appendChild(group(
       'Training',
@@ -429,6 +531,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         onStarted,
         detail: () => trainingDelta(cfg),
         registerDetail: (reload) => deltaLoaders.push(reload),
+        registerRunState: (setBadge) => runStateSetters.set(cfg.uuid, setBadge),
       })),
       trainings === null ? 'Could not load training configs.' : 'No training configs yet —',
       trainings === null ? null : { label: 'define one', tab: 'tab-training-management' },
@@ -505,6 +608,15 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
     ));
 
     container.replaceChildren(frag);
+    _runStateByConfig = runStateSetters;
+
+    // Seeded from one fetch, then kept fresh by the Runs tab handing over its
+    // stream messages. Without the seed a card arrives blank and stays blank
+    // until something happens to a task — precisely the case where it should
+    // already read "Training in progress".
+    fetchTasksStatus()
+      .then(({ tasks }) => applyRunsLauncherTaskState(tasks))
+      .catch(err => Logger.warn('runsLauncher: could not seed run state', err));
 
     // Deliberately not awaited: the launcher is usable the moment the cards are
     // in the DOM, and each card fills its own number in as it arrives. The

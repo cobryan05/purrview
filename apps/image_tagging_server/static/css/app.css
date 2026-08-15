@@ -486,6 +486,32 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   color: var(--text-faint);
 }
 
+/* A recipe whose model is training right now is the one card not to press, so
+   the badge leads the card rather than trailing the numbers. */
+.runs-launch-card__run-badge {
+  align-self: flex-start;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.runs-launch-card__run-badge.is-running {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.runs-launch-card__run-badge.is-queued,
+.runs-launch-card__run-badge.is-paused {
+  background: var(--surface-elevated);
+  color: var(--text-faint);
+}
+
+.runs-launch-card.is-live {
+  border-color: var(--color-accent);
+}
+
 /* "+312 since last run" — the reason to press this card rather than another
    one, so it is the one line on the card that carries colour. */
 .runs-launch-card__detail {

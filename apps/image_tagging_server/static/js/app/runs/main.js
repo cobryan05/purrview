@@ -17,7 +17,7 @@ import { countRunningTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
-import { renderRunsLauncher } from '/app-static/js/ui/runsLauncher.js';
+import { applyRunsLauncherTaskState, renderRunsLauncher } from '/app-static/js/ui/runsLauncher.js';
 
 export async function init() {
   // Service health sits above the task list — it applies to the whole surface.
@@ -94,6 +94,10 @@ export async function init() {
         // renderActiveTasks no-ops unless its pane is visible, so this costs
         // nothing while the Active pane is not the one on screen.
         renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
+        // The launcher shows "Training in progress" on the card that started a
+        // run. It is fed from here rather than subscribing itself: this stream
+        // is deliberately the tab's only one, and its lifetime is managed below.
+        applyRunsLauncherTaskState(data.tasks);
       },
     });
     // EventSource reconnects automatically on error; no extra handling needed.

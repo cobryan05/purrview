@@ -156,6 +156,32 @@ def _mock_launchables(page: Page):
     )
 
 
+def _training_instance(status: str, config_uuid: str = "tc-1", typename: str = "TrainModelTask") -> dict:
+    """One entry of the task-status payload, shaped like a run the launcher
+    started: a throwaway task config carrying the recipe's uuid."""
+    return {
+        "config": {
+            "uuid": "tmp-cfg",
+            "name": "Train Primary Model",
+            "typename": typename,
+            "params": {"training_config_uuid": config_uuid},
+        },
+        "instance": {"uuid": "task-1", "status": status},
+        "continuous": False,
+    }
+
+
+def _mock_task_status(page: Page, instances: dict):
+    page.route(
+        "**/api/tasks/instances/get",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "tasks": instances}),
+        ),
+    )
+
+
 def _open_launcher(page: Page, base_url: str, **previous_run):
     _mock_launchables(page)
     _mock_previous_run(page, **previous_run)
@@ -459,6 +485,89 @@ class TestTrainingCardDelta:
         page.locator("#runs-launcher-box .runs-launch-group").first.get_by_test_id("runs-launch-group-action").click()
 
         expect(self._detail(page, "Primary Model")).to_contain_text("13 pos · 28 neg")
+
+
+class TestTrainingInProgressBadge:
+    """A recipe whose model is training right now is the one card you should not
+    be pressing, and the run was visible only on the Active sub-tab."""
+
+    def _badge(self, page: Page, name: str):
+        return _card(page, name).get_by_test_id("runs-launch-run-badge")
+
+    def test_a_running_training_is_named_on_its_card(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-1": _training_instance("running")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Primary Model")).to_have_text("Training in progress")
+        expect(_card(page, "Primary Model")).to_have_class(re.compile(r"\bis-live\b"))
+
+    def test_a_queued_run_counts_too(self, page: Page, base_url: str):
+        """A queued run is as much a reason not to press Start as a running one."""
+        _mock_task_status(page, {"task-1": _training_instance("pending")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Primary Model")).to_have_text("Queued")
+
+    def test_a_finished_run_leaves_no_badge(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-1": _training_instance("completed")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Primary Model")).to_be_hidden()
+        expect(_card(page, "Primary Model")).not_to_have_class(re.compile(r"\bis-live\b"))
+
+    def test_another_recipes_run_does_not_mark_this_card(self, page: Page, base_url: str):
+        """The badge keys on the training config the run was launched from, not
+        on 'some training is happening somewhere'."""
+        _mock_task_status(page, {"task-1": _training_instance("running", config_uuid="tc-other")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Primary Model")).to_be_hidden()
+
+    def test_a_non_training_task_does_not_mark_a_training_card(self, page: Page, base_url: str):
+        _mock_task_status(
+            page,
+            {"task-1": _training_instance("running", typename="ApplyFilterChainTask")},
+        )
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Primary Model")).to_be_hidden()
+
+    def test_the_launcher_opens_no_stream_of_its_own(self, page: Page, base_url: str):
+        """Runs owns exactly one task SSE stream, closed when the tab is left
+        (test_leaks_and_races.py guards it). The launcher is pushed that stream's
+        messages instead of subscribing a second time, so entering and leaving
+        the pane must not add a connection.
+        """
+        page.add_init_script(
+            """
+            window.__taskStreams = [];
+            const OrigES = window.EventSource;
+            window.EventSource = function(url, opts) {
+                const es = new OrigES(url, opts);
+                if (String(url).includes('/api/tasks/stream')) window.__taskStreams.push(es);
+                return es;
+            };
+            window.EventSource.prototype = OrigES.prototype;
+            """
+        )
+        _mock_task_status(page, {"task-1": _training_instance("running")})
+        _open_launcher(page, base_url)
+        expect(self._badge(page, "Primary Model")).to_be_visible()
+
+        opened_with_launcher = page.evaluate("() => window.__taskStreams.length")
+
+        # Bounce off Runs and back into the launcher: a per-render subscription
+        # would show up as a second connection here.
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.wait_for_timeout(300)
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
+        page.locator("#tab-runs .workspace-tab-button[data-tab='tab-runs-launch']").click()
+        expect(self._badge(page, "Primary Model")).to_be_visible()
+
+        states = page.evaluate("() => window.__taskStreams.map(es => es.readyState)")
+        # One stream per Runs visit, and every earlier one closed (readyState 2).
+        assert opened_with_launcher == 1, f"launcher visit opened {opened_with_launcher} streams"
+        assert states.count(1) <= 1, f"more than one live task stream: {states}"
 
 
 class TestUnscopedFilterChainGuard:
