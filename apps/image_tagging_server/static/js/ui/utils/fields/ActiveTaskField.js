@@ -281,6 +281,24 @@ export class ActiveTaskField extends Field {
       }
     }
 
+    // Task-supplied action buttons (e.g. "See results", or a `task_command`
+    // back-channel action like "capture now"). Above the status widgets, not
+    // below: on a long-running card the widgets grow without bound, and these
+    // buttons — the most-used part of the card — would otherwise sit off the
+    // bottom of a scroll.
+    if (this._actions.length > 0) {
+      const actionsRow = document.createElement('div');
+      actionsRow.style.cssText = 'display:flex; gap:0.5em; margin-bottom:0.5em; flex-wrap:wrap;';
+      for (const action of this._actions) {
+        const btn = document.createElement('button');
+        btn.textContent = action.label;
+        btn.style.cssText = 'font-size:0.9em; padding:0.2em 0.6em; cursor:pointer;';
+        btn.addEventListener('click', () => this._handleAction(action));
+        actionsRow.appendChild(btn);
+      }
+      body.appendChild(actionsRow);
+    }
+
     // ── Schema-driven status widgets ───────────────────────────────────
     const widgetsHost = document.createElement('div');
     body.appendChild(widgetsHost);
@@ -501,21 +519,6 @@ export class ActiveTaskField extends Field {
           teardown();
         }
       });
-    }
-
-    // Task-supplied action buttons (e.g. "See results", or a `task_command`
-    // back-channel action like "capture now").
-    if (this._actions.length > 0) {
-      const actionsRow = document.createElement('div');
-      actionsRow.style.cssText = 'display:flex; gap:0.5em; margin-top:0.4em; flex-wrap:wrap;';
-      for (const action of this._actions) {
-        const btn = document.createElement('button');
-        btn.textContent = action.label;
-        btn.style.cssText = 'font-size:0.9em; padding:0.2em 0.6em; cursor:pointer;';
-        btn.addEventListener('click', () => this._handleAction(action));
-        actionsRow.appendChild(btn);
-      }
-      body.appendChild(actionsRow);
     }
 
     details.appendChild(body);
