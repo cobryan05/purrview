@@ -179,6 +179,42 @@ class TestRetrainedModelIsReloaded:
 
         assert keepwarm_manager._pinned_models["clf"].inference.weights == b"retrained onnx"
 
+    async def test_recognize_under_a_caller_pin_sees_new_weights(self, keepwarm_manager, tmp_path, load_counter):
+        """A long-running task pins once and then calls recognize() in a loop — it
+        never re-enters pin_model, so the reload check has to live on the recognize
+        path too. Otherwise retraining that model changes nothing until the task is
+        suspended and resumed (dropping the pin), which is how this was found."""
+        pin_id = await keepwarm_manager.pin_model("clf")
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id)
+
+        self._overwrite(tmp_path, b"retrained onnx")
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id)
+
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"retrained onnx", (
+            "recognize() under a caller-held pin kept serving the pre-retrain session; "
+            "the caller must not have to unpin to pick up new weights"
+        )
+        assert len(load_counter) == 2, "new weights on disk must trigger exactly one reload"
+
+    async def test_recognize_under_a_caller_pin_does_not_reload_unchanged_weights(self, keepwarm_manager, load_counter):
+        pin_id = await keepwarm_manager.pin_model("clf")
+        for _ in range(5):
+            await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id)
+
+        assert len(load_counter) == 1
+
+    async def test_caller_pin_timeout_survives_a_reload(self, keepwarm_manager, tmp_path):
+        """The reload must not clobber the caller's pin bookkeeping — a pin taken with
+        a custom duration keeps that duration, and keeps its id."""
+        pin_id = await keepwarm_manager.pin_model("clf", timeout=1234.0)
+
+        self._overwrite(tmp_path, b"retrained onnx")
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id)
+
+        pins = keepwarm_manager._pinned_models["clf"].pins
+        assert pin_id in pins
+        assert pins[pin_id].timeout == 1234.0
+
     async def test_torn_write_keeps_serving_old_session_then_recovers(
         self, keepwarm_manager, tmp_path, load_counter, monkeypatch
     ):

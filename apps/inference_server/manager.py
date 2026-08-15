@@ -438,6 +438,56 @@ class Manager:
         path = self.staged_model_path(staging_id)
         path.unlink(missing_ok=True)
 
+    async def _reload_if_weights_changed(self, model_name: str, model_path: str) -> None:
+        """Rebuild a loaded session if its .onnx has been rewritten under it.
+
+        Retraining lands new weights over $MODELS_ROOT/<name>.onnx from a different
+        process entirely (tasks_server's `_training_job_runner._save_artifact`), so
+        nothing here is told the file changed. Without this check a warm session
+        outlives the file it was built from and keeps answering from the previous
+        model's weights until its pin happens to idle out — a retrained detector
+        scored 0.0006 on an image its new weights scored 0.94 on. Compared on
+        mtime_ns, matching how _class_map_cache invalidates sidecars.
+
+        No-ops if the model isn't loaded. Callers must hold the model's lock, so
+        this can't interleave with a concurrent load or delete.
+        """
+        existing = self._pinned_models.get(model_name)
+        if existing is None:
+            return
+
+        # Stat before loading, never after: a write landing *during* the load
+        # would otherwise be recorded as already-loaded and stay stale. Re-reading
+        # once too often is harmless; missing a write is the bug this prevents.
+        current_mtime = await self._weights_mtime_ns(model_path)
+        if current_mtime is None or current_mtime == existing.weights_mtime_ns:
+            return
+
+        logger.info(
+            f"Model '{model_name}' changed on disk (mtime {existing.weights_mtime_ns} -> "
+            f"{current_mtime}); reloading the in-memory session."
+        )
+        try:
+            # Mutated in place rather than replaced so `pins` survives: dropping the
+            # entry would invalidate every caller's pin id and make their later
+            # unpin_model raise.
+            existing.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
+            existing.path = model_path
+        except Exception:
+            # _save_artifact lands the new weights with a plain write_bytes(), so
+            # there is a window where the file is a truncated ONNX. Keep answering
+            # from the session we already have rather than failing the request
+            # outright — degraded (stale) beats down. The mtime is still recorded so
+            # a permanently broken file doesn't re-attempt a ~30MB load on every
+            # call; the completing write bumps mtime again, which is what makes the
+            # torn-write case self-heal on a later call.
+            logger.warning(
+                f"Model '{model_name}' changed on disk but the new file failed to load; "
+                f"continuing with the previously loaded session.",
+                exc_info=True,
+            )
+        existing.weights_mtime_ns = current_mtime
+
     async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME, pin_id: Optional[str] = None) -> str:
         """
         Pin a model into memory, keeping it loaded until unpinned.
@@ -469,47 +519,7 @@ class Manager:
             if model_name not in self._avail_models:
                 raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-            # Retraining lands new weights over $MODELS_ROOT/<name>.onnx from a
-            # different process entirely (tasks_server's
-            # _training_job_runner._save_artifact), so nothing here is told the file
-            # changed. Without this check a warm session outlives the file it was
-            # built from and keeps answering from the previous model's weights until
-            # its keep-warm pin happens to idle out — a retrained detector scored
-            # 0.0006 on an image its new weights scored 0.94 on. Compared on
-            # mtime_ns, matching how _class_map_cache invalidates sidecars.
-            existing = self._pinned_models.get(model_name)
-            if existing is not None:
-                # Stat before loading, never after: a write landing *during* the
-                # load would otherwise be recorded as already-loaded and stay
-                # stale. Re-reading once too often is harmless; missing a write
-                # is the bug this exists to prevent.
-                current_mtime = await self._weights_mtime_ns(model_path)
-                if current_mtime is not None and current_mtime != existing.weights_mtime_ns:
-                    logger.info(
-                        f"Model '{model_name}' changed on disk (mtime {existing.weights_mtime_ns} -> "
-                        f"{current_mtime}); reloading the in-memory session."
-                    )
-                    try:
-                        # Mutated in place rather than replaced so `pins` survives:
-                        # dropping the entry would invalidate every caller's pin id
-                        # and make their later unpin_model raise.
-                        existing.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
-                        existing.path = model_path
-                    except Exception:
-                        # _save_artifact lands the new weights with a plain
-                        # write_bytes(), so there is a window where the file is a
-                        # truncated ONNX. Keep answering from the session we already
-                        # have rather than failing the request outright — degraded
-                        # (stale) beats down. The mtime is still recorded so a
-                        # permanently broken file doesn't re-attempt a ~30MB load on
-                        # every call; the completing write bumps mtime again, which
-                        # is what makes the torn-write case self-heal on a later call.
-                        logger.warning(
-                            f"Model '{model_name}' changed on disk but the new file failed to load; "
-                            f"continuing with the previously loaded session.",
-                            exc_info=True,
-                        )
-                    existing.weights_mtime_ns = current_mtime
+            await self._reload_if_weights_changed(model_name, model_path)
 
             if model_name not in self._pinned_models:
                 load_future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -592,6 +602,13 @@ class Manager:
         caller_pin_valid = pin_id is not None and pinned is not None and pin_id in pinned.pins
         if caller_pin_valid:
             pinned.pins[pin_id].expiry = time.time() + pinned.pins[pin_id].timeout
+            # A caller holding its own pin never re-enters pin_model, so the staleness
+            # check there would never fire for it: a long-running detection task pins
+            # once and then loops on recognize(), and used to keep serving pre-retrain
+            # weights until it was suspended and resumed (dropping the pin). Same
+            # per-call stat() the pinless branch already pays via pin_model.
+            async with self._get_model_lock(model_name):
+                await self._reload_if_weights_changed(model_name, self._avail_models[model_name])
         else:
             # Pinless caller: load once and keep the model warm under the shared
             # implicit pin (refreshing its expiry), rather than tearing the session
