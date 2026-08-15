@@ -38,6 +38,7 @@ from training_client.models.manifest_entry import ManifestEntry
 from training_client.models.submit_job_payload import SubmitJobPayload
 
 from apps import FILES_ROOT
+from apps.helpers.metadataUtils import atomic_write_bytes
 
 logger = logging.getLogger(__file__)
 
@@ -522,9 +523,14 @@ class TrainingJobRunnerMixin:
 
         _MODELS_DIR.mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:*") as tf:
-            for member in tf.getmembers():
-                if not member.isfile():
-                    continue
+            members = [m for m in tf.getmembers() if m.isfile()]
+            # The .onnx lands last. The inference server keys its reload on that
+            # file's mtime alone, so anything the new weights depend on — external
+            # `.onnx.data` tensors, the sidecar's class list — has to already be on
+            # disk when it moves. Keyed on the boolean rather than the name, because
+            # lexicographically ".onnx" sorts *before* ".onnx.data".
+            members.sort(key=lambda m: Path(m.name).name.endswith(".onnx"))
+            for member in members:
                 name = Path(member.name).name
                 if not name.endswith((".onnx", ".onnx.data", ".json")):
                     logger.warning("Unexpected artifact file %s, skipping", name)
@@ -537,7 +543,10 @@ class TrainingJobRunnerMixin:
                         # else (e.g. two configs sharing a model name) is a silent
                         # clobber — leave a trace either way.
                         logger.warning("Overwriting existing model artifact %s", dest)
-                    dest.write_bytes(fobj.read())
+                    # Atomic: a live detection task stats and reloads this file on
+                    # every inference, so a plain write_bytes() is readable as a
+                    # truncated ONNX mid-write. See atomic_write_bytes.
+                    await asyncio.to_thread(atomic_write_bytes, dest, fobj.read())
                     self.log(f"Saved model artifact: {dest}")
 
     async def _cancel_remote_job(self, job_id: str) -> None:

@@ -3,7 +3,9 @@
 import ast
 import json
 import logging
+import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -135,6 +137,39 @@ def save_model_json_metadata(model_path: str, metadata: Dict[str, Any]) -> None:
         f.write(json.dumps(metadata, indent=2))
 
 
+def atomic_write_bytes(dest: Path, data: bytes) -> None:
+    """Land `data` at `dest` so a concurrent reader sees the old file or the new one,
+    never a half-written one.
+
+    A plain `write_bytes()` leaves a window where the file on disk is a truncated
+    ONNX. That window is reachable: the inference server stats model files on every
+    inference and reloads when the mtime moves
+    (`inference_server.manager._reload_if_weights_changed`), so a retrain landing
+    under a live detection task can be read mid-write. It degrades gracefully there
+    — the failed load keeps the previous session — but the load is wasted work and
+    the model stays stale until the *next* mtime bump. Writing a sibling temp file
+    and `os.replace()`-ing it removes the window instead of coping with it.
+
+    The temp name deliberately does not end in `.onnx`: `Manager.list_models()`
+    globs `*.onnx`, so a temp carrying that suffix would be advertised as a real,
+    half-written model for as long as the write takes. Same directory, because
+    `os.replace` is only atomic within a filesystem.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".{dest.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            # Without this the rename can be durable while the contents are not, so
+            # a crash mid-write leaves a correctly-named but empty/short model.
+            os.fsync(fh.fileno())
+        os.replace(tmp, dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def write_onnx_with_sidecar(
     model_path: str,
     onnx_bytes: bytes,
@@ -166,8 +201,7 @@ def write_onnx_with_sidecar(
     if overwrite and sidecar_path.exists():
         sidecar_path.unlink()
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(onnx_bytes)
+    atomic_write_bytes(path, onnx_bytes)
 
     sidecar_existed = sidecar_path.exists()
     metadata = get_model_metadata(str(path), create_json_if_missing=False)
