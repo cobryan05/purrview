@@ -16,8 +16,13 @@ def pytest_addoption(parser):
     )
 
 
-def make_png() -> bytes:
-    """Return a minimal valid 1x1 white PNG."""
+def make_png(pixel: bytes = b"\xff\xff\xff") -> bytes:
+    """Return a minimal valid 1x1 PNG, white unless another RGB pixel is given.
+
+    The pixel is a parameter so a test can produce two *different* valid images
+    -- "did this file get replaced?" cannot be asked with one byte-identical
+    fixture.
+    """
 
     def chunk(tag, data):
         raw = tag + data
@@ -26,6 +31,6 @@ def make_png() -> bytes:
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(b"\x00\xff\xff\xff"))
+        + chunk(b"IDAT", zlib.compress(b"\x00" + pixel))
         + chunk(b"IEND", b"")
     )

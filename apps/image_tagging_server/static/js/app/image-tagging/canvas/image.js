@@ -153,6 +153,11 @@ export async function saveAnnotations(runtime) {
     return false;
   }
 
+  // Taken before the request goes out: `updateImage` serialises the payload
+  // synchronously, so this is exactly what the server is being told, and the
+  // user is free to keep drawing while it is in flight.
+  const saveToken = runtime.beginSave();
+
   try {
     await updateImage(runtime.state.image);
     // Drop the prefetched copy here, at the write, rather than relying on a
@@ -160,7 +165,7 @@ export async function saveAnnotations(runtime) {
     // so a non-broadcasting save would otherwise leave a pre-save copy cached
     // and navigating back would show the edit undone.
     invalidateCachedImage(runtime.state.image.image_path);
-    runtime.markClean();
+    runtime.markClean(saveToken);
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
     events.publish(EventTypes.CANVAS_ANNOTATIONS_SAVED, { runtimeId: runtime.id });
     toast('Annotations saved successfully!');

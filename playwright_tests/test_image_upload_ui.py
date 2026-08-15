@@ -13,6 +13,8 @@ import json
 
 from playwright.sync_api import Page, expect
 
+from playwright_tests.waits import wait_until
+
 # A 1x1 PNG — the server decodes uploads for real, but these tests mock the
 # endpoint, so it only has to be plausible file content.
 TINY_PNG = base64.b64decode(
@@ -156,6 +158,59 @@ class TestAskThenRemember:
 
         expect(page.get_by_test_id("modal-shell-dialog").first).to_be_visible()
         assert not calls, "Must not upload before the destination is confirmed"
+
+    def test_confirming_the_prompt_actually_uploads(self, page: Page, base_url: str):
+        """The whole ask path end to end. Every other test in this class stops
+        at the dialog, so nothing caught that answering it uploaded nothing."""
+        _mock_file_list(page)
+        _mock_settings(page, {})
+        calls = _mock_upload(page)
+        _open_files_tab(page, base_url)
+
+        _choose_file(page)
+
+        # Directory picker first…
+        page.locator(".fb-select-btn").first.click()
+        # …then "Upload to this folder?".
+        confirm = page.get_by_test_id("upload-remember-confirm")
+        expect(confirm).to_be_visible()
+        confirm.click()
+
+        wait_until(page, lambda: bool(calls), "Expected confirming the prompt to upload the file")
+
+    def test_cancelling_the_prompt_uploads_nothing(self, page: Page, base_url: str):
+        _mock_file_list(page)
+        _mock_settings(page, {})
+        calls = _mock_upload(page)
+        _open_files_tab(page, base_url)
+
+        _choose_file(page)
+
+        page.locator(".fb-select-btn").first.click()
+        page.get_by_test_id("upload-remember-dialog").locator("button", has_text="Cancel").click()
+        page.wait_for_timeout(800)
+
+        assert not calls, "Cancelling the destination prompt must not upload"
+
+
+class TestPickerDismissal:
+    def test_a_picker_that_fires_no_event_still_frees_the_import_button(self, page: Page, base_url: str):
+        """`<input type=file>` does not fire 'cancel' everywhere, and a dismissed
+        picker fires no 'change' either — without a fallback the promise never
+        settles and Import stays disabled for the life of the pane."""
+        _mock_file_list(page)
+        _mock_settings(page, {})
+        _open_files_tab(page, base_url)
+
+        button = page.get_by_test_id("file-upload-button")
+        with page.expect_file_chooser():
+            button.click()
+        # Deliberately never answer the chooser: no files, no 'change', and no
+        # 'cancel'. Regaining focus is all the app gets.
+        expect(button).to_be_disabled()
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+
+        expect(button).to_be_enabled()
 
 
 class TestReporting:

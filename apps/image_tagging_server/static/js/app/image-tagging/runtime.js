@@ -116,6 +116,9 @@ export function createImageTaggingRuntime() {
    * No bbox comparison can see those, so they stay dirty until saved.
    */
   let _forcedDirty = false;
+  /** Bumped by every markDirty, so a save can tell "I cleared what I sent" from
+   *  "a label was toggled after my payload left". */
+  let _dirtyEpoch = 0;
 
   /** Re-sync which bboxes are draggable for the current tool/canvas. */
   function _syncDraggable() {
@@ -157,13 +160,39 @@ export function createImageTaggingRuntime() {
    */
   function markDirty() {
     _forcedDirty = true;
+    _dirtyEpoch++;
     events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
   }
 
-  /** Adopt the current annotations as the clean state (call after a successful save). */
-  function markClean() {
-    _cleanSignature = _annotationSignature(_imgTaggingState?.image?.bboxes);
-    _forcedDirty = false;
+  /**
+   * Snapshot what a save is about to send, for `markClean` to adopt later.
+   *
+   * A save against a busy database takes seconds, and the user keeps drawing
+   * through it. Without this the response handler fingerprinted whatever the
+   * canvas held *then* — so a box drawn mid-flight was recorded as saved, Save
+   * went disabled, and the edit was never written.
+   *
+   * @returns {{signature: string, dirtyEpoch: number}}
+   */
+  function beginSave() {
+    return {
+      signature: _annotationSignature(_imgTaggingState?.image?.bboxes),
+      dirtyEpoch: _dirtyEpoch,
+    };
+  }
+
+  /**
+   * Adopt a saved state as the clean baseline (call after a successful save).
+   *
+   * @param {?{signature: string, dirtyEpoch: number}} [token] - from `beginSave`,
+   *   identifying what was actually persisted. Omitted by callers with nothing
+   *   in flight (a freshly loaded image), which take the current state as clean.
+   */
+  function markClean(token = null) {
+    _cleanSignature = token ? token.signature : _annotationSignature(_imgTaggingState?.image?.bboxes);
+    // Image-level label/tag edits have nothing to diff against, so the sticky
+    // flag can only be cleared when none arrived after the payload went out.
+    if (!token || token.dirtyEpoch === _dirtyEpoch) _forcedDirty = false;
   }
 
   function clearHistory() {
@@ -286,6 +315,7 @@ export function createImageTaggingRuntime() {
     undo,
     redo,
     markDirty,
+    beginSave,
     markClean,
     clearHistory,
   };

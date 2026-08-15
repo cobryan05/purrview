@@ -229,8 +229,8 @@ class Manager:
             except (ValueError, TypeError):
                 pass
         # Propagate the resolved sizes to the HashIndex before building.
-        self._hash_index._image_hash_size = self._image_hash_size
-        self._hash_index._bbox_hash_size = self._bbox_hash_size
+        self._hash_index.image_hash_size = self._image_hash_size
+        self._hash_index.bbox_hash_size = self._bbox_hash_size
 
         def _on_phase(p: str) -> None:
             self._build_phase = p
@@ -1739,15 +1739,29 @@ class Manager:
         if frame is None:
             raise ValueError(f"{base_name!r} could not be decoded as an image")
 
-        await asyncio.to_thread(target.write_bytes, data)
+        # An overwrite replaces a file that is already registered and may carry
+        # annotations, so it cannot simply be deleted if the write half-fails.
+        # Move it aside first (a rename, not a copy) and put it back on failure:
+        # otherwise a failed re-upload costs the user the new file *and* the old
+        # one. The dot-prefixed, non-image name keeps scans off it in between.
+        backup: Optional[Path] = None
+        if target.exists():
+            backup = target.with_name(f".{target.name}.upload-bak")
+            await asyncio.to_thread(os.replace, target, backup)
 
         try:
+            await asyncio.to_thread(target.write_bytes, data)
             image = await self._db_client.add_image(target)
         except Exception:
             # Do not leave a file the DB does not know about — it would show in
             # the browser and be missing from every search.
             await asyncio.to_thread(target.unlink, True)
+            if backup is not None:
+                await asyncio.to_thread(os.replace, backup, target)
             raise
+
+        if backup is not None:
+            await asyncio.to_thread(backup.unlink, True)
 
         duplicate_of, duplicate_distance = await self._find_upload_duplicate(image.uuid, target)
 
@@ -1769,7 +1783,7 @@ class Manager:
         try:
             threshold_raw = await self._db_client.get_setting("dedup_image_threshold")
             threshold = int(threshold_raw) if threshold_raw is not None else 5
-            phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index._image_hash_size)
+            phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index.image_hash_size)
             self._hash_index.add_image(image_uuid, phash)
             for other_uuid, distance in self._hash_index.find_similar_images(phash, threshold):
                 if other_uuid != image_uuid:
@@ -2840,10 +2854,20 @@ class Manager:
         key = hashlib.sha1(image_path.encode()).hexdigest()
         return self._thumb_cache_dir() / f"img_{key}_{width}.png"
 
-    def _region_thumb_cache_path(self, image_path: str, region: Tuple[float, float, float, float], width: int) -> Path:
+    def _region_thumb_cache_path(
+        self,
+        image_path: str,
+        region: Tuple[float, float, float, float],
+        width: int,
+        color: Optional[str] = None,
+    ) -> Path:
         # The region is part of the key, so moving a proposed box simply misses
-        # the cache rather than needing an invalidation hook.
-        key = hashlib.sha1(f"{image_path}|{region[0]:.6f},{region[1]:.6f},{region[2]:.6f},{region[3]:.6f}".encode())
+        # the cache rather than needing an invalidation hook. So is the outline
+        # colour: it is drawn into the PNG, and relabelling a proposed box asks
+        # for the same region in a new colour -- keyed without it, the card ends
+        # up showing a chip of one class beside a crop outlined in another.
+        region_key = f"{region[0]:.6f},{region[1]:.6f},{region[2]:.6f},{region[3]:.6f}"
+        key = hashlib.sha1(f"{image_path}|{region_key}|{color or ''}".encode())
         return self._thumb_cache_dir() / f"rgn_{key.hexdigest()}_{width}.png"
 
     async def get_region_thumbnail(
@@ -2873,7 +2897,7 @@ class Manager:
         if bw <= 0 or bh <= 0:
             return None
 
-        cache_path = self._region_thumb_cache_path(image_path, (bx, by, bw, bh), width)
+        cache_path = self._region_thumb_cache_path(image_path, (bx, by, bw, bh), width, color)
         if cache_path.exists():
             try:
                 cache_path.touch()  # update mtime for LRU tracking

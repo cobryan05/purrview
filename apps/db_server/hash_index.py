@@ -229,6 +229,31 @@ class HashIndex:
         self._needs_rebuild: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Hash sizes
+    #
+    # Public because they are resolved from DB settings *after* construction and
+    # every phash computed elsewhere has to agree with the trees built here.
+    # Callers were reaching through to the underscored attributes in both
+    # directions, so a rename here would have silently mis-sized hashes.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def image_hash_size(self) -> int:
+        return self._image_hash_size
+
+    @image_hash_size.setter
+    def image_hash_size(self, value: int) -> None:
+        self._image_hash_size = value
+
+    @property
+    def bbox_hash_size(self) -> int:
+        return self._bbox_hash_size
+
+    @bbox_hash_size.setter
+    def bbox_hash_size(self, value: int) -> None:
+        self._bbox_hash_size = value
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Build / rebuild
     # ─────────────────────────────────────────────────────────────────────────
 

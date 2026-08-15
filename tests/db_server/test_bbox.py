@@ -236,6 +236,26 @@ async def test_region_thumbnail_is_cached_per_region(http_client, image_file, mo
     assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
 
 
+async def test_region_thumbnail_is_cached_per_outline_color(http_client, image_file, monkeypatch, tmp_path):
+    """The outline colour is baked into the PNG, so it has to be part of the key.
+
+    Relabelling a proposed box re-points the <img> at the same region with a new
+    colour; keyed on region alone, the second request serves the crop outlined
+    in the previous label's colour — the chip says one class and the crop shows
+    another.
+    """
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+
+    red = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&color=%23ff0000")
+    assert red.status_code == 200
+
+    blue = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&color=%230000ff")
+    assert blue.status_code == 200
+
+    assert blue.content != red.content, "Re-colouring the outline must not serve the cached crop"
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+
+
 async def test_region_thumbnail_missing_image_returns_404(http_client, monkeypatch, tmp_path):
     monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
     r = await http_client.get(f"/api/images/no_such_image.png/region/thumbnail?{REGION_QS}")

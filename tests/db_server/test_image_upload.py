@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from apps.helpers.db.db_client import DbClient
 from tests.conftest import make_png
 
 
@@ -154,6 +155,39 @@ class TestNameCollisions:
         assert result["path"] == "fixed.png"
         assert result["renamedFrom"] is None
         assert not (files_root / "fixed_1.png").exists()
+
+    async def test_a_failed_overwrite_leaves_the_previous_file_intact(self, http_client, files_root, monkeypatch):
+        """The rollback exists so a file the DB never learned about is not left
+        behind. On an overwrite that reasoning inverts: the file that was there
+        is already registered and may carry annotations, so deleting it on a
+        failed re-upload loses the new file *and* the old one."""
+        await _post(http_client, [_upload("kept.png")])
+        original = (files_root / "kept.png").read_bytes()
+
+        async def _boom(self, *args, **kwargs):
+            raise RuntimeError("db went away mid-upload")
+
+        monkeypatch.setattr(DbClient, "add_image", _boom)
+
+        r = await _post(http_client, [_upload("kept.png", make_png(b"\x00\x00\x00"))], overwrite="true")
+
+        assert r.json()["results"][0]["ok"] is False
+        assert (files_root / "kept.png").exists(), "The pre-existing file must survive a failed overwrite"
+        assert (files_root / "kept.png").read_bytes() == original
+
+    async def test_a_failed_first_upload_leaves_no_orphan_file(self, http_client, files_root, monkeypatch):
+        """The other half of the same rule: a brand-new file the DB never
+        registered would show in the browser and be missing from every search."""
+
+        async def _boom(self, *args, **kwargs):
+            raise RuntimeError("db went away mid-upload")
+
+        monkeypatch.setattr(DbClient, "add_image", _boom)
+
+        r = await _post(http_client, [_upload("orphan.png")])
+
+        assert r.json()["results"][0]["ok"] is False
+        assert not (files_root / "orphan.png").exists()
 
     async def test_a_first_upload_is_not_renamed(self, http_client):
         r = await _post(http_client, [_upload("original.png")])

@@ -306,6 +306,83 @@ class TestDirtyState:
         )
         assert result is True
 
+    def test_an_edit_made_during_a_save_stays_dirty(self, shared_page: Page):
+        """A save takes seconds against a busy DB, and the user keeps drawing.
+
+        markClean must adopt the state that was *sent*, not whatever the canvas
+        holds when the response lands — otherwise the edits made in between are
+        counted as saved, Save goes disabled, and they are never written.
+        """
+        page = shared_page
+        result = page.evaluate(
+            """async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+
+            """
+            + _RUNTIME_SETUP
+            + """
+
+            runtime.state.image.bboxes.set('b1', makeBbox('b1'));
+            runtime.pushState();
+
+            // What a save does: snapshot what it is about to send…
+            const token = runtime.beginSave();
+            // …the user draws another box while the request is in flight…
+            runtime.state.image.bboxes.set('b2', makeBbox('b2'));
+            runtime.pushState();
+            // …and the response finally lands.
+            runtime.markClean(token);
+
+            return runtime.isDirty;
+        }"""
+        )
+        assert result is True, "The box drawn during the save must still count as unsaved"
+
+    def test_a_label_change_made_during_a_save_stays_dirty(self, shared_page: Page):
+        """Same race for image-level label/tag edits, which no bbox comparison
+        can see — they are tracked by a sticky flag that the save cleared
+        wholesale, discarding one set after the payload went out."""
+        page = shared_page
+        result = page.evaluate(
+            """async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+
+            """
+            + _RUNTIME_SETUP
+            + """
+
+            const token = runtime.beginSave();
+            runtime.markDirty();          // label/tag toggled mid-flight
+            runtime.markClean(token);
+
+            return runtime.isDirty;
+        }"""
+        )
+        assert result is True
+
+    def test_a_save_with_no_edits_during_it_ends_clean(self, shared_page: Page):
+        """The other half: an undisturbed save must still clear the button."""
+        page = shared_page
+        result = page.evaluate(
+            """async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+
+            """
+            + _RUNTIME_SETUP
+            + """
+
+            runtime.state.image.bboxes.set('b1', makeBbox('b1'));
+            runtime.pushState();
+            runtime.markDirty();
+
+            const token = runtime.beginSave();
+            runtime.markClean(token);
+
+            return runtime.isDirty;
+        }"""
+        )
+        assert result is False
+
     def test_dirty_after_undo(self, shared_page: Page):
         """Undo counts as a mutation — isDirty becomes true."""
         page = shared_page

@@ -91,7 +91,10 @@ async function promptForTarget(suggested) {
     cancel.type = 'button';
     cancel.className = 'secondary panel-btn';
     cancel.textContent = 'Cancel';
-    cancel.addEventListener('click', () => { close(); finish(null); });
+    // Answer first, close second. `close()` runs `onClose` synchronously, so
+    // closing first settles the promise with the dismissal value and the real
+    // answer is dropped — which made "Upload here" upload nothing at all.
+    cancel.addEventListener('click', () => { finish(null); close(); });
 
     const confirm = document.createElement('button');
     confirm.type = 'button';
@@ -99,8 +102,8 @@ async function promptForTarget(suggested) {
     confirm.dataset.testid = 'upload-remember-confirm';
     confirm.textContent = 'Upload here';
     confirm.addEventListener('click', () => {
-      close();
       finish({ path: toRelative(chosen), remember: remember.checked });
+      close();
     });
 
     actions.append(cancel, confirm);
@@ -251,6 +254,15 @@ function pickFiles() {
     // universal either, so resolve empty on whichever arrives.
     input.addEventListener('cancel', () => resolve([]), { once: true });
     input.click();
+    // …and where neither fires (older Safari, and anything else that skips
+    // 'cancel'), this promise would never settle: the caller's `finally` never
+    // runs, so the Import button stays disabled until the pane is re-rendered.
+    // Regaining window focus is the one signal every browser gives, since the
+    // picker is modal — but 'change' can land just after it, so give it a beat
+    // before concluding nothing was chosen. Resolving twice is a no-op.
+    window.addEventListener('focus', () => {
+      setTimeout(() => resolve([...(input.files ?? [])]), 300);
+    }, { once: true });
   });
 }
 
