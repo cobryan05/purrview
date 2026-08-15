@@ -1,8 +1,7 @@
 """RunClassifierTask — apply a trained ONNX image classifier to images.
 
 Loads the ONNX model written by BinaryImageClassifier and tags images in the DB
-based on confidence. Uses the same FilesystemImageFetcher / HttpImageFetcher
-abstraction as the training pipeline.
+based on confidence.
 """
 
 import asyncio

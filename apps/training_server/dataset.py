@@ -7,81 +7,19 @@ Images arrive via the push ingest API and are stored in the uuid-keyed
 The split is deterministic: images are sorted by UUID then sliced.
 This is reproducible across runs regardless of submission order.
 
-Image access is abstracted behind a ``fetcher`` interface with two concrete
-implementations:
-  - ``FilesystemImageFetcher`` — reads raw files from a local directory
-  - ``HttpImageFetcher``       — fetches via the db_server HTTP API, caches locally
+Images are always read from the local cache. The training server never calls
+back into db_server — every connection in the training path is outbound from
+tasks_server, which is what lets the training server run on a host that cannot
+reach the rest of the stack.
 """
 
 from __future__ import annotations
 
-import base64
 import logging
 import shutil
-import tempfile
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Fetcher abstractions
-# ---------------------------------------------------------------------------
-
-
-class FilesystemImageFetcher:
-    """Read image bytes from a local directory by filename.
-
-    An optional ``path_prefix_map`` remaps filename prefixes before reading,
-    e.g. ``{"/mnt/nas": "/data"}`` rewrites ``/mnt/nas/img.jpg`` →
-    ``/data/img.jpg`` (relative to ``fs_root``).
-    """
-
-    def __init__(self, fs_root: str, path_prefix_map: Optional[dict] = None):
-        self._root = Path(fs_root)
-        self._prefix_map: dict[str, str] = path_prefix_map or {}
-
-    def fetch(self, uuid: str, filename: str) -> bytes:
-        for old, new in self._prefix_map.items():
-            if filename.startswith(old):
-                filename = new + filename[len(old) :]
-                break
-        return (self._root / filename.lstrip("/")).read_bytes()
-
-
-class HttpImageFetcher:
-    """Fetch image bytes from the db_server HTTP API, caching by UUID on disk.
-
-    If ``cache_dir`` is not provided a temporary directory is created; call
-    ``cleanup()`` to remove it when training is done.
-    """
-
-    def __init__(self, db_base_url: str, cache_dir: Optional[str] = None):
-        self._base_url = db_base_url.rstrip("/")
-        self._owns_tmp = cache_dir is None
-        self._tmp = cache_dir if cache_dir else tempfile.mkdtemp()
-        self._cache = Path(self._tmp)
-
-    def fetch(self, uuid: str, filename: str) -> bytes:
-        import httpx
-
-        cached = self._cache / uuid
-        if cached.exists():
-            return cached.read_bytes()
-
-        resp = httpx.get(f"{self._base_url}/api/images/{uuid}/raw")
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("status") != "success":
-            raise ValueError(data.get("message", f"Failed to fetch image {uuid}"))
-        raw = base64.b64decode(data["image_base64"])
-        cached.write_bytes(raw)
-        return raw
-
-    def cleanup(self) -> None:
-        if self._owns_tmp and Path(self._tmp).exists():
-            shutil.rmtree(self._tmp, ignore_errors=True)
 
 
 class _CacheFetcher:
@@ -97,41 +35,6 @@ class _CacheFetcher:
 # ---------------------------------------------------------------------------
 # Public dataset builders
 # ---------------------------------------------------------------------------
-
-
-def _build_dataset(
-    label_uuid: str,
-    db_base_url: str,
-    fetcher: FilesystemImageFetcher,
-    split: str = "train",
-    val_fraction: float = 0.2,
-) -> "ImageLabelDataset":
-    """Fetch labeled images for *label_uuid* from the db_server and build a dataset.
-
-    Args:
-        label_uuid:   UUID of the label to train on.
-        db_base_url:  Base URL of the db_server.
-        fetcher:      Image fetcher instance.
-        split:        ``"train"`` or ``"val"``.
-        val_fraction: Fraction to hold out for validation.
-    """
-    import httpx
-
-    resp = httpx.get(
-        f"{db_base_url.rstrip('/')}/api/images/labeled",
-        params={"label_uuid": label_uuid},
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    rows = data.get("images") or []
-    if not rows:
-        raise ValueError(f"No labeled images found for label_uuid={label_uuid!r}")
-
-    rows_sorted = sorted(rows, key=lambda r: r["image_uuid"])
-    n_val = max(1, int(len(rows_sorted) * val_fraction))
-    n_train = len(rows_sorted) - n_val
-    split_rows = rows_sorted[:n_train] if split == "train" else rows_sorted[n_train:]
-    return ImageLabelDataset(split_rows=split_rows, fetcher=fetcher, split=split)
 
 
 def build_dataset_from_manifest(
@@ -191,8 +94,7 @@ class ImageLabelDataset:
     Augmentation: train split gets random crop + flip + colour jitter;
     val split gets centre crop only.
 
-    Pass either ``fetcher`` (preferred) or ``cache_dir`` (legacy; creates a
-    ``_CacheFetcher`` internally).
+    Reads from the UUID-keyed cache, like MultiLabelDataset.
     """
 
     INPUT_SIZE = (224, 224)
@@ -201,13 +103,9 @@ class ImageLabelDataset:
         self,
         split_rows: list[dict],
         split: str,
-        fetcher=None,
-        cache_dir: Optional[str] = None,
+        cache_dir: str,
     ):
-        if fetcher is None and cache_dir is not None:
-            fetcher = _CacheFetcher(cache_dir)
-        elif fetcher is None:
-            raise ValueError("Either fetcher or cache_dir must be provided")
+        fetcher = _CacheFetcher(cache_dir)
 
         # Defer torch/albumentations imports — only available in training container.
         import albumentations as A
