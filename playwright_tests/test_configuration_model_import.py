@@ -165,6 +165,15 @@ class TestImportModelConversion:
         assert len(stage_calls) == 1, f"Expected 1 POST to /api/models/import/stage, got {len(stage_calls)}"
         assert "sourceBase64" in stage_calls[0]
 
+        # The task is created from the *stage response*, so it is a step behind:
+        # waiting only on the stage call above and asserting this immediately
+        # fails whenever the machine is loaded enough for the two to separate.
+        wait_until(
+            page,
+            lambda: len(create_calls) >= 1,
+            lambda: f"Expected 1 POST to /api/tasks/configs/create, got {len(create_calls)}",
+        )
+
         assert len(create_calls) == 1, f"Expected 1 POST to /api/tasks/configs/create, got {len(create_calls)}"
         payload = create_calls[0]
         assert payload.get("typename") == "ConvertModelTask"
