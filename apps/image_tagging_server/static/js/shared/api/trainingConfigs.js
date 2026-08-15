@@ -86,6 +86,32 @@ export async function fetchTrainingConfigReadiness(uuid) {
   };
 }
 
+/**
+ * The same readiness counts, over only `imageUuids` — a previous run's recorded
+ * manifest, so the positive/negative split of "then" and "now" is produced by
+ * one counting rule. Images no longer in the config's datasets drop out, so the
+ * counts can total less than imageUuids.length.
+ *
+ * @param {string} uuid
+ * @param {string[]} imageUuids
+ */
+export async function fetchTrainingConfigReadinessForImages(uuid, imageUuids) {
+  const res = await apiFetch(`/api/training-configs/${uuid}/readiness-for-images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageUuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch previous-run readiness');
+  }
+  return {
+    readyCount: data.readyCount ?? 0,
+    readyPositiveCount: data.readyPositiveCount ?? 0,
+    readyNegativeCount: data.readyNegativeCount ?? 0,
+  };
+}
+
 export async function fetchTrainingConfigNeedsReview({
   uuid,
   labelUuids = [],

@@ -4187,7 +4187,9 @@ class DbClient:
             targets.append(_build_target(node_by_label[b_uuid], "submodel", sub_classes))
         return targets
 
-    async def get_training_config_readiness(self, uuid: str) -> Optional[dict]:
+    async def get_training_config_readiness(
+        self, uuid: str, restrict_to_image_uuids: Optional[list[str]] = None
+    ) -> Optional[dict]:
         """Return ready/needs-review/not-started counts for a training config's datasets (union).
 
         An image is 'ready' when every target label has an explicit PRESENT or ABSENT
@@ -4209,6 +4211,14 @@ class DbClient:
         because child annotations all roll up to their parent label. Since the
         readiness_threshold is then 1, there is no possible partial state, so
         needs_review_count is always 0 under rollup.
+
+        *restrict_to_image_uuids* narrows every count to that subset of the dataset
+        union (None = the whole union). Mirrors get_training_config_label_stats:
+        the launcher and the training page replay these counts over a previously
+        trained model's recorded manifest, so "what went in last time" and "what is
+        here now" come out of the same code. Intersected with the union rather than
+        used raw — an image the run trained on but that has since left the dataset
+        is not part of this config's baseline any more.
 
         Returns None if the training config doesn't exist.
         """
@@ -4248,6 +4258,10 @@ class DbClient:
             }
 
         image_uuids = [img.uuid for img in all_images]
+        if restrict_to_image_uuids is not None:
+            _restrict = set(restrict_to_image_uuids)
+            image_uuids = [u for u in image_uuids if u in _restrict]
+
         n_labels = len(label_uuids)
         # With rollup, any one verified label means the image is ready.
         readiness_threshold = 1 if is_rollup else n_labels

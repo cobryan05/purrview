@@ -42,8 +42,16 @@ export function modelNameForConfig(config) {
  * it must not take the readiness panel down with it.
  *
  * @param {{uuid: string, name: string, modelConfigNodeUuid?: string|null, hyperparamsJson?: object}} config
+ * @param {object} [opts]
+ * @param {boolean} [opts.withLabelStats=true] - replay the config's label-stats
+ *   query over the manifest. That query is the expensive half of this function
+ *   (measured 0.05–0.7s per config against a ~1200-image manifest), and callers
+ *   that only want the image totals — the Runs launcher cards, which show a
+ *   single "+N since last run" — should pass false. With false,
+ *   `labelStatsByUuid` is empty and `stillInDatasetCount` is 0.
  * @returns {Promise<null | {
  *   modelName: string,
+ *   imageUuids: string[],
  *   trainedAt: string|null,
  *   trainCount: number,
  *   valCount: number,
@@ -52,7 +60,7 @@ export function modelNameForConfig(config) {
  *   labelStatsByUuid: Map<string, object>,
  * }>}
  */
-export async function loadPreviousRun(config) {
+export async function loadPreviousRun(config, { withLabelStats = true } = {}) {
   if (!config?.uuid) return null;
   const modelName = modelNameForConfig(config);
   if (!modelName) return null;
@@ -86,19 +94,22 @@ export async function loadPreviousRun(config) {
 
   let labelStats = [];
   let stillInDatasetCount = 0;
-  try {
-    const stats = await fetchTrainingConfigLabelStatsForImages(config.uuid, imageUuids);
-    labelStats = stats.labelStats;
-    stillInDatasetCount = stats.totalImages;
-  } catch {
-    // Counts we can't compute are simply absent — the image totals below are
-    // still worth showing on their own.
-    labelStats = [];
-    stillInDatasetCount = 0;
+  if (withLabelStats) {
+    try {
+      const stats = await fetchTrainingConfigLabelStatsForImages(config.uuid, imageUuids);
+      labelStats = stats.labelStats;
+      stillInDatasetCount = stats.totalImages;
+    } catch {
+      // Counts we can't compute are simply absent — the image totals below are
+      // still worth showing on their own.
+      labelStats = [];
+      stillInDatasetCount = 0;
+    }
   }
 
   return {
     modelName,
+    imageUuids,
     trainedAt: manifest.trainedAt,
     trainCount: manifest.train.length,
     valCount: manifest.val.length,

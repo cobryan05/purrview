@@ -3377,8 +3377,12 @@ class Manager:
     async def delete_training_config(self, uuid: str) -> bool:
         return await self._db_client.delete_training_config(uuid)
 
-    async def get_training_config_readiness(self, uuid: str) -> "Optional[dict]":
-        return await self._db_client.get_training_config_readiness(uuid)
+    async def get_training_config_readiness(
+        self, uuid: str, restrict_to_image_uuids: "Optional[list[str]]" = None
+    ) -> "Optional[dict]":
+        return await self._db_client.get_training_config_readiness(
+            uuid, restrict_to_image_uuids=restrict_to_image_uuids
+        )
 
     async def get_training_config_detection_dataset(self, uuid: str) -> "Optional[dict]":
         result = await self._db_client.get_training_config_detection_dataset(uuid)

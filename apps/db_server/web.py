@@ -710,6 +710,13 @@ class TrainingConfigLabelStatsForImagesPayload(Payload):
     image_uuids: List[str] = Field(default_factory=list)
 
 
+class TrainingConfigImageSubsetPayload(Payload):
+    # Same shape as the payload above, kept as its own model rather than shared:
+    # the generated API clients name their request models after the endpoint's
+    # payload class, so collapsing the two would rename an existing client model.
+    image_uuids: List[str] = Field(default_factory=list)
+
+
 class NeedsReviewImagesPayload(Payload):
     label_uuids: List[str] = Field(default_factory=list)
     after_uuid: Optional[str] = None
@@ -3340,6 +3347,35 @@ class WebApp:
         ) -> TrainingConfigReadinessResponse:
             try:
                 result = await self._manager.get_training_config_readiness(uuid)
+                if result is None:
+                    return TrainingConfigReadinessResponse(
+                        status=JsonValues.FAILURE, message="Training config not found"
+                    )
+                return TrainingConfigReadinessResponse(status=JsonValues.SUCCESS, **result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingConfigReadinessResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-configs/{uuid}/readiness-for-images",
+            response_model=TrainingConfigReadinessResponse,
+            tags=[ApiTags.TRAINING_CONFIGS],
+            operation_id="get_training_config_readiness_for_images",
+        )
+        async def get_training_config_readiness_for_images(
+            uuid: str,
+            payload: TrainingConfigImageSubsetPayload,
+        ) -> TrainingConfigReadinessResponse:
+            """Same counts as GET /readiness, over only the supplied images.
+
+            The Runs launcher replays a previous run's recorded manifest through
+            this to say how many *positive* images have appeared since — a delta
+            in ready_count alone is dominated by confirmed-absence negatives and
+            reads as far more new training signal than there is."""
+            try:
+                result = await self._manager.get_training_config_readiness(
+                    uuid, restrict_to_image_uuids=payload.image_uuids
+                )
                 if result is None:
                     return TrainingConfigReadinessResponse(
                         status=JsonValues.FAILURE, message="Training config not found"

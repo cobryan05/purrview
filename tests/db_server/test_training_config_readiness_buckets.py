@@ -492,3 +492,109 @@ class TestReadyPositiveNegativeSplit:
 
         assert len(all_uuids) == 5
         assert len(set(all_uuids)) == 5
+
+
+class TestReadinessForImages:
+    """POST /readiness-for-images — the same counts over an explicit image set.
+
+    The Runs launcher replays a previous run's recorded manifest through this so
+    "+N since last run" can be split into positives and negatives. A single total
+    is misleading on these datasets: they are overwhelmingly background, so most
+    of any growth is confirmed-absence images carrying no new training signal.
+    """
+
+    async def _uuids_of(self, http_client, cfg_uuid: str, bucket: str) -> list[str]:
+        body = await _post_bucket(http_client, cfg_uuid, bucket)
+        return [img["uuid"] for img in body["images"]]
+
+    async def test_counts_only_the_supplied_images_and_splits_them(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-restrict")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-restrict", ds["uuid"])
+
+        # One positive and two background images — the shape that makes an
+        # unsplit delta lie.
+        await _register_image(http_client, files_root, "bk_r_positive.png")
+        await _verify_label(http_client, "bk_r_positive.png", parent_label, "present")
+        await _verify_label(http_client, "bk_r_positive.png", child_label, "absent")
+        for name in ("bk_r_bg_a.png", "bk_r_bg_b.png"):
+            await _register_image(http_client, files_root, name)
+            await _verify_label(http_client, name, parent_label, "absent")
+            await _verify_label(http_client, name, child_label, "absent")
+
+        whole = await _readiness(http_client, cfg["uuid"])
+        assert (whole["readyPositiveCount"], whole["readyNegativeCount"]) == (1, 2)
+
+        positives = await self._uuids_of(http_client, cfg["uuid"], "ready-positive-images")
+        negatives = await self._uuids_of(http_client, cfg["uuid"], "ready-negative-images")
+
+        r = await http_client.post(
+            f"/api/training-configs/{cfg['uuid']}/readiness-for-images",
+            json={"imageUuids": positives + negatives[:1]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["readyCount"] == 2
+        assert body["readyPositiveCount"] == 1
+        assert body["readyNegativeCount"] == 1
+
+    async def test_images_no_longer_in_the_datasets_are_ignored(self, http_client, files_root):
+        """A manifest can name images that have since left the config's datasets.
+        They are not part of this config's baseline any more, so they must not be
+        counted — the subset is intersected with the dataset union, not used raw."""
+        ds = await _create_dataset(http_client, "bk-ds-restrict-gone")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-restrict-gone", ds["uuid"])
+
+        await _register_image(http_client, files_root, "bk_rg_positive.png")
+        await _verify_label(http_client, "bk_rg_positive.png", parent_label, "present")
+        await _verify_label(http_client, "bk_rg_positive.png", child_label, "absent")
+        present = await self._uuids_of(http_client, cfg["uuid"], "ready-positive-images")
+
+        r = await http_client.post(
+            f"/api/training-configs/{cfg['uuid']}/readiness-for-images",
+            json={"imageUuids": present + ["00000000-0000-0000-0000-0000000000ff"]},
+        )
+        body = r.json()
+        assert body["readyCount"] == 1
+        assert body["notStartedCount"] == 0
+
+    async def test_empty_subset_counts_nothing(self, http_client, files_root):
+        ds = await _create_dataset(http_client, "bk-ds-restrict-empty")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-restrict-empty", ds["uuid"])
+
+        await _register_image(http_client, files_root, "bk_re_positive.png")
+        await _verify_label(http_client, "bk_re_positive.png", parent_label, "present")
+        await _verify_label(http_client, "bk_re_positive.png", child_label, "absent")
+
+        r = await http_client.post(
+            f"/api/training-configs/{cfg['uuid']}/readiness-for-images",
+            json={"imageUuids": []},
+        )
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["readyCount"] == 0
+        assert body["readyPositiveCount"] == 0
+        assert body["readyNegativeCount"] == 0
+        assert body["notStartedCount"] == 0
+
+    async def test_unrestricted_readiness_is_unchanged(self, http_client, files_root):
+        """The subset is opt-in: GET /readiness must still count the whole union."""
+        ds = await _create_dataset(http_client, "bk-ds-restrict-noop")
+        cfg, parent_label, child_label = await _make_two_label_tc(http_client, "bk-tc-restrict-noop", ds["uuid"])
+
+        await _register_image(http_client, files_root, "bk_rn_a.png")
+        await _verify_label(http_client, "bk_rn_a.png", parent_label, "present")
+        await _verify_label(http_client, "bk_rn_a.png", child_label, "absent")
+        await _register_image(http_client, files_root, "bk_rn_b.png")
+
+        readiness = await _readiness(http_client, cfg["uuid"])
+        assert readiness["readyCount"] == 1
+        assert readiness["notStartedCount"] == 1
+
+    async def test_nonexistent_config_reports_failure(self, http_client):
+        r = await http_client.post(
+            "/api/training-configs/00000000-0000-0000-0000-000000000000/readiness-for-images",
+            json={"imageUuids": []},
+        )
+        body = r.json()
+        assert body["status"] == "failure"

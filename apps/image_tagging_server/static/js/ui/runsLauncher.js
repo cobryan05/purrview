@@ -14,6 +14,11 @@ import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.
 import { fetchFilterChains } from '/app-static/js/shared/api/filterChains.js';
 import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchTaskConfigs } from '/app-static/js/shared/api/tasks.js';
+import {
+  fetchTrainingConfigReadiness,
+  fetchTrainingConfigReadinessForImages,
+} from '/app-static/js/shared/api/trainingConfigs.js';
+import { loadPreviousRun, formatTrainedAt } from '/app-static/js/ui/utils/previousTrainingRun.js';
 import { launchRun, launchSavedConfig } from '/app-static/js/ui/utils/launchRun.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
@@ -54,6 +59,117 @@ async function settle(fn) {
   }
 }
 
+// ── "+N since last run" on training cards ────────────────────────────────────
+//
+// Images that would go into a run started now, minus the images that trained the
+// model this config last produced — the delta the training config's coverage
+// panel shows, on the screen where the decision to start a run is made.
+//
+// Split into positives and negatives, and never shown as a single total: these
+// datasets are overwhelmingly background, so "+1,100 since last run" routinely
+// means 1,100 confirmed-absence images and no new training signal at all. The
+// same reason readiness itself carries ready_positive_count/ready_negative_count.
+//
+// It costs two readiness queries plus a sidecar read per config — measured
+// 0.05–0.4s each against the live database — so it is loaded off the render
+// path, a few at a time, and cached briefly.
+
+/** @type {Map<string, {at: number, value: {text: string, tone: string, title: string}}>} */
+const _deltaCache = new Map();
+const DELTA_TTL_MS = 60_000;
+const DELTA_CONCURRENCY = 3;
+
+/**
+ * Run `tasks` a few at a time. Dozens of training configs firing a readiness
+ * query each at once would put the database under a burst nobody asked for,
+ * while the user is most likely about to start a run on it.
+ *
+ * @param {Array<() => Promise<any>>} tasks
+ * @param {number} limit
+ */
+async function runThrottled(tasks, limit = DELTA_CONCURRENCY) {
+  const queue = [...tasks];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    for (let task = queue.shift(); task; task = queue.shift()) await task();
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * Signed, because a run can also shrink: images get deleted and datasets get
+ * re-scoped, and "+-40" would be nonsense.
+ * @param {number} n
+ */
+function _signed(n) {
+  return `${n > 0 ? '+' : ''}${n.toLocaleString()}`;
+}
+
+/**
+ * How many more images are ready for this training config than went into the
+ * model it last trained, positives and negatives counted separately.
+ *
+ * `withLabelStats: false` is what keeps this affordable: the per-label replay
+ * over the previous manifest is the expensive half of loadPreviousRun and none
+ * of it is visible on a card.
+ *
+ * @param {{uuid: string, name: string}} config
+ * @returns {Promise<{text: string, tone: string, title: string}>}
+ */
+async function trainingDelta(config) {
+  const cached = _deltaCache.get(config.uuid);
+  if (cached && Date.now() - cached.at < DELTA_TTL_MS) return cached.value;
+
+  const [readiness, previousRun] = await Promise.all([
+    fetchTrainingConfigReadiness(config.uuid),
+    loadPreviousRun(config, { withLabelStats: false }),
+  ]);
+  const pos = readiness?.readyPositiveCount ?? 0;
+  const neg = readiness?.readyNegativeCount ?? 0;
+
+  let value;
+  if (!previousRun) {
+    // Never trained, or trained somewhere else — there is no baseline to
+    // subtract, and claiming "+everything since" would be a lie.
+    value = {
+      text: `${pos.toLocaleString()} pos`,
+      rest: ` · ${neg.toLocaleString()} neg ready · not trained yet`,
+      tone: 'muted',
+      title: 'No previous run recorded for this recipe',
+    };
+  } else {
+    // The baseline is the same split over the manifest the model was trained on,
+    // read through the same endpoint — so a re-labelled image moves both sides
+    // rather than showing up as phantom growth.
+    const before = await fetchTrainingConfigReadinessForImages(config.uuid, previousRun.imageUuids);
+    const posDelta = pos - before.readyPositiveCount;
+    const negDelta = neg - before.readyNegativeCount;
+
+    const when = formatTrainedAt(previousRun.trainedAt);
+    const title =
+      `Last run (${previousRun.modelName}${when ? `, ${when}` : ''}): ` +
+      `${before.readyPositiveCount.toLocaleString()} positive / ${before.readyNegativeCount.toLocaleString()} negative ` +
+      `of ${previousRun.manifestCount.toLocaleString()} images\n` +
+      `Ready now: ${pos.toLocaleString()} positive / ${neg.toLocaleString()} negative`;
+
+    // Tone follows the positives alone. A card that went up by a thousand
+    // confirmed-absence images has not gained training signal, and colouring it
+    // green would say that it had.
+    const tone = posDelta > 0 ? 'up' : posDelta < 0 ? 'down' : 'muted';
+    value =
+      posDelta === 0 && negDelta === 0
+        ? { text: 'no new images since last run', tone: 'muted', title }
+        : {
+            text: `${_signed(posDelta)} pos`,
+            rest: ` · ${_signed(negDelta)} neg since last run`,
+            tone,
+            title,
+          };
+  }
+
+  _deltaCache.set(config.uuid, { at: Date.now(), value });
+  return value;
+}
+
 /**
  * One launchable thing: a big Start target, plus a link to what defines it.
  *
@@ -71,9 +187,24 @@ async function settle(fn) {
  *   Configuration screen opens on it rather than on whatever was last edited
  * @param {?{title: string, message: string}} [opts.confirm] - gate the start
  *   behind a confirmation, for runs that are destructive or unscoped.
+ * @param {?() => Promise<{text: string, tone?: string, title?: string}>} [opts.detail] -
+ *   a slow, per-card number that must not hold up the card itself. When given, a
+ *   third line is reserved on the card and filled in when this resolves.
+ * @param {?(reload: () => Promise<void>) => void} [opts.registerDetail] - handed
+ *   the card's reload function, so the group can re-run every card's detail.
  * @returns {HTMLElement}
  */
-function launchCard({ name, hint, start, onStarted, configTab, configUuid = null, confirm = null }) {
+function launchCard({
+  name,
+  hint,
+  start,
+  onStarted,
+  configTab,
+  configUuid = null,
+  confirm = null,
+  detail = null,
+  registerDetail = null,
+}) {
   const card = document.createElement('div');
   card.className = 'runs-launch-card';
   card.dataset.tour = 'runs.launchCard';
@@ -93,6 +224,45 @@ function launchCard({ name, hint, start, onStarted, configTab, configUuid = null
   sub.className = 'runs-launch-card__hint';
   sub.textContent = hint;
   startBtn.appendChild(sub);
+
+  if (detail) {
+    // The slot is appended now and filled later: the launcher must paint at the
+    // speed of the four list endpoints, not at the speed of one readiness query
+    // per card.
+    const slot = document.createElement('span');
+    slot.className = 'runs-launch-card__detail is-pending';
+    slot.dataset.testid = 'runs-launch-detail';
+    slot.textContent = '…';
+    startBtn.appendChild(slot);
+
+    // Two spans, because only the first half carries a colour: a card whose
+    // negatives grew by a thousand must not read as a thousand-image win.
+    const lead = document.createElement('span');
+    lead.dataset.testid = 'runs-launch-detail-lead';
+    const rest = document.createElement('span');
+    rest.className = 'runs-launch-card__detail-rest';
+
+    registerDetail?.(async () => {
+      slot.className = 'runs-launch-card__detail is-pending';
+      slot.replaceChildren('…');
+      slot.removeAttribute('title');
+      try {
+        const { text, rest: restText = '', tone = 'muted', title = '' } = await detail();
+        slot.className = 'runs-launch-card__detail';
+        lead.className = `runs-launch-card__detail-lead is-${tone}`;
+        lead.textContent = text;
+        rest.textContent = restText;
+        slot.replaceChildren(lead, rest);
+        if (title) slot.title = title;
+      } catch (err) {
+        // One card's number failing is not worth a toast — the card still starts
+        // runs, which is what it is for.
+        Logger.warn('runsLauncher: card detail failed', err);
+        slot.className = 'runs-launch-card__detail is-muted';
+        slot.replaceChildren('count unavailable');
+      }
+    });
+  }
 
   card.appendChild(startBtn);
 
@@ -153,15 +323,34 @@ function launchCard({ name, hint, start, onStarted, configTab, configUuid = null
  * @param {Array<HTMLElement>} cards
  * @param {?{label: string, tab: string}} emptyAction - where to go to create one
  * @param {string} emptyText
+ * @param {?{label: string, title: string, onClick: (btn: HTMLButtonElement) => any}} [headerAction]
  * @returns {HTMLElement}
  */
-function group(title, cards, emptyText, emptyAction) {
+function group(title, cards, emptyText, emptyAction, headerAction = null) {
   const section = document.createElement('section');
   section.className = 'runs-launch-group';
 
   const heading = document.createElement('h4');
   heading.className = 'runs-launch-group__heading';
   heading.textContent = title;
+  if (headerAction && cards.length) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'runs-launch-group__action';
+    btn.dataset.testid = 'runs-launch-group-action';
+    btn.textContent = headerAction.label;
+    btn.title = headerAction.title;
+    btn.setAttribute('aria-label', headerAction.title);
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await headerAction.onClick(btn);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    heading.appendChild(btn);
+  }
   section.appendChild(heading);
 
   if (cards.length) {
@@ -218,6 +407,9 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
 
     const frag = document.createDocumentFragment();
 
+    /** @type {Array<() => Promise<void>>} */
+    const deltaLoaders = [];
+
     frag.appendChild(group(
       'Training',
       (trainings ?? []).map(cfg => launchCard({
@@ -231,9 +423,19 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         configTab: 'tab-training-management',
         configUuid: cfg.uuid,
         onStarted,
+        detail: () => trainingDelta(cfg),
+        registerDetail: (reload) => deltaLoaders.push(reload),
       })),
       trainings === null ? 'Could not load training configs.' : 'No training configs yet —',
       trainings === null ? null : { label: 'define one', tab: 'tab-training-management' },
+      {
+        label: '↻',
+        title: 'Recount images since the last training run',
+        onClick: async () => {
+          _deltaCache.clear();
+          await runThrottled(deltaLoaders);
+        },
+      },
     ));
 
     frag.appendChild(group(
@@ -299,6 +501,12 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
     ));
 
     container.replaceChildren(frag);
+
+    // Deliberately not awaited: the launcher is usable the moment the cards are
+    // in the DOM, and each card fills its own number in as it arrives. The
+    // release of _rendering must not wait on it either, or a tab switch during
+    // the fill would be swallowed by the re-entrancy guard.
+    runThrottled(deltaLoaders).catch(err => Logger.warn('runsLauncher: delta pass failed', err));
   } finally {
     _rendering = false;
   }
