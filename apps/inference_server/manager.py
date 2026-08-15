@@ -608,7 +608,16 @@ class Manager:
             # weights until it was suspended and resumed (dropping the pin). Same
             # per-call stat() the pinless branch already pays via pin_model.
             async with self._get_model_lock(model_name):
-                await self._reload_if_weights_changed(model_name, self._avail_models[model_name])
+                # Re-check under the lock, as pin_model and delete_model both do.
+                # The guard above ran before the lock was taken, and the wait for
+                # it is exactly when a concurrent delete_model — or a list_models
+                # scan, which replaces _avail_models wholesale — can drop the key.
+                # Indexing it blind turns that into a KeyError out of the middle
+                # of inference instead of the caller-facing error below.
+                model_path = self._avail_models.get(model_name)
+                if model_path is None:
+                    raise ValueError(f"Model '{model_name}' is not available. Please check the model name.")
+                await self._reload_if_weights_changed(model_name, model_path)
         else:
             # Pinless caller: load once and keep the model warm under the shared
             # implicit pin (refreshing its expiry), rather than tearing the session

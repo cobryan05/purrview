@@ -315,3 +315,31 @@ class TestDeleteModelRacesLoad:
                 "deletion re-inserted it into _pinned_models — a ghost entry that "
                 "a future delete_model('clf') can never reach again"
             )
+
+
+class TestModelDisappearsMidRecognize:
+    """`list_models()` rebuilds `_avail_models` wholesale (it is a directory scan),
+    and `delete_model` removes the key outright. Either can land while a
+    caller-pinned `recognize()` is waiting on the model lock, because the
+    availability guard runs *before* the lock is taken. What the caller should
+    then get is the same clean ValueError as any other unavailable model — not a
+    KeyError from indexing a dict the scan has already replaced.
+    """
+
+    async def test_recognize_raises_valueerror_when_the_model_goes_away_under_the_lock(self, keepwarm_manager):
+        mgr = keepwarm_manager
+        pin_id = await mgr.pin_model("clf")
+
+        lock = mgr._get_model_lock("clf")
+        await lock.acquire()
+        try:
+            recognize_task = asyncio.create_task(mgr.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id))
+            # Let recognize() clear the pre-lock guard and block on the lock.
+            await asyncio.sleep(0.05)
+            # A concurrent directory scan that no longer finds the file.
+            mgr._avail_models.pop("clf")
+        finally:
+            lock.release()
+
+        with pytest.raises(ValueError, match="not available"):
+            await recognize_task
