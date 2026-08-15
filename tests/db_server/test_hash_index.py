@@ -103,6 +103,59 @@ class TestImageOperations:
         assert "img-grey" in uuids
 
 
+class TestReplaceImage:
+    """An image uuid can outlive its contents — an overwriting upload writes new
+    bytes over a registered path and keeps the row. The index has to follow, and
+    remove+add cannot do it: the tree keeps the superseded item and its liveness
+    filter is per-uuid, so re-adding the uuid makes the old hash answerable again.
+    """
+
+    def test_the_old_content_no_longer_matches(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        idx.replace_image("img-1", IMG_WHITE)
+
+        results = idx.find_similar_images(IMG_BLACK, threshold=0)
+        assert all(uuid != "img-1" for uuid, _ in results)
+
+    def test_the_new_content_matches(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        idx.replace_image("img-1", IMG_WHITE)
+
+        ((uuid, dist),) = idx.find_similar_images(IMG_WHITE, threshold=0)
+        assert uuid == "img-1"
+        assert dist == 0
+
+    def test_other_images_are_untouched(self, idx):
+        idx.add_image("img-1", IMG_BLACK)
+        idx.add_image("img-2", IMG_BLACK)
+        idx.replace_image("img-1", IMG_WHITE)
+
+        uuids = {u for u, _ in idx.find_similar_images(IMG_BLACK, threshold=0)}
+        assert uuids == {"img-2"}
+
+    def test_replacing_with_the_same_hash_keeps_the_image_findable(self, idx):
+        """Re-uploading identical bytes is a normal thing to do, and must not
+        tombstone the entry it just re-added."""
+        idx.add_image("img-1", IMG_BLACK)
+        idx.replace_image("img-1", IMG_BLACK)
+
+        assert any(uuid == "img-1" for uuid, _ in idx.find_similar_images(IMG_BLACK, threshold=0))
+
+    def test_replacing_an_unknown_image_just_adds_it(self, idx):
+        idx.replace_image("img-new", IMG_BLACK)
+
+        assert any(uuid == "img-new" for uuid, _ in idx.find_similar_images(IMG_BLACK, threshold=0))
+
+    def test_reverting_to_an_earlier_hash_makes_it_findable_again(self, idx):
+        """Undoing an overwrite must clear the tombstone the overwrite left, or
+        the restored image is filtered out on the strength of its own hash."""
+        idx.add_image("img-1", IMG_BLACK)
+        idx.replace_image("img-1", IMG_WHITE)
+        idx.replace_image("img-1", IMG_BLACK)
+
+        assert any(uuid == "img-1" for uuid, _ in idx.find_similar_images(IMG_BLACK, threshold=0))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Bbox: add / find / remove / move
 # ─────────────────────────────────────────────────────────────────────────────

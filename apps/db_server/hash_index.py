@@ -146,6 +146,10 @@ class _FlatHashTable:
         for row in self._rows_of.pop(uuid, ()):
             self._alive[row] = False
 
+    def hashes_for(self, uuid: str) -> List[str]:
+        """Hex hashes of every live row for *uuid* — what the tree still answers with."""
+        return [self._rows[row].tobytes().hex() for row in self._rows_of.get(uuid, ()) if self._alive[row]]
+
     def nearest(self, phash_hex: str) -> Optional[Tuple[int, str]]:
         """Return ``(distance, uuid)`` for the closest live row, or None if empty."""
         if self._n == 0 or not self._alive[: self._n].any():
@@ -223,10 +227,23 @@ class HashIndex:
         self._image_flat = _FlatHashTable(self._image_byte_len)
         self._bbox_flat: Dict[str, _FlatHashTable] = {}
 
+        # (phash_hex, image_uuid) items the tree still holds but that no longer
+        # describe the image — see replace_image. Emptied by a rebuild, which
+        # loads only current hashes.
+        self._superseded_images: Set[Tuple[str, str]] = set()
+
         # Set to True when tombstone ratio crosses the threshold.  Callers should
         # invoke rebuild_if_needed() from a safe context rather than relying on
         # an automatic concurrent task.
         self._needs_rebuild: bool = False
+
+    def _image_item_is_live(self, phash_hex: str, uuid: str) -> bool:
+        """Whether a tree item still describes a current image.
+
+        Two ways it can stop: the image is gone (tombstoned by uuid), or its
+        contents were replaced under the same uuid (tombstoned by item).
+        """
+        return uuid in self._valid_images and (phash_hex, uuid) not in self._superseded_images
 
     # ─────────────────────────────────────────────────────────────────────────
     # Hash sizes
@@ -390,6 +407,7 @@ class HashIndex:
         self._bbox_tombstones = data.bbox_tombstones
         self._image_flat = data.image_flat
         self._bbox_flat = data.bbox_flat
+        self._superseded_images = set()
         self._needs_rebuild = False
 
     async def rebuild(self) -> RebuildStats:
@@ -439,6 +457,27 @@ class HashIndex:
         self._valid_images.add(uuid)
         self._image_flat.add(uuid, phash)
 
+    def replace_image(self, uuid: str, phash: str) -> None:
+        """Point an image entry at a new hash — the file's contents changed.
+
+        ``remove_image`` then ``add_image`` is not enough on its own. Both the
+        tree and the flat table keep the superseded item (see _FlatHashTable's
+        note), and the tree's liveness filter is per-*uuid*: re-adding the uuid
+        makes its old item answerable again, so the image keeps matching content
+        it no longer holds until the next full rebuild. The flat table tombstones
+        by row and is already correct, so only the tree needs the extra
+        bookkeeping — and only for entries that were actually superseded, which
+        is rare enough to hold individually rather than by keeping every current
+        hash in a second dict.
+        """
+        self._validate_image_phash(phash, context=f"uuid={uuid}")
+        for old in self._image_flat.hashes_for(uuid):
+            if old != phash:
+                self._superseded_images.add((old, uuid))
+        self.remove_image(uuid)
+        self.add_image(uuid, phash)
+        self._superseded_images.discard((phash, uuid))
+
     def add_bbox(self, uuid: str, label_uuid: str, phash: str) -> None:
         """Insert a bbox entry into the per-label index."""
         self._validate_bbox_phash(phash, context=f"uuid={uuid}")
@@ -485,7 +524,7 @@ class HashIndex:
         if self._image_tree is None:
             return None
         for phash_hex, uuid in self._image_tree:
-            if uuid not in self._valid_images:
+            if not self._image_item_is_live(phash_hex, uuid):
                 continue
             if candidate_uuids is not None and uuid not in candidate_uuids:
                 continue
@@ -511,7 +550,7 @@ class HashIndex:
         except Exception:
             logger.exception("HashIndex.find_similar_images error")
             return []
-        results = [(item[1], dist) for dist, item in raw if item[1] in self._valid_images]
+        results = [(item[1], dist) for dist, item in raw if self._image_item_is_live(item[0], item[1])]
         results.sort(key=lambda x: x[1])
         return results
 
@@ -642,7 +681,7 @@ class HashIndex:
         uuids: List[str] = []
         phash_hexes: List[str] = []
         for phash_hex, uuid in self._image_tree:
-            if uuid not in self._valid_images:
+            if not self._image_item_is_live(phash_hex, uuid):
                 continue
             if candidate_uuids is not None and uuid not in candidate_uuids:
                 continue

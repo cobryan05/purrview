@@ -1775,7 +1775,19 @@ class Manager:
         if backup is not None:
             await asyncio.to_thread(backup.unlink, True)
 
-        duplicate_of, duplicate_distance = await self._find_upload_duplicate(image.uuid, target)
+        # An overwrite reuses the existing row (add_image returns it), so the
+        # pHash on that row still describes the file that was just replaced.
+        duplicate_of, duplicate_distance = await self._find_upload_duplicate(
+            image.uuid, target, replaced=backup is not None
+        )
+        if backup is not None:
+            # Thumbnails are keyed on the source file's mtime, so the new bytes
+            # miss the cache on their own. The bbox crops are not: they are keyed
+            # on bbox uuid and validated against bbox.updated_at, which nothing
+            # here moves.
+            bbox_uuids = [b.uuid for b in await self._db_client.get_bboxes_for_image(image.uuid)]
+            if bbox_uuids:
+                await self.invalidate_bbox_thumbnails(bbox_uuids)
 
         return {
             "path": self._image_rel_path(str(target)),
@@ -1785,8 +1797,23 @@ class Manager:
             "renamed_from": renamed_from,
         }
 
-    async def _find_upload_duplicate(self, image_uuid: str, path: Path) -> Tuple[Optional[str], Optional[int]]:
+    async def _find_upload_duplicate(
+        self, image_uuid: str, path: Path, replaced: bool = False
+    ) -> Tuple[Optional[str], Optional[int]]:
         """Nearest already-known image within the configured dedup threshold.
+
+        Also records the hash it computed, in both places that have to agree: the
+        in-memory index (which answers this query) and images.phash (which the
+        index is rebuilt from on startup). Writing only the first meant every
+        uploaded-but-not-yet-annotated image silently dropped out of dedup on the
+        next db_server restart — update_image_metadata recomputes an image pHash
+        only when it is None, but that runs on the first annotation save, which
+        an imported-and-ignored image never gets.
+
+        *replaced* says this path already had a different picture at it, which
+        makes it an index *update* rather than an insert — see
+        HashIndex.replace_image, without which later uploads keep matching
+        content that is no longer on disk.
 
         Best-effort: a hash index that is cold, rebuilding, or sized differently
         must not fail the upload — the file is already written and registered,
@@ -1796,7 +1823,11 @@ class Manager:
             threshold_raw = await self._db_client.get_setting("dedup_image_threshold")
             threshold = int(threshold_raw) if threshold_raw is not None else 5
             phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index.image_hash_size)
-            self._hash_index.add_image(image_uuid, phash)
+            if replaced:
+                self._hash_index.replace_image(image_uuid, phash)
+            else:
+                self._hash_index.add_image(image_uuid, phash)
+            await self._db_client.update_phashes(image_uuid, phash, [])
             for other_uuid, distance in self._hash_index.find_similar_images(phash, threshold):
                 if other_uuid != image_uuid:
                     return other_uuid, distance
@@ -2862,8 +2893,28 @@ class Manager:
 
         await asyncio.to_thread(_remove_files)
 
-    def _image_thumb_cache_path(self, image_path: str, width: int) -> Path:
-        key = hashlib.sha1(image_path.encode()).hexdigest()
+    @staticmethod
+    def _source_version(source: Optional[Path]) -> str:
+        """A cheap identity for the *contents* of an image file, for cache keys.
+
+        Path alone is not one. A file under FILES_ROOT can be replaced in place —
+        by an overwriting upload, by a rsync, by the user swapping in a better
+        scan — and every path-keyed thumbnail then serves the picture that is
+        gone. Keying on mtime+size instead means new bytes simply miss the cache,
+        with no invalidation hook to remember to call from each of the places
+        that can write over an image. The superseded entries age out through the
+        same oldest-mtime trim that bounds the cache anyway.
+        """
+        if source is None:
+            return "0"
+        try:
+            st = source.stat()
+        except OSError:
+            return "0"
+        return f"{st.st_mtime_ns}-{st.st_size}"
+
+    def _image_thumb_cache_path(self, image_path: str, width: int, source: Optional[Path] = None) -> Path:
+        key = hashlib.sha1(f"{image_path}|{self._source_version(source)}".encode()).hexdigest()
         return self._thumb_cache_dir() / f"img_{key}_{width}.png"
 
     def _region_thumb_cache_path(
@@ -2872,6 +2923,7 @@ class Manager:
         region: Tuple[float, float, float, float],
         width: int,
         color: Optional[str] = None,
+        source: Optional[Path] = None,
     ) -> Path:
         # The region is part of the key, so moving a proposed box simply misses
         # the cache rather than needing an invalidation hook. So is the outline
@@ -2879,7 +2931,7 @@ class Manager:
         # for the same region in a new colour -- keyed without it, the card ends
         # up showing a chip of one class beside a crop outlined in another.
         region_key = f"{region[0]:.6f},{region[1]:.6f},{region[2]:.6f},{region[3]:.6f}"
-        key = hashlib.sha1(f"{image_path}|{region_key}|{color or ''}".encode())
+        key = hashlib.sha1(f"{image_path}|{region_key}|{color or ''}|{self._source_version(source)}".encode())
         return self._thumb_cache_dir() / f"rgn_{key.hexdigest()}_{width}.png"
 
     async def get_region_thumbnail(
@@ -2909,7 +2961,13 @@ class Manager:
         if bw <= 0 or bh <= 0:
             return None
 
-        cache_path = self._region_thumb_cache_path(image_path, (bx, by, bw, bh), width, color)
+        # Resolved before the cache lookup — see get_image_thumbnail: the source
+        # file's version is part of the key.
+        safe_path = self._resolve_image_file_path(image_path)
+        if safe_path is None:
+            return None
+
+        cache_path = self._region_thumb_cache_path(image_path, (bx, by, bw, bh), width, color, source=safe_path)
         if cache_path.exists():
             try:
                 cache_path.touch()  # update mtime for LRU tracking
@@ -2917,10 +2975,6 @@ class Manager:
                     return await f.read()
             except OSError:
                 pass
-
-        safe_path = self._resolve_image_file_path(image_path)
-        if safe_path is None:
-            return None
 
         outline: Tuple[int, int, int] = (92, 196, 92)  # the "new box" green
         if color:
@@ -2963,7 +3017,14 @@ class Manager:
         """
         from PIL import Image as PILImage
 
-        cache_path = self._image_thumb_cache_path(image_path, width)
+        # Resolved first: the source file's version is part of the cache key, so
+        # replacing an image in place misses the cache instead of serving the
+        # picture it replaced.
+        safe_path = self._resolve_image_file_path(image_path)
+        if safe_path is None:
+            return None
+
+        cache_path = self._image_thumb_cache_path(image_path, width, source=safe_path)
         if cache_path.exists():
             try:
                 cache_path.touch()  # update mtime for LRU tracking
@@ -2971,10 +3032,6 @@ class Manager:
                 pass
             async with aiofiles.open(cache_path, "rb") as f:
                 return await f.read()
-
-        safe_path = self._resolve_image_file_path(image_path)
-        if safe_path is None:
-            return None
 
         def _generate() -> Optional[bytes]:
             try:

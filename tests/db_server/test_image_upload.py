@@ -214,3 +214,86 @@ class TestDuplicateReporting:
         r = await _post(http_client, [_upload("solo.png")])
 
         assert r.json()["results"][0]["duplicateOf"] is None
+
+
+def _patterned_png(seed: int) -> bytes:
+    """A structured 32x32 PNG whose pHash actually depends on *seed*.
+
+    make_png's 1x1 image is uniform, and a uniform image hashes the same
+    whatever colour it is — so it cannot answer "did the stored hash follow the
+    file?" at all.
+    """
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (32, 32))
+    px = img.load()
+    for y in range(32):
+        for x in range(32):
+            px[x, y] = (255, 255, 255) if ((x // 4) + (y // 4) + seed) % 2 else (0, 0, 0)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestUploadPhash:
+    """An upload's pHash is what the dedup index and similar-image search run on.
+
+    It is computed on arrival (that is how the duplicate report in the response
+    is produced), so the only question is whether it is *kept*.
+    """
+
+    async def test_the_phash_computed_on_arrival_is_persisted(self, http_client, db_client):
+        """The in-memory index is rebuilt from images.phash on startup, so a hash
+        that only ever reached the index is lost on the next db_server restart —
+        and re-importing the same picture is then reported as new."""
+        r = await _post(http_client, [_upload("hashed.png", _patterned_png(0))])
+        uuid = r.json()["results"][0]["uuid"]
+
+        image = await db_client.get_image_by_uuid(uuid)
+        assert image.phash is not None, "the pHash was added to the index but never written to the row"
+
+    async def test_an_overwrite_replaces_the_stored_phash(self, http_client, db_client):
+        """add_image returns the *existing* record for an overwritten path, and
+        update_image_metadata only recomputes a pHash that is None — so without
+        an explicit refresh the row keeps describing the picture that was
+        replaced, forever."""
+        first = await _post(http_client, [_upload("swapped.png", _patterned_png(0))])
+        uuid = first.json()["results"][0]["uuid"]
+        original = (await db_client.get_image_by_uuid(uuid)).phash
+
+        await _post(http_client, [_upload("swapped.png", _patterned_png(1))], overwrite="true")
+
+        replaced = (await db_client.get_image_by_uuid(uuid)).phash
+        assert replaced is not None
+        assert replaced != original, "the row still holds the replaced file's pHash"
+
+    async def test_an_overwritten_image_is_no_longer_a_duplicate_of_the_old_content(self, http_client, files_root):
+        """The index half of the same bug: a stale entry keeps matching uploads
+        against a picture that is no longer anywhere on disk."""
+        old = _patterned_png(0)
+        new = _patterned_png(1)
+        await _post(http_client, [_upload("target.png", old)], overwrite="true")
+        await _post(http_client, [_upload("target.png", new)], overwrite="true")
+
+        # Upload the *old* content somewhere else: nothing on disk looks like it
+        # any more, so it must not be reported as a duplicate of target.png.
+        r = await _post(http_client, [_upload("elsewhere.png", old)])
+
+        assert r.json()["results"][0]["duplicateOf"] is None, "matched a pHash for content that was overwritten"
+
+
+class TestThumbnailFreshness:
+    async def test_the_thumbnail_follows_an_overwritten_file(self, http_client):
+        """The cache is keyed on path+width with no freshness check, so a
+        re-upload that fixes an image keeps serving the one it replaced."""
+        await _post(http_client, [_upload("shown.png", _patterned_png(0))], overwrite="true")
+        before = await http_client.get("/api/images/shown.png/thumbnail", params={"width": 16})
+        assert before.status_code == 200
+
+        await _post(http_client, [_upload("shown.png", _patterned_png(1))], overwrite="true")
+        after = await http_client.get("/api/images/shown.png/thumbnail", params={"width": 16})
+
+        assert after.status_code == 200
+        assert after.content != before.content, "the cache served the thumbnail of the replaced file"
