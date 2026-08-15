@@ -43,6 +43,9 @@ function setupTabs(containerOrSelector, buttonSelector, paneSelector, onTabChang
   // attach click listeners
   getButtons().forEach(button => {
     button.addEventListener('click', () => activateTab(button.dataset.tab));
+    // Marked so navigateTabs can tell a wired button from one that is merely in
+    // the DOM — clicking the latter does nothing at all, silently.
+    button.dataset.tabWired = '1';
   });
 
   // ensure at least one tab is active on setup
@@ -101,10 +104,21 @@ export function takePendingSelection(tabId) {
   return uuid;
 }
 
+/** How long navigateTabs waits for a lazy-initialised pane to wire its tabs. */
+const NAV_WIRE_TIMEOUT_MS = 3000;
+const NAV_POLL_MS = 25;
+
 /**
- * Navigate to a main tab then, after a short delay, to a workspace sub-tab.
- * The delay lets the main-tab's lazy-init mount its pane before the workspace
- * click fires.  Pass the bare tab id (data-tab value) for each argument.
+ * Navigate to a main tab then, once its pane is ready, to a workspace sub-tab.
+ *
+ * Waits for the destination button to be *wired* rather than firing after a
+ * fixed delay. A main tab's lazy init awaits several fetches before
+ * `setupWorkspaceTabs` attaches its listeners, so a timed click could land on a
+ * button that is in the DOM but inert: the user stayed on the default pane, and
+ * the pending selection stayed in the map to be consumed — and acted on — by
+ * their next ordinary visit to that pane, opening something they never asked
+ * for. If the pane never wires up, the selection is dropped for the same
+ * reason.
  *
  * @param {string} mainTabId       e.g. 'tab-configuration'
  * @param {string} workspaceTabId  e.g. 'tab-dataset-management'
@@ -115,12 +129,26 @@ export function takePendingSelection(tabId) {
 export function navigateTabs(mainTabId, workspaceTabId, { selectUuid = null } = {}) {
   if (selectUuid) _pendingSelections.set(workspaceTabId, selectUuid);
   document.querySelector(`.main-tab-button[data-tab="${mainTabId}"]`)?.click();
-  setTimeout(() => {
-    const button = document.querySelector(`#${mainTabId} [data-tab="${workspaceTabId}"]`);
+
+  const deadline = Date.now() + NAV_WIRE_TIMEOUT_MS;
+  const attempt = () => {
+    const button = document.querySelector(`#${mainTabId} [data-tab="${workspaceTabId}"][data-tab-wired]`);
+    if (!button) {
+      if (Date.now() < deadline) {
+        setTimeout(attempt, NAV_POLL_MS);
+      } else if (selectUuid && _pendingSelections.get(workspaceTabId) === selectUuid) {
+        // Nobody is going to consume it now, and leaving it would ambush a
+        // later visit. Only drop our own entry — a newer navigation may have
+        // overwritten it in the meantime.
+        _pendingSelections.delete(workspaceTabId);
+      }
+      return;
+    }
     // Clicking the already-active tab is a no-op, so the pane would never
     // re-render and the pending selection would sit unconsumed until some
     // later visit picked it up. Drop `active` first to force the re-render.
-    if (selectUuid) button?.classList.remove('active');
-    button?.click();
-  }, 50);
+    if (selectUuid) button.classList.remove('active');
+    button.click();
+  };
+  setTimeout(attempt, 0);
 }
