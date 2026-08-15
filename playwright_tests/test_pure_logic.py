@@ -860,3 +860,63 @@ class TestBuildHierarchy:
             return h.size;
         }""")
         assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# ui/tasks.js — the two task counts
+# ---------------------------------------------------------------------------
+
+
+class TestTaskCounts:
+    """Two counts over the same task map, answering two different questions.
+
+    The badge asks "is something still working?" — a paused job has not
+    finished, so it counts. The off-tab SSE stream asks "can anything finish
+    behind the user's back?" — a paused job cannot, so it must not. Conflating
+    them held an EventSource open per browser tab for the life of the app,
+    because restart recovery writes `paused` for any interrupted task that had a
+    checkpoint, and nothing but the user can move it out of that state.
+    """
+
+    TASKS = """{
+        running:    { instance: { status: 'running' },   continuous: false },
+        paused:     { instance: { status: 'paused' },    continuous: false },
+        done:       { instance: { status: 'completed' }, continuous: false },
+        failed:     { instance: { status: 'error' },     continuous: false },
+        watcher:    { instance: { status: 'running' },   continuous: true },
+    }"""
+
+    def _counts(self, page: Page, tasks: str):
+        return page.evaluate(
+            """async (tasksSrc) => {
+            const { countRunningTasks, countAdvancingTasks } =
+                await import('/app-static/js/ui/tasks.js');
+            const tasks = eval('(' + tasksSrc + ')');
+            return { running: countRunningTasks(tasks), advancing: countAdvancingTasks(tasks) };
+        }""",
+            tasks,
+        )
+
+    def test_the_badge_counts_a_paused_job(self, shared_page: Page):
+        assert self._counts(shared_page, self.TASKS)["running"] == 2  # running + paused
+
+    def test_the_stream_condition_does_not_count_a_paused_job(self, shared_page: Page):
+        assert self._counts(shared_page, self.TASKS)["advancing"] == 1  # running only
+
+    def test_a_lone_paused_job_does_not_hold_the_stream_open(self, shared_page: Page):
+        """The leak itself: one paused instance and an otherwise idle app."""
+        counts = self._counts(shared_page, "{ p: { instance: { status: 'paused' }, continuous: false } }")
+        assert counts["advancing"] == 0, "a paused job kept the off-tab stream alive"
+        assert counts["running"] == 1, "a paused job is still unfinished and belongs on the badge"
+
+    def test_neither_count_includes_a_watcher(self, shared_page: Page):
+        """A watcher stays armed for weeks; counting it pins both at >= 1 forever."""
+        counts = self._counts(shared_page, "{ w: { instance: { status: 'running' }, continuous: true } }")
+        assert counts == {"running": 0, "advancing": 0}
+
+    def test_terminal_jobs_are_excluded_from_both(self, shared_page: Page):
+        counts = self._counts(
+            shared_page,
+            "{ a: { instance: { status: 'completed' } }, b: { instance: { status: 'error' } } }",
+        )
+        assert counts == {"running": 0, "advancing": 0}

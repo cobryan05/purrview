@@ -329,6 +329,28 @@ export function countRunningTasks(tasks) {
 }
 
 /**
+ * Count jobs that can still change state on their own.
+ *
+ * Narrower than the badge count, and for a different question. The badge asks
+ * "is something still working?", which a paused job answers yes to — it has not
+ * finished. The off-tab stream asks "can anything finish behind the user's
+ * back?", which a paused job answers no to: only the user can restart it, and
+ * they have to come back to Runs to do it.
+ *
+ * Counting paused here is what pinned an EventSource open for the life of every
+ * browser tab. A single paused instance is not exotic — restart recovery writes
+ * exactly that status for any interrupted task that had a checkpoint.
+ *
+ * @param {Record<string, any>} tasks
+ * @returns {number}
+ */
+export function countAdvancingTasks(tasks) {
+  return Object.values(tasks || {})
+    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status) && t.instance?.status !== 'paused' && !t.continuous)
+    .length;
+}
+
+/**
  * Count armed continuous tasks — watchers and other run-until-stopped work.
  *
  * Separate from the badge so the two can be shown differently: a job count is

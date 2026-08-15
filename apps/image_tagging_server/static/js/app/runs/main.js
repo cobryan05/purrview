@@ -13,7 +13,7 @@
  */
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { countRunningTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
+import { countAdvancingTasks, countRunningTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
@@ -34,8 +34,8 @@ export async function init() {
     document.getElementById('task-activity-badge-active'),
   ].filter(Boolean);
 
-  /** Last count the badges were painted with; drives the stream's lifetime. */
-  let runningCount = 0;
+  /** Jobs that can still finish on their own; drives the stream's lifetime. */
+  let advancingCount = 0;
   /** Whether Runs is the main tab on screen. Runs itself always needs the feed. */
   let onRunsTab = true;
 
@@ -45,14 +45,17 @@ export async function init() {
    */
   function updateBadge(tasks) {
     const n = countRunningTasks(tasks);
-    runningCount = n;
     for (const badge of badges) {
       badge.textContent = String(n);
       badge.hidden = n === 0;
     }
+    // Deliberately not the badge count: a paused job still counts as unfinished
+    // (so the badge shows it) but cannot finish without the user, so it must not
+    // hold the stream. See countAdvancingTasks.
+    advancingCount = countAdvancingTasks(tasks);
     // The last job finishing is what makes an off-tab stream pointless — drop
     // it at that moment rather than holding it until the user comes back.
-    if (n === 0 && !onRunsTab) closeTaskStream();
+    if (advancingCount === 0 && !onRunsTab) closeTaskStream();
   }
 
   /**
@@ -113,13 +116,14 @@ export async function init() {
   // reads zero and cannot change until the user acts (the leak that
   // test_leaks_and_races.py guards).
   //
-  // A live count is the exact condition that separates them: if nothing is
-  // running, nothing can finish behind your back, so an idle app holds no
-  // connection. `updateBadge` drops it the moment the last job ends.
+  // "Can anything finish behind your back?" is the exact condition that
+  // separates them, and it is a narrower question than the badge's — a paused
+  // job is unfinished but cannot advance without the user, so it must not hold
+  // the connection. `updateBadge` drops it the moment the last live job ends.
   events.subscribe(EventTypes.MAIN_TAB_CHANGED, ({ tabName }) => {
     onRunsTab = tabName === 'tab-runs';
     if (!onRunsTab) {
-      if (runningCount === 0) closeTaskStream();
+      if (advancingCount === 0) closeTaskStream();
     } else {
       openTaskStream();
       seedBadge();
