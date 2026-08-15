@@ -656,8 +656,15 @@ class Manager:
         all_instances = resp.instances or []
 
         # "new" = created but server crashed before task.start() was reached.
-        # Nothing useful to recover; remove them.
-        new_tasks = [inst for inst in all_instances if inst.status == TaskStatus.NEW]
+        # Nothing useful to recover; remove them — unless this process is the one
+        # starting it right now. _start_task registers the instance in
+        # _running_tasks before its RUNNING write lands, so between those two
+        # points a perfectly healthy task is sitting in the DB as "new". That
+        # window only became reachable when recovery started retrying on later
+        # worker passes instead of running once before any task could exist.
+        new_tasks = [
+            inst for inst in all_instances if inst.status == TaskStatus.NEW and inst.uuid not in self._running_tasks
+        ]
         if new_tasks:
             logger.info(f"Removing {len(new_tasks)} never-started task instance(s)")
             await asyncio.to_thread(
@@ -690,7 +697,15 @@ class Manager:
         *no_checkpoint_message*); what to do about it must not differ, or which of
         the two timers happened to fire first would decide whether a resumable job
         stays resumable.
+
+        An instance this process is driving is not an orphan, so the filter lives
+        here rather than in either caller. Startup recovery used to run exactly
+        once, before any task could exist, and so needed no filter; now that it
+        retries until db_server answers, a pass that succeeds late would otherwise
+        pause (or error) a task that never stopped — and, for a persistent config,
+        hand it to _auto_restart_with_guard for a second driver.
         """
+        instances = [inst for inst in instances if inst.uuid not in self._running_tasks]
         if not instances:
             return
 
