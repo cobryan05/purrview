@@ -128,6 +128,21 @@ export function subscribeTaskStream({ onMessage, onError } = {}) {
   _subscribers.add(sub);
   _open();
 
+  // "Once per outage" is about not repeating yourself to the same subscriber,
+  // not about the outage being announced once and then forgotten. A subscriber
+  // that arrives mid-outage has been told nothing, and the task runners await a
+  // promise that only onError can settle — so with a long-lived subscriber (the
+  // Runs badge) holding the set non-empty, starting a model import while the
+  // stream is down left the modal waiting for a frame that was never coming.
+  // Deferred so the caller has its unsubscribe handle before onError can run.
+  if (_outageReported && onError) {
+    setTimeout(() => {
+      if (!_subscribers.has(sub) || !_outageReported) return;
+      try { sub.onError(new Error('SSE connection closed unexpectedly')); }
+      catch (err) { console.error('taskStream subscriber failed', err); }
+    }, 0);
+  }
+
   let done = false;
   return () => {
     if (done) return;

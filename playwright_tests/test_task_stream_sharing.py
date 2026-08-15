@@ -59,23 +59,20 @@ def _prepare(page: Page, base_url: str):
 class TestSharing:
     def test_two_subscribers_share_one_connection(self, page: Page, base_url: str):
         _prepare(page, base_url)
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             const seen = [];
             subscribeTaskStream({ onMessage: (d) => seen.push(['a', d.n]) });
             subscribeTaskStream({ onMessage: (d) => seen.push(['b', d.n]) });
             FakeEventSource.instances.at(-1).send({ n: 1 });
             return { sockets: FakeEventSource.instances.length, seen };
-        }"""
-        )
+        }""")
         assert result["sockets"] == 1, result
         assert result["seen"] == [["a", 1], ["b", 1]], result
 
     def test_the_connection_closes_when_the_last_subscriber_leaves(self, page: Page, base_url: str):
         _prepare(page, base_url)
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             const offA = subscribeTaskStream({ onMessage: () => {} });
             const offB = subscribeTaskStream({ onMessage: () => {} });
@@ -83,8 +80,7 @@ class TestSharing:
             const afterFirst = FakeEventSource.instances[0].closed;
             offB();
             return { afterFirst, afterLast: FakeEventSource.instances[0].closed };
-        }"""
-        )
+        }""")
         assert result["afterFirst"] is False, "the stream closed while a subscriber was still on it"
         assert result["afterLast"] is True, "the stream stayed open with no subscribers"
 
@@ -92,15 +88,13 @@ class TestSharing:
         """readyState CONNECTING means EventSource is already retrying — opening a
         second socket over the top of that is how you end up with two."""
         _prepare(page, base_url)
-        sockets = page.evaluate(
-            """async () => {
+        sockets = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             subscribeTaskStream({ onMessage: () => {} });
             FakeEventSource.instances[0].drop();
             await new Promise(r => setTimeout(r, 1500));
             return FakeEventSource.instances.length;
-        }"""
-        )
+        }""")
         assert sockets == 1, f"a transient drop opened {sockets} sockets"
 
 
@@ -114,8 +108,7 @@ class TestDeadStreamRecovery:
         """The Operations tab subscribes and never unsubscribes, so the subscriber
         set never empties and nothing ever cleared the dead handle."""
         _prepare(page, base_url)
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             // The long-lived subscriber (Operations badge): no onError, never leaves.
             subscribeTaskStream({ onMessage: () => {} });
@@ -126,8 +119,7 @@ class TestDeadStreamRecovery:
             subscribeTaskStream({ onMessage: (d) => seen.push(d.n) });
             FakeEventSource.instances.at(-1).send({ n: 7 });
             return { sockets: FakeEventSource.instances.length, seen };
-        }"""
-        )
+        }""")
         assert result["sockets"] > 1, "the next subscriber was handed the dead socket"
         assert result["seen"] == [7], f"a fresh subscriber received no frames: {result}"
 
@@ -135,8 +127,7 @@ class TestDeadStreamRecovery:
         """Nothing re-subscribes while the user sits on Operations, so recovery has
         to come from the stream itself."""
         _prepare(page, base_url)
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             const seen = [];
             subscribeTaskStream({ onMessage: (d) => seen.push(d.n) });
@@ -144,8 +135,7 @@ class TestDeadStreamRecovery:
             await new Promise(r => setTimeout(r, 2000));
             FakeEventSource.instances.at(-1).send({ n: 3 });
             return { sockets: FakeEventSource.instances.length, seen };
-        }"""
-        )
+        }""")
         assert result["sockets"] == 2, f"the stream did not reconnect: {result}"
         assert result["seen"] == [3], f"the reconnected stream delivered nothing: {result}"
 
@@ -153,8 +143,7 @@ class TestDeadStreamRecovery:
         """Otherwise the second outage of a session starts at the previous one's
         longest delay, and a stream that flaps once takes minutes to come back."""
         _prepare(page, base_url)
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             subscribeTaskStream({ onMessage: () => {} });
             FakeEventSource.instances[0].fail();
@@ -163,23 +152,20 @@ class TestDeadStreamRecovery:
             FakeEventSource.instances.at(-1).fail();
             await new Promise(r => setTimeout(r, 2000));       // first-attempt delay again
             return FakeEventSource.instances.length;
-        }"""
-        )
+        }""")
         assert result == 3, f"the retry delay did not reset after a working stream: {result} sockets"
 
     def test_reconnecting_stops_once_the_last_subscriber_leaves(self, page: Page, base_url: str):
         """A closed modal must not leave a socket reopening itself forever."""
         _prepare(page, base_url)
-        sockets = page.evaluate(
-            """async () => {
+        sockets = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             const off = subscribeTaskStream({ onMessage: () => {} });
             FakeEventSource.instances[0].fail();
             off();
             await new Promise(r => setTimeout(r, 2500));
             return FakeEventSource.instances.length;
-        }"""
-        )
+        }""")
         assert sockets == 1, f"the stream kept reconnecting after everyone left: {sockets} sockets"
 
     def test_subscribers_are_told_once_the_outage_persists(self, page: Page, base_url: str):
@@ -188,8 +174,7 @@ class TestDeadStreamRecovery:
         not fire on the first failure, which is usually a restart mid-flight.
         """
         _prepare(page, base_url)
-        result = page.evaluate(
-            """async () => {
+        result = page.evaluate("""async () => {
             const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
             const errors = [];
             subscribeTaskStream({ onMessage: () => {}, onError: (e) => errors.push(e.message) });
@@ -200,8 +185,77 @@ class TestDeadStreamRecovery:
 
             await new Promise(r => setTimeout(r, 9000));
             return { afterFirst, errors: errors.length };
-        }"""
-        )
+        }""")
         assert result["afterFirst"] == 0, "a single failure was reported as fatal"
         assert result["errors"] >= 1, "a sustained outage was never reported to subscribers"
         assert result["errors"] == 1, f"subscribers were told {result['errors']} times for one outage"
+
+
+class TestJoiningDuringAnOutage:
+    """The outage flag is module state, and a subscriber arriving after it was
+    raised has been told nothing at all. That is the exact shape of the bug the
+    task runners hit: they await a promise only `onError` can settle, so a model
+    import started while the stream is down waits for a frame that is not coming.
+    """
+
+    def test_a_subscriber_that_joins_mid_outage_is_told(self, page: Page, base_url: str):
+        _prepare(page, base_url)
+        result = page.evaluate("""async () => {
+            const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
+            // The Runs badge: no onError, never leaves — so the subscriber set
+            // never empties and the outage flag is never reset.
+            subscribeTaskStream({ onMessage: () => {} });
+            FakeEventSource.autoFail = true;
+            FakeEventSource.instances.at(-1).fail();
+            await new Promise(r => setTimeout(r, 9000));   // past NOTIFY_AFTER_ATTEMPTS
+
+            // Now the task runner opens its modal, mid-outage.
+            const errors = [];
+            subscribeTaskStream({ onMessage: () => {}, onError: (e) => errors.push(e.message) });
+            await new Promise(r => setTimeout(r, 200));
+            FakeEventSource.autoFail = false;
+            return errors.length;
+        }""")
+        assert result == 1, "a subscriber that joined during a reported outage was never told"
+
+    def test_a_subscriber_that_joins_after_recovery_is_not_told(self, page: Page, base_url: str):
+        """The flag clears on the first frame, so the next modal must open clean."""
+        _prepare(page, base_url)
+        result = page.evaluate("""async () => {
+            const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
+            subscribeTaskStream({ onMessage: () => {} });
+            FakeEventSource.autoFail = true;
+            FakeEventSource.instances.at(-1).fail();
+            await new Promise(r => setTimeout(r, 9000));
+            FakeEventSource.autoFail = false;
+
+            // The stream comes back: a frame is the proof, and clears the flag.
+            await new Promise(r => setTimeout(r, 2000));
+            FakeEventSource.instances.at(-1).send({ n: 1 });
+
+            const errors = [];
+            subscribeTaskStream({ onMessage: () => {}, onError: (e) => errors.push(e.message) });
+            await new Promise(r => setTimeout(r, 200));
+            return errors.length;
+        }""")
+        assert result == 0, "a healthy stream reported a stale outage to a new subscriber"
+
+    def test_unsubscribing_immediately_cancels_the_notification(self, page: Page, base_url: str):
+        """The report is deferred so the caller gets its handle first; a caller
+        that leaves in between must not still be called back."""
+        _prepare(page, base_url)
+        result = page.evaluate("""async () => {
+            const { subscribeTaskStream } = await import('/app-static/js/shared/api/taskStream.js');
+            subscribeTaskStream({ onMessage: () => {} });
+            FakeEventSource.autoFail = true;
+            FakeEventSource.instances.at(-1).fail();
+            await new Promise(r => setTimeout(r, 9000));
+
+            const errors = [];
+            const off = subscribeTaskStream({ onMessage: () => {}, onError: (e) => errors.push(e.message) });
+            off();
+            await new Promise(r => setTimeout(r, 200));
+            FakeEventSource.autoFail = false;
+            return errors.length;
+        }""")
+        assert result == 0, "a subscriber was notified after it had already left"
