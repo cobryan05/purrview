@@ -65,3 +65,32 @@ async def test_proxy_called_with_correct_path(http_client, monkeypatch):
     monkeypatch.setattr(web_module.IMAGE_PROXY, "handle_request", capture)
     await http_client.get("/api/images/some/nested/path")
     assert captured["path"] == "some/nested/path"
+
+
+class TestStaticAssetRevalidation:
+    """The SPA is unbundled, unversioned ES modules fetched by bare URL.
+
+    Without an explicit cache-control the browser applies heuristic freshness
+    per file, so one page load can mix modules from two revisions of the tree —
+    and an import of an export that the cached copy predates is a module-level
+    SyntaxError that takes the whole app down, not just the feature that owns
+    the module.
+    """
+
+    async def test_app_static_asks_the_browser_to_revalidate(self, http_client):
+        r = await http_client.get("/app-static/js/ui/tasks.js")
+
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-cache"
+
+    async def test_the_etag_survives_so_revalidation_stays_cheap(self, http_client):
+        """no-cache must not mean re-download: the 304 is what makes it free."""
+        r = await http_client.get("/app-static/js/ui/tasks.js")
+
+        assert r.headers.get("etag"), "no etag to revalidate against"
+
+        cached = await http_client.get(
+            "/app-static/js/ui/tasks.js",
+            headers={"if-none-match": r.headers["etag"]},
+        )
+        assert cached.status_code == 304

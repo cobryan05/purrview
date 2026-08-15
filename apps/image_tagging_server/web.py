@@ -134,6 +134,41 @@ def _tasks_poll_interval(data: dict) -> float:
     return TASKS_STREAM_IDLE_POLL_S
 
 
+class RevalidatedStaticFiles(StaticFiles):
+    """StaticFiles that makes the browser revalidate every asset.
+
+    The SPA is served as unbundled, unversioned ES modules: `main.js` statically
+    imports `runs/main.js`, which imports named exports from `ui/tasks.js`, and
+    every one of those is fetched by its own bare URL. Starlette sends etag and
+    last-modified but no cache-control, which leaves the browser free to apply
+    *heuristic* freshness — and it computes that per file, from each file's own
+    last-modified. So the modules in one page load are not guaranteed to come
+    from the same revision of the tree.
+
+    That is not a theoretical problem. Adding an export to `ui/tasks.js` and a
+    matching import in `runs/main.js` is enough: a browser that revalidates the
+    importer but serves the imported module from cache raises
+
+        The requested module '.../ui/tasks.js' does not provide an export
+        named 'countAdvancingTasks'
+
+    at module-evaluation time. `app/main.js` imports `runs/main.js` statically,
+    so that kills the entire SPA — the tab shell is in index.html and still
+    paints, which makes it look like one page rendered nothing rather than like
+    a total failure to boot.
+
+    `no-cache` does not mean "do not store": the copy is kept and the etag still
+    turns the revalidation into a 304, so this costs a conditional request per
+    asset, not a re-download. Correctness over a handful of 304s — the failure
+    it prevents is invisible until someone opens the console.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 class WebApp:
     SUCCESS_KEY = "success"
     FAILURE_KEY = "failure"
@@ -146,10 +181,10 @@ class WebApp:
         self._manager: Manager = manager
 
         # Mount static files
-        self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
+        self._app.mount("/static", RevalidatedStaticFiles(directory="/app/static", check_dir=False), name="static")
         self._app.mount(
             "/app-static",
-            StaticFiles(directory=os.path.join(SCRIPT_DIR, "static"), check_dir=False),
+            RevalidatedStaticFiles(directory=os.path.join(SCRIPT_DIR, "static"), check_dir=False),
             name="app-static",
         )
 
