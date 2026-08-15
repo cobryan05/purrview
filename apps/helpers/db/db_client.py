@@ -1973,8 +1973,20 @@ class DbClient:
                 await self._sync_tags_to_json()
         return count
 
-    async def write_image_metadata_to_db(self, image_uuid: str, update: ImageRecordUpdate) -> None:
-        """Replace all bboxes for an image directly in the database."""
+    async def write_image_metadata_to_db(
+        self,
+        image_uuid: str,
+        update: ImageRecordUpdate,
+        image_phash: Optional[str] = None,
+    ) -> None:
+        """Replace all bboxes for an image directly in the database.
+
+        Each bbox's `phash` is written with the row it belongs to, and
+        `image_phash` (when given) in the same transaction. SQLite takes one
+        writer at a time, so a save's cost against a busy database is the number
+        of times it asks for that lock — a separate `update_phashes` round trip
+        doubled it for hashes the caller already had in hand.
+        """
         async with self._async_session_maker() as session:
             await session.exec(delete(BBox).where(BBox.image_uuid == image_uuid))
 
@@ -1998,12 +2010,18 @@ class DbClient:
                         width=b.width,
                         height=b.height,
                         metadata_json=self._apply_verified_confidence_rule(b.metadata_json, final_uuids) or {},
+                        phash=b.phash,
                     )
                 )
                 for tag_uuid in final_uuids:
                     session.add(BBoxTagLink(bbox_uuid=b.uuid, tag_uuid=tag_uuid))
             # Touch the image so updated_at reflects the full bbox replacement.
             await self._touch_image(session, image_uuid)
+            if image_phash is not None:
+                image = await session.get(ImageRecord, image_uuid)
+                if image is not None:
+                    image.phash = image_phash
+                    session.add(image)
             await session.commit()
 
     def write_image_metadata_to_json(
@@ -2689,6 +2707,52 @@ class DbClient:
                 set_={"status": stmt.excluded.status, "updated_at": stmt.excluded.updated_at},
             )
             await session.exec(stmt)
+            await session.commit()
+
+    async def sync_image_present_labels(
+        self,
+        image_uuid: str,
+        present_label_uuids: List[str],
+        stale_label_uuids: List[str],
+    ) -> None:
+        """Set PRESENT rows and drop the ones that no longer apply, in one write.
+
+        The two halves are one decision — "these labels are present now, those
+        are not any more" — and were costing one transaction per present label
+        plus another for the delete. On a busy database that is the difference
+        between a save that feels instant and one that takes seconds, because
+        each transaction queues separately for SQLite's single writer.
+
+        ABSENT rows are never touched here; they are user-asserted.
+        """
+        if not present_label_uuids and not stale_label_uuids:
+            return
+        now = datetime.now(timezone.utc)
+        async with self._async_session_maker() as session:
+            if present_label_uuids:
+                stmt = sqlite_insert(ImageLabel).values(
+                    [
+                        {
+                            "image_uuid": image_uuid,
+                            "label_uuid": label_uuid,
+                            "status": ImageItemStatus.PRESENT,
+                            "updated_at": now,
+                        }
+                        for label_uuid in present_label_uuids
+                    ]
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[ImageLabel.image_uuid, ImageLabel.label_uuid],
+                    set_={"status": stmt.excluded.status, "updated_at": stmt.excluded.updated_at},
+                )
+                await session.exec(stmt)
+            if stale_label_uuids:
+                await session.exec(
+                    delete(ImageLabel).where(
+                        ImageLabel.image_uuid == image_uuid,
+                        ImageLabel.label_uuid.in_(stale_label_uuids),
+                    )
+                )
             await session.commit()
 
     async def get_image_labels(self, image_uuid: str) -> List[ImageLabel]:

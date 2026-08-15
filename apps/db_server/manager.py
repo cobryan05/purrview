@@ -623,8 +623,6 @@ class Manager:
             if b.metadata_json is None:
                 b.metadata_json = old_metadata.get(b.uuid, {})
 
-        await self._db_client.write_image_metadata_to_db(image.uuid, update)
-
         # Tombstone all previous bbox entries from the hash index (covers
         # deleted, moved, and resized boxes). This must happen outside the
         # phash-recompute conditional below: deleting the LAST bbox leaves
@@ -635,10 +633,18 @@ class Manager:
             if old_bbox.phash and old_bbox.label_uuid:
                 self._hash_index.remove_bbox(old_bbox.uuid, old_bbox.label_uuid)
 
+        # Hashes are computed BEFORE the write, not after it, so they can ride
+        # the same transaction as the rows they describe. Decoding the frame and
+        # cropping it is ~50ms of pure CPU; doing it while holding SQLite's
+        # single writer lock would block every other service for that long, and
+        # doing it after the write meant asking for the lock a second time —
+        # which, behind a running collect task, cost far more than the work.
+        #
         # Image phash is computed once (first write only — the file never changes).
         # Bbox phashes must always be (re-)computed because the user may have moved or
         # resized boxes since the last save, which changes the cropped pixel region.
         image_phash: Optional[str] = image.phash
+        bbox_phash_list: List[Dict[str, str]] = []
         if image_phash is None or update.bboxes:
             try:
                 image_bgr = await asyncio.to_thread(__import__("cv2").imread, str(safe_path))
@@ -646,7 +652,6 @@ class Manager:
                     if image_phash is None:
                         image_phash = await asyncio.to_thread(phash_from_numpy, image_bgr, self._image_hash_size)
                     # Always (re-)compute per-bbox phashes.
-                    bbox_phash_list = []
                     for b in update.bboxes:
                         try:
                             bp = await asyncio.to_thread(
@@ -658,21 +663,29 @@ class Manager:
                                 b.height,
                                 self._bbox_hash_size,
                             )
+                            b.phash = bp
                             bbox_phash_list.append({"uuid": b.uuid, "phash": bp})
                         except Exception:
                             logger.exception("bbox phash error for %s", b.uuid)
-                    await self._db_client.update_phashes(image.uuid, image_phash, bbox_phash_list)
-                    # Update hash index (old entries were tombstoned above).
-                    if image.phash is None and image_phash:
-                        self._hash_index.add_image(image.uuid, image_phash)
-                    uuid_to_label = {b.uuid: b.label_uuid for b in update.bboxes}
-                    for bp_entry in bbox_phash_list:
-                        label_uuid = uuid_to_label.get(bp_entry["uuid"])
-                        if label_uuid:
-                            self._hash_index.add_bbox(bp_entry["uuid"], label_uuid, bp_entry["phash"])
             except Exception:
                 logger.exception("phash computation failed for %s", image_rel_path)
                 image_phash = image.phash  # revert to previously-stored value on error
+
+        # One write for the geometry, the tags and every hash that goes with them.
+        await self._db_client.write_image_metadata_to_db(
+            image.uuid,
+            update,
+            image_phash=image_phash if image_phash != image.phash else None,
+        )
+
+        # Update hash index (old entries were tombstoned above).
+        if image.phash is None and image_phash:
+            self._hash_index.add_image(image.uuid, image_phash)
+        uuid_to_label = {b.uuid: b.label_uuid for b in update.bboxes}
+        for bp_entry in bbox_phash_list:
+            label_uuid = uuid_to_label.get(bp_entry["uuid"])
+            if label_uuid:
+                self._hash_index.add_bbox(bp_entry["uuid"], label_uuid, bp_entry["phash"])
 
         # Re-read from DB; get_image_by_filename eager-loads bboxes → label + tags,
         # so we can include names in the sidecar for rebuild robustness.
@@ -1311,8 +1324,6 @@ class Manager:
         present_label_uuids = {
             b.label_uuid for b in update.bboxes if b.label_uuid and _BBOX_VERIFIED_TAG in b.tag_uuids
         }
-        for label_uuid in present_label_uuids:
-            await self._db_client.set_image_label_status(image_uuid, label_uuid, ImageItemStatus.PRESENT)
 
         existing = await self._db_client.get_image_labels(image_uuid)
         stale_candidates = [
@@ -1326,7 +1337,8 @@ class Manager:
             stale_present = [
                 u for u in stale_candidates if labels.get(u) is None or labels[u].scope != LabelScope.IMAGE
             ]
-        await self._db_client.delete_image_labels(image_uuid, stale_present)
+        # One write for both halves: the upserts used to be a transaction each.
+        await self._db_client.sync_image_present_labels(image_uuid, sorted(present_label_uuids), stale_present)
 
     async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:
         """Resolve an image path to its DB uuid, or None if not found."""
