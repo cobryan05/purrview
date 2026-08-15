@@ -132,3 +132,72 @@ class TestBadge:
     def test_the_active_sub_tab_badge_hides_at_zero(self, page: Page, base_url: str):
         _open_runs(page, base_url, {"t-watch": WATCHER})
         expect(self._active_tab_badge(page)).to_be_hidden()
+
+    def test_the_badge_is_reseeded_on_return(self, page: Page, base_url: str):
+        """Returning re-seeds from a fresh fetch rather than trusting whatever
+        was last on screen — the stream may have been closed the whole time."""
+        _open_runs(page, base_url, {"t-train": TRAINING})
+        expect(self._badge(page)).to_have_text("1")
+
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.wait_for_timeout(300)
+        _mock_tasks(page, {})
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
+
+        expect(self._badge(page)).to_be_hidden()
+        expect(self._active_tab_badge(page)).to_be_hidden()
+
+
+class TestStreamLifetimeFollowsTheCount:
+    """The stream lives off-tab exactly as long as something can still finish.
+
+    Closing it unconditionally froze the badge — a job that ended while the user
+    was annotating still read as running. Holding it open unconditionally costs
+    a connection per browser tab for the life of the app, feeding a badge that
+    reads zero and cannot change (see test_leaks_and_races.py, which pins the
+    idle case). A live count is what separates the two.
+    """
+
+    _COUNTER = """
+        window.__taskStreams = { opened: 0, closed: 0 };
+        const Native = window.EventSource;
+        window.EventSource = function (url, init) {
+            const es = new Native(url, init);
+            const isTaskStream = String(url).includes('/api/tasks/stream');
+            if (isTaskStream) window.__taskStreams.opened += 1;
+            const close = es.close.bind(es);
+            es.close = () => { if (isTaskStream) window.__taskStreams.closed += 1; return close(); };
+            return es;
+        };
+        window.EventSource.prototype = Native.prototype;
+    """
+
+    def test_a_running_job_keeps_the_stream_alive_off_tab(self, page: Page, base_url: str):
+        page.add_init_script(self._COUNTER)
+        _open_runs(page, base_url, {"t-train": TRAINING})
+        expect(page.locator("#task-activity-badge")).to_have_text("1")
+
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.wait_for_timeout(700)
+
+        counts = page.evaluate("window.__taskStreams")
+        assert counts["closed"] == 0, "A job is still running — the badge must keep counting"
+        assert counts["opened"] == 1
+
+    def test_nothing_running_closes_the_stream_off_tab(self, page: Page, base_url: str):
+        """Nothing can finish behind your back, so an idle app holds no socket."""
+        page.add_init_script(self._COUNTER)
+        _open_runs(page, base_url, {"t-watch": WATCHER})  # continuous: not a job
+        expect(page.locator("#task-activity-badge")).to_be_hidden()
+
+        page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+        page.wait_for_timeout(700)
+
+        assert page.evaluate("window.__taskStreams.closed") == 1
+
+    # NOT covered here: the last job *ending* while the user is away, which
+    # `updateBadge` handles by dropping the stream at that moment. The fixture
+    # cannot deliver a second SSE event mid-test — `page.route` fulfils a body
+    # in one shot, and the server-side stream reads the mocked tasks proxy
+    # rather than anything the test can change — so the assertion would be
+    # vacuous. The tab-change branches below are the two that are reachable.

@@ -34,16 +34,25 @@ export async function init() {
     document.getElementById('task-activity-badge-active'),
   ].filter(Boolean);
 
+  /** Last count the badges were painted with; drives the stream's lifetime. */
+  let runningCount = 0;
+  /** Whether Runs is the main tab on screen. Runs itself always needs the feed. */
+  let onRunsTab = true;
+
   /**
    * Show how many tasks are still live on the Runs tab buttons. Hidden at zero
    * rather than showing "0": a permanent badge stops being a signal.
    */
   function updateBadge(tasks) {
     const n = countRunningTasks(tasks);
+    runningCount = n;
     for (const badge of badges) {
       badge.textContent = String(n);
       badge.hidden = n === 0;
     }
+    // The last job finishing is what makes an off-tab stream pointless — drop
+    // it at that moment rather than holding it until the user comes back.
+    if (n === 0 && !onRunsTab) closeTaskStream();
   }
 
   /**
@@ -82,19 +91,31 @@ export async function init() {
       onMessage: (data) => {
         if (!data?.tasks) return;
         updateBadge(data.tasks);
-        // renderActiveTasks no-ops unless its pane is visible, so this keeps
-        // the badge live while the user is on another tab.
+        // renderActiveTasks no-ops unless its pane is visible, so this costs
+        // nothing while the Active pane is not the one on screen.
         renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
       },
     });
     // EventSource reconnects automatically on error; no extra handling needed.
   }
 
-  // The stream must not outlive Runs-tab focus: close it whenever another main
-  // tab takes over, and reopen it when the user returns.
+  // The stream outlives Runs-tab focus only while something is actually running.
+  //
+  // Two failures to avoid at once. Closing it unconditionally froze both badges
+  // at whatever they read on the way out — a training that finished while you
+  // were annotating still showed as running, and the badge exists precisely to
+  // report that from elsewhere. Holding it open unconditionally costs an SSE
+  // connection per browser tab for the life of the app, feeding a badge that
+  // reads zero and cannot change until the user acts (the leak that
+  // test_leaks_and_races.py guards).
+  //
+  // A live count is the exact condition that separates them: if nothing is
+  // running, nothing can finish behind your back, so an idle app holds no
+  // connection. `updateBadge` drops it the moment the last job ends.
   events.subscribe(EventTypes.MAIN_TAB_CHANGED, ({ tabName }) => {
-    if (tabName !== 'tab-runs') {
-      closeTaskStream();
+    onRunsTab = tabName === 'tab-runs';
+    if (!onRunsTab) {
+      if (runningCount === 0) closeTaskStream();
     } else {
       openTaskStream();
       seedBadge();
