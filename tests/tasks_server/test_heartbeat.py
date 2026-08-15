@@ -185,12 +185,17 @@ async def test_start_task_sets_instance_uuid(manager, tasks_api_mock):
 
 # ---------------------------------------------------------------------------
 # _check_stale_tasks
+#
+# These set _recovery_done directly: the stale net is gated on the startup
+# recovery pass having run (see test_restart_recovery.py), and what is under
+# test here is the staleness logic itself, not the gate.
 # ---------------------------------------------------------------------------
 
 
 async def test_check_stale_tasks_marks_orphan_with_stale_hb_as_error(manager, tasks_api_mock):
     inst = _make_instance("orphan-uuid", TaskStatus.RUNNING, heartbeat_at=_stale_hb())
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 
@@ -205,6 +210,7 @@ async def test_check_stale_tasks_ignores_live_running_task(manager, tasks_api_mo
     inst = _make_instance(TASK_UUID, TaskStatus.RUNNING, heartbeat_at=_stale_hb())
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
     manager._running_tasks[TASK_UUID] = MagicMock()
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 
@@ -216,6 +222,7 @@ async def test_check_stale_tasks_ignores_no_heartbeat(manager, tasks_api_mock):
     """heartbeat_at=None means the task pre-dates heartbeat support — leave it alone."""
     inst = _make_instance("old-task-uuid", TaskStatus.RUNNING, heartbeat_at=None)
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 
@@ -225,6 +232,7 @@ async def test_check_stale_tasks_ignores_no_heartbeat(manager, tasks_api_mock):
 async def test_check_stale_tasks_ignores_fresh_heartbeat(manager, tasks_api_mock):
     inst = _make_instance("fresh-uuid", TaskStatus.RUNNING, heartbeat_at=_fresh_hb())
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 
@@ -238,6 +246,7 @@ async def test_check_stale_tasks_ignores_non_running_statuses(manager, tasks_api
         _make_instance("paused-uuid", TaskStatus.PAUSED, heartbeat_at=_stale_hb()),
     ]
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=instances)
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 
@@ -251,6 +260,7 @@ async def test_check_stale_tasks_handles_multiple_stale_instances(manager, tasks
         _make_instance("fresh-1", TaskStatus.RUNNING, heartbeat_at=_fresh_hb()),
     ]
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=instances)
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 
@@ -264,6 +274,7 @@ async def test_check_stale_tasks_tolerates_naive_datetime(manager, tasks_api_moc
     naive_stale = datetime.utcnow() - timedelta(seconds=30 * 5)
     inst = _make_instance("naive-uuid", TaskStatus.RUNNING, heartbeat_at=naive_stale)
     tasks_api_mock.list_task_instances.return_value = MagicMock(instances=[inst])
+    manager._recovery_done = True
 
     await manager._check_stale_tasks()
 

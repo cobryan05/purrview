@@ -419,6 +419,10 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           typename: 'TrainModelTask',
           name: `Train ${cfg.name}`,
           params: { training_config_uuid: cfg.uuid },
+          // The training itself lives on the training server; restarting
+          // tasks_server only detaches the watcher. Persistent lets the
+          // recovered task re-attach to the still-running job by job_id.
+          persistent: true,
         }),
         configTab: 'tab-training-management',
         configUuid: cfg.uuid,

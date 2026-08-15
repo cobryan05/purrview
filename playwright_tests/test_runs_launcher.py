@@ -244,7 +244,11 @@ class TestLaunching:
         assert payloads[0]["params"]["training_config_uuid"] == "tc-1"
         # Scaffolding, not a definition the user authored.
         assert payloads[0]["isTemporary"] is True
-        assert payloads[0]["persistent"] is False
+        # Training is the one launch that opts into persistence: the job runs on
+        # the training server, so a tasks_server restart detaches the watcher
+        # rather than killing the work, and the recovered task can re-attach to
+        # the still-running job instead of waiting for someone to press Resume.
+        assert payloads[0]["persistent"] is True
 
     def test_saved_task_starts_without_cloning_itself(self, page: Page, base_url: str):
         """A config the user authored is started directly. Cloning one per press

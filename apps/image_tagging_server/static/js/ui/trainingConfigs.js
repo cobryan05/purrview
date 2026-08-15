@@ -91,6 +91,11 @@ function buildStartRunLink({ config, getDirty, save }) {
         typename: 'TrainModelTask',
         name: `Train ${config.name}`,
         params: { training_config_uuid: config.uuid },
+        // The actual training runs on the training server, not here — a
+        // tasks_server restart only detaches the thing watching it. Persistent
+        // means the recovered task re-attaches to that still-running job
+        // (by job_id, from its checkpoint) instead of waiting for a click.
+        persistent: true,
       });
       toast(`Started Train ${config.name}`, 3000);
       // Runs is where it can actually be watched — and specifically Active.

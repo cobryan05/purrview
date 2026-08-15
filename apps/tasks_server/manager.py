@@ -59,6 +59,13 @@ class Manager:
         # monotonic time.monotonic() of the last time we asked each running task
         # (keyed by instance uuid) to checkpoint. See _checkpoint_running_tasks.
         self._last_checkpoint_request: Dict[str, float] = {}
+        # Has the startup recovery pass completed? It is retried every worker pass
+        # until it does (db_server may not be up yet), and the stale-heartbeat net
+        # waits on it — see _run_startup_recovery.
+        self._recovery_done: bool = False
+        # DB instances marked "running" that this process is not driving. Sampled on
+        # the worker pass so the sync get_status() stays an in-memory read.
+        self._unattached_count: int = 0
         self._config = {
             "db_server": db_api_client.configuration.host,
             "inference_server": inference_api_client.configuration.host,
@@ -386,6 +393,20 @@ class Manager:
 
         return stopped_tasks
 
+    async def save_task_resume_data(self, task_uuid: str, resume_data: Dict[str, Any]) -> None:
+        """Write one task instance's checkpoint straight through to the DB.
+
+        The narrow write only — never _save_task_data, which also writes
+        result/status/ended_at and would clobber a task that is still running.
+        Used by Task.save_checkpoint_now() for state that must not wait for the
+        periodic pass.
+        """
+        await asyncio.to_thread(
+            TasksApi(self._db_api_client).set_task_instance_resume_data,
+            task_uuid,
+            db_models.SetTaskResumeDataPayload(resume_data=resume_data),
+        )
+
     async def update_task_heartbeat(self, task_uuid: str) -> None:
         """Forward a heartbeat ping to the DB server for the given task instance."""
         await asyncio.to_thread(
@@ -645,70 +666,128 @@ class Manager:
             )
 
         # "running" = server was killed while the task was executing.
-        # If the task managed to save a checkpoint, treat it as paused so the user
-        # can resume it.  If there is no checkpoint there is nothing to resume from,
-        # so mark it as an error so it's clearly visible but not misleadingly resumable.
         running_tasks = [inst for inst in all_instances if inst.status == TaskStatus.RUNNING]
+        await self._reconcile_interrupted(
+            running_tasks,
+            no_checkpoint_message=(
+                "The server stopped while this task was running, and it had no checkpoint to resume from."
+            ),
+        )
+
+    async def _reconcile_interrupted(
+        self,
+        instances: List[db_models.TaskInstanceRead],
+        no_checkpoint_message: str,
+    ) -> None:
+        """Decide the fate of instances left "running" with nothing driving them.
+
+        If the task managed to save a checkpoint, treat it as paused so it can be
+        resumed. If there is no checkpoint there is nothing to resume from, so mark
+        it as an error — clearly visible, and not misleadingly resumable.
+
+        Shared by both paths that can find an orphan: the startup recovery pass and
+        the stale-heartbeat net. They differ only in how they noticed (hence
+        *no_checkpoint_message*); what to do about it must not differ, or which of
+        the two timers happened to fire first would decide whether a resumable job
+        stays resumable.
+        """
+        if not instances:
+            return
+
         resumable_instances: List[db_models.TaskInstanceRead] = []
-        if running_tasks:
-            coros = []
-            for inst in running_tasks:
-                recovery_message = None
-                if inst.resume_data:
-                    recovered_status = db_models.TaskStatus.PAUSED
-                    logger.info(f"Task {inst.uuid} interrupted with checkpoint — marking paused (resumable)")
-                    resumable_instances.append(inst)
-                else:
-                    recovered_status = db_models.TaskStatus.ERROR
-                    recovery_message = (
-                        "The server stopped while this task was running, and it had no checkpoint to resume from."
-                    )
-                    logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
-                coros.append(
-                    asyncio.to_thread(
-                        TasksApi(self._db_api_client).set_task_instance_status,
-                        inst.uuid,
-                        db_models.SetTaskStatusPayload(status=recovered_status, error_message=recovery_message),
-                    )
+        coros = []
+        for inst in instances:
+            recovery_message = None
+            if inst.resume_data:
+                recovered_status = db_models.TaskStatus.PAUSED
+                logger.info(f"Task {inst.uuid} interrupted with checkpoint — marking paused (resumable)")
+                resumable_instances.append(inst)
+            else:
+                recovered_status = db_models.TaskStatus.ERROR
+                recovery_message = no_checkpoint_message
+                logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
+            coros.append(
+                asyncio.to_thread(
+                    TasksApi(self._db_api_client).set_task_instance_status,
+                    inst.uuid,
+                    db_models.SetTaskStatusPayload(status=recovered_status, error_message=recovery_message),
                 )
-            await asyncio.gather(*coros)
+            )
+        await asyncio.gather(*coros)
 
         # Auto-restart PERSISTENT configs whose interrupted instance recovered with a
         # checkpoint (resumable). This is the only path that restarts a task without
-        # explicit user action, so it stays strictly opt-in per config (a crashed
-        # TrainModelTask, or any config that never set _persistent, is left PAUSED for
-        # the user to resume manually) and is subject to the crash-loop guard.
-        if resumable_instances:
-            config_uuids = list({inst.config_uuid for inst in resumable_instances})
-            configs_resp = await asyncio.to_thread(
-                TasksApi(self._db_api_client).list_task_configs,
-                uuids=config_uuids,
-            )
-            configs = configs_resp.configs or {}
-            for inst in resumable_instances:
-                config = configs.get(inst.config_uuid)
-                if config is None:
-                    continue
-                if not config.params.get(Task.InternalKeys.PERSISTENT, False):
-                    continue
-                try:
-                    await self._auto_restart_with_guard(config, inst)
-                except Exception:
-                    logger.exception(f"Failed to auto-restart persistent task instance {inst.uuid}")
+        # explicit user action, so it stays strictly opt-in per config (any config that
+        # never set _persistent is left PAUSED for the user to resume manually) and is
+        # subject to the crash-loop guard.
+        if not resumable_instances:
+            return
+        config_uuids = list({inst.config_uuid for inst in resumable_instances})
+        configs_resp = await asyncio.to_thread(
+            TasksApi(self._db_api_client).list_task_configs,
+            uuids=config_uuids,
+        )
+        configs = configs_resp.configs or {}
+        for inst in resumable_instances:
+            config = configs.get(inst.config_uuid)
+            if config is None:
+                continue
+            if not config.params.get(Task.InternalKeys.PERSISTENT, False):
+                continue
+            try:
+                await self._auto_restart_with_guard(config, inst)
+            except Exception:
+                logger.exception(f"Failed to auto-restart persistent task instance {inst.uuid}")
+
+    async def _run_startup_recovery(self) -> bool:
+        """Run the one-time recovery pass, retrying on later worker passes if it fails.
+
+        _init() reads from db_server, which during a whole-stack restart is very
+        likely not up yet — services start concurrently. Losing the recovery pass to
+        that race used to be permanent for the boot: every instance orphaned by the
+        restart stayed "running" forever with a frozen heartbeat, which is exactly
+        the state where the UI lists a task the service says it isn't running.
+
+        Returns True once recovery has completed (now or on an earlier call), so the
+        stale-heartbeat net can wait for it rather than racing it.
+        """
+        if self._recovery_done:
+            return True
+        try:
+            await self._init()
+        except Exception:
+            logger.exception("Manager startup recovery failed; will retry on the next pass")
+            return False
+        self._recovery_done = True
+        return True
 
     async def _check_stale_tasks(self) -> None:
-        """Mark running tasks as error when their heartbeat has gone stale.
+        """Reconcile running tasks whose heartbeat has gone stale.
 
         A task's heartbeat goes stale if the asyncio Task died without updating
-        its DB status (e.g. the _on_task_complete DB write failed). Tasks that
-        are still alive in _running_tasks are excluded from the check.
-        Threshold = 4 × HEARTBEAT_INTERVAL so a single missed beat doesn't
-        trigger a false positive.
+        its DB status (e.g. the _on_task_complete DB write failed), or if the
+        process that was driving it went away. Tasks that are still alive in
+        _running_tasks are excluded from the check. Threshold = 4 ×
+        HEARTBEAT_INTERVAL so a single missed beat doesn't trigger a false
+        positive.
+
+        What happens to a stale task is _reconcile_interrupted's call, not this
+        method's: an orphan with a checkpoint is resumable however it was
+        noticed. Skipped entirely until the startup recovery pass has run, so
+        the two never race for the same orphan.
         """
+        if not self._recovery_done:
+            return
         stale_threshold = timedelta(seconds=Task.HEARTBEAT_INTERVAL * 4)
         now = datetime.now(timezone.utc)
         try:
-            resp = await asyncio.to_thread(TasksApi(self._db_api_client).list_task_instances)
+            # resume_data is what decides resumable-vs-error below, and the
+            # default listing omits it — without it every orphan looks
+            # uncheckpointed.
+            resp = await asyncio.to_thread(
+                TasksApi(self._db_api_client).list_task_instances,
+                include_resume_data=True,
+            )
             all_instances = resp.instances or []
             stale = []
             for inst in all_instances:
@@ -722,27 +801,39 @@ class Manager:
                 if hb.tzinfo is None:
                     hb = hb.replace(tzinfo=timezone.utc)
                 if (now - hb) > stale_threshold:
+                    logger.warning("Task %s has stale heartbeat — reconciling", inst.uuid)
                     stale.append(inst)
-            if stale:
-                coros = []
-                for inst in stale:
-                    logger.warning("Task %s has stale heartbeat — marking error", inst.uuid)
-                    coros.append(
-                        asyncio.to_thread(
-                            TasksApi(self._db_api_client).set_task_instance_status,
-                            inst.uuid,
-                            db_models.SetTaskStatusPayload(
-                                status=TaskStatus.ERROR,
-                                error_message=(
-                                    "No heartbeat from this task for over "
-                                    f"{stale_threshold}; assuming it died without reporting an error."
-                                ),
-                            ),
-                        )
-                    )
-                await asyncio.gather(*coros)
+            await self._reconcile_interrupted(
+                stale,
+                no_checkpoint_message=(
+                    "No heartbeat from this task for over "
+                    f"{stale_threshold}, and it had no checkpoint to resume from."
+                ),
+            )
         except Exception:
             logger.exception("Error checking stale tasks")
+
+    async def _refresh_unattached_count(self) -> None:
+        """Count DB instances that say "running" but that this process isn't driving.
+
+        get_status() is polled every few seconds and must stay an in-memory read
+        (see apps/helpers/serviceStatus.py), so the DB side of the count is
+        sampled here on the 60s worker pass and cached.
+
+        Without it the status panel counts only _running_tasks while the Runs list
+        renders the DB rows, so an orphaned task shows as "running" in one view and
+        "0 running" in the other, with nothing to say which is right.
+        """
+        try:
+            resp = await asyncio.to_thread(TasksApi(self._db_api_client).list_task_instances)
+        except Exception:
+            logger.exception("Error refreshing unattached task count")
+            return
+        self._unattached_count = sum(
+            1
+            for inst in (resp.instances or [])
+            if inst.status == TaskStatus.RUNNING and inst.uuid not in self._running_tasks
+        )
 
     async def _checkpoint_running_tasks(self) -> None:
         """Periodic checkpoint pass, run from the 60s worker loop.
@@ -944,21 +1035,18 @@ class Manager:
 
     async def _worker_task(self):
         try:
-            try:
-                await self._init()
-            except Exception:
-                # _init() can fail on a boot-time race (e.g. db_server isn't reachable
-                # yet while services start concurrently). Its one-shot orphan-recovery
-                # pass is lost for this boot, but the periodic loop below — especially
-                # _check_stale_tasks, the safety net for exactly this kind of orphaned
-                # "running" row — must still run, or a task instance left "running" by
-                # a crash/restart is stuck forever with a frozen heartbeat.
-                logger.exception("Manager._init() failed at startup; recovery pass skipped for this boot")
+            # Recovery can fail on a boot-time race (db_server isn't reachable yet
+            # while services start concurrently). It is retried on every pass below
+            # until it runs — losing it for the whole boot leaves any instance
+            # orphaned by the restart stuck "running" with a frozen heartbeat.
+            await self._run_startup_recovery()
             while True:
                 await asyncio.sleep(60)
+                await self._run_startup_recovery()
                 await self._check_stale_tasks()
                 await self._checkpoint_running_tasks()
                 await self._prune_finished_task_instances()
+                await self._refresh_unattached_count()
         except asyncio.CancelledError:
             logger.info("Periodic task was cancelled.")
         except Exception as e:
@@ -1001,10 +1089,28 @@ class Manager:
         if paused:
             summary += f" ({paused} paused)"
 
+        # Instances the DB still calls "running" that nothing here is driving. They
+        # are what the Runs list shows while this panel would otherwise say zero, so
+        # the disagreement is reported rather than left for the reader to discover.
+        unattached = self._unattached_count
+        if unattached:
+            summary += f" · {unattached} unattached"
+            notices.append(
+                {
+                    "key": "tasks_server:unattached",
+                    "level": "warning",
+                    "message": (
+                        f"{unattached} task(s) are marked running in the database but are not attached to "
+                        "this server. They are being recovered — resumable ones will be paused for you to "
+                        "resume, or auto-resumed if the task is persistent."
+                    ),
+                }
+            )
+
         return {
             "service": "tasks_server",
             "status": "ok",
-            "tasks": {"running": running, "paused": paused},
+            "tasks": {"running": running, "paused": paused, "unattached": unattached},
             "summary": summary,
             "notices": notices,
             "details": [

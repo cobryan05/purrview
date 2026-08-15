@@ -56,10 +56,28 @@ _MAX_EPOCH_HISTORY = 2000
 _EPOCH_METRIC_KEYS = ("train_loss", "val_loss", "val_accuracy")
 
 
+class _StreamDropped(Exception):
+    """The SSE connection ended without a terminal event.
+
+    Says nothing about the job — only that this end stopped hearing about it.
+    """
+
+
 class TrainingJobRunnerMixin:
+    # How many times to reconnect to a job's event stream (or wait out an
+    # unreachable server on resume) before giving up on it. With _RECONNECT_DELAYS
+    # this is a bit over 20 minutes of outage tolerated, which covers a training
+    # server restart or a redeploy on another host without leaving a task retrying
+    # into a server that is never coming back.
+    MAX_STREAM_RECONNECTS: int = 40
+    _RECONNECT_DELAYS: tuple[int, ...] = (2, 5, 10, 20, 30)
+
+    def _reconnect_delay(self, attempt: int) -> int:
+        return self._RECONNECT_DELAYS[min(attempt, len(self._RECONNECT_DELAYS) - 1)]
+
     async def _run_one_job(self) -> dict[str, Any]:
         if self._job_id:
-            status = await self._check_remote_job_status(self._job_id)
+            status = await self._await_reachable_status(self._job_id)
             self.log(f"Resuming training job {self._job_id} (remote status: {status})")
             await self.heartbeat(force=True)
 
@@ -71,9 +89,7 @@ class TrainingJobRunnerMixin:
                 # Server restarted mid-job. Restart the job and consume SSE.
                 # Training will resume from the last epoch checkpoint.
                 self.log(f"Job {self._job_id} was interrupted; restarting on training server")
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    r = await client.post(f"{self._training_base_url}/api/training/jobs/{self._job_id}/restart")
-                    r.raise_for_status()
+                await self._restart_remote_job(self._job_id)
                 return await self._consume_sse(self._job_id)
 
             if status in ("running", "queued", "awaiting_data"):
@@ -82,6 +98,12 @@ class TrainingJobRunnerMixin:
 
             if status in ("error", "cancelled"):
                 raise RuntimeError(f"Training job {self._job_id} is in terminal state: {status}")
+
+            if status == "unreachable":
+                # Only reachable by cancelling during the retry wait — the poll
+                # otherwise raises rather than returning this. Falling through
+                # would resubmit a job we never established was gone.
+                return {"cancelled": True, "job_id": self._job_id}
 
             # Status is "not_found" (404) or unknown — server restarted without
             # persisted state. Re-submit the full job; images are likely still cached.
@@ -123,12 +145,17 @@ class TrainingJobRunnerMixin:
         self._job_id = resp.job_id
         self.log(f"Submitted training job {self._job_id} ({len(self._manifest)} images in manifest)")
 
-        # Persist immediately so cancel can reach the remote job.
+        # Persist immediately so cancel — and recovery after a restart — can reach
+        # the remote job. Written straight through rather than flagged for the
+        # manager's periodic pass: that pass runs once a minute, and a restart
+        # inside that window leaves a real training job running on the other host
+        # with nothing in the database pointing at it. The flag is still set as a
+        # fallback for when the direct write fails (db_server restarting).
         self._resume_data["job_id"] = self._job_id
         self._resume_data["model_name"] = self._model_name
         self._resume_data["manifest"] = self._manifest
         self._resume_data["config"] = self._config
-        self._data_ready_flag.set()
+        await self.save_checkpoint_now()
 
         if self._cancel_flag.is_set():
             await self._cancel_remote_job(self._job_id)
@@ -153,15 +180,50 @@ class TrainingJobRunnerMixin:
         return await self._consume_sse(self._job_id)
 
     async def _check_remote_job_status(self, job_id: str) -> str:
-        """Return the current status of a remote training job, or 'not_found' on any error."""
+        """Return the current status of a remote training job.
+
+        Two distinct failure answers, deliberately not merged: 'not_found' means
+        the training server answered and has no such job (resubmit is correct),
+        'unreachable' means it did not answer at all (resubmitting would push the
+        whole image set again and leave the original job training unattended).
+        The training server can be on another host, so "did not answer" is an
+        ordinary, recoverable event.
+        """
         try:
             resp = await asyncio.to_thread(
                 TrainingApi(self._api_client).get_training_job,
                 job_id,
             )
             return resp.status
-        except Exception:
-            return "not_found"
+        except Exception as e:
+            if getattr(e, "status", None) == 404:
+                return "not_found"
+            logger.warning("Could not reach the training server for job %s: %s", job_id, e)
+            return "unreachable"
+
+    async def _await_reachable_status(self, job_id: str) -> str:
+        """Poll the remote job status until the training server answers.
+
+        Bounded by MAX_STREAM_RECONNECTS: a server that is never coming back must
+        fail the task rather than hold it open forever.
+        """
+        for attempt in range(self.MAX_STREAM_RECONNECTS):
+            status = await self._check_remote_job_status(job_id)
+            if status != "unreachable":
+                return status
+            if self._cancel_flag.is_set():
+                return "unreachable"
+            delay = self._reconnect_delay(attempt)
+            self.log(f"Training server unreachable; retrying job {job_id} in {delay}s")
+            await self.heartbeat(force=True)
+            await asyncio.sleep(delay)
+        raise RuntimeError(f"Training server unreachable while trying to re-attach to job {job_id}")
+
+    async def _restart_remote_job(self, job_id: str) -> None:
+        """Re-queue a job the training server marked 'interrupted' by its own restart."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(f"{self._training_base_url}/api/training/jobs/{job_id}/restart")
+            r.raise_for_status()
 
     async def _push_images(self, job_id: str, manifest: list[dict]) -> None:
         """Determine missing images, read them from FILES_ROOT, POST tar batches."""
@@ -282,43 +344,93 @@ class TrainingJobRunnerMixin:
         return buf.getvalue(), added, skipped
 
     async def _consume_sse(self, job_id: str) -> dict[str, Any]:
-        """Open the SSE stream for *job_id* and relay events until done/error/cancel."""
+        """Follow *job_id*'s event stream to a terminal event, reconnecting as needed.
+
+        Losing the stream is not losing the job: the training runs on the training
+        server, which may be on another host, so a dropped connection, a network
+        blip or a redeploy over there must be recovered from rather than reported
+        as a training failure. On each drop the job's real status decides what
+        happens — finished while we were away (collect the artifact), interrupted
+        by the server's own restart (re-queue it), still going (reconnect), or
+        genuinely terminal (fail).
+        """
+        for attempt in range(self.MAX_STREAM_RECONNECTS + 1):
+            if self._cancel_flag.is_set():
+                await self._cancel_remote_job(job_id)
+                return {"cancelled": True, "job_id": job_id}
+
+            try:
+                return await self._stream_job_events(job_id)
+            except (httpx.HTTPError, _StreamDropped) as e:
+                if attempt >= self.MAX_STREAM_RECONNECTS:
+                    raise RuntimeError(f"Lost the event stream for training job {job_id}: {e}") from e
+                self.log(f"Event stream for job {job_id} dropped ({e}); checking whether it is still running")
+
+            if self._cancel_flag.is_set():
+                await self._cancel_remote_job(job_id)
+                return {"cancelled": True, "job_id": job_id}
+
+            status = await self._check_remote_job_status(job_id)
+            if status == "done":
+                # It finished while we were disconnected — the terminal event was
+                # emitted to nobody, but the artifact is there to collect.
+                await self._save_artifact(job_id)
+                self.log(f"Training job {job_id} completed while disconnected")
+                return {"job_id": job_id, "model_name": self._model_name}
+            if status in ("error", "cancelled"):
+                raise RuntimeError(f"Training job {job_id} ended in state: {status}")
+            if status == "not_found":
+                raise RuntimeError(f"Training job {job_id} no longer exists on the training server")
+            if status == "interrupted":
+                self.log(f"Job {job_id} was interrupted by a training server restart; re-queueing it")
+                try:
+                    await self._restart_remote_job(job_id)
+                except Exception as e:
+                    self.log(f"Could not re-queue job {job_id}: {e}")
+
+            delay = self._reconnect_delay(attempt)
+            self.log(f"Reconnecting to job {job_id} in {delay}s (attempt {attempt + 1})")
+            # The reconnect wait is dead air as far as the stale-heartbeat check is
+            # concerned; without this a long outage gets the task marked dead.
+            await self.heartbeat(force=True)
+            await asyncio.sleep(delay)
+
+        raise RuntimeError(f"Gave up reconnecting to training job {job_id}")
+
+    async def _stream_job_events(self, job_id: str) -> dict[str, Any]:
+        """One SSE connection: relay events until a terminal one, or raise.
+
+        Raises _StreamDropped if the connection ends without a terminal event —
+        the caller decides whether that is recoverable.
+        """
         stream_url = f"{self._training_base_url}/api/training/jobs/{job_id}/stream"
-        cancelled = False
 
-        if self._cancel_flag.is_set():
-            cancelled = True
-        else:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", stream_url) as response:
-                    event_type: Optional[str] = None
-                    async for raw_line in response.aiter_lines():
-                        if self._cancel_flag.is_set():
-                            cancelled = True
-                            break
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("GET", stream_url) as response:
+                event_type: Optional[str] = None
+                async for raw_line in response.aiter_lines():
+                    if self._cancel_flag.is_set():
+                        await self._cancel_remote_job(job_id)
+                        return {"cancelled": True, "job_id": job_id}
 
-                        line = raw_line.strip()
-                        if not line:
-                            event_type = None
+                    line = raw_line.strip()
+                    if not line:
+                        event_type = None
+                        continue
+                    if line.startswith("event:"):
+                        event_type = line[len("event:") :].strip()
+                    elif line.startswith("data:"):
+                        data_str = line[len("data:") :].strip()
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
                             continue
-                        if line.startswith("event:"):
-                            event_type = line[len("event:") :].strip()
-                        elif line.startswith("data:"):
-                            data_str = line[len("data:") :].strip()
-                            try:
-                                data = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                continue
 
-                            result = await self._handle_event(event_type, data)
-                            if result is not None:
-                                return result
+                        result = await self._handle_event(event_type, data)
+                        if result is not None:
+                            return result
 
-        if cancelled:
-            await self._cancel_remote_job(job_id)
-            return {"cancelled": True, "job_id": job_id}
-
-        raise RuntimeError(f"Training job {job_id} stream ended without a terminal event")
+        raise _StreamDropped(f"stream for job {job_id} ended without a terminal event")
 
     def _record_epoch_metrics(self, data: dict) -> None:
         """Append one per-epoch metric sample from a progress event to the history.

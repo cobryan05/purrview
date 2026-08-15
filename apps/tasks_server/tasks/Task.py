@@ -399,6 +399,33 @@ class Task(ABC):
         """Return whether the task is done."""
         return self._task_done.is_set()
 
+    async def save_checkpoint_now(self) -> bool:
+        """Write the current _resume_data to the DB immediately.
+
+        The manager's periodic pass (Manager._checkpoint_running_tasks) collects
+        checkpoints roughly once a minute, which is fine for progress but not for
+        the fact that a task has taken ownership of something outside this process
+        — a remote training job, say. Losing that to a restart in the collection
+        window leaves the remote work running with nothing pointing at it, so the
+        task can force the write at the moment it acquires such a handle.
+
+        Falls back to the periodic pass (by leaving _data_ready_flag set) if the
+        write fails, so a db_server blip costs a delay rather than the task.
+        Returns whether the direct write succeeded.
+        """
+        self._data_ready_flag.set()
+        if not self._instance_uuid:
+            return False
+        try:
+            await self._manager.save_task_resume_data(self._instance_uuid, self.get_resume_data())
+        except Exception:
+            logger.warning(
+                "Immediate checkpoint failed for task %s; leaving it to the periodic pass", self._instance_uuid
+            )
+            return False
+        self._data_ready_flag.clear()
+        return True
+
     def is_data_ready(self) -> bool:
         """Return whether the task has data ready for saving."""
         return self._data_ready_flag.is_set()
