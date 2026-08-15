@@ -350,6 +350,26 @@ class WebApp:
         async def tasks_server_status():
             return JSONResponse(content=self._manager.get_status())
 
+        @self._app.post(
+            "/api/reload-server-config",
+            operation_id="reload_server_config",
+            response_class=JSONResponse,
+        )
+        async def reload_server_config() -> JSONResponse:
+            """Re-read the inference/training URL overrides from db_server settings.
+
+            The worker loop already re-reads these once a minute; this endpoint is
+            what image_tagging_server calls the moment Settings → Servers is saved,
+            so a new URL takes effect immediately instead of on the next pass.
+            """
+            try:
+                await self._manager.reload_url_overrides()
+                config = await self._manager.get_server_config()
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "config": config})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
+
         @self._app.get(
             "/api/tasks/types/list",
             response_model=ListTaskTypesResponse,

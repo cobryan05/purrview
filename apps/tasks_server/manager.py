@@ -9,11 +9,13 @@ from typing import Any, Dict, List, Optional, Union
 
 import db_client
 import db_client.models as db_models
+import httpx
 import inference_client
 from db_client.api.tasks_api import TasksApi
 
-from apps import TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
+from apps import APPS, APPS_CONFIG, TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
 from apps.helpers.consts import TaskStatus
+from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
 from apps.tasks_server.types import TaskInfo
 
@@ -49,10 +51,27 @@ class Manager:
         self,
         db_api_client: db_client.ApiClient,
         inference_api_client: inference_client.ApiClient,
+        default_training_url: Optional[str] = None,
     ):
         self._task: Optional[asyncio.Task] = None
         self._inference_api_client: inference_client.ApiClient = inference_api_client
         self._db_api_client: db_client.ApiClient = db_api_client
+
+        # Settings → Servers can point inference/training at another host (both
+        # services are network-isolated by design — see apps/helpers/serverUrls.py).
+        # The injected client and APPS_CONFIG supply the local defaults; overrides
+        # are resolved from db_server on every worker pass and on demand via
+        # reload_url_overrides(), because a task started an hour from now must use
+        # whatever URL is current then, not whatever was set at import time.
+        if default_training_url is None:
+            training_cfg = APPS_CONFIG[APPS.TRAINING_SERVER]
+            default_training_url = f"http://{training_cfg.host}:{training_cfg.port}"
+        self._default_inference_url: str = inference_api_client.configuration.host
+        self._default_training_url: str = default_training_url
+        self._inference_url_override: Optional[str] = None
+        self._training_url_override: Optional[str] = None
+        self._training_base_url: str = default_training_url
+        self._url_settings_client = httpx.AsyncClient(timeout=10.0)
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._completion_tasks: set[asyncio.Task] = set()
         self._pending_oneshot_deletes: set[str] = set()
@@ -66,19 +85,69 @@ class Manager:
         # DB instances marked "running" that this process is not driving. Sampled on
         # the worker pass so the sync get_status() stays an in-memory read.
         self._unattached_count: int = 0
-        self._config = {
-            "db_server": db_api_client.configuration.host,
-            "inference_server": inference_api_client.configuration.host,
-        }
 
     def get_db_api_client(self) -> db_client.ApiClient:
         return self._db_api_client
 
     def get_inference_api_client(self) -> inference_client.ApiClient:
+        """The inference client to use *right now*.
+
+        Tasks must call this at the point of use rather than caching it across a
+        long run: a URL change swaps the client out, and a task holding the old
+        one would keep talking to the previous host.
+        """
         return self._inference_api_client
 
+    def get_training_base_url(self) -> str:
+        """Base URL of the training server, honouring the Settings override."""
+        return self._training_base_url
+
+    async def reload_url_overrides(self) -> None:
+        """Re-read the inference/training URL overrides and apply any change.
+
+        Cheap and idempotent — the inference client is only rebuilt when the
+        effective URL actually moves, so calling this on every worker pass does
+        not churn urllib3 connection pools.
+        """
+        inference_override, training_override = await read_url_overrides(
+            self._url_settings_client, self._db_api_client.configuration.host
+        )
+
+        # The Settings input happily accepts a trailing slash; the generated
+        # client concatenates host + path, so leaving it on yields "//api/...".
+        def _clean(url: Optional[str]) -> Optional[str]:
+            return url.rstrip("/") if url else None
+
+        self._inference_url_override = _clean(inference_override)
+        self._training_url_override = _clean(training_override)
+
+        effective_inference = self._inference_url_override or self._default_inference_url
+        effective_training = self._training_url_override or self._default_training_url
+
+        if effective_inference != self._inference_api_client.configuration.host:
+            logger.info(f"Inference server URL -> {effective_inference}")
+            self._inference_api_client = inference_client.ApiClient(inference_client.Configuration(effective_inference))
+
+        if effective_training != self._training_base_url:
+            logger.info(f"Training server URL -> {effective_training}")
+            self._training_base_url = effective_training
+
+    async def _reload_url_overrides_safe(self) -> None:
+        """reload_url_overrides() wrapped for the worker loop, where an exception
+        would kill the pass that also does recovery, heartbeats and pruning."""
+        try:
+            await self.reload_url_overrides()
+        except Exception as e:
+            logger.warning(f"Could not refresh server URL overrides: {e}")
+
     async def get_server_config(self) -> Dict[str, Any]:
-        return self._config.copy()
+        return {
+            "db_server": self._db_api_client.configuration.host,
+            "inference_server": self._inference_api_client.configuration.host,
+            "training_server": self._training_base_url,
+            "inference_server_url_override": self._inference_url_override,
+            "training_server_url_override": self._training_url_override,
+        }
 
     async def list_task_types(self) -> List[str]:
         return list(task_registry.keys())
@@ -1054,9 +1123,16 @@ class Manager:
             # while services start concurrently). It is retried on every pass below
             # until it runs — losing it for the whole boot leaves any instance
             # orphaned by the restart stuck "running" with a frozen heartbeat.
+            # Resolve server URL overrides before recovery so a recovered task
+            # starts against the configured host, not the compiled-in default.
+            # Re-read every pass (not once) for the same reason recovery retries:
+            # db_server may not be up yet at boot, and the setting can change at
+            # any time from Settings → Servers.
+            await self._reload_url_overrides_safe()
             await self._run_startup_recovery()
             while True:
                 await asyncio.sleep(60)
+                await self._reload_url_overrides_safe()
                 await self._run_startup_recovery()
                 await self._check_stale_tasks()
                 await self._checkpoint_running_tasks()

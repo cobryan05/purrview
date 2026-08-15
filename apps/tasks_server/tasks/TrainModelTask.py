@@ -57,8 +57,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         db_base_url = f"http://{db_cfg.host}:{db_cfg.port}"
         self._db_api_client = db_client.ApiClient(db_client.Configuration(host=db_base_url))
 
-        training_cfg = APPS_CONFIG[APPS.TRAINING_SERVER]
-        self._training_base_url: str = f"http://{training_cfg.host}:{training_cfg.port}"
+        # Resolved through the manager, not APPS_CONFIG: Settings → Servers can
+        # point training at another host, and only the manager tracks that override.
+        self._training_base_url: str = self._manager.get_training_base_url()
         tc_config = training_client.Configuration(host=self._training_base_url)
         self._api_client = training_client.ApiClient(tc_config)
 

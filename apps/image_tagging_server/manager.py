@@ -13,13 +13,17 @@ import tasks_client
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.reverseProxy import ReverseProxy
+from apps.helpers.serverUrls import (
+    INFERENCE_URL_SETTING_KEY,
+    TRAINING_URL_SETTING_KEY,
+    read_url_overrides,
+)
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.DEBUG)
 
-INFERENCE_URL_SETTING_KEY = "inference_server_url"
-TRAINING_URL_SETTING_KEY = "training_server_url"
+__all__ = ["Manager", "INFERENCE_URL_SETTING_KEY", "TRAINING_URL_SETTING_KEY"]
 
 # Service /status probes: a service that's simply busy (e.g. mid-inference or
 # mid-training-step) can take a while to answer its own health check. Rather
@@ -80,26 +84,14 @@ class Manager:
         except Exception as e:
             logger.warning(f"Could not load server URL overrides from DB: {e}")
 
-    async def _read_db_setting(self, key: str) -> Optional[str]:
-        """Read a setting from db_server via HTTP. Returns None on error or empty value."""
-        try:
-            res = await self._test_client.get(f"{self._db_server_url}/api/settings/{key}")
-            if res.status_code == 200:
-                return res.json().get("value") or None
-            return None
-        except Exception as e:
-            logger.debug(f"Could not read setting '{key}': {e}")
-            return None
-
     async def _reload_url_overrides(self) -> None:
         """Re-read URL overrides from DB and rebuild proxies."""
-        inference_url, training_url = await asyncio.gather(
-            self._read_db_setting(INFERENCE_URL_SETTING_KEY),
-            self._read_db_setting(TRAINING_URL_SETTING_KEY),
-        )
+        inference_url, training_url = await read_url_overrides(self._test_client, self._db_server_url)
 
-        self._inference_url_override = inference_url
-        self._training_url_override = training_url
+        # The Settings input accepts a trailing slash; the proxy concatenates
+        # base_url + path, so leaving it on yields a double-slashed request path.
+        self._inference_url_override = inference_url.rstrip("/") if inference_url else None
+        self._training_url_override = training_url.rstrip("/") if training_url else None
 
         effective_inference = self._inference_url_override or self._default_inference_url
         effective_training = self._training_url_override or self._default_training_url
@@ -112,8 +104,34 @@ class Manager:
         logger.info(f"Server proxies: inference={effective_inference}, training={effective_training}")
 
     async def reload_url_overrides(self) -> None:
-        """Public method called after settings are saved to apply new proxy URLs."""
+        """Public method called after settings are saved to apply new proxy URLs.
+
+        Also nudges tasks_server, which resolves the same two overrides for its
+        background tasks. Without the nudge the UI would be proxying to the new
+        host while every running task still used the old one until tasks_server's
+        next worker pass — a split brain that is very hard to read from the UI.
+        """
         await self._reload_url_overrides()
+        await self._notify_tasks_server_reload()
+
+    async def _notify_tasks_server_reload(self) -> None:
+        """Best-effort: tasks_server re-reads the settings itself once a minute, so
+        a failure here delays the change rather than losing it."""
+        tasks_url = self._tasks_api_client.configuration.host
+        try:
+            res = await self._test_client.post(f"{tasks_url}/api/reload-server-config", timeout=PROBE_SOFT_TIMEOUT)
+            if res.status_code != 200:
+                logger.warning(f"tasks_server rejected server-config reload: HTTP {res.status_code}")
+        except Exception as e:
+            logger.warning(f"Could not notify tasks_server of server-config change: {e}")
+
+    @property
+    def effective_inference_url(self) -> str:
+        return self._inference_url_override or self._default_inference_url
+
+    @property
+    def effective_training_url(self) -> str:
+        return self._training_url_override or self._default_training_url
 
     @property
     def inference_proxy(self) -> ReverseProxy:
@@ -185,9 +203,11 @@ class Manager:
         relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
         services = [
             ("db_server", self._db_server_url),
-            ("inference_server", self._default_inference_url),
+            # Effective, not default: probing localhost while the app proxies to a
+            # remote host would report the health of a service nothing is using.
+            ("inference_server", self.effective_inference_url),
             ("tasks_server", self._tasks_api_client.configuration.host),
-            ("training_server", self._default_training_url),
+            ("training_server", self.effective_training_url),
             ("relay_buffer_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
         ]
 

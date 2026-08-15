@@ -167,6 +167,10 @@ async function _buildServerSection() {
       label: 'Inference Server',
       serverType: 'inference_server',
       settingKey: 'inference_server_url',
+      description:
+        'Runs ONNX detection and classification. Takes images over HTTP and needs no database, so it can run on ' +
+        'another host — but the models directory must live with it, and trained models are currently written to the ' +
+        'models directory of whichever host runs the tasks server. Point this elsewhere only if both share that directory.',
       defaultUrl: serverConfig.inference_server ?? 'http://localhost:8001',
       currentOverride: serverConfig.inference_server_url_override ?? null,
     }),
@@ -174,6 +178,9 @@ async function _buildServerSection() {
       label: 'Training Server',
       serverType: 'training_server',
       settingKey: 'training_server_url',
+      description:
+        'Runs training jobs. Fully network-isolated — it keeps its own artifacts directory and hands finished models ' +
+        'back over HTTP, so it needs no shared filesystem and is safe to run on a separate GPU host.',
       defaultUrl: serverConfig.training_server ?? 'http://localhost:8005',
       currentOverride: serverConfig.training_server_url_override ?? null,
     })
@@ -186,10 +193,10 @@ async function _buildServerSection() {
  * Build a server URL configuration row. The URL input needs the full row width,
  * so this row stacks its label above the controls rather than sitting beside them.
  *
- * @param {{label:string, serverType:string, settingKey:string, defaultUrl:string, currentOverride:string|null}} opts
+ * @param {{label:string, serverType:string, settingKey:string, description?:string, defaultUrl:string, currentOverride:string|null}} opts
  * @returns {HTMLElement}
  */
-function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOverride }) {
+function _buildServerRow({ label, serverType, settingKey, description, defaultUrl, currentOverride }) {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'settings-server-input';
@@ -201,6 +208,7 @@ function _buildServerRow({ label, serverType, settingKey, defaultUrl, currentOve
 
   const { row, setStatus } = _buildRow({
     label,
+    description,
     controls: [input, testBtn, saveBtn],
     stacked: true,
   });
