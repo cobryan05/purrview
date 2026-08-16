@@ -30,6 +30,7 @@ from inference_client.api.models_api import ModelsApi
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
+from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.hashUtils import (
@@ -116,6 +117,10 @@ AMBIGUITY_METRIC_RATIO = "ratio"
 AMBIGUITY_METRIC_MARGIN = "margin"
 
 
+AMBIGUITY_KIND_SAME_MODEL = "same_model"
+AMBIGUITY_KIND_CROSS_MODEL = "cross_model"
+
+
 @dataclass
 class AmbiguityInfo:
     """Why one detection was judged confusable, and by which model.
@@ -123,6 +128,13 @@ class AmbiguityInfo:
     Attribution is the whole point (AMBIGUITY_REVIEW_PLAN.md §1): the question
     being answered is "is *this* model confused, and with what?", so `model` and
     `rival_*` are not optional colour — they are the payload.
+
+    Two kinds, and the distinction matters when reading the results:
+      - SAME_MODEL: one model scored two classes almost equally on one box. This
+        is a statement about that model's own decision boundary.
+      - CROSS_MODEL: two different models put incompatible labels on the same
+        object. A statement about the two models disagreeing, not about either
+        one's internal uncertainty — `rival_model` names the other.
     """
 
     metric: str
@@ -131,6 +143,8 @@ class AmbiguityInfo:
     rival_label_uuid: Optional[str]
     rival_class_str: Optional[str]
     rival_confidence: float
+    kind: str = AMBIGUITY_KIND_SAME_MODEL
+    rival_model: Optional[str] = None
 
     def as_metadata(self) -> dict[str, str]:
         """Flat, string-valued metadata_json keys.
@@ -144,8 +158,8 @@ class AmbiguityInfo:
         the existing keys already use (`confidence`, `source_model`,
         `source_confidence`): flat keys, string values.
         """
-        return {
-            "ambiguity_kind": "same_model",
+        meta = {
+            "ambiguity_kind": self.kind,
             "ambiguity_metric": self.metric,
             "ambiguity_value": str(round(self.value, 4)),
             "ambiguity_model": self.model,
@@ -153,6 +167,9 @@ class AmbiguityInfo:
             "ambiguity_rival_class_str": self.rival_class_str or "",
             "ambiguity_rival_confidence": str(round(self.rival_confidence, 4)),
         }
+        if self.rival_model:
+            meta["ambiguity_rival_model"] = self.rival_model
+        return meta
 
 
 def _ambiguity_value(metric: str, top: float, rival: float) -> float:
@@ -303,6 +320,7 @@ class CollectTrainingImagesTask(Task):
         self._ambiguity_threshold: float = 0.7
         self._ambiguity_top_k: int = 3
         self._ambiguity_scope: str = "configured"
+        self._ambiguity_cross_model: bool = True
         self._ambiguity_min_confidence: float = 0.0
         self._ambiguity_flagged: int = 0
         self._ambiguity_evaluated: int = 0
@@ -471,6 +489,10 @@ class CollectTrainingImagesTask(Task):
             self._ambiguity_top_k = 3
         _scope_raw = str(params.get("ambiguity_scope", "configured") or "configured")
         self._ambiguity_scope: str = _scope_raw if _scope_raw in ("configured", "any") else "configured"
+        # Cross-model disagreement needs no runner-up scores, so it is the only
+        # confusion signal available for NMS-free/E2E models. Defaults on: with a
+        # single model configured it is inert anyway.
+        self._ambiguity_cross_model: bool = bool(params.get("ambiguity_cross_model", True))
         try:
             self._ambiguity_min_confidence: float = float(params.get("ambiguity_min_confidence", 0.0))
         except (TypeError, ValueError):
@@ -1828,6 +1850,13 @@ class CollectTrainingImagesTask(Task):
                 raise r
             results_per_model.append(r if isinstance(r, list) else [])
 
+        # Cross-model disagreement is measured HERE, on the per-model lists, for
+        # the same reason same-model ambiguity is measured inside _run_model:
+        # once merged there is no longer a "model-a said cat, model-b said dog"
+        # to report, only a flat set of surviving boxes.
+        if self._enable_ambiguity and self._ambiguity_cross_model and len(results_per_model) > 1:
+            self._detect_cross_model_ambiguity(results_per_model, det_meta)
+
         # Flatten in priority order then apply cross-model hierarchy-aware IoU dedup.
         # This MUST happen before any confidence-band filtering — see the comment
         # in _run_model above and _frame_triggers_save below.
@@ -1885,6 +1914,84 @@ class CollectTrainingImagesTask(Task):
             if band is not None and band.contains(det.confidence):
                 return True
         return False
+
+    def _labels_are_unrelated(self, a: Optional[str], b: Optional[str]) -> bool:
+        """True when two labels are genuinely incompatible claims about one object.
+
+        Same label is agreement. An ancestor/descendant pair ("Animal" vs "Cat")
+        is *hierarchy*, not disagreement — the merge already treats it as one
+        being a refinement of the other, and flagging it as confusion would fire
+        on every correctly-working hierarchical model.
+        """
+        if not a or not b or a == b:
+            return False
+        if a in self._label_ancestry.get(b, ()):
+            return False
+        if b in self._label_ancestry.get(a, ()):
+            return False
+        return True
+
+    def _detect_cross_model_ambiguity(self, results_per_model: list, det_meta: dict[str, dict[str, Any]]) -> None:
+        """Flag objects two different models labelled incompatibly.
+
+        Runs on the PRE-MERGE per-model lists, pairwise, so both sides can be
+        named — after the merge there is no "which model said what" left to
+        report. Unlike same-model ambiguity this needs no runner-up scores at
+        all, so it is the only signal available for NMS-free/E2E models.
+
+        Both detections are flagged, each naming the other: the merge keeps both
+        boxes when their labels are unrelated, so both will be written to the
+        image, and a reviewer who opens either one should see why it is marked.
+
+        Mutates *det_meta* in place, never overwriting a same-model verdict —
+        that one is the more direct statement about a specific model's own
+        decision boundary, so it wins where both apply.
+        """
+        for i in range(len(results_per_model)):
+            for j in range(i + 1, len(results_per_model)):
+                for det_a in results_per_model[i]:
+                    for det_b in results_per_model[j]:
+                        if not self._labels_are_unrelated(det_a.bbox.label_uuid, det_b.bbox.label_uuid):
+                            continue
+                        if iou_xywh(det_a.bbox, det_b.bbox) < self._overlap_iou_threshold:
+                            continue
+                        # Order by confidence so "winner"/"rival" mean the same
+                        # thing here as in the same-model path.
+                        hi, lo = (det_a, det_b) if det_a.confidence >= det_b.confidence else (det_b, det_a)
+                        value = _ambiguity_value(self._ambiguity_metric, hi.confidence, lo.confidence)
+                        self._ambiguity_evaluated += 1
+                        self._ambiguity_samples.append((det_meta.get(hi.bbox.uuid, {}).get("model", "?"), value))
+                        if not _ambiguity_fires(self._ambiguity_metric, value, self._ambiguity_threshold):
+                            continue
+                        for winner, rival in ((hi, lo), (lo, hi)):
+                            self._record_cross_model_flag(winner, rival, value, det_meta)
+
+    def _record_cross_model_flag(self, winner, rival, value: float, det_meta: dict[str, dict[str, Any]]) -> None:
+        """Attach one cross-model verdict to *winner*, respecting the same gates
+        the same-model path applies (review_disabled, the confidence floor)."""
+        meta = det_meta.get(winner.bbox.uuid)
+        if meta is None or meta.get("ambiguity") is not None:
+            return  # unknown detection, or same-model already had its say
+        band = self._target_label_bands.get(winner.bbox.label_uuid)
+        if band is None or band.review_disabled:
+            return
+        if winner.confidence < self._ambiguity_min_confidence:
+            return
+        winner_model = meta.get("model") or "?"
+        rival_model = (det_meta.get(rival.bbox.uuid) or {}).get("model")
+        meta["ambiguity"] = AmbiguityInfo(
+            kind=AMBIGUITY_KIND_CROSS_MODEL,
+            metric=self._ambiguity_metric,
+            value=value,
+            model=winner_model,
+            rival_model=rival_model,
+            rival_label_uuid=rival.bbox.label_uuid,
+            rival_class_str=rival.bbox.class_str,
+            rival_confidence=rival.confidence,
+        )
+        self._ambiguity_flagged += 1
+        key = (winner_model, winner.bbox.label_uuid or "?", rival.bbox.label_uuid or "?")
+        self._ambiguity_pairs[key] = self._ambiguity_pairs.get(key, 0) + 1
 
     def _label_name(self, label_uuid: str) -> str:
         """Human-readable label name for status text, falling back to whatever
@@ -2900,6 +3007,21 @@ class CollectTrainingImagesTask(Task):
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.05,
+                    },
+                    "ambiguity_cross_model": {
+                        "type": "boolean",
+                        "label": "Also flag disagreements between models",
+                        "description": (
+                            "When two of the models above put incompatible labels on the same object "
+                            "(one says cat, the other says dog), flag it — two independently trained "
+                            "models disagreeing is a strong signal, and both boxes get marked with the "
+                            "other model named.\n\n"
+                            "A parent/child pair (Animal vs Cat) is not a disagreement and is never "
+                            "flagged. Has no effect with only one model configured, and unlike the "
+                            "check above it works with every model type — including end-to-end exports "
+                            "that cannot report runner-up classes at all."
+                        ),
+                        "default": True,
                     },
                     "ambiguity_top_k": {
                         "type": "int",

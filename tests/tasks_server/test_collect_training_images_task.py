@@ -4376,3 +4376,136 @@ class TestAmbiguityPersistence:
         await off._init(_PARAMS, resume_data=None)
         off._task_tag_uuid = "task-tag"
         assert "Browse confusable" not in [a["label"] for a in off._review_actions()]
+
+
+class TestCrossModelAmbiguity:
+    """Two models putting incompatible labels on the same object. Needs no
+    runner-up scores, so it is the only confusion signal available for
+    NMS-free/E2E models — and it must name BOTH models, or it says nothing more
+    than 'the merged set was inconsistent'."""
+
+    _DOG_UUID = "label-dog-uuid"
+
+    async def _task(self, ancestry=None, **overrides):
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [
+                {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+                {"modelName": "model-b", "labelValues": {self._DOG_UUID: 0.5}},
+            ],
+            **overrides,
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._label_ancestry = ancestry or {}
+        return task
+
+    def _api(self, a_dets, b_dets):
+        api = MagicMock(spec=InferenceApi)
+        api.detect.side_effect = [
+            MagicMock(result=MagicMock(detections=a_dets, alternates_available=True)),
+            MagicMock(result=MagicMock(detections=b_dets, alternates_available=True)),
+        ]
+        return api
+
+    async def _run(self, task, a_dets, b_dets):
+        frame = _untracked_image()
+        await task._run_inference(self._api(a_dets, b_dets), "b64", {"model-a": None, "model-b": None}, provided=frame)
+        return frame
+
+    async def test_disagreeing_models_flag_both_boxes_naming_each_other(self):
+        task = await self._task()
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)  # same place, IoU 1.0
+
+        frame = await self._run(task, [cat], [dog])
+
+        cat_info = frame._det_meta[cat.bbox.uuid]["ambiguity"]
+        dog_info = frame._det_meta[dog.bbox.uuid]["ambiguity"]
+        assert cat_info.kind == "cross_model"
+        assert cat_info.model == "model-a" and cat_info.rival_model == "model-b"
+        assert cat_info.rival_label_uuid == self._DOG_UUID
+        # The mirror image, so opening either box explains itself.
+        assert dog_info.model == "model-b" and dog_info.rival_model == "model-a"
+        assert dog_info.rival_label_uuid == _LABEL_UUID
+
+    async def test_agreeing_models_are_not_flagged(self):
+        """Same label on the same object is agreement, not confusion."""
+        task = await self._task()
+        a = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        b = _detection_with_alts(0.85, [], label_uuid=_LABEL_UUID)
+        frame = await self._run(task, [a], [b])
+        assert all(m["ambiguity"] is None for m in frame._det_meta.values())
+
+    async def test_parent_child_labels_are_hierarchy_not_disagreement(self):
+        """'Animal' over 'Cat' is a refinement — the merge already treats it that
+        way, and flagging it would fire on every working hierarchical model."""
+        task = await self._task(ancestry={_LABEL_UUID: {self._DOG_UUID}})
+        child = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        parent = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+        frame = await self._run(task, [child], [parent])
+        assert all(m["ambiguity"] is None for m in frame._det_meta.values())
+
+    async def test_non_overlapping_boxes_are_not_flagged(self):
+        """Two different objects, not one contested object."""
+        task = await self._task()
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+        dog.bbox.x, dog.bbox.y = 0.8, 0.8
+        frame = await self._run(task, [cat], [dog])
+        assert all(m["ambiguity"] is None for m in frame._det_meta.values())
+
+    async def test_confident_disagreement_below_threshold_is_not_flagged(self):
+        """A confident model beating an unconfident one is not a close call."""
+        task = await self._task()
+        cat = _detection_with_alts(0.95, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.51, [], label_uuid=self._DOG_UUID)  # ratio 0.54 < 0.7
+        frame = await self._run(task, [cat], [dog])
+        assert all(m["ambiguity"] is None for m in frame._det_meta.values())
+
+    async def test_same_model_verdict_wins_over_cross_model(self):
+        """Same-model confusion is the more direct statement about a specific
+        model's decision boundary, so it must not be overwritten."""
+        task = await self._task()
+        cat = _detection_with_alts(0.9, [_alt(_RIVAL_UUID, 0.89)], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+        frame = await self._run(task, [cat], [dog])
+        assert frame._det_meta[cat.bbox.uuid]["ambiguity"].kind == "same_model"
+        # The other box still gets its cross-model verdict.
+        assert frame._det_meta[dog.bbox.uuid]["ambiguity"].kind == "cross_model"
+
+    async def test_can_be_disabled_independently(self):
+        task = await self._task(ambiguity_cross_model=False)
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+        frame = await self._run(task, [cat], [dog])
+        assert all(m["ambiguity"] is None for m in frame._det_meta.values())
+
+    async def test_cross_model_works_without_any_runner_up_scores(self):
+        """The E2E fallback: neither detection carries alternates, and the flag
+        still fires. This is what makes the feature usable for models that
+        cannot report runner-up classes at all."""
+        task = await self._task()
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.88, [], label_uuid=self._DOG_UUID)
+        assert cat.alternates == [] and dog.alternates == []
+        frame = await self._run(task, [cat], [dog])
+        assert frame._det_meta[cat.bbox.uuid]["ambiguity"] is not None
+
+    async def test_cross_model_metadata_names_both_models_and_stays_stringly_typed(self, tmp_path):
+        task = await self._task()
+        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+        frame = await self._run(task, [cat], [dog])
+
+        images_api = MagicMock()
+        task._meta_write_lock = asyncio.Lock()
+        await task._save_image(images_api, frame, [cat], tmp_path, ImageProviderType.FIXED)
+
+        box = images_api.update_image_metadata.call_args.args[0].boxes[0]
+        assert CONFUSABLE_TAG_UUID in box.tag_uuids
+        assert box.bbox_meta["ambiguity_kind"] == "cross_model"
+        assert box.bbox_meta["ambiguity_model"] == "model-a"
+        assert box.bbox_meta["ambiguity_rival_model"] == "model-b"
+        assert all(isinstance(v, str) for v in box.bbox_meta.values())
