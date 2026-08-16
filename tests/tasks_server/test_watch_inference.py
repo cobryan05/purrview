@@ -22,16 +22,19 @@ CAT = "label-cat"
 
 
 def _bbox(x1: float, y1: float, x2: float, y2: float, label_uuid: str = CAT) -> SimpleNamespace:
-    """A detection bbox as the inference client returns it.
+    """A detection bbox as the inference client really returns it.
 
-    Carries both corner and x/y/width/height forms: the task reads the corners, while
-    the hierarchy merger's `iou_xywh` reads the latter.
+    ⚠️ Corner attributes are deliberately ABSENT. An earlier version of this helper
+    invented `x1/y1/x2/y2`, which the real `BoundingBoxMetadataModel` has never had —
+    so every test here passed while the watcher died with
+    `'BoundingBoxMetadataModel' object has no attribute 'x1'` on its first frame.
+    A fake that is more generous than the thing it stands in for tests nothing.
+
+    Corners are taken as arguments only because they read more naturally at the call
+    sites; they are stored the way the client stores them, as relative x/y/width/height.
+    See TestRealClientBboxShape, which uses the generated model itself.
     """
     return SimpleNamespace(
-        x1=x1,
-        y1=y1,
-        x2=x2,
-        y2=y2,
         x=x1,
         y=y1,
         width=x2 - x1,
@@ -71,7 +74,7 @@ class TestRunInference:
         """The regression: this returned [] for every frame, for every model."""
         api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.9)])
 
-        detections = await _task()._run_inference(api, "base64-image", ["cat-model"])
+        detections = await _task()._run_inference(api, "base64-image", ["cat-model"], frame_size=(100, 100))
 
         assert len(detections) == 1, "watcher produced no detections — the payload is invalid again"
         assert isinstance(detections[0], Detection)
@@ -86,7 +89,7 @@ class TestRunInference:
         """
         api = _FakeInferenceApi([])
 
-        await _task()._run_inference(api, "base64-image", ["cat-model"])
+        await _task()._run_inference(api, "base64-image", ["cat-model"], frame_size=(100, 100))
 
         assert len(api.payloads) == 1
         assert api.payloads[0].conf_thresh == pytest.approx(StreamWatcherTask._INFERENCE_CONF_FLOOR)
@@ -95,7 +98,7 @@ class TestRunInference:
     async def test_no_models_is_not_a_call(self):
         api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.9)])
 
-        assert await _task()._run_inference(api, "base64-image", []) == []
+        assert await _task()._run_inference(api, "base64-image", [], frame_size=(100, 100)) == []
         assert api.payloads == []
 
     async def test_inference_failure_is_contained(self):
@@ -105,4 +108,51 @@ class TestRunInference:
             def detect(self, model_name: str, payload: Any):
                 raise RuntimeError("model exploded")
 
-        assert await _task()._run_inference(_Boom(), "base64-image", ["cat-model"]) == []
+        assert await _task()._run_inference(_Boom(), "base64-image", ["cat-model"], frame_size=(100, 100)) == []
+
+
+class TestRealClientBboxShape:
+    """The watcher crashed with `'BoundingBoxMetadataModel' object has no attribute
+    'x1'` on every frame, while every test here passed.
+
+    The fake above invented `x1/y1/x2/y2`. The real generated client has only
+    `x, y, width, height`, and they are RELATIVE (0..1) — so the task both read
+    fields that do not exist and, once they did, would have handed the tracker
+    fractions where it documents pixels. Zones are scaled to the analysis frame's
+    pixel size (`WatchPipeline.prepare_frame` → `engine.set_frame_size`), so a
+    relative box silently collapses every rule into the top-left corner.
+
+    These tests build the ACTUAL client model, so no fake can drift from it again.
+    """
+
+    def _real_bbox(self, x, y, w, h, label_uuid=CAT):
+        from inference_client.models.bounding_box_metadata_model import (
+            BoundingBoxMetadataModel,
+        )
+
+        return BoundingBoxMetadataModel(uuid="bbox-1", x=x, y=y, width=w, height=h, label_uuid=label_uuid)
+
+    async def test_real_client_bbox_does_not_have_corner_attributes(self):
+        """Pins the shape the task must code against."""
+        bbox = self._real_bbox(0.1, 0.2, 0.3, 0.4)
+        assert not hasattr(bbox, "x1")
+        assert (bbox.x, bbox.y, bbox.width, bbox.height) == (0.1, 0.2, 0.3, 0.4)
+
+    async def test_detections_are_converted_to_analysis_frame_pixels(self):
+        """A relative box becomes x1,y1,x2,y2 in the pixel space of the frame that
+        was actually sent to inference — the same space the zones are scaled to."""
+        api = _FakeInferenceApi([SimpleNamespace(bbox=self._real_bbox(0.1, 0.2, 0.3, 0.4), confidence=0.9)])
+
+        detections = await _task()._run_inference(api, "base64-image", ["cat-model"], frame_size=(640, 480))
+
+        assert len(detections) == 1
+        x1, y1, x2, y2 = detections[0].bbox
+        assert (x1, y1) == pytest.approx((64.0, 96.0))
+        assert (x2, y2) == pytest.approx((256.0, 288.0))
+
+    async def test_a_full_frame_box_spans_the_whole_frame(self):
+        api = _FakeInferenceApi([SimpleNamespace(bbox=self._real_bbox(0.0, 0.0, 1.0, 1.0), confidence=0.5)])
+
+        detections = await _task()._run_inference(api, "base64-image", ["cat-model"], frame_size=(640, 480))
+
+        assert detections[0].bbox == pytest.approx((0.0, 0.0, 640.0, 480.0))

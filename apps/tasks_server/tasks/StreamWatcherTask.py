@@ -27,7 +27,7 @@ import base64
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import db_client
 import inference_client
@@ -479,9 +479,22 @@ class StreamWatcherTask(Task):
     # ------------------------------------------------------------------ inference
 
     async def _run_inference(
-        self, inference_api: InferenceApi, base64_img: str, model_names: List[str]
+        self,
+        inference_api: InferenceApi,
+        base64_img: str,
+        model_names: List[str],
+        frame_size: Tuple[int, int],
     ) -> List[Detection]:
-        """Run a source's model stack and merge the results."""
+        """Run a source's model stack and merge the results.
+
+        *frame_size* is the (width, height) IN PIXELS of the image that was sent to
+        inference — i.e. the analysis frame, after any downscale. It is required,
+        not inferred: the inference client returns boxes as RELATIVE x/y/width/
+        height, while `tracker.BBox` and `watch.geometry` are both documented in
+        pixels, and zones are scaled to exactly this frame size by
+        `WatchPipeline.prepare_frame`. Getting it from anywhere else (the camera's
+        native size, say) would offset every rule.
+        """
         if not model_names:
             return []
 
@@ -520,9 +533,21 @@ class StreamWatcherTask(Task):
             overlap_iou_threshold=0.5,
             policy=MergePolicy.FIRST_WINS,
         )
+        # ⚠️ The client model has x/y/width/height only, and they are RELATIVE.
+        # There is no x1/y1/x2/y2 on it — reading those raised AttributeError out
+        # of the first frame of every watcher (the caller's try/except covers only
+        # the frame fetch, so nothing caught it). Convert to absolute corners here,
+        # once, at the boundary where the model's coordinate space meets the
+        # tracker's pixel space.
+        frame_w, frame_h = frame_size
         return [
             Detection(
-                bbox=(det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2),
+                bbox=(
+                    det.bbox.x * frame_w,
+                    det.bbox.y * frame_h,
+                    (det.bbox.x + det.bbox.width) * frame_w,
+                    (det.bbox.y + det.bbox.height) * frame_h,
+                ),
                 label_uuid=det.bbox.label_uuid,
                 label_name=getattr(det.bbox, "label_name", None),
                 confidence=getattr(det, "confidence", 0.0) or 0.0,
@@ -642,7 +667,12 @@ class StreamWatcherTask(Task):
         # that stale by seconds, and these timestamps are what the clip window indexes.
         self._push_to_ring(pipeline, base64_img, time.monotonic(), full_res=provided.encoded_b64)
 
-        detections = await self._run_inference(inference_api, base64_img, pipeline.model_names)
+        # analysed.shape is (h, w, c); the detections must land in the same pixel
+        # space the zones were scaled to by prepare_frame() just above.
+        analysed_h, analysed_w = analysed.shape[:2]
+        detections = await self._run_inference(
+            inference_api, base64_img, pipeline.model_names, frame_size=(analysed_w, analysed_h)
+        )
 
         now = time.monotonic()
         pipeline.health.record_success(now)
