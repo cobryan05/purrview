@@ -1628,6 +1628,11 @@ class WatchProfileSource(SQLModel, table=True):
     enabled: bool = Field(default=True)
     # NULL means "use the profile default" for each of these.
     model_group_uuid: Optional[str] = Field(default=None, foreign_key="model_groups.uuid", ondelete="SET NULL")
+    # A single model, for the common case where a stack of one is pure ceremony. Mutually
+    # exclusive with model_group_uuid — enforced by WatchProfileSourceWrite, not the DB
+    # row, the same way ModelGroupMember handles its own model_name/child_group_uuid pair.
+    # Not an FK: models are files under MODELS_ROOT, not rows.
+    model_name: Optional[str] = Field(default=None)
     analysis_fps: Optional[float] = Field(default=None)
     analysis_width: Optional[int] = Field(default=None)
     record_retention_s: Optional[float] = Field(default=None)
@@ -1719,6 +1724,8 @@ class WatchProfile(TimestampModel, table=True):
     tracker_typename: str = Field(default="IouTracker")
     tracker_params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     default_model_group_uuid: Optional[str] = Field(default=None, foreign_key="model_groups.uuid", ondelete="SET NULL")
+    # The single-model counterpart of default_model_group_uuid; see WatchProfileSource.
+    default_model_name: Optional[str] = Field(default=None)
     # Analysis rate and width are first-class because per-frame inference over
     # base64 HTTP is the throughput ceiling: 2–5 fps at 640 px tracks cats fine and
     # cuts payloads ~10x. Recording is unaffected — MediaMTX records the full-rate,
@@ -1836,6 +1843,7 @@ class WatchProfileSourceRead(OrmModel):
     order: int = 0
     enabled: bool = True
     model_group_uuid: Optional[str] = None
+    model_name: Optional[str] = None
     analysis_fps: Optional[float] = None
     analysis_width: Optional[int] = None
     record_retention_s: Optional[float] = None
@@ -1851,6 +1859,7 @@ class WatchProfileSourceWrite(ApiModel):
     order: int = 0
     enabled: bool = True
     model_group_uuid: Optional[str] = None
+    model_name: Optional[str] = None
     analysis_fps: Optional[float] = None
     analysis_width: Optional[int] = None
     record_retention_s: Optional[float] = None
@@ -1866,6 +1875,10 @@ class WatchProfileSourceWrite(ApiModel):
             raise ValueError("analysis_fps must be positive when set")
         if self.analysis_width is not None and self.analysis_width <= 0:
             raise ValueError("analysis_width must be positive when set")
+        # Both set has no sensible reading — silently preferring one would make the
+        # UI's other dropdown a control that does nothing.
+        if self.model_group_uuid and self.model_name:
+            raise ValueError("a source selects either a model stack or a single model, not both")
         return self
 
 
@@ -1977,6 +1990,7 @@ class WatchProfileRead(OrmModel):
     tracker_typename: str
     tracker_params_json: Dict[str, Any] = Field(default_factory=dict)
     default_model_group_uuid: Optional[str] = None
+    default_model_name: Optional[str] = None
     default_analysis_fps: float = 5.0
     default_analysis_width: int = 640
     sources: List[WatchProfileSourceRead] = Field(default_factory=list)
@@ -1994,12 +2008,19 @@ class WatchProfileCreate(ApiModel):
     tracker_typename: str = "IouTracker"
     tracker_params_json: Dict[str, Any] = Field(default_factory=dict)
     default_model_group_uuid: Optional[str] = None
+    default_model_name: Optional[str] = None
     default_analysis_fps: float = 5.0
     default_analysis_width: int = 640
     sources: List[WatchProfileSourceWrite] = Field(default_factory=list)
     rules: List[InteractionRuleWrite] = Field(default_factory=list)
     actions: List[WatchActionWrite] = Field(default_factory=list)
     label_lifetimes: List[LabelLifetimeWrite] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_default_models(self) -> "WatchProfileCreate":
+        if self.default_model_group_uuid and self.default_model_name:
+            raise ValueError("a watcher's default is either a model stack or a single model, not both")
+        return self
 
 
 class WatchProfileUpdate(ApiModel):
@@ -2009,6 +2030,7 @@ class WatchProfileUpdate(ApiModel):
     tracker_typename: Optional[str] = None
     tracker_params_json: Optional[Dict[str, Any]] = None
     default_model_group_uuid: Optional[str] = None
+    default_model_name: Optional[str] = None
     default_analysis_fps: Optional[float] = None
     default_analysis_width: Optional[int] = None
     # None = no change; [] = remove all.
@@ -2016,6 +2038,14 @@ class WatchProfileUpdate(ApiModel):
     rules: Optional[List[InteractionRuleWrite]] = None
     actions: Optional[List[WatchActionWrite]] = None
     label_lifetimes: Optional[List[LabelLifetimeWrite]] = None
+
+    @model_validator(mode="after")
+    def _validate_default_models(self) -> "WatchProfileUpdate":
+        # Only fires when the caller explicitly sends both as non-null; a PATCH that
+        # sets one and omits the other is the ordinary way to switch between them.
+        if self.default_model_group_uuid and self.default_model_name:
+            raise ValueError("a watcher's default is either a model stack or a single model, not both")
+        return self
 
 
 class WatchEventRead(OrmModel):

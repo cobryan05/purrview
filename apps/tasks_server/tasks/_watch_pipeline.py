@@ -232,3 +232,21 @@ def expand_model_group(group_uuid: Optional[str], groups_by_uuid: Dict[str, Any]
 
     _walk(group_uuid)
     return names
+
+
+def resolve_model_names(
+    group_uuid: Optional[str],
+    model_name: Optional[str],
+    groups_by_uuid: Dict[str, Any],
+) -> List[str]:
+    """Resolve a (stack, single model) pair into the models to run.
+
+    A watch source picks *either* a stack or one bare model — wrapping a single model
+    in a one-member stack just to run it is ceremony the config should not demand. The
+    two are mutually exclusive at the API layer, but a row written before that check
+    existed could hold both, so the stack wins here rather than raising: a watcher that
+    detects with too much is recoverable, one that refuses to start is not.
+    """
+    if group_uuid:
+        return expand_model_group(group_uuid, groups_by_uuid)
+    return [model_name] if model_name else []

@@ -6365,6 +6365,7 @@ class DbClient:
                 order=src.order,
                 enabled=src.enabled,
                 model_group_uuid=src.model_group_uuid,
+                model_name=src.model_name,
                 analysis_fps=src.analysis_fps,
                 analysis_width=src.analysis_width,
                 record_retention_s=src.record_retention_s,
@@ -6457,6 +6458,7 @@ class DbClient:
                 tracker_typename=data.tracker_typename,
                 tracker_params_json=data.tracker_params_json,
                 default_model_group_uuid=data.default_model_group_uuid,
+                default_model_name=data.default_model_name,
                 default_analysis_fps=data.default_analysis_fps,
                 default_analysis_width=data.default_analysis_width,
             )

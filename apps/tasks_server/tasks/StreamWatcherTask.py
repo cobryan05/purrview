@@ -50,7 +50,7 @@ from apps.helpers.watch.geometry import zone_from_row
 from apps.helpers.watch.rules import RuleSpec
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
-from ._watch_pipeline import WatchPipeline, build_label_lifetimes, expand_model_group
+from ._watch_pipeline import WatchPipeline, build_label_lifetimes, resolve_model_names
 from .Registry import register_task
 from .Task import Task
 from .utils.sourceHelper import SourceHelper
@@ -283,9 +283,16 @@ class StreamWatcherTask(Task):
             zones = [zone_from_row(z) for z in src.zones]
             engine = WatchEngine(rules=rule_specs, zones=zones, source_uuid=src.source_uuid)
 
-            model_names = expand_model_group(
-                src.model_group_uuid or self._profile.default_model_group_uuid, groups_by_uuid
-            )
+            # A source that names either a stack or a model overrides the profile
+            # wholesale; only a source that names neither inherits the default. Falling
+            # back field-by-field would let a source's single model be silently union-ed
+            # with the profile's default stack.
+            if src.model_group_uuid or src.model_name:
+                model_names = resolve_model_names(src.model_group_uuid, src.model_name, groups_by_uuid)
+            else:
+                model_names = resolve_model_names(
+                    self._profile.default_model_group_uuid, self._profile.default_model_name, groups_by_uuid
+                )
             if not model_names:
                 self.log(f"Source {src.source_uuid} has no models configured — nothing will be detected on it")
 

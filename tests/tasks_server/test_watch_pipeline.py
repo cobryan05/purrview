@@ -20,6 +20,7 @@ from apps.tasks_server.tasks._watch_pipeline import (
     build_label_lifetimes,
     downscale_to_width,
     expand_model_group,
+    resolve_model_names,
 )
 
 CAT = "label-cat"
@@ -265,3 +266,22 @@ class TestExpandModelGroup:
 
     def test_none_group_yields_nothing(self):
         assert expand_model_group(None, {}) == []
+
+
+class TestResolveModelNames:
+    """A watch source picks either a Model Stack or one bare model."""
+
+    def test_a_bare_model_needs_no_stack(self):
+        assert resolve_model_names(None, "cat_detector", {}) == ["cat_detector"]
+
+    def test_a_stack_is_still_expanded(self):
+        groups = {"g1": {"members": [{"order": 0, "model_name": "first"}, {"order": 1, "model_name": "second"}]}}
+        assert resolve_model_names("g1", None, groups) == ["first", "second"]
+
+    def test_neither_yields_nothing(self):
+        assert resolve_model_names(None, None, {}) == []
+
+    def test_a_row_holding_both_prefers_the_stack_rather_than_raising(self):
+        """The API rejects the pair, but a pre-existing row must still start the watcher."""
+        groups = {"g1": {"members": [{"order": 0, "model_name": "from_stack"}]}}
+        assert resolve_model_names("g1", "bare", groups) == ["from_stack"]

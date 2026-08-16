@@ -3503,9 +3503,11 @@ class Manager:
                     errors.append(f"Rule {rule.name!r}: subject {side} references a zone that no longer exists.")
 
         for src in profile.sources:
-            if src.model_group_uuid is None and profile.default_model_group_uuid is None:
+            has_own = bool(src.model_group_uuid or src.model_name)
+            has_default = bool(profile.default_model_group_uuid or profile.default_model_name)
+            if not has_own and not has_default:
                 errors.append(
-                    f"Source {src.source_uuid} has no model stack and the profile sets no default, "
+                    f"Source {src.source_uuid} has no models selected and the profile sets no default, "
                     "so nothing will be detected on it."
                 )
             fps = src.analysis_fps or profile.default_analysis_fps

@@ -29,6 +29,7 @@ FAKE_PROFILE = {
     "trackerTypename": "IouTracker",
     "trackerParamsJson": {},
     "defaultModelGroupUuid": None,
+    "defaultModelName": None,
     "defaultAnalysisFps": 5.0,
     "defaultAnalysisWidth": 640,
     "sources": [
@@ -39,6 +40,7 @@ FAKE_PROFILE = {
             "order": 0,
             "enabled": True,
             "modelGroupUuid": None,
+            "modelName": None,
             "analysisFps": 5.0,
             "analysisWidth": 640,
             "recordRetentionS": 45.0,
@@ -94,11 +96,23 @@ FAKE_PROFILE = {
 }
 
 
+MODELS = ["cat_detector.onnx", "yolov8n.onnx"]
+
+MODEL_GROUPS = [
+    {"uuid": "grp-1", "name": "House stack", "description": "", "mergePolicy": "first_wins", "members": []},
+]
+
 LABELS = [
     {"uuid": "label-cat", "name": "Cat"},
     {"uuid": "label-tabby", "name": "Tabby"},
     {"uuid": "label-litterbox", "name": "Litter Box"},
 ]
+
+# Same profile, but the source runs one bare model rather than a stack.
+SINGLE_MODEL_PROFILE = {
+    **FAKE_PROFILE,
+    "sources": [{**FAKE_PROFILE["sources"][0], "modelGroupUuid": None, "modelName": "cat_detector.onnx"}],
+}
 
 # Same profile, but the rule's second subject is a *label* rather than a zone —
 # "Tabby is inside Litter Box".
@@ -166,6 +180,27 @@ def _mock_watch_apis(page: Page, profiles: list | None = None, on_create=None, o
             status=200,
             content_type="application/json",
             body=json.dumps({"status": "success", "valid": True, "errors": [], "warnings": []}),
+        ),
+    )
+
+    # A watcher can select a Model Stack *or* a single model, so the editor reads both
+    # lists. Unmocked, fetchModelsList() falls back to [] and the Models optgroup would
+    # silently not exist — which is the thing under test.
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/models"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "models": MODELS}),
+        ),
+    )
+
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/model-groups"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "groups": MODEL_GROUPS}),
         ),
     )
 
@@ -303,6 +338,61 @@ class TestWatcherEditor:
         rule = saved["rules"][0]
         assert rule["subjectBKind"] == "label", rule
         assert rule["subjectBRef"] == "label-litterbox", rule
+
+    def test_a_source_can_choose_an_individual_model_not_just_a_stack(self, page: Page, base_url: str):
+        """Running one model used to require wrapping it in a one-member Model Stack."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        choice = page.locator("[data-testid='watch-model-choice']").first
+        expect(choice.locator("optgroup[label='Model stacks'] option")).to_have_count(1)
+        expect(choice.locator("optgroup[label='Models'] option")).to_have_count(len(MODELS))
+
+    def test_a_source_reopens_on_its_chosen_model(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[SINGLE_MODEL_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        choice = page.locator("[data-testid='watch-model-choice']").first
+        expect(choice).to_have_value("m:cat_detector.onnx")
+
+    def test_saving_an_individual_model_sends_it_and_clears_the_stack(self, page: Page, base_url: str):
+        """Both keys must go out: omitting the stack would leave the old one in place."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-model-choice']").first.select_option("m:yolov8n.onnx")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        source = saved["sources"][0]
+        assert source["modelName"] == "yolov8n.onnx", source
+        assert source["modelGroupUuid"] is None, source
+
+    def test_saving_a_stack_clears_any_individual_model(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[SINGLE_MODEL_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-model-choice']").first.select_option("g:grp-1")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        source = saved["sources"][0]
+        assert source["modelGroupUuid"] == "grp-1", source
+        assert source["modelName"] is None, source
+
+    def test_the_profile_default_can_also_be_an_individual_model(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-default-model-choice']").select_option("m:cat_detector.onnx")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: "defaultModelName" in saved)
+        assert saved["defaultModelName"] == "cat_detector.onnx", saved
+        assert saved["defaultModelGroupUuid"] is None, saved
 
     def test_adding_a_rule_appends_a_row(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])

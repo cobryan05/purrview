@@ -1,6 +1,7 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
+import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import {
   fetchWatchProfiles, createWatchProfile, updateWatchProfile, deleteWatchProfile,
   validateWatchProfile,
@@ -71,6 +72,93 @@ function select(options, value, onChange) {
   return sel;
 }
 
+// ── Model selection ─────────────────────────────────────────────────────────
+// A watcher picks *either* a Model Stack or one bare model. Two dropdowns would need a
+// rule about which wins; one dropdown with two optgroups makes them exclusive by
+// construction, which is exactly what the backend enforces. The option values are
+// prefixed because a stack uuid and a model name share no namespace and a bare value
+// could not say which it was.
+const MODEL_CHOICE_GROUP = 'g:';
+const MODEL_CHOICE_MODEL = 'm:';
+
+/**
+ * Encode a stored (groupUuid, modelName) pair as an option value.
+ * @returns {string} '' when neither is set
+ */
+function modelChoiceValue(groupUuid, modelName) {
+  if (groupUuid) return `${MODEL_CHOICE_GROUP}${groupUuid}`;
+  if (modelName) return `${MODEL_CHOICE_MODEL}${modelName}`;
+  return '';
+}
+
+/**
+ * Decode an option value back into the two fields the API expects.
+ *
+ * Both are returned every time, one of them null — the payload has to *clear* the
+ * other field, not omit it, or switching a source from a stack to a single model
+ * would leave the old stack in place and the backend would reject the pair.
+ *
+ * @returns {{modelGroupUuid: ?string, modelName: ?string}}
+ */
+function readModelChoice(value) {
+  if (value?.startsWith(MODEL_CHOICE_GROUP)) {
+    return { modelGroupUuid: value.slice(MODEL_CHOICE_GROUP.length), modelName: null };
+  }
+  if (value?.startsWith(MODEL_CHOICE_MODEL)) {
+    return { modelGroupUuid: null, modelName: value.slice(MODEL_CHOICE_MODEL.length) };
+  }
+  return { modelGroupUuid: null, modelName: null };
+}
+
+/**
+ * A `<select>` of "(fallback) | stacks… | models…".
+ *
+ * @param {{groupOptions: Array, modelNames: string[]}} ctx
+ * @param {string} emptyText  what "neither" means here — inherit, or nothing at all
+ * @param {string} value      from modelChoiceValue()
+ */
+function modelChoiceSelect(ctx, emptyText, value, onChange, { testid = 'watch-model-choice' } = {}) {
+  const sel = document.createElement('select');
+  // The profile default and the per-source override are the same widget in different
+  // places; distinct testids because the default renders first and would otherwise
+  // capture every `.first` locator aimed at a source row.
+  sel.dataset.testid = testid;
+
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = emptyText;
+  sel.appendChild(none);
+
+  const addGroup = (label, options) => {
+    if (!options.length) return;
+    const group = document.createElement('optgroup');
+    group.label = label;
+    for (const opt of options) {
+      const o = document.createElement('option');
+      o.value = opt.key;
+      o.textContent = opt.text;
+      group.appendChild(o);
+    }
+    sel.appendChild(group);
+  };
+
+  addGroup('Model stacks', ctx.groupOptions.map(g => ({ key: `${MODEL_CHOICE_GROUP}${g.key}`, text: g.text })));
+  addGroup('Models', ctx.modelNames.map(name => ({ key: `${MODEL_CHOICE_MODEL}${name}`, text: name })));
+
+  // A stack or model that has since been deleted would otherwise silently fall back to
+  // the first option and be saved as that on the next edit. Keep it, marked.
+  if (value && !sel.querySelector(`option[value="${CSS.escape(value)}"]`)) {
+    const orphan = document.createElement('option');
+    orphan.value = value;
+    orphan.textContent = `${value.slice(2)} (missing)`;
+    sel.appendChild(orphan);
+  }
+
+  sel.value = value || '';
+  if (onChange) sel.addEventListener('change', onChange);
+  return sel;
+}
+
 function numberInput(value, { step = '1', min = null, placeholder = '' } = {}) {
   const input = document.createElement('input');
   input.type = 'number';
@@ -129,9 +217,10 @@ function buildSourceRow(src, ctx) {
   sourceSel.dataset.testid = 'watch-source-select';
   row.appendChild(wfield('Source', sourceSel));
 
-  const modelSel = select(
-    [{ key: '', text: '(profile default)' }, ...ctx.modelGroupOptions],
-    src.modelGroupUuid || '',
+  const modelSel = modelChoiceSelect(
+    ctx,
+    '(profile default)',
+    modelChoiceValue(src.modelGroupUuid, src.modelName),
     ctx.onAnyChange,
   );
   row.appendChild(wfield('Models', modelSel));
@@ -185,7 +274,7 @@ function buildSourceRow(src, ctx) {
       sourceUuid: sourceSel.value,
       order: 0,
       enabled: true,
-      modelGroupUuid: modelSel.value || null,
+      ...readModelChoice(modelSel.value),
       analysisFps: fps.value === '' ? null : num(fps, null),
       analysisWidth: width.value === '' ? null : num(width, null),
       recordRetentionS: retention.value === '' ? null : num(retention, null),
@@ -437,12 +526,14 @@ export async function renderWatchProfileManager({ target }) {
       onNew: () => openEditor(null),
     });
 
-    const [profilesMap, sourcesMap, labelsMap, modelGroups] = await Promise.all([
+    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames] = await Promise.all([
       fetchWatchProfiles().catch(() => new Map()),
       fetchSourceList().catch(() => new Map()),
       // fetchLabels() returns a Map, not an array — the fallback must match.
       fetchLabels().catch(() => new Map()),
       fetchModelGroups().catch(() => new Map()),
+      // fetchModelsList() is the array of names, unlike its Map-returning neighbours.
+      fetchModelsList().catch(() => []),
     ]);
 
     const sourceOptions = [...sourcesMap.values()].map(s => ({ key: s.uuid, text: s.name || s.uuid }));
@@ -513,10 +604,12 @@ export async function renderWatchProfileManager({ target }) {
       description.addEventListener('input', onAnyChange);
       identity.appendChild(wfield('Description', description));
 
-      const defaultModels = select(
-        [{ key: '', text: '(none)' }, ...modelGroupOptions],
-        profile?.defaultModelGroupUuid || '',
+      const defaultModels = modelChoiceSelect(
+        { groupOptions: modelGroupOptions, modelNames },
+        '(none)',
+        modelChoiceValue(profile?.defaultModelGroupUuid, profile?.defaultModelName),
         onAnyChange,
+        { testid: 'watch-default-model-choice' },
       );
       identity.appendChild(wfield('Default models', defaultModels));
       screen.editorBody.appendChild(identity);
@@ -533,7 +626,8 @@ export async function renderWatchProfileManager({ target }) {
       function addSource(src) {
         const entry = buildSourceRow(src, {
           sourceOptions,
-          modelGroupOptions,
+          groupOptions: modelGroupOptions,
+          modelNames,
           sourceNameFor,
           onZonesChanged: () => refreshZoneOptions(),
           onAnyChange,
@@ -653,7 +747,10 @@ export async function renderWatchProfileManager({ target }) {
           name: nameInput.value.trim(),
           description: description.value.trim(),
           enabled: enabled.checked,
-          defaultModelGroupUuid: defaultModels.value || null,
+          // Both keys, always: switching away from a stack has to null it out, or the
+          // backend sees a stack *and* a model and rejects the pair.
+          defaultModelGroupUuid: readModelChoice(defaultModels.value).modelGroupUuid,
+          defaultModelName: readModelChoice(defaultModels.value).modelName,
           sources: sourceRows.map((entry, i) => ({ ...entry.getSource(), order: i })),
           rules: ruleRows.map((entry, i) => ({ ...entry.getRule(), order: i })),
           actions: actionRows.map((entry, i) => ({ ...entry.getAction(), order: i })),

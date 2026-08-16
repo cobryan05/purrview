@@ -251,6 +251,83 @@ class TestNestedWrites:
         assert "twice" in body["message"]
 
 
+class TestModelSelection:
+    """A watcher runs either a Model Stack or a single model, at both levels.
+
+    Wrapping one model in a one-member stack just to run it was the only way to do
+    this, which made the stack a piece of ceremony rather than a choice.
+    """
+
+    async def test_a_source_can_name_a_single_model(self, http_client):
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid, "modelName": "cat_detector"}],
+        )
+        assert body["status"] == "success", body
+        src = body["profile"]["sources"][0]
+        assert src["modelName"] == "cat_detector"
+        assert src["modelGroupUuid"] is None
+
+    async def test_a_profile_default_can_be_a_single_model(self, http_client):
+        body = await _create_profile(http_client, "House cams", defaultModelName="cat_detector")
+        assert body["status"] == "success", body
+        assert body["profile"]["defaultModelName"] == "cat_detector"
+
+    async def test_a_source_naming_both_is_rejected(self, http_client):
+        """Both set has no reading — silently preferring one makes the other dropdown a lie."""
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[
+                {
+                    "sourceUuid": source_uuid,
+                    "modelName": "cat_detector",
+                    "modelGroupUuid": "22222222-2222-2222-2222-222222222222",
+                }
+            ],
+        )
+        assert body["status"] == "failure", body
+
+    async def test_a_profile_default_naming_both_is_rejected(self, http_client):
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            defaultModelName="cat_detector",
+            defaultModelGroupUuid="22222222-2222-2222-2222-222222222222",
+        )
+        assert body["status"] == "failure", body
+
+    async def test_switching_a_source_from_a_model_to_none_clears_it(self, http_client):
+        """The editor sends both keys on every save; an explicit null must actually clear."""
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid, "modelName": "cat_detector"}],
+            )
+        )["profile"]
+
+        r = await http_client.patch(
+            f"/api/watch-profiles/{profile['uuid']}",
+            json={"sources": [{"sourceUuid": source_uuid, "modelName": None, "modelGroupUuid": None}]},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["profile"]["sources"][0]["modelName"] is None
+
+    async def test_clearing_a_profile_default_model_persists(self, http_client):
+        profile = (await _create_profile(http_client, "House cams", defaultModelName="cat_detector"))["profile"]
+        r = await http_client.patch(
+            f"/api/watch-profiles/{profile['uuid']}",
+            json={"defaultModelName": None, "defaultModelGroupUuid": None},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["profile"]["defaultModelName"] is None
+
+
 class TestReferentialIntegrity:
     async def test_rule_referencing_an_unknown_zone_is_rejected(self, http_client):
         """A dangling zone reference means the rule silently never fires."""
@@ -421,7 +498,33 @@ class TestValidateEndpoint:
         r = await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")
         report = r.json()
         assert report["valid"] is False
-        assert any("model stack" in e for e in report["errors"])
+        assert any("no models selected" in e for e in report["errors"])
+
+    async def test_a_source_with_only_a_bare_model_is_not_an_error(self, http_client):
+        """A single model is a complete selection — it does not need a one-member stack."""
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid, "modelName": "cat_detector"}],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert not any("no models selected" in e for e in report["errors"]), report
+
+    async def test_a_profile_default_bare_model_covers_its_sources(self, http_client):
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                defaultModelName="cat_detector",
+                sources=[{"sourceUuid": source_uuid}],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert not any("no models selected" in e for e in report["errors"]), report
 
     async def test_no_enabled_rules_is_a_warning_not_an_error(self, http_client):
         source_uuid = await _make_source(http_client)
