@@ -128,6 +128,55 @@ class TestOverrideLifecycle:
         assert mgr.get_training_base_url() == _DEFAULT_TRAINING
 
 
+class TestClientCleanup:
+    async def test_replaced_inference_client_releases_its_pool(self):
+        """The generated client has no close(); its urllib3 pool is only
+        reachable through rest_client, so dropping the reference strands the
+        connections to the old host for the life of the process."""
+        mgr = _make_manager()
+        first = mgr.get_inference_api_client()
+        first.rest_client.pool_manager.clear = MagicMock()
+        with _patch_overrides("http://gpu-box:8001", None):
+            await mgr.reload_url_overrides()
+        assert mgr.get_inference_api_client() is not first
+        first.rest_client.pool_manager.clear.assert_called_once()
+
+    async def test_unchanged_override_keeps_the_pool(self):
+        """A no-op reload must not tear down a live pool — the worker calls this
+        every pass."""
+        mgr = _make_manager()
+        client = mgr.get_inference_api_client()
+        client.rest_client.pool_manager.clear = MagicMock()
+        with _patch_overrides(None, None):
+            await mgr.reload_url_overrides()
+        client.rest_client.pool_manager.clear.assert_not_called()
+
+    async def test_stop_closes_the_settings_client(self):
+        mgr = _make_manager()
+        settings_client = mgr._url_settings_client
+        await mgr.stop()
+        assert settings_client.is_closed
+
+
+class TestReloadEndpoint:
+    async def test_failure_is_reported_as_an_error_status(self, http_client):
+        """The caller (image_tagging_server) only inspects the HTTP status, so a
+        200 on failure reads as a successful reload and hides a split brain."""
+        with patch(
+            "apps.tasks_server.manager.read_url_overrides",
+            AsyncMock(side_effect=RuntimeError("db_server unreachable")),
+        ):
+            r = await http_client.post("/api/reload-server-config")
+        assert r.status_code >= 500
+        assert r.json()["status"] != "success"
+
+    async def test_success_is_200(self, http_client):
+        with _patch_overrides(None, None):
+            r = await http_client.post("/api/reload-server-config")
+        assert r.status_code == 200
+        assert r.json()["status"] == "success"
+
+
 class TestTasksResolveThroughManager:
     """The point of the fix: tasks must ask the manager, not APPS_CONFIG."""
 

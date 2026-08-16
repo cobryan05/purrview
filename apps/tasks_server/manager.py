@@ -126,11 +126,52 @@ class Manager:
 
         if effective_inference != self._inference_api_client.configuration.host:
             logger.info(f"Inference server URL -> {effective_inference}")
+            previous = self._inference_api_client
             self._inference_api_client = inference_client.ApiClient(inference_client.Configuration(effective_inference))
+            self._release_api_client(previous)
 
         if effective_training != self._training_base_url:
             logger.info(f"Training server URL -> {effective_training}")
             self._training_base_url = effective_training
+
+    @staticmethod
+    def _release_api_client(client: Any) -> None:
+        """Release the connection pool held by a discarded generated ApiClient.
+
+        The generated client has no close(): its urllib3 PoolManager is only
+        reachable through rest_client, and nothing finalises it. Dropping the
+        reference therefore leaves the sockets to the old host open, so each
+        Settings → Servers change strands a pool for the life of the process.
+
+        Tasks are told to fetch the client at the point of use rather than cache
+        it (see get_inference_api_client), so by the time a swap happens nothing
+        should still be holding this one.
+        """
+        pool_manager = getattr(getattr(client, "rest_client", None), "pool_manager", None)
+        if pool_manager is None:
+            return
+        try:
+            pool_manager.clear()
+        except Exception as e:
+            logger.warning(f"Could not release the previous API client's connection pool: {e}")
+
+    async def stop(self) -> None:
+        """Stop the worker loop and release the clients this manager owns.
+
+        Called from the app lifespan on shutdown. Without it the settings
+        httpx client is never closed, which leaks in tests that build many
+        managers and logs an unclosed-session warning on teardown.
+        """
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Worker task raised during shutdown: {e}")
+        await self._url_settings_client.aclose()
+        self._release_api_client(self._inference_api_client)
 
     async def _reload_url_overrides_safe(self) -> None:
         """reload_url_overrides() wrapped for the worker loop, where an exception

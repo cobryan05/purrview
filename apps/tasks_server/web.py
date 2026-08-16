@@ -268,6 +268,7 @@ class WebApp:
         yield  # This allows the app to run
 
         logging.info("Application is shutting down...")
+        await self._manager.stop()
 
     def app(self) -> FastAPI:
         """
@@ -368,7 +369,14 @@ class WebApp:
                 return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "config": config})
             except Exception as e:
                 logger.error(e, exc_info=True)
-                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
+                # 500, not 200: image_tagging_server decides whether the reload
+                # took by looking at the status code alone, so a 200 here reads
+                # as success and hides the split brain (UI on the new URL, tasks
+                # still on the old one) until the next worker pass.
+                return JSONResponse(
+                    status_code=500,
+                    content={"status": WebApp.FAILURE_KEY, "message": str(e)},
+                )
 
         @self._app.get(
             "/api/tasks/types/list",
