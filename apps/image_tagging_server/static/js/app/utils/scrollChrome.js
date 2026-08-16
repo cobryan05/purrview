@@ -31,10 +31,32 @@ const DELTA_THRESHOLD = 6;
 const ALWAYS_SHOWN_ABOVE = 80;
 
 /**
- * Never hide out from under an open menu or a control being used: the filter
- * popover is anchored to the chip bar and rides along with the transform, and
- * anything focused inside the chrome (a text filter, a dropdown) would be
- * yanked off screen mid-interaction.
+ * Text entry is the one thing that must not scroll away underneath the user:
+ * you cannot keep typing into a field you can no longer see. Everything else in
+ * the chrome — sliders, selects, checkboxes, buttons — keeps focus after a
+ * plain click, so treating focus alone as "in use" pinned the bars open for the
+ * rest of the session. The similar-search modal made that obvious: its
+ * threshold slider sits in the toolbar, and adjusting it (the whole point of
+ * that modal) meant the bars never hid again.
+ *
+ * @param {Element|null} el
+ * @returns {boolean}
+ */
+function isTextEntry(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === 'TEXTAREA') return true;
+  if (tag !== 'INPUT') return false;
+  // Everything that isn't a button/toggle/slider takes typed input of some kind
+  // (text, search, number, date, …), including <input> with no type at all.
+  return !['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'color', 'file'].includes(el.type);
+}
+
+/**
+ * Never hide out from under an open menu or a field being typed into: the
+ * filter popover is anchored to the chip bar and rides along with the
+ * transform, and a text field would be yanked off screen mid-edit.
  *
  * @param {ParentNode} root  where to look for an open popover — the document for
  *   the page context, the modal's content div for a modal.
@@ -43,8 +65,8 @@ const ALWAYS_SHOWN_ABOVE = 80;
 function chromeIsBusy(root) {
   if (root.querySelector('.review-filter-popover:not([hidden])')) return true;
   const active = document.activeElement;
-  if (!active || !active.closest?.('.main-tab-header, .review-sticky-top')) return false;
-  // In a modal only focus *inside this scroller* counts — a control focused in
+  if (!isTextEntry(active) || !active.closest?.('.main-tab-header, .review-sticky-top')) return false;
+  // In a modal only focus *inside this scroller* counts — a field focused in
   // another panel behind the modal must not pin this one's bars open.
   return root === document ? true : root.contains(active);
 }

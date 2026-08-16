@@ -50,22 +50,37 @@ def _mock_api(page: Page):
     )
 
 
-def _open_modal(page: Page, base_url: str):
+def _open_modal(page: Page, base_url: str, with_controls: bool = False):
+    """`with_controls` mirrors similarSearch.js, which passes a `modal-toolbar-row`
+    of its own controls (threshold slider, count field) into the sticky toolbar."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.evaluate(
-        """async (candidates) => {
+        """async ({ candidates, withControls }) => {
             const { showReviewModal } = await import('/app-static/js/app/review/main.js');
+            let row = null;
+            if (withControls) {
+                row = document.createElement('div');
+                row.className = 'modal-toolbar-row';
+                const slider = document.createElement('input');
+                slider.type = 'range';
+                slider.className = 'modal-threshold-slider';
+                const count = document.createElement('input');
+                count.type = 'number';
+                count.className = 'modal-count-input';
+                row.append(slider, count);
+            }
             await showReviewModal({
                 title: 'Scroll Chrome Test',
                 initialViewFilter: 'images',
+                toolbarControls: row,
                 fetchImages: async ({ afterUuid, limit }) => {
                     const start = afterUuid ? candidates.findIndex(c => c.uuid === afterUuid) + 1 : 0;
                     return candidates.slice(start, start + limit);
                 },
             });
         }""",
-        CANDIDATES,
+        {"candidates": CANDIDATES, "withControls": with_controls},
     )
     page.wait_for_selector(".compare-modal-content .review-sticky-top", timeout=4000)
 
@@ -171,3 +186,51 @@ class TestModalScrollChrome:
         assert result["hidden"], "precondition: bars should have hidden on scroll-down"
         assert abs(result["after"] - result["before"]) < 2, f"modal header moved: {result}"
         assert result["closeVisible"], "close button must stay reachable"
+
+
+class TestFocusedControlsDoNotPinTheBars:
+    """Regression: focus alone used to count as "chrome in use", so one click on
+    a toolbar control pinned the bars open for the rest of the modal's life.
+    The similar-search modals put a threshold slider right there — adjusting it,
+    which is the whole point of those modals, permanently disabled the hiding.
+    Only text entry pins the bars now (you can't type into what you can't see).
+    """
+
+    def _scroll_and_report(self, page: Page):
+        return page.evaluate("""async () => {
+            const content = document.querySelector('.compare-modal-content');
+            const spacer = document.createElement('div');
+            spacer.style.height = '4000px';
+            spacer.style.flex = '0 0 auto';
+            content.appendChild(spacer);
+            await new Promise(r => requestAnimationFrame(r));
+            content.scrollTop = 1200;
+            await new Promise(r => requestAnimationFrame(r));
+            await new Promise(r => setTimeout(r, 300));
+            const active = document.activeElement;
+            return {
+                hidden: content.classList.contains('chrome-hidden'),
+                activeInBars: !!active?.closest?.('.review-sticky-top'),
+            };
+        }""")
+
+    def test_a_focused_slider_still_lets_the_bars_hide(self, page: Page, base_url: str):
+        _mock_api(page)
+        _open_modal(page, base_url, with_controls=True)
+
+        page.locator(".compare-modal-content input.modal-threshold-slider").click()
+        result = self._scroll_and_report(page)
+
+        assert result["activeInBars"], "precondition: the slider should hold focus after a click"
+        assert result["hidden"], "a focused slider must not pin the bars open"
+
+    def test_a_focused_text_field_pins_the_bars(self, page: Page, base_url: str):
+        """The other half of the rule: a field being typed into must not scroll away."""
+        _mock_api(page)
+        _open_modal(page, base_url, with_controls=True)
+
+        page.locator(".compare-modal-content input.modal-count-input").click()
+        result = self._scroll_and_report(page)
+
+        assert result["activeInBars"], "precondition: the number field should hold focus after a click"
+        assert not result["hidden"], "a focused text field must keep the bars visible"
