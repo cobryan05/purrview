@@ -123,6 +123,140 @@ class TestImageLabelSidecarWrite:
         assert [row["status"] for row in data["image_labels"]] == ["absent"]
 
 
+class TestImageLabelSidecarCreation:
+    """Images with no bounding boxes have no sidecar until an assessment needs one.
+
+    Sidecars are otherwise only ever created by a bbox write, and "I checked,
+    this label is not here" is precisely the annotation made on a box-free
+    image — so refusing to create the file lost exactly the assessments the
+    sidecars exist to survive.
+
+    The file is created only when it would carry something: an image with no
+    assessments and no boxes gets none, because "this image exists" is already
+    said by the image.
+    """
+
+    @pytest.fixture
+    async def boxless(self, db_client, files_root):
+        img = files_root / "boxless.png"
+        img.write_bytes(make_png())
+        record = await db_client.add_image(img)
+        return record.uuid, img, img.with_suffix(".json")
+
+    async def test_absent_on_a_boxless_image_creates_the_sidecar(self, http_client, label_uuid, boxless):
+        _image_uuid, _img, side = boxless
+        assert not side.exists(), "fixture must start with no sidecar"
+
+        r = await http_client.post(
+            "/api/images/labels/set",
+            json={"imagePath": "boxless.png", "labelUuid": label_uuid, "status": "absent"},
+        )
+        assert r.status_code == 200
+
+        assert side.exists(), "an absent mark on a boxless image must reach disk"
+        data = json.loads(side.read_text())
+        assert [row["status"] for row in data["image_labels"]] == ["absent"]
+
+    async def test_created_sidecar_is_reconcilable(self, http_client, label_uuid, boxless):
+        """A sidecar with no uuid/boxes is skipped by the reconcile path, so
+        creating one without them would trade silent loss for silent loss."""
+        image_uuid, _img, side = boxless
+        await http_client.post(
+            "/api/images/labels/set",
+            json={"imagePath": "boxless.png", "labelUuid": label_uuid, "status": "absent"},
+        )
+
+        data = json.loads(side.read_text())
+        assert data["uuid"] == image_uuid
+        assert data["boxes"] == []
+        assert data["filename"]
+
+    async def test_created_sidecar_survives_a_rebuild(self, http_client, db_client, files_root, label_uuid, boxless):
+        _image_uuid, img, _side = boxless
+        await http_client.post(
+            "/api/images/labels/set",
+            json={"imagePath": "boxless.png", "labelUuid": label_uuid, "status": "absent"},
+        )
+
+        fresh = DbClient(db_dir=files_root.parent / "freshbox", memory=True, files_root=files_root)
+        await fresh.init_db()
+        try:
+            await fresh.add_label("cat", "#FF0000")
+            record = await fresh.sync_image_from_json(img)
+            rows = await fresh.get_image_labels_for_sidecar(record.uuid)
+        finally:
+            await fresh.close()
+
+        assert [(r["label_name"], r["status"]) for r in rows] == [("cat", "absent")]
+
+    async def test_bulk_set_absent_creates_the_sidecar(self, http_client, label_uuid, boxless):
+        image_uuid, _img, side = boxless
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setAbsent", "labelUuids": [label_uuid]},
+        )
+        assert r.status_code == 200
+
+        assert side.exists()
+        data = json.loads(side.read_text())
+        assert [row["status"] for row in data["image_labels"]] == ["absent"]
+        assert data["uuid"] == image_uuid
+
+    async def test_no_sidecar_when_there_is_nothing_to_record(self, http_client, label_uuid, boxless):
+        """ "This image exists" is not information — the image file already says
+        that. Without assessments or boxes there is nothing to preserve, so no
+        file is written."""
+        _image_uuid, _img, side = boxless
+
+        # Reverting to uncertain deletes the row, leaving an image with no
+        # assessments and no boxes.
+        r = await http_client.post(
+            "/api/images/labels/set",
+            json={"imagePath": "boxless.png", "labelUuid": label_uuid, "status": "uncertain"},
+        )
+        assert r.status_code == 200
+        assert not side.exists(), "an empty sidecar is litter, not durability"
+
+    async def test_bulk_action_with_nothing_to_record_writes_no_file(self, http_client, label_uuid, boxless):
+        image_uuid, _img, side = boxless
+
+        r = await http_client.post(
+            "/api/images/bulk-apply-by-uuids",
+            json={"imageUuids": [image_uuid], "action": "setUncertain", "labelUuids": [label_uuid]},
+        )
+        assert r.status_code == 200
+        assert not side.exists()
+
+    async def test_clearing_the_last_assessment_still_updates_an_existing_sidecar(
+        self, http_client, label_uuid, boxless
+    ):
+        """Once the file exists, an empty list is a real instruction ("the user
+        cleared everything") and must be written — the skip rule is only about
+        creating a file, never about refusing to update one."""
+        _image_uuid, _img, side = boxless
+        for status in ("absent", "uncertain"):
+            r = await http_client.post(
+                "/api/images/labels/set",
+                json={"imagePath": "boxless.png", "labelUuid": label_uuid, "status": status},
+            )
+            assert r.status_code == 200
+
+        assert side.exists()
+        assert json.loads(side.read_text())["image_labels"] == []
+
+    async def test_recreated_sidecar_keeps_the_images_boxes(self, http_client, label_uuid, image_file, sidecar):
+        """A deleted sidecar is rebuilt from the DB, not stamped with boxes: []."""
+        bbox_uuid = await _seed_sidecar(http_client, label_uuid)
+        sidecar.unlink()
+
+        r = await _set_status(http_client, label_uuid, "absent")
+        assert r.status_code == 200
+
+        data = json.loads(sidecar.read_text())
+        assert [b["uuid"] for b in data["boxes"]] == [bbox_uuid], "must not erase boxes the DB still has"
+
+
 class TestImageLabelSidecarRestore:
     async def test_absent_survives_a_rebuild(self, http_client, files_root, image_file, label_uuid, sidecar, tmp_path):
         """A fresh DB restored from the sidecar recovers the ABSENT assessment."""
@@ -214,16 +348,22 @@ class TestImageLabelSidecarBackfill:
         assert [r["status"] for r in restored["image_labels"]] == ["absent"]
         assert restored["boxes"], "backfill must not clobber the boxes it doesn't own"
 
-    async def test_backfill_skips_images_with_no_sidecar(
+    async def test_backfill_creates_a_missing_sidecar(
         self, http_client, db_client, files_root, image_file, label_uuid, sidecar
     ):
-        """No sidecar means no file to repair — never invent a boxless one."""
-        await _seed_sidecar(http_client, label_uuid)
+        """A missing sidecar is written, complete, rather than skipped — the
+        images most likely to lack one are the boxless ones, which are exactly
+        the ones whose assessments have nowhere else to live."""
+        bbox_uuid = await _seed_sidecar(http_client, label_uuid)
         await _set_status(http_client, label_uuid, "absent")
+        image_uuid = json.loads(sidecar.read_text())["uuid"]
         sidecar.unlink()
 
         manager = Manager(db_client=db_client, files_root=files_root)
         stats = await manager.backfill_image_label_sidecars()
 
-        assert stats == {"written": 0, "skipped_no_sidecar": 1, "skipped_no_path": 0}
-        assert not sidecar.exists()
+        assert stats == {"written": 0, "created": 1, "skipped_no_data": 0, "skipped_no_path": 0}
+        data = json.loads(sidecar.read_text())
+        assert data["uuid"] == image_uuid
+        assert [b["uuid"] for b in data["boxes"]] == [bbox_uuid]
+        assert [r["status"] for r in data["image_labels"]] == ["absent"]

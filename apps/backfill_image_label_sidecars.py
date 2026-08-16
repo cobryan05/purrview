@@ -7,8 +7,11 @@ be independent of. This walks the assessments already in the DB and writes them
 into the sidecar next to each image.
 
 Idempotent: rerunning rewrites identical content, so an interrupted run can
-simply be repeated. Images with no sidecar yet are skipped rather than given a
-new one, because a sidecar with no `uuid`/`boxes` is invisible to reconcile.
+simply be repeated. An image with no sidecar yet gets a complete one (uuid,
+filename, its boxes from the DB, then the assessments) — a boxless image never
+had a sidecar to begin with, and it is exactly the kind that carries an
+"absent" assessment. An image with nothing to record — no assessments and no
+boxes — is left without a file rather than given an empty one.
 
 Run inside the container:
 
@@ -40,8 +43,8 @@ async def main() -> None:
         await db_client.close()
 
     print(
-        f"wrote {stats['written']} sidecars; "
-        f"skipped {stats['skipped_no_sidecar']} with no sidecar, "
+        f"updated {stats['written']} sidecars, created {stats['created']}; "
+        f"skipped {stats['skipped_no_data']} with nothing to record, "
         f"{stats['skipped_no_path']} with no resolvable path"
     )
 

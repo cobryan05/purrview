@@ -1945,6 +1945,31 @@ class DbClient:
             result = await session.exec(stmt)
             return list(result.all())
 
+    async def get_bboxes_for_images(self, image_uuids: List[str]) -> Dict[str, List[BBox]]:
+        """{image_uuid: [BBox]} for a batch, tags and label loaded.
+
+        Exists for the sidecar-creation path: an image whose sidecar is missing
+        needs its real boxes written alongside the assessments, and doing that
+        per image would put a query per image on a bulk action. Images with no
+        boxes are omitted — callers default the lookup themselves.
+        """
+        if not image_uuids:
+            return {}
+        out: Dict[str, List[BBox]] = {}
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(image_uuids):
+                stmt = (
+                    select(BBox)
+                    .where(BBox.image_uuid.in_(chunk))  # type: ignore[attr-defined]
+                    .options(
+                        selectinload(BBox.tags),
+                        selectinload(BBox.label),
+                    )
+                )
+                for bbox in (await session.exec(stmt)).all():
+                    out.setdefault(bbox.image_uuid, []).append(bbox)
+        return out
+
     async def delete_image(self, image_uuid: str) -> bool:
         """Delete an image by UUID. BBoxes will be deleted via CASCADE."""
         async with self._async_session_maker() as session:
@@ -2154,14 +2179,21 @@ class DbClient:
             except Exception as e:
                 logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
         existing.update(new_data)
-        # Atomic write: serialise to a sibling temp file then os.replace so a
-        # crash mid-write can never leave a torn/half-written sidecar (which a
-        # later overwrite-sync would then refuse — or, historically, wipe from).
-        serialized = json.dumps(existing, indent=2)
-        tmp_path = json_path.with_name(json_path.name + ".tmp")
+        DbClient._atomic_write_text(json_path, json.dumps(existing, indent=2))
+
+    @staticmethod
+    def _atomic_write_text(path: Path, text: str) -> None:
+        """Write `text` to `path` via a sibling temp file and os.replace.
+
+        A crash mid-write can never leave a torn/half-written file (which a
+        later overwrite-sync would then refuse — or, historically, wipe from).
+        Every on-disk copy that exists to survive a lost database goes through
+        here; a truncated one defeats the point of keeping it.
+        """
+        tmp_path = path.with_name(path.name + ".tmp")
         try:
-            tmp_path.write_text(serialized)
-            os.replace(tmp_path, json_path)
+            tmp_path.write_text(text)
+            os.replace(tmp_path, path)
         except Exception:
             tmp_path.unlink(missing_ok=True)
             raise
@@ -2947,6 +2979,12 @@ class DbClient:
                 )
                 for row, label_name in (await session.exec(stmt)).all():
                     status = row.status.value if isinstance(row.status, ImageItemStatus) else str(row.status).lower()
+                    # UNCERTAIN is the absence of a row by convention, and the
+                    # reconcile reader skips it — so serialising one would write
+                    # a row that a later overwrite sync deletes rather than
+                    # restores. Keep writer and reader on the same rule.
+                    if status == ImageItemStatus.UNCERTAIN.value:
+                        continue
                     out.setdefault(row.image_uuid, []).append(
                         {
                             "label_uuid": row.label_uuid,
@@ -2962,8 +3000,8 @@ class DbClient:
 
     async def get_image_label_sidecar_batch(
         self, image_uuids: List[str]
-    ) -> Dict[str, Tuple[str, List[Dict[str, Any]]]]:
-        """{image_uuid: (filename, [sidecar rows])} for a batch of images, in one query.
+    ) -> Dict[str, Tuple[str, Optional[str], List[Dict[str, Any]]]]:
+        """{image_uuid: (filename, phash, [sidecar rows])} for a batch, in one query.
 
         Deliberately one query rather than "fetch filenames, fetch rows": the
         bulk-apply paths run this after every page, and an image whose
@@ -2971,25 +3009,40 @@ class DbClient:
         filename — so it is an outer join from images, not a lookup keyed on
         the rows. Images with no assessments come back with an empty list,
         which is the instruction to write `[]`.
+
+        phash comes along because a sidecar that has to be *created* (an image
+        with no boxes never got one from the bbox writer) would otherwise be
+        written without it, and a rebuild from that sidecar would lose it.
         """
         if not image_uuids:
             return {}
-        out: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
+        out: Dict[str, Tuple[str, Optional[str], List[Dict[str, Any]]]] = {}
         async with self._async_session_maker() as session:
             for chunk in _chunked(image_uuids):
                 stmt = (
-                    select(ImageRecord.uuid, ImageRecord.filename, ImageLabel.label_uuid, ImageLabel.status, Label.name)
+                    select(
+                        ImageRecord.uuid,
+                        ImageRecord.filename,
+                        ImageRecord.phash,
+                        ImageLabel.label_uuid,
+                        ImageLabel.status,
+                        Label.name,
+                    )
                     .join(ImageLabel, ImageLabel.image_uuid == ImageRecord.uuid, isouter=True)
                     .join(Label, Label.uuid == ImageLabel.label_uuid, isouter=True)
                     .where(ImageRecord.uuid.in_(chunk))
                 )
-                for image_uuid, filename, label_uuid, status, label_name in (await session.exec(stmt)).all():
-                    entry = out.setdefault(image_uuid, (filename, []))
+                for image_uuid, filename, phash, label_uuid, status, label_name in (await session.exec(stmt)).all():
+                    entry = out.setdefault(image_uuid, (filename, phash, []))
                     if label_uuid is None:
                         continue
                     status_value = status.value if isinstance(status, ImageItemStatus) else str(status).lower()
-                    entry[1].append({"label_uuid": label_uuid, "label_name": label_name, "status": status_value})
-        for _filename, rows in out.values():
+                    # Same rule as get_image_labels_for_sidecar_bulk: UNCERTAIN is
+                    # the absence of a row, and the reader skips it.
+                    if status_value == ImageItemStatus.UNCERTAIN.value:
+                        continue
+                    entry[2].append({"label_uuid": label_uuid, "label_name": label_name, "status": status_value})
+        for _filename, _phash, rows in out.values():
             rows.sort(key=lambda r: (r["label_name"] or "", r["label_uuid"]))
         return out
 

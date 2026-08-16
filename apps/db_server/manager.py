@@ -1356,7 +1356,7 @@ class Manager:
         await self._db_client.sync_image_present_labels(image_uuid, sorted(present_label_uuids), stale_present)
         await self._sync_image_labels_sidecar(image_uuid)
 
-    async def _sync_image_labels_sidecar(self, image_uuid: str, filename: Optional[str] = None) -> None:
+    async def _sync_image_labels_sidecar(self, image_uuid: str) -> None:
         """Mirror this image's whole-image label assessments into its JSON sidecar.
 
         ABSENT rows ("I checked; this label is not in this image") and
@@ -1365,60 +1365,117 @@ class Manager:
         this they would live only in the database, which is exactly the failure
         the sidecars exist to survive.
 
-        Costs one query plus one small file write per call. That is deliberate:
-        it runs on the same events that already do per-image DB work, and the
-        alternative (a periodic sweep) reintroduces the window where an
-        assessment exists only in SQLite.
+        A batch of one: the single-image and bulk paths must agree on when a
+        sidecar is created, and having two implementations of that rule is how
+        they came to disagree in the first place.
         """
-        if filename is None:
-            filenames = await self._db_client.get_image_filenames([image_uuid])
-            filename = filenames.get(image_uuid)
-        if not filename:
-            logger.warning("Skipping image_labels sidecar write: no filename for image %s", image_uuid)
-            return
-        safe_path = get_safe_path(self._files_root, filename)
-        if safe_path is None:
-            logger.warning(f"Skipping image_labels sidecar write for {filename!r}: path not under FILES_ROOT")
-            return
-        sidecar_path = self._get_json_sidefile(safe_path)
-        # Only refresh a sidecar that already exists. Creating one here would
-        # produce a file with image_labels but no `boxes`/`uuid`, which the
-        # reconcile path reads as "sidecar without uuid" and skips.
-        if not sidecar_path.exists():
-            return
-        rows = await self._db_client.get_image_labels_for_sidecar(image_uuid)
-        await asyncio.to_thread(self._db_client.write_image_labels_to_json, sidecar_path, rows)
+        await self._write_image_label_sidecars([image_uuid])
+
+    @staticmethod
+    def _sidecar_bbox_update(bboxes: List[BBox]) -> ImageRecordUpdate:
+        """Build the `boxes` half of a sidecar from DB rows.
+
+        Only used when a sidecar has to be created from scratch; the normal
+        bbox path already has the payload it just wrote.
+        """
+        return ImageRecordUpdate(
+            bboxes=[
+                BBoxUpdate(
+                    uuid=b.uuid,
+                    label_uuid=b.label_uuid,
+                    label_name=b.label.name if b.label else None,
+                    x=b.x,
+                    y=b.y,
+                    width=b.width,
+                    height=b.height,
+                    tag_uuids=[t.uuid for t in (b.tags or [])],
+                    tag_names=[t.name for t in (b.tags or [])],
+                    phash=b.phash,
+                )
+                for b in bboxes
+            ]
+        )
 
     async def _write_image_label_sidecars(self, image_uuids: List[str]) -> Dict[str, int]:
-        """Refresh the image_labels slice of the sidecar for a batch of images.
+        """Write the image_labels slice of the sidecar for a batch of images.
 
-        Two queries for the whole batch rather than two per image. The bulk
-        actions go through here instead of _sync_image_labels_sidecar precisely
-        so their DB cost stays independent of how many images were selected —
-        a per-image sync turns a 5000-image bulk apply into 10000 extra queries.
+        A few queries for the whole batch rather than a few per image. The bulk
+        actions go through here precisely so their DB cost stays independent of
+        how many images were selected — a per-image sync turns a 5000-image bulk
+        apply into 10000 extra queries.
 
-        Returns counts keyed 'written', 'skipped_no_sidecar', 'skipped_no_path'.
+        A missing sidecar is created when — and only when — there is something
+        to record in it. Sidecars are otherwise only ever produced by a bbox
+        write, so an image that has never had a box has no file, and "I checked,
+        this label is not here" is exactly the assessment such an image carries;
+        skipping those left them in SQLite only, which is the loss the sidecars
+        exist to prevent. But an image with no assessments and no boxes has
+        nothing to say beyond "this file exists", which the file itself already
+        says — writing one there would litter the dataset with empty JSON.
+
+        What does get created is a *complete* sidecar (uuid, filename, boxes,
+        phash), because the reconcile path skips a sidecar with no uuid and an
+        overwrite sync reads a missing `boxes` key as "this image has none".
+
+        Returns counts keyed 'written', 'created', 'skipped_no_data',
+        'skipped_no_path'.
         """
-        stats = {"written": 0, "skipped_no_sidecar": 0, "skipped_no_path": 0}
+        stats = {"written": 0, "created": 0, "skipped_no_data": 0, "skipped_no_path": 0}
         if not image_uuids:
             return stats
 
         batch = await self._db_client.get_image_label_sidecar_batch(image_uuids)
 
+        targets: List[Tuple[str, str, Optional[str], Path, List[Dict[str, Any]]]] = []
         for image_uuid in image_uuids:
-            filename, rows = batch.get(image_uuid, (None, []))
+            filename, phash, rows = batch.get(image_uuid, (None, None, []))
             safe_path = get_safe_path(self._files_root, filename) if filename else None
             if safe_path is None:
                 stats["skipped_no_path"] += 1
                 continue
-            sidecar_path = self._get_json_sidefile(safe_path)
-            if not sidecar_path.exists():
-                # Same rule as _sync_image_labels_sidecar: never invent a
-                # sidecar that has no boxes/uuid for reconcile to key on.
-                stats["skipped_no_sidecar"] += 1
-                continue
-            await asyncio.to_thread(self._db_client.write_image_labels_to_json, sidecar_path, rows)
-            stats["written"] += 1
+            targets.append((image_uuid, filename, phash, self._get_json_sidefile(safe_path), rows))
+        if not targets:
+            return stats
+
+        # One thread hop for every stat(): exists() is a blocking syscall, and a
+        # bulk apply over a few thousand images would otherwise run one of them
+        # per image directly on the event loop.
+        existing = await asyncio.to_thread(lambda: {t[3] for t in targets if t[3].exists()})
+        missing = [t[0] for t in targets if t[3] not in existing]
+        # Boxes are read from the DB rather than written as [] so that a sidecar
+        # recreated after deletion doesn't claim the image has no boxes — an
+        # overwrite sync would then delete the real ones.
+        bboxes_by_image = await self._db_client.get_bboxes_for_images(missing) if missing else {}
+        # Convert while the ORM rows are still session-fresh, not inside the thread.
+        updates = {uuid: self._sidecar_bbox_update(bboxes_by_image.get(uuid, [])) for uuid in missing}
+
+        def _write_all() -> Tuple[int, int, int]:
+            written = created = skipped = 0
+            for image_uuid, filename, phash, sidecar_path, rows in targets:
+                if sidecar_path in existing:
+                    # An existing sidecar is refreshed even when `rows` is empty:
+                    # there, [] is the user having cleared every assessment, and
+                    # an overwrite sync has to see that to honour it.
+                    self._db_client.write_image_labels_to_json(sidecar_path, rows)
+                    written += 1
+                    continue
+                if not rows and not updates[image_uuid].bboxes:
+                    # Nothing to preserve — don't leave an empty file behind.
+                    skipped += 1
+                    continue
+                self._db_client.write_image_metadata_to_json(
+                    sidecar_path,
+                    image_uuid,
+                    filename,
+                    updates[image_uuid],
+                    image_phash=phash,
+                    image_labels=rows,
+                )
+                created += 1
+            return written, created, skipped
+
+        # The writes themselves are one hop too, rather than one per image.
+        stats["written"], stats["created"], stats["skipped_no_data"] = await asyncio.to_thread(_write_all)
         return stats
 
     async def backfill_image_label_sidecars(self, batch_size: int = 500) -> Dict[str, int]:
@@ -1432,10 +1489,11 @@ class Manager:
         rows, and loading every row plus every filename in one query to build a
         dict would hold the lot in memory at once for no benefit.
 
-        Returns counts keyed 'written', 'skipped_no_sidecar', 'skipped_no_path'.
+        Returns counts keyed 'written', 'created', 'skipped_no_data',
+        'skipped_no_path'.
         """
         image_uuids = await self._db_client.get_image_uuids_with_labels()
-        stats = {"written": 0, "skipped_no_sidecar": 0, "skipped_no_path": 0}
+        stats = {"written": 0, "created": 0, "skipped_no_data": 0, "skipped_no_path": 0}
 
         for start in range(0, len(image_uuids), batch_size):
             batch_stats = await self._write_image_label_sidecars(image_uuids[start : start + batch_size])
@@ -1477,9 +1535,7 @@ class Manager:
             await self._db_client.delete_image_labels(image_uuid, [label_uuid])
         else:
             await self._db_client.set_image_label_status(image_uuid, label_uuid, status)
-        # image_path is already resolvable by get_safe_path, so pass it through
-        # rather than paying a filename lookup we don't need.
-        await self._sync_image_labels_sidecar(image_uuid, filename=image_path)
+        await self._sync_image_labels_sidecar(image_uuid)
         return "modified"
 
     async def get_image_labels(self, image_path: str) -> Optional[List[ImageLabelRead]]:
