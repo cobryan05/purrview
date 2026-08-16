@@ -34,9 +34,14 @@ class VideoStreamMetadata:
     pixel_format: str
 
     @property
-    def rgb24_frame_size(self) -> int:
-        """Bytes per frame once ffmpeg has converted to rgb24, which is what the
-        rawvideo output pipe always carries regardless of the source's own format."""
+    def raw24_frame_size(self) -> int:
+        """Bytes per frame on the rawvideo output pipe, whatever the source's own format.
+
+        Packed 24-bit either way, so the number is the same for bgr24 and rgb24 — the
+        name deliberately does not say which, because callers request `bgr24` (see
+        `FfmpegImageProvider`) and a name asserting otherwise is how the wrong channel
+        order gets re-introduced.
+        """
         return self.width * self.height * 3
 
 
@@ -290,7 +295,7 @@ class FFmpegStreamerIn:
                 self._height = meta.height
                 self._fps = meta.fps
                 self._pixel_format = meta.pixel_format
-                self._frame_size = meta.rgb24_frame_size
+                self._frame_size = meta.raw24_frame_size
                 self._metadata_event.set()
                 break
         except Exception as e:

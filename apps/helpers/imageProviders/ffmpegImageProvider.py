@@ -70,7 +70,18 @@ class FfmpegImageProvider(ImageProvider):
     ):
         output_args = {
             "format": "rawvideo",
-            "pix_fmt": "rgb24",
+            # bgr24, NOT rgb24 — the whole app treats a frame as BGR, and nothing
+            # downstream can detect the difference. cv2.imencode/imwrite read channel 0
+            # as blue, so an RGB frame is written to disk and sent to inference with red
+            # and blue swapped; the inference provider then runs cvtColor(BGR2RGB) and
+            # hands the model the swapped image, while the models were trained on
+            # correctly-ordered ones. This asked for rgb24 from the provider's first
+            # commit, and produced no error anywhere — only worse detections.
+            #
+            # Free to fix: ffmpeg's swscale converts the source's yuv to one packed
+            # 24-bit layout or the other at identical cost, so this adds nothing to the
+            # hot path and removes a conversion that would otherwise be needed in Python.
+            "pix_fmt": "bgr24",
             "codec": "rawvideo",
         }  # decode raw frames
         if min_capture_interval > 0:

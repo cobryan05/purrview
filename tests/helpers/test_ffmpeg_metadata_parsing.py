@@ -75,4 +75,4 @@ class TestParseVideoStreamBanner:
         ],
     )
     def test_frame_size_is_rgb24_bytes(self, banner, expected):
-        assert parse_video_stream_banner(banner).rgb24_frame_size == expected
+        assert parse_video_stream_banner(banner).raw24_frame_size == expected

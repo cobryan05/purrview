@@ -83,10 +83,12 @@ class SaveSnapshotAction(Action):
         import cv2
 
         dest.parent.mkdir(parents=True, exist_ok=True)
-        # Providers hand out RGB; cv2.imwrite expects BGR, and writing the wrong one
-        # produces blue cats.
-        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        ok, buffer = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), self.quality])
+        # No colour conversion: providers hand out BGR, which is what cv2.imencode
+        # expects, so the frame goes out as it came in. This used to convert RGB→BGR,
+        # which was correct only for the one provider that was itself emitting RGB by
+        # mistake and blue-shifted every snapshot from the other three. Converting here
+        # would also be a per-event full-frame copy for no reason.
+        ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.quality])
         if not ok:
             raise RuntimeError("cv2 failed to encode the snapshot")
         dest.write_bytes(buffer.tobytes())
