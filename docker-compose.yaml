@@ -67,6 +67,12 @@ services:
         condition: service_started
         required: false
     volumes:
+      # Local time comes from the host, not from a hardcoded zone: every
+      # service reads the host's /etc/localtime + /etc/timezone read-only, so
+      # log timestamps and event times match the machine the stack runs on.
+      # Set TZ in .env only to deliberately override the host.
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
@@ -104,6 +110,8 @@ services:
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - ./conf:/conf
       - ./logs:/logs
       - training_cache:/training-cache
@@ -138,6 +146,8 @@ services:
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
@@ -175,7 +185,6 @@ services:
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training-dev}
-      TZ: America/Chicago
     # training-dev is always part of the same "dev" profile as app-dev, so
     # this can be an unconditional dependency (unlike app -> training).
     depends_on:
@@ -221,6 +230,8 @@ services:
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - ./conf:/conf
       - ./logs:/logs
       - ./apps:/app/apps
@@ -262,7 +273,6 @@ services:
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
       MODELS_ROOT: /app/models
-      TZ: America/Chicago
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
     volumes:
       - /etc/localtime:/etc/localtime:ro
