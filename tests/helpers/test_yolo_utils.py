@@ -379,3 +379,97 @@ class TestExtractUltralyticsE2eFormat:
         assert len(dets) == 2
         assert dets[0][5] == 3
         assert dets[1][5] == 7
+
+
+class TestDecodeDetectionsTopK:
+    """`top_k` returns the runner-up classes the network already scored and this
+    function otherwise discards at the argmax (AMBIGUITY_REVIEW_PLAN.md).
+
+    The parity test is the important one: ~40 call sites and every other test in
+    this file pass no `top_k` and must keep receiving a bare array.
+    """
+
+    def _one_box(self, scores):
+        return (
+            np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float32),
+            np.array([scores], dtype=np.float32),
+        )
+
+    def _decode(self, boxes, scores, **kw):
+        return decode_detections(
+            boxes,
+            scores,
+            conf_thresh=0.1,
+            iou_thresh=0.5,
+            scale=1.0,
+            pad=(0, 0),
+            original_shape=(100, 100),
+            **kw,
+        )
+
+    def test_top_k_zero_returns_a_bare_array_identical_to_before(self):
+        boxes, scores = self._one_box([0.4, 0.9, 0.1, 0.85])
+        plain = self._decode(boxes, scores)
+        with_k = self._decode(boxes, scores, top_k=3)[0]
+        assert isinstance(plain, np.ndarray)
+        assert np.array_equal(plain, with_k)
+
+    def test_alternates_are_ranked_best_first_and_exclude_the_winner(self):
+        # winner = class 1 (0.9); runners-up = class 3 (0.85) then class 0 (0.4)
+        boxes, scores = self._one_box([0.4, 0.9, 0.1, 0.85])
+        dets, alternates = self._decode(boxes, scores, top_k=3)
+
+        assert int(dets[0][5]) == 1
+        assert alternates.shape == (1, 2, 2)
+        assert [int(c) for c in alternates[0][:, 0]] == [3, 0]
+        assert alternates[0][:, 1] == pytest.approx([0.85, 0.4])
+
+    def test_alternate_count_is_capped_by_the_number_of_classes(self):
+        """Asking for more classes than the model has must not fabricate rows."""
+        boxes, scores = self._one_box([0.9, 0.8])
+        _, alternates = self._decode(boxes, scores, top_k=8)
+        assert alternates.shape == (1, 1, 2)
+
+    def test_single_class_model_yields_no_alternates(self):
+        boxes, scores = self._one_box([0.9])
+        dets, alternates = self._decode(boxes, scores, top_k=3)
+        assert len(dets) == 1
+        assert alternates.shape == (1, 0, 2)
+
+    def test_no_detections_still_returns_a_pair(self):
+        """Callers unpack two values whenever they asked for top_k; the empty
+        path must not break that."""
+        boxes, scores = self._one_box([0.01, 0.02])
+        dets, alternates = self._decode(boxes, scores, top_k=3)
+        assert len(dets) == 0
+        assert alternates.shape[0] == 0
+
+    def test_nms_free_models_report_no_alternates_rather_than_failing(self):
+        """An E2E export's `scores` is [confidence, class_id] — already argmaxed
+        inside the graph, so there is no per-class matrix to rank. It must return
+        empty alternates, not raise and not misread the class_id column."""
+        boxes = np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float32)
+        scores = np.array([[0.9, 3.0]], dtype=np.float32)  # confidence, class_id
+        dets, alternates = self._decode(boxes, scores, skip_nms=True, top_k=3)
+        assert int(dets[0][5]) == 3
+        assert alternates.shape == (1, 0, 2)
+
+    def test_alternates_align_row_for_row_with_surviving_detections(self):
+        """After NMS drops boxes, each alternates row must still belong to the
+        detection at the same index — a misalignment here would silently attribute
+        one box's confusion to another."""
+        boxes = np.array(
+            [[10.0, 10.0, 50.0, 50.0], [11.0, 11.0, 51.0, 51.0], [80.0, 80.0, 95.0, 95.0]],
+            dtype=np.float32,
+        )
+        # rows 0/1 overlap (NMS keeps the stronger); row 2 is far away.
+        scores = np.array([[0.9, 0.85, 0.0], [0.5, 0.4, 0.0], [0.0, 0.2, 0.95]], dtype=np.float32)
+        dets, alternates = self._decode(boxes, scores, top_k=2)
+
+        assert len(dets) == len(alternates)
+        for det, alt in zip(dets, alternates):
+            winner_class = int(det[5])
+            # The winner never appears among its own runners-up.
+            assert winner_class not in [int(c) for c in alt[:, 0]]
+            # And every runner-up scored no higher than the winner.
+            assert all(s <= det[4] + 1e-6 for s in alt[:, 1])

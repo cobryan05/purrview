@@ -32,6 +32,7 @@ from apps.helpers.consts import TaskStatus
 
 from .types import (
     BBOX_CONFIDENCE_METADATA_KEYS,
+    CONFUSABLE_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
     RETIRED_TAG_UUIDS,
@@ -153,6 +154,19 @@ _SYSTEM_TAGS = [
         exclusive_group=None,
         protected=True,
         icon=None,
+    ),
+    Tag(
+        uuid=CONFUSABLE_TAG_UUID,
+        name="Confusable",
+        color="#c0392b",
+        kind=TagKind.SYSTEM,
+        # Not a verification state — a box can be confusable and verified at once.
+        exclusive_group=None,
+        protected=True,
+        # The icon is load-bearing, not decoration: BboxView._computeIconText
+        # renders any tag's icon on the canvas, so this single field is what
+        # marks a confusable box in the UI without a line of JS.
+        icon="⇄",
     ),
 ]
 

@@ -4,6 +4,9 @@ export const UNVERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000001';
 // Keep in sync with apps/helpers/db/types.py
 export const REJECTION_TAG_UUID = '00000000-0000-0000-0000-000000000004';
 export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000005';
+// Model was "confident but confused" — the runner-up class scored close to the
+// winner. Not a verification state (see VERIFICATION_TAG_UUIDS below).
+export const CONFUSABLE_TAG_UUID = '00000000-0000-0000-0000-000000000006';
 
 // Both are in the verification exclusive group — mutually exclusive per bbox
 export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID]);

@@ -51,6 +51,17 @@ class InferencePayload(Payload):
     return_source_img: bool = False
     return_annotated_img: bool = False
     pin_id: Optional[str] = None
+    top_k: int = Field(
+        default=0,
+        ge=0,
+        le=32,
+        description=(
+            "Return this many best classes per detection instead of just the winner. "
+            "0 (default) returns only the winner, exactly as before. The runners-up "
+            "come back on each detection's `alternates`; check `alternatesAvailable` "
+            "on the result, since NMS-free/E2E models cannot produce them at all."
+        ),
+    )
     image_base64: str  # base64 encoded image string
 
 
@@ -603,6 +614,7 @@ class WebApp:
                     conf_thresh=payload.conf_thresh,
                     return_annotated_img=payload.return_annotated_img,
                     pin_id=payload.pin_id,
+                    top_k=payload.top_k,
                 )
 
                 if not payload.return_source_img:

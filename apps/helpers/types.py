@@ -105,9 +105,38 @@ class BoundingBoxMetadataModel(BaseModel):
 
 
 @dataclass
+class ClassScore:
+    """One runner-up class on a detection — the model's next-best guess.
+
+    `label_uuid` is filled in by the inference manager from the model's sidecar
+    class map (the same resolution the winning class gets), so consumers never
+    have to know a model's class ordering.
+    """
+
+    class_id: int
+    confidence: float
+    class_str: Optional[str] = None
+    label_uuid: Optional[str] = None
+
+
+class ClassScoreModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True, alias_generator=to_camel, populate_by_name=True)
+
+    class_id: int
+    confidence: float
+    class_str: Optional[str] = None
+    label_uuid: Optional[str] = None
+
+
+@dataclass
 class DetectionResult:
     bbox: BoundingBoxMetadata
     confidence: float
+    # Next-best classes for THIS detection, best-first, excluding the winner.
+    # Populated only when the caller asked for them (`top_k` on the request);
+    # empty otherwise, and always empty for NMS-free/E2E models — see
+    # `alternates_available` on InferenceResult.
+    alternates: List["ClassScore"] = field(default_factory=list)
 
 
 class DetectionResultModel(BaseModel):
@@ -115,6 +144,7 @@ class DetectionResultModel(BaseModel):
 
     bbox: BoundingBoxMetadataModel
     confidence: float
+    alternates: List[ClassScoreModel] = Field(default_factory=list)
 
 
 @dataclass
@@ -125,6 +155,14 @@ class InferenceResult:
     inference_time: Optional[float] = None
     annotated_image: Optional[np.ndarray] = None
     source_image: Optional[np.ndarray] = None
+    # False when this model architecturally cannot produce runner-up classes —
+    # NMS-free/E2E exports (YOLOv10, YOLO26) bake the argmax into the graph, so
+    # the per-class scores never leave the ONNX file.
+    #
+    # ⚠️ This is NOT the same as "no alternates were found". A caller collecting
+    # confusable detections must treat False as "this model cannot answer the
+    # question" and say so, or a multi-day run silently flags nothing.
+    alternates_available: bool = True
 
 
 class InferenceResultModel(BaseModel):
@@ -136,6 +174,7 @@ class InferenceResultModel(BaseModel):
     inference_time: Optional[float] = None
     annotated_image: Optional[Base64Image] = None
     source_image: Optional[Base64Image] = None
+    alternates_available: bool = True
 
 
 # ---------------------------------------------------------------------------

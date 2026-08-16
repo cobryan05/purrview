@@ -642,6 +642,14 @@ class Manager:
             class_uuid_maps = await self.get_models_classes([model_name])
             class_uuid_map = class_uuid_maps.get(model_name, {})
             for det in inference_result.detections:
+                # Runner-up classes resolve through the SAME sidecar map as the
+                # winner, so a caller comparing "cat vs dog" is comparing label
+                # UUIDs, not a model's private class ordering. Done here rather
+                # than in the provider because the provider has no DB/sidecar
+                # access — it only knows class names.
+                for alt in det.alternates or ():
+                    if alt.class_str:
+                        alt.label_uuid = class_uuid_map.get(alt.class_str, alt.label_uuid)
                 if not det.bbox.class_str:
                     continue
                 det.bbox.label_uuid = class_uuid_map.get(det.bbox.class_str, det.bbox.label_uuid)

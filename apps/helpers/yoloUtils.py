@@ -145,6 +145,7 @@ def decode_detections(
     pad: Tuple[int, int],
     original_shape: Tuple[int, int],
     skip_nms: bool = False,
+    top_k: int = 0,
 ) -> np.ndarray:
     """
     Shared NMS + rescale/clip tail for YOLO-family raw outputs.
@@ -177,12 +178,43 @@ def decode_detections(
             array through the same row ordering (see
             `ultralyticsE2eInferenceProvider.py`'s `_extract`, which returns
             `scores` as (num_preds, 2): [confidence, class_id]).
+        top_k (int): When > 0, also return the per-detection **n-best runners-up**
+            — the classes that scored next-highest on the same prediction row.
+            This is the "confident but confused" signal (AMBIGUITY_REVIEW_PLAN.md):
+            the network already emits a score for every class on every prediction
+            and this function otherwise discards all but the argmax, so the data
+            costs nothing extra to produce.
 
     Returns:
-        np.ndarray: Array of detections with shape (num_detections, 6) where each row contains
-                    [x1, y1, x2, y2, confidence, class_id].
+        np.ndarray: when ``top_k <= 0`` (the default), detections with shape
+            (num_detections, 6): [x1, y1, x2, y2, confidence, class_id].
+        Tuple[np.ndarray, np.ndarray]: when ``top_k > 0``, that same array plus an
+            ``alternates`` array of shape (num_detections, n_alt, 2) whose last
+            axis is [class_id, confidence], ordered best-first and **excluding the
+            winning class**. ``n_alt`` is ``min(top_k - 1, num_classes - 1)``.
+
+            ⚠️ The conditional return type follows the numpy ``return_index`` /
+            ``return_counts`` idiom deliberately: every existing caller and test
+            passes no ``top_k`` and must keep receiving a bare array. Do not
+            "clean this up" into an always-tuple return without updating all of
+            them.
+
+            ⚠️ Always empty (n_alt = 0) when ``skip_nms`` is True — NMS-free/E2E
+            exports bake the argmax into the graph and never emit a per-class
+            score matrix, so there is nothing to rank. Callers must surface that
+            as "unavailable", not as "no confusion found".
     """
     boxes = boxes_xyxy.copy()
+    n_alt = 0
+    # Bound here, not only in the argmax branch below: the skip_nms path never
+    # assigns it and the tail must still be able to read it.
+    scores_masked: "np.ndarray | None" = None
+    if top_k > 0 and not skip_nms:
+        # scores is (num_preds, nc) here; one column can have no runner-up.
+        n_alt = max(0, min(int(top_k) - 1, int(scores.shape[1]) - 1))
+
+    def _empty_alternates(n_dets: int) -> np.ndarray:
+        return np.zeros((n_dets, n_alt, 2), dtype=np.float32)
 
     if skip_nms:
         # Rows are already picked (one detection per row, no multi-class
@@ -197,7 +229,8 @@ def decode_detections(
         class_ids = class_ids[mask]
 
         if len(boxes) == 0:
-            return np.zeros((0, 6), dtype=np.float32)
+            empty = np.zeros((0, 6), dtype=np.float32)
+            return (empty, _empty_alternates(0)) if top_k > 0 else empty
     else:
         # Compute final scores and class IDs
         class_ids_int = np.argmax(scores, axis=1)  # Get class with highest score
@@ -208,9 +241,15 @@ def decode_detections(
         boxes = boxes[mask]
         confidences = confidences[mask]
         class_ids_int = class_ids_int[mask]
+        # The surviving rows' FULL per-class score vectors, carried alongside the
+        # argmax so the runners-up are still reachable after NMS. Only retained
+        # when asked for — otherwise this is a wasted (num_preds, nc) copy on the
+        # hot path of every inference call in the app.
+        scores_masked = scores[mask] if n_alt > 0 else None
 
         if len(boxes) == 0:
-            return np.zeros((0, 6), dtype=np.float32)
+            empty = np.zeros((0, 6), dtype=np.float32)
+            return (empty, _empty_alternates(0)) if top_k > 0 else empty
 
         # Apply Non-Maximum Suppression (NMS). cv2.dnn.NMSBoxes expects boxes as
         # (x, y, w, h) rects, not (x1, y1, x2, y2) corners — convert here; `boxes`
@@ -226,13 +265,16 @@ def decode_detections(
         )
 
         if len(indices) == 0:
-            return np.zeros((0, 6), dtype=np.float32)
+            empty = np.zeros((0, 6), dtype=np.float32)
+            return (empty, _empty_alternates(0)) if top_k > 0 else empty
 
         # Keep only the selected boxes, confidences, and class IDs
         indices = np.array(indices).flatten()
         boxes = boxes[indices]
         confidences = confidences[indices]
         class_ids = class_ids_int[indices].astype(np.float32)
+        if scores_masked is not None:
+            scores_masked = scores_masked[indices]
 
     # Undo padding and scaling to restore original image coordinates
     dw, dh = pad
@@ -245,4 +287,24 @@ def decode_detections(
     boxes[:, 1::2] = np.clip(boxes[:, 1::2], 0, original_shape[0])  # Clip y-coordinates
 
     # Combine results into a single array
-    return np.hstack((boxes, confidences[:, None], class_ids[:, None]))
+    dets = np.hstack((boxes, confidences[:, None], class_ids[:, None]))
+    if top_k <= 0:
+        return dets
+
+    if n_alt == 0 or skip_nms or scores_masked is None:
+        # Either nothing was asked for beyond the winner, or the provider's
+        # architecture never gave us a score matrix to rank (skip_nms).
+        return dets, _empty_alternates(len(dets))
+
+    # Mask out the winner so it can't reappear as its own runner-up, then take
+    # the next n_alt classes. argpartition is O(nc) per row rather than a full
+    # sort; only the small n_alt slice is then ordered.
+    masked = scores_masked.astype(np.float32, copy=True)
+    masked[np.arange(len(masked)), class_ids.astype(np.int64)] = -np.inf
+    part = np.argpartition(-masked, n_alt - 1, axis=1)[:, :n_alt]
+    part_scores = np.take_along_axis(masked, part, axis=1)
+    order = np.argsort(-part_scores, axis=1)
+    alt_ids = np.take_along_axis(part, order, axis=1).astype(np.float32)
+    alt_scores = np.take_along_axis(part_scores, order, axis=1).astype(np.float32)
+    alternates = np.stack((alt_ids, alt_scores), axis=2)
+    return dets, alternates

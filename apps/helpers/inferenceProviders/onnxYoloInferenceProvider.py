@@ -20,7 +20,7 @@ import onnxruntime as ort
 
 import apps.helpers.yoloUtils as YoloUtils
 from apps.helpers.bboxUtils import BBox
-from apps.helpers.types import BoundingBoxMetadata, DetectionResult, InferenceResult
+from apps.helpers.types import BoundingBoxMetadata, ClassScore, DetectionResult, InferenceResult
 
 from .inferenceProvider import InferenceProvider
 
@@ -136,8 +136,15 @@ class OnnxYoloInferenceProvider(InferenceProvider):
             preds = np.transpose(preds, (0, 2, 1))
 
         conf_thresh = float(kwargs.get("conf_thresh", self.conf_thresh))
+        # Runner-up classes are opt-in per call: they widen the response for every
+        # caller that asks, and only the confusable-detection path wants them.
+        top_k = int(kwargs.get("top_k", 0) or 0)
+        # An NMS-free/E2E export argmaxed inside the graph — there is no per-class
+        # score matrix left to rank, at any price. Say so rather than returning an
+        # empty list that reads as "no confusion here".
+        alternates_available = not self.SKIP_NMS
         boxes_xyxy, scores = self._extract(preds[0])
-        detections = YoloUtils.decode_detections(
+        decoded = YoloUtils.decode_detections(
             boxes_xyxy,
             scores,
             conf_thresh=conf_thresh,
@@ -146,7 +153,14 @@ class OnnxYoloInferenceProvider(InferenceProvider):
             pad=pad,
             original_shape=original_shape,
             skip_nms=self.SKIP_NMS,
+            top_k=top_k,
         )
+        # decode_detections follows the numpy return_* idiom: bare array unless
+        # top_k was requested.
+        if top_k > 0:
+            detections, alternates = decoded
+        else:
+            detections, alternates = decoded, None
         t_post = time.perf_counter()  # PERF
         # PERF BEGIN
         logger.debug(
@@ -160,11 +174,30 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         # PERF END
 
         detection_results: List[DetectionResult] = []
-        for det in detections:
+        for det_idx, det in enumerate(detections):
             x_min, y_min, x_max, y_max = map(float, det[:4])
             confidence = float(det[4])
             class_id = int(det[5])
             class_name = self.class_names[class_id] if self.class_names and class_id < len(self.class_names) else None
+
+            # Runners-up for this same box, best-first, winner already excluded by
+            # decode_detections. Named through the same class_names table as the
+            # winner so downstream label resolution is one uniform lookup.
+            alt_scores: List[ClassScore] = []
+            if alternates is not None and det_idx < len(alternates):
+                for alt_class_id, alt_conf in alternates[det_idx]:
+                    alt_id = int(alt_class_id)
+                    alt_scores.append(
+                        ClassScore(
+                            class_id=alt_id,
+                            confidence=float(alt_conf),
+                            class_str=(
+                                self.class_names[alt_id]
+                                if self.class_names and alt_id < len(self.class_names)
+                                else None
+                            ),
+                        )
+                    )
 
             # Convert absolute xyxy to relative x1y1wh for BBox
             rel_bbox = BBox.fromX1Y1X2Y2(x_min, y_min, x_max, y_max, imgW, imgH)
@@ -178,7 +211,7 @@ class OnnxYoloInferenceProvider(InferenceProvider):
                 width=width,
                 height=height,
             )
-            res = DetectionResult(bbox=bbox, confidence=confidence)
+            res = DetectionResult(bbox=bbox, confidence=confidence, alternates=alt_scores)
             detection_results.append(res)
 
         return InferenceResult(
@@ -187,6 +220,7 @@ class OnnxYoloInferenceProvider(InferenceProvider):
             detections=detection_results,
             inference_time=None,
             source_image=image,
+            alternates_available=alternates_available,
         )
 
     def __del__(self):

@@ -20,6 +20,11 @@ class ImageItemStatus(str, Enum):
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 REJECTION_TAG_UUID = "00000000-0000-0000-0000-000000000004"
 VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
+# Marks a bbox whose runner-up class scored close enough to the winner that the
+# model is effectively undecided — "confident but confused" (see
+# AMBIGUITY_REVIEW_PLAN.md). Deliberately NOT in the "verification" exclusive
+# group: a box is independently confusable *and* unverified/verified.
+CONFUSABLE_TAG_UUID = "00000000-0000-0000-0000-000000000006"
 
 # System tags that used to exist and must never come back. A tags.json dumped
 # before the removing migration ran still lists them, and sync_tags_from_json()

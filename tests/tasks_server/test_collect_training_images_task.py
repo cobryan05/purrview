@@ -31,6 +31,7 @@ from inference_client.api.inference_api import InferenceApi
 
 from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskStatus
+from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderMetadata,
@@ -4005,3 +4006,373 @@ class TestBboxConfidenceReachesTheWire:
         box = self._box(extra={"confidence": "0.82"})
         assert box.bbox_meta is None
         assert not hasattr(box, "extra")
+
+
+# ─── Confusable detections / ambiguity (AMBIGUITY_REVIEW_PLAN.md Phase A) ─────
+
+_RIVAL_UUID = "label-rival-uuid"
+
+_AMBIGUITY_PARAMS = {
+    **_PARAMS,
+    "enable_ambiguity": True,
+    "ambiguity_metric": "ratio",
+    "ambiguity_threshold": 0.7,
+    "ambiguity_scope": "any",
+}
+
+
+def _alt(label_uuid: str | None, confidence: float, class_str: str = "rival") -> MagicMock:
+    alt = MagicMock()
+    alt.label_uuid = label_uuid
+    alt.confidence = confidence
+    alt.class_str = class_str
+    return alt
+
+
+def _detection_with_alts(confidence: float, alternates: list, label_uuid: str = _LABEL_UUID) -> MagicMock:
+    """A detection carrying runner-up classes, as the inference server returns
+    them when `top_k` is requested."""
+    det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=label_uuid, confidence=confidence)
+    det.alternates = alternates
+    det.bbox.uuid = str(uuid.uuid4())
+    return det
+
+
+class TestAmbiguityDetection:
+    """The 'confident but confused' trigger: a detection whose runner-up class
+    scored close to the winner, which the confidence band structurally cannot
+    see (the winner is high-confidence, so no ceiling catches it)."""
+
+    async def _task(self, **overrides):
+        params = {**_AMBIGUITY_PARAMS, **overrides}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        return task
+
+    async def test_close_runner_up_is_flagged(self):
+        task = await self._task()
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
+        info = task._detect_ambiguity(det, _MODEL_NAME)
+        assert info is not None
+        assert info.model == _MODEL_NAME
+        assert info.rival_label_uuid == _RIVAL_UUID
+        assert info.value == pytest.approx(0.88 / 0.91)
+
+    async def test_distant_runner_up_is_not_flagged(self):
+        task = await self._task()
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.10)])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+
+    async def test_detection_with_no_alternates_is_never_flagged(self):
+        """A model that returned no runners-up (or one that cannot produce them)
+        must not be read as 'not confused' by accident — it simply yields None."""
+        task = await self._task()
+        det = _detection_with_alts(0.91, [])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+
+    async def test_disabled_by_default_flags_nothing(self):
+        params = {**_PARAMS}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+
+    async def test_margin_metric_uses_absolute_gap_and_inverted_direction(self):
+        """Margin fires when the gap is at or BELOW the threshold — the opposite
+        direction from ratio. Getting this backwards would flag every confident
+        detection instead of the confusable ones."""
+        task = await self._task(ambiguity_metric="margin", ambiguity_threshold=0.05)
+        close = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])  # gap 0.03
+        far = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.50)])  # gap 0.41
+        assert task._detect_ambiguity(close, _MODEL_NAME) is not None
+        assert task._detect_ambiguity(far, _MODEL_NAME) is None
+
+    async def test_review_disabled_label_never_triggers_ambiguity(self):
+        """'Review up to = 0' means 'tag it, but never let it pull a frame into
+        review'. Ambiguity must not become a back door around that."""
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: {"min": 0.2, "max": 0}}}],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        assert task._target_label_bands[_LABEL_UUID].review_disabled is True
+
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+
+    async def test_min_confidence_floor_skips_weak_detections(self):
+        """Weak detections are already collected by the confidence band; the floor
+        stops the same frame being flagged twice for two different reasons."""
+        task = await self._task(ambiguity_min_confidence=0.6)
+        weak = _detection_with_alts(0.4, [_alt(_RIVAL_UUID, 0.39)])
+        strong = _detection_with_alts(0.9, [_alt(_RIVAL_UUID, 0.89)])
+        assert task._detect_ambiguity(weak, _MODEL_NAME) is None
+        assert task._detect_ambiguity(strong, _MODEL_NAME) is not None
+
+    async def test_scope_configured_ignores_rival_outside_target_labels(self):
+        task = await self._task(ambiguity_scope="configured")
+        # _RIVAL_UUID is not in model_label_config, so under 'configured' it does
+        # not count, however close it scored.
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+
+    async def test_scope_any_counts_rival_outside_target_labels(self):
+        task = await self._task(ambiguity_scope="any")
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is not None
+
+    async def test_scope_configured_accepts_a_configured_rival(self):
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "ambiguity_scope": "configured",
+            "model_label_config": [
+                {"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.5, _RIVAL_UUID: 0.5}},
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
+        assert task._detect_ambiguity(det, _MODEL_NAME) is not None
+
+    async def test_zero_confidence_winner_does_not_divide_by_zero(self):
+        """A 0.0 winner would make ratio inf/NaN, which compares True against any
+        threshold and would flag everything."""
+        task = await self._task()
+        det = _detection_with_alts(0.0, [_alt(_RIVAL_UUID, 0.0)])
+        info = task._detect_ambiguity(det, _MODEL_NAME)
+        assert info is None or info.value == 0.0
+
+
+class TestAmbiguityAsAnIndependentSaveTrigger:
+    """The point of the feature: a high-confidence detection nothing in the
+    confidence band could ever collect still gets the frame saved."""
+
+    async def test_confident_but_confused_frame_is_saved(self):
+        """Band is min 0.5 / max 1.0, so a 0.91 detection is in-band anyway. Use a
+        band that would NOT trigger (max 0.6) and show ambiguity saves it."""
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: {"min": 0.2, "max": 0.6}}}],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        confident_and_confused = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [confident_and_confused]
+
+        frame = _untracked_image()
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
+
+        # Band alone would have rejected it: 0.91 > max 0.6.
+        assert task._frame_triggers_save([confident_and_confused]) is False
+        assert matching == [confident_and_confused]
+        assert frame._det_meta[confident_and_confused.bbox.uuid]["ambiguity"] is not None
+
+    async def test_confident_and_unconfused_frame_is_still_not_saved(self):
+        """The complement — ambiguity must not turn into 'save everything'."""
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: {"min": 0.2, "max": 0.6}}}],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        confident_and_sure = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.05)])
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = [confident_and_sure]
+
+        frame = _untracked_image()
+        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
+        assert matching == []
+
+    async def test_top_k_is_only_requested_when_the_feature_is_on(self):
+        """Every other run must keep today's response size."""
+        task = _make_task(params=_PARAMS)
+        await task._init(_PARAMS, resume_data=None)
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = []
+        await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert inference_api.detect.call_args.args[1].top_k == 0
+
+    async def test_top_k_is_requested_when_the_feature_is_on(self):
+        task = _make_task(params=_AMBIGUITY_PARAMS)
+        await task._init(_AMBIGUITY_PARAMS, resume_data=None)
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value.result.detections = []
+        await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        assert inference_api.detect.call_args.args[1].top_k == 3
+
+
+class TestAmbiguityAttributionSurvivesTheMerge:
+    """The headline regression: ambiguity is computed per model BEFORE the
+    cross-model merge, and the surviving detection must still name the model that
+    was actually confused. Computing it after the merge cannot answer that at all
+    — the merge drops losers and blends models together."""
+
+    async def _two_model_task(self, **overrides):
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [
+                {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+                {"modelName": "model-b", "labelValues": {_LABEL_UUID: 0.5}},
+            ],
+            **overrides,
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        return task
+
+    async def test_surviving_detection_keeps_its_own_models_attribution(self):
+        """model-a wins the same-label collision; the metadata must say model-a,
+        not model-b, and must carry model-a's ambiguity."""
+        task = await self._two_model_task()
+
+        a_det = _detection_with_alts(0.9, [_alt(_RIVAL_UUID, 0.88)])
+        b_det = _detection_with_alts(0.7, [_alt(_RIVAL_UUID, 0.10)])  # overlapping, same label
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.side_effect = [
+            MagicMock(result=MagicMock(detections=[a_det], alternates_available=True)),
+            MagicMock(result=MagicMock(detections=[b_det], alternates_available=True)),
+        ]
+
+        frame = _untracked_image()
+        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
+
+        assert matching == [a_det]
+        meta = frame._det_meta[a_det.bbox.uuid]
+        assert meta["model"] == "model-a"
+        assert meta["ambiguity"].model == "model-a"
+        # The dropped detection's metadata must not linger — it describes a box
+        # that will never be written.
+        assert b_det.bbox.uuid not in frame._det_meta
+
+    async def test_each_model_is_attributed_separately_when_both_survive(self):
+        """Non-overlapping boxes: both survive, each keeps its own model name."""
+        task = await self._two_model_task()
+
+        a_det = _detection_with_alts(0.9, [_alt(_RIVAL_UUID, 0.88)])
+        b_det = _detection_with_alts(0.9, [_alt(_RIVAL_UUID, 0.88)])
+        b_det.bbox.x, b_det.bbox.y = 0.7, 0.7  # far away, no IoU overlap
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.side_effect = [
+            MagicMock(result=MagicMock(detections=[a_det], alternates_available=True)),
+            MagicMock(result=MagicMock(detections=[b_det], alternates_available=True)),
+        ]
+
+        frame = _untracked_image()
+        await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
+
+        assert frame._det_meta[a_det.bbox.uuid]["model"] == "model-a"
+        assert frame._det_meta[b_det.bbox.uuid]["model"] == "model-b"
+
+
+class TestAmbiguityUnsupportedModels:
+    """An NMS-free/E2E export argmaxes inside its own graph and can never report a
+    runner-up. The failure mode to avoid is silence: a multi-day run that flags
+    nothing looks exactly like a run where nothing was confusable."""
+
+    async def test_unavailable_model_raises_a_notice(self):
+        task = _make_task(params=_AMBIGUITY_PARAMS)
+        await task._init(_AMBIGUITY_PARAMS, resume_data=None)
+
+        inference_api = MagicMock(spec=InferenceApi)
+        inference_api.detect.return_value = MagicMock(result=MagicMock(detections=[], alternates_available=False))
+        await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+
+        assert _MODEL_NAME in task._ambiguity_unavailable_models
+        task._status = TaskStatus.RUNNING
+        messages = [n["message"] for n in task.get_notices()]
+        assert any(_MODEL_NAME in m and "runner-up" in m for m in messages)
+
+
+class TestAmbiguityPersistence:
+    """What lands on the bbox: the tag Review filters on, and the metadata that
+    names which model was confused and with what."""
+
+    async def test_flagged_bbox_gets_tag_metadata_and_source_model(self, tmp_path):
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: {"min": 0.2, "max": 0.6}}}],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
+        frame = _untracked_image()
+        frame._det_meta = {
+            det.bbox.uuid: {
+                "model": _MODEL_NAME,
+                "ambiguity": task._detect_ambiguity(det, _MODEL_NAME),
+            }
+        }
+
+        images_api = MagicMock()
+        task._meta_write_lock = asyncio.Lock()
+        await task._save_image(images_api, frame, [det], tmp_path, ImageProviderType.FIXED)
+
+        box = images_api.update_image_metadata.call_args.args[0].boxes[0]
+        assert CONFUSABLE_TAG_UUID in box.tag_uuids
+        assert box.bbox_meta["source_model"] == _MODEL_NAME
+        assert box.bbox_meta["ambiguity_model"] == _MODEL_NAME
+        assert box.bbox_meta["ambiguity_rival_label_uuid"] == _RIVAL_UUID
+        assert json.loads(box.bbox_meta["alternates"])[0]["label_uuid"] == _RIVAL_UUID
+        # The confidence key every reader already depends on must be untouched.
+        assert box.bbox_meta["confidence"] == "0.91"
+
+    async def test_metadata_values_are_all_strings(self, tmp_path):
+        """metadata_json is typed Dict[str, str] end to end (RawJsonDict). A
+        nested dict or a bare float is rejected by the generated client's
+        validation, so this pins the whole payload flat and stringly-typed."""
+        task = _make_task(params=_AMBIGUITY_PARAMS)
+        await task._init(_AMBIGUITY_PARAMS, resume_data=None)
+        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
+        frame = _untracked_image()
+        frame._det_meta = {det.bbox.uuid: {"model": _MODEL_NAME, "ambiguity": task._detect_ambiguity(det, _MODEL_NAME)}}
+
+        images_api = MagicMock()
+        task._meta_write_lock = asyncio.Lock()
+        await task._save_image(images_api, frame, [det], tmp_path, ImageProviderType.FIXED)
+
+        box = images_api.update_image_metadata.call_args.args[0].boxes[0]
+        assert all(isinstance(v, str) for v in box.bbox_meta.values())
+
+    async def test_unflagged_bbox_gets_source_model_but_no_tag_or_alternates(self, tmp_path):
+        """source_model is written on EVERY collected box — it is the precondition
+        for asking 'which model is confused?' — but the tag and the alternates
+        payload are only for boxes that actually fired."""
+        task = _make_task(params=_AMBIGUITY_PARAMS)
+        await task._init(_AMBIGUITY_PARAMS, resume_data=None)
+        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.05)])
+        frame = _untracked_image()
+        frame._det_meta = {det.bbox.uuid: {"model": _MODEL_NAME, "ambiguity": None}}
+
+        images_api = MagicMock()
+        task._meta_write_lock = asyncio.Lock()
+        await task._save_image(images_api, frame, [det], tmp_path, ImageProviderType.FIXED)
+
+        box = images_api.update_image_metadata.call_args.args[0].boxes[0]
+        assert CONFUSABLE_TAG_UUID not in box.tag_uuids
+        assert box.bbox_meta["source_model"] == _MODEL_NAME
+        assert "ambiguity_model" not in box.bbox_meta
+        assert "alternates" not in box.bbox_meta
+
+    async def test_browse_confusable_action_only_appears_when_enabled(self):
+        task = _make_task(params=_AMBIGUITY_PARAMS)
+        await task._init(_AMBIGUITY_PARAMS, resume_data=None)
+        task._task_tag_uuid = "task-tag"
+        labels = [a["label"] for a in task._review_actions()]
+        assert "Browse confusable" in labels
+
+        off = _make_task(params=_PARAMS)
+        await off._init(_PARAMS, resume_data=None)
+        off._task_tag_uuid = "task-tag"
+        assert "Browse confusable" not in [a["label"] for a in off._review_actions()]
