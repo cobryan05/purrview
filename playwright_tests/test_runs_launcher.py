@@ -538,8 +538,7 @@ class TestTrainingInProgressBadge:
         messages instead of subscribing a second time, so entering and leaving
         the pane must not add a connection.
         """
-        page.add_init_script(
-            """
+        page.add_init_script("""
             window.__taskStreams = [];
             const OrigES = window.EventSource;
             window.EventSource = function(url, opts) {
@@ -548,8 +547,7 @@ class TestTrainingInProgressBadge:
                 return es;
             };
             window.EventSource.prototype = OrigES.prototype;
-            """
-        )
+            """)
         _mock_task_status(page, {"task-1": _training_instance("running")})
         _open_launcher(page, base_url)
         expect(self._badge(page, "Primary Model")).to_be_visible()

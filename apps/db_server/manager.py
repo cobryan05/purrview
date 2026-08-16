@@ -106,6 +106,10 @@ _BBOX_VERIFIED_TAG = VERIFIED_TAG_UUID
 # meaningful value there (promote to root), so it can't also mean "not supplied".
 _PARENT_UUID_NOT_SET = object()
 
+# Bulk image actions that mutate image_labels, and therefore need the sidecar's
+# image_labels slice rewritten once per batch after the action has been applied.
+IMAGE_LABEL_BULK_ACTIONS = ("setPresent", "setAbsent", "setUncertain")
+
 # Crop-thumbnail outline weight, as a fraction of the RENDERED width (3px on the
 # 300px crops the review grid asks for). See Manager._render_outlined_crop for
 # why it can't be a source-pixel constant.
@@ -1181,6 +1185,7 @@ class Manager:
         modified_count = 0
         fail_count = 0
         skipped_count = 0
+        touched: List[str] = []
         for image_uuid in image_uuids:
             try:
                 result = await self._apply_image_bulk_action(image_uuid, action, label_uuids, tag_uuids)
@@ -1188,9 +1193,12 @@ class Manager:
                     skipped_count += 1
                 else:
                     modified_count += 1
+                    touched.append(image_uuid)
             except Exception as e:
                 logger.error("bulk_apply_images_by_uuids: image %s failed: %s", image_uuid, e)
                 fail_count += 1
+        if action in IMAGE_LABEL_BULK_ACTIONS:
+            await self._write_image_label_sidecars(touched)
         return modified_count, fail_count, skipped_count
 
     async def bulk_apply_images(
@@ -1244,6 +1252,7 @@ class Manager:
             if not batch:
                 break
 
+            touched: List[str] = []
             for img in batch:
                 try:
                     result = await self._apply_image_bulk_action(img.uuid, action, label_uuids, tag_uuids)
@@ -1251,9 +1260,15 @@ class Manager:
                         skipped_count += 1
                     else:
                         modified_count += 1
+                        touched.append(img.uuid)
                 except Exception as e:
                     logger.error("bulk_apply_images: image %s failed: %s", img.uuid, e)
                     fail_count += 1
+
+            # Per page, not per run: this walks every matching image, so holding
+            # the full touched set to the end would grow without bound.
+            if action in IMAGE_LABEL_BULK_ACTIONS:
+                await self._write_image_label_sidecars(touched)
 
             if not has_more:
                 break
@@ -1339,6 +1354,96 @@ class Manager:
             ]
         # One write for both halves: the upserts used to be a transaction each.
         await self._db_client.sync_image_present_labels(image_uuid, sorted(present_label_uuids), stale_present)
+        await self._sync_image_labels_sidecar(image_uuid)
+
+    async def _sync_image_labels_sidecar(self, image_uuid: str, filename: Optional[str] = None) -> None:
+        """Mirror this image's whole-image label assessments into its JSON sidecar.
+
+        ABSENT rows ("I checked; this label is not in this image") and
+        image-scope PRESENT rows are asserted by the user and derivable from
+        nothing else — not from `boxes`, not from the label vocabulary. Without
+        this they would live only in the database, which is exactly the failure
+        the sidecars exist to survive.
+
+        Costs one query plus one small file write per call. That is deliberate:
+        it runs on the same events that already do per-image DB work, and the
+        alternative (a periodic sweep) reintroduces the window where an
+        assessment exists only in SQLite.
+        """
+        if filename is None:
+            filenames = await self._db_client.get_image_filenames([image_uuid])
+            filename = filenames.get(image_uuid)
+        if not filename:
+            logger.warning("Skipping image_labels sidecar write: no filename for image %s", image_uuid)
+            return
+        safe_path = get_safe_path(self._files_root, filename)
+        if safe_path is None:
+            logger.warning(f"Skipping image_labels sidecar write for {filename!r}: path not under FILES_ROOT")
+            return
+        sidecar_path = self._get_json_sidefile(safe_path)
+        # Only refresh a sidecar that already exists. Creating one here would
+        # produce a file with image_labels but no `boxes`/`uuid`, which the
+        # reconcile path reads as "sidecar without uuid" and skips.
+        if not sidecar_path.exists():
+            return
+        rows = await self._db_client.get_image_labels_for_sidecar(image_uuid)
+        await asyncio.to_thread(self._db_client.write_image_labels_to_json, sidecar_path, rows)
+
+    async def _write_image_label_sidecars(self, image_uuids: List[str]) -> Dict[str, int]:
+        """Refresh the image_labels slice of the sidecar for a batch of images.
+
+        Two queries for the whole batch rather than two per image. The bulk
+        actions go through here instead of _sync_image_labels_sidecar precisely
+        so their DB cost stays independent of how many images were selected —
+        a per-image sync turns a 5000-image bulk apply into 10000 extra queries.
+
+        Returns counts keyed 'written', 'skipped_no_sidecar', 'skipped_no_path'.
+        """
+        stats = {"written": 0, "skipped_no_sidecar": 0, "skipped_no_path": 0}
+        if not image_uuids:
+            return stats
+
+        batch = await self._db_client.get_image_label_sidecar_batch(image_uuids)
+
+        for image_uuid in image_uuids:
+            filename, rows = batch.get(image_uuid, (None, []))
+            safe_path = get_safe_path(self._files_root, filename) if filename else None
+            if safe_path is None:
+                stats["skipped_no_path"] += 1
+                continue
+            sidecar_path = self._get_json_sidefile(safe_path)
+            if not sidecar_path.exists():
+                # Same rule as _sync_image_labels_sidecar: never invent a
+                # sidecar that has no boxes/uuid for reconcile to key on.
+                stats["skipped_no_sidecar"] += 1
+                continue
+            await asyncio.to_thread(self._db_client.write_image_labels_to_json, sidecar_path, rows)
+            stats["written"] += 1
+        return stats
+
+    async def backfill_image_label_sidecars(self, batch_size: int = 500) -> Dict[str, int]:
+        """Write existing image_labels rows into sidecars that predate the feature.
+
+        One-shot repair for databases annotated before sidecars carried label
+        assessments. Idempotent — rerunning it rewrites the same content — so it
+        is safe to run again if it is interrupted.
+
+        Batched deliberately: the live DB has tens of thousands of assessment
+        rows, and loading every row plus every filename in one query to build a
+        dict would hold the lot in memory at once for no benefit.
+
+        Returns counts keyed 'written', 'skipped_no_sidecar', 'skipped_no_path'.
+        """
+        image_uuids = await self._db_client.get_image_uuids_with_labels()
+        stats = {"written": 0, "skipped_no_sidecar": 0, "skipped_no_path": 0}
+
+        for start in range(0, len(image_uuids), batch_size):
+            batch_stats = await self._write_image_label_sidecars(image_uuids[start : start + batch_size])
+            for key, value in batch_stats.items():
+                stats[key] += value
+
+        logger.info("backfill_image_label_sidecars: %s", stats)
+        return stats
 
     async def _resolve_image_uuid(self, image_path: str) -> Optional[str]:
         """Resolve an image path to its DB uuid, or None if not found."""
@@ -1372,6 +1477,9 @@ class Manager:
             await self._db_client.delete_image_labels(image_uuid, [label_uuid])
         else:
             await self._db_client.set_image_label_status(image_uuid, label_uuid, status)
+        # image_path is already resolvable by get_safe_path, so pass it through
+        # rather than paying a filename lookup we don't need.
+        await self._sync_image_labels_sidecar(image_uuid, filename=image_path)
         return "modified"
 
     async def get_image_labels(self, image_path: str) -> Optional[List[ImageLabelRead]]:

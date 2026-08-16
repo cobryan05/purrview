@@ -633,6 +633,66 @@ async def test_rebuild_overwrites_bboxes_when_requested(tmp_path):
     assert bboxes[0].uuid == canonical_bid
 
 
+async def test_overwrite_when_sidecar_bbox_uuids_already_in_db(tmp_path):
+    """Re-syncing a sidecar over a DB that already holds the same bbox UUIDs.
+
+    Reassigning the relationship made SQLAlchemy UPDATE the existing rows rather
+    than insert new ones, and that UPDATE spans `confidence` — a GENERATED
+    column SQLite refuses to write, so the whole restore raised. Reconcile does
+    exactly this whenever a sidecar is newer than the DB row.
+    """
+    files_root = tmp_path / "files"
+    files_root.mkdir()
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    client = DbClient(db_dir=db_dir)
+    await client.init_db()
+
+    label = await client.add_label("cat", "#FF0000")
+    image_path = files_root / "resync.png"
+    image_path.write_bytes(make_png())
+
+    image = await client.add_image(image_path)
+    bid = str(uuid_mod.uuid4())
+    await client.write_image_metadata_to_db(
+        image.uuid,
+        ImageRecordUpdate(
+            bboxes=[BBoxUpdate(uuid=bid, label_uuid=label.uuid, x=0.0, y=0.0, width=0.1, height=0.1, tag_uuids=[])]
+        ),
+    )
+
+    # Same bbox UUID as the DB, moved coordinates — the sidecar is authoritative.
+    image_path.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "uuid": image.uuid,
+                "filename": str(image_path),
+                "boxes": [
+                    {
+                        "uuid": bid,
+                        "label_uuid": label.uuid,
+                        "label_name": "cat",
+                        "x": 0.5,
+                        "y": 0.5,
+                        "width": 0.2,
+                        "height": 0.2,
+                        "tag_uuids": [],
+                        "tag_names": [],
+                    }
+                ],
+            }
+        )
+    )
+
+    await client.sync_image_from_json(image_path, overwrite=True)
+
+    bboxes = await client.get_bboxes_for_image(image.uuid)
+    assert len(bboxes) == 1
+    assert bboxes[0].uuid == bid
+    assert bboxes[0].x == pytest.approx(0.5), "sidecar geometry should win"
+    await client.close()
+
+
 async def test_overwrite_from_corrupt_sidecar_does_not_wipe_bboxes(tmp_path):
     """A present-but-unparseable sidecar must NOT be treated as "empty" and
     overwrite the DB's bboxes with nothing. sync_image_from_json(overwrite=True)

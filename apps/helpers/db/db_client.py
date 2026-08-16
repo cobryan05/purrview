@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Set, TypeVar, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from alembic import command as alembic_command
@@ -179,6 +179,7 @@ TAGS_JSON = "tags.json"
 SOURCES_JSON = "sources.json"
 DATASETS_JSON = "datasets.json"
 TASK_CONFIGS_JSON = "task_configs.json"
+MODEL_CONFIGS_JSON = "model_configs.json"
 DB_FILE = "db.sqlite"
 
 # IN-vs-EXISTS dispatch for the image-search bbox filters (see
@@ -678,6 +679,7 @@ class DbClient:
         self._sources_json_path: Path = self._db_dir / SOURCES_JSON
         self._datasets_json_path: Path = self._db_dir / DATASETS_JSON
         self._task_configs_json_path: Path = self._db_dir / TASK_CONFIGS_JSON
+        self._model_configs_json_path: Path = self._db_dir / MODEL_CONFIGS_JSON
         self._memory: bool = memory
 
         if memory:
@@ -804,6 +806,19 @@ class DbClient:
         if dataset_count == 0:
             await self.sync_datasets_from_json()
 
+        async with self._async_session_maker() as session:
+            count_statement = select(func.count()).select_from(ModelConfig)
+            result = await session.exec(count_statement)
+            model_config_count = result.one() or 0
+
+        if model_config_count == 0:
+            await self.sync_model_configs_from_json()
+        elif not self._memory and not self._model_configs_json_path.exists():
+            # Configs predating this dump have never been written out, and the
+            # dump only runs on mutation — so without this they stay DB-only
+            # until someone happens to edit one. Backfill on first startup.
+            await self._sync_model_configs_to_json()
+
         # Refresh query-planner statistics so SQLite picks optimal indexes for
         # the current data distribution.  PRAGMA optimize is incremental — it
         # only runs ANALYZE on tables/indexes whose stats are stale, so it is
@@ -929,6 +944,10 @@ class DbClient:
         box_tag_uuids: Dict[str, List[str]] = {}  # bbox_uuid → tag UUID list
         box_tag_names: Dict[str, List[str]] = {}  # bbox_uuid → tag name list (fallback)
         box_label_names: Dict[str, str] = {}  # bbox_uuid → label name (fallback)
+        # Whole-image label assessments: (label_uuid, label_name, status) triples,
+        # resolved to real label UUIDs further down alongside the bbox labels.
+        json_image_labels: List[Tuple[Optional[str], Optional[str], ImageItemStatus]] = []
+        sidecar_has_image_labels = False
 
         if json_path.exists():
             try:
@@ -946,6 +965,23 @@ class DbClient:
                     box_tag_names[bbox.uuid] = tag_names_list
                     if label_name:
                         box_label_names[bbox.uuid] = label_name
+                # Distinguish "sidecar predates this feature" (key absent) from
+                # "user cleared every assessment" (key present but empty). Only
+                # the latter may delete DB rows during an overwrite sync.
+                sidecar_has_image_labels = "image_labels" in metadata_dict
+                for row in metadata_dict.get("image_labels", []):
+                    raw_status = str(row.get("status", "")).lower()
+                    try:
+                        status = ImageItemStatus(raw_status)
+                    except ValueError:
+                        logger.warning("Skipping image_label with unknown status %r in %s", raw_status, json_path)
+                        continue
+                    # UNCERTAIN is the absence of a row, so a sidecar carrying one
+                    # has nothing to restore — skip rather than insert a row that
+                    # every reader would have to special-case back out.
+                    if status == ImageItemStatus.UNCERTAIN:
+                        continue
+                    json_image_labels.append((row.get("label_uuid"), row.get("label_name"), status))
             except Exception as e:
                 logger.error(f"Failed to parse {json_path}: {e}")
                 # A present-but-unparseable sidecar must never be treated as an
@@ -962,12 +998,16 @@ class DbClient:
                 box_tag_uuids = {}
                 box_tag_names = {}
                 box_label_names = {}
+                json_image_labels = []
+                sidecar_has_image_labels = False
 
         async with self._async_session_maker() as session:
             # --- Resolve label/tag UUIDs (UUID-first, name-fallback) ---
             all_label_uuids = {b.label_uuid for b in json_bboxes if b.label_uuid}
+            all_label_uuids |= {u for u, _n, _s in json_image_labels if u}
             all_tag_uuids = {u for uuids in box_tag_uuids.values() for u in uuids}
             all_label_names = set(box_label_names.values())
+            all_label_names |= {n for _u, n, _s in json_image_labels if n}
             all_tag_names = {n for names in box_tag_names.values() for n in names}
 
             labels_by_uuid: Dict[str, str] = {}
@@ -1098,6 +1138,16 @@ class DbClient:
                 bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
             elif overwrite:
                 # Old BBoxTagLink rows are cascade-deleted when the old BBox rows are removed.
+                #
+                # Drop the old rows and flush *before* attaching the sidecar's,
+                # so a bbox whose UUID appears in both is INSERTed fresh rather
+                # than UPDATEd in place. An UPDATE spans every column including
+                # `confidence`, which is GENERATED — SQLite rejects the write and
+                # the whole restore fails. That is the common case, not an edge
+                # one: re-syncing a sidecar over a DB that still holds the same
+                # bboxes is exactly what reconcile does.
+                db_record.bboxes = []
+                await session.flush()
                 db_record.bboxes = json_bboxes
                 db_record.metadata_json = metadata_dict
                 if json_phash:
@@ -1122,6 +1172,70 @@ class DbClient:
                 # deduplicates the list, preventing composite-PK IntegrityErrors.
                 for tag_uuid in self._resolve_exclusive_groups(raw_tags, tags_obj_by_uuid):
                     session.add(BBoxTagLink(bbox_uuid=bbox_uuid, tag_uuid=tag_uuid))
+
+            # --- Restore whole-image label assessments ---
+            # These are the only annotations a user can make that leave no trace
+            # in `boxes`: an ABSENT row means "I looked, and this label is not
+            # here". Nothing else in the sidecar can reconstruct them.
+            if sidecar_has_image_labels:
+                resolved_statuses: Dict[str, ImageItemStatus] = {}
+                for lbl_uuid, lbl_name, status in json_image_labels:
+                    if lbl_uuid and lbl_uuid in labels_by_uuid:
+                        resolved = lbl_uuid
+                    elif lbl_name and lbl_name in labels_by_name:
+                        resolved = labels_by_name[lbl_name]
+                        logger.warning(
+                            "image_label for '%s': uuid %s not found, resolved by name to %s.",
+                            lbl_name,
+                            lbl_uuid,
+                            resolved,
+                        )
+                    else:
+                        logger.warning(
+                            "image_label (uuid=%s, name=%s) unresolvable in %s; dropping.",
+                            lbl_uuid,
+                            lbl_name,
+                            json_path,
+                        )
+                        continue
+                    resolved_statuses[resolved] = status
+
+                # no_autoflush: the pending BBox state is mid-write here, and
+                # letting this unrelated SELECT trigger a flush makes SQLAlchemy
+                # emit an UPDATE that includes `confidence` — a generated column
+                # SQLite refuses to update. The bboxes flush on commit as before.
+                with session.no_autoflush:
+                    existing_rows = (
+                        await session.exec(select(ImageLabel).where(ImageLabel.image_uuid == db_record.uuid))
+                    ).all()
+                existing_by_label = {r.label_uuid: r for r in existing_rows}
+                now = datetime.now(timezone.utc)
+
+                for label_uuid, status in resolved_statuses.items():
+                    row = existing_by_label.get(label_uuid)
+                    if row is None:
+                        session.add(
+                            ImageLabel(
+                                image_uuid=db_record.uuid,
+                                label_uuid=label_uuid,
+                                status=status,
+                                updated_at=now,
+                            )
+                        )
+                    elif overwrite:
+                        row.status = status
+                        row.updated_at = now
+                        session.add(row)
+                    # else: merge mode leaves the DB's own assessment alone.
+
+                if overwrite:
+                    # Symmetry with the bbox overwrite branch: the sidecar is the
+                    # authority, so an assessment it no longer lists is one the
+                    # user cleared. Guarded by sidecar_has_image_labels above so a
+                    # pre-feature sidecar can never trigger this.
+                    for label_uuid, row in existing_by_label.items():
+                        if label_uuid not in resolved_statuses:
+                            await session.delete(row)
 
             try:
                 await session.commit()
@@ -2024,6 +2138,49 @@ class DbClient:
                     session.add(image)
             await session.commit()
 
+    @staticmethod
+    def _merge_write_sidecar(json_path: Path, new_data: Dict[str, Any]) -> None:
+        """Merge `new_data` into the sidecar at `json_path` and write it atomically.
+
+        Only the top-level keys present in `new_data` are replaced; every other
+        key already in the file survives. That is what lets the bbox writer and
+        the image_labels writer each own their own slice of the same file
+        without either having to know what the other stores.
+        """
+        existing: Dict[str, Any] = {}
+        if json_path.exists():
+            try:
+                existing = jstyleson.loads(json_path.read_text())
+            except Exception as e:
+                logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
+        existing.update(new_data)
+        # Atomic write: serialise to a sibling temp file then os.replace so a
+        # crash mid-write can never leave a torn/half-written sidecar (which a
+        # later overwrite-sync would then refuse — or, historically, wipe from).
+        serialized = json.dumps(existing, indent=2)
+        tmp_path = json_path.with_name(json_path.name + ".tmp")
+        try:
+            tmp_path.write_text(serialized)
+            os.replace(tmp_path, json_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+    def write_image_labels_to_json(self, json_path: Path, image_labels: List[Dict[str, Any]]) -> None:
+        """Write only the whole-image label assessments into an existing sidecar.
+
+        Kept separate from write_image_metadata_to_json because the two are
+        driven by different events: bbox edits rewrite `boxes`, and
+        present/absent/uncertain actions rewrite `image_labels`. Neither should
+        have to re-derive the other's data just to persist its own.
+
+        An empty list is written as an empty list, not omitted — "the user
+        cleared every assessment" has to be distinguishable from "this sidecar
+        predates the feature", or a restore would resurrect assessments the
+        user deliberately removed.
+        """
+        self._merge_write_sidecar(json_path, {"image_labels": image_labels})
+
     def write_image_metadata_to_json(
         self,
         json_path: Path,
@@ -2031,14 +2188,14 @@ class DbClient:
         filename: str,
         update: ImageRecordUpdate,
         image_phash: Optional[str] = None,
+        image_labels: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Write image metadata to the JSON sidecar file."""
-        existing: Dict[str, Any] = {}
-        if json_path.exists():
-            try:
-                existing = jstyleson.loads(json_path.read_text())
-            except Exception as e:
-                logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
+        """Write image metadata to the JSON sidecar file.
+
+        `image_labels` is optional: when None the sidecar's existing
+        `image_labels` key is left untouched rather than cleared, so a caller
+        that only knows about bboxes cannot destroy the label assessments.
+        """
         new_data: Dict[str, Any] = {
             "uuid": image_uuid,
             "filename": filename,
@@ -2060,18 +2217,9 @@ class DbClient:
         }
         if image_phash:
             new_data["phash"] = image_phash
-        existing.update(new_data)
-        # Atomic write: serialise to a sibling temp file then os.replace so a
-        # crash mid-write can never leave a torn/half-written sidecar (which a
-        # later overwrite-sync would then refuse — or, historically, wipe from).
-        serialized = json.dumps(existing, indent=2)
-        tmp_path = json_path.with_name(json_path.name + ".tmp")
-        try:
-            tmp_path.write_text(serialized)
-            os.replace(tmp_path, json_path)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
+        if image_labels is not None:
+            new_data["image_labels"] = image_labels
+        self._merge_write_sidecar(json_path, new_data)
 
     async def get_all_image_phashes(self) -> List[Dict[str, str]]:
         """Return [{uuid, phash}] for all images with a non-null phash."""
@@ -2760,6 +2908,90 @@ class DbClient:
         async with self._async_session_maker() as session:
             result = await session.exec(select(ImageLabel).where(ImageLabel.image_uuid == image_uuid))
             return result.all()
+
+    async def get_image_uuids_with_labels(self) -> List[str]:
+        """Every image uuid that has at least one image_labels row.
+
+        Used by the sidecar backfill, which has no reason to walk images that
+        carry no assessments.
+        """
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(ImageLabel.image_uuid).distinct())
+            return list(result.all())
+
+    async def get_image_labels_for_sidecar(self, image_uuid: str) -> List[Dict[str, Any]]:
+        """Return this image's label assessments in sidecar form.
+
+        Each row carries label_name alongside label_uuid for the same reason
+        bboxes do: on a rebuild that mints new label UUIDs, the name is the only
+        key left that can resolve the row.
+        """
+        rows = await self.get_image_labels_for_sidecar_bulk([image_uuid])
+        return rows.get(image_uuid, [])
+
+    async def get_image_labels_for_sidecar_bulk(self, image_uuids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """Batched get_image_labels_for_sidecar: {image_uuid: [sidecar rows]}.
+
+        Images with no assessments are omitted — callers that need an explicit
+        empty list should default the lookup themselves.
+        """
+        if not image_uuids:
+            return {}
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(image_uuids):
+                stmt = (
+                    select(ImageLabel, Label.name)
+                    .join(Label, Label.uuid == ImageLabel.label_uuid, isouter=True)
+                    .where(ImageLabel.image_uuid.in_(chunk))
+                )
+                for row, label_name in (await session.exec(stmt)).all():
+                    status = row.status.value if isinstance(row.status, ImageItemStatus) else str(row.status).lower()
+                    out.setdefault(row.image_uuid, []).append(
+                        {
+                            "label_uuid": row.label_uuid,
+                            "label_name": label_name,
+                            "status": status,
+                        }
+                    )
+        # Stable ordering keeps the sidecar byte-identical across rewrites that
+        # changed nothing, so backups and diffs stay quiet.
+        for rows in out.values():
+            rows.sort(key=lambda r: (r["label_name"] or "", r["label_uuid"]))
+        return out
+
+    async def get_image_label_sidecar_batch(
+        self, image_uuids: List[str]
+    ) -> Dict[str, Tuple[str, List[Dict[str, Any]]]]:
+        """{image_uuid: (filename, [sidecar rows])} for a batch of images, in one query.
+
+        Deliberately one query rather than "fetch filenames, fetch rows": the
+        bulk-apply paths run this after every page, and an image whose
+        assessments were just cleared has zero rows but still needs its
+        filename — so it is an outer join from images, not a lookup keyed on
+        the rows. Images with no assessments come back with an empty list,
+        which is the instruction to write `[]`.
+        """
+        if not image_uuids:
+            return {}
+        out: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(image_uuids):
+                stmt = (
+                    select(ImageRecord.uuid, ImageRecord.filename, ImageLabel.label_uuid, ImageLabel.status, Label.name)
+                    .join(ImageLabel, ImageLabel.image_uuid == ImageRecord.uuid, isouter=True)
+                    .join(Label, Label.uuid == ImageLabel.label_uuid, isouter=True)
+                    .where(ImageRecord.uuid.in_(chunk))
+                )
+                for image_uuid, filename, label_uuid, status, label_name in (await session.exec(stmt)).all():
+                    entry = out.setdefault(image_uuid, (filename, []))
+                    if label_uuid is None:
+                        continue
+                    status_value = status.value if isinstance(status, ImageItemStatus) else str(status).lower()
+                    entry[1].append({"label_uuid": label_uuid, "label_name": label_name, "status": status_value})
+        for _filename, rows in out.values():
+            rows.sort(key=lambda r: (r["label_name"] or "", r["label_uuid"]))
+        return out
 
     async def get_image_labels_bulk(self, image_uuids: List[str]) -> List[ImageLabel]:
         """Return all image_label rows for a batch of images (chunked IN)."""
@@ -5505,6 +5737,128 @@ class DbClient:
     def _mc_to_read(mc: ModelConfig) -> ModelConfigRead:
         return ModelConfigRead.model_validate(mc)
 
+    async def _sync_model_configs_to_json(self) -> None:
+        """Dump model_configs (+ their nodes) to model_configs.json.
+
+        Each node stores label_name beside label_uuid, matching the sidecar
+        convention: on a rebuild that mints new label UUIDs the name is the
+        only key that can still resolve the node to a label.
+        """
+        async with self._async_session_maker() as session:
+            stmt = select(ModelConfig).options(selectinload(ModelConfig.nodes))
+            configs = (await session.exec(stmt)).all()
+            label_names: Dict[str, str] = {
+                uuid: name for uuid, name in (await session.exec(select(Label.uuid, Label.name))).all()
+            }
+            rows = [
+                {
+                    "uuid": mc.uuid,
+                    "name": mc.name,
+                    "description": mc.description,
+                    "nodes": [
+                        {
+                            "label_uuid": n.label_uuid,
+                            "label_name": label_names.get(n.label_uuid) if n.label_uuid else None,
+                            "model_type": n.model_type,
+                            "architecture": n.architecture,
+                            "roll_up_unchecked": n.roll_up_unchecked,
+                        }
+                        for n in (mc.nodes or [])
+                    ],
+                }
+                for mc in configs
+            ]
+        self._model_configs_json_path.write_text(json.dumps(rows, indent=2))
+
+    async def sync_model_configs_from_json(self) -> None:
+        """Read model_configs.json into the DB. Does not remove existing configs.
+
+        A config is matched by UUID, then by name (names are unique, so a name
+        collision must reuse the DB row or the insert violates the constraint).
+        Nodes are replaced wholesale for any config it touches.
+
+        A node whose label can be resolved by neither UUID nor name is dropped
+        with a warning rather than failing the whole config — the FK would
+        reject it anyway, and losing one node beats losing the config.
+        """
+        if not self._model_configs_json_path.exists():
+            return
+
+        try:
+            json_data = json.loads(self._model_configs_json_path.read_text())
+        except Exception as e:
+            logger.error(f"Failed to parse model_configs.json: {e}")
+            return
+
+        async with self._async_session_maker() as session:
+            existing = (await session.exec(select(ModelConfig).options(selectinload(ModelConfig.nodes)))).all()
+            by_uuid: Dict[str, ModelConfig] = {mc.uuid: mc for mc in existing}
+            by_name: Dict[str, ModelConfig] = {mc.name: mc for mc in existing}
+
+            labels = (await session.exec(select(Label.uuid, Label.name))).all()
+            valid_label_uuids = {uuid for uuid, _ in labels}
+            label_uuid_by_name = {name: uuid for uuid, name in labels}
+
+            count = 0
+            for item in json_data:
+                json_uuid = item.get("uuid")
+                name = item.get("name")
+                if not name:
+                    continue
+
+                mc = by_uuid.get(json_uuid) if json_uuid else None
+                if mc is None and name in by_name:
+                    mc = by_name[name]
+                    logger.warning(
+                        "Model config '%s' from JSON (UUID %s) matched by name to existing DB row (UUID %s).",
+                        name,
+                        json_uuid,
+                        mc.uuid,
+                    )
+                if mc is None:
+                    mc = ModelConfig(uuid=json_uuid or str(uuid4()), name=name)
+                    session.add(mc)
+                    await session.flush()
+
+                mc.name = name
+                mc.description = item.get("description")
+                session.add(mc)
+
+                await session.exec(delete(ModelConfigNode).where(ModelConfigNode.model_config_uuid == mc.uuid))
+                seen_labels: Set[Optional[str]] = set()
+                for node in item.get("nodes", []):
+                    label_uuid = node.get("label_uuid")
+                    if label_uuid and label_uuid not in valid_label_uuids:
+                        fallback = label_uuid_by_name.get(node.get("label_name") or "")
+                        if fallback is None:
+                            logger.warning(
+                                "Model config '%s': node label (uuid=%s, name=%s) unresolvable; dropping node.",
+                                name,
+                                label_uuid,
+                                node.get("label_name"),
+                            )
+                            continue
+                        label_uuid = fallback
+                    # A duplicate label within one config violates the same rule
+                    # create_model_config enforces; keep the first and warn.
+                    if label_uuid in seen_labels:
+                        logger.warning("Model config '%s': duplicate node label %s; dropping.", name, label_uuid)
+                        continue
+                    seen_labels.add(label_uuid)
+                    session.add(
+                        ModelConfigNode(
+                            model_config_uuid=mc.uuid,
+                            label_uuid=label_uuid,
+                            model_type=node["model_type"],
+                            architecture=node["architecture"],
+                            roll_up_unchecked=node.get("roll_up_unchecked", False),
+                        )
+                    )
+                count += 1
+
+            await session.commit()
+            logger.info("Synced %d model configs from %s", count, self._model_configs_json_path)
+
     async def list_model_configs(self) -> List[ModelConfigRead]:
         async with self._async_session_maker() as session:
             stmt = select(ModelConfig).options(selectinload(ModelConfig.nodes))
@@ -5554,7 +5908,9 @@ class DbClient:
             await session.commit()
             stmt = select(ModelConfig).where(ModelConfig.uuid == mc.uuid).options(selectinload(ModelConfig.nodes))
             result = await session.exec(stmt)
-            return self._mc_to_read(result.one())
+            out = self._mc_to_read(result.one())
+        await self._sync_model_configs_to_json()
+        return out
 
     async def update_model_config(self, uuid: str, data: ModelConfigUpdate) -> Optional[ModelConfigRead]:
         async with self._async_session_maker() as session:
@@ -5596,7 +5952,9 @@ class DbClient:
             result2 = await session.exec(
                 select(ModelConfig).where(ModelConfig.uuid == uuid).options(selectinload(ModelConfig.nodes))
             )
-            return self._mc_to_read(result2.one())
+            out = self._mc_to_read(result2.one())
+        await self._sync_model_configs_to_json()
+        return out
 
     async def delete_model_config(self, uuid: str) -> bool:
         async with self._async_session_maker() as session:
@@ -5605,6 +5963,7 @@ class DbClient:
                 return False
             await session.delete(mc)
             await session.commit()
+        await self._sync_model_configs_to_json()
         return True
 
     # ─── Filter Chains ────────────────────────────────────────────────────────
