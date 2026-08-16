@@ -41,10 +41,12 @@ class IouTracker(Tracker):
         min_hits: int = 3,
         max_age_s: float = 2.0,
         anchor_confidence: float = 0.6,
+        min_confidence: float = 0.25,
         label_lifetimes: Optional[Dict[str, LabelLifetimeSpec]] = None,
         **params: Any,
     ) -> None:
         super().__init__(**params)
+        self._min_confidence = min_confidence
         self._iou_threshold = iou_threshold
         self._min_hits = min_hits
         self._max_age_s = max_age_s
@@ -60,6 +62,16 @@ class IouTracker(Tracker):
     @classmethod
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {
+            "min_confidence": {
+                "type": "float",
+                "required": False,
+                "default": 0.25,
+                "help": (
+                    "Detections below this confidence are ignored entirely. Inference is asked for a "
+                    "lower floor than this so other trackers can use the weak boxes; this tracker "
+                    "has no use for them."
+                ),
+            },
             "iou_threshold": {
                 "type": "float",
                 "required": False,
@@ -136,6 +148,11 @@ class IouTracker(Tracker):
     # ------------------------------------------------------------------ API
 
     def update(self, detections: List[Detection], now: float) -> List[Track]:
+        # The task asks inference for a deliberately low floor so that ByteTrack can use
+        # the low-scoring boxes. This tracker has no use for them — it has no second
+        # association pass — so it applies its own threshold here rather than inheriting
+        # whatever floor the task happened to request.
+        detections = [d for d in detections if d.confidence >= self._min_confidence]
         pairs, _, unmatched_dets = self._match(detections)
 
         for t_idx, d_idx in pairs:

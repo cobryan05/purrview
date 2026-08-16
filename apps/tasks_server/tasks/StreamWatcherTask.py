@@ -75,6 +75,12 @@ class StreamWatcherTask(Task):
     _FETCH_TIMEOUT_S: float = 30.0
     _INFERENCE_TIMEOUT_S: float = 60.0
     _MAX_RETRIES: int = 2
+    # Deliberately low: thresholding is the *tracker's* job, not this call's.
+    # ByteTrack's second association pass exists to recover boxes that a conventional
+    # threshold throws away — filtering here would quietly reduce it to plain SORT, and
+    # the loss would be invisible (fewer track ids, no error). Each tracker applies its
+    # own real threshold, exposed through `params_schema()` and tunable in the UI.
+    _INFERENCE_CONF_FLOOR: float = 0.1
     # Ceiling on how long the loop sleeps when nothing is due. Short enough that a
     # newly-due source is serviced promptly, long enough that an idle watcher costs
     # nothing measurable.
@@ -429,14 +435,19 @@ class StreamWatcherTask(Task):
             return []
 
         async def _run_model(name: str) -> list:
+            # Built once, outside the retry loop and outside the try. A malformed payload
+            # is a programming error, not a transient inference failure, and building it
+            # inside the `except Exception` below is exactly how this call spent its first
+            # week returning zero detections on every frame.
+            payload = InferencePayload(
+                image_base64=base64_img,
+                pin_id=self._pin_ids.get(name),
+                conf_thresh=self._INFERENCE_CONF_FLOOR,
+            )
             for attempt in range(self._MAX_RETRIES):
                 try:
                     result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            inference_api.detect,
-                            name,
-                            InferencePayload(image_base64=base64_img, pin_id=self._pin_ids.get(name)),
-                        ),
+                        asyncio.to_thread(inference_api.detect, name, payload),
                         timeout=self._INFERENCE_TIMEOUT_S,
                     )
                     return list(result.result.detections or [])

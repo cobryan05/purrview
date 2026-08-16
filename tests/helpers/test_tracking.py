@@ -228,10 +228,40 @@ class TestAnchors:
         assert tracks[0].is_anchor is False
 
     def test_non_anchor_labels_never_latch(self):
+        """A non-anchor track always takes the new box, however weakly it was detected.
+
+        0.4 is deliberately below `anchor_confidence` (0.6) — which is the contrast this
+        test exists to draw — but above `min_confidence` (0.25), below which the tracker
+        discards a detection outright and there is no box to take.
+        """
         tracker = IouTracker(min_hits=1, label_lifetimes={CAT: LabelLifetimeSpec(ttl_s=2.0)})
         tracker.update([_det(0, 0, 20, 20, conf=0.9)], now=0.0)
-        tracks = tracker.update([_det(2, 2, 22, 22, conf=0.2)], now=0.2)
+        tracks = tracker.update([_det(2, 2, 22, 22, conf=0.4)], now=0.2)
         assert tracks[0].bbox == (2, 2, 22, 22)
+
+
+class TestMinConfidence:
+    """The task asks inference for a low floor so ByteTrack can use weak boxes; this
+    tracker has no second association pass, so it applies its own threshold."""
+
+    def test_detections_below_min_confidence_are_ignored(self):
+        tracker = IouTracker(min_hits=1, min_confidence=0.25)
+
+        assert tracker.update([_det(0, 0, 20, 20, conf=0.1)], now=0.0) == []
+
+    def test_a_weak_detection_does_not_refresh_a_track(self):
+        tracker = IouTracker(min_hits=1, min_confidence=0.25)
+        tracker.update([_det(0, 0, 20, 20, conf=0.9)], now=0.0)
+
+        tracker.update([_det(0, 0, 20, 20, conf=0.1)], now=0.5)
+
+        # Coasting on its TTL, not refreshed — the weak box was never seen.
+        assert tracker.all_tracks()[0].last_seen == 0.0
+
+    def test_the_threshold_is_configurable(self):
+        tracker = IouTracker(min_hits=1, min_confidence=0.05)
+
+        assert len(tracker.update([_det(0, 0, 20, 20, conf=0.1)], now=0.0)) == 1
 
 
 class TestReset:
