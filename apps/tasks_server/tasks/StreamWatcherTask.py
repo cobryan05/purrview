@@ -114,6 +114,9 @@ class StreamWatcherTask(Task):
         # rolling buffer is addressed. Captured once so a clock adjustment mid-run
         # can't make two events disagree about when 'now' was.
         self._wallclock_offset: float = time.time() - time.monotonic()
+        # source_uuid → (frame_seq, quality, base64 jpeg). Populated only by the live
+        # view, so a watcher with no viewer never allocates one.
+        self._preview_cache: Dict[str, tuple] = {}
         self._progress = None  # a watcher has no meaningful completion percentage
 
     # ------------------------------------------------------------------ schema
@@ -755,6 +758,146 @@ class StreamWatcherTask(Task):
             "recentEvents": list(reversed(self._recent_events[-15:])),
             "tuningHints": "\n".join(hints) if hints else "No tuning suggestions yet.",
         }
+
+    # ------------------------------------------------------------------ live view
+
+    #: Preview JPEG quality. Lower than the analysis path's: this is a monitoring
+    #: view polled a few times a second, not a training image.
+    _PREVIEW_QUALITY: int = 70
+
+    async def get_live_preview(self, source_uuid: Optional[str] = None, **options: Any) -> Optional[dict[str, Any]]:
+        """The most recent analysed frame for one source, with everything seen in it.
+
+        Three layers of "don't do the work":
+
+        1. **Nothing is precomputed.** A watcher nobody is looking at pays nothing for
+           this method existing — the frame loop stores a reference it already held.
+        2. **`since_seq`** — a caller that already has frame N gets metadata only, no
+           image. Polling at 5 Hz against a 1 fps camera therefore costs one encode per
+           second, not five, and transfers no image bytes on the other four.
+        3. **The encode is cached per (frame, quality)** so two viewers, or a caller
+           that doesn't pass `since_seq`, still only cost one encode per frame.
+
+        Deliberately reports the frame *as analysed* — downscaled, and byte-identical to
+        what was handed to inference — because the whole point of this view is to answer
+        "is the model being shown what I think it is?". A prettier full-resolution frame
+        would show coordinates that do not line up with the boxes drawn on it.
+        """
+        pipeline = self._pipeline_for(source_uuid)
+        payload: dict[str, Any] = {
+            "profileUuid": getattr(self._profile, "uuid", None),
+            "profileName": getattr(self._profile, "name", None),
+            "dryRun": self._dry_run,
+            # The picker's whole option list, so the view needs exactly one call per poll.
+            "sources": [{"sourceUuid": p.source_uuid, "sourceName": p.source_name} for p in self._pipelines],
+            "sourceUuid": pipeline.source_uuid if pipeline else None,
+            "sourceName": pipeline.source_name if pipeline else None,
+            "frame": None,
+        }
+        if pipeline is None:
+            return payload
+
+        now = time.monotonic()
+        # One reference, grabbed once: the loop replaces this attribute between frames,
+        # and reading it twice could encode one frame and report another's geometry.
+        frame = pipeline.last_frame
+        quality = int(options.get("quality") or self._PREVIEW_QUALITY)
+
+        payload.update(
+            {
+                "analysisFps": pipeline.analysis_fps,
+                "analysisWidth": pipeline.analysis_width,
+                "modelNames": list(pipeline.model_names),
+                "framesAnalysed": pipeline.health.frames_analysed,
+                "healthy": pipeline.health.healthy,
+                "lastError": pipeline.health.last_error,
+                "buffer": pipeline._buffer_label(),
+                "frameAgeS": (round(now - pipeline.health.last_frame_at, 2) if pipeline.health.last_frame_at else None),
+                # Pre-tracker, so an empty tracks list next to a populated detections
+                # list localises the problem to the tracker rather than the model.
+                "detections": [
+                    {
+                        "bbox": [round(v, 2) for v in det.bbox],
+                        "labelUuid": det.label_uuid,
+                        "labelName": det.label_name,
+                        "confidence": round(det.confidence, 4),
+                    }
+                    for det in pipeline.detections
+                ],
+                "tracks": [{**t.to_dict(), "ageS": round(t.age_s(now), 2)} for t in pipeline.tracks],
+                "zones": [
+                    {"uuid": z.uuid, "name": z.name, "kind": z.kind, "points": [list(p) for p in z.points]}
+                    for z in pipeline.engine.zones.values()
+                ],
+                "openEvents": pipeline.engine.open_events(),
+            }
+        )
+
+        if frame is None:
+            return payload
+
+        seq = pipeline.frame_seq
+        height, width = frame.shape[:2]
+        payload["frameSeq"] = seq
+        payload["frameWidth"] = width
+        payload["frameHeight"] = height
+
+        since = options.get("since_seq")
+        if since is not None and int(since) == seq:
+            # The caller already has these pixels. Everything above still moves —
+            # tracks age, events open — so the metadata is worth returning; the image
+            # is not worth re-encoding or re-sending.
+            payload["frameUnchanged"] = True
+            return payload
+
+        cached_seq, cached_quality, cached_b64 = self._preview_cache.get(pipeline.source_uuid, (None, None, None))
+        if cached_seq == seq and cached_quality == quality:
+            payload["frame"] = cached_b64
+            return payload
+
+        encoded = await asyncio.to_thread(self._encode_preview, frame, quality)
+        # One entry per source, overwritten — a bounded ~50 KB per watched source, and
+        # only for sources someone has actually opened the live view on.
+        self._preview_cache[pipeline.source_uuid] = (seq, quality, encoded)
+        payload["frame"] = encoded
+        return payload
+
+    def _pipeline_for(self, source_uuid: Optional[str]) -> Optional[WatchPipeline]:
+        if not self._pipelines:
+            return None
+        if not source_uuid:
+            return self._pipelines[0]
+        return next((p for p in self._pipelines if p.source_uuid == source_uuid), None)
+
+    @staticmethod
+    def _encode_preview(frame, quality: int) -> Optional[str]:
+        """Bare base64 JPEG — not `base64_encode_jpg`, which wraps it in a JSON packet
+        for the inference API. An <img> src wants the bytes, not the envelope.
+
+        No colour conversion, on purpose: this shows the array exactly as
+        `cv2.imencode` in the inference path interprets it, so a provider handing out
+        RGB where the rest of the app assumes BGR shows up here as blue cats instead of
+        being silently corrected in the one view meant to reveal it.
+        """
+        import base64
+
+        import cv2
+
+        params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+        try:
+            # No copy: the frame is passed straight through. cv2.imencode treats its
+            # input as const, so nothing here needs a writable or re-laid-out array.
+            ok, buffer = cv2.imencode(".jpg", frame, params)
+        except cv2.error:
+            # Some providers hand out a read-only view over a buffer (ffmpeg's
+            # np.frombuffer). Copying is the fallback, not the default, so the common
+            # case stays zero-copy.
+            import numpy as np
+
+            ok, buffer = cv2.imencode(".jpg", np.ascontiguousarray(frame), params)
+        if not ok:
+            return None
+        return base64.b64encode(buffer).decode("ascii")
 
     def _percentile(self, pct: int) -> Optional[float]:
         if not self._inference_ms:

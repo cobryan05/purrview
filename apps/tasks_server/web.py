@@ -142,6 +142,13 @@ class TasksStatusDataResponse(StatusResponse):
     status_data: Dict[str, dict] = Field(default_factory=dict)
 
 
+class TaskLivePreviewResponse(StatusResponse):
+    #: Free-form because its shape is the task type's business, not the transport's —
+    #: the same reason status_data is a bare dict. Absent when the task type has no
+    #: live view.
+    preview: Optional[dict] = None
+
+
 class TaskCommandPayload(Payload):
     task_uuid: str
     command: str
@@ -463,6 +470,45 @@ class WebApp:
                 return TasksStatusDataResponse(status=WebApp.SUCCESS_KEY, status_data=status_data)
             except Exception as e:
                 return TasksStatusDataResponse(status=WebApp.FAILURE_KEY, message=str(e))
+
+        @self._app.get(
+            "/api/tasks/instances/{task_uuid}/live-preview",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_live_preview",
+            response_model=TaskLivePreviewResponse,
+        )
+        async def get_task_live_preview_api(
+            task_uuid: str,
+            source_uuid: Optional[str] = None,
+            quality: Optional[int] = None,
+            since_seq: Optional[int] = None,
+        ) -> TaskLivePreviewResponse:
+            """
+            The frame a running task is currently working on, plus what it sees in it.
+
+            A GET rather than the surrounding POST-with-payload convention because it is
+            polled several times a second by whoever has the view open, and because it
+            reads state without touching it.
+
+            The frame is encoded per request, so a task nobody is watching pays nothing
+            for this endpoint existing. Pass `since_seq` with the last `frameSeq` you
+            received and a poll that outruns the camera returns fresh metadata with no
+            image attached, rather than re-encoding and re-sending pixels you have.
+            """
+            try:
+                preview = await self._manager.get_task_live_preview(
+                    task_uuid, source_uuid=source_uuid, quality=quality, since_seq=since_seq
+                )
+            except ValueError as e:
+                # Not running is the ordinary case (the watcher was stopped while the
+                # view was open), not a server fault.
+                return TaskLivePreviewResponse(status=WebApp.FAILURE_KEY, message=str(e))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TaskLivePreviewResponse(status=WebApp.FAILURE_KEY, message=str(e))
+            if preview is None:
+                return TaskLivePreviewResponse(status=WebApp.FAILURE_KEY, message="This task type has no live view")
+            return TaskLivePreviewResponse(status=WebApp.SUCCESS_KEY, preview=preview)
 
         @self._app.post(
             "/api/tasks/instances/command",

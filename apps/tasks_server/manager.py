@@ -583,6 +583,22 @@ class Manager:
                 logger.exception("Failed to load persisted status data for %s", not_running)
         return status_data
 
+    async def get_task_live_preview(
+        self, task_uuid: str, source_uuid: Optional[str] = None, **options: Any
+    ) -> Optional[dict[str, Any]]:
+        """Ask a running task for its current frame and what it sees in it.
+
+        Only ever served from the live task — unlike status_data there is no persisted
+        fallback, because a frame from a finished run is not a live view of anything.
+
+        Raises ValueError if the task isn't running; returns None if the task type has
+        no live view.
+        """
+        task_info = self._running_tasks.get(task_uuid)
+        if task_info is None or task_info.task is None:
+            raise ValueError(f"Task {task_uuid} is not currently running")
+        return await task_info.task.get_live_preview(source_uuid=source_uuid, **options)
+
     async def send_task_command(self, task_uuid: str, command: str, params: dict[str, Any]) -> None:
         """Forward a UI-issued command to the running task instance's handle_command().
 

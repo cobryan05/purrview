@@ -109,10 +109,19 @@ class WatchPipeline:
     health: SourceHealth = field(default_factory=SourceHealth)
     _next_frame_at: float = 0.0
     _last_tracks: List[Track] = field(default_factory=list)
+    #: Detections from the last analysed frame, *before* the tracker saw them. Kept
+    #: only for the live view, and kept separately from tracks on purpose: "inference
+    #: returned nothing" and "the tracker discarded everything inference returned" look
+    #: identical from the tracks alone, and they have opposite fixes.
+    _last_detections: List[Detection] = field(default_factory=list)
     _last_frame_shape: Optional[tuple] = None
     #: Most recent analysed frame, kept for snapshot actions. One frame per source,
     #: replaced each time — deliberately not a history.
     last_frame: Optional[np.ndarray] = None
+    #: Increments once per analysed frame. Lets the live view's encode cache and its
+    #: caller both ask "is this the frame I already have?" without comparing pixels —
+    #: which is what keeps a 5 Hz poll of a 1 fps camera free.
+    frame_seq: int = 0
 
     @property
     def frame_interval_s(self) -> float:
@@ -135,6 +144,7 @@ class WatchPipeline:
         """Downscale and remember the analysis geometry the zones scale against."""
         analysed = downscale_to_width(image, self.analysis_width)
         self.last_frame = analysed
+        self.frame_seq += 1
         height, width = analysed.shape[:2]
         if self._last_frame_shape != (height, width):
             self._last_frame_shape = (height, width)
@@ -145,6 +155,7 @@ class WatchPipeline:
 
     def step(self, detections: Sequence[Detection], now: float) -> List[WatchEventSignal]:
         """Advance the tracker and rule engine for one analysed frame."""
+        self._last_detections = list(detections)
         self._last_tracks = self.tracker.update(list(detections), now)
         return self.engine.step(self._last_tracks, now)
 
@@ -154,6 +165,10 @@ class WatchPipeline:
     @property
     def tracks(self) -> List[Track]:
         return list(self._last_tracks)
+
+    @property
+    def detections(self) -> List[Detection]:
+        return list(self._last_detections)
 
     def status_row(self, now: float) -> Dict[str, Any]:
         """One row of the status panel's Sources table."""

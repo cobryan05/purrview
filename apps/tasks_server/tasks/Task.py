@@ -190,6 +190,21 @@ class Task(ABC):
         """
         return {}
 
+    async def get_live_preview(self, source_uuid: Optional[str] = None, **options: Any) -> Optional[dict[str, Any]]:
+        """
+        Return the most recent frame this task is working on, plus whatever it currently
+        believes about that frame, for a live drill-down view.
+
+        Unlike get_status_data() this MAY do CPU work (JPEG encoding) and so is async —
+        but it must remain *pull*-driven: encode on request, never on every frame. A
+        task with no viewer must pay nothing, which is why nothing here is precomputed
+        in the hot loop.
+
+        Returns None when this task type has no live view (the default), which the web
+        layer reports as "not available" rather than an error.
+        """
+        return None
+
     async def handle_command(self, command: str, params: dict[str, Any]) -> None:
         """
         Handle a UI-issued command sent via POST /api/tasks/instances/command

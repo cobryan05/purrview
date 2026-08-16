@@ -19,6 +19,7 @@ import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { Logger, showPaneError } from '/app-static/js/ui/utils/index.js';
+import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
 
 /**
  * Small local button helper.
@@ -44,6 +45,14 @@ function _panelButton(text, onClick) {
 const WATCHER_TYPENAME = 'StreamWatcherTask';
 
 /**
+ * Instance statuses that mean "this watcher is still a live thing".
+ *
+ * `pending` counts: a watcher that is starting up is on its way to watching, and
+ * showing it as stopped would make the pane flicker through a lie on every start.
+ */
+const LIVE_STATUSES = new Set(['running', 'pending', 'paused']);
+
+/**
  * Map watch-profile uuid → live task info, for profiles that are running.
  *
  * A watcher task carries its profile uuid in the config params rather than in a
@@ -56,10 +65,18 @@ async function fetchRunningWatchers() {
   const running = new Map();
   try {
     const { tasks } = await fetchTasksStatus();
-    for (const task of Object.values(tasks ?? {})) {
+    for (const [taskUuid, task] of Object.entries(tasks ?? {})) {
       if (task?.config?.typename !== WATCHER_TYPENAME) continue;
+      // The instance list includes *finished* instances, which are retained after a
+      // watcher is stopped. Without this filter a stopped watcher kept its "running"
+      // pill for as long as its instance row survived — the single most misleading
+      // thing this pane could say.
+      if (!LIVE_STATUSES.has(task?.instance?.status)) continue;
       const uuid = task?.config?.params?.watch_profile_uuid;
-      if (uuid) running.set(uuid, task);
+      // The map key is the instance uuid, and the live view needs it; `instance.uuid`
+      // agrees, but reading the key means a payload shape change cannot silently
+      // produce an undefined task uuid.
+      if (uuid) running.set(uuid, { ...task, taskUuid });
     }
   } catch (err) {
     // A watcher that cannot be resolved is reported as not running rather than
@@ -170,6 +187,17 @@ function _profileCard(profile, task) {
   const spacer = document.createElement('span');
   spacer.style.flex = '1';
   bar.appendChild(spacer);
+
+  // Only offered while the watcher is running: there is no frame to show otherwise,
+  // and a button that always opens an empty modal teaches the user to ignore it.
+  if (isRunning) {
+    const liveBtn = _panelButton(
+      'Live view',
+      () => openWatcherLiveView({ taskUuid: task.taskUuid, profileName: profile.name }),
+    );
+    liveBtn.dataset.testid = 'nvr-live-view';
+    bar.appendChild(liveBtn);
+  }
 
   // `selectUuid` is not optional decoration: without it the Watchers pane opens on
   // whatever was last selected, so "Edit rules" on card B lands you in card A's editor.

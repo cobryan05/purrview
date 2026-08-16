@@ -6102,3 +6102,99 @@ progress.progress-indeterminate:indeterminate {
   gap: var(--space-2, 0.5rem);
   margin-top: var(--space-3, 0.75rem);
 }
+
+/* ===== Watcher live view ===== */
+.watch-live-dialog { max-width: 1100px; }
+
+.watch-live-bar,
+.watch-live-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.watch-live-footer {
+  margin-top: var(--space-3, 0.75rem);
+  justify-content: flex-end;
+}
+
+.watch-live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  margin: 0;
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Pico gives form controls a bottom margin that would stack these into a column. */
+.watch-live-toggle input,
+.watch-live-bar select { margin-bottom: 0; }
+
+.watch-live-bar select { width: auto; }
+
+.watch-live-body {
+  display: flex;
+  gap: var(--space-4, 1rem);
+  align-items: flex-start;
+  margin-top: var(--space-3, 0.75rem);
+}
+
+.watch-live-stage {
+  flex: 1 1 640px;
+  min-width: 320px;
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+  background: #000;
+}
+
+/* The canvas is sized in *frame* pixels so overlay coordinates need no scaling
+   maths; CSS alone fits it to the stage. */
+.watch-live-stage canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.watch-live-side {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.watch-live-status {
+  font-size: var(--text-sm, 0.875rem);
+  color: var(--text-muted);
+}
+
+.watch-live-status--error { color: var(--color-danger, #f87171); }
+
+.watch-live-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2, 0.5rem);
+  font-size: var(--text-xs, 0.75rem);
+  padding: 0.1rem 0;
+  border-bottom: 1px solid var(--border-subtle, #2a2a2a);
+}
+
+.watch-live-stat__label { color: var(--text-faint); }
+.watch-live-stat__value { color: var(--text-muted); text-align: right; }
+
+.watch-live-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 0.75rem);
+}
+
+.watch-live-list__row {
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}

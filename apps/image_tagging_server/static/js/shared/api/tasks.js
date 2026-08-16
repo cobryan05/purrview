@@ -148,6 +148,38 @@ export async function fetchTaskStatusData(taskUuids) {
 }
 
 /**
+ * The frame a running task is currently working on, plus what it sees in it.
+ *
+ * Only some task types have a live view (today: StreamWatcherTask); the rest
+ * answer "no live view", which is a normal answer and not an error. A stopped
+ * task answers the same way, which is exactly what a poll running when the user
+ * stops the watcher will hit — so this resolves to `null` in both cases rather
+ * than throwing, and only a transport failure throws.
+ *
+ * Pass `sinceSeq` with the last `frameSeq` you received: a poll that outruns the
+ * camera then comes back with fresh metadata and `frameUnchanged: true`, having
+ * re-encoded and re-sent nothing.
+ *
+ * @param {string} taskUuid
+ * @param {{sourceUuid?: ?string, sinceSeq?: ?number, quality?: ?number}} [opts]
+ * @returns {Promise<?object>} the preview, or null when there is none to show
+ * @throws {Error} only on a transport failure
+ */
+export async function fetchTaskLivePreview(taskUuid, { sourceUuid = null, sinceSeq = null, quality = null } = {}) {
+  const params = new URLSearchParams();
+  if (sourceUuid) params.set('source_uuid', sourceUuid);
+  // 0 is a legitimate seq (no frame yet), so test for null rather than falsiness.
+  if (sinceSeq != null) params.set('since_seq', String(sinceSeq));
+  if (quality != null) params.set('quality', String(quality));
+  const query = params.toString();
+
+  const res = await apiFetch(`/api/tasks/instances/${encodeURIComponent(taskUuid)}/live-preview${query ? `?${query}` : ''}`);
+  if (!res.ok) throw new Error(`Live preview request failed (${res.status})`);
+  const data = await res.json();
+  return data.status === 'success' ? (data.preview ?? null) : null;
+}
+
+/**
  * Sends a command to a running task instance — the `task_command` status-action
  * back-channel. `Task.handle_command()` on the backend is only supposed to set
  * a flag or push to a queue (never perform I/O), so this call is expected to
