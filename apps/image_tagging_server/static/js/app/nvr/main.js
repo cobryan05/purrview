@@ -112,6 +112,37 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
 }
 
 /**
+ * The analysis rate this profile actually runs at, as display text.
+ *
+ * `defaultAnalysisFps` is only the fallback for a source that sets no rate of its
+ * own — showing it alone reported 5 fps for a watcher whose single source was
+ * configured at 1. Sources are what get analysed, so they are what this reports;
+ * the default only appears via the sources that inherit it. Mixed rates are shown
+ * as a range rather than being collapsed to one misleading number.
+ *
+ * A running watcher's `analysis_fps_cap` param is applied for the same reason — while
+ * it is running, that cap is the rate, and reporting the uncapped config would be the
+ * same lie in a different place.
+ *
+ * @param {object} profile
+ * @param {?object} task - live task info, or null when not running
+ * @returns {?string} e.g. "1 fps", "1–5 fps", or null when there are no sources
+ */
+function _analysisFpsText(profile, task) {
+  const sources = (profile.sources ?? []).filter(s => s.enabled !== false);
+  if (!sources.length) return null;
+  const cap = Number(task?.config?.params?.analysis_fps_cap) || null;
+  const rates = sources
+    .map(s => s.analysisFps ?? profile.defaultAnalysisFps)
+    .filter(v => v != null)
+    .map(v => (cap ? Math.min(v, cap) : v));
+  if (!rates.length) return null;
+  const low = Math.min(...rates);
+  const high = Math.max(...rates);
+  return low === high ? `${low} fps` : `${low}–${high} fps`;
+}
+
+/**
  * @param {object} profile
  * @param {?object} task - live task info, or null when not running
  * @returns {HTMLElement}
@@ -140,9 +171,11 @@ function _profileCard(profile, task) {
   spacer.style.flex = '1';
   bar.appendChild(spacer);
 
+  // `selectUuid` is not optional decoration: without it the Watchers pane opens on
+  // whatever was last selected, so "Edit rules" on card B lands you in card A's editor.
   bar.appendChild(_panelButton(
     'Edit rules',
-    () => navigateTabs('tab-configuration', 'tab-watcher-management'),
+    () => navigateTabs('tab-configuration', 'tab-watcher-management', { selectUuid: profile.uuid }),
   ));
 
   // Start/stop lives in Runs for now rather than being half-duplicated here:
@@ -165,7 +198,7 @@ function _profileCard(profile, task) {
   meta.textContent = [
     `${rules.length} rule${rules.length === 1 ? '' : 's'}`,
     profile.trackerTypename || profile.tracker_typename,
-    profile.defaultAnalysisFps != null ? `${profile.defaultAnalysisFps} fps` : null,
+    _analysisFpsText(profile, task),
   ].filter(Boolean).join(' · ');
   body.appendChild(meta);
 
