@@ -6,13 +6,37 @@ do with any that weren't cleanly shut down:
   "new"     → task was created but the server crashed before it could start;
                delete it (nothing to recover).
   "running" + resume_data  → server was killed while task was executing and
-               had already written a checkpoint; promote to "paused" so the
-               user can resume.
+               had already written a checkpoint; promote to "paused".
   "running" + no resume_data → server was killed before any checkpoint;
                mark as "error" so it's clearly visible but not misleadingly
                resumable.
   "paused" / "completed" / "error" → terminal or intentional states; leave
                them alone.
+
+**"paused" is not the end of the story for a PERSISTENT config.** After the
+statuses above are applied, `Manager._recover_interrupted_instances` makes a
+second pass over the instances that recovered *with* a checkpoint, and any whose
+config carries `Task.InternalKeys.PERSISTENT` is auto-restarted via
+`_auto_restart_with_guard` — no user action at all. So a persistent task comes
+back running on its own after a `tasks_server` restart, and only a
+non-persistent one waits, paused, for someone to press resume.
+
+The auto-restart is subject to a crash-loop guard: more than
+`_CRASH_LOOP_MAX_RESTARTS` (5) restarts inside `_CRASH_LOOP_WINDOW` (1 hour) and
+the instance is marked "error" instead. A restart after the window has elapsed
+opens a fresh window, which is how the guard decays for a task that only fails
+occasionally.
+
+Read the list above as "what the status pass does", not as "what the user will
+see" — reading it as the latter leads directly to telling someone their
+long-running collect run needs a manual resume when it does not.
+
+The auto-restart half is tested in `test_checkpoint_and_restart.py`
+(`test_persistent_config_auto_resumes_after_restart`,
+`test_non_persistent_config_does_not_auto_resume`, and the two crash-loop guard
+tests) and in `test_restart_recovery.py`
+(`test_stale_orphan_of_a_persistent_config_is_auto_restarted`). This file covers
+only the status pass, which is why its docstring described only half the story.
 """
 
 from unittest.mock import MagicMock, call
