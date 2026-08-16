@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import logging
 import random
 import ssl
@@ -93,18 +94,34 @@ class UrlImageProvider(ImageProvider):
             if now < self._next_capture_time:
                 await self._sleep(self._next_capture_time - now)
 
-        frame = await asyncio.to_thread(self._downloadImage)
+        frame, raw = await asyncio.to_thread(self._downloadImage)
 
         if self._min_capture_interval > 0:
             self._next_capture_time = self._now() + self._min_capture_interval
 
         frame_idx = self._frame_idx
         self._frame_idx += 1
-        return ImageWithProviderMetadata(
+        provided = ImageWithProviderMetadata(
             frame, metadata=ImageProviderMetadata(source=self.source_name, frame_idx=frame_idx)
         )
+        # Hand on the bytes the camera actually sent, rather than discarding them and
+        # re-encoding the decoded array later. This is the camera's own full-resolution
+        # JPEG: it is what makes an event clip from a snapshot camera full-res, and it
+        # saves an encode wherever a consumer wanted a JPEG anyway. Only JPEG payloads
+        # qualify — the packet declares its format, and a PNG announced as JPEG would be
+        # a lie that only surfaces in whatever tries to decode it.
+        if raw[:2] == b"\xff\xd8":
+            provided.encoded_b64 = json.dumps(
+                {"format": "jpeg", "metadata": {}, "data": base64.b64encode(raw).decode("ascii")}
+            )
+        return provided
 
     def _downloadImage(self):
+        """Fetch and decode one frame, returning `(decoded_bgr, raw_bytes)`.
+
+        The raw bytes are returned rather than dropped so a caller can keep the
+        camera's own encoding — see `getNextImage`.
+        """
         logger.debug(f"Downloading image from {self._url}")
         try:
             if self._ignore_ssl_errors:
@@ -112,7 +129,8 @@ class UrlImageProvider(ImageProvider):
             else:
                 req = urllib.request.urlopen(self._request, timeout=DOWNLOAD_TIMEOUT)
 
-            buffer = np.array(bytearray(req.read()), dtype=np.uint8)
+            raw = req.read()
+            buffer = np.frombuffer(raw, dtype=np.uint8)
         except Exception:
             logger.exception(f"Failed to download image from {self._url}")
             raise
@@ -120,7 +138,7 @@ class UrlImageProvider(ImageProvider):
         frame = cv2.imdecode(buffer, flags=cv2.IMREAD_COLOR)
         if frame is None:
             logger.error(f"Failed to decode image from {self._url} (response was not a valid image)")
-        return frame
+        return frame, raw
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:

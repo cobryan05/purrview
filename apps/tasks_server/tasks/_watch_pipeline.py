@@ -106,6 +106,14 @@ class WatchPipeline:
     ingest_tier: str = "native"
     buffered: bool = False
     retention_s: float = 0.0
+    #: Frame-ring bounds for a source with no continuous stream, from its watch-source
+    #: row. Unused when the source has a real rewind buffer — the ring exists precisely
+    #: because there is no timeline to rewind.
+    ring_seconds: float = 20.0
+    ring_max_mb: float = 32.0
+    #: BufferMode.OFF means the user has asked for no buffering at all on this source,
+    #: which must also suppress the ring — otherwise "off" would still cost RAM.
+    buffer_mode: str = "auto"
     health: SourceHealth = field(default_factory=SourceHealth)
     _next_frame_at: float = 0.0
     _last_tracks: List[Track] = field(default_factory=list)

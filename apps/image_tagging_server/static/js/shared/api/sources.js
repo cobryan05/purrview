@@ -79,6 +79,26 @@ export async function fetchImageProviderSchema(providerName) {
   return await providerSchemaFetcher.fetch(providerName);
 }
 
+/**
+ * Each source's ingest tier — whether it can be rewound, and why not.
+ *
+ * Deliberately not cached and deliberately not computed here: the server owns this
+ * answer (one function decides it, so the relay's path config, the watcher's clip
+ * backend and this badge cannot disagree), and it changes the moment a source's URL
+ * is edited.
+ *
+ * @returns {Promise<Map<string, {tier: string, reason: string, buffered: boolean, transcoding: boolean}>>}
+ *   keyed by source uuid; empty when the lookup fails, so a caller renders no badge
+ *   rather than a wrong one.
+ */
+export async function fetchSourceIngestTiers() {
+  const res = await apiFetch('/api/sources/ingest-tiers');
+  if (!res.ok) return new Map();
+  const data = await res.json();
+  if (data.status !== 'success') return new Map();
+  return new Map(Object.entries(data.tiers ?? {}));
+}
+
 
 /** -----------------------------
  * SOURCE FUNCTIONS

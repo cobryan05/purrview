@@ -5969,6 +5969,25 @@ progress.progress-indeterminate:indeterminate {
   gap: 0.25rem 0.5rem;
 }
 
+/* Buffer/tier badge beside the pre-roll field. Muted while the source can rewind —
+   it is confirmation, not news — and warning-coloured when it cannot, because then
+   the neighbouring "buffer s" value is a request that will never be honoured. */
+.watch-buffer-badge {
+  font-size: var(--text-2xs, 0.7rem);
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.watch-buffer-badge--unbuffered { color: var(--color-warning, #fbbf24); }
+
+/* Still editable — the value keeps its meaning if the source is repointed at a
+   stream — but visibly not in effect. */
+.watch-input--inert {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
 /* The rule reads as a sentence — "[Cat] [is inside] [Zone: litter box]" — which is
    the only layout that makes containment-vs-IoU legible to a non-expert. It only
    reads that way while the selects are intrinsically sized; see the density note. */

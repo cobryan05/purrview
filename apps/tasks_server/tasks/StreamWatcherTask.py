@@ -23,6 +23,8 @@ Two properties this loop must keep:
 """
 
 import asyncio
+import base64
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -38,7 +40,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
-from apps.helpers.actions.recordClipAction import PlaybackClipBackend, RecordClipAction
+from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
 from apps.helpers.actions.Registry import create_action
 from apps.helpers.consts import JsonValues, TaskStatus
 from apps.helpers.imageUtils import base64_encode_jpg
@@ -117,6 +119,9 @@ class StreamWatcherTask(Task):
         # source_uuid → (frame_seq, quality, base64 jpeg). Populated only by the live
         # view, so a watcher with no viewer never allocates one.
         self._preview_cache: Dict[str, tuple] = {}
+        # source_uuid → FrameRing, for sources with no rewind buffer. Created on first
+        # frame, so a profile of RTSP cameras allocates none of them.
+        self._frame_rings: Dict[str, FrameRing] = {}
         self._progress = None  # a watcher has no meaningful completion percentage
 
     # ------------------------------------------------------------------ schema
@@ -315,6 +320,9 @@ class StreamWatcherTask(Task):
                     model_names=model_names,
                     analysis_fps=fps,
                     analysis_width=src.analysis_width or self._profile.default_analysis_width,
+                    ring_seconds=getattr(src, "ring_seconds", 20.0) or 20.0,
+                    ring_max_mb=getattr(src, "ring_max_mb", 32.0) or 32.0,
+                    buffer_mode=str(getattr(src, "buffer_mode", "auto") or "auto"),
                 )
             )
 
@@ -346,8 +354,11 @@ class StreamWatcherTask(Task):
                 if row.kind == "publish_mqtt":
                     action = create_action(row.kind, publisher=self._mqtt, **params)
                 elif row.kind == "record_clip":
-                    backend = PlaybackClipBackend(relay_client) if relay_client else None
-                    action = create_action(row.kind, backend=backend, **params)
+                    # A resolver, not a backend: which one is right depends on the source
+                    # the event fired on, and a profile may mix a relayed camera with a
+                    # snapshot poller. Resolved at event time because a source's buffered
+                    # flag isn't known until its provider has started, which is after this.
+                    action = create_action(row.kind, backend_for=self._clip_backend_for, **params)
                 else:
                     action = create_action(row.kind, **params)
             except Exception as e:
@@ -360,6 +371,43 @@ class StreamWatcherTask(Task):
 
         if self._actions:
             self.log(f"Loaded {len(self._actions)} action(s)")
+
+    def _clip_backend_for(self, context: ActionContext):
+        """Pick the clip backend for the source an event fired on.
+
+        Buffered sources (MediaMTX pulls or ffmpeg-ingests them) are cut retroactively
+        out of the relay's recorded segments — full resolution, full frame rate, with
+        real pre-roll. Everything else has no timeline to rewind, so it falls back to
+        its frame ring, which is choppy and honest about it.
+        """
+        pipeline = next((p for p in self._pipelines if p.source_uuid == context.source_uuid), None)
+        if pipeline is None:
+            return None
+        if pipeline.buffered:
+            relay_client = (
+                self._manager.get_relay_api_client() if hasattr(self._manager, "get_relay_api_client") else None
+            )
+            return PlaybackClipBackend(relay_client) if relay_client else None
+        ring = self._frame_rings.get(pipeline.source_uuid)
+        return RingClipBackend(ring) if ring is not None else None
+
+    def _ring_for(self, pipeline: WatchPipeline) -> Optional[FrameRing]:
+        """The frame ring for an unbuffered source, created on first use.
+
+        Lazily, and only for sources that need one: a profile of RTSP cameras must not
+        allocate tens of megabytes of ring it will never read from.
+        """
+        if pipeline.buffered or pipeline.buffer_mode == "off":
+            return None
+        ring = self._frame_rings.get(pipeline.source_uuid)
+        if ring is None:
+            ring = FrameRing(max_seconds=pipeline.ring_seconds, max_mb=pipeline.ring_max_mb)
+            self._frame_rings[pipeline.source_uuid] = ring
+            self.log(
+                f"Source {pipeline.source_name} has no rewind buffer — keeping a "
+                f"{pipeline.ring_seconds:g}s / {pipeline.ring_max_mb:g}MB frame ring for clip pre-roll"
+            )
+        return ring
 
     async def _load_mqtt_settings(self, db_api_client: db_client.ApiClient) -> Optional[MqttSettings]:
         """Read broker config from global Settings.
@@ -590,6 +638,10 @@ class StreamWatcherTask(Task):
         else:
             base64_img = await asyncio.to_thread(base64_encode_jpg, analysed)
 
+        # A fresh reading, not the `now` from before the fetch: a slow camera can make
+        # that stale by seconds, and these timestamps are what the clip window indexes.
+        self._push_to_ring(pipeline, base64_img, time.monotonic(), full_res=provided.encoded_b64)
+
         detections = await self._run_inference(inference_api, base64_img, pipeline.model_names)
 
         now = time.monotonic()
@@ -599,6 +651,36 @@ class StreamWatcherTask(Task):
         for signal in pipeline.step(detections, now):
             self._note_event(signal)
             await self._dispatch(signal, pipeline)
+
+    def _push_to_ring(
+        self, pipeline: WatchPipeline, base64_img: str, now: float, full_res: Optional[str] = None
+    ) -> None:
+        """Keep an unbuffered source's recent frames, so its events can still have pre-roll.
+
+        Prefers the frame as the *camera* sent it (`full_res`) over the downscaled
+        analysis frame. For a snapshot camera that is the difference between a 640 px
+        clip and a full-resolution one, and it costs nothing: those bytes were already
+        downloaded, and using them avoids an encode rather than adding one. Falls back to
+        the analysis frame's JPEG, which was encoded for inference anyway.
+
+        Either way the ring costs one base64 decode per analysed frame (tens of
+        microseconds at these sizes) and no second encode.
+
+        Timestamps are wallclock because that is how clip windows are addressed; the
+        loop's own clock is monotonic, hence the offset.
+        """
+        ring = self._ring_for(pipeline)
+        if ring is None:
+            return
+        try:
+            # base64_encode_jpg wraps the image in a JSON packet ({"format", "data", ...})
+            # rather than returning bare base64 — see imageUtils. Unwrap it here.
+            payload = json.loads(full_res or base64_img)
+            jpeg = base64.b64decode(payload["data"])
+        except Exception:
+            logger.debug("Could not unpack frame for the ring on %s", pipeline.source_uuid, exc_info=True)
+            return
+        ring.push(now + self._wallclock_offset, jpeg)
 
     def _note_event(self, signal) -> None:
         if signal.phase is EventPhase.START:

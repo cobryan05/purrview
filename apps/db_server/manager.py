@@ -414,6 +414,33 @@ class Manager:
         sources = await self._db_client.get_sources()
         return sources
 
+    async def get_source_ingest_tiers(self) -> Dict[str, Dict[str, Any]]:
+        """Resolve every source's ingest tier: can it be rewound, and why or why not.
+
+        Served rather than re-derived in the browser deliberately — `resolve_ingest_tier`
+        is documented as the single function that decides this, because the same answer
+        drives the relay's path config, the watcher's choice of clip backend and the UI
+        badge, and those three disagreeing is a class of bug with no visible symptom.
+
+        Pure and cheap (no I/O beyond the source list), so it is recomputed per request
+        rather than cached: a source's URL can be edited at any time, and a stale
+        "buffered" badge is exactly the lie this endpoint exists to prevent.
+        """
+        from apps.helpers.streams.ingest import resolve_ingest_tier
+
+        tiers: Dict[str, Dict[str, Any]] = {}
+        for source in await self._db_client.get_sources():
+            provider_cls = image_provider_registry.get(source.typename)
+            try:
+                plan = resolve_ingest_tier(provider_cls, source.params or {})
+            except Exception:
+                # An unknown provider or an unparseable URL must not blank the badge for
+                # every other source; it is reported as the unbuffered case it is.
+                logger.exception("Could not resolve ingest tier for source %s", source.uuid)
+                continue
+            tiers[source.uuid] = plan.to_dict()
+        return tiers
+
     async def create_new_source(self, image_provider: str, provider_params: Dict[str, Any], source_name: str) -> Source:
         """
         Create a new source from an image source as a preset image_provider/params

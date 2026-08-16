@@ -1,5 +1,5 @@
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
+import { fetchSourceIngestTiers, fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import {
@@ -316,6 +316,31 @@ function buildLifetimeRow(lifetime, ctx) {
   };
 }
 
+/**
+ * The four-state buffer badge, from a source's ingest tier.
+ *
+ * Wording and glyphs match `WatchPipeline._buffer_label()`, which renders the same
+ * four states on the running task's status card. Two places saying different things
+ * about the same source is how a user learns to trust neither.
+ *
+ * @param {?{tier: string, reason: string, buffered: boolean, transcoding: boolean}} plan
+ * @returns {{text: string, title: string, buffered: boolean}}
+ */
+function bufferBadgeFor(plan) {
+  if (!plan) return { text: '', title: '', buffered: true };
+  const suffix = plan.transcoding ? ' — transcoding (per-camera CPU)' : '';
+  switch (plan.tier) {
+    case 'native':
+      return { text: '● rewind (native)', title: plan.reason + suffix, buffered: true };
+    case 'ffmpeg':
+      return { text: '● rewind (ffmpeg ingest)', title: plan.reason + suffix, buffered: true };
+    case 'ring':
+      return { text: '◐ frame ring (no rewind)', title: plan.reason, buffered: false };
+    default:
+      return { text: '⚠ no buffer', title: plan.reason, buffered: false };
+  }
+}
+
 // ── Source row ──────────────────────────────────────────────────────────────
 function buildSourceRow(src, ctx) {
   const row = el('div', 'watch-source-row watch-row');
@@ -346,6 +371,44 @@ function buildSourceRow(src, ctx) {
   rates.appendChild(wfield('fps', fps, { width: '4.5rem' }));
   rates.appendChild(wfield('width px', width, { width: '5rem' }));
   rates.appendChild(wfield('buffer s', retention, { width: '4.5rem' }));
+
+  // The honesty affordance: "buffer s" above is a request for pre-roll, and a snapshot
+  // camera cannot honour it at any value. Without this the mistake is invisible until
+  // an event fires and the clip that was supposed to appear simply doesn't.
+  const badge = el('span', 'watch-buffer-badge');
+  badge.dataset.testid = 'watch-buffer-badge';
+  rates.appendChild(badge);
+
+  // Frame-ring bounds. Shown only for a source that has no rewind buffer, because that
+  // is the only case where a ring is kept — but always *sent*, see getSource below.
+  const ringFields = el('span', 'watch-ring-fields');
+  ringFields.dataset.testid = 'watch-ring-fields';
+  const ringSeconds = numberInput(src.ringSeconds ?? '', { step: '5', min: 0, placeholder: '20' });
+  ringSeconds.dataset.testid = 'watch-ring-seconds';
+  const ringMaxMb = numberInput(src.ringMaxMb ?? '', { step: '8', min: 0, placeholder: '32' });
+  ringMaxMb.dataset.testid = 'watch-ring-max-mb';
+  ringSeconds.addEventListener('input', ctx.onAnyChange);
+  ringMaxMb.addEventListener('input', ctx.onAnyChange);
+  ringFields.appendChild(wfield('ring s', ringSeconds, { width: '4.5rem' }));
+  ringFields.appendChild(wfield('ring MB', ringMaxMb, { width: '4.5rem' }));
+  rates.appendChild(ringFields);
+
+  function refreshBadge() {
+    const info = bufferBadgeFor(ctx.ingestTierFor?.(sourceSel.value));
+    badge.textContent = info.text;
+    badge.title = info.title;
+    badge.classList.toggle('watch-buffer-badge--unbuffered', !info.buffered);
+    // Not disabled — the value is still stored and still meaningful if the source is
+    // later repointed at a stream. Marked instead, so the field explains itself.
+    retention.classList.toggle('watch-input--inert', !info.buffered);
+    retention.title = info.buffered ? '' : `Pre-roll cannot be honoured: ${info.title}`;
+    // The ring is what gives an unbuffered source any pre-roll at all, so its bounds
+    // are only worth showing there; on a rewindable source they would be dead controls.
+    ringFields.hidden = info.buffered;
+  }
+  refreshBadge();
+  sourceSel.addEventListener('change', refreshBadge);
+
   row.appendChild(rates);
 
   // Zones live behind a modal because they need a video frame as a backdrop, which
@@ -386,6 +449,14 @@ function buildSourceRow(src, ctx) {
       analysisFps: fps.value === '' ? null : num(fps, null),
       analysisWidth: width.value === '' ? null : num(width, null),
       recordRetentionS: retention.value === '' ? null : num(retention, null),
+      // Always sent, including while hidden, and `bufferMode` even though nothing
+      // renders it: a watch profile is saved as a whole-list replace, so a field the
+      // editor omits is a field the save silently resets to its default. These three
+      // were harmless to drop while nothing read them — the watcher reads all three
+      // now, so dropping them would quietly undo a configured ring on every save.
+      bufferMode: src.bufferMode ?? 'auto',
+      ringSeconds: ringSeconds.value === '' ? 20.0 : num(ringSeconds, 20.0),
+      ringMaxMb: ringMaxMb.value === '' ? 32.0 : num(ringMaxMb, 32.0),
       zones: zones.map(z => ({
         uuid: z.uuid,
         name: z.name,
@@ -634,7 +705,7 @@ export async function renderWatchProfileManager({ target }) {
       onNew: () => openEditor(null),
     });
 
-    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames, trackers] = await Promise.all([
+    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames, trackers, ingestTiers] = await Promise.all([
       fetchWatchProfiles().catch(() => new Map()),
       fetchSourceList().catch(() => new Map()),
       // fetchLabels() returns a Map, not an array — the fallback must match.
@@ -643,12 +714,18 @@ export async function renderWatchProfileManager({ target }) {
       // fetchModelsList() is the array of names, unlike its Map-returning neighbours.
       fetchModelsList().catch(() => []),
       fetchTrackers().catch(() => []),
+      // Its own fetch rather than a field on the source list: the tier is derived, not
+      // stored, and the sources list is served from a cache this must not inherit.
+      fetchSourceIngestTiers().catch(() => new Map()),
     ]);
 
     const sourceOptions = [...sourcesMap.values()].map(s => ({ key: s.uuid, text: s.name || s.uuid }));
     const labelOptions = [...labelsMap.values()].map(l => ({ key: l.uuid, text: l.name || l.uuid }));
     const modelGroupOptions = [...modelGroups.values()].map(g => ({ key: g.uuid, text: g.name || g.uuid }));
     const sourceNameFor = uuid => sourcesMap.get(uuid)?.name || uuid;
+    // Undefined (not null) for an unknown source, so the badge renders nothing rather
+    // than asserting "no buffer" about a source it simply has no answer for.
+    const ingestTierFor = uuid => ingestTiers.get(uuid);
 
     function renderList(selectedUuid) {
       screen.listBody.innerHTML = '';
@@ -739,6 +816,7 @@ export async function renderWatchProfileManager({ target }) {
           groupOptions: modelGroupOptions,
           modelNames,
           sourceNameFor,
+          ingestTierFor,
           onZonesChanged: () => refreshZoneOptions(),
           onAnyChange,
           onDelete: () => {

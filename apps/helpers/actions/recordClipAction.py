@@ -26,7 +26,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..watch.events import EventPhase, WatchEventSignal
 from .action import Action, ActionContext, ActionResult
@@ -181,6 +181,7 @@ class RecordClipAction(Action):
         max_length_s: float = 180.0,
         output_dir: str = str(DEFAULT_CLIP_ROOT),
         backend: Optional[ClipBackend] = None,
+        backend_for: Optional[Callable[[ActionContext], Optional[ClipBackend]]] = None,
         **params: Any,
     ) -> None:
         super().__init__(**params)
@@ -189,6 +190,17 @@ class RecordClipAction(Action):
         self.max_length_s = float(max_length_s)
         self.output_dir = Path(output_dir)
         self._backend = backend
+        # Resolved per event rather than per action, because the right backend is a
+        # property of the *source*: one profile can watch an RTSP camera (playback out
+        # of MediaMTX) and a snapshot poller (frame ring) at once. A single injected
+        # backend meant the whole profile got whichever one the task built, so a
+        # snapshot source in a mixed profile failed every clip with "no relay path".
+        self._backend_for = backend_for
+
+    def _resolve_backend(self, context: ActionContext) -> Optional[ClipBackend]:
+        if self._backend_for is not None:
+            return self._backend_for(context)
+        return self._backend
 
     @classmethod
     def display_name(cls) -> str:
@@ -255,13 +267,14 @@ class RecordClipAction(Action):
         # which is precisely what a retroactive buffer buys us.
         if signal.phase is not EventPhase.END:
             return ActionResult(ok=True, detail="not an event end; nothing to cut")
-        if self._backend is None:
+        backend = self._resolve_backend(context)
+        if backend is None:
             return ActionResult(ok=False, detail="No clip backend available for this source")
 
         start, duration = self.plan_window(signal, context)
         dest = self.clip_path(signal, context, start)
         try:
-            result = await self._backend.extract(context, start, duration, dest)
+            result = await backend.extract(context, start, duration, dest)
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:
             # Past the buffer window this is permanent, not transient — the caller marks

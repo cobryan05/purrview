@@ -150,8 +150,40 @@ LABEL_SUBJECT_PROFILE = {
 }
 
 
-def _mock_watch_apis(page: Page, profiles: list | None = None, on_create=None, on_update=None):
+def _mock_watch_apis(
+    page: Page,
+    profiles: list | None = None,
+    on_create=None,
+    on_update=None,
+    ingest_tiers: dict | None = None,
+):
     profiles = profiles or []
+
+    # Must be routed before the bare `/api/sources` matcher below, and is a distinct
+    # path from it: the tier is derived per request, not a field on the source.
+    tiers_body = (
+        {"status": "success", "tiers": ingest_tiers}
+        if ingest_tiers is not None
+        else {
+            "status": "success",
+            "tiers": {
+                "src-1": {
+                    "tier": "native",
+                    "reason": "MediaMTX pulls rtsp:// natively",
+                    "buffered": True,
+                    "transcoding": False,
+                }
+            },
+        }
+    )
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/sources/ingest-tiers"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(tiers_body),
+        ),
+    )
 
     page.route(
         lambda url: url.split("?")[0].rstrip("/").endswith("/api/labels"),
@@ -240,7 +272,11 @@ def _mock_watch_apis(page: Page, profiles: list | None = None, on_create=None, o
     )
 
     page.route(
-        lambda url: url.split("?")[0].rstrip("/").endswith("/api/sources"),
+        # `/api/sources/get`, not `/api/sources` — `fetchSourceList()` calls the former,
+        # so a matcher for the latter never fired and every test in this file was
+        # quietly running against the developer's real source list instead of this
+        # fixture. Both are matched now so the fixture is what the editor actually sees.
+        lambda url: url.split("?")[0].rstrip("/").endswith(("/api/sources", "/api/sources/get")),
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -713,3 +749,121 @@ class TestTrackingSection:
         assert lifetimes and lifetimes[0]["labelUuid"] == "label-litterbox"
         assert lifetimes[0]["ttlS"] == 30
         assert lifetimes[0]["isAnchor"] is True
+
+
+class TestBufferTierBadge:
+    """The pre-roll field's honesty affordance.
+
+    "buffer s" is a request for pre-roll, and a snapshot camera cannot honour it at any
+    value. Before this badge the mistake was invisible until an event fired and the clip
+    that was supposed to appear simply never did.
+    """
+
+    RING_TIERS = {
+        "src-1": {
+            "tier": "ring",
+            "reason": "Snapshot/frame source — no continuous stream to record",
+            "buffered": False,
+            "transcoding": False,
+        }
+    }
+
+    def _open_profile(self, page: Page, base_url: str, ingest_tiers=None):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], ingest_tiers=ingest_tiers)
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-source-row']").first).to_be_visible()
+
+    def test_a_streamable_source_reports_a_rewind_buffer(self, page: Page, base_url: str):
+        self._open_profile(page, base_url)
+        badge = page.locator("[data-testid='watch-buffer-badge']").first
+        expect(badge).to_contain_text("rewind")
+        expect(badge).not_to_have_class("watch-buffer-badge--unbuffered")
+
+    def test_a_snapshot_source_warns_that_pre_roll_cannot_be_honoured(self, page: Page, base_url: str):
+        self._open_profile(page, base_url, ingest_tiers=self.RING_TIERS)
+        badge = page.locator("[data-testid='watch-buffer-badge']").first
+        expect(badge).to_contain_text("no rewind")
+        expect(badge).to_have_class("watch-buffer-badge watch-buffer-badge--unbuffered")
+
+    def test_the_reason_is_available_to_the_user_not_just_the_state(self, page: Page, base_url: str):
+        """A bare "no buffer" invites "why not?" — the reason is what makes it actionable."""
+        self._open_profile(page, base_url, ingest_tiers=self.RING_TIERS)
+        badge = page.locator("[data-testid='watch-buffer-badge']").first
+        assert "no continuous stream" in (badge.get_attribute("title") or "")
+
+    def test_the_pre_roll_field_is_marked_but_still_editable(self, page: Page, base_url: str):
+        """Marked, not disabled: the value keeps its meaning if the source is repointed."""
+        self._open_profile(page, base_url, ingest_tiers=self.RING_TIERS)
+        row = page.locator("[data-testid='watch-source-row']").first
+        retention = row.locator("input[type='number']").nth(2)
+        expect(retention).to_be_editable()
+        assert "watch-input--inert" in (retention.get_attribute("class") or "")
+
+    def test_no_badge_is_shown_when_the_tier_is_unknown(self, page: Page, base_url: str):
+        """An empty answer must render nothing, not assert "no buffer" about a source
+        the server simply had no answer for."""
+        self._open_profile(page, base_url, ingest_tiers={})
+        badge = page.locator("[data-testid='watch-buffer-badge']").first
+        expect(badge).to_have_text("")
+
+
+class TestRingFieldsSurviveASave:
+    """A whole-list replace drops what the editor does not send.
+
+    `ringSeconds` / `ringMaxMb` / `bufferMode` were omitted by the editor, so every save
+    reset them to defaults. That was invisible while nothing read them; the watcher now
+    reads all three to size an unbuffered source's frame ring, so a save would quietly
+    undo a configured ring.
+    """
+
+    RING_TIERS = {
+        "src-1": {"tier": "ring", "reason": "Snapshot source", "buffered": False, "transcoding": False},
+    }
+
+    def _open(self, page: Page, base_url: str, saved: dict, ingest_tiers=None):
+        _mock_watch_apis(
+            page,
+            profiles=[FAKE_PROFILE],
+            on_update=lambda body: saved.update(body),
+            ingest_tiers=ingest_tiers,
+        )
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-source-row']").first).to_be_visible()
+
+    def test_ring_bounds_are_shown_only_for_an_unbuffered_source(self, page: Page, base_url: str):
+        saved: dict = {}
+        self._open(page, base_url, saved)
+        expect(page.locator("[data-testid='watch-ring-fields']").first).to_be_hidden()
+
+        page.reload()
+        self._open(page, base_url, saved, ingest_tiers=self.RING_TIERS)
+        expect(page.locator("[data-testid='watch-ring-fields']").first).to_be_visible()
+
+    def test_an_edited_ring_size_is_saved(self, page: Page, base_url: str):
+        saved: dict = {}
+        self._open(page, base_url, saved, ingest_tiers=self.RING_TIERS)
+
+        page.locator("[data-testid='watch-ring-seconds']").first.fill("45")
+        page.locator("[data-testid='watch-ring-max-mb']").first.fill("64")
+        page.get_by_role("button", name="Save", exact=True).first.click()
+
+        wait_until(page, lambda: saved.get("sources"), "the save never reached the API")
+        source = saved["sources"][0]
+        assert source["ringSeconds"] == 45
+        assert source["ringMaxMb"] == 64
+
+    def test_a_save_preserves_the_stored_values_it_does_not_render(self, page: Page, base_url: str):
+        """`bufferMode` has no input; the save must still carry it through unchanged."""
+        saved: dict = {}
+        self._open(page, base_url, saved)
+
+        page.locator("[data-testid='watcher-name']").fill("Renamed")
+        page.get_by_role("button", name="Save", exact=True).first.click()
+
+        wait_until(page, lambda: saved.get("sources"), "the save never reached the API")
+        source = saved["sources"][0]
+        assert source["bufferMode"] == FAKE_PROFILE["sources"][0]["bufferMode"]
+        assert source["ringSeconds"] == FAKE_PROFILE["sources"][0]["ringSeconds"]
+        assert source["ringMaxMb"] == FAKE_PROFILE["sources"][0]["ringMaxMb"]

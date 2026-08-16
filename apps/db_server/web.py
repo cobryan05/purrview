@@ -357,6 +357,11 @@ class ListImageProvidersResponse(StatusResponse):
     image_providers: List[str] = Field(default_factory=list)
 
 
+class SourceIngestTiersResponse(StatusResponse):
+    #: source uuid → IngestPlan.to_dict() (tier, reason, buffered, transcoding).
+    tiers: Dict[str, dict] = Field(default_factory=dict)
+
+
 ########
 # Sources
 ########
@@ -1289,6 +1294,28 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListImageProvidersResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/sources/ingest-tiers",
+            response_model=SourceIngestTiersResponse,
+            tags=[ApiTags.SOURCES],
+            operation_id="get_source_ingest_tiers",
+        )
+        async def get_source_ingest_tiers_api() -> SourceIngestTiersResponse:
+            """
+            Whether each source can be rewound, and why — the four-state buffer answer.
+
+            Exists so the Watchers editor can warn *at configuration time* that a
+            pre-roll being typed into a snapshot camera cannot be honoured. Without it
+            the mistake is only discoverable at event time, as a clip that silently
+            never arrives.
+            """
+            try:
+                tiers = await self._manager.get_source_ingest_tiers()
+                return SourceIngestTiersResponse(status=JsonValues.SUCCESS, tiers=tiers)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return SourceIngestTiersResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/sources/image-providers/schema",

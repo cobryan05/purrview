@@ -106,7 +106,7 @@ class TestUrlImageProviderInterval:
         provider = UrlImageProvider(url="http://example.invalid/img.jpg", min_capture_interval=1.0)
         monkeypatch.setattr(provider, "_now", clock.monotonic)
         monkeypatch.setattr(provider, "_sleep", clock.sleep)
-        monkeypatch.setattr(provider, "_downloadImage", lambda: np.zeros((1, 1, 3), dtype=np.uint8))
+        monkeypatch.setattr(provider, "_downloadImage", lambda: (np.zeros((1, 1, 3), dtype=np.uint8), b""))
 
         timestamps = []
         for _ in range(3):
@@ -127,7 +127,7 @@ class TestUrlImageProviderInterval:
             raise AssertionError("sleep() should not be called when min_capture_interval is 0")
 
         monkeypatch.setattr(provider, "_sleep", _sleep_should_not_be_called)
-        monkeypatch.setattr(provider, "_downloadImage", lambda: np.zeros((1, 1, 3), dtype=np.uint8))
+        monkeypatch.setattr(provider, "_downloadImage", lambda: (np.zeros((1, 1, 3), dtype=np.uint8), b""))
 
         for _ in range(3):
             await provider.getNextImage()
@@ -137,7 +137,7 @@ class TestUrlImageProviderMetadata:
     async def test_metadata_has_unique_source_and_frame_idx(self, monkeypatch):
         provider = UrlImageProvider(url="http://example.invalid/img.jpg")
         provider.set_source_identity("cam1")
-        monkeypatch.setattr(provider, "_downloadImage", lambda: np.zeros((1, 1, 3), dtype=np.uint8))
+        monkeypatch.setattr(provider, "_downloadImage", lambda: (np.zeros((1, 1, 3), dtype=np.uint8), b""))
 
         pairs = set()
         for _ in range(5):
@@ -385,3 +385,47 @@ class TestFfmpegImageProviderStopGuards:
         )
 
         await provider.stop()  # must not raise
+
+
+class TestUrlImageProviderKeepsTheCamerasOwnEncoding:
+    """The downloaded JPEG is handed on, not thrown away and re-encoded later.
+
+    It is the camera's full-resolution original, which is what lets a snapshot camera's
+    event clip be full-res rather than a 640 px re-encode of the analysis frame — and
+    keeping it *removes* an encode rather than adding one.
+    """
+
+    def _provider_returning(self, monkeypatch, payload: bytes):
+        provider = UrlImageProvider(url="http://example.invalid/img.jpg")
+        decoded = np.zeros((4, 4, 3), dtype=np.uint8)
+        monkeypatch.setattr(provider, "_downloadImage", lambda: (decoded, payload))
+        return provider
+
+    async def test_a_jpeg_payload_is_carried_through_verbatim(self, monkeypatch):
+        import base64
+        import json
+
+        import cv2
+
+        ok, buffer = cv2.imencode(".jpg", np.zeros((4, 4, 3), dtype=np.uint8))
+        assert ok
+        payload = buffer.tobytes()
+        provider = self._provider_returning(monkeypatch, payload)
+
+        provided = await provider.getNextImage()
+
+        packet = json.loads(provided.encoded_b64)
+        assert packet["format"] == "jpeg"
+        assert base64.b64decode(packet["data"]) == payload
+
+    async def test_a_non_jpeg_payload_is_not_announced_as_jpeg(self, monkeypatch):
+        """A PNG declared as JPEG is a lie that only surfaces in whatever decodes it."""
+        import cv2
+
+        ok, buffer = cv2.imencode(".png", np.zeros((4, 4, 3), dtype=np.uint8))
+        assert ok
+        provider = self._provider_returning(monkeypatch, buffer.tobytes())
+
+        provided = await provider.getNextImage()
+
+        assert provided.encoded_b64 is None
