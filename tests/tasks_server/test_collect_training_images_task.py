@@ -4509,3 +4509,53 @@ class TestCrossModelAmbiguity:
         assert box.bbox_meta["ambiguity_model"] == "model-a"
         assert box.bbox_meta["ambiguity_rival_model"] == "model-b"
         assert all(isinstance(v, str) for v in box.bbox_meta.values())
+
+    async def test_rival_below_its_own_label_floor_is_not_a_disagreement(self):
+        """The scan only considers detections that will actually be written.
+
+        `conf_thresh` sent to the network is the LOOSEST floor across all
+        configured labels, so the raw per-model lists contain detections well
+        below their own label's minimum. Those are dropped by _annotatable and
+        never become boxes — letting one act as a rival would produce a flag
+        naming a box the reviewer cannot see, and would treat a detection the
+        config calls uncollectable as evidence. It is also what keeps this
+        quadratic scan proportional to what the run collects rather than to what
+        the network returned.
+        """
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [
+                {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+                {"modelName": "model-b", "labelValues": {self._DOG_UUID: 0.5}},
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._label_ancestry = {}
+
+        # ratio 0.45/0.6 = 0.75, over the 0.7 threshold — it would fire on the
+        # numbers alone, but the dog is below the dog label's own 0.5 floor.
+        cat = _detection_with_alts(0.6, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.45, [], label_uuid=self._DOG_UUID)
+        frame = await self._run(task, [cat], [dog])
+
+        assert frame._det_meta[cat.bbox.uuid]["ambiguity"] is None
+
+    async def test_rival_at_its_floor_still_counts(self):
+        """The complement — the prune must cut below the floor, not at it."""
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "model_label_config": [
+                {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+                {"modelName": "model-b", "labelValues": {self._DOG_UUID: 0.5}},
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._label_ancestry = {}
+
+        cat = _detection_with_alts(0.6, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.5, [], label_uuid=self._DOG_UUID)  # exactly at floor
+        frame = await self._run(task, [cat], [dog])
+
+        assert frame._det_meta[cat.bbox.uuid]["ambiguity"] is not None

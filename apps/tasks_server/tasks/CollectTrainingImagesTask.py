@@ -1946,11 +1946,38 @@ class CollectTrainingImagesTask(Task):
         Mutates *det_meta* in place, never overwriting a same-model verdict —
         that one is the more direct statement about a specific model's own
         decision boundary, so it wins where both apply.
+
+        ⚠️ Cost: this is O(dets_a × dets_b) per model pair, on top of the merge's
+        own quadratic pass. `conf_thresh` sent to the network is `_min_all_conf`
+        — the LOOSEST floor across every configured label — so the raw per-model
+        lists can be several times larger than the set that will actually be
+        kept. Hence the prefilter below: it is the difference between scanning
+        what the network returned and scanning what the run is actually
+        collecting, and the saving is quadratic.
         """
-        for i in range(len(results_per_model)):
-            for j in range(i + 1, len(results_per_model)):
-                for det_a in results_per_model[i]:
-                    for det_b in results_per_model[j]:
+        # Restrict to detections that will survive _annotatable (at or above
+        # their OWN label's floor). Two reasons, and the second is correctness,
+        # not speed:
+        #   1. Quadratic saving — see the cost note above.
+        #   2. A below-floor detection is never written as a box. Letting one act
+        #      as a "rival" would produce a flag naming a box the reviewer cannot
+        #      see on the image, and would count a detection the config says is
+        #      not worth collecting as evidence of disagreement.
+        # The MERGE still receives the unfiltered lists: there a below-floor
+        # detection must remain able to suppress an overlapping duplicate.
+        candidates: list[list] = []
+        for dets in results_per_model:
+            kept = []
+            for det in dets:
+                band = self._target_label_bands.get(det.bbox.label_uuid)
+                if band is not None and det.confidence >= band.min_confidence:
+                    kept.append(det)
+            candidates.append(kept)
+
+        for i in range(len(candidates)):
+            for j in range(i + 1, len(candidates)):
+                for det_a in candidates[i]:
+                    for det_b in candidates[j]:
                         if not self._labels_are_unrelated(det_a.bbox.label_uuid, det_b.bbox.label_uuid):
                             continue
                         if iou_xywh(det_a.bbox, det_b.bbox) < self._overlap_iou_threshold:
