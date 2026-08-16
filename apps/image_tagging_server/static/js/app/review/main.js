@@ -42,6 +42,7 @@ import { rerenderBboxViews, resetCanvasZoom } from '/app-static/js/app/image-tag
 import { acquireModalLayer, applyModalCascade, registerEscHandler, unregisterEscHandler } from '/app-static/js/ui/utils/modalZIndex.js';
 import { bindOutsideDismiss } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { trapModalFocus } from '/app-static/js/ui/utils/modalShell.js';
+import { attachScrollChrome } from '/app-static/js/app/utils/scrollChrome.js';
 import { MultiSelectField } from '/app-static/js/ui/utils/fields/MultiSelectField.js';
 import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/instance.js';
 import { selectBboxView } from '/app-static/js/app/image-tagging/canvas/interaction.js';
@@ -636,6 +637,14 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   stickyTop.append(filterScopedActionsBar, actionBar, contextualActionBar);
   container.appendChild(stickyTop);
   container.appendChild(entryView.layout);
+
+  // In the tab context the page scrolls and app/main.js's page-level
+  // scrollChrome already hides these bars on scroll-down. In a modal the
+  // container *is* the scroller, so it needs its own listener — same behaviour,
+  // scoped to this container. Detected from computed overflow rather than a
+  // flag so any future scrolling host gets it for free.
+  const _containerScrolls = ['auto', 'scroll'].includes(getComputedStyle(container).overflowY);
+  const _scrollChrome = _containerScrolls ? attachScrollChrome(container) : null;
 
   // ── Filter panel (full mode only) ─────────────────────────────────
   // Lives inside filterChipBarWrap as a popover; opened by "+ Add filter".
@@ -2807,6 +2816,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       hoverPreview.destroy();
       entryView.destroy();
       if (_scrollHandler) container.removeEventListener('scroll', _scrollHandler);
+      _scrollChrome?.destroy();
       container.innerHTML = '';
     },
     filterPanel,

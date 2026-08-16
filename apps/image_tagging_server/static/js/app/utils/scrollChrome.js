@@ -1,5 +1,5 @@
 /**
- * Auto-hiding page chrome.
+ * Auto-hiding chrome for a scrolling results view.
  *
  * The main tab strip and the Review toolbar block (`.review-sticky-top`:
  * toolbar + filter chips + the action bars) are both `position: sticky` at the
@@ -8,11 +8,18 @@
  *
  * So: scrolling *down* slides both out of the way, scrolling *up* brings them
  * straight back, which is what you're already doing when you want to reach the
- * tabs or the filters. Near the top of the page they're always shown.
+ * tabs or the filters. Near the top of the scroll they're always shown.
  *
- * The show/hide is a `transform` toggled by `body.chrome-hidden` (see app.css)
- * rather than a height/display change, so revealing never reflows the grid
- * underneath — a reflow mid-scroll would shift the cards you're looking at.
+ * The show/hide is a `transform` toggled by the `chrome-hidden` class (see
+ * app.css) rather than a height/display change, so revealing never reflows the
+ * grid underneath — a reflow mid-scroll would shift the cards you're looking at.
+ *
+ * Two contexts use this:
+ *   - the page (`initScrollChrome`) — scroller is the window, class lands on
+ *     <body>, and both the tab header and the review bars move.
+ *   - a review modal (`attachScrollChrome`) — scroller is the modal's own
+ *     `overflow:auto` content div, class lands on that div, and only the review
+ *     bars inside it move (the modal header keeps the close button reachable).
  */
 
 const HIDE_CLASS = 'chrome-hidden';
@@ -23,54 +30,94 @@ const DELTA_THRESHOLD = 6;
 /** Above this scroll offset the chrome is always shown — there's nothing to gain. */
 const ALWAYS_SHOWN_ABOVE = 80;
 
-let _lastY = 0;
-let _ticking = false;
-let _installed = false;
-
 /**
  * Never hide out from under an open menu or a control being used: the filter
  * popover is anchored to the chip bar and rides along with the transform, and
  * anything focused inside the chrome (a text filter, a dropdown) would be
  * yanked off screen mid-interaction.
  *
+ * @param {ParentNode} root  where to look for an open popover — the document for
+ *   the page context, the modal's content div for a modal.
  * @returns {boolean}
  */
-function chromeIsBusy() {
-  if (document.querySelector('.review-filter-popover:not([hidden])')) return true;
+function chromeIsBusy(root) {
+  if (root.querySelector('.review-filter-popover:not([hidden])')) return true;
   const active = document.activeElement;
-  return !!active && !!active.closest?.('.main-tab-header, .review-sticky-top');
+  if (!active || !active.closest?.('.main-tab-header, .review-sticky-top')) return false;
+  // In a modal only focus *inside this scroller* counts — a control focused in
+  // another panel behind the modal must not pin this one's bars open.
+  return root === document ? true : root.contains(active);
 }
 
-function update() {
-  _ticking = false;
-  const y = Math.max(0, window.scrollY);
-  const delta = y - _lastY;
+/**
+ * Wire the hide-on-scroll-down / show-on-scroll-up behaviour to one scroller.
+ *
+ * @param {{ scroller: Window|HTMLElement, host: HTMLElement, root: ParentNode }} opts
+ *   `host` is the element the HIDE_CLASS is toggled on; `root` scopes the
+ *   busy check.
+ * @returns {{ show: () => void, destroy: () => void }}
+ */
+function createScrollChrome({ scroller, host, root }) {
+  const readY = () => Math.max(0, scroller === window ? window.scrollY : scroller.scrollTop);
 
-  // Below the threshold, leave _lastY alone so a slow drift still accumulates
-  // into a real direction change instead of being swallowed sample by sample.
-  if (Math.abs(delta) < DELTA_THRESHOLD) return;
-  _lastY = y;
+  let lastY = readY();
+  let ticking = false;
 
-  const hide = delta > 0 && y > ALWAYS_SHOWN_ABOVE && !chromeIsBusy();
-  document.body.classList.toggle(HIDE_CLASS, hide);
+  function update() {
+    ticking = false;
+    const y = readY();
+    const delta = y - lastY;
+
+    // Below the threshold, leave lastY alone so a slow drift still accumulates
+    // into a real direction change instead of being swallowed sample by sample.
+    if (Math.abs(delta) < DELTA_THRESHOLD) return;
+    lastY = y;
+
+    const hide = delta > 0 && y > ALWAYS_SHOWN_ABOVE && !chromeIsBusy(root);
+    host.classList.toggle(HIDE_CLASS, hide);
+  }
+
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(update);
+  }
+
+  scroller.addEventListener('scroll', onScroll, { passive: true });
+
+  return {
+    show() {
+      host.classList.remove(HIDE_CLASS);
+      lastY = readY();
+    },
+    destroy() {
+      scroller.removeEventListener('scroll', onScroll);
+      host.classList.remove(HIDE_CLASS);
+    },
+  };
 }
 
-function onScroll() {
-  if (_ticking) return;
-  _ticking = true;
-  requestAnimationFrame(update);
-}
+let _page = null;
 
-/** Install the scroll listener. Idempotent. */
+/** Install the page-level scroll listener. Idempotent. */
 export function initScrollChrome() {
-  if (_installed) return;
-  _installed = true;
-  _lastY = Math.max(0, window.scrollY);
-  window.addEventListener('scroll', onScroll, { passive: true });
+  if (_page) return;
+  _page = createScrollChrome({ scroller: window, host: document.body, root: document });
 }
 
-/** Force the chrome back into view (e.g. after a programmatic tab switch). */
+/** Force the page chrome back into view (e.g. after a programmatic tab switch). */
 export function showChrome() {
-  document.body.classList.remove(HIDE_CLASS);
-  _lastY = Math.max(0, window.scrollY);
+  _page?.show();
+}
+
+/**
+ * Same behaviour for a scroll container that isn't the page — the review
+ * modal's content div. The caller owns the returned handle and must call
+ * `destroy()` when the container goes away.
+ *
+ * @param {HTMLElement} scrollEl  an `overflow:auto`/`scroll` element.
+ * @returns {{ show: () => void, destroy: () => void }}
+ */
+export function attachScrollChrome(scrollEl) {
+  return createScrollChrome({ scroller: scrollEl, host: scrollEl, root: scrollEl });
 }

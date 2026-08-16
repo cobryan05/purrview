@@ -1519,6 +1519,25 @@ button.lt-swatch:hover {
   transition: transform 0.18s ease;
 }
 
+/* Modal context: same auto-hiding chrome as the page, driven by
+   `chrome-hidden` on the modal's own scroll container (attachScrollChrome in
+   app/utils/scrollChrome.js) instead of on <body>. The modal header isn't
+   inside the scroller and stays put — the close button must never slide away.
+   The sticky bars are what scrolls past, so only they translate. */
+.review-sticky-top {
+  transition: transform 0.18s ease;
+}
+
+.chrome-hidden > .review-sticky-top {
+  transform: translateY(-100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-sticky-top {
+    transition: none;
+  }
+}
+
 .review-toolbar {
   display: flex;
   align-items: center;
