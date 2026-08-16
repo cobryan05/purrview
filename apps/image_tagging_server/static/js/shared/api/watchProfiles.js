@@ -29,6 +29,22 @@ export async function fetchWatchProfiles() {
   return watchProfilesFetcher.fetch('watchProfilesMap');
 }
 
+/**
+ * Available trackers and their parameter schemas.
+ *
+ * Registry-driven so a new tracker appears in the picker with no change here: the
+ * backend returns `paramsSchema` verbatim from the tracker class, and the editor
+ * renders whatever fields it declares.
+ */
+export async function fetchTrackers() {
+  const res = await apiFetch('/api/watch-profiles/trackers');
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch trackers');
+  }
+  return data.trackers || [];
+}
+
 export async function fetchWatchProfile(uuid) {
   const res = await apiFetch(`/api/watch-profiles/${uuid}`);
   const data = await res.json();

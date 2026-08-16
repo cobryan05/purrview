@@ -93,6 +93,7 @@ from apps.helpers.hashUtils import (
 )
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.serviceStatus import row, section
+from apps.helpers.tracking.Registry import tracker_registry
 from apps.helpers.types import FileEntryRead
 
 logging.basicConfig(stream=sys.stdout)
@@ -3536,6 +3537,22 @@ class Manager:
             "errors": errors,
             "warnings": warnings,
         }
+
+    async def list_avail_trackers(self) -> List[Dict[str, Any]]:
+        """Registered trackers, with the schema the Watchers pane renders their params from.
+
+        Returned in one call rather than the list-then-fetch-schema pair the image
+        providers use: there are a handful of trackers and their schemas are a few
+        fields each, so a second round trip per tracker buys nothing.
+        """
+        return [
+            {
+                "typename": typename,
+                "display_name": cls.display_name(),
+                "params_schema": cls.params_schema(),
+            }
+            for typename, cls in sorted(tracker_registry.items())
+        ]
 
     # ── Watch events and recordings ────────────────────────────────────────────
 

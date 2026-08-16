@@ -108,6 +108,26 @@ LABELS = [
     {"uuid": "label-litterbox", "name": "Litter Box"},
 ]
 
+# As `GET /api/watch-profiles/trackers` returns them. Schema keys stay snake_case —
+# they are data the tracker declared, not model fields, so they are not camelised.
+TRACKERS = [
+    {
+        "typename": "ByteTracker",
+        "displayName": "ByteTrack (two-stage)",
+        "paramsSchema": {
+            "track_thresh": {"type": "float", "required": False, "default": 0.5, "help": "High threshold."},
+            "low_thresh": {"type": "float", "required": False, "default": 0.1, "help": "Low threshold."},
+        },
+    },
+    {
+        "typename": "IouTracker",
+        "displayName": "IoU / SORT-lite",
+        "paramsSchema": {
+            "min_confidence": {"type": "float", "required": False, "default": 0.25, "help": "Floor."},
+        },
+    },
+]
+
 # Same profile, but the source runs one bare model rather than a stack.
 SINGLE_MODEL_PROFILE = {
     **FAKE_PROFILE,
@@ -151,8 +171,23 @@ def _mock_watch_apis(page: Page, profiles: list | None = None, on_create=None, o
             body=json.dumps({"status": "success", "profile": profiles[0] if profiles else FAKE_PROFILE}),
         )
 
+    # Must be excluded from the single-profile matcher below, which would otherwise
+    # answer it with a profile and leave the picker silently falling back to its default.
     page.route(
-        lambda url: "/api/watch-profiles/" in url and not url.endswith("/validate"),
+        lambda url: url.rstrip("/").endswith("/api/watch-profiles/trackers"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "trackers": TRACKERS}),
+        ),
+    )
+
+    page.route(
+        lambda url: (
+            "/api/watch-profiles/" in url
+            and not url.endswith("/validate")
+            and not url.rstrip("/").endswith("/trackers")
+        ),
         handle_single,
     )
 
@@ -614,3 +649,67 @@ class TestZonesReachTheRules:
 
         expect(subject_b.locator("option")).to_have_count(1)
         expect(subject_b.locator("option").first).to_have_text("(no zones defined)")
+
+
+class TestTrackingSection:
+    """Tracker choice and per-label lifetimes.
+
+    Both were configurable in the schema and read by the task from the day the watcher
+    shipped, but the editor never rendered or sent them — so the tracker was permanently
+    the default and lifetimes were unreachable.
+    """
+
+    def _open_profile(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_the_picker_is_populated_from_the_registry(self, page: Page, base_url: str):
+        self._open_profile(page, base_url)
+        options = page.locator("[data-testid='watch-tracker'] option").all_text_contents()
+        assert "ByteTrack (two-stage)" in options
+        assert "IoU / SORT-lite" in options
+
+    def test_params_follow_the_selected_tracker(self, page: Page, base_url: str):
+        """Schema-driven: switching trackers must re-render the fields, not keep stale ones."""
+        self._open_profile(page, base_url)
+        page.locator("[data-testid='watch-tracker-tuning'] summary").click()
+
+        page.locator("[data-testid='watch-tracker']").select_option("ByteTracker")
+        expect(page.locator("[data-testid='watch-tracker-param-track_thresh']")).to_be_visible()
+
+        page.locator("[data-testid='watch-tracker']").select_option("IouTracker")
+        expect(page.locator("[data-testid='watch-tracker-param-track_thresh']")).to_have_count(0)
+        expect(page.locator("[data-testid='watch-tracker-param-min_confidence']")).to_be_visible()
+
+    def test_tuning_is_collapsed_so_the_editor_still_fits(self, page: Page, base_url: str):
+        self._open_profile(page, base_url)
+        expect(page.locator("[data-testid='watch-tracker-params']")).to_be_hidden()
+
+    def test_a_label_lifetime_can_be_added_and_is_saved(self, page: Page, base_url: str):
+        """The headline case: a litter box outlives a cat by 30x."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=saved.update)
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+        page.locator("[data-testid='watch-add-lifetime']").click()
+        row = page.locator("[data-testid='watch-lifetime-row']").first
+        row.locator("[data-testid='watch-lifetime-label']").select_option("label-litterbox")
+        ttl = row.locator("[data-testid='watch-lifetime-ttl']")
+        ttl.fill("30")
+        row.locator("[data-testid='watch-lifetime-anchor']").check()
+        page.locator("[data-testid='watch-tracker']").select_option("ByteTracker")
+
+        page.get_by_role("button", name="Save", exact=True).first.click()
+
+        # Poll rather than assert immediately: the save is a round trip through the
+        # mocked route, which runs on this same thread.
+        wait_until(page, lambda: saved.get("trackerTypename"), "the save never reached the API")
+        assert saved.get("trackerTypename") == "ByteTracker"
+        lifetimes = saved.get("labelLifetimes") or []
+        assert lifetimes and lifetimes[0]["labelUuid"] == "label-litterbox"
+        assert lifetimes[0]["ttlS"] == 30
+        assert lifetimes[0]["isAnchor"] is True

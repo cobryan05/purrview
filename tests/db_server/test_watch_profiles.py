@@ -652,3 +652,26 @@ class TestOpenEvents:
         )
         assert updated.recording_uuid == rec.uuid
         assert updated.peak_confidence == 0.9
+
+
+class TestTrackerListing:
+    """The Watchers pane builds its tracker picker from this, so a new tracker must
+    appear without any UI change — that is the whole point of the registry."""
+
+    async def test_lists_registered_trackers_with_schemas(self, http_client):
+        resp = await http_client.get("/api/watch-profiles/trackers")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        by_typename = {t["typename"]: t for t in body["trackers"]}
+        assert {"IouTracker", "ByteTracker"} <= set(by_typename)
+        assert by_typename["ByteTracker"]["displayName"] == "ByteTrack (two-stage)"
+        # Schema *keys* are data, not model fields, so they stay snake_case and reach the
+        # form machinery exactly as the tracker declared them — same as provider schemas.
+        assert "track_thresh" in by_typename["ByteTracker"]["paramsSchema"]
+
+    async def test_route_is_not_shadowed_by_the_uuid_route(self, http_client):
+        """`/trackers` must not be read as a profile uuid — it is declared first."""
+        resp = await http_client.get("/api/watch-profiles/trackers")
+
+        assert resp.json().get("trackers"), "the parameterised route swallowed the literal one"

@@ -5922,6 +5922,29 @@ progress.progress-indeterminate:indeterminate {
 .watch-identity > .watch-field:first-child { flex: 1 1 14rem; }
 .watch-identity > .watch-field:first-child input { flex: 1; }
 
+/* Tracker params sit behind a closed twisty on the section heading line, so tuning is
+   reachable without the section costing a row of its own. */
+.watch-tracker-tuning > summary {
+  cursor: pointer;
+  color: var(--pico-muted-color, #999);
+  font-size: 0.85em;
+  list-style-position: inside;
+}
+.watch-tracker-params,
+.watch-tracker-params-host {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1, 0.25rem) var(--space-3, 0.75rem);
+  /* Only occupies space once opened; closed, <details> hides it entirely. */
+  padding-top: var(--space-1, 0.25rem);
+}
+
+.watch-hint {
+  color: var(--pico-muted-color, #999);
+  font-size: 0.85em;
+}
+
 .watch-row {
   border: 1px solid var(--pico-muted-border-color, #444);
   border-radius: var(--radius-sm, 4px);

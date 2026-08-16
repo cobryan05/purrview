@@ -831,6 +831,18 @@ class PreviewApplyResponse(StatusResponse):
     result: PreviewApplyResult = Field(default_factory=PreviewApplyResult)
 
 
+class TrackerInfo(Payload):
+    typename: str
+    display_name: str
+    #: `Tracker.params_schema()` verbatim — field shapes vary per tracker, so this stays
+    #: an open dict and is rendered by the same machinery that renders provider schemas.
+    params_schema: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ListTrackersResponse(StatusResponse):
+    trackers: List[TrackerInfo] = Field(default_factory=list)
+
+
 class ListWatchProfilesResponse(StatusResponse):
     profiles: List[WatchProfileRead] = Field(default_factory=list)
 
@@ -3866,6 +3878,24 @@ class WebApp:
                 return PreviewApplyResponse(status=JsonValues.FAILURE, message=str(e))
 
     def _register_watch_profile_routes(self) -> None:
+        # Registered before "/api/watch-profiles/{uuid}": FastAPI matches routes in
+        # registration order, so a literal path declared after the parameterised one
+        # would be shadowed by it and "trackers" would arrive as a profile uuid.
+        @self._app.get(
+            "/api/watch-profiles/trackers",
+            response_model=ListTrackersResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="list_trackers",
+        )
+        async def list_trackers() -> ListTrackersResponse:
+            """Available trackers and their parameter schemas, for the Watchers pane."""
+            try:
+                trackers = await self._manager.list_avail_trackers()
+                return ListTrackersResponse(status=JsonValues.SUCCESS, trackers=trackers)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListTrackersResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.get(
             "/api/watch-profiles",
             response_model=ListWatchProfilesResponse,

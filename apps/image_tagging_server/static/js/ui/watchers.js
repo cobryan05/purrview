@@ -4,7 +4,7 @@ import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import {
   fetchWatchProfiles, createWatchProfile, updateWatchProfile, deleteWatchProfile,
-  validateWatchProfile,
+  validateWatchProfile, fetchTrackers,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
@@ -206,6 +206,114 @@ function sectionHeader(text, addButton) {
   head.appendChild(el('span', 'panel-section-label', text));
   if (addButton) head.appendChild(addButton);
   return head;
+}
+
+// ── Tracker params ──────────────────────────────────────────────────────────
+/**
+ * Renders one tracker's `params_schema()` into a form, and reads it back.
+ *
+ * Schema-driven rather than hand-written per tracker: that is the whole point of the
+ * registry, and it means adding a tracker needs no change in this file. Field *keys*
+ * arrive snake_case (they are data, not model fields, so they are not camelised) and
+ * are stored back exactly as declared — the Python side looks them up by those names.
+ *
+ * @param {object} schema `paramsSchema` for the selected tracker.
+ * @param {object} stored Saved `trackerParamsJson`, which may be from another tracker.
+ * @param {() => void} onAnyChange
+ */
+function buildTrackerParams(schema, stored, onAnyChange) {
+  const box = el('div', 'watch-tracker-params');
+  box.dataset.testid = 'watch-tracker-params';
+  const readers = {};
+
+  for (const [key, field] of Object.entries(schema || {})) {
+    const type = field.type || 'str';
+    const saved = stored?.[key];
+    // A saved value only applies if it came from this tracker; switching trackers
+    // leaves foreign keys in the stored params, and the schema is the authority.
+    const value = saved !== undefined ? saved : field.default;
+    let control;
+
+    if (type === 'bool') {
+      control = document.createElement('input');
+      control.type = 'checkbox';
+      control.checked = value === true;
+      control.addEventListener('change', onAnyChange);
+      readers[key] = () => control.checked;
+    } else if (type === 'int' || type === 'float') {
+      control = numberInput(value ?? '', { step: type === 'int' ? '1' : '0.05', min: 0 });
+      control.addEventListener('input', onAnyChange);
+      // Number('') === 0, which has already caused a silent-stop bug in this codebase —
+      // an empty box must mean "the default", not "zero".
+      readers[key] = () => (type === 'int' ? Math.round(num(control, field.default)) : num(control, field.default));
+    } else {
+      control = document.createElement('input');
+      control.type = 'text';
+      control.value = value ?? '';
+      control.addEventListener('input', onAnyChange);
+      readers[key] = () => control.value.trim();
+    }
+
+    control.dataset.testid = `watch-tracker-param-${key}`;
+    if (field.help) control.title = field.help;
+    box.appendChild(wfield(key.replace(/_/g, ' '), control, { width: type === 'bool' ? null : '6rem' }));
+  }
+
+  if (!box.children.length) {
+    box.appendChild(el('span', 'watch-hint', 'This tracker has no options.'));
+  }
+
+  return {
+    element: box,
+    getParams: () => Object.fromEntries(Object.entries(readers).map(([k, read]) => [k, read()])),
+  };
+}
+
+// ── Label lifetime row ──────────────────────────────────────────────────────
+/**
+ * One per-label tracking lifetime: how long that label's track survives without a
+ * detection, and whether it latches.
+ *
+ * In **seconds, not frames**, matching the tracker: a frame count means 1 s on a 5 fps
+ * camera and 0.2 s on a 25 fps one. This is what makes "a litter box survives 30 s of
+ * misses while a cat survives 1 s" expressible.
+ */
+function buildLifetimeRow(lifetime, ctx) {
+  const row = el('div', 'watch-lifetime-row watch-row');
+  row.dataset.testid = 'watch-lifetime-row';
+
+  const label = select(ctx.labelOptions, lifetime.labelUuid || ctx.labelOptions[0]?.key, ctx.onAnyChange);
+  label.dataset.testid = 'watch-lifetime-label';
+  row.appendChild(wfield('Label', label));
+
+  const ttl = numberInput(lifetime.ttlS ?? 2.0, { step: '0.5', min: 0 });
+  ttl.dataset.testid = 'watch-lifetime-ttl';
+  ttl.title = 'Seconds the track survives with no detection before it is assumed gone.';
+  ttl.addEventListener('input', ctx.onAnyChange);
+  row.appendChild(wfield('TTL s', ttl, { width: '5rem' }));
+
+  const anchor = document.createElement('input');
+  anchor.type = 'checkbox';
+  anchor.checked = lifetime.isAnchor === true;
+  anchor.dataset.testid = 'watch-lifetime-anchor';
+  anchor.title =
+    'Latch this label’s box once seen confidently, instead of trusting a detector that '
+    + 'intermittently misses a stationary object. Appropriate for furniture, not for animals.';
+  anchor.addEventListener('change', ctx.onAnyChange);
+  row.appendChild(wfield('Anchor', anchor));
+
+  row.appendChild(removeButton(ctx.onDelete, 'Remove lifetime'));
+
+  return {
+    element: row,
+    getLifetime: () => ({
+      labelUuid: label.value || null,
+      // ttl_s is rejected server-side at <= 0, so an emptied box must fall back rather
+      // than send 0 and fail the whole save.
+      ttlS: num(ttl, 2.0) || 2.0,
+      isAnchor: anchor.checked,
+    }),
+  };
 }
 
 // ── Source row ──────────────────────────────────────────────────────────────
@@ -526,7 +634,7 @@ export async function renderWatchProfileManager({ target }) {
       onNew: () => openEditor(null),
     });
 
-    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames] = await Promise.all([
+    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames, trackers] = await Promise.all([
       fetchWatchProfiles().catch(() => new Map()),
       fetchSourceList().catch(() => new Map()),
       // fetchLabels() returns a Map, not an array — the fallback must match.
@@ -534,6 +642,7 @@ export async function renderWatchProfileManager({ target }) {
       fetchModelGroups().catch(() => new Map()),
       // fetchModelsList() is the array of names, unlike its Map-returning neighbours.
       fetchModelsList().catch(() => []),
+      fetchTrackers().catch(() => []),
     ]);
 
     const sourceOptions = [...sourcesMap.values()].map(s => ({ key: s.uuid, text: s.name || s.uuid }));
@@ -568,6 +677,7 @@ export async function renderWatchProfileManager({ target }) {
       const sourceRows = [];
       const ruleRows = [];
       const actionRows = [];
+      const lifetimeRows = [];
 
       const bar = buildPanelEditorBar({
         container: screen.editorBar,
@@ -648,6 +758,74 @@ export async function renderWatchProfileManager({ target }) {
         onAnyChange();
       });
 
+      // ── Tracking ──
+      // The tracker turns per-frame detections into objects with identity over time,
+      // which is what every rule below is written against — so it belongs above Rules.
+      const addLifetimeBtn = el('button', 'panel-btn', '+ Add label lifetime');
+      addLifetimeBtn.type = 'button';
+      addLifetimeBtn.dataset.testid = 'watch-add-lifetime';
+
+      const trackerOptions = trackers.map(t => ({ key: t.typename, text: t.displayName || t.typename }));
+      const trackerSel = select(
+        trackerOptions.length ? trackerOptions : [{ key: 'IouTracker', text: 'IoU / SORT-lite' }],
+        profile?.trackerTypename || 'IouTracker',
+        () => { renderTrackerParams(); onAnyChange(); },
+      );
+      trackerSel.dataset.testid = 'watch-tracker';
+
+      // The picker rides the section's own heading line and the params collapse behind a
+      // closed twisty, so the whole section costs no height beyond the heading it needed
+      // anyway. A profile with one source, rule and action must still fit without the
+      // editor scrolling — there is a Playwright test that says so.
+      const trackingHead = sectionHeader('Tracking', addLifetimeBtn);
+      trackingHead.insertBefore(wfield('Tracker', trackerSel), addLifetimeBtn);
+
+      const trackerParamsHost = el('div', 'watch-tracker-params-host');
+      const tuning = document.createElement('details');
+      tuning.className = 'watch-tracker-tuning';
+      tuning.dataset.testid = 'watch-tracker-tuning';
+      const tuningSummary = document.createElement('summary');
+      tuningSummary.textContent = 'Tuning';
+      tuning.append(tuningSummary, trackerParamsHost);
+      trackingHead.insertBefore(tuning, addLifetimeBtn);
+
+      screen.editorBody.appendChild(trackingHead);
+
+      let trackerParams = null;
+      function renderTrackerParams() {
+        const chosen = trackers.find(t => t.typename === trackerSel.value);
+        trackerParamsHost.innerHTML = '';
+        trackerParams = buildTrackerParams(
+          chosen?.paramsSchema || {},
+          // Only reuse saved params while the selected tracker is the saved one; another
+          // tracker's keys are meaningless to this one.
+          trackerSel.value === profile?.trackerTypename ? profile?.trackerParamsJson : null,
+          onAnyChange,
+        );
+        trackerParamsHost.appendChild(trackerParams.element);
+      }
+      renderTrackerParams();
+
+      const lifetimesBox = el('div', 'watch-rows');
+      lifetimesBox.dataset.testid = 'watch-lifetimes-box';
+      screen.editorBody.appendChild(lifetimesBox);
+
+      function addLifetime(lifetime) {
+        const entry = buildLifetimeRow(lifetime, {
+          labelOptions: labelOptions.length ? labelOptions : [{ key: '', text: '(no labels)' }],
+          onAnyChange,
+          onDelete: () => {
+            entry.element.remove();
+            lifetimeRows.splice(lifetimeRows.indexOf(entry), 1);
+            onAnyChange();
+          },
+        });
+        lifetimeRows.push(entry);
+        lifetimesBox.appendChild(entry.element);
+      }
+
+      addLifetimeBtn.addEventListener('click', () => { addLifetime({}); onAnyChange(); });
+
       // ── Rules ──
       const addRuleBtn = el('button', 'panel-btn', '+ Add rule');
       addRuleBtn.type = 'button';
@@ -720,6 +898,7 @@ export async function renderWatchProfileManager({ target }) {
       report.dataset.testid = 'watch-validation';
       screen.editorBody.appendChild(report);
 
+      for (const lifetime of profile?.labelLifetimes || []) addLifetime(lifetime);
       for (const src of profile?.sources || []) addSource(src);
       for (const rule of profile?.rules || []) addRule(rule);
       for (const action of profile?.actions || []) addAction(action);
@@ -751,6 +930,11 @@ export async function renderWatchProfileManager({ target }) {
           // backend sees a stack *and* a model and rejects the pair.
           defaultModelGroupUuid: readModelChoice(defaultModels.value).modelGroupUuid,
           defaultModelName: readModelChoice(defaultModels.value).modelName,
+          trackerTypename: trackerSel.value,
+          trackerParamsJson: trackerParams?.getParams() || {},
+          // A row with no label selected (no labels exist yet) would fail server-side
+          // validation and take the whole save with it.
+          labelLifetimes: lifetimeRows.map(entry => entry.getLifetime()).filter(l => l.labelUuid),
           sources: sourceRows.map((entry, i) => ({ ...entry.getSource(), order: i })),
           rules: ruleRows.map((entry, i) => ({ ...entry.getRule(), order: i })),
           actions: actionRows.map((entry, i) => ({ ...entry.getAction(), order: i })),
