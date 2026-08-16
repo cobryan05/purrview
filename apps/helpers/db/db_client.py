@@ -5810,6 +5810,12 @@ class DbClient:
                     "description": mc.description,
                     "nodes": [
                         {
+                            # The node UUID is a real reference target, not an
+                            # internal detail: training_configs.model_config_node_uuid
+                            # is an FK to it and every trained model records it in
+                            # its metadata. Minting a fresh one on restore would
+                            # leave all of those dangling.
+                            "uuid": n.uuid,
                             "label_uuid": n.label_uuid,
                             "label_name": label_names.get(n.label_uuid) if n.label_uuid else None,
                             "model_type": n.model_type,
@@ -5821,7 +5827,7 @@ class DbClient:
                 }
                 for mc in configs
             ]
-        self._model_configs_json_path.write_text(json.dumps(rows, indent=2))
+        self._atomic_write_text(self._model_configs_json_path, json.dumps(rows, indent=2))
 
     async def sync_model_configs_from_json(self) -> None:
         """Read model_configs.json into the DB. Does not remove existing configs.
@@ -5897,13 +5903,30 @@ class DbClient:
                     if label_uuid in seen_labels:
                         logger.warning("Model config '%s': duplicate node label %s; dropping.", name, label_uuid)
                         continue
+                    # model_configs.json sits beside labels.json, which is meant to
+                    # be hand-edited, so a node missing a required key is a normal
+                    # accident. Drop it like an unresolvable label rather than
+                    # raising: this runs inside init_db(), and a KeyError here takes
+                    # db_server down at boot with nothing pointing at the cause.
+                    model_type = node.get("model_type")
+                    architecture = node.get("architecture")
+                    if not model_type or not architecture:
+                        logger.warning(
+                            "Model config '%s': node (label=%s) missing model_type/architecture; dropping node.",
+                            name,
+                            label_uuid,
+                        )
+                        continue
                     seen_labels.add(label_uuid)
                     session.add(
                         ModelConfigNode(
+                            # Preserve the dumped UUID so training configs and
+                            # trained models keep resolving to this node.
+                            uuid=node.get("uuid") or str(uuid4()),
                             model_config_uuid=mc.uuid,
                             label_uuid=label_uuid,
-                            model_type=node["model_type"],
-                            architecture=node["architecture"],
+                            model_type=model_type,
+                            architecture=architecture,
                             roll_up_unchecked=node.get("roll_up_unchecked", False),
                         )
                     )
