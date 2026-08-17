@@ -24,6 +24,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { prefs } from '/app-static/js/shared/prefs.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { verifyAllBboxes } from '../app/image-tagging/canvas/image.js';
+import { registerCanvasAction } from '../app/image-tagging/canvasActions.js';
 import { toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import {
@@ -1321,15 +1322,32 @@ async function mountSelectMode(container, { runtime, filter }) {
     if (uuids.length) runtime?.markDirty?.();
   }
 
-  markAbsentBtn.addEventListener('click', () => bulkOp(
+  // Named so the hotkeys can fire the same code the buttons do — a second copy
+  // of the "which uuids does this apply to" filter is exactly the sort of thing
+  // that drifts once and then silently marks the wrong set absent.
+  const doMarkAbsent = () => bulkOp(
     targetedUuids().filter(uuid => effectiveStatus(uuid) !== 'present'),
     'absent',
-  ));
+  );
 
-  resetAllBtn.addEventListener('click', () => bulkOp(
+  const doResetAll = () => bulkOp(
     targetedUuids().filter(uuid => serverStates.has(uuid)),
     'uncertain',
-  ));
+  );
+
+  markAbsentBtn.addEventListener('click', doMarkAbsent);
+  resetAllBtn.addEventListener('click', doResetAll);
+
+  // Hotkey hooks. Both act on the panel's current targeting, which lives in this
+  // closure, so hotkeys.js dispatches through the registry rather than
+  // reimplementing the target set. Only registered when there is a runtime to
+  // key them to — a panel with no canvas has nothing to mark dirty.
+  let unregisterBulkActions = () => {};
+  if (runtime) {
+    const unregAbsent = registerCanvasAction(runtime.id, 'markAbsent', doMarkAbsent);
+    const unregReset = registerCanvasAction(runtime.id, 'resetLabels', doResetAll);
+    unregisterBulkActions = () => { unregAbsent(); unregReset(); };
+  }
 
   /**
    * Render a labelled section: a header (title + [◉ all | ⊘ none] master
@@ -1632,6 +1650,7 @@ async function mountSelectMode(container, { runtime, filter }) {
       unsubBboxes();
       unsubSaved();
       unsubTool();
+      unregisterBulkActions();
     },
   };
 }

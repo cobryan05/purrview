@@ -28,11 +28,17 @@ export const FIXED_ACTIONS = [
   { id: 'action:enhance', label: 'Cycle image enhancement' },
   { id: 'action:save', label: 'Save annotations' },
   { id: 'action:runInference', label: 'Run inference' },
+  { id: 'action:markAbsent', label: 'Mark targeted labels absent' },
+  { id: 'action:resetLabels', label: 'Reset targeted labels' },
+  { id: 'action:verifyAll', label: 'Verify all bboxes' },
 ];
 
 const DEFAULT_BINDINGS = {
-  'v': 'action:select',
-  'r': 'action:bbox',
+  // Select and Draw-bbox sit on Q and B rather than the V and R they used to
+  // hold: the label-panel bulk actions below wanted R and V, and those read far
+  // better as Reset and Verify than as tool switches.
+  'q': 'action:select',
+  'b': 'action:bbox',
   '[': 'action:prevImage',
   ']': 'action:nextImage',
   'delete': 'action:delete',
@@ -45,6 +51,9 @@ const DEFAULT_BINDINGS = {
   'e': 'action:enhance',
   's': 'action:save',
   'i': 'action:runInference',
+  'a': 'action:markAbsent',
+  'r': 'action:resetLabels',
+  'v': 'action:verifyAll',
 };
 
 /**

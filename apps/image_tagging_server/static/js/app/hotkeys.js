@@ -1,4 +1,4 @@
-import { deleteSelected, saveAnnotations } from './image-tagging/canvas/image.js';
+import { deleteSelected, saveAnnotations, verifyAllBboxes } from './image-tagging/canvas/image.js';
 import { getCanvasAction } from './image-tagging/canvasActions.js';
 import { resetCanvasZoom } from './image-tagging/canvas/manager.js';
 import { cycleCanvasEnhancement } from './image-tagging/canvas/enhance.js';
@@ -59,6 +59,25 @@ function dispatchAction(action, runtime) {
       const run = getCanvasAction(runtime.id, 'runInference');
       if (!run) return false;
       run(runtime);
+      return true;
+    }
+    // Verify-all is pure runtime state (bbox tags), so it works on any canvas —
+    // unlike the two below, which act on the label panel's targeting.
+    case 'action:verifyAll': verifyAllBboxes(runtime); return true;
+    // "Targeted" is whatever the label panel currently scopes to (active model /
+    // filter / everything — see activeModelBar), and only that panel knows it.
+    // Without a panel there is no target set, so these report unhandled rather
+    // than guessing at "all labels" and silently rewriting the whole image.
+    case 'action:markAbsent': {
+      const markAbsent = getCanvasAction(runtime.id, 'markAbsent');
+      if (!markAbsent) return false;
+      markAbsent();
+      return true;
+    }
+    case 'action:resetLabels': {
+      const reset = getCanvasAction(runtime.id, 'resetLabels');
+      if (!reset) return false;
+      reset();
       return true;
     }
     default: return false;

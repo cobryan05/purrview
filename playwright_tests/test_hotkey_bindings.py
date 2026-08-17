@@ -165,6 +165,56 @@ class TestDefaultBindings:
         }""")
         assert result == "action:runInference"
 
+    def test_a_maps_to_mark_absent(self, page: Page, base_url: str):
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return actionForCombo('a');
+        }""")
+        assert result == "action:markAbsent"
+
+    def test_r_maps_to_reset_labels(self, page: Page, base_url: str):
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return actionForCombo('r');
+        }""")
+        assert result == "action:resetLabels"
+
+    def test_v_maps_to_verify_all(self, page: Page, base_url: str):
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return actionForCombo('v');
+        }""")
+        assert result == "action:verifyAll"
+
+    def test_tools_moved_to_q_and_b(self, page: Page, base_url: str):
+        """Select and Draw-bbox vacated V and R for the bulk actions."""
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return { q: actionForCombo('q'), b: actionForCombo('b') };
+        }""")
+        assert result["q"] == "action:select"
+        assert result["b"] == "action:bbox"
+
+    def test_no_fixed_action_ships_without_a_key(self, page: Page, base_url: str):
+        """The defaults are an object literal keyed by combo, so reusing a key is
+        not an error — the later entry silently wins and the earlier action ships
+        unreachable. That shows up here as an action with no combo at all.
+
+        Deliberately not asserting one combo per action: Delete and Delete-image
+        each answer to two keys (Delete and Backspace), which is intended.
+        """
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const m = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            await m.initHotkeyBindings();
+            return m.FIXED_ACTIONS.map(a => a.id).filter(a => m.combosForAction(a).length === 0);
+        }""")
+        assert result == []
+
     def test_save_and_inference_listed_as_configurable_actions(self, page: Page, base_url: str):
         """Both appear in FIXED_ACTIONS, which is what the config panel renders."""
         goto(page, base_url)
@@ -174,6 +224,9 @@ class TestDefaultBindings:
         }""")
         assert "action:save" in result
         assert "action:runInference" in result
+        assert "action:markAbsent" in result
+        assert "action:resetLabels" in result
+        assert "action:verifyAll" in result
 
     def test_delete_key_maps_to_delete(self, page: Page, base_url: str):
         goto(page, base_url)
@@ -199,9 +252,7 @@ class TestNewDefaultsMerged:
     def _seed(self, page: Page, mapping: dict):
         import json
 
-        page.add_init_script(
-            f"localStorage.setItem({json.dumps(self.STORAGE_KEY)}, {json.dumps(json.dumps(mapping))})"
-        )
+        page.add_init_script(f"localStorage.setItem({json.dumps(self.STORAGE_KEY)}, {json.dumps(json.dumps(mapping))})")
 
     def _init_and_read(self, page: Page, combos: list):
         return page.evaluate(
@@ -258,9 +309,9 @@ class TestSetBinding:
         goto(page, base_url)
         result = page.evaluate("""async () => {
             const { setBinding, actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
-            // 'v' defaults to action:select
-            setBinding('action:select', 'q');    // q → select; v should now be unbound
-            return actionForCombo('v');
+            // 'q' defaults to action:select
+            setBinding('action:select', 'x');    // x → select; q should now be unbound
+            return actionForCombo('q');
         }""")
         assert result is None
 
@@ -269,9 +320,9 @@ class TestSetBinding:
         goto(page, base_url)
         result = page.evaluate("""async () => {
             const { setBinding, actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
-            // 'v' → action:select by default; steal it for undo
-            setBinding('action:undo', 'v');
-            return { undoCombo: actionForCombo('v'), selectCombo: actionForCombo('v') !== 'action:select' };
+            // 'q' → action:select by default; steal it for undo
+            setBinding('action:undo', 'q');
+            return { undoCombo: actionForCombo('q'), selectCombo: actionForCombo('q') !== 'action:select' };
         }""")
         assert result["undoCombo"] == "action:undo"
         assert result["selectCombo"] is True
@@ -296,7 +347,7 @@ class TestClearBinding:
         result = page.evaluate("""async () => {
             const { clearBinding, actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
             clearBinding('action:undo');
-            return actionForCombo('v');   // action:select should be unaffected
+            return actionForCombo('q');   // action:select should be unaffected
         }""")
         assert result == "action:select"
 
@@ -312,10 +363,10 @@ class TestResetBindings:
             resetBindings();
             return {
                 ctrlZ: actionForCombo('ctrl+z'),
-                v: actionForCombo('v'),
+                q: actionForCombo('q'),
                 x: actionForCombo('x'),   // should be gone after reset
             };
         }""")
         assert result["ctrlZ"] == "action:undo"
-        assert result["v"] == "action:select"
+        assert result["q"] == "action:select"
         assert result["x"] is None

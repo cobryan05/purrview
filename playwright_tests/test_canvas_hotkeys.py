@@ -8,12 +8,15 @@ on window._testRuntime so state can be read back after the keypress.
 Default bindings (from hotkeyBindings.js):
   ctrl+z       → action:undo
   ctrl+shift+z → action:redo
-  v            → action:select
-  r            → action:bbox
+  q            → action:select
+  b            → action:bbox
   delete       → action:delete
   backspace    → action:delete
   s            → action:save
   i            → action:runInference
+  a            → action:markAbsent
+  r            → action:resetLabels
+  v            → action:verifyAll
 
 Run with:
     pytest tests/playwright/test_canvas_hotkeys.py -p no:xdist --override-ini="addopts=" -v
@@ -128,23 +131,23 @@ class TestKeyboardRedo:
 
 
 class TestKeyboardToolSwitch:
-    def test_v_switches_to_select_tool(self, page: Page, base_url: str):
+    def test_q_switches_to_select_tool(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
 
         # Start on a non-select tool
         page.evaluate("""() => window._testRuntime.setTool('bbox')""")
 
-        page.keyboard.press("v")
+        page.keyboard.press("q")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
         assert result == "select"
 
-    def test_r_switches_to_bbox_tool(self, page: Page, base_url: str):
+    def test_b_switches_to_bbox_tool(self, page: Page, base_url: str):
         _setup_runtime(page, base_url)
 
         page.evaluate("""() => window._testRuntime.setTool('select')""")
 
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
         assert result == "bbox"
@@ -153,7 +156,7 @@ class TestKeyboardToolSwitch:
         _setup_runtime(page, base_url)
 
         page.evaluate("""() => window._testRuntime.setTool('select')""")
-        page.keyboard.press("v")
+        page.keyboard.press("q")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
         assert result == "select"
@@ -260,7 +263,7 @@ class TestHotkeysAndFocus:
         page.evaluate("""() => window._testRuntime.setTool('select')""")
 
         _focus_element(page, "<input type='text'>")
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         assert page.evaluate("""() => window._testRuntime.tool""") == "select"
 
@@ -269,7 +272,7 @@ class TestHotkeysAndFocus:
         page.evaluate("""() => window._testRuntime.setTool('select')""")
 
         _focus_element(page, "<textarea></textarea>")
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         assert page.evaluate("""() => window._testRuntime.tool""") == "select"
 
@@ -278,7 +281,7 @@ class TestHotkeysAndFocus:
         page.evaluate("""() => window._testRuntime.setTool('select')""")
 
         _focus_element(page, "<input type='checkbox'>")
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
 
@@ -291,7 +294,7 @@ class TestHotkeysAndFocus:
         page.keyboard.press("Delete")
 
         assert page.evaluate("""() => window._testRuntime.state.image.bboxes.size""") == 1
-        page.keyboard.press("r")
+        page.keyboard.press("b")
         assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
 
     def test_button_focus_does_not_suppress_hotkeys(self, page: Page, base_url: str):
@@ -299,7 +302,7 @@ class TestHotkeysAndFocus:
         page.evaluate("""() => window._testRuntime.setTool('select')""")
 
         _focus_element(page, "<button>Save</button>")
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
 
@@ -354,7 +357,7 @@ class TestHotkeysAndFocus:
         page.mouse.up(button="middle")
 
         assert page.evaluate("""() => document.activeElement.tagName""") != "INPUT"
-        page.keyboard.press("r")
+        page.keyboard.press("b")
         assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
 
 
@@ -382,7 +385,7 @@ class TestHotkeysBlockedWhileDialogOpen:
             window._testShell = shell;
         }""")
 
-        page.keyboard.press("v")
+        page.keyboard.press("q")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
         assert result == "bbox"  # unchanged — the hotkey must not have fired
@@ -399,7 +402,7 @@ class TestHotkeysBlockedWhileDialogOpen:
         }""")
         page.evaluate("""() => window._testShell.close()""")
 
-        page.keyboard.press("v")
+        page.keyboard.press("q")
 
         result = page.evaluate("""() => window._testRuntime.tool""")
         assert result == "select"
@@ -415,7 +418,7 @@ class TestHotkeysBlockedWhileDialogOpen:
         }""")
 
         for _ in range(5):
-            page.keyboard.press("v")
+            page.keyboard.press("q")
 
         count = page.evaluate("""() => document.querySelectorAll('.app-modal-overlay').length""")
         assert count == 1
@@ -486,3 +489,95 @@ class TestSaveAndInferenceHotkeys:
         page.keyboard.press("i")
 
         assert page.evaluate("""() => window._testCalls""") == []
+
+
+# ---------------------------------------------------------------------------
+# Label-panel bulk actions ('a' / 'r') and Verify All ('v')
+# ---------------------------------------------------------------------------
+
+
+class TestBulkLabelHotkeys:
+    """Mark-absent and Reset act on the label panel's *targeted* set, which only
+    that panel knows, so they route through the canvas-action registry. Verify
+    All is pure runtime state and works on any canvas."""
+
+    def _register(self, page: Page, name: str) -> None:
+        page.evaluate(
+            """async (name) => {
+            const { registerCanvasAction } = await import('/app-static/js/app/image-tagging/canvasActions.js');
+            window._testCalls = window._testCalls ?? [];
+            window._testUnregister = registerCanvasAction(
+                window._testRuntime.id, name, () => window._testCalls.push(name),
+            );
+        }""",
+            name,
+        )
+
+    def test_a_fires_mark_absent(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        self._register(page, "markAbsent")
+
+        page.keyboard.press("a")
+
+        assert page.evaluate("""() => window._testCalls""") == ["markAbsent"]
+
+    def test_r_fires_reset_labels(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        self._register(page, "resetLabels")
+
+        page.keyboard.press("r")
+
+        assert page.evaluate("""() => window._testCalls""") == ["resetLabels"]
+
+    def test_a_is_inert_with_no_label_panel(self, page: Page, base_url: str):
+        """No panel means no targeted set. Guessing "all labels" here would
+        silently rewrite presence for the whole image, so the key must no-op."""
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => {
+            window._testDefaultPrevented = null;
+            document.addEventListener('keydown', e => {
+                window._testDefaultPrevented = e.defaultPrevented;
+            });
+        }""")
+
+        page.keyboard.press("a")
+
+        assert page.evaluate("""() => window._testDefaultPrevented""") is False
+
+    def test_v_verifies_every_bbox_on_the_canvas(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+
+        before = page.evaluate("""() => (window._testRuntime.state.image.bboxes.get('b1').tags ?? []).length""")
+
+        page.keyboard.press("v")
+
+        after = page.evaluate("""async () => {
+            const { VERIFIED_TAG_UUID } = await import('/app-static/js/shared/api/review.js');
+            const tags = window._testRuntime.state.image.bboxes.get('b1').tags ?? [];
+            return tags.some(t => t.uuid === VERIFIED_TAG_UUID);
+        }""")
+        assert before == 0
+        assert after is True, "pressing 'v' should tag every bbox verified"
+
+
+class TestToolHotkeysMoved:
+    """Select and Draw-bbox moved off V and R so Verify-all and Reset could take
+    them. Their own keys are covered by TestKeyboardToolSwitch above; these pin
+    that the vacated keys no longer switch tools, which is the part a careless
+    re-add of the old defaults would silently break."""
+
+    def test_v_no_longer_switches_tools(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('bbox')""")
+
+        page.keyboard.press("v")
+
+        assert page.evaluate("""() => window._testRuntime.tool""") == "bbox"
+
+    def test_r_no_longer_switches_tools(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => window._testRuntime.setTool('select')""")
+
+        page.keyboard.press("r")
+
+        assert page.evaluate("""() => window._testRuntime.tool""") == "select"

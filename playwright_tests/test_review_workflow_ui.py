@@ -2171,7 +2171,7 @@ class TestCanvasModalHotkeys:
     def test_tool_hotkey_works_when_modal_opens(self, page: Page, base_url: str):
         modal = self._open_modal(page, base_url)
 
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
 
@@ -2180,7 +2180,7 @@ class TestCanvasModalHotkeys:
 
         page.keyboard.press("]")
         page.wait_for_timeout(600)  # let the nav-triggered image load settle
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
 
@@ -2206,7 +2206,7 @@ class TestCanvasModalHotkeys:
         expect(title).to_have_text("Edit: folder/image2.jpg", timeout=5000)
         page.wait_for_timeout(600)
 
-        page.keyboard.press("r")
+        page.keyboard.press("b")
 
         expect(modal.locator("button[data-tool='bbox']")).to_have_class(re.compile(r"\bselected\b"))
 
