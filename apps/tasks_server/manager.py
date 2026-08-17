@@ -1,9 +1,11 @@
 """Manager models on Tasks Server"""
 
 import asyncio
+import functools
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -43,9 +45,6 @@ class Manager:
     _CRASH_LOOP_MAX_RESTARTS: int = 5
     _CRASH_LOOP_WINDOW: timedelta = timedelta(hours=1)
 
-    # Retention bounds for finished instances (see apps/__init__.py). Read from the
-    # module-level config at class definition rather than per-call so tests can
-    # patch.object these directly, the same way they do the crash-loop knobs.
     # How many missed heartbeats before a task this process is driving is called
     # wedged. Matches the orphan check's threshold on purpose — the two ask the same
     # question of the same signal and differ only in what they conclude (see
@@ -61,6 +60,13 @@ class Manager:
     # was midway through — so this is a last resort, not a timeout.
     _FORCE_STOP_AFTER_S: float = 120.0
 
+    # Threads reserved for this manager's own DB bookkeeping. Small on purpose: the
+    # calls are short writes and reads, and the point is isolation, not throughput.
+    _BOOKKEEPING_THREADS: int = 4
+
+    # Retention bounds for finished instances (see apps/__init__.py). Read from the
+    # module-level config at class definition rather than per-call so tests can
+    # patch.object these directly, the same way they do the crash-loop knobs.
     _RETENTION_DAYS: int = TASK_RETENTION_DAYS
     _RETENTION_MAX_COMPLETED: int = TASK_RETENTION_MAX_COMPLETED
     # Statuses a task never leaves on its own — only these are prunable.
@@ -110,6 +116,12 @@ class Manager:
         # driving that have stopped progressing. See _check_wedged_tasks: reported,
         # never acted on.
         self._wedged_tasks: Dict[str, float] = {}
+        # Threads for this manager's own bookkeeping — see _db_call for why it does
+        # not share the default one.
+        self._bookkeeping_executor = ThreadPoolExecutor(
+            max_workers=self._BOOKKEEPING_THREADS,
+            thread_name_prefix="tasks-bookkeeping",
+        )
 
     def get_db_api_client(self) -> db_client.ApiClient:
         return self._db_api_client
@@ -211,6 +223,35 @@ class Manager:
         except Exception as e:
             logger.warning(f"Could not release the previous API client's connection pool: {e}")
 
+    async def _db_call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run one of this manager's own DB calls, on threads nothing else can exhaust.
+
+        A drop-in for `asyncio.to_thread(fn, ...)` that uses a private executor instead
+        of the default one.
+
+        The default executor holds min(32, cpu + 4) threads and is shared by every
+        `to_thread` in the process — inference requests, training submissions, image
+        encodes, file writes. That is fine until something saturates it, and then the
+        thing that suffers is whatever is smallest and most important: the heartbeat.
+        That is not hypothetical. It is what made a wedged watcher invisible — leaked
+        inference threads filled the pool, `update_task_heartbeat` could not get a
+        slot, and the task went on looking alive in every view the app has while
+        nothing at all was happening.
+
+        Bounding those calls (see apps/helpers/apiCall.py) makes saturation much less
+        likely; this makes starving the *reporting* path impossible rather than
+        unlikely. Whatever else jams, the manager can still write a heartbeat, persist
+        a final status and answer /status — which is the difference between an outage
+        you can see and one you cannot.
+
+        Deliberately only the manager's own bookkeeping. Task work stays on the shared
+        pool: the isolation is worth having precisely because this side is small and
+        predictable, and moving bulk work here would recreate the problem inside the
+        reserved pool.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._bookkeeping_executor, functools.partial(fn, *args, **kwargs))
+
     async def stop(self) -> None:
         """Stop the worker loop and release the clients this manager owns.
 
@@ -228,6 +269,9 @@ class Manager:
                 logger.warning(f"Worker task raised during shutdown: {e}")
         await self._url_settings_client.aclose()
         self._release_api_client(self._inference_api_client)
+        # cancel_futures so a queued write cannot hold shutdown open; anything already
+        # running is bounded by its own request timeout.
+        self._bookkeeping_executor.shutdown(wait=False, cancel_futures=True)
 
     async def _reload_url_overrides_safe(self) -> None:
         """reload_url_overrides() wrapped for the worker loop, where an exception
@@ -269,7 +313,7 @@ class Manager:
                 not_running.append(tid)
 
         if not_running:
-            resp = await asyncio.to_thread(
+            resp = await self._db_call(
                 TasksApi(self._db_api_client).get_task_results,
                 db_models.GetTaskResultsPayload(task_uuids=not_running),
             )
@@ -297,13 +341,13 @@ class Manager:
                     uuids_left.remove(uuid)
 
         if uuids_left is None or len(uuids_left) > 0:
-            instances_resp = await asyncio.to_thread(
+            instances_resp = await self._db_call(
                 TasksApi(self._db_api_client).list_task_instances,
                 uuids=uuids_left,
             )
             db_instances = instances_resp.instances or []
             config_uuids = list(set(inst.config_uuid for inst in db_instances))
-            configs_resp = await asyncio.to_thread(
+            configs_resp = await self._db_call(
                 TasksApi(self._db_api_client).list_task_configs,
                 uuids=config_uuids,
             )
@@ -343,7 +387,7 @@ class Manager:
         if persistent is None:
             persistent = task_registry[typename].DEFAULT_PERSISTENT
         params[Task.InternalKeys.PERSISTENT] = persistent
-        resp = await asyncio.to_thread(
+        resp = await self._db_call(
             TasksApi(self._db_api_client).create_task_config,
             db_models.CreateTaskConfigPayload(name=name, typename=typename, params=params, is_temporary=is_temporary),
         )
@@ -352,7 +396,7 @@ class Manager:
     async def delete_task_configs(self, config_uuids: Union[List[str], str]) -> None:
         if isinstance(config_uuids, str):
             config_uuids = [config_uuids]
-        await asyncio.to_thread(
+        await self._db_call(
             TasksApi(self._db_api_client).delete_task_configs,
             db_models.DeleteTaskConfigsPayload(config_uuids=config_uuids),
         )
@@ -367,7 +411,7 @@ class Manager:
                 await self._running_tasks[task_id].task.stop()
                 del self._running_tasks[task_id]
                 deleted_uuids.append(task_id)
-        await asyncio.to_thread(
+        await self._db_call(
             TasksApi(self._db_api_client).delete_task_instances,
             db_models.DeleteTaskInstancesPayload(task_uuids=task_uuids),
         )
@@ -385,7 +429,7 @@ class Manager:
         if typename is not None and typename not in task_registry:
             raise ValueError(f"Unknown task type: {typename}")
 
-        await asyncio.to_thread(
+        await self._db_call(
             TasksApi(self._db_api_client).update_task_config,
             config_uuid,
             db_models.UpdateTaskConfigPayload(
@@ -403,7 +447,7 @@ class Manager:
         if isinstance(task_config_uuids, str):
             task_config_uuids = [task_config_uuids]
 
-        resp = await asyncio.to_thread(
+        resp = await self._db_call(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=task_config_uuids,
             is_temporary=is_temporary,
@@ -465,7 +509,7 @@ class Manager:
 
         # One of the two paths that actually restarts a task, so it needs the
         # checkpoint — the listing omits resume_data unless asked (see below).
-        instances_resp = await asyncio.to_thread(
+        instances_resp = await self._db_call(
             TasksApi(self._db_api_client).list_task_instances,
             uuids=uuids_to_check,
             include_resume_data=True,
@@ -486,7 +530,7 @@ class Manager:
             return []
 
         config_uuids = list(set(inst.config_uuid for inst in paused))
-        configs_resp = await asyncio.to_thread(
+        configs_resp = await self._db_call(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=config_uuids,
         )
@@ -616,7 +660,7 @@ class Manager:
         Used by Task.save_checkpoint_now() for state that must not wait for the
         periodic pass.
         """
-        await asyncio.to_thread(
+        await self._db_call(
             TasksApi(self._db_api_client).set_task_instance_resume_data,
             task_uuid,
             db_models.SetTaskResumeDataPayload(resume_data=resume_data),
@@ -624,7 +668,7 @@ class Manager:
 
     async def update_task_heartbeat(self, task_uuid: str) -> None:
         """Forward a heartbeat ping to the DB server for the given task instance."""
-        await asyncio.to_thread(
+        await self._db_call(
             TasksApi(self._db_api_client).set_task_instance_heartbeat,
             task_uuid,
         )
@@ -675,7 +719,7 @@ class Manager:
 
         if not_running:
             try:
-                resp = await asyncio.to_thread(
+                resp = await self._db_call(
                     TasksApi(self._db_api_client).list_task_instances,
                     uuids=not_running,
                 )
@@ -742,7 +786,7 @@ class Manager:
 
     async def _save_task_data(self, task_info: TaskInfo, ended_at: Optional[datetime] = None) -> None:
         if task_info.task.is_data_ready():
-            await asyncio.to_thread(
+            await self._db_call(
                 TasksApi(self._db_api_client).set_task_instance_resume_data,
                 task_info.instance.uuid,
                 db_models.SetTaskResumeDataPayload(resume_data=task_info.task.get_resume_data()),
@@ -755,12 +799,12 @@ class Manager:
         # Status and result are critical — a failure here must propagate so the
         # caller's retry logic can attempt recovery.
         await asyncio.gather(
-            asyncio.to_thread(
+            self._db_call(
                 TasksApi(self._db_api_client).set_task_instance_result,
                 task_info.instance.uuid,
                 db_models.SetTaskResultPayload(result=task_info.task.get_results() or {}),
             ),
-            asyncio.to_thread(
+            self._db_call(
                 TasksApi(self._db_api_client).set_task_instance_status,
                 task_info.instance.uuid,
                 db_models.SetTaskStatusPayload(
@@ -783,7 +827,7 @@ class Manager:
         except Exception:
             logger.exception(f"get_status_data() failed for task {task_info.instance.uuid} (non-fatal)")
         try:
-            await asyncio.to_thread(
+            await self._db_call(
                 TasksApi(self._db_api_client).set_task_instance_timestamps,
                 task_info.instance.uuid,
                 db_models.SetTaskTimestampsPayload(
@@ -822,7 +866,7 @@ class Manager:
             # answered from _running_tasks don't keep serving it.
             instance.result = None
         else:
-            resp = await asyncio.to_thread(
+            resp = await self._db_call(
                 TasksApi(self._db_api_client).create_task_instance,
                 db_models.CreateTaskInstancePayload(config_uuid=config.uuid),
             )
@@ -842,7 +886,7 @@ class Manager:
         # the terminal status, leaving the task stuck as "running" forever
         # with no in-memory entry left for Stop/Suspend/Cancel to act on.
         start_writes = [
-            asyncio.to_thread(
+            self._db_call(
                 TasksApi(self._db_api_client).set_task_instance_status,
                 instance.uuid,
                 db_models.SetTaskStatusPayload(status=TaskStatus.RUNNING),
@@ -850,7 +894,7 @@ class Manager:
             # This write also retires the previous run's ended_at (see
             # set_task_timestamps_and_logs) so a resumed row can't read as
             # having ended before it started.
-            asyncio.to_thread(
+            self._db_call(
                 TasksApi(self._db_api_client).set_task_instance_timestamps,
                 instance.uuid,
                 db_models.SetTaskTimestampsPayload(started_at=started_at),
@@ -858,7 +902,7 @@ class Manager:
         ]
         if resume_instance:
             start_writes.append(
-                asyncio.to_thread(
+                self._db_call(
                     TasksApi(self._db_api_client).set_task_instance_result,
                     instance.uuid,
                     db_models.SetTaskResultPayload(result={}),
@@ -880,7 +924,7 @@ class Manager:
         # Startup recovery inspects each interrupted instance's checkpoint to decide
         # paused-and-resumable vs. error, and hands it to the auto-restart path, so
         # this is the other listing that must opt into resume_data.
-        resp = await asyncio.to_thread(
+        resp = await self._db_call(
             TasksApi(self._db_api_client).list_task_instances,
             include_resume_data=True,
         )
@@ -898,7 +942,7 @@ class Manager:
         ]
         if new_tasks:
             logger.info(f"Removing {len(new_tasks)} never-started task instance(s)")
-            await asyncio.to_thread(
+            await self._db_call(
                 TasksApi(self._db_api_client).delete_task_instances,
                 db_models.DeleteTaskInstancesPayload(task_uuids=[inst.uuid for inst in new_tasks]),
             )
@@ -953,7 +997,7 @@ class Manager:
                 recovery_message = no_checkpoint_message
                 logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
             coros.append(
-                asyncio.to_thread(
+                self._db_call(
                     TasksApi(self._db_api_client).set_task_instance_status,
                     inst.uuid,
                     db_models.SetTaskStatusPayload(status=recovered_status, error_message=recovery_message),
@@ -969,7 +1013,7 @@ class Manager:
         if not resumable_instances:
             return
         config_uuids = list({inst.config_uuid for inst in resumable_instances})
-        configs_resp = await asyncio.to_thread(
+        configs_resp = await self._db_call(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=config_uuids,
         )
@@ -1030,7 +1074,7 @@ class Manager:
             # resume_data is what decides resumable-vs-error below, and the
             # default listing omits it — without it every orphan looks
             # uncheckpointed.
-            resp = await asyncio.to_thread(
+            resp = await self._db_call(
                 TasksApi(self._db_api_client).list_task_instances,
                 include_resume_data=True,
             )
@@ -1166,7 +1210,7 @@ class Manager:
         "0 running" in the other, with nothing to say which is right.
         """
         try:
-            resp = await asyncio.to_thread(TasksApi(self._db_api_client).list_task_instances)
+            resp = await self._db_call(TasksApi(self._db_api_client).list_task_instances)
         except Exception:
             logger.exception("Error refreshing unattached task count")
             return
@@ -1215,7 +1259,7 @@ class Manager:
 
             if task.is_data_ready():
                 try:
-                    await asyncio.to_thread(
+                    await self._db_call(
                         TasksApi(self._db_api_client).set_task_instance_resume_data,
                         uuid,
                         db_models.SetTaskResumeDataPayload(resume_data=task.get_resume_data()),
@@ -1278,7 +1322,7 @@ class Manager:
                 inst.uuid,
             )
             await asyncio.gather(
-                asyncio.to_thread(
+                self._db_call(
                     TasksApi(self._db_api_client).set_task_instance_status,
                     inst.uuid,
                     db_models.SetTaskStatusPayload(
@@ -1289,7 +1333,7 @@ class Manager:
                         ),
                     ),
                 ),
-                asyncio.to_thread(
+                self._db_call(
                     TasksApi(self._db_api_client).update_task_config,
                     config.uuid,
                     db_models.UpdateTaskConfigPayload(params=new_params),
@@ -1297,7 +1341,7 @@ class Manager:
             )
             return
 
-        await asyncio.to_thread(
+        await self._db_call(
             TasksApi(self._db_api_client).update_task_config,
             config.uuid,
             db_models.UpdateTaskConfigPayload(params=new_params),
@@ -1328,7 +1372,7 @@ class Manager:
         if self._RETENTION_DAYS <= 0 and self._RETENTION_MAX_COMPLETED <= 0:
             return []
         try:
-            resp = await asyncio.to_thread(TasksApi(self._db_api_client).list_task_instances)
+            resp = await self._db_call(TasksApi(self._db_api_client).list_task_instances)
         except Exception:
             logger.exception("Failed to list task instances for retention pruning")
             return []
@@ -1359,7 +1403,7 @@ class Manager:
             return []
         uuids = sorted(victims)
         try:
-            await asyncio.to_thread(
+            await self._db_call(
                 TasksApi(self._db_api_client).delete_task_instances,
                 db_models.DeleteTaskInstancesPayload(task_uuids=uuids),
             )
