@@ -170,6 +170,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
+# Created before anything is copied in, so every COPY below can set ownership as it
+# writes (COPY --chown) instead of a recursive chown afterwards. That `chown -R /app`
+# cost ~50s of every rebuild and, worse, rewrote every file it touched into a fresh
+# layer — paying for a second copy of the whole application tree in the image purely
+# to change its owner.
+RUN groupadd -g $APPUSER_GID appuser && \
+    useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
+
 # Runtime Python deps + the selected onnxruntime flavor.
 COPY requirements.txt requirements-cpu.txt requirements-gpu.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -187,15 +195,19 @@ RUN mkdir -p /logs /app/static/js /app/static/css \
   && cp /tmp/konva/konva.min.js /app/static/js/ \
   && mkdir -p /app/static/js/konva-types \
   && cp -r /tmp/konva/lib/* /app/static/js/konva-types/ \
-  && rm -rf /tmp/konva /tmp/konva.tgz
+  && rm -rf /tmp/konva /tmp/konva.tgz \
+  # These were written by root above, and are the only files in /app that no COPY
+  # --chown covers. Scoped rather than a blanket -R over /app: it is a handful of
+  # vendored assets, so it costs nothing and stays cheap as the app grows.
+  && chown -R appuser:appuser /app /logs
 
-COPY --from=mediamtx /mediamtx /app/mediamtx
+COPY --from=mediamtx --chown=appuser:appuser /mediamtx /app/mediamtx
 
 # Copy required foundational application files
-COPY conf /conf
-COPY templates ./templates
-COPY static ./static
-COPY apps ./apps
+COPY --chown=appuser:appuser conf /conf
+COPY --chown=appuser:appuser templates ./templates
+COPY --chown=appuser:appuser static ./static
+COPY --chown=appuser:appuser apps ./apps
 
 # Install all internal API client wheels from the openapi builder
 COPY --from=openapi-builder /app/openapi_wheels/ /tmp/openapi_wheels/
@@ -203,14 +215,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/openapi_wheels/*.whl && rm -rf /tmp/openapi_wheels
 
 # Copy the generated internal API type sheets for the UI layer
-COPY --from=openapi-builder /app/static/js/api-types/ /app/static/js/api-types/
+COPY --from=openapi-builder --chown=appuser:appuser /app/static/js/api-types/ /app/static/js/api-types/
 
-# Create non-root user
-RUN groupadd -g $APPUSER_GID appuser && \
-    useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
-
-# Set runtime folder ownership safely
-RUN mkdir -p /training-artifacts /training-cache && chown -R appuser:appuser /app /logs /conf /training-artifacts /training-cache
+# Directory ownership only — the contents were already placed with COPY --chown, so
+# this stays a constant-time step however large the application gets. The directories
+# themselves still need setting because a COPY creates its destination as root.
+RUN mkdir -p /training-artifacts /training-cache \
+  && chown appuser:appuser /app /conf /logs /training-artifacts /training-cache
 
 USER appuser
 
@@ -244,6 +255,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 WORKDIR /app
 
+# Mirror the application user configuration exactly to handle shared volume writes
+# safely. Created before the copies so each can set ownership as it writes — see the
+# same note in the `app` stage for why a trailing `chown -R /app` is worth avoiding.
+RUN groupadd -g $APPUSER_GID appuser && \
+    useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
+
 # Install training dependencies from the compiled wheelhouse
 # (Guaranteed cp311 wheels, keeping this stage 100% clean of compilers)
 COPY --from=training-wheels /app/training_wheels /tmp/training_wheels
@@ -257,15 +274,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 # Copy application runtime structure
-COPY conf/supervisord-training.conf /conf/supervisord-training.conf
-COPY templates ./templates
-COPY apps ./apps
+COPY --chown=appuser:appuser conf/supervisord-training.conf /conf/supervisord-training.conf
+COPY --chown=appuser:appuser templates ./templates
+COPY --chown=appuser:appuser apps ./apps
 
-# Mirror the application user configuration exactly to handle shared volume writes safely
-RUN groupadd -g $APPUSER_GID appuser && \
-    useradd -m -u $APPUSER_UID -g appuser -s /bin/bash appuser
-
-RUN mkdir -p /logs /data /training-artifacts /training-cache && chown -R appuser:appuser /app /logs /conf /data /training-artifacts /training-cache
+# Runtime mount points only — empty directories, so this stays a constant-time step.
+# /app is included because the pytorch base populated it before appuser existed.
+RUN mkdir -p /logs /data /training-artifacts /training-cache \
+  && chown appuser:appuser /app /logs /conf /data /training-artifacts /training-cache
 
 USER appuser
 
@@ -356,13 +372,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update \
   && apt-get install -y --no-install-recommends bash curl git
 
-COPY requirements-dev.txt .
+COPY --chown=appuser:appuser requirements-dev.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements-dev.txt \
   && echo 'cd /project/apps 2>/dev/null || cd /app/apps' >> /home/appuser/.bashrc
 
-# System dependencies for Playwright testing tools
-RUN playwright install-deps chromium
+# System dependencies for Playwright testing tools. `install-deps` shells out to
+# apt-get itself, so it gets the same cache mounts as every other apt step here —
+# without them it re-downloads the whole browser dependency set on each rebuild.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    playwright install-deps chromium
 
 # Pull in prebuilt CLI tooling (claude, nvm/node, uv, serena) from the shared devtools stage
 COPY --from=devtools --chown=appuser:appuser /home/appuser/.local /home/appuser/.local
@@ -409,7 +429,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update \
   && apt-get install -y --no-install-recommends bash curl git build-essential
 
-COPY requirements-dev.txt .
+COPY --chown=appuser:appuser requirements-dev.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements-dev.txt \
   && echo 'cd /project/apps 2>/dev/null || cd /app/apps' >> /home/appuser/.bashrc
