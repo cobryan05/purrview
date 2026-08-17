@@ -53,6 +53,14 @@ class Manager:
     # between beats does not trip it.
     _WEDGED_HEARTBEAT_INTERVALS: int = 4
 
+    # How long a task gets to honour a stop request before it is interrupted rather
+    # than asked. Generously longer than the cancel endpoint's own grace period: a
+    # watcher closing streams and flushing open events takes seconds, and a task that
+    # would have stopped on its own must never be interrupted mid-cleanup for being
+    # slow. Interrupting is a worse outcome than waiting — it costs whatever the task
+    # was midway through — so this is a last resort, not a timeout.
+    _FORCE_STOP_AFTER_S: float = 120.0
+
     _RETENTION_DAYS: int = TASK_RETENTION_DAYS
     _RETENTION_MAX_COMPLETED: int = TASK_RETENTION_MAX_COMPLETED
     # Statuses a task never leaves on its own — only these are prunable.
@@ -1051,6 +1059,45 @@ class Manager:
         except Exception:
             logger.exception("Error checking stale tasks")
 
+    def _escalate_stuck_cancels(self) -> None:
+        """Interrupt tasks that were asked to stop and haven't.
+
+        cancel_task() only sets a flag. A task that polls it stops; one parked
+        somewhere that never looks at it again does not, and until now nothing
+        followed up — the user's Stop was the end of the story either way.
+
+        Escalation is deliberately slow and deliberately last. Interrupting costs
+        whatever the task was midway through, so a task that would have finished
+        cleaning up on its own must not be cut short for being slow; _FORCE_STOP_AFTER_S
+        is set well beyond any honest shutdown. Only tasks this process is still
+        driving are considered, since a task that has already finished has nothing to
+        interrupt.
+
+        This recovers the recoverable cases and no others. force_stop() raises
+        CancelledError at the task's current await, which does nothing at all to a task
+        blocked inside asyncio.to_thread — see its docstring. A task that survives this
+        is reported by _check_wedged_tasks and needs a service restart.
+        """
+        now = time.monotonic()
+        for uuid, task_info in list(self._running_tasks.items()):
+            task = task_info.task
+            if task is None or task.is_force_stopping():
+                continue
+            asked_for = task.seconds_since_cancel_requested(now)
+            if asked_for is None or asked_for < self._FORCE_STOP_AFTER_S:
+                continue
+            logger.warning(
+                "Task %r (%s) has not stopped %.0fs after being asked; interrupting it. "
+                "If it is blocked in a thread this will not reach it.",
+                task_info.config.name,
+                uuid,
+                asked_for,
+            )
+            try:
+                task.force_stop()
+            except Exception:
+                logger.exception("Failed to interrupt task %s", uuid)
+
     def _check_wedged_tasks(self) -> None:
         """Notice running tasks this process *is* driving that have stopped progressing.
 
@@ -1348,8 +1395,9 @@ class Manager:
                 await self._checkpoint_running_tasks()
                 await self._prune_finished_task_instances()
                 await self._refresh_unattached_count()
-                # Last, and synchronous: it reads in-memory state only, so it still
-                # reports when the DB calls above are what has jammed.
+                # Last, and synchronous: these read in-memory state only, so they
+                # still run when the DB calls above are what has jammed.
+                self._escalate_stuck_cancels()
                 self._check_wedged_tasks()
         except asyncio.CancelledError:
             logger.info("Periodic task was cancelled.")

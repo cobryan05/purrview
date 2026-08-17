@@ -111,6 +111,13 @@ class Task(ABC):
         # When _execute() began, so a task that has not had time to beat yet is
         # measured from its own start rather than from the epoch.
         self._started_monotonic: Optional[float] = None
+        # When the cooperative stop was first asked for, so the manager can tell a
+        # task that is shutting down from one that has ignored the request.
+        self._cancel_requested_at: Optional[float] = None
+        # Set only by force_stop(). Tells _execute that an incoming CancelledError is
+        # ours and should end the task, rather than someone else's (loop shutdown)
+        # which must be allowed to propagate.
+        self._force_stopping: bool = False
 
     @abstractmethod
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
@@ -258,6 +265,21 @@ class Task(ABC):
             self._results = {"status": TaskStatus.COMPLETED, "data": results}
             self._status = TaskStatus.COMPLETED
             self.log("Completed")
+        except asyncio.CancelledError:
+            # Handled explicitly because CancelledError is a BaseException, so the
+            # `except Exception` below never sees it. Left unhandled it would skip
+            # both branches with _status still RUNNING, and _on_task_complete would
+            # then persist "running" as the task's *final* status — a finished task
+            # that the DB calls running forever, which is the shape of bug this
+            # whole area keeps producing.
+            if not self._force_stopping:
+                # Not our doing — a loop shutdown, most likely. Cancellation has to
+                # keep travelling, or shutdown hangs on a task refusing to end.
+                raise
+            self._status = TaskStatus.ERROR
+            self._error_message = "Force-stopped: the task did not respond to the stop request."
+            self._results = {"status": TaskStatus.ERROR, "message": self._error_message}
+            self.log("Force-stopped")
         except Exception as e:
             self._status = TaskStatus.ERROR
             logger.error(e, exc_info=True)
@@ -271,8 +293,18 @@ class Task(ABC):
             # indeterminate (None) progress the whole way must not leave the frontend's
             # striped bar showing after the task is actually done.
             self._progress = 100.0
-            await self._deinit()
-            self._task_done.set()
+            try:
+                await self._deinit()
+            except Exception:
+                # _task_done is what everything waiting on this task keys off:
+                # wait_for_task_done, and through it _on_task_complete, which owns
+                # removing the task and writing its final status. A _deinit that
+                # raised used to skip it and strand all of that — and a task being
+                # torn down mid-operation, which is exactly what a force-stop
+                # produces, is when _deinit is most likely to raise.
+                logger.exception("Error during _deinit for task %s", self._instance_uuid)
+            finally:
+                self._task_done.set()
 
     def _update_progress(self, percent: Optional[float]):
         """Store progress. Pass None for indeterminate progress (striped bar in the UI)."""
@@ -526,8 +558,46 @@ class Task(ABC):
             raise asyncio.TimeoutError("Timed out waiting for task or data.")
 
     def cancel_task(self) -> None:
-        """Request a data update for the task."""
+        """Ask the task to stop cooperatively.
+
+        Sets the flag a task's own loop polls; it does not interrupt anything. A task
+        that never checks the flag, or is parked in a call that cannot be interrupted,
+        will not stop — which is what force_stop() is the backup for.
+        """
+        if self._cancel_requested_at is None:
+            self._cancel_requested_at = time.monotonic()
         self._cancel_flag.set()
+
+    def seconds_since_cancel_requested(self, now: Optional[float] = None) -> Optional[float]:
+        """How long this task has been asked to stop. None if it never was."""
+        if self._cancel_requested_at is None:
+            return None
+        return (time.monotonic() if now is None else now) - self._cancel_requested_at
+
+    def force_stop(self) -> bool:
+        """Escalate from asking to interrupting: cancel the asyncio task itself.
+
+        The backup for a cooperative stop that never lands. Returns True if a
+        cancellation was delivered — False if there was nothing to cancel, or the task
+        had already finished on its own between the decision and this call.
+
+        **This is not a guaranteed kill, and must not be described as one.** It raises
+        CancelledError at the task's current await point, so it works on a task parked
+        at an ordinary await and does nothing whatsoever to one blocked inside
+        `asyncio.to_thread` — that thread cannot be interrupted, which is why bounding
+        the calls that run in threads (see apps/helpers/apiCall.py) matters more than
+        this does. Treat it as recovering the cases that are recoverable, not as a
+        general answer to a stuck task.
+        """
+        if self._task is None or self._task.done():
+            return False
+        self._force_stopping = True
+        self.log("Stop request ignored — interrupting the task")
+        return self._task.cancel()
+
+    def is_force_stopping(self) -> bool:
+        """Whether this task has been interrupted rather than merely asked to stop."""
+        return self._force_stopping
 
     async def wait_for_task_done(self, timeout: Optional[float] = None) -> None:
         """

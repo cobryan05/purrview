@@ -30,6 +30,13 @@ if "TestTask" not in task_registry:
 
             cancel_task = asyncio.create_task(self._cancel_flag.wait())
             sleep_task = asyncio.create_task(asyncio.sleep(self._duration))
+            # Bound before the try, and to both children rather than to whatever
+            # asyncio.wait returned: if this task is itself cancelled, `wait` raises
+            # before the assignment ever happens, and the cleanup below then died on
+            # an UnboundLocalError — turning a CancelledError into an ordinary
+            # exception and leaking both children. Cancelling an already-finished
+            # task is a no-op, so covering both is free.
+            pending = {cancel_task, sleep_task}
 
             try:
                 done, pending = await asyncio.wait({cancel_task, sleep_task}, return_when=asyncio.FIRST_COMPLETED)
