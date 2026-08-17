@@ -80,6 +80,15 @@ class SourceHealth:
     #: grows: ten failures is 30 seconds early on and over half an hour later, so a
     #: failure count says almost nothing about how long a camera has been away.
     failing_since: Optional[float] = None
+    #: True while the source is coming up rather than broken. Kept apart from the
+    #: failure count because the two need opposite handling: a connect is polled
+    #: often and briefly, a failure is retried on a widening backoff.
+    connecting: bool = False
+
+    #: How often to look in on a source that is still connecting. Short, because the
+    #: cost is one cheap readiness check and the alternative is leaving a camera that
+    #: came up two seconds ago unread for the length of a failure backoff.
+    CONNECT_POLL_S = 2.0
 
     BACKOFF_BASE_S = 5.0
     BACKOFF_MAX_S = 300.0
@@ -96,11 +105,33 @@ class SourceHealth:
         self.last_frame_at = now
         self.last_error = None
         self.failing_since = None
+        self.connecting = False
         self.frames_analysed += 1
+
+    def record_connecting(self, now: float) -> None:
+        """Note that the source is still coming up. Not a failure.
+
+        Deliberately does not touch the failure count or the backoff. A camera that
+        takes three minutes to connect would otherwise spend that time accruing
+        failures, widening its own retry interval and being declared failed before it
+        ever had the chance to succeed — and, worse, being torn down and restarted on
+        each of those retries so the three minutes never elapsed uninterrupted.
+
+        Downtime still runs from here, because the source genuinely is not delivering;
+        what changes is that `is_failed` will not call it a fault while it holds.
+        """
+        if self.failing_since is None:
+            self.failing_since = now
+        self.connecting = True
+        self.last_error = None
+        self.next_attempt_at = now + self.CONNECT_POLL_S
 
     def record_failure(self, now: float, error: str) -> None:
         if self.failing_since is None:
             self.failing_since = now
+        # A real failure supersedes a connect in progress: whatever window it had, it
+        # has stopped being a source that is merely slow to arrive.
+        self.connecting = False
         self.consecutive_failures += 1
         self.last_error = error
         # The exponent is capped, not the failure count: retries continue indefinitely,
@@ -126,13 +157,22 @@ class SourceHealth:
         """Whether this source has been down long enough to call it failed.
 
         A reporting distinction only — nothing stops retrying on the strength of it.
+
+        A source still connecting is never failed however long it has taken. Coming up
+        can legitimately outlast FAILED_AFTER_S, and reporting a camera as failed
+        while it is in the middle of successfully connecting is how a health signal
+        teaches people to ignore it.
         """
+        if self.connecting:
+            return False
         return self.failing_since is not None and self.downtime_s(now) >= self.FAILED_AFTER_S
 
     def state(self, now: float) -> str:
-        """One of ``ok`` / ``reconnecting`` / ``failed``, for display."""
-        if self.healthy:
+        """One of ``ok`` / ``connecting`` / ``reconnecting`` / ``failed``, for display."""
+        if self.healthy and not self.connecting:
             return "ok"
+        if self.connecting:
+            return "connecting"
         return "failed" if self.is_failed(now) else "reconnecting"
 
 
@@ -251,9 +291,13 @@ class WatchPipeline:
         "failing (37)" invited the reading that something had gone wrong 37 times;
         what it meant was that one camera had been away for an hour and a half.
         """
+        down = _format_duration(self.health.downtime_s(now))
+        if self.health.connecting:
+            # Named separately from reconnecting so a camera that is simply slow to
+            # come up does not read as one that keeps dropping.
+            return f"connecting — waiting for the stream ({down})"
         if self.health.healthy:
             return "ok"
-        down = _format_duration(self.health.downtime_s(now))
         if self.health.is_failed(now):
             return f"failed — no frames for {down}, still retrying"
         return f"reconnecting — no frames for {down}"

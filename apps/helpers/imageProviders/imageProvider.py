@@ -104,6 +104,21 @@ class ImageProvider:
         """
         return True
 
+    def is_connecting(self) -> bool:
+        """Whether this provider is still coming up and should be left alone.
+
+        Splits "not ready" into its two cases, which want opposite treatment: a
+        provider still connecting needs patience, a broken one needs rebuilding. Left
+        undivided, a source that is merely slow to connect gets torn down on every
+        retry and never completes a connection at all — which for an RTSP camera
+        behind a relay, where coming up cold can take minutes, is the difference
+        between working and never working.
+
+        Default False — a provider that is not ready and claims no connect window is
+        simply not ready.
+        """
+        return False
+
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         """

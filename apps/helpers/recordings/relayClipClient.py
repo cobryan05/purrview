@@ -18,8 +18,6 @@ from typing import Any, Dict
 
 import relay_buffer_client
 
-from apps.helpers.apiCall import LONG_TIMEOUT
-
 logger = logging.getLogger(__name__)
 
 

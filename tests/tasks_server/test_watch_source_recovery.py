@@ -309,3 +309,85 @@ class TestFormatDuration:
 
     def test_a_negative_duration_does_not_render_as_nonsense(self):
         assert _format_duration(-5) == "0s"
+
+
+class TestConnectingIsNotFailing:
+    """A camera that is slow to come up must not be treated as one that is broken.
+
+    An RTSP camera behind a relay can take two or three minutes from cold. Before
+    this distinction existed, the watcher saw "no frames", counted a failure, widened
+    the backoff, declared the source failed at two minutes, and — worst of all — tore
+    the reader down and rebuilt it on every retry, so the three minutes it needed
+    never elapsed uninterrupted. A camera slower than the retry interval could
+    reconnect forever without ever once connecting.
+    """
+
+    def test_connecting_does_not_count_as_a_failure(self):
+        health = SourceHealth()
+
+        health.record_connecting(100.0)
+
+        assert health.consecutive_failures == 0, "a connect must not widen the backoff"
+        assert health.state(100.0) == "connecting"
+
+    def test_a_long_connect_is_never_reported_failed(self):
+        """Coming up can legitimately outlast FAILED_AFTER_S. Reporting a camera as
+        failed while it is in the middle of successfully connecting is how a health
+        signal teaches people to ignore it."""
+        health = SourceHealth()
+        health.record_connecting(0.0)
+
+        later = SourceHealth.FAILED_AFTER_S * 3
+        health.record_connecting(later)
+
+        assert not health.is_failed(later)
+        assert health.state(later) == "connecting"
+
+    def test_connecting_polls_often_rather_than_backing_off(self):
+        """A camera that came up two seconds ago must not wait out a failure backoff
+        before anyone looks at it."""
+        health = SourceHealth()
+
+        health.record_connecting(100.0)
+
+        assert health.next_attempt_at == pytest.approx(100.0 + SourceHealth.CONNECT_POLL_S)
+        assert health.next_attempt_at < 100.0 + SourceHealth.BACKOFF_BASE_S
+
+    def test_a_real_failure_supersedes_a_connect(self):
+        health = SourceHealth()
+        health.record_connecting(0.0)
+
+        health.record_failure(10.0, "stream gone")
+
+        assert health.connecting is False
+        assert health.consecutive_failures == 1
+        assert health.state(10.0) == "reconnecting"
+
+    def test_a_connect_that_never_completes_eventually_reports_failed(self):
+        """Patience is bounded. Once the provider stops calling itself connecting, the
+        ordinary failure path takes over and the downtime already accrued applies."""
+        health = SourceHealth()
+        health.record_connecting(0.0)
+        health.record_failure(SourceHealth.FAILED_AFTER_S + 1, "never came up")
+
+        assert health.is_failed(SourceHealth.FAILED_AFTER_S + 1)
+
+    def test_a_successful_frame_clears_the_connecting_state(self):
+        health = SourceHealth()
+        health.record_connecting(0.0)
+
+        health.record_success(5.0)
+
+        assert health.connecting is False
+        assert health.state(5.0) == "ok"
+
+    def test_the_label_says_connecting_not_failing(self):
+        from apps.tasks_server.tasks._watch_pipeline import WatchPipeline
+
+        pipeline = _pipeline()
+        pipeline.health.record_connecting(0.0)
+
+        label = WatchPipeline._health_label(pipeline, now=90.0)
+
+        assert "connecting" in label
+        assert "failed" not in label

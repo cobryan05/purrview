@@ -756,12 +756,20 @@ class StreamWatcherTask(Task):
         now = time.monotonic()
         pipeline.schedule_next(now)
 
-        # A source that has already failed gets its connection rebuilt before anything
-        # else is asked of it. Without this the retry was theatre: the provider gives
-        # up on its own stream after a few frameless reads and returns None from then
-        # on, so the watcher's backoff was re-asking a reader that had permanently
-        # stopped trying, forever, at ever-longer intervals.
-        if not pipeline.health.healthy:
+        provider = pipeline.provider
+        if not provider.is_ready():
+            # Not ready splits two ways, and they want opposite treatment.
+            if provider.is_connecting():
+                # Coming up. Leave it entirely alone — an RTSP camera behind a relay
+                # can take minutes from cold, and rebuilding a reader mid-handshake
+                # restarts that clock rather than hurrying it. Poll, do not touch.
+                pipeline.health.record_connecting(now)
+                return
+
+            # Out of its connect window and still silent: genuinely broken, so rebuild
+            # it. Without this the retry was theatre — the provider gives up on its own
+            # stream after a few frameless reads and returns None from then on, so the
+            # backoff was re-asking a reader that had permanently stopped trying.
             if not await self._reconnect_source(pipeline, now):
                 return
 

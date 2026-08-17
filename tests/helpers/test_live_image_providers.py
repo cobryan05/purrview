@@ -91,6 +91,21 @@ class FakeFfmpegStreamer:
         self.astop_calls += 1
 
 
+class _NotYetReadyStreamer(FakeFfmpegStreamer):
+    """A reader that has been spawned but whose source has not come up yet.
+
+    The state a slow RTSP camera sits in for minutes: the process exists, ffmpeg is
+    retrying, and no geometry has been reported. Indistinguishable from a dead source
+    without the connect grace, which is the whole point.
+    """
+
+    def metadata_ready(self) -> bool:
+        return False
+
+    async def wait_for_metadata(self) -> None:
+        await asyncio.sleep(3600)
+
+
 def _frame_bytes(fill: int, size: int = 12) -> bytes:
     return bytes([fill]) * size
 
@@ -521,13 +536,103 @@ class TestFfmpegImageProviderReconnect:
 
         assert provider.is_ready() is False, "a source that has not come up is not ready"
 
-    async def test_a_provider_that_never_started_cannot_reconnect(self):
-        """There is nothing to rebuild against — only a full start() recovers this."""
+    async def test_a_provider_that_never_started_falls_back_to_a_full_start(self, monkeypatch):
+        """start() failing is the ordinary way a slow camera begins life — it misses
+        the relay-readiness window. If reconnect could not recover that, the source
+        would be permanently dead for the rest of the run."""
         provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        started = []
+        monkeypatch.setattr(
+            ffmpeg_provider_module,
+            "FFmpegStreamerIn",
+            lambda url, **kw: started.append(url) or FakeFfmpegStreamer([]),
+        )
 
-        with pytest.raises(RuntimeError):
-            await provider.reconnect()
+        await provider.reconnect()
+
+        assert started == ["rtsp://cam.invalid/stream"], "a full start() must be attempted"
 
     async def test_is_ready_is_false_without_a_stream(self):
         provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
         assert provider.is_ready() is False
+
+
+class TestFfmpegImageProviderConnectGrace:
+    """A camera that is slow to come up must not be torn down mid-handshake.
+
+    An RTSP camera behind a relay can take two or three minutes from cold, and
+    MediaMTX retries the source in the background throughout. Before the grace
+    existed, the watcher saw "not ready", called it broken, and rebuilt the reader —
+    restarting the clock. A camera slower than the retry interval could therefore
+    reconnect forever without ever once connecting.
+    """
+
+    async def test_a_freshly_started_reader_is_connecting_not_broken(self, monkeypatch):
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = _NotYetReadyStreamer([])
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._stream_started_at = 100.0
+        monkeypatch.setattr(provider, "_now", lambda: 101.0)
+
+        assert provider.is_ready() is False
+        assert provider.is_connecting() is True
+
+    async def test_reconnect_leaves_a_connecting_reader_alone(self, monkeypatch):
+        """The core regression: rebuilding does not hurry a handshake, it restarts it."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        streamer = _NotYetReadyStreamer([])
+        provider._stream = streamer
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._stream_started_at = 100.0
+        # Well inside the grace, and far beyond any failure backoff.
+        monkeypatch.setattr(provider, "_now", lambda: 100.0 + 120.0)
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: FakeFfmpegStreamer([]))
+
+        await provider.reconnect()
+
+        assert streamer.astop_calls == 0, "a connecting reader must not be torn down"
+        assert provider._stream is streamer, "and must not be replaced"
+
+    async def test_a_reader_past_the_grace_is_rebuilt(self, monkeypatch):
+        """Patience is bounded — a stream that never arrives is eventually broken."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        streamer = _NotYetReadyStreamer([])
+        provider._stream = streamer
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._stream_started_at = 100.0
+        monkeypatch.setattr(provider, "_now", lambda: 100.0 + provider.CONNECT_GRACE_S + 1)
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: FakeFfmpegStreamer([]))
+
+        assert provider.is_connecting() is False
+        await provider.reconnect()
+
+        assert streamer.astop_calls == 1
+        assert provider._stream is not streamer
+
+    async def test_a_connected_reader_is_not_connecting(self):
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = FakeFfmpegStreamer([])  # metadata_ready() is True
+        provider._stream_started_at = 0.0
+
+        assert provider.is_ready() is True
+        assert provider.is_connecting() is False
+
+    async def test_the_grace_is_long_enough_for_a_real_camera(self):
+        """Two to three minutes is normal from cold; the window has to clear that
+        with room, or the fix only moves the cliff."""
+        assert FfmpegImageProvider.CONNECT_GRACE_S >= 180.0
+
+    async def test_each_rebuild_gets_a_full_window(self, monkeypatch):
+        """Otherwise the second attempt inherits the first one's elapsed time and is
+        declared broken before it has had a chance."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = _NotYetReadyStreamer([])
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._stream_started_at = 0.0
+        monkeypatch.setattr(provider, "_now", lambda: 1000.0)
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: _NotYetReadyStreamer([]))
+
+        await provider.reconnect()
+
+        assert provider._stream_started_at == 1000.0
+        assert provider.is_connecting() is True

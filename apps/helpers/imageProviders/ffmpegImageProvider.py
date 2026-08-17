@@ -10,7 +10,7 @@ from typing import Any, Optional, Tuple
 import numpy as np
 
 from apps import APPS, APPS_CONFIG
-from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
+from apps.helpers.apiCall import bind_default_timeout
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 from apps.helpers.streams.ingest import resolve_ingest_tier
@@ -46,6 +46,16 @@ class FfmpegImageProvider(ImageProvider):
     # stops yielding data (EOF, dead source, etc.) can't spin astop()/astart() forever.
     _MAX_STREAM_RESTARTS = 3
     _RESTART_BACKOFF = 0.5
+
+    # How long a freshly-started reader is allowed to be silent before it counts as
+    # broken rather than still connecting.
+    #
+    # Generous because connecting genuinely is slow: an RTSP camera behind a relay can
+    # take two or three minutes to come up from cold, and MediaMTX retries the source
+    # in the background the whole time. Tearing the reader down before that finishes
+    # does not hurry it — it resets the attempt, and a short grace produces a source
+    # that reconnects forever and never once connects.
+    CONNECT_GRACE_S: float = 300.0
 
     # Injectable seams for tests (patch on the class/instance instead of the global
     # asyncio/time modules, which are shared process-wide and unsafe to monkeypatch
@@ -99,6 +109,10 @@ class FfmpegImageProvider(ImageProvider):
         #: Where the reader reads from, learned in start(). reconnect() rebuilds the
         #: reader against it without re-running the lease handshake.
         self._stream_url: str = ""
+        #: When the current reader was spawned, for the connect grace. Reset on every
+        #: rebuild, so each attempt gets a full window rather than inheriting the
+        #: elapsed time of the one before it.
+        self._stream_started_at: Optional[float] = None
         self._video_path: str = video_path.strip()
         self._ffmpeg_args: dict = output_args
         self._min_capture_interval: float = min_capture_interval
@@ -168,6 +182,8 @@ class FfmpegImageProvider(ImageProvider):
                 # whole lease handshake to rediscover where to read from.
                 self._stream_url = stream_url
                 self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
+
+                self._stream_started_at = self._now()
                 await self._stream.astart()
             except BaseException:
                 await self._release_lease_quietly()
@@ -179,6 +195,8 @@ class FfmpegImageProvider(ImageProvider):
 
         self._stream_url = self._video_path
         self._stream = FFmpegStreamerIn(self._video_path, output_args=self._ffmpeg_args)
+
+        self._stream_started_at = self._now()
         await self._stream.astart()
 
     async def reconnect(self) -> None:
@@ -199,17 +217,30 @@ class FfmpegImageProvider(ImageProvider):
         source that is genuinely down would otherwise block this call for the full
         metadata timeout — and the caller servicing several cameras from one loop pays
         that stall on all of them.
+
+        A reader still inside its connect grace is left strictly alone. Rebuilding one
+        that is mid-handshake does not hurry it up, it restarts it — and a camera that
+        takes minutes to come up would then be reconnected forever without ever once
+        connecting.
         """
+        if self.is_connecting():
+            return
+
         if self._stream is not None:
             stream, self._stream = self._stream, None
             await stream.astop()
 
         if not self._stream_url:
-            # start() never got far enough to learn where to read from, so there is no
-            # reader to rebuild — only a full start() can recover this one.
-            raise RuntimeError("Cannot reconnect a provider that never started")
+            # start() never learned where to read from, which means it failed before
+            # getting that far — a slow camera missing the relay-readiness window is
+            # the ordinary way. A full start() is the only thing that can recover it,
+            # and it is safe to repeat: a failed start already handed its lease back.
+            await self.start()
+            return
 
         self._stream = FFmpegStreamerIn(self._stream_url, output_args=self._ffmpeg_args)
+
+        self._stream_started_at = self._now()
         await self._stream.astart()
         self._buffer = b""
         # Re-read on the new stream rather than trusting the old geometry: a camera can
@@ -219,6 +250,20 @@ class FfmpegImageProvider(ImageProvider):
         # The inner per-call restart budget is spent; this attempt is the caller's
         # retry, so it starts with a full one.
         self._restart_count = 0
+
+    def is_connecting(self) -> bool:
+        """True while a reader is up but hasn't produced geometry yet, within grace.
+
+        The distinction the caller needs: not-ready means either "coming up" or
+        "broken", and those want opposite treatment — patience versus a rebuild.
+        Without it a slow camera is indistinguishable from a dead one, and gets
+        restarted every retry until someone notices it never works.
+        """
+        if self._stream is None or self._stream_started_at is None:
+            return False
+        if self._stream.metadata_ready():
+            return False
+        return (self._now() - self._stream_started_at) < self.CONNECT_GRACE_S
 
     def is_ready(self) -> bool:
         """True once ffmpeg has reported geometry — i.e. the source is actually there."""
