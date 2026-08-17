@@ -48,6 +48,7 @@ import { createCanvasInstance } from '/app-static/js/app/image-tagging/canvas/in
 import { selectBboxView } from '/app-static/js/app/image-tagging/canvas/interaction.js';
 import { next_image, prev_image } from '/app-static/js/app/image-tagging/files.js';
 import { saveAnnotations, seedRuntimeBboxes } from '/app-static/js/app/image-tagging/canvas/image.js';
+import { registerCanvasAction } from '/app-static/js/app/image-tagging/canvasActions.js';
 import { createInferencePanel } from '/app-static/js/app/image-tagging/inferencePanel.js';
 import {
   wireInferenceRunner,
@@ -3310,6 +3311,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   let unsubTabRules    = () => {};
   let unsubBboxChanged = () => {};
   let unsubInference   = () => {};
+  let unregisterSaveAction = () => {};
 
   try {
     instance = await createCanvasInstance(canvasWrap, { tool: 'select' });
@@ -3588,6 +3590,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     if (unsubNavLoad) unsubNavLoad();
     unsubTabRules();
     unsubInference();
+    unregisterSaveAction();
     sidebarPanelsHandle.destroy();
     inferencePanelHandle.destroy();
     toolbarHandle.destroy();
@@ -3705,8 +3708,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   _canvasEscClose = () => { if (!closeBtn.disabled) tryClose(); };
   registerEscHandler(_canvasEscClose);
 
-  // ── Save (without closing) button ─────────────────────────────────
-  saveOnlyBtn.addEventListener('click', async () => {
+  // ── Save (without closing) ────────────────────────────────────────
+  // Named rather than inline: the Save hotkey fires this same path (registered
+  // as this runtime's 'save' action below), so keypress and click cannot drift
+  // apart — both go through _persist, both restore the button states, and both
+  // broadcast under the same conditions.
+  async function _doSaveOnly() {
+    if (saveOnlyBtn.disabled) return;      // a save (or a close) is already in flight
     if (!instance.runtime.isDirty) return; // nothing to save — button is dimmed
     _setAllButtonsDisabled(true);
     saveOnlyBtn.textContent = 'Saving…';
@@ -3732,7 +3740,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
         bboxes: currentBboxesMap,
       });
     }
-  });
+  }
+
+  saveOnlyBtn.addEventListener('click', _doSaveOnly);
+  unregisterSaveAction = registerCanvasAction(instance.runtime.id, 'save', _doSaveOnly);
 
   // ── Save & Close button ────────────────────────────────────────────
   saveBtn.addEventListener('click', async () => {

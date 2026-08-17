@@ -26,6 +26,8 @@ export const FIXED_ACTIONS = [
   { id: 'action:redo', label: 'Redo' },
   { id: 'action:resetZoom', label: 'Reset zoom' },
   { id: 'action:enhance', label: 'Cycle image enhancement' },
+  { id: 'action:save', label: 'Save annotations' },
+  { id: 'action:runInference', label: 'Run inference' },
 ];
 
 const DEFAULT_BINDINGS = {
@@ -41,7 +43,37 @@ const DEFAULT_BINDINGS = {
   'shift+backspace': 'action:deleteImage',
   '0': 'action:resetZoom',
   'e': 'action:enhance',
+  's': 'action:save',
+  'i': 'action:runInference',
 };
+
+/**
+ * Add defaults for actions the stored map has never heard of.
+ *
+ * Bindings are persisted whole, so an action added to DEFAULT_BINDINGS after a
+ * user already has a saved map would otherwise arrive unbound for them — the
+ * new hotkey silently does nothing until they open the config panel. Only
+ * actions with *no* combo at all get one, and only if their default combo is
+ * still free, so a rebound or reassigned key is never disturbed.
+ *
+ * The one cost: an action the user deliberately cleared comes back the next
+ * time its default combo is free. Rebinding it to something else — or to a
+ * combo they never press — sticks, which is the practical way to opt out.
+ *
+ * @param {Record<string,string>} stored - mutated in place
+ * @returns {boolean} true if anything was added
+ */
+function _mergeNewDefaults(stored) {
+  const alreadyBound = new Set(Object.values(stored));
+  let changed = false;
+  for (const [combo, action] of Object.entries(DEFAULT_BINDINGS)) {
+    if (alreadyBound.has(action)) continue;      // user has a key for it already
+    if (stored[combo] !== undefined) continue;   // default combo is taken by something else
+    stored[combo] = action;
+    changed = true;
+  }
+  return changed;
+}
 
 /** @type {Record<string,string>|null} */
 let _bindings = null;
@@ -90,17 +122,21 @@ export async function initHotkeyBindings() {
       const dbValue = await getSetting(DB_SETTING_KEY);
       if (dbValue !== null) {
         _bindings = JSON.parse(dbValue);
+        const gained = _mergeNewDefaults(_bindings);
         // Mirror to localStorage so next startup is instant even if DB is slow.
         _saveToLocalStorage();
+        if (gained) _persistToDb();
       } else {
         // DB has no entry yet: load from localStorage (migration) or defaults.
         _bindings = _loadFromLocalStorage();
+        _mergeNewDefaults(_bindings);
         // Persist to DB so next load comes from there.
         _persistToDb();
       }
     } catch (err) {
       console.warn('Failed to load hotkeys from DB, using localStorage fallback:', err);
       _bindings = _loadFromLocalStorage();
+      _mergeNewDefaults(_bindings);
     }
   })();
 
@@ -113,6 +149,7 @@ function _ensureLoaded() {
   if (!_bindings) {
     // Fallback for callers that haven't awaited init (e.g. first keydown before init).
     _bindings = _loadFromLocalStorage();
+    _mergeNewDefaults(_bindings);
   }
   return _bindings;
 }

@@ -9,6 +9,7 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { sessionPrefs } from '/app-static/js/shared/prefs.js';
 import { clearUnmatched, verifyAllBboxes } from './canvas/image.js';
+import { registerCanvasAction } from './canvasActions.js';
 
 const SESSION_SELECTED_DETECTORS_KEY = 'wtch_inference_selected_detectors';
 const SESSION_SELECTED_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
@@ -497,6 +498,14 @@ export async function createInferencePanel(runtime, container) {
     open();
   }
 
+  // ── Hotkey hook ───────────────────────────────────────────────────
+  // The Run hotkey has to reach *this* panel's selection, threshold and
+  // replace-flag, all of which live in this closure — so the panel registers
+  // itself for the runtime it belongs to and drops the registration on destroy.
+  const unregisterRunAction = registerCanvasAction(runtime.id, 'runInference', () => {
+    handleRun().catch(err => Logger.error('Run inference failed:', err));
+  });
+
   // ── Initial load ──────────────────────────────────────────────────
   _loadPersistedSelection();
   try {
@@ -513,6 +522,7 @@ export async function createInferencePanel(runtime, container) {
 
   return {
     destroy() {
+      unregisterRunAction();
       container.innerHTML = '';
       container.classList.remove('inference-panel');
     },

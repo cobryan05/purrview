@@ -149,6 +149,32 @@ class TestDefaultBindings:
         }""")
         assert "ctrl+z" in result
 
+    def test_s_maps_to_save(self, page: Page, base_url: str):
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return actionForCombo('s');
+        }""")
+        assert result == "action:save"
+
+    def test_i_maps_to_run_inference(self, page: Page, base_url: str):
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { actionForCombo } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return actionForCombo('i');
+        }""")
+        assert result == "action:runInference"
+
+    def test_save_and_inference_listed_as_configurable_actions(self, page: Page, base_url: str):
+        """Both appear in FIXED_ACTIONS, which is what the config panel renders."""
+        goto(page, base_url)
+        result = page.evaluate("""async () => {
+            const { FIXED_ACTIONS } = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            return FIXED_ACTIONS.map(a => a.id);
+        }""")
+        assert "action:save" in result
+        assert "action:runInference" in result
+
     def test_delete_key_maps_to_delete(self, page: Page, base_url: str):
         goto(page, base_url)
         result = page.evaluate("""async () => {
@@ -156,6 +182,60 @@ class TestDefaultBindings:
             return actionForCombo('delete');
         }""")
         assert result == "action:delete"
+
+
+# ---------------------------------------------------------------------------
+# New defaults merged into an already-stored binding map
+# ---------------------------------------------------------------------------
+
+
+class TestNewDefaultsMerged:
+    """Bindings are persisted whole, so an action added to DEFAULT_BINDINGS after
+    a user already has a saved map must be merged in on load — otherwise the new
+    hotkey silently does nothing for every existing user."""
+
+    STORAGE_KEY = "ww_hotkey_bindings"
+
+    def _seed(self, page: Page, mapping: dict):
+        import json
+
+        page.add_init_script(
+            f"localStorage.setItem({json.dumps(self.STORAGE_KEY)}, {json.dumps(json.dumps(mapping))})"
+        )
+
+    def _init_and_read(self, page: Page, combos: list):
+        return page.evaluate(
+            """async (combos) => {
+            const m = await import('/app-static/js/app/image-tagging/hotkeyBindings.js');
+            await m.initHotkeyBindings();
+            const out = {};
+            for (const c of combos) out[c] = m.actionForCombo(c);
+            return out;
+        }""",
+            combos,
+        )
+
+    def test_stored_map_without_the_new_actions_gains_them(self, page: Page, base_url: str):
+        self._seed(page, {"v": "action:select", "ctrl+z": "action:undo"})
+        goto(page, base_url)
+        result = self._init_and_read(page, ["s", "i", "v"])
+        assert result["s"] == "action:save"
+        assert result["i"] == "action:runInference"
+        assert result["v"] == "action:select"  # existing bindings untouched
+
+    def test_default_combo_already_used_is_not_stolen(self, page: Page, base_url: str):
+        self._seed(page, {"s": "action:select"})
+        goto(page, base_url)
+        result = self._init_and_read(page, ["s"])
+        assert result["s"] == "action:select"
+
+    def test_action_bound_to_another_key_keeps_that_key(self, page: Page, base_url: str):
+        """A user who rebound Save to K must not also get S."""
+        self._seed(page, {"k": "action:save"})
+        goto(page, base_url)
+        result = self._init_and_read(page, ["k", "s"])
+        assert result["k"] == "action:save"
+        assert result["s"] is None
 
 
 # ---------------------------------------------------------------------------

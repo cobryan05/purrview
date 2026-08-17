@@ -1,4 +1,5 @@
-import { deleteSelected } from './image-tagging/canvas/image.js';
+import { deleteSelected, saveAnnotations } from './image-tagging/canvas/image.js';
+import { getCanvasAction } from './image-tagging/canvasActions.js';
 import { resetCanvasZoom } from './image-tagging/canvas/manager.js';
 import { cycleCanvasEnhancement } from './image-tagging/canvas/enhance.js';
 import { setTool } from './image-tagging/canvas/tools.js';
@@ -46,6 +47,20 @@ function dispatchAction(action, runtime) {
     case 'action:redo': runtime.redo(); return true;
     case 'action:resetZoom': resetCanvasZoom(runtime.canvas); return true;
     case 'action:enhance': cycleCanvasEnhancement(runtime); return true;
+    // Save goes through whatever the surrounding editor means by "persist" when
+    // it registered one (the review modal's Save button, which also handles its
+    // own button states and broadcast), falling back to the plain DB save the
+    // main canvas toolbar uses.
+    case 'action:save': (getCanvasAction(runtime.id, 'save') ?? saveAnnotations)(runtime); return true;
+    // Only handled where an inference panel is mounted — with no panel there is
+    // no model selection to run, so report unhandled rather than preventDefault
+    // a key that did nothing (same reasoning as prev/nextImage above).
+    case 'action:runInference': {
+      const run = getCanvasAction(runtime.id, 'runInference');
+      if (!run) return false;
+      run(runtime);
+      return true;
+    }
     default: return false;
   }
 }

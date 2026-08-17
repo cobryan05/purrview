@@ -12,6 +12,8 @@ Default bindings (from hotkeyBindings.js):
   r            → action:bbox
   delete       → action:delete
   backspace    → action:delete
+  s            → action:save
+  i            → action:runInference
 
 Run with:
     pytest tests/playwright/test_canvas_hotkeys.py -p no:xdist --override-ini="addopts=" -v
@@ -417,3 +419,70 @@ class TestHotkeysBlockedWhileDialogOpen:
 
         count = page.evaluate("""() => document.querySelectorAll('.app-modal-overlay').length""")
         assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Save ('s') and Run-inference ('i')
+# ---------------------------------------------------------------------------
+
+
+class TestSaveAndInferenceHotkeys:
+    """Both actions are implemented outside the runtime — the surrounding editor
+    (canvas modal) registers a save handler and the inference panel registers a
+    run handler, keyed by runtime id. The hotkeys must reach those handlers, and
+    'i' must stay unhandled where no inference panel is mounted."""
+
+    def _register(self, page: Page, name: str) -> None:
+        page.evaluate(
+            """async (name) => {
+            const { registerCanvasAction } = await import('/app-static/js/app/image-tagging/canvasActions.js');
+            window._testCalls = window._testCalls ?? [];
+            window._testUnregister = registerCanvasAction(
+                window._testRuntime.id, name, () => window._testCalls.push(name),
+            );
+        }""",
+            name,
+        )
+
+    def test_s_fires_the_registered_save_action(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        self._register(page, "save")
+
+        page.keyboard.press("s")
+
+        assert page.evaluate("""() => window._testCalls""") == ["save"]
+
+    def test_i_fires_the_registered_run_inference_action(self, page: Page, base_url: str):
+        _setup_runtime(page, base_url)
+        self._register(page, "runInference")
+
+        page.keyboard.press("i")
+
+        assert page.evaluate("""() => window._testCalls""") == ["runInference"]
+
+    def test_i_is_inert_with_no_inference_panel(self, page: Page, base_url: str):
+        """No registered handler: the key must not throw and must not be
+        preventDefault()ed, since nothing acted on it."""
+        _setup_runtime(page, base_url)
+        page.evaluate("""() => {
+            window._testDefaultPrevented = null;
+            document.addEventListener('keydown', e => {
+                window._testDefaultPrevented = e.defaultPrevented;
+            });
+        }""")
+
+        page.keyboard.press("i")
+
+        assert page.evaluate("""() => window._testDefaultPrevented""") is False
+
+    def test_handler_is_dropped_after_unregister(self, page: Page, base_url: str):
+        """A closed panel's handler must not keep receiving keys. Uses
+        runInference rather than save: with no handler, save falls back to a real
+        DB write, which this fixture's throwaway image has no business doing."""
+        _setup_runtime(page, base_url)
+        self._register(page, "runInference")
+        page.evaluate("""() => window._testUnregister()""")
+
+        page.keyboard.press("i")
+
+        assert page.evaluate("""() => window._testCalls""") == []
