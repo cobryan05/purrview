@@ -26,6 +26,7 @@ from db_client.models.reconcile_image_payload import ReconcileImagePayload
 from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
 from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.hashUtils import DEFAULT_BBOX_HASH_SIZE, DEFAULT_IMAGE_HASH_SIZE
 from apps.helpers.logUtils import LOG_LEVEL
 
 from .Registry import register_task
@@ -328,8 +329,8 @@ class DatabaseMaintenanceTask(Task):
     ) -> dict:
         """Compute perceptual hashes concurrently, then rebuild the BK-tree index."""
         image_hash_size, bbox_hash_size = await asyncio.gather(
-            self._read_int_setting(settings_api, "dedup_image_hash_size", 8),
-            self._read_int_setting(settings_api, "dedup_bbox_hash_size", 16),
+            self._read_int_setting(settings_api, "dedup_image_hash_size", DEFAULT_IMAGE_HASH_SIZE),
+            self._read_int_setting(settings_api, "dedup_bbox_hash_size", DEFAULT_BBOX_HASH_SIZE),
         )
         image_hex_len = image_hash_size * image_hash_size // 4
         bbox_hex_len = bbox_hash_size * bbox_hash_size // 4

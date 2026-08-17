@@ -28,7 +28,7 @@ import numpy as np
 import pybktree
 
 from apps.helpers.db.db_client import DbClient
-from apps.helpers.hashUtils import hamming
+from apps.helpers.hashUtils import DEFAULT_BBOX_HASH_SIZE, DEFAULT_IMAGE_HASH_SIZE, hamming
 
 # ── Byte-level popcount LUT (always available) ────────────────────────────────
 # Used directly for arbitrary-width hash arrays in rank_images_by_diversity,
@@ -205,8 +205,8 @@ class HashIndex:
     def __init__(
         self,
         db_client: DbClient,
-        image_hash_size: int = 8,
-        bbox_hash_size: int = 16,
+        image_hash_size: int = DEFAULT_IMAGE_HASH_SIZE,
+        bbox_hash_size: int = DEFAULT_BBOX_HASH_SIZE,
     ) -> None:
         self._db_client = db_client
         self._image_hash_size = image_hash_size

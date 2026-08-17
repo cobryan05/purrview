@@ -14,7 +14,7 @@
  * Exported helpers (for settings page / context-menu providers):
  *   getImageHashMax()          → Promise<number>  (n² for current hash size n)
  *   getBboxHashMax()           → Promise<number>
- *   getImageDefaultThreshold() → Promise<number>  (stored setting or 20% of max)
+ *   getImageDefaultThreshold() → Promise<number>  (stored setting, else the kind default)
  *   getBboxDefaultThreshold()  → Promise<number>
  */
 
@@ -29,23 +29,35 @@ import { getSetting } from '/app-static/js/shared/api/settings.js';
 import { pageStartIdx, buildCountControl, buildSwitchModeButton } from '/app-static/js/ui/searchUtils.js';
 import { openDissimilarImagesModal, openDissimilarBboxesModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { toast } from '/app-static/js/ui/utils/logging.js';
+import {
+  DEFAULT_BBOX_HASH_SIZE,
+  DEFAULT_IMAGE_HASH_SIZE,
+  defaultThresholdFor,
+  hashMaxFor,
+} from '/app-static/js/shared/dedupDefaults.js';
 
 /** @returns {Promise<number>} */
 export async function getImageHashMax() {
   const v = await getSetting('dedup_image_hash_size').catch(() => null);
-  return (parseInt(v, 10) || 8) ** 2;
+  return hashMaxFor(parseInt(v, 10) || DEFAULT_IMAGE_HASH_SIZE);
 }
 
 /** @returns {Promise<number>} */
 export async function getBboxHashMax() {
   const v = await getSetting('dedup_bbox_hash_size').catch(() => null);
-  return (parseInt(v, 10) || 16) ** 2;
+  return hashMaxFor(parseInt(v, 10) || DEFAULT_BBOX_HASH_SIZE);
 }
 
 // ── Default threshold helpers ──────────────────────────────────────────────────
 
-/** Read stored threshold setting clamped to max, falling back to 20% of max. */
-async function _readThreshold(key, max) {
+/**
+ * Read stored threshold setting clamped to max, falling back to the kind's
+ * default (rescaled if the hash size in play isn't the one it was chosen for).
+ * @param {string} key
+ * @param {number} max
+ * @param {'image'|'bbox'} kind
+ */
+async function _readThreshold(key, max, kind) {
   try {
     const stored = await getSetting(key);
     if (stored !== null && stored !== '') {
@@ -53,7 +65,7 @@ async function _readThreshold(key, max) {
       if (!isNaN(n) && n >= 1) return Math.min(n, max);
     }
   } catch (_) {}
-  return Math.round(max * 0.2);
+  return Math.min(defaultThresholdFor(kind, Math.round(Math.sqrt(max))), max);
 }
 
 /**
@@ -62,7 +74,7 @@ async function _readThreshold(key, max) {
  * @returns {Promise<number>}
  */
 export async function getImageDefaultThreshold(hashMax = null) {
-  return _readThreshold('dedup_image_threshold', hashMax ?? await getImageHashMax());
+  return _readThreshold('dedup_image_threshold', hashMax ?? await getImageHashMax(), 'image');
 }
 
 /**
@@ -71,7 +83,7 @@ export async function getImageDefaultThreshold(hashMax = null) {
  * @returns {Promise<number>}
  */
 export async function getBboxDefaultThreshold(hashMax = null) {
-  return _readThreshold('dedup_bbox_threshold', hashMax ?? await getBboxHashMax());
+  return _readThreshold('dedup_bbox_threshold', hashMax ?? await getBboxHashMax(), 'bbox');
 }
 
 // ── Shared slider builder ──────────────────────────────────────────────────────
@@ -145,7 +157,7 @@ export async function openSimilarImagesModal({ imageUuids, threshold = null, can
 
   const candidateSet = candidateUuids ? new Set(candidateUuids) : null;
   const sliderMax = await getImageHashMax();
-  let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax);
+  let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_image_threshold', sliderMax, 'image');
   let _count = 100;
 
   // Sorted match list — [{imageUuid, distance}] ascending by distance.
@@ -263,7 +275,7 @@ export async function openSimilarBboxesModal({ bboxes, threshold = null }) {
   toast('Searching for similar bboxes…', 2000, 'info');
 
   const sliderMax = await getBboxHashMax();
-  let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax);
+  let _threshold = threshold !== null ? threshold : await _readThreshold('dedup_bbox_threshold', sliderMax, 'bbox');
   let _count = 100;
 
   function _runQuery(t) {

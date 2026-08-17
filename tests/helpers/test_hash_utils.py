@@ -128,15 +128,23 @@ class TestHamming:
         assert hamming(h_black, h_white) > 0
 
     def test_checkerboard_vs_gradient_has_large_distance(self):
-        """Images with very different frequency content have a large pHash distance."""
+        """Images with very different frequency content have a large pHash distance.
+
+        Pinned to hash_size=8 rather than riding on the default: "> 10 bits
+        apart" is calibrated against a 64-bit hash. Over a wider hash these
+        synthetic 64x64 patterns put nearly all their energy in a handful of
+        low-frequency coefficients, so the raw bit count *falls* while the
+        images stay just as different — a threshold in absolute bits only means
+        something alongside the width it was chosen for.
+        """
         # Checkerboard — maximum high-frequency energy
         checker = np.indices((64, 64)).sum(axis=0) % 2  # 0/1 mask
         checker_bgr = (checker[:, :, None] * 255).astype(np.uint8).repeat(3, axis=2)
         # Horizontal gradient — smooth, mostly low-frequency
         grad = np.tile(np.linspace(0, 255, 64).astype(np.uint8), (64, 1))
         grad_bgr = grad[:, :, None].repeat(3, axis=2)
-        h_checker = phash_from_numpy(checker_bgr)
-        h_grad = phash_from_numpy(grad_bgr)
+        h_checker = phash_from_numpy(checker_bgr, hash_size=8)
+        h_grad = phash_from_numpy(grad_bgr, hash_size=8)
         assert hamming(h_checker, h_grad) > 10
 
     def test_similar_images_have_small_distance(self):

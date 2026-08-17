@@ -22,6 +22,25 @@ from PIL import Image
 # in sync here guarantees that pre-save and post-save hashes are identical.
 PHASH_JPEG_QUALITY: int = 95
 
+# ── Deduplication defaults ───────────────────────────────────────────────────
+#
+# The values used when the corresponding ``dedup_*`` DB setting is absent — i.e.
+# on a fresh install, or before anyone has opened Settings → Deduplication.
+# They were previously spelled as bare literals in seven places across
+# db_server, tasks_server and the frontend; a mismatch between any two of them
+# means phashes computed at one width being compared against an index built at
+# another, which `HashIndex._validate_*_phash` rejects outright.
+#
+# Thresholds are Hamming distances over a hash_size² -bit hash, so they only
+# make sense paired with the sizes above: 5/65536 bits apart is near-identical
+# (image dedup wants that), while the looser bbox figure is tuned for "find
+# similar crops" searches rather than duplicate rejection.  Mirrored on the
+# frontend in `static/js/shared/dedupDefaults.js` — keep the two in sync.
+DEFAULT_IMAGE_HASH_SIZE: int = 16
+DEFAULT_BBOX_HASH_SIZE: int = 16
+DEFAULT_IMAGE_THRESHOLD: int = 5
+DEFAULT_BBOX_THRESHOLD: int = 75
+
 
 def _numpy_bgr_to_pil(image_bgr: np.ndarray) -> Image.Image:
     """Convert OpenCV BGR ndarray to a PIL Image (RGB)."""
@@ -29,7 +48,7 @@ def _numpy_bgr_to_pil(image_bgr: np.ndarray) -> Image.Image:
     return Image.fromarray(rgb.astype(np.uint8))
 
 
-def phash_from_numpy(image_bgr: np.ndarray, hash_size: int = 8) -> str:
+def phash_from_numpy(image_bgr: np.ndarray, hash_size: int = DEFAULT_IMAGE_HASH_SIZE) -> str:
     """Compute pHash from an already-decoded numpy BGR array (no disk I/O).
 
     Returns the hash as a hex string.
@@ -44,7 +63,7 @@ def phash_from_numpy_crop(
     y: float,
     w: float,
     h: float,
-    hash_size: int = 16,
+    hash_size: int = DEFAULT_BBOX_HASH_SIZE,
 ) -> str:
     """Crop a normalized bbox region from a numpy BGR array and return its pHash.
 
@@ -63,7 +82,7 @@ def phash_from_numpy_crop(
     return str(imagehash.phash(pil, hash_size=hash_size))
 
 
-def compute_image_phash(image_path: Path, hash_size: int = 8) -> str:
+def compute_image_phash(image_path: Path, hash_size: int = DEFAULT_IMAGE_HASH_SIZE) -> str:
     """Read an image from disk and return its pHash as a hex string."""
     pil = Image.open(image_path).convert("RGB")
     return str(imagehash.phash(pil, hash_size=hash_size))
@@ -75,7 +94,7 @@ def compute_bbox_phash(
     y: float,
     w: float,
     h: float,
-    hash_size: int = 16,
+    hash_size: int = DEFAULT_BBOX_HASH_SIZE,
 ) -> str:
     """Crop a normalized bbox region from an image on disk and return its pHash."""
     pil_full = Image.open(image_path).convert("RGB")
@@ -104,8 +123,8 @@ def hamming(a: str, b: str) -> int:
 def compute_phashes_with_jpeg_roundtrip(
     image_bgr: np.ndarray,
     bboxes_xywh: list[tuple[float, float, float, float]],
-    image_hash_size: int = 8,
-    bbox_hash_size: int = 16,
+    image_hash_size: int = DEFAULT_IMAGE_HASH_SIZE,
+    bbox_hash_size: int = DEFAULT_BBOX_HASH_SIZE,
 ) -> tuple[str, list[str]]:
     """Compute image and bbox phashes via a JPEG round-trip at ``PHASH_JPEG_QUALITY``.
 

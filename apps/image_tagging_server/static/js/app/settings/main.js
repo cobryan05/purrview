@@ -3,6 +3,14 @@ import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import { getSetting, setSetting } from '/app-static/js/shared/api/settings.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import {
+  DEFAULT_BBOX_HASH_SIZE,
+  DEFAULT_BBOX_THRESHOLD,
+  DEFAULT_IMAGE_HASH_SIZE,
+  DEFAULT_IMAGE_THRESHOLD,
+  defaultThresholdFor,
+  hashMaxFor,
+} from '/app-static/js/shared/dedupDefaults.js';
 
 let _initialized = false;
 let _hotkeyHandle = null;
@@ -283,57 +291,60 @@ async function _buildDedupSection() {
     getSetting('dedup_bbox_threshold').catch(() => null),
   ]);
 
-  const imgN    = parseInt(imgHashStored, 10) || 8;
-  const bboxN   = parseInt(bboxHashStored, 10) || 16;
-  const imgMax  = imgN * imgN;
-  const bboxMax = bboxN * bboxN;
+  const imgN    = parseInt(imgHashStored, 10) || DEFAULT_IMAGE_HASH_SIZE;
+  const bboxN   = parseInt(bboxHashStored, 10) || DEFAULT_BBOX_HASH_SIZE;
+  const imgMax  = hashMaxFor(imgN);
+  const bboxMax = hashMaxFor(bboxN);
 
-  const _threshVal = (stored, max) => {
+  const _threshVal = (stored, max, kind) => {
     if (stored !== null && stored !== '') {
       const n = parseInt(stored, 10);
       if (!isNaN(n) && n >= 1) return Math.min(n, max);
     }
-    return Math.round(max * 0.2);
+    return Math.min(defaultThresholdFor(kind, Math.round(Math.sqrt(max))), max);
   };
 
   const { element: imgHashRow,   select: imgHashSelect  } = _buildHashSizeRow({
     key: 'dedup_image_hash_size',
     label: 'Image hash size',
-    description: 'Grid dimension n for whole-image perceptual hash (n² bits). Default: 8 → 64-bit.',
+    description: `Grid dimension n for whole-image perceptual hash (n² bits). Default: ${DEFAULT_IMAGE_HASH_SIZE} → ${hashMaxFor(DEFAULT_IMAGE_HASH_SIZE)}-bit.`,
     currentN: imgN,
   });
   const { element: imgThreshRow, input:  imgThreshInput  } = _buildThresholdRow({
     key: 'dedup_image_threshold',
     label: 'Image threshold',
-    description: 'Max Hamming distance for "find similar images" searches. Auto-set to 20% of hash range when hash size changes.',
-    currentVal: _threshVal(imgThreshStored, imgMax),
+    description: `Max Hamming distance for "find similar images" searches. Default: ${DEFAULT_IMAGE_THRESHOLD} — rescaled to keep the same selectivity when hash size changes.`,
+    currentVal: _threshVal(imgThreshStored, imgMax, 'image'),
     max: imgMax,
   });
 
   const { element: bboxHashRow,   select: bboxHashSelect  } = _buildHashSizeRow({
     key: 'dedup_bbox_hash_size',
     label: 'BBox hash size',
-    description: 'Grid dimension n for bounding-box crop perceptual hash (n² bits). Default: 16 → 256-bit.',
+    description: `Grid dimension n for bounding-box crop perceptual hash (n² bits). Default: ${DEFAULT_BBOX_HASH_SIZE} → ${hashMaxFor(DEFAULT_BBOX_HASH_SIZE)}-bit.`,
     currentN: bboxN,
   });
   const { element: bboxThreshRow, input:  bboxThreshInput  } = _buildThresholdRow({
     key: 'dedup_bbox_threshold',
     label: 'BBox threshold',
-    description: 'Max Hamming distance for "find similar bboxes" searches. Auto-set to 20% of hash range when hash size changes.',
-    currentVal: _threshVal(bboxThreshStored, bboxMax),
+    description: `Max Hamming distance for "find similar bboxes" searches. Default: ${DEFAULT_BBOX_THRESHOLD} — rescaled to keep the same selectivity when hash size changes.`,
+    currentVal: _threshVal(bboxThreshStored, bboxMax, 'bbox'),
     max: bboxMax,
   });
 
-  // When hash size changes, auto-update the paired threshold input to the 20% default
-  function _wireHashToThreshold(hashSelect, threshInput) {
+  // Changing hash size changes the bit-width the threshold is measured over, so
+  // the number in the box stops meaning what it did (75 is loose over 256 bits
+  // and impossible over 64). Reset it to this kind's default, rescaled to the
+  // new width, rather than leaving a stale figure the user has to reason about.
+  function _wireHashToThreshold(hashSelect, threshInput, kind) {
     hashSelect.addEventListener('change', () => {
-      const max = parseInt(hashSelect.value, 10) ** 2;
-      threshInput.max = String(max);
-      threshInput.value = String(Math.round(max * 0.2));
+      const n = parseInt(hashSelect.value, 10);
+      threshInput.max = String(hashMaxFor(n));
+      threshInput.value = String(defaultThresholdFor(kind, n));
     });
   }
-  _wireHashToThreshold(imgHashSelect, imgThreshInput);
-  _wireHashToThreshold(bboxHashSelect, bboxThreshInput);
+  _wireHashToThreshold(imgHashSelect, imgThreshInput, 'image');
+  _wireHashToThreshold(bboxHashSelect, bboxThreshInput, 'bbox');
 
   body.append(imgHashRow, imgThreshRow, bboxHashRow, bboxThreshRow);
   return section;

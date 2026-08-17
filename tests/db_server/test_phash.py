@@ -19,6 +19,12 @@ import pytest
 from PIL import Image
 
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
+from apps.helpers.hashUtils import DEFAULT_IMAGE_HASH_SIZE
+
+# hash_size N produces N²/4 hex chars. Derived from the constant rather than
+# written out, so these assertions follow the shipped default instead of pinning
+# whatever it happened to be when they were written.
+IMAGE_PHASH_HEX_LEN = DEFAULT_IMAGE_HASH_SIZE**2 // 4
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -91,7 +97,7 @@ class TestPhashStoredOnWrite:
         image_row = next((r for r in rows if r["uuid"] == image_uuid), None)
         assert image_row is not None
         assert image_row["phash"] is not None
-        assert len(image_row["phash"]) == 16  # hash_size=8 → 64 bits → 16 hex chars
+        assert len(image_row["phash"]) == IMAGE_PHASH_HEX_LEN
 
     async def test_bbox_phash_stored_in_db(self, db_client, written_image):
         _, bbox_uuid = written_image
@@ -288,7 +294,7 @@ class TestFindSimilarImages:
         # Use a phash of all-zeros; unlikely to match any real image
         r = await http_client.post(
             "/api/images/find-similar",
-            json={"phash": "0" * 16, "threshold": 0},
+            json={"phash": "0" * IMAGE_PHASH_HEX_LEN, "threshold": 0},
         )
         assert r.status_code == 200
         body = r.json()
@@ -484,7 +490,7 @@ class TestRecomputePhash:
         )
         phash = r.json()["imagePhash"]
         assert isinstance(phash, str)
-        assert len(phash) == 16  # default hash_size=8
+        assert len(phash) == IMAGE_PHASH_HEX_LEN
 
     async def test_recompute_returns_bbox_count(self, http_client, written_image):
         image_uuid, _ = written_image

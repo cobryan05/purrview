@@ -52,8 +52,15 @@ assert hamming(IMG_BLACK, IMG_WHITE) > 0
 
 @pytest.fixture
 def idx(db_client):
-    """Empty HashIndex not yet built from DB."""
-    return HashIndex(db_client)
+    """Empty HashIndex not yet built from DB.
+
+    Widths are pinned rather than left to the app defaults: the fixtures above
+    are built at these sizes, and these tests are about index mechanics (add /
+    find / tombstone / rebuild), not about which default the product ships. A
+    HashIndex sized differently from its inputs rejects every insert, so leaving
+    this implicit made the whole file fail the moment a default changed.
+    """
+    return HashIndex(db_client, image_hash_size=8, bbox_hash_size=16)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

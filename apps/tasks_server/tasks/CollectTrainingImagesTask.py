@@ -34,6 +34,8 @@ from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.hashUtils import (
+    DEFAULT_BBOX_HASH_SIZE,
+    DEFAULT_IMAGE_HASH_SIZE,
     PHASH_JPEG_QUALITY,
     compute_phashes_with_jpeg_roundtrip,
 )
@@ -540,8 +542,8 @@ class CollectTrainingImagesTask(Task):
             self._label_ancestry,
             self._label_meta,
         ) = await asyncio.gather(
-            self._read_int_setting(_settings_api, "dedup_image_hash_size", 8),
-            self._read_int_setting(_settings_api, "dedup_bbox_hash_size", 16),
+            self._read_int_setting(_settings_api, "dedup_image_hash_size", DEFAULT_IMAGE_HASH_SIZE),
+            self._read_int_setting(_settings_api, "dedup_bbox_hash_size", DEFAULT_BBOX_HASH_SIZE),
             build_label_ancestry_map(_labels_api),
             build_label_metadata_map(_labels_api),
         )

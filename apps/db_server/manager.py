@@ -86,6 +86,9 @@ from apps.helpers.db.types import (
 )
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.hashUtils import (
+    DEFAULT_BBOX_HASH_SIZE,
+    DEFAULT_IMAGE_HASH_SIZE,
+    DEFAULT_IMAGE_THRESHOLD,
     compute_bbox_phash,
     compute_image_phash,
     phash_from_numpy,
@@ -153,8 +156,8 @@ class Manager:
         self._files_root: Path = files_root
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
         self._config = {}
-        self._image_hash_size: int = int(os.environ.get("IMAGE_HASH_SIZE", "8"))
-        self._bbox_hash_size: int = int(os.environ.get("BBOX_HASH_SIZE", "16"))
+        self._image_hash_size: int = int(os.environ.get("IMAGE_HASH_SIZE", str(DEFAULT_IMAGE_HASH_SIZE)))
+        self._bbox_hash_size: int = int(os.environ.get("BBOX_HASH_SIZE", str(DEFAULT_BBOX_HASH_SIZE)))
         self._hash_index = HashIndex(
             db_client,
             image_hash_size=self._image_hash_size,
@@ -2014,7 +2017,7 @@ class Manager:
         """
         try:
             threshold_raw = await self._db_client.get_setting("dedup_image_threshold")
-            threshold = int(threshold_raw) if threshold_raw is not None else 5
+            threshold = int(threshold_raw) if threshold_raw is not None else DEFAULT_IMAGE_THRESHOLD
             phash = await asyncio.to_thread(compute_image_phash, path, self._hash_index.image_hash_size)
             if replaced:
                 self._hash_index.replace_image(image_uuid, phash)
