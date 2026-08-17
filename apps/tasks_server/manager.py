@@ -46,6 +46,13 @@ class Manager:
     # Retention bounds for finished instances (see apps/__init__.py). Read from the
     # module-level config at class definition rather than per-call so tests can
     # patch.object these directly, the same way they do the crash-loop knobs.
+    # How many missed heartbeats before a task this process is driving is called
+    # wedged. Matches the orphan check's threshold on purpose — the two ask the same
+    # question of the same signal and differ only in what they conclude (see
+    # _check_wedged_tasks) — and is loose enough that an ordinary slow operation
+    # between beats does not trip it.
+    _WEDGED_HEARTBEAT_INTERVALS: int = 4
+
     _RETENTION_DAYS: int = TASK_RETENTION_DAYS
     _RETENTION_MAX_COMPLETED: int = TASK_RETENTION_MAX_COMPLETED
     # Statuses a task never leaves on its own — only these are prunable.
@@ -91,6 +98,10 @@ class Manager:
         # DB instances marked "running" that this process is not driving. Sampled on
         # the worker pass so the sync get_status() stays an in-memory read.
         self._unattached_count: int = 0
+        # instance uuid → seconds since its last heartbeat, for tasks this process IS
+        # driving that have stopped progressing. See _check_wedged_tasks: reported,
+        # never acted on.
+        self._wedged_tasks: Dict[str, float] = {}
 
     def get_db_api_client(self) -> db_client.ApiClient:
         return self._db_api_client
@@ -1040,6 +1051,62 @@ class Manager:
         except Exception:
             logger.exception("Error checking stale tasks")
 
+    def _check_wedged_tasks(self) -> None:
+        """Notice running tasks this process *is* driving that have stopped progressing.
+
+        The blind spot this fills: _check_stale_tasks deliberately skips anything in
+        _running_tasks, because its finding is routed to _reconcile_interrupted, which
+        marks the instance paused-or-error and — for a persistent config — auto-restarts
+        it. Doing that to a task that is merely stuck would start a second driver
+        alongside a first that still holds its subprocesses and relay leases. So a
+        registered task that stops beating is invisible to every safety net, which is
+        exactly the state a wedged watcher sat in.
+
+        The same signal therefore means opposite things either side of that line. An
+        *unregistered* stale row means no driver exists and one may be needed;
+        a *registered* one means a driver exists and is stuck, where starting another is
+        the worst available move. Hence detection only: this counts and reports, and
+        deliberately changes no task state.
+
+        It cannot be escalated to action on this evidence anyway. A task doing a long
+        operation without calling `heartbeat(force=True)` first is indistinguishable
+        from a wedged one — see Task.heartbeat's own warning — and that ambiguity is
+        fine for telling a person and not fine for killing something.
+
+        In-memory and synchronous: it reads each task's monotonic heartbeat rather than
+        the DB's, so it still works when the DB write is what has jammed.
+        """
+        threshold = Task.HEARTBEAT_INTERVAL * self._WEDGED_HEARTBEAT_INTERVALS
+        now = time.monotonic()
+        wedged: Dict[str, float] = {}
+        for uuid, task_info in self._running_tasks.items():
+            if task_info.task is None:
+                continue
+            silent_for = task_info.task.seconds_since_heartbeat(now)
+            if silent_for is not None and silent_for > threshold:
+                wedged[uuid] = silent_for
+
+        # Logged on the way in and out only. This runs every worker pass, and a task
+        # wedged for a day would otherwise write the same line hundreds of times.
+        for uuid, silent_for in wedged.items():
+            if uuid not in self._wedged_tasks:
+                task_info = self._running_tasks.get(uuid)
+                name = task_info.config.name if task_info else uuid
+                logger.warning(
+                    "Task %r (%s) is running but has not reported progress for %.0fs. "
+                    "It is still registered here, so nothing will recover it "
+                    "automatically — if it never returns, restarting tasks_server is "
+                    "the only way to clear it.",
+                    name,
+                    uuid,
+                    silent_for,
+                )
+        for uuid in self._wedged_tasks:
+            if uuid not in wedged and uuid in self._running_tasks:
+                logger.info("Task %s is reporting progress again", uuid)
+
+        self._wedged_tasks = wedged
+
     async def _refresh_unattached_count(self) -> None:
         """Count DB instances that say "running" but that this process isn't driving.
 
@@ -1281,6 +1348,9 @@ class Manager:
                 await self._checkpoint_running_tasks()
                 await self._prune_finished_task_instances()
                 await self._refresh_unattached_count()
+                # Last, and synchronous: it reads in-memory state only, so it still
+                # reports when the DB calls above are what has jammed.
+                self._check_wedged_tasks()
         except asyncio.CancelledError:
             logger.info("Periodic task was cancelled.")
         except Exception as e:
@@ -1316,6 +1386,11 @@ class Manager:
             message = ti.task.get_status_message() if ti.task else ""
             if message:
                 parts.append(message)
+            # A stuck task's own status message is whatever it last managed to set,
+            # which reads as though it were still doing that. Say otherwise.
+            silent_for = self._wedged_tasks.get(ti.instance.uuid) if ti.instance else None
+            if silent_for is not None:
+                parts.append(f"NOT RESPONDING for {silent_for / 60:.0f}m")
             rows.append(row(f"{ti.config.name} ({ti.config.typename})", "  ·  ".join(p for p in parts if p)))
 
         running = len(self._running_tasks)
@@ -1341,10 +1416,36 @@ class Manager:
                 }
             )
 
+        # Tasks this server is driving that have stopped reporting progress. Unlike
+        # `unattached` above, nothing is recovering these — that is the point of
+        # saying so, since a stuck task is otherwise indistinguishable from a busy one
+        # in every view the app has.
+        wedged = len(self._wedged_tasks)
+        if wedged:
+            summary += f" · {wedged} not responding"
+            longest = max(self._wedged_tasks.values())
+            notices.append(
+                {
+                    "key": "tasks_server:wedged",
+                    "level": "warning",
+                    "message": (
+                        f"{wedged} running task(s) have not reported progress for up to "
+                        f"{longest / 60:.0f} minute(s). They are still attached to this server, so "
+                        "they are not being recovered automatically and Stop may not reach them. "
+                        "If they do not resume, restarting tasks_server will clear them."
+                    ),
+                }
+            )
+
         return {
             "service": "tasks_server",
             "status": "ok",
-            "tasks": {"running": running, "paused": paused, "unattached": unattached},
+            "tasks": {
+                "running": running,
+                "paused": paused,
+                "unattached": unattached,
+                "wedged": wedged,
+            },
             "summary": summary,
             "notices": notices,
             "details": [

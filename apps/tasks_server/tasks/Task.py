@@ -104,7 +104,13 @@ class Task(ABC):
         self._data_req_flag: asyncio.Event = asyncio.Event()
         self._data_ready_flag: asyncio.Event = asyncio.Event()
         self._manager: Manager = manager
+        # Deliberately 0.0 rather than "now": `heartbeat()` rate-limits on this, and
+        # seeding it with the clock would delay the first beat by a whole interval.
+        # seconds_since_heartbeat() handles the not-yet-beaten case instead.
         self._last_heartbeat_time: float = 0.0
+        # When _execute() began, so a task that has not had time to beat yet is
+        # measured from its own start rather than from the epoch.
+        self._started_monotonic: Optional[float] = None
 
     @abstractmethod
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
@@ -242,6 +248,7 @@ class Task(ABC):
         raise NotImplementedError(f"{self.typename()} does not implement any commands")
 
     async def _execute(self) -> None:
+        self._started_monotonic = time.monotonic()
         try:
             self.log("Initializing")
             await self._init(params=self._params, resume_data=self._resume_data)
@@ -362,6 +369,23 @@ class Task(ABC):
             await self._manager.update_task_heartbeat(self._instance_uuid)
         except Exception:
             logger.warning("Heartbeat update failed for task %s", self._instance_uuid)
+
+    def seconds_since_heartbeat(self, now: Optional[float] = None) -> Optional[float]:
+        """How long since this task last reported progress. None before it starts.
+
+        In-memory and monotonic, unlike the DB `heartbeat_at` the orphan check reads:
+        the question here is whether *this* process's task is still iterating, which
+        needs no round trip and must stay answerable when the DB write is the thing
+        that has stopped working.
+
+        Measured from the task's start until the first beat lands, because
+        `_last_heartbeat_time` sits at 0.0 until then — read raw, a task one second
+        old would look like it had been silent since the epoch.
+        """
+        if self._started_monotonic is None:
+            return None
+        reference = self._last_heartbeat_time or self._started_monotonic
+        return (time.monotonic() if now is None else now) - reference
 
     def get_resume_data(self) -> dict[str, Any]:
         """Return the resume data for the task."""
