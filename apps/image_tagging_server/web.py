@@ -374,6 +374,18 @@ class WebApp:
         async def proxy_training(request: Request, path: str):
             return await self._manager.training_proxy.handle_request(path, request)
 
+        @self._app.get("/status", operation_id="image_tagging_server_status", response_class=JSONResponse)
+        async def image_tagging_server_status() -> JSONResponse:
+            """This service's own health, in the same shape every other service uses.
+
+            Every other service answers /status; this one 404'd, so the process
+            hosting the whole frontend was the one thing no health check could
+            see. Anything pointed at the stack — a uptime monitor, a container
+            healthcheck, or the Operations panel — got a 404 here and had to
+            treat "the frontend is up" as unknowable.
+            """
+            return JSONResponse(content=self._manager.get_own_status())
+
         @self._app.get("/api/service-status", response_class=JSONResponse)
         async def service_status() -> JSONResponse:
             """Probe all backend services and return their status."""

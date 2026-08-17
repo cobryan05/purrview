@@ -12,6 +12,7 @@ import inference_client
 import tasks_client
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers import serviceStatus
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.reverseProxy import ReverseProxy
 from apps.helpers.serverUrls import (
@@ -199,6 +200,41 @@ class Manager:
             "training_server_url_override": self._training_url_override,
         }
 
+    def get_own_status(self) -> dict:
+        """This service's own ``/status``, built in-memory.
+
+        image_tagging_server hosts the entire frontend and proxies every other
+        service, yet it was the one service missing from its own Service Status
+        panel — the panel could report "all services ok" while rendered by a
+        process nobody was checking. It is not probed over HTTP like the others:
+        issuing a request to ourselves to answer a request we are already
+        serving costs a worker for no information the process doesn't already
+        have.
+
+        The detail rows are the *effective* upstream URLs, because those are
+        overridable at runtime and a wrong override is otherwise invisible —
+        "inference is fine" and "inference is fine on the box you are actually
+        talking to" are different claims, and this panel is where you go to tell
+        them apart. Kept to in-memory reads, per the /status contract.
+        """
+        relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+        overrides = sum(1 for u in (self._inference_url_override, self._training_url_override) if u)
+        rows = [
+            serviceStatus.row("db_server", self._db_server_url),
+            serviceStatus.row("tasks_server", self._tasks_api_client.configuration.host),
+            serviceStatus.row("inference_server", self.effective_inference_url),
+            serviceStatus.row("training_server", self.effective_training_url),
+            serviceStatus.row("relay_buffer_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
+        ]
+        status: dict = {
+            "service": "image_tagging_server",
+            "status": "ok",
+            "summary": f"frontend · proxying {len(rows)} services"
+            + (f" · {overrides} URL override{'s' if overrides != 1 else ''}" if overrides else ""),
+            "details": [serviceStatus.section("Upstreams (effective)", rows)],
+        }
+        return status
+
     async def get_all_service_status(self) -> List[dict]:
         """Probe each backend service's /status endpoint and return aggregated results."""
         relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
@@ -288,7 +324,11 @@ class Manager:
             # the UI for probes that are merely a little slow.
             return {"service": name, "status": "checking", "notices": []}
 
-        return list(await asyncio.gather(*[_probe(name, url) for name, url in services]))
+        probed = list(await asyncio.gather(*[_probe(name, url) for name, url in services]))
+        # Ourselves first: this is the process rendering the panel, so if it is
+        # in the list at all it belongs at the top rather than sorted in among
+        # the things it proxies to.
+        return [self.get_own_status(), *probed]
 
     async def get_notices(self) -> list[dict]:
         """Return aggregated service notices from all backends, with a 5-second cache."""

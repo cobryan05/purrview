@@ -45,11 +45,24 @@ def _install_slow_get(manager, delay: float, *, status_code: int = 200, payload:
     manager._test_client.get = _slow_get
 
 
+def _probed(statuses: list[dict]) -> list[dict]:
+    """Only the entries that came from an HTTP probe.
+
+    get_all_service_status() also reports image_tagging_server itself, built
+    in-memory rather than probed (it is the process answering the request, so
+    asking itself over HTTP would spend a worker to learn nothing). These tests
+    are about probe timeout behaviour, so that entry is not one of their
+    subjects — without this filter they assert "every service has a
+    still-waiting notice" against a service that was never waiting.
+    """
+    return [s for s in statuses if s.get("service") != "image_tagging_server"]
+
+
 class TestProbeSoftHardTimeouts:
     async def test_fast_response_reports_success_with_no_notice(self, manager):
         _install_slow_get(manager, delay=0.0)
         statuses = await manager.get_all_service_status()
-        for svc in statuses:
+        for svc in _probed(statuses):
             assert svc.get("notices", []) == []
 
     async def test_slow_response_under_soft_timeout_is_silent(self, manager):
@@ -57,7 +70,7 @@ class TestProbeSoftHardTimeouts:
         the UI with any notice at all, even mid-flight."""
         _install_slow_get(manager, delay=_SOFT / 2)
         statuses = await manager.get_all_service_status()
-        for svc in statuses:
+        for svc in _probed(statuses):
             assert svc.get("notices", []) == []
 
     async def test_slow_response_past_soft_timeout_reports_still_waiting(self, manager):
@@ -72,7 +85,7 @@ class TestProbeSoftHardTimeouts:
 
         statuses = await manager.get_all_service_status()
         assert len(statuses) > 0
-        for svc in statuses:
+        for svc in _probed(statuses):
             notices = svc.get("notices", [])
             assert len(notices) == 1
             assert notices[0]["level"] == "info"
@@ -87,14 +100,14 @@ class TestProbeSoftHardTimeouts:
         await manager.get_all_service_status()  # kicks off the probe
         await asyncio.sleep(_SOFT * 1.5)
         statuses = await manager.get_all_service_status()
-        for svc in statuses:
+        for svc in _probed(statuses):
             assert svc["notices"][0]["level"] == "info"
 
         # Wait past PROBE_HARD_TIMEOUT — httpx's own request timeout fires
         # inside the background task, resolving it to "unreachable".
         await asyncio.sleep(_HARD * 1.5)
         statuses = await manager.get_all_service_status()
-        for svc in statuses:
+        for svc in _probed(statuses):
             notices = svc.get("notices", [])
             assert len(notices) == 1
             assert notices[0]["level"] == "warning"
@@ -125,11 +138,11 @@ class TestProbeSoftHardTimeouts:
         await manager.get_all_service_status()
         await asyncio.sleep(_SOFT * 1.5)
         statuses = await manager.get_all_service_status()
-        for svc in statuses:
+        for svc in _probed(statuses):
             assert svc["notices"][0]["level"] == "info"
 
         await asyncio.sleep(_HARD)  # let the in-flight probe resolve successfully
 
         statuses = await manager.get_all_service_status()
-        for svc in statuses:
+        for svc in _probed(statuses):
             assert svc.get("notices", []) == []
