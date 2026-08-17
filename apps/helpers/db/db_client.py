@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import sys
+import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -177,6 +179,12 @@ _DEFAULT_IMAGE_LABEL_NAMES = ["Corrupt", "Blurry", "Occluded", "Empty"]
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
+
+# Guards the read-merge-write of JSON sidecars (see DbClient._sidecar_lock).
+# Sidecar writes run on the default thread pool via asyncio.to_thread, so this
+# is thread contention within one process, not cross-process locking — db_server
+# is the only service that writes sidecars.
+_SIDECAR_LOCKS = tuple(threading.Lock() for _ in range(64))
 logger.setLevel(logging.DEBUG)
 
 
@@ -2178,6 +2186,17 @@ class DbClient:
             await session.commit()
 
     @staticmethod
+    def _sidecar_lock(json_path: Path) -> threading.Lock:
+        """Return the lock guarding read-modify-write access to `json_path`.
+
+        Striped rather than one-lock-per-path: a per-path registry would grow a
+        lock object for every image ever written and never release them, and the
+        writes under the lock are a couple of milliseconds of file I/O, so the
+        occasional two-unrelated-sidecars collision costs nothing measurable.
+        """
+        return _SIDECAR_LOCKS[hash(str(json_path)) % len(_SIDECAR_LOCKS)]
+
+    @staticmethod
     def _merge_write_sidecar(json_path: Path, new_data: Dict[str, Any]) -> None:
         """Merge `new_data` into the sidecar at `json_path` and write it atomically.
 
@@ -2185,15 +2204,23 @@ class DbClient:
         key already in the file survives. That is what lets the bbox writer and
         the image_labels writer each own their own slice of the same file
         without either having to know what the other stores.
+
+        The read and the write are one critical section, not two independent
+        steps. Saving an annotation issues one write per changed label, all of
+        them concurrent on the thread pool and all of them aimed at the same
+        sidecar; without the lock two writers both read the pre-merge file and
+        the second one writes its slice over a stale copy, dropping the first
+        one's key from disk while the database kept both.
         """
-        existing: Dict[str, Any] = {}
-        if json_path.exists():
-            try:
-                existing = jstyleson.loads(json_path.read_text())
-            except Exception as e:
-                logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
-        existing.update(new_data)
-        DbClient._atomic_write_text(json_path, json.dumps(existing, indent=2))
+        with DbClient._sidecar_lock(json_path):
+            existing: Dict[str, Any] = {}
+            if json_path.exists():
+                try:
+                    existing = jstyleson.loads(json_path.read_text())
+                except Exception as e:
+                    logger.warning(f"Could not parse sidecar {json_path}, overwriting: {e}")
+            existing.update(new_data)
+            DbClient._atomic_write_text(json_path, json.dumps(existing, indent=2))
 
     @staticmethod
     def _atomic_write_text(path: Path, text: str) -> None:
@@ -2203,10 +2230,19 @@ class DbClient:
         later overwrite-sync would then refuse — or, historically, wipe from).
         Every on-disk copy that exists to survive a lost database goes through
         here; a truncated one defeats the point of keeping it.
+
+        The temp file name is unique per call. A fixed `<name>.tmp` is shared by
+        every concurrent writer of the same file: the first `os.replace` renames
+        the temp file away, and the next writer's replace then fails with
+        FileNotFoundError even though its own data was written fine — which the
+        UI reported as "N label state(s) failed to save" after the row had
+        already landed in the database.
         """
-        tmp_path = path.with_name(path.name + ".tmp")
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        tmp_path = Path(tmp_name)
         try:
-            tmp_path.write_text(text)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
             os.replace(tmp_path, path)
         except Exception:
             tmp_path.unlink(missing_ok=True)
