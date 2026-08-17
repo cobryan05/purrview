@@ -7,9 +7,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import ffmpeg
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 READ_CHUNK_SIZE = 16 * 1024
 

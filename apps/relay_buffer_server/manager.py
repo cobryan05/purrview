@@ -39,6 +39,7 @@ from mediamtx_client.models.path import Path as MtxPath
 from mediamtx_client.models.path_conf import PathConf
 
 from apps import STREAM_BUFFER_DIR, STREAM_BUFFER_SIZE
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.playbackClient import PlaybackClient, PlaybackError
 from apps.helpers.serviceStatus import fmt_duration, row, section
 from apps.helpers.streams.bufferBudget import (
@@ -56,7 +57,7 @@ from apps.helpers.streams.ingest import IngestPlan, IngestTier, resolve_ingest_t
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # How much rewind a recorded path keeps by default. Deliberately under a minute: the
 # buffer is RAM, and the design trades depth for costing ~nothing when idle.

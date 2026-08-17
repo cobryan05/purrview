@@ -9,13 +9,14 @@ from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.fileUtils import filter_stubs_by_directory
+from apps.helpers.logUtils import LOG_LEVEL
 
 from .Registry import register_task
 from .Task import Task
 from .utils.labelHelper import build_label_ancestry_map
 
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # Images fetched per DB round-trip.
 _BATCH_SIZE = 100

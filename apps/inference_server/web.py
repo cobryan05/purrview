@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.curatedModels import CURATED_BASE_MODELS
 from apps.helpers.imageUtils import base64_decode_image
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.types import (
     InferenceResult,
     InferenceResultModel,
@@ -183,7 +184,7 @@ class PinModelResponse(StatusResponse):
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class WebApp:

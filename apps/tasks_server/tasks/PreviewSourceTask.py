@@ -4,13 +4,14 @@ from typing import Any, Optional
 
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.imageUtils import base64_encode_jpg
+from apps.helpers.logUtils import LOG_LEVEL
 
 from .Registry import register_task
 from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 @register_task()

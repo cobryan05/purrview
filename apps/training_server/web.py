@@ -16,12 +16,14 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 from .manager import Manager
 from .trainers import TRAINER_REGISTRY
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 # ─── Request / Response models ───────────────────────────────────────────────

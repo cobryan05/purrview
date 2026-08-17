@@ -47,6 +47,7 @@ from training_client.models.submit_job_payload import SubmitJobPayload
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.curatedModels import get_curated_model
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name, write_onnx_with_sidecar
 
 from ._training_job_runner import TrainingJobRunnerMixin
@@ -55,7 +56,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 _DOWNLOAD_TIMEOUT = 300.0  # seconds; matches ImportModelTask's curated-ONNX download

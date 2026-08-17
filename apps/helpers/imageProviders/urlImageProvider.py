@@ -13,6 +13,8 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 from .imageProvider import (
     ImageProvider,
     ImageProviderMetadata,
@@ -23,7 +25,7 @@ from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 DOWNLOAD_TIMEOUT = 10.0
 

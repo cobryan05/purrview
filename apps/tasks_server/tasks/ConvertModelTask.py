@@ -33,6 +33,7 @@ from training_client.api.training_api import TrainingApi
 from training_client.models.submit_job_payload import SubmitJobPayload
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 from apps.helpers.modelStaging import staged_model_path
 
@@ -42,7 +43,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 

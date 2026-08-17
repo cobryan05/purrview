@@ -10,13 +10,14 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from apps.helpers.consts import TaskStatus
+from apps.helpers.logUtils import LOG_LEVEL
 
 if TYPE_CHECKING:
     from ..manager import Manager
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class Task(ABC):

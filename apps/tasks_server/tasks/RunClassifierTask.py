@@ -23,6 +23,7 @@ from apps import FILES_ROOT
 from apps.helpers.classifier_utils import preprocess_image_bytes as _preprocess_image
 from apps.helpers.classifier_utils import softmax as _softmax
 from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.logUtils import LOG_LEVEL
 
 from ._classifier_runtime import ClassifierRuntime
 from .Registry import register_task
@@ -30,7 +31,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 

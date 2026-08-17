@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from apps.helpers.curatedModels import get_curated_model
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import (
     validate_bare_model_name,
     write_onnx_with_sidecar,
@@ -27,7 +28,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 _DOWNLOAD_TIMEOUT = 300.0  # seconds; matches _training_job_runner._save_artifact's pattern

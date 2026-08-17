@@ -4,6 +4,7 @@ import mediamtx_client
 import uvicorn
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.logUtils import quiet_poll_access_logs
 
 from .manager import Manager
 from .web import WebApp
@@ -18,6 +19,10 @@ api_client = mediamtx_client.ApiClient(mediamtx_conf)
 
 manager = Manager(api_client)
 web_app = WebApp(manager=manager, app_name=config.name)
+
+# Poll endpoints log one access line per tab per tick; quiet the successful
+# ones so the log stays readable (see helpers/logUtils).
+quiet_poll_access_logs()
 
 # Get the uvicorn app
 app = web_app.app()

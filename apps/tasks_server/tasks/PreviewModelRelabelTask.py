@@ -53,6 +53,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 
 from ._filter_chain_runner import Detection
@@ -67,7 +68,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # No UX-facing ceiling on the candidate bbox list: the review-browser UI *warns*
 # the user on large runs (and lets them cap the count), but "process all" is

@@ -13,6 +13,7 @@ import numpy as np
 import apps.helpers.metadataUtils as metadataUtils
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
 from apps.helpers.inferenceProviders.Registry import inference_provider_registry
+from apps.helpers.logUtils import LOG_LEVEL
 
 if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
     import cv2
@@ -20,7 +21,7 @@ if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 def sigmoid(x):

@@ -6,9 +6,11 @@ from typing import Callable
 
 import paho.mqtt.client as mqtt
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger("MqttClient")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class MqttClient:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from apps import APPS, FILES_ROOT
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.model_type_map import resolve_trainer_type
 from apps.helpers.serviceStatus import fmt_duration, row, section
 
@@ -20,7 +21,7 @@ from .job_queue import Job, JobQueue
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _DEFAULT_ARTIFACTS_DIR = "/training-artifacts"
 _DEFAULT_EVICTION_SWEEP_SEC = 3600  # background age/size sweep interval

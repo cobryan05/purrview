@@ -31,6 +31,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
+from apps.helpers.logUtils import LOG_LEVEL
 
 from .types import (
     BBOX_CONFIDENCE_METADATA_KEYS,
@@ -185,7 +186,7 @@ logger = logging.getLogger(__file__)
 # is thread contention within one process, not cross-process locking — db_server
 # is the only service that writes sidecars.
 _SIDECAR_LOCKS = tuple(threading.Lock() for _ in range(64))
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class SidecarParseError(Exception):

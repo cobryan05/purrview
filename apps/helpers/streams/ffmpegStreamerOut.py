@@ -6,9 +6,11 @@ from typing import Dict, List, Optional, Union
 
 import ffmpeg
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class FFmpegStreamerOut:

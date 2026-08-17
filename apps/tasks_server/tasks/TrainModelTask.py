@@ -31,6 +31,7 @@ from db_client.models.training_target_detection_dataset_payload import (
 )
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.model_type_map import resolve_trainer_type
 
 from ._classifier_job_builders import (
@@ -43,7 +44,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 @register_task()

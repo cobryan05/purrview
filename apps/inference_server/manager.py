@@ -19,6 +19,7 @@ from apps.helpers.inferenceProviders.inferenceProvider import (
     InferenceProvider,
     InferenceResult,
 )
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import (
     VALID_MODEL_DEVICES,
     get_model_metadata,
@@ -37,7 +38,7 @@ from apps.helpers.yoloUtils import load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # Subdirectory (under CACHE_DIR) where raw uploaded model files are staged pending
 # an asynchronous conversion task (e.g. pytorch -> onnx) run by the tasks_server.

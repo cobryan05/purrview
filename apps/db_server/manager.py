@@ -92,13 +92,14 @@ from apps.helpers.hashUtils import (
     phash_from_numpy_crop,
 )
 from apps.helpers.imageProviders.Registry import image_provider_registry
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.serviceStatus import row, section
 from apps.helpers.tracking.Registry import tracker_registry
 from apps.helpers.types import FileEntryRead
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # Only bboxes explicitly carrying this tag produce PRESENT image-label rows.
 _BBOX_VERIFIED_TAG = VERIFIED_TAG_UUID

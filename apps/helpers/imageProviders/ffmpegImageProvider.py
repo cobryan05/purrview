@@ -10,6 +10,7 @@ from typing import Any, Optional, Tuple
 import numpy as np
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 from apps.helpers.streams.ingest import resolve_ingest_tier
 
@@ -23,7 +24,7 @@ from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
     import relay_buffer_client

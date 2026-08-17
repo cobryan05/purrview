@@ -20,6 +20,7 @@ from db_client.api.labels_api import LabelsApi
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 
 from apps import FILES_ROOT
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 
 from ._classifier_runtime import ClassifierRuntime, load_classifier_config
@@ -30,7 +31,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # Images fetched per batch_images_by_uuids round-trip (matches PreviewModelRelabelTask).
 _IMAGE_BATCH_SIZE = 32

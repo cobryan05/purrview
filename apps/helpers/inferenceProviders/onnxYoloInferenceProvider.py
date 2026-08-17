@@ -20,13 +20,14 @@ import onnxruntime as ort
 
 import apps.helpers.yoloUtils as YoloUtils
 from apps.helpers.bboxUtils import BBox
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.types import BoundingBoxMetadata, ClassScore, DetectionResult, InferenceResult
 
 from .inferenceProvider import InferenceProvider
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class OnnxYoloInferenceProvider(InferenceProvider):

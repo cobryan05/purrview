@@ -12,13 +12,14 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.reverseProxy import ReverseProxy
 
 from .manager import Manager
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 

@@ -11,9 +11,11 @@ from typing import Any, Dict, List, Optional
 
 import onnx
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 DEFAULT_MODEL_DEVICE = "auto"
 VALID_MODEL_DEVICES = ("auto", "gpu", "cpu")

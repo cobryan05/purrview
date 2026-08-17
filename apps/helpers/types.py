@@ -15,11 +15,13 @@ from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from typing_extensions import Annotated
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 from .consts import JsonValues
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class Payload(BaseModel):

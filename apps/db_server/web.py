@@ -77,6 +77,7 @@ from apps.helpers.db.types import (
     WatchProfileRead,
     WatchProfileUpdate,
 )
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,
@@ -202,7 +203,7 @@ class BulkApplyImagesPayload(ApiPayload):
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 ########

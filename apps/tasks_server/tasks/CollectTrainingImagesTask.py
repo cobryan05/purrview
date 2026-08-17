@@ -43,6 +43,7 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageWithProviderMetadata,
 )
 from apps.helpers.imageUtils import base64_encode_jpg
+from apps.helpers.logUtils import LOG_LEVEL
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._filter_chain_runner import FilterChainRunner
@@ -59,7 +60,7 @@ from .utils.sourceHelper import SourceHelper
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 # Two detections from different models are treated as the same physical object when
 # their boxes overlap at or above this IoU; the higher-priority (earlier-configured)

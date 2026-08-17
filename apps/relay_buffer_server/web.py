@@ -14,11 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from mediamtx_client.api_client import ApiClient
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 from .manager import Manager
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class WebApp:

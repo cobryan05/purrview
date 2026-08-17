@@ -15,6 +15,7 @@ from db_client.api.tasks_api import TasksApi
 
 from apps import APPS, APPS_CONFIG, TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
 from apps.helpers.consts import TaskStatus
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
 from apps.tasks_server.types import TaskInfo
@@ -24,7 +25,7 @@ from .tasks.Task import Task
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class Manager:

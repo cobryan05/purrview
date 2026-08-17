@@ -13,13 +13,14 @@ import numpy as np
 
 from apps.helpers.hashUtils import phash_from_numpy
 from apps.helpers.imageUtils import base64_encode_jpg
+from apps.helpers.logUtils import LOG_LEVEL
 
 from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
 from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 @register_image_provider()

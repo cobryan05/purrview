@@ -8,6 +8,7 @@ from typing import Any, Optional
 import numpy as np
 from PIL import Image
 
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.mqttClient import MqttClient
 
 from .imageProvider import ImageProvider, ImageProviderType, ImageWithProviderMetadata
@@ -15,7 +16,7 @@ from .Registry import register_image_provider
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 @register_image_provider()

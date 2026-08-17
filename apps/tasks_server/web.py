@@ -18,13 +18,14 @@ from pydantic import Field
 
 from apps.helpers.consts import JsonValues
 from apps.helpers.db.types import TaskConfigRead, TaskResult
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.types import Payload, StatusResponse
 from apps.tasks_server.manager import Manager
 from apps.tasks_server.types import TaskInfo, TaskInfoRead
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 class CreateTaskConfigPayload(Payload):

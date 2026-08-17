@@ -5,6 +5,7 @@ import uvicorn
 
 from apps import APPS_CONFIG, DB_DIR
 from apps.helpers.db.db_client import DbClient
+from apps.helpers.logUtils import quiet_poll_access_logs
 
 from .manager import Manager
 from .web import WebApp
@@ -15,6 +16,10 @@ db_client = DbClient(DB_DIR, files_root=FILES_ROOT)
 
 manager = Manager(db_client=db_client, files_root=FILES_ROOT)
 web_app = WebApp(manager=manager, app_name=config.name)
+
+# Poll endpoints log one access line per tab per tick; quiet the successful
+# ones so the log stays readable (see helpers/logUtils).
+quiet_poll_access_logs()
 
 # Get the uvicorn app
 app = web_app.app()

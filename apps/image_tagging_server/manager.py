@@ -12,6 +12,7 @@ import inference_client
 import tasks_client
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.reverseProxy import ReverseProxy
 from apps.helpers.serverUrls import (
     INFERENCE_URL_SETTING_KEY,
@@ -21,7 +22,7 @@ from apps.helpers.serverUrls import (
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 __all__ = ["Manager", "INFERENCE_URL_SETTING_KEY", "TRAINING_URL_SETTING_KEY"]
 

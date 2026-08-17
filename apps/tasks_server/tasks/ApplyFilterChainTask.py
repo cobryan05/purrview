@@ -46,6 +46,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 from apps import FILES_ROOT
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
 from apps.helpers.fileUtils import filter_stubs_by_directory
+from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import get_model_metadata, validate_bare_model_name
 
 from ._filter_chain_runner import Detection, FilterChainRunner
@@ -55,7 +56,7 @@ from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 _MAX_IMAGES_CEILING = 5000

@@ -26,13 +26,14 @@ from db_client.models.reconcile_image_payload import ReconcileImagePayload
 from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
 from apps.helpers.fileUtils import get_safe_path
+from apps.helpers.logUtils import LOG_LEVEL
 
 from .Registry import register_task
 from .Task import Task
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 _VALID_SYNC_MODES = {
     "merge",

@@ -5,12 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from apps.helpers.logUtils import LOG_LEVEL
+
 from .ffmpegStreamerIn import FFmpegStreamerIn
 from .ffmpegStreamerOut import FFmpegStreamerOut
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOG_LEVEL)
 
 
 STREAM_START_TIMEOUT = 60.0  # Timeout for initial stream read
