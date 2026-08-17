@@ -5,6 +5,7 @@ import inference_client
 import uvicorn
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.apiCall import bind_default_timeout
 from apps.helpers.logUtils import quiet_poll_access_logs
 
 from .manager import Manager
@@ -17,10 +18,10 @@ inference_host = APPS_CONFIG[APPS.INFERENCE_SERVER].host
 inference_port = APPS_CONFIG[APPS.INFERENCE_SERVER].port
 
 inference_client_conf = inference_client.Configuration(f"http://{inference_host}:{inference_port}")
-inference_api_client = inference_client.ApiClient(inference_client_conf)
+inference_api_client = bind_default_timeout(inference_client.ApiClient(inference_client_conf))
 
 db_client_conf = db_client.Configuration(f"http://{db_host}:{db_port}")
-db_api_client = db_client.ApiClient(db_client_conf)
+db_api_client = bind_default_timeout(db_client.ApiClient(db_client_conf))
 
 manager = Manager(db_api_client=db_api_client, inference_api_client=inference_api_client)
 web_app = WebApp(app_name=config.name, manager=manager)

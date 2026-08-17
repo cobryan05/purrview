@@ -15,6 +15,7 @@ import relay_buffer_client
 from db_client.api.tasks_api import TasksApi
 
 from apps import APPS, APPS_CONFIG, TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
+from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
 from apps.helpers.consts import TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.relayClipClient import RelayClipClient
@@ -120,8 +121,14 @@ class Manager:
         """
         if self._relay_clip_client is None:
             relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
-            api_client = relay_buffer_client.ApiClient(
-                relay_buffer_client.Configuration(f"http://{relay_cfg.host}:{relay_cfg.port}")
+            # Bound long as a whole: this client exists solely to cut clips, and
+            # remuxing a minute of video out of the rolling buffer is real work. The
+            # relay's own fast calls (leases, readiness) go through a different client.
+            api_client = bind_default_timeout(
+                relay_buffer_client.ApiClient(
+                    relay_buffer_client.Configuration(f"http://{relay_cfg.host}:{relay_cfg.port}")
+                ),
+                timeout=LONG_TIMEOUT,
             )
             self._relay_clip_client = RelayClipClient(api_client)
         return self._relay_clip_client
@@ -155,7 +162,9 @@ class Manager:
         if effective_inference != self._inference_api_client.configuration.host:
             logger.info(f"Inference server URL -> {effective_inference}")
             previous = self._inference_api_client
-            self._inference_api_client = inference_client.ApiClient(inference_client.Configuration(effective_inference))
+            self._inference_api_client = bind_default_timeout(
+                inference_client.ApiClient(inference_client.Configuration(effective_inference))
+            )
             self._release_api_client(previous)
 
         if effective_training != self._training_base_url:

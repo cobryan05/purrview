@@ -33,6 +33,7 @@ from training_client.api.training_api import TrainingApi
 from training_client.models.submit_job_payload import SubmitJobPayload
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 from apps.helpers.modelStaging import staged_model_path
@@ -58,13 +59,21 @@ class ConvertModelTask(Task, TrainingJobRunnerMixin):
         # ── API client setup (mirrors TrainModelTask._init) ─────────────────
         db_cfg = APPS_CONFIG[APPS.DB_SERVER]
         db_base_url = f"http://{db_cfg.host}:{db_cfg.port}"
-        self._db_api_client = db_client.ApiClient(db_client.Configuration(host=db_base_url))
+        self._db_api_client = bind_default_timeout(db_client.ApiClient(db_client.Configuration(host=db_base_url)))
 
         # Resolved through the manager, not APPS_CONFIG: Settings → Servers can
         # point training at another host, and only the manager tracks that override.
         self._training_base_url: str = self._manager.get_training_base_url()
         tc_config = training_client.Configuration(host=self._training_base_url)
-        self._api_client = training_client.ApiClient(tc_config)
+        # Every call this client makes is to the training server, and the training
+
+        # server does slow work — submitting a job with a large manifest, ingesting
+
+        # images, converting a model. Bound as a whole rather than per call, so no
+
+        # caller has to know about the client library's timeout parameter.
+
+        self._api_client = bind_default_timeout(training_client.ApiClient(tc_config), timeout=LONG_TIMEOUT)
 
         # ── Resume from a previous run ───────────────────────────────────────
         self._job_id: Optional[str] = resume_data.get("job_id") if resume_data else None

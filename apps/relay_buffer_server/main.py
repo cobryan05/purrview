@@ -4,6 +4,7 @@ import mediamtx_client
 import uvicorn
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.apiCall import bind_default_timeout
 from apps.helpers.logUtils import quiet_poll_access_logs
 
 from .manager import Manager
@@ -15,7 +16,7 @@ mediamtx_port = APPS_CONFIG[APPS.MEDIA_MTX_API].port
 # Defining the host is optional and defaults to http://localhost:9997
 # See configuration.py for a list of all supported configuration parameters.
 mediamtx_conf = mediamtx_client.Configuration(host=f"http://{mediamtx_host}:{mediamtx_port}")
-api_client = mediamtx_client.ApiClient(mediamtx_conf)
+api_client = bind_default_timeout(mediamtx_client.ApiClient(mediamtx_conf))
 
 manager = Manager(api_client)
 web_app = WebApp(manager=manager, app_name=config.name)

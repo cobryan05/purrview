@@ -6,6 +6,7 @@ import tasks_client
 import uvicorn
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.apiCall import bind_default_timeout
 from apps.helpers.logUtils import quiet_poll_access_logs
 
 from .manager import Manager
@@ -23,11 +24,11 @@ training_port = APPS_CONFIG[APPS.TRAINING_SERVER].port
 
 
 inference_client_conf = inference_client.Configuration(f"http://{inference_host}:{inference_port}")
-inference_api_client = inference_client.ApiClient(inference_client_conf)
+inference_api_client = bind_default_timeout(inference_client.ApiClient(inference_client_conf))
 tasks_client_conf = tasks_client.Configuration(f"http://{tasks_host}:{tasks_port}")
-tasks_api_client = tasks_client.ApiClient(tasks_client_conf)
+tasks_api_client = bind_default_timeout(tasks_client.ApiClient(tasks_client_conf))
 db_client_conf = db_client.Configuration(f"http://{db_host}:{db_port}")
-db_api_client = db_client.ApiClient(db_client_conf)
+db_api_client = bind_default_timeout(db_client.ApiClient(db_client_conf))
 
 manager = Manager(
     inference_api_client=inference_api_client,

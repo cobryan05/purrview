@@ -10,6 +10,7 @@ from typing import Any, Optional, Tuple
 import numpy as np
 
 from apps import APPS, APPS_CONFIG
+from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
 from apps.helpers.streams.ingest import resolve_ingest_tier
@@ -127,7 +128,7 @@ class FfmpegImageProvider(ImageProvider):
                 APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].port,
             )
             config = relay_buffer_client.Configuration(f"http://{relay_host}:{relay_port}")
-            self._rtsp_relay_api = relay_buffer_client.ApiClient(config)
+            self._rtsp_relay_api = bind_default_timeout(relay_buffer_client.ApiClient(config))
             self._relayed_name = f"provider-{uuid.uuid4()}"
 
     def __repr__(self):
