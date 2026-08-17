@@ -128,7 +128,15 @@ class FFmpegStreamerIn:
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=max_queued_frames)
         self._stop_event: asyncio.Event = asyncio.Event()
         self._metadata_event: asyncio.Event = asyncio.Event()
+        #: Whether a banner actually parsed, as opposed to the stderr reader merely
+        #: finishing. Kept apart from `_metadata_event` because that event doubles as
+        #: "stop waiting", and "stop waiting" is not "the camera is there".
+        self._metadata_parsed: bool = False
         self._task: Optional[asyncio.Task] = None
+        #: The stderr pump. Held only so a caller can tell it apart from a leak; it is
+        #: never cancelled, because it is blocked in a thread on a blocking readline
+        #: that cancellation cannot interrupt. Reaping the process is what ends it.
+        self._stderr_task: Optional[asyncio.Future] = None
         self._event_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self._is_frame_aligned: bool = False
         # Transport returned by connect_read_pipe() in the worker. A new one is created
@@ -169,8 +177,14 @@ class FFmpegStreamerIn:
         For a live source that never connects, stderr never reaches EOF and the banner
         never parses, so waiting is indistinguishable from waiting forever. A caller
         polling a reconnect needs to ask without committing to that.
+
+        Answers from the parsed flag rather than the event, and the two genuinely differ:
+        the event is also set when the reader gives up, so that `wait_for_metadata()`
+        releases its waiters instead of hanging on a camera that is gone. Reading the
+        event here would turn that release into a claim that the source is up — which is
+        the reading callers act on when they decide not to rebuild it.
         """
-        return self._metadata_event.is_set()
+        return self._metadata_parsed
 
     async def wait_for_metadata(self) -> None:
         """Waits for metadata to become available"""
@@ -284,6 +298,11 @@ class FFmpegStreamerIn:
 
         self._stop_event.clear()
         self._metadata_event.clear()
+        # Geometry from the stream that just died must not vouch for the one replacing
+        # it: a camera can come back at a different resolution, and a caller polling
+        # readiness would otherwise be told the new reader was up before it had read a
+        # single byte of it.
+        self._metadata_parsed = False
         self._is_frame_aligned = False
 
         self._task = self._event_loop.create_task(self._worker_task())
@@ -298,6 +317,8 @@ class FFmpegStreamerIn:
 
         self._stop_event.clear()
         self._metadata_event.clear()
+        # See start(): a restart must not inherit the old stream's readiness.
+        self._metadata_parsed = False
         self._is_frame_aligned = False
 
         self._task = self._event_loop.create_task(self._worker_task())
@@ -335,13 +356,25 @@ class FFmpegStreamerIn:
                 except Exception as e:
                     logger.error(f"Worker task for {self._source} raised during astop: {e}")
 
-    def _extract_metadata_from_stderr(self) -> None:
-        """Extracts metadata from the FFmpeg process's stderr output.
+    def _pump_stderr(self) -> None:
+        """Consume ffmpeg's stderr until EOF, publishing the geometry banner on the way.
 
-        Note this only ever returns for a *finite* source unless a banner parses:
-        for a live camera stderr never reaches EOF, so a parse failure shows up as
-        `wait_for_metadata()` hanging rather than raising. That makes the parser's
-        tolerance load-bearing — see `parse_video_stream_banner`.
+        Draining is the point, and it is not optional bookkeeping. ffmpeg runs at
+        `-loglevel info` and writes to stderr for as long as it lives; a pipe holds
+        64 KiB. This used to stop reading at the first parsed banner, so on a long-lived
+        camera the pipe eventually filled and ffmpeg blocked in `write()` — and a
+        process blocked writing its log has stopped reading its input, so it stopped
+        pulling RTSP, MediaMTX dropped the stalled session, and the frames ended.
+
+        Nothing about that failure looks like a failure from outside: the process stays
+        alive, stdout stays open (and empty), the geometry is still known, so every
+        readiness check upstream keeps answering yes. It was measured on a wedged
+        container as stdout 0/65536 bytes and stderr 65087/65536.
+
+        The banner is published mid-stream rather than by returning, because for a live
+        source EOF never comes — see `wait_for_metadata()`. Only the first banner counts:
+        ffmpeg prints one per stream and per internal reconnect, and the frame reader is
+        already unpacking fixed-size frames against the first one.
         """
         assert self._process is not None and self._process.stderr is not None
         try:
@@ -349,6 +382,8 @@ class FFmpegStreamerIn:
                 line = line.decode("utf-8", "replace").strip()
                 logger.debug(f"FFmpeg stderr: {line}")
 
+                if self._metadata_parsed:
+                    continue
                 meta = parse_video_stream_banner(line)
                 if meta is None:
                     continue
@@ -357,11 +392,16 @@ class FFmpegStreamerIn:
                 self._fps = meta.fps
                 self._pixel_format = meta.pixel_format
                 self._frame_size = meta.raw24_frame_size
+                self._metadata_parsed = True
                 self._metadata_event.set()
-                break
         except Exception as e:
-            logger.error(f"Error while extracting metadata: {e}")
+            # Swallowed on purpose: a pump that dies re-creates the exact deadlock it
+            # exists to prevent, and it dying is invisible from anywhere else.
+            logger.error(f"Error while reading ffmpeg stderr for {self._source}: {e}")
         finally:
+            # Releases `wait_for_metadata()` even when no banner ever parsed — waiting
+            # on a camera that is gone is otherwise indistinguishable from waiting
+            # forever. `metadata_ready()` deliberately does not read this event.
             self._metadata_event.set()
 
     async def _worker_task(self) -> None:
@@ -373,8 +413,13 @@ class FFmpegStreamerIn:
             and self._event_loop is not None
         )
 
-        # Extract metadata from stderr
-        await asyncio.to_thread(self._extract_metadata_from_stderr)
+        # Started, not awaited: the pump now runs for the life of the process, so
+        # awaiting it would mean never reading a frame. Waiting on the event instead
+        # keeps the old ordering guarantee — geometry is known before the frame reader
+        # below sizes itself against it — without tying the two lifetimes together.
+        # The thread ends on its own when the process is reaped and stderr hits EOF.
+        self._stderr_task = asyncio.ensure_future(asyncio.to_thread(self._pump_stderr))
+        await self._metadata_event.wait()
 
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
