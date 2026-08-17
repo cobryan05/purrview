@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import tarfile
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +56,28 @@ _MAX_EPOCH_HISTORY = 2000
 # tuple rather than "whatever's in the event" so a trainer adding a private
 # debugging key doesn't silently start riding along in the persisted history.
 _EPOCH_METRIC_KEYS = ("train_loss", "val_loss", "val_accuracy")
+
+# How many recent epoch durations the ETA is averaged over. Short enough to
+# follow a real change in epoch cost (a trainer that slows down once the GPU is
+# shared), long enough that one stalled epoch doesn't swing the estimate.
+_ETA_WINDOW = 5
+
+
+def format_eta(seconds: float) -> str:
+    """Render an ETA the way a person reads one: coarse, and never false-precise.
+
+    Minutes-and-seconds below an hour, hours-and-minutes above it. The estimate
+    is an average over a handful of epochs, so showing "1h 03m 47s" would claim
+    an accuracy it does not have.
+    """
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
 
 
 class _StreamDropped(Exception):
@@ -470,6 +493,8 @@ class TrainingJobRunnerMixin:
         history.append(sample)
         del history[:-_MAX_EPOCH_HISTORY]
 
+        self._record_epoch_time(epoch)
+
         total_epochs = data.get("total_epochs")
         if isinstance(total_epochs, (int, float)) and not isinstance(total_epochs, bool):
             self._total_epochs = int(total_epochs)
@@ -477,6 +502,51 @@ class TrainingJobRunnerMixin:
         # Ride along with the existing job_id/manifest persistence so an
         # interrupted-and-resumed run keeps the curve it has drawn so far.
         self._resume_data["epoch_history"] = history
+
+    def _record_epoch_time(self, epoch: int) -> None:
+        """Timestamp an epoch boundary, for the ETA.
+
+        Deliberately in-memory only and never persisted: the timestamps are
+        wall-clock arrival times, so a run that is interrupted and resumed hours
+        later would otherwise carry a gap that reads as one enormously slow
+        epoch. A resumed run simply re-measures and has no ETA until it has
+        finished two epochs of its own.
+        """
+        times: list[tuple[int, float]] = getattr(self, "_epoch_times", None)
+        if times is None:
+            times = self._epoch_times = []
+        # Same truncation rule as the metric history: a re-run replays epoch
+        # numbers we already have, and a stale pair either side of the restart
+        # would measure the restart rather than an epoch.
+        while times and times[-1][0] >= epoch:
+            times.pop()
+        times.append((epoch, time.monotonic()))
+        del times[: -(_ETA_WINDOW + 1)]
+
+    def estimate_eta_seconds(self) -> Optional[float]:
+        """Seconds of training left, or None when there is nothing to base it on.
+
+        Needs a known epoch total and two timed epoch boundaries from *this*
+        process. Returns None rather than a guess: an ETA that appears
+        immediately and is wrong is worse than one that appears a minute in.
+        """
+        total = getattr(self, "_total_epochs", None)
+        times: list[tuple[int, float]] = getattr(self, "_epoch_times", None) or []
+        if not total or len(times) < 2:
+            return None
+        first_epoch, first_at = times[0]
+        last_epoch, last_at = times[-1]
+        epochs_measured = last_epoch - first_epoch
+        elapsed = last_at - first_at
+        if epochs_measured <= 0 or elapsed <= 0:
+            return None
+        remaining = total - last_epoch
+        if remaining <= 0:
+            # The last epoch has landed: there is no time left to estimate, and
+            # a persisted "0s" on a finished run's snapshot reads as a stat that
+            # was measured rather than one that stopped applying.
+            return None
+        return (elapsed / epochs_measured) * remaining
 
     async def _handle_event(self, event_type: Optional[str], data: dict) -> Optional[dict[str, Any]]:
         """Process one SSE event. Returns a result dict if terminal, else None."""

@@ -38,7 +38,7 @@ from ._classifier_job_builders import (
     build_binary_classifier_job,
     build_multi_label_classifier_job,
 )
-from ._training_job_runner import TrainingJobRunnerMixin
+from ._training_job_runner import TrainingJobRunnerMixin, format_eta
 from .Registry import register_task
 from .Task import Task
 
@@ -430,6 +430,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 # than a misleading 0.
                 "fields": {
                     "epoch": "Epoch",
+                    # Only present once two epoch boundaries have been timed in
+                    # this process — see estimate_eta_seconds.
+                    "eta": "Est. remaining",
                     "train_loss": "Train loss",
                     "val_loss": "Val loss",
                     "val_accuracy": "Val accuracy",
@@ -475,6 +478,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         stats: dict[str, Any] = {
             "epoch": f"{latest['epoch']} / {total_epochs}" if total_epochs else str(latest["epoch"]),
         }
+        eta_seconds = self.estimate_eta_seconds()
+        if eta_seconds is not None:
+            stats["eta"] = format_eta(eta_seconds)
         if "train_loss" in latest:
             stats["train_loss"] = f"{latest['train_loss']:.4f}"
         if "val_loss" in latest:
