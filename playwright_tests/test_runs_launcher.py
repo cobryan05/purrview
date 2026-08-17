@@ -597,22 +597,20 @@ class TestWatcherAlreadyRunning:
 
         _start(page, "Test").click()
 
-        # The refusal is a toast, not a silent no-op: a button that looks
-        # pressable and then does nothing reads as a bug.
-        expect(page.get_by_text(re.compile(r"already running"))).to_be_visible()
+        # It opens the live view instead (see TestWatcherDrillDown) — the point
+        # here is only that it does not start a second watcher.
+        expect(page.get_by_test_id("watch-live-dialog")).to_be_visible()
         assert started == []
 
-    def test_the_card_looks_unavailable_before_it_is_pressed(self, page: Page, base_url: str):
+    def test_the_card_invites_the_press_rather_than_blocking_it(self, page: Page, base_url: str):
+        """A running watcher card is not "unavailable" — pressing it does the
+        useful thing (shows you the watcher), so it must not look disabled."""
         _mock_task_status(page, {"task-w1": _watcher_instance("running")})
         _open_launcher(page, base_url)
 
         start = _start(page, "Test")
-        expect(start).to_have_class(re.compile(r"\bis-blocked\b"))
-        expect(start).to_have_attribute("title", re.compile(r"already running"))
-        # Deliberately NOT disabled/aria-disabled: the button still does
-        # something when pressed (it explains itself), and marking it disabled
-        # would both lie to assistive tech and swallow the click that carries
-        # the explanation.
+        expect(start).not_to_have_class(re.compile(r"\bis-blocked\b"))
+        expect(start).to_have_attribute("title", re.compile(r"live view"))
         expect(start).to_be_enabled()
 
     def test_an_idle_watcher_card_still_starts(self, page: Page, base_url: str):
@@ -658,6 +656,118 @@ class TestWatcherAlreadyRunning:
         # One stream per Runs visit, and every earlier one closed (readyState 2).
         assert opened_with_launcher == 1, f"launcher visit opened {opened_with_launcher} streams"
         assert states.count(1) <= 1, f"more than one live task stream: {states}"
+
+
+def _mock_live_preview(page: Page):
+    """The one endpoint the drill-down modal polls once it opens."""
+    page.route(
+        "**/api/tasks/instances/*/live-preview**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "preview": {
+                        "profileName": "Test",
+                        "sources": [{"sourceUuid": "src-1", "sourceName": "Cam"}],
+                        "sourceUuid": "src-1",
+                        "sourceName": "Cam",
+                        "frame": None,
+                        "detections": [],
+                        "tracks": [],
+                    },
+                }
+            ),
+        ),
+    )
+
+
+class TestWatcherDrillDown:
+    """Pressing a watcher that is already watching should show it to you.
+
+    The launcher knew a watcher was running (it badges "Watching now") and its
+    only answer to a press was to refuse. The useful answer is the drill-down
+    the NVR pane already has — the thing the user was reaching for.
+    """
+
+    def test_pressing_a_running_watcher_opens_the_live_view(self, page: Page, base_url: str):
+        _mock_live_preview(page)
+        _mock_task_status(page, {"task-w1": _watcher_instance("running")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Test").click()
+
+        expect(page.get_by_test_id("watch-live-dialog")).to_be_visible()
+
+    def test_it_opens_the_live_view_for_that_watcher(self, page: Page, base_url: str):
+        """Keyed on the running instance, not the profile: opening the wrong
+        watcher's frames would be worse than opening none."""
+        asked: list = []
+        page.route(
+            "**/api/tasks/instances/*/live-preview**",
+            lambda route: (
+                asked.append(route.request.url),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "preview": {"sources": [], "frame": None}}),
+                ),
+            )[-1],
+        )
+        _mock_task_status(page, {"task-w1": _watcher_instance("running")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Test").click()
+        expect(page.get_by_test_id("watch-live-dialog")).to_be_visible()
+
+        wait_until(
+            page,
+            lambda: any("task-w1" in url for url in asked),
+            message=lambda: f"live-preview never asked for the running instance: {asked}",
+        )
+
+    def test_an_idle_watcher_card_does_not_open_the_live_view(self, page: Page, base_url: str):
+        """Nothing is running, so the press must start a run as it always did."""
+        _mock_live_preview(page)
+        _mock_task_status(page, {})
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "new-cfg"}),
+            ),
+        )
+        _open_launcher(page, base_url)
+
+        _start(page, "Test").click()
+
+        expect(page.get_by_test_id("watch-live-dialog")).not_to_be_visible()
+
+    def test_a_paused_watcher_offers_no_live_view(self, page: Page, base_url: str):
+        """A paused watcher has stopped producing frames, so the modal would be
+        empty — and a button that opens an empty modal teaches people to ignore
+        it."""
+        _mock_live_preview(page)
+        _mock_task_status(page, {"task-w1": _watcher_instance("paused")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Test").click()
+
+        expect(page.get_by_test_id("watch-live-dialog")).not_to_be_visible()
+        expect(page.get_by_text(re.compile(r"no live view"))).to_be_visible()
+
+    def test_a_training_card_keeps_the_plain_refusal(self, page: Page, base_url: str):
+        """Only watchers have a live view; a running training still just says
+        it will not start a second."""
+        _mock_task_status(page, {"task-1": _training_instance("running")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Primary Model").click()
+
+        expect(page.get_by_text(re.compile(r"already running"))).to_be_visible()
+        expect(page.get_by_test_id("watch-live-dialog")).not_to_be_visible()
 
 
 class TestUnscopedFilterChainGuard:

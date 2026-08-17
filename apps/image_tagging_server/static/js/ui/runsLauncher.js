@@ -25,6 +25,7 @@ import { loadPreviousRun, formatTrainedAt } from '/app-static/js/ui/utils/previo
 import { launchRun, launchSavedConfig } from '/app-static/js/ui/utils/launchRun.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 
 let _rendering = false;
@@ -232,6 +233,15 @@ function _runLabel(status, kind) {
 }
 
 /**
+ * Statuses whose instance can actually be looked at live.
+ *
+ * A queued watcher has no frames yet and a paused one has stopped producing
+ * them, so opening a live view on either shows an empty modal — which teaches
+ * people that the button does not work.
+ */
+const _VIEWABLE_TONES = new Set(['running']);
+
+/**
  * Index the live runs in a task-status payload by the definition (training
  * config / watch profile) they were launched from.
  *
@@ -247,6 +257,9 @@ function indexLiveRuns(tasks) {
     if (!configUuid) continue;
     const label = _runLabel(entry.instance?.status, kind);
     if (!label) continue;
+    // The instance uuid rides along so a card can open the running thing, not
+    // just describe it. Only for statuses that have something to show.
+    label.taskUuid = _VIEWABLE_TONES.has(label.tone) ? entry.instance?.uuid ?? null : null;
     // Running beats queued when a definition has both in flight — the stronger
     // statement is the true one, and two badges do not fit on a card.
     const current = byConfig.get(configUuid);
@@ -313,6 +326,7 @@ function launchCard({
   registerDetail = null,
   registerRunState = null,
   preventDuplicate = false,
+  onLiveClick = null,
 }) {
   // The card's current live-run label, kept in the closure so the click handler
   // can read what the badge is showing. Only meaningful with registerRunState.
@@ -350,20 +364,27 @@ function launchCard({
       liveLabel = label;
       badge.hidden = label === null;
       card.classList.toggle('is-live', label !== null);
-      // A card that refuses to start a second run should look like it, not
-      // just say so after the press.
+      // What a live card looks like depends on what pressing it will now do.
       //
-      // Deliberately NOT aria-disabled (nor `disabled`): the control still
-      // does something when pressed — it explains why it won't start another —
-      // so marking it disabled would be a lie to assistive tech, and it also
-      // makes the button unclickable, which would swallow that explanation.
-      // The title carries the reason for anyone who hovers or reads it out.
+      // With onLiveClick, the card is not blocked at all — it stops being a
+      // Start button and becomes a way into the running thing, which is what
+      // you actually want from a card that says "Watching now". It keeps the
+      // normal pointer and says so in the title.
+      //
+      // Without one, pressing only explains why it will not start a second.
+      // That is still deliberately NOT aria-disabled (nor `disabled`): the
+      // control does do something, so marking it disabled would be a lie to
+      // assistive tech, and it would also make the button unclickable, which
+      // would swallow the explanation.
       if (preventDuplicate) {
-        startBtn.classList.toggle('is-blocked', label !== null);
-        if (label !== null) {
-          startBtn.title = `${name} is already running`;
-        } else {
+        const live = label !== null;
+        startBtn.classList.toggle('is-blocked', live && !onLiveClick);
+        if (!live) {
           startBtn.removeAttribute('title');
+        } else if (onLiveClick) {
+          startBtn.title = `Open the live view for ${name}`;
+        } else {
+          startBtn.title = `${name} is already running`;
         }
       }
       if (label === null) return;
@@ -450,6 +471,19 @@ function launchCard({
     // Read from the badge rather than re-queried, so the refusal matches what
     // the user could actually see when they pressed.
     if (preventDuplicate && liveLabel) {
+      // A card that is already running is the wrong place to offer "start
+      // again" and the right place to offer "show me it". Where the run has a
+      // live view, pressing opens it; the refusal is only the fallback for
+      // runs that have nothing to show.
+      if (onLiveClick) {
+        try {
+          onLiveClick(liveLabel);
+        } catch (err) {
+          Logger.warn('runsLauncher: could not open live view', err);
+          toast(err.message || `Could not open the live view for ${name}`, 5000, 'error');
+        }
+        return;
+      }
       toast(`${name} is already running — stop it first if you want to restart it`, 4000);
       return;
     }
@@ -657,6 +691,17 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         registerRunState: (setBadge) => runStateSetters.set(profile.uuid, setBadge),
         // A second watcher on one profile is never what was meant.
         preventDuplicate: true,
+        // Pressing a watcher that is already watching opens the same drill-down
+        // the NVR pane uses, rather than telling the user it will not start a
+        // second one. "Watching now" invites a press, and the useful answer to
+        // that press is the live view — the thing they came to see.
+        onLiveClick: ({ taskUuid }) => {
+          if (!taskUuid) {
+            toast(`${profile.name} has no live view yet`, 4000);
+            return;
+          }
+          openWatcherLiveView({ taskUuid, profileName: profile.name });
+        },
       })),
       watchers === null ? 'Could not load watch profiles.' : 'No watch profiles yet —',
       watchers === null ? null : { label: 'define one', tab: 'tab-watcher-management' },
