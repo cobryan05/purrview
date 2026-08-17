@@ -23,7 +23,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
-import { attachCardPreviews, stopAllCardPreviews } from '/app-static/js/app/nvr/cardPreview.js';
+import { attachCardPreviews, levelFromHealthLabel, stopAllCardPreviews } from '/app-static/js/app/nvr/cardPreview.js';
 
 /**
  * Small local button helper.
@@ -122,6 +122,10 @@ async function fetchWatcherSources(taskUuids) {
         sourceUuid: row.sourceUuid,
         // `source` is the status table's column name for the human name.
         sourceName: row.source,
+        // Carried through for the card's counter. This is the only per-source health
+        // that covers the sources *beyond* the four that get thumbnails — without it a
+        // card silently reports on a subset of its own cameras.
+        health: row.health,
       })).filter(s => s.sourceUuid);
       if (sources.length) byTask.set(taskUuid, sources);
     }
@@ -329,6 +333,74 @@ function _profileCard(profile, task, sources = []) {
   state.textContent = isRunning ? 'running' : 'stopped';
   bar.appendChild(state);
 
+  // "running" is true of a watcher whose only camera has been dark for an hour, and
+  // that reading is what let a dead source go unnoticed for a whole run. These two sit
+  // next to it and can contradict it, so the card cannot say "fine" on its own.
+  //
+  // The count is separate from the alert because it answers a question the alert
+  // cannot: only four sources get thumbnails, so on a bigger profile the strip shows a
+  // subset and "no red tiles" stops meaning "no problems". `n/m live` is over *every*
+  // source, tiled or not.
+  const countPill = document.createElement('span');
+  countPill.className = 'nvr-state-pill nvr-state-pill--count';
+  countPill.dataset.testid = 'nvr-source-count';
+  countPill.hidden = true;
+  bar.appendChild(countPill);
+
+  const alertPill = document.createElement('span');
+  alertPill.className = 'nvr-state-pill nvr-state-pill--offline';
+  alertPill.dataset.testid = 'nvr-offline-pill';
+  alertPill.hidden = true;
+  bar.appendChild(alertPill);
+
+  /**
+   * Per-source level for the whole profile.
+   *
+   * Seeded from the status payload, which covers every source, then overwritten for
+   * the four that have tiles as their polls come in — those are fresher (10 s) than
+   * this pane's re-render, and they are the ones the user is looking at.
+   */
+  const levels = new Map(
+    (sources ?? []).map(s => [s.sourceUuid, {
+      sourceName: s.sourceName || s.sourceUuid,
+      level: levelFromHealthLabel(s.health),
+    }]),
+  );
+
+  function renderHealthPills() {
+    const all = [...levels.values()];
+    if (!isRunning || !all.length) {
+      countPill.hidden = true;
+      alertPill.hidden = true;
+      card.classList.remove('nvr-profile-card--degraded');
+      return;
+    }
+    const dead = all.filter(s => s.level === 'dead');
+    const connecting = all.filter(s => s.level === 'connecting');
+    const live = all.length - dead.length - connecting.length;
+
+    countPill.hidden = false;
+    countPill.textContent = `${live}/${all.length} live`;
+    countPill.classList.toggle('nvr-state-pill--count-degraded', dead.length > 0);
+
+    // The card is named after the profile, so the alert has to name the *camera* —
+    // "1 source offline" on a six-camera card sends you hunting for which.
+    const names = list => list.map(s => s.sourceName).join(', ');
+    if (dead.length) {
+      alertPill.hidden = false;
+      alertPill.textContent = `⚠ no signal: ${names(dead)}`;
+      card.classList.add('nvr-profile-card--degraded');
+    } else if (connecting.length) {
+      alertPill.hidden = false;
+      alertPill.textContent = `connecting: ${names(connecting)}`;
+      card.classList.remove('nvr-profile-card--degraded');
+    } else {
+      alertPill.hidden = true;
+      alertPill.textContent = '';
+      card.classList.remove('nvr-profile-card--degraded');
+    }
+  }
+
   const spacer = document.createElement('span');
   spacer.style.flex = '1';
   bar.appendChild(spacer);
@@ -373,7 +445,16 @@ function _profileCard(profile, task, sources = []) {
   // Only for a running watcher: a stopped one has no frames, and a strip of permanent
   // "no frame yet" placeholders would make every stopped card look broken.
   if (isRunning) {
-    attachCardPreviews(body, { taskUuid: task.taskUuid, sources });
+    attachCardPreviews(body, {
+      taskUuid: task.taskUuid,
+      sources,
+      onHealth: (states) => {
+        for (const state of states) {
+          levels.set(state.sourceUuid, { sourceName: state.sourceName, level: state.level });
+        }
+        renderHealthPills();
+      },
+    });
   }
 
   const rules = profile.rules ?? profile.interactionRules ?? [];
@@ -392,6 +473,10 @@ function _profileCard(profile, task, sources = []) {
     row.textContent = rule.name || '(unnamed rule)';
     body.appendChild(row);
   }
+
+  // Seeded state, before any tile has polled: a card that has just been rendered onto
+  // an already-broken watcher must say so immediately, not ten seconds later.
+  renderHealthPills();
 
   card.appendChild(body);
   return card;

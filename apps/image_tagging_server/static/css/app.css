@@ -719,6 +719,18 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   box-shadow: 0 0 0 1px #f87171;
 }
 
+/* A dead camera has to be identifiable from across the pane, before any caption is
+   read — the frozen frame inside it looks exactly as convincing as a live one. Amber
+   for a source still coming up (expected, bounded), red for one that has stopped. */
+.nvr-preview-tile--stale {
+  border-color: var(--color-danger, #f87171);
+  box-shadow: 0 0 0 1px var(--color-danger, #f87171);
+}
+
+.nvr-preview-tile--connecting {
+  border-color: var(--color-warning, #fbbf24);
+}
+
 .nvr-preview-tile canvas {
   display: block;
   width: 100%;
@@ -750,6 +762,7 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 }
 
 .nvr-preview-tile__stat--error { color: var(--color-danger, #f87171); }
+.nvr-preview-tile__stat--warn { color: var(--color-warning, #fbbf24); }
 
 .nvr-preview-more {
   align-self: center;
@@ -791,6 +804,35 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .nvr-state-pill--running {
   border-color: var(--color-success);
   color: var(--color-success);
+}
+
+/* Quiet by default — it is a fact about the card, not an alarm. It turns only when
+   the count itself is the bad news. */
+.nvr-state-pill--count {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+}
+
+.nvr-state-pill--count-degraded {
+  border-color: var(--color-danger, #f87171);
+  color: var(--color-danger, #f87171);
+}
+
+/* Filled, not outlined like the others: it sits directly beside a green "RUNNING"
+   that it exists to contradict, and an outline next to an outline reads as more of
+   the same status rather than as a problem. */
+.nvr-state-pill--offline {
+  border-color: var(--color-danger, #f87171);
+  background: var(--color-danger, #f87171);
+  color: #1a1a1a;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* A degraded card should be findable while scrolling a wall of profiles, without the
+   whole card turning into an alert — the strip inside it carries the detail. */
+.nvr-profile-card--degraded {
+  border-color: var(--color-danger, #f87171);
 }
 
 .nvr-empty {

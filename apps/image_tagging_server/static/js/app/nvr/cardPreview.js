@@ -45,6 +45,77 @@ export const MAX_TILES = 4;
 /** Lower than the drill-down's: this is a thumbnail scaled down by CSS anyway. */
 const THUMB_QUALITY = 45;
 
+/**
+ * Frame age past which a tile stops being treated as live.
+ *
+ * Comfortably above one refresh interval, so an ordinary poll landing between two
+ * frames of a slow camera never trips it, and well below the two minutes the backend
+ * waits before calling a source failed — the picture should say something is wrong
+ * before the task log does.
+ */
+const STALE_AFTER_S = 15;
+
+/** Source states that mean "the picture on screen is not what the camera sees now". */
+const DEAD_STATES = new Set(['failed', 'reconnecting']);
+
+/** Coarse elapsed time. Mirrors `_format_duration` in `_watch_pipeline.py`. */
+function formatAge(seconds) {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+/**
+ * Classify a source from the status table's `health` string.
+ *
+ * The counterpart to `livenessOf`, for the sources that have no tile. Only the first
+ * `MAX_TILES` sources are polled, so on a six-camera profile the last two are invisible
+ * to the preview strip entirely — and "invisible" must not mean "assumed fine". The
+ * status payload already carries a health label for *every* source at no extra cost.
+ *
+ * Matches the labels built by `WatchPipeline._health_label` in `_watch_pipeline.py`.
+ *
+ * @param {?string} label
+ * @returns {'ok'|'connecting'|'dead'}
+ */
+export function levelFromHealthLabel(label) {
+  const text = String(label ?? '').toLowerCase();
+  if (text.startsWith('connecting')) return 'connecting';
+  if (text.startsWith('failed') || text.startsWith('reconnecting')) return 'dead';
+  return 'ok';
+}
+
+/**
+ * Classify one source's liveness from a preview payload.
+ *
+ * Three outcomes rather than a boolean, because they want different treatment: a
+ * camera coming up is expected and should not shout, a camera that has stopped
+ * delivering is a fault, and everything else is fine.
+ *
+ * @returns {{level: 'ok'|'connecting'|'dead', ageS: ?number, label: string}}
+ */
+export function livenessOf(preview) {
+  const state = preview?.sourceState;
+  // `frameAgeS` is null until the very first frame, and "never delivered" is exactly
+  // the case a card must not render as healthy — the downtime stands in for the age.
+  const ageS = preview?.frameAgeS ?? preview?.downtimeS ?? null;
+  const age = ageS == null ? null : formatAge(ageS);
+
+  if (state === 'connecting') {
+    return { level: 'connecting', ageS, label: age ? `connecting ${age}` : 'connecting' };
+  }
+  // The state is authoritative when the watcher offers one; the age is the fallback
+  // for a payload that predates it, and the backstop for a source the watcher still
+  // believes is healthy while its frames have visibly stopped.
+  const dead = DEAD_STATES.has(state) || (ageS != null && ageS > STALE_AFTER_S);
+  if (!dead) return { level: 'ok', ageS, label: '' };
+  return { level: 'dead', ageS, label: age ? `no signal · ${age}` : 'no signal' };
+}
+
 /** On-screen size of a box caption, in CSS pixels, whatever the camera's resolution. */
 const CAPTION_PX = 10;
 
@@ -78,12 +149,25 @@ export function stopAllCardPreviews() {
  * The names must come from the watcher rather than the profile row, which carries
  * source uuids only — a tile captioned with a uuid is the problem this exists to fix.
  *
+ * `onHealth` exists because the tiles are the only thing that learns a source has gone
+ * dark, and the card — which is what someone actually scans down a wall of profiles —
+ * had no way to know. It is called with one entry per polled source whenever any of
+ * them changes level.
+ *
  * @param {HTMLElement} host - element the strip is appended to
  * @param {{taskUuid: string, sources: Array<{sourceUuid: string, sourceName?: string}>,
- *          refreshMs?: number, maxTiles?: number}} opts
+ *          refreshMs?: number, maxTiles?: number,
+ *          onHealth?: (states: Array<{sourceUuid: string, sourceName: string,
+ *                                     level: string, label: string}>) => void}} opts
  * @returns {() => void} stop function (also registered for `stopAllCardPreviews`)
  */
-export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = REFRESH_MS, maxTiles = MAX_TILES }) {
+export function attachCardPreviews(host, {
+  taskUuid,
+  sources = [],
+  refreshMs = REFRESH_MS,
+  maxTiles = MAX_TILES,
+  onHealth = null,
+}) {
   // A watcher whose sources are not known yet gets no strip at all, rather than an
   // empty bordered box that reads as a broken camera.
   if (!sources.length) return () => {};
@@ -116,6 +200,24 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
   document.addEventListener('visibilitychange', onVisibility);
 
   const tiles = [];
+
+  /** Latest level per source, so the card can be told without re-polling anything. */
+  const health = new Map();
+
+  function reportHealth(source, liveness) {
+    if (!onHealth) return;
+    const previous = health.get(source.sourceUuid);
+    // Only on a change of *level*: the label ticks every poll ("58m" → "59m") and a
+    // card that re-rendered its bar every ten seconds would fight the user's cursor.
+    const changed = !previous || previous.level !== liveness.level;
+    health.set(source.sourceUuid, {
+      sourceUuid: source.sourceUuid,
+      sourceName: source.sourceName || source.sourceUuid || 'source',
+      level: liveness.level,
+      label: liveness.label,
+    });
+    if (changed && !stopped) onHealth([...health.values()]);
+  }
 
   /**
    * One source's thumbnail: canvas, caption, and its own polling loop.
@@ -162,6 +264,38 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
     }
     placeholder('…');
 
+    /**
+     * Stamp a dead or connecting source's frame so it cannot be read as live.
+     *
+     * The frame is kept rather than blanked — the last thing the camera saw is often
+     * the most useful thing on the pane, and a black rectangle throws it away to say
+     * something a caption already says. What it must not do is *look current*, so it
+     * is dimmed and struck with a band naming the state and how long it has held.
+     * Drawn into the canvas rather than layered in CSS so it survives a screenshot,
+     * which is how these cards usually get reported.
+     */
+    function drawLivenessOverlay(liveness, width, height) {
+      const dead = liveness.level === 'dead';
+      // Darkened rather than hidden: enough to kill the "this is live" read at a
+      // glance, not so much that the scene is lost.
+      ctx.fillStyle = dead ? 'rgba(0, 0, 0, 0.55)' : 'rgba(0, 0, 0, 0.35)';
+      ctx.fillRect(0, 0, width, height);
+
+      const shown = canvas.clientWidth || width;
+      const scale = width / shown;
+      const bandH = Math.max(16, Math.round(18 * scale));
+      const y = Math.round(height / 2 - bandH / 2);
+      ctx.fillStyle = dead ? 'rgba(153, 27, 27, 0.85)' : 'rgba(120, 83, 8, 0.85)';
+      ctx.fillRect(0, y, width, bandH);
+
+      ctx.fillStyle = '#fff';
+      ctx.font = `${Math.max(9, Math.round(11 * scale))}px sans-serif`;
+      ctx.textBaseline = 'middle';
+      const text = (dead ? 'NO SIGNAL' : 'CONNECTING') + (liveness.ageS != null ? ` · ${formatAge(liveness.ageS)}` : '');
+      ctx.fillText(text, Math.round(6 * scale), y + bandH / 2);
+      ctx.textBaseline = 'alphabetic';
+    }
+
     function draw() {
       const preview = state.preview;
       if (!ctx) return;
@@ -175,6 +309,18 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
       if (state.image) ctx.drawImage(state.image, 0, 0, width, height);
       else placeholder('No frame yet');
       if (!preview) return;
+
+      const liveness = livenessOf(preview);
+      // The boxes belong to the frozen frame, and drawing them over a dead camera
+      // asserts the watcher is tracking something it stopped seeing an hour ago.
+      if (liveness.level !== 'ok') {
+        drawLivenessOverlay(liveness, width, height);
+        tile.classList.toggle('nvr-preview-tile--stale', liveness.level === 'dead');
+        tile.classList.toggle('nvr-preview-tile--connecting', liveness.level === 'connecting');
+        tile.classList.remove('nvr-preview-tile--event');
+        return;
+      }
+      tile.classList.remove('nvr-preview-tile--stale', 'nvr-preview-tile--connecting');
 
       // Everything below is drawn in frame pixels and then scaled by CSS, so a fixed
       // 12px caption is 12px only by accident: on a 320-wide frame in a 176px tile it
@@ -216,25 +362,29 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
       const tracks = (preview.tracks ?? []).length;
       const dets = (preview.detections ?? []).length;
       const events = (preview.openEvents ?? []).length;
-      const age = preview.frameAgeS;
-      if (preview.lastError) {
-        statEl.textContent = 'source error';
-        statEl.classList.add('nvr-preview-tile__stat--error');
+      const liveness = livenessOf(preview);
+
+      // Duration first, error second. `lastError` used to short-circuit to a bare
+      // "source error", which is how a camera that had been down for an hour read
+      // identically to one that missed a single frame — the duration is the whole
+      // difference between "it blinked" and "nobody has looked at this since Tuesday",
+      // and it was the one thing not on screen.
+      statEl.classList.toggle('nvr-preview-tile__stat--error', liveness.level === 'dead');
+      statEl.classList.toggle('nvr-preview-tile__stat--warn', liveness.level === 'connecting');
+      if (liveness.level !== 'ok') {
+        statEl.textContent = liveness.label;
+        // The reason belongs somewhere, just not in a caption sized for "3 tracks".
+        tile.title = [liveness.label, preview.lastError].filter(Boolean).join(' — ');
         return;
       }
-      // A frozen frame is the failure this whole strip exists to expose, and a still
-      // picture cannot show it — the age has to be spelled out.
-      const stale = age != null && age > Math.max(10, refreshMs / 1000);
-      statEl.classList.toggle('nvr-preview-tile__stat--error', stale);
-      statEl.textContent = stale
-        ? `no frame for ${Math.round(age)}s`
-        : [
-          events ? `${events} event${events === 1 ? '' : 's'}` : '',
-          `${tracks} track${tracks === 1 ? '' : 's'}`,
-          // Only when it adds information: detections and tracks agreeing is the
-          // normal case and printing both every time is noise.
-          dets !== tracks ? `${dets} det` : '',
-        ].filter(Boolean).join(' · ');
+      tile.title = '';
+      statEl.textContent = [
+        events ? `${events} event${events === 1 ? '' : 's'}` : '',
+        `${tracks} track${tracks === 1 ? '' : 's'}`,
+        // Only when it adds information: detections and tracks agreeing is the
+        // normal case and printing both every time is noise.
+        dets !== tracks ? `${dets} det` : '',
+      ].filter(Boolean).join(' · ');
     }
 
     async function apply(preview) {
@@ -255,6 +405,7 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
       if (stopped) return;
       draw();
       renderCaption(preview);
+      reportHealth(source, livenessOf(preview));
     }
 
     async function poll({ immediate = false } = {}) {

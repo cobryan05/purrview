@@ -45,7 +45,14 @@ def _status_data(sources) -> dict:
             TASK_UUID: {
                 "stats": {},
                 "sources": [
-                    {"source": s["sourceName"], "sourceUuid": s["sourceUuid"], "tracks": 0, "health": "ok"}
+                    {
+                        "source": s["sourceName"],
+                        "sourceUuid": s["sourceUuid"],
+                        "tracks": 0,
+                        # The card's counter reads this for *every* source, including the
+                        # ones past MAX_TILES that never get a thumbnail.
+                        "health": s.get("health", "ok"),
+                    }
                     for s in sources
                 ],
                 "activeTracksTable": [],
@@ -146,7 +153,8 @@ class TestCardPreview:
         _mock(page, preview=_preview(frameAgeS=120.0))
         _open_live_pane(page, base_url)
 
-        expect(page.locator("[data-testid='nvr-preview-stat']").first).to_contain_text("no frame for 120s")
+        expect(page.locator("[data-testid='nvr-preview-stat']").first).to_contain_text("no signal")
+        expect(page.locator("[data-testid='nvr-preview-stat']").first).to_contain_text("2m")
 
     def test_a_stopped_watcher_has_no_preview_strip(self, page: Page, base_url: str):
         """A stopped watcher has no frames; a strip of placeholders would look broken."""
@@ -155,6 +163,123 @@ class TestCardPreview:
 
         expect(page.locator(".nvr-profile-card")).to_have_count(1)
         expect(page.locator("[data-testid='nvr-preview-strip']")).to_have_count(0)
+
+
+class TestADeadSourceIsImpossibleToMiss:
+    """A camera that stopped an hour ago must not present as a working one.
+
+    Everything on the card kept saying "fine": the pill said running, the thumbnail
+    showed a frame (the last one that ever arrived, with its boxes still drawn on it),
+    and the only contradiction was a caption that read "source error" — no duration, no
+    colour, smaller than the source name next to it. A source went dark for most of a
+    run without anything drawing the eye to it.
+    """
+
+    def test_a_dead_source_marks_its_tile(self, page: Page, base_url: str):
+        _mock(page, preview=_preview(frameAgeS=3600.0, sourceState="failed", downtimeS=3600.0))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator(".nvr-preview-tile--stale")).to_have_count(1)
+
+    def test_the_duration_survives_a_last_error(self, page: Page, base_url: str):
+        """The regression. `lastError` used to short-circuit the caption to a bare
+        "source error", so a camera down for an hour read exactly like one that
+        missed a single frame — and the duration is the entire difference."""
+        _mock(
+            page,
+            preview=_preview(
+                frameAgeS=3600.0,
+                downtimeS=3600.0,
+                sourceState="failed",
+                lastError="source returned no frame",
+            ),
+        )
+        _open_live_pane(page, base_url)
+
+        stat = page.locator("[data-testid='nvr-preview-stat']").first
+        expect(stat).to_contain_text("1h")
+        expect(stat).to_contain_text("no signal")
+
+    def test_a_dead_source_does_not_keep_drawing_event_boxes(self, page: Page, base_url: str):
+        """The tracks belong to the frozen frame. Highlighting them asserts the watcher
+        is reacting to something it stopped seeing an hour ago."""
+        preview = _preview(
+            frameAgeS=3600.0,
+            sourceState="failed",
+            downtimeS=3600.0,
+            openEvents=[{"ruleUuid": "r1", "ruleName": "Cat in litter box", "state": "active", "trackIds": [3]}],
+        )
+        _mock(page, preview=preview)
+        _open_live_pane(page, base_url)
+
+        expect(page.locator(".nvr-preview-tile--stale")).to_have_count(1)
+        expect(page.locator(".nvr-preview-tile--event")).to_have_count(0)
+
+    def test_the_card_names_the_offline_camera(self, page: Page, base_url: str):
+        """A pill on the card, next to the green "running" it contradicts — the strip
+        can be scrolled past, and "1 source offline" would send you hunting for which."""
+        _mock(page, preview=_preview(frameAgeS=3600.0, sourceState="failed", downtimeS=3600.0))
+        _open_live_pane(page, base_url)
+
+        pill = page.locator("[data-testid='nvr-offline-pill']")
+        expect(pill).to_be_visible()
+        expect(pill).to_contain_text("Litter cam")
+
+    def test_a_healthy_card_carries_no_alarm(self, page: Page, base_url: str):
+        _mock(page)
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-tile']").first).to_be_visible()
+        expect(page.locator("[data-testid='nvr-offline-pill']")).to_be_hidden()
+        expect(page.locator(".nvr-preview-tile--stale")).to_have_count(0)
+
+    def test_a_source_still_connecting_is_not_reported_as_dead(self, page: Page, base_url: str):
+        """Coming up is expected and bounded. Shouting about it is how a health signal
+        teaches people to ignore it."""
+        _mock(page, preview=_preview(frame=None, frameAgeS=None, sourceState="connecting", downtimeS=40.0))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-stat']").first).to_contain_text("connecting")
+        expect(page.locator(".nvr-preview-tile--stale")).to_have_count(0)
+        expect(page.locator(".nvr-preview-tile--connecting")).to_have_count(1)
+
+
+class TestTheCardCountsItsCameras:
+    """Only four sources get thumbnails, so on a bigger profile "no red tiles" stops
+    meaning "no problems" — the strip is showing a subset and nothing says so. The
+    counter is over every source the watcher has, tiled or not, and it reads its health
+    from the status payload the pane already fetches."""
+
+    def test_a_healthy_card_counts_all_its_cameras(self, page: Page, base_url: str):
+        _mock(page)
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-source-count']")).to_have_text("1/1 live")
+
+    def test_a_dead_camera_is_missing_from_the_live_count(self, page: Page, base_url: str):
+        _mock(page, preview=_preview(frameAgeS=3600.0, sourceState="failed", downtimeS=3600.0))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-source-count']")).to_have_text("0/1 live")
+
+    def test_a_source_with_no_tile_still_reaches_the_count(self, page: Page, base_url: str):
+        """The gap this closes: source six has no thumbnail, so before the counter
+        existed its being dark was not represented anywhere on the card."""
+        sources = [{"sourceUuid": f"src-{i}", "sourceName": f"Cam {i}"} for i in range(1, 7)]
+        sources[5]["health"] = "failed — no frames for 1h 2m, still retrying"
+        _mock(page, profiles=[_multi_source_profile()], sources=sources)
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-source-count']")).to_have_text("5/6 live")
+        expect(page.locator("[data-testid='nvr-offline-pill']")).to_contain_text("Cam 6")
+        # And it is genuinely one of the untiled ones.
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(4)
+
+    def test_a_stopped_watcher_counts_nothing(self, page: Page, base_url: str):
+        _mock(page, task_status="completed")
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-source-count']")).to_be_hidden()
 
 
 class TestMultiSourceCards:
