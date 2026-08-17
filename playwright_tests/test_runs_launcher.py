@@ -532,6 +532,98 @@ class TestTrainingInProgressBadge:
 
         expect(self._badge(page, "Primary Model")).to_be_hidden()
 
+
+def _watcher_instance(status: str = "running", profile_uuid: str = "wp-1") -> dict:
+    """A running watcher, shaped the way the launcher starts one: a throwaway
+    task config carrying the watch profile's uuid."""
+    return {
+        "config": {
+            "uuid": "tmp-watch-cfg",
+            "name": "Watch Test",
+            "typename": "StreamWatcherTask",
+            "params": {"watch_profile_uuid": profile_uuid},
+        },
+        "instance": {"uuid": "task-w1", "status": status},
+        "continuous": True,
+    }
+
+
+class TestWatcherAlreadyRunning:
+    """A watcher is the case where a second copy is actively harmful: both open
+    the same cameras, both evaluate the same rules, and both fire the same
+    actions — duplicate clips, duplicate MQTT, and a stop that stops one of them.
+    The card has to say so, and refuse.
+    """
+
+    def _badge(self, page: Page, name: str):
+        return _card(page, name).get_by_test_id("runs-launch-run-badge")
+
+    def test_a_running_watcher_is_named_on_its_card(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-w1": _watcher_instance("running")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Test")).to_have_text("Watching now")
+        expect(_card(page, "Test")).to_have_class(re.compile(r"\bis-live\b"))
+
+    def test_a_paused_watcher_reads_as_a_watcher_not_a_training(self, page: Page, base_url: str):
+        # The wording is per task type on purpose; a wall of watcher cards all
+        # saying "Training paused" would be worse than no badge.
+        _mock_task_status(page, {"task-w1": _watcher_instance("paused")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Test")).to_have_text("Watcher paused")
+
+    def test_another_profiles_watcher_does_not_mark_this_card(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-w1": _watcher_instance("running", profile_uuid="wp-other")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Test")).to_be_hidden()
+
+    def test_pressing_start_does_not_launch_a_second_watcher(self, page: Page, base_url: str):
+        started: list = []
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: (
+                started.append(route.request.post_data),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configUuid": "should-not-happen"}),
+                ),
+            )[-1],
+        )
+        _mock_task_status(page, {"task-w1": _watcher_instance("running")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Test").click()
+
+        # The refusal is a toast, not a silent no-op: a button that looks
+        # pressable and then does nothing reads as a bug.
+        expect(page.get_by_text(re.compile(r"already running"))).to_be_visible()
+        assert started == []
+
+    def test_the_card_looks_unavailable_before_it_is_pressed(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-w1": _watcher_instance("running")})
+        _open_launcher(page, base_url)
+
+        start = _start(page, "Test")
+        expect(start).to_have_class(re.compile(r"\bis-blocked\b"))
+        expect(start).to_have_attribute("title", re.compile(r"already running"))
+        # Deliberately NOT disabled/aria-disabled: the button still does
+        # something when pressed (it explains itself), and marking it disabled
+        # would both lie to assistive tech and swallow the click that carries
+        # the explanation.
+        expect(start).to_be_enabled()
+
+    def test_an_idle_watcher_card_still_starts(self, page: Page, base_url: str):
+        """The guard must not leak into the normal case."""
+        _mock_task_status(page, {})
+        _open_launcher(page, base_url)
+
+        start = _start(page, "Test")
+        expect(start).not_to_have_class(re.compile(r"\bis-blocked\b"))
+        expect(_card(page, "Test")).not_to_have_class(re.compile(r"\bis-live\b"))
+
     def test_the_launcher_opens_no_stream_of_its_own(self, page: Page, base_url: str):
         """Runs owns exactly one task SSE stream, closed when the tab is left
         (test_leaks_and_races.py guards it). The launcher is pushed that stream's

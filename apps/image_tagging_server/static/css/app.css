@@ -476,6 +476,20 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   cursor: progress;
 }
 
+/* A card that will refuse to start a second run (a watcher already watching)
+   should read as unavailable *before* it is pressed. Not `disabled`: the click
+   still needs to land so it can explain why, and a disabled button is skipped
+   by the keyboard and announces nothing. aria-disabled carries that meaning to
+   assistive tech while leaving the element focusable. */
+.runs-launch-card__start.is-blocked {
+  cursor: not-allowed;
+}
+
+.runs-launch-card__start.is-blocked .runs-launch-card__name,
+.runs-launch-card__start.is-blocked .runs-launch-card__hint {
+  opacity: 0.55;
+}
+
 .runs-launch-card__name {
   font-size: var(--text-sm);
   font-weight: 600;

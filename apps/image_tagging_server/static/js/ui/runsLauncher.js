@@ -188,40 +188,66 @@ async function trainingDelta(config) {
 let _runStateByConfig = new Map();
 
 /**
- * How a live TrainModelTask should read on the card that launches it.
+ * Task types whose live instances a launch card should know about, and the
+ * param that ties a running instance back to the definition on the card.
+ *
+ * The launcher starts these through a throwaway task config carrying the
+ * definition's uuid, so that param is the only link between a running job and
+ * the card that would start another one.
+ *
+ * Wording is per-type because the badge is the whole point: "Training in
+ * progress" and "Watching now" answer different questions, and a generic
+ * "Running" on a wall of watcher cards says nothing useful.
+ */
+const LIVE_RUN_KINDS = {
+  TrainModelTask: {
+    paramKey: 'training_config_uuid',
+    running: 'Training in progress',
+    paused: 'Training paused',
+  },
+  StreamWatcherTask: {
+    paramKey: 'watch_profile_uuid',
+    running: 'Watching now',
+    paused: 'Watcher paused',
+  },
+};
+
+/**
+ * How a live run should read on the card that launches it.
  * Anything not terminal counts: a queued run is as much a reason not to press
  * Start as a running one.
  *
  * @param {string} status
+ * @param {{running: string, paused: string}} kind
  * @returns {?{text: string, tone: string}}
  */
-function _runLabel(status) {
+function _runLabel(status, kind) {
   if (TERMINAL_STATUSES.has(status)) return null;
-  if (status === 'paused') return { text: 'Training paused', tone: 'paused' };
-  if (status === 'running') return { text: 'Training in progress', tone: 'running' };
+  if (status === 'cancelled') return null;
+  if (status === 'paused') return { text: kind.paused, tone: 'paused' };
+  if (status === 'running') return { text: kind.running, tone: 'running' };
   // 'new'/'pending', plus any status this UI has not been taught yet — treating
   // an unknown state as live is the safe direction.
   return { text: 'Queued', tone: 'queued' };
 }
 
 /**
- * Index the live training runs in a task-status payload by the training config
- * they were launched from.
+ * Index the live runs in a task-status payload by the definition (training
+ * config / watch profile) they were launched from.
  *
  * @param {Record<string, any>} tasks - `tasks` from fetchTasksStatus / the stream
  * @returns {Map<string, {text: string, tone: string}>}
  */
-function indexTrainingRuns(tasks) {
+function indexLiveRuns(tasks) {
   const byConfig = new Map();
   for (const entry of Object.values(tasks || {})) {
-    if (entry?.config?.typename !== 'TrainModelTask') continue;
-    // The launcher starts trainings through a throwaway task config carrying the
-    // recipe's uuid, so this is what ties a running job back to a card.
-    const configUuid = entry.config?.params?.training_config_uuid;
+    const kind = LIVE_RUN_KINDS[entry?.config?.typename];
+    if (!kind) continue;
+    const configUuid = entry.config?.params?.[kind.paramKey];
     if (!configUuid) continue;
-    const label = _runLabel(entry.instance?.status);
+    const label = _runLabel(entry.instance?.status, kind);
     if (!label) continue;
-    // Running beats queued when a recipe has both in flight — the stronger
+    // Running beats queued when a definition has both in flight — the stronger
     // statement is the true one, and two badges do not fit on a card.
     const current = byConfig.get(configUuid);
     if (current && current.tone === 'running') continue;
@@ -242,7 +268,7 @@ function indexTrainingRuns(tasks) {
  */
 export function applyRunsLauncherTaskState(tasks) {
   if (_runStateByConfig.size === 0) return;
-  const live = indexTrainingRuns(tasks);
+  const live = indexLiveRuns(tasks);
   for (const [configUuid, setBadge] of _runStateByConfig) {
     setBadge(live.get(configUuid) ?? null);
   }
@@ -286,7 +312,11 @@ function launchCard({
   detail = null,
   registerDetail = null,
   registerRunState = null,
+  preventDuplicate = false,
 }) {
+  // The card's current live-run label, kept in the closure so the click handler
+  // can read what the badge is showing. Only meaningful with registerRunState.
+  let liveLabel = null;
   const card = document.createElement('div');
   card.className = 'runs-launch-card';
   card.dataset.tour = 'runs.launchCard';
@@ -317,8 +347,25 @@ function launchCard({
     startBtn.insertBefore(badge, top);
 
     registerRunState((label) => {
+      liveLabel = label;
       badge.hidden = label === null;
       card.classList.toggle('is-live', label !== null);
+      // A card that refuses to start a second run should look like it, not
+      // just say so after the press.
+      //
+      // Deliberately NOT aria-disabled (nor `disabled`): the control still
+      // does something when pressed — it explains why it won't start another —
+      // so marking it disabled would be a lie to assistive tech, and it also
+      // makes the button unclickable, which would swallow that explanation.
+      // The title carries the reason for anyone who hovers or reads it out.
+      if (preventDuplicate) {
+        startBtn.classList.toggle('is-blocked', label !== null);
+        if (label !== null) {
+          startBtn.title = `${name} is already running`;
+        } else {
+          startBtn.removeAttribute('title');
+        }
+      }
       if (label === null) return;
       badge.className = `runs-launch-card__run-badge is-${label.tone}`;
       badge.textContent = label.text;
@@ -390,6 +437,22 @@ function launchCard({
     //
     // Disabling the *button*, not the card: the card is a div now, where
     // `disabled` is an inert unknown property that silently does nothing.
+    // Nothing this launcher starts is actually improved by a second concurrent
+    // copy: two watchers on one profile open the same cameras and double-fire
+    // every action (duplicate clips, duplicate MQTT, and a "stop" that stops
+    // one of them); two trainings from one recipe contend for the GPU and race
+    // on the same output model. So this is opt-in only because it is opt-in to
+    // *detect* — a card can be guarded exactly when LIVE_RUN_KINDS knows which
+    // param ties a running instance back to it. The Saved-tasks cards have no
+    // such link, so an unguarded card here means "we cannot tell", not "go
+    // ahead".
+    //
+    // Read from the badge rather than re-queried, so the refusal matches what
+    // the user could actually see when they pressed.
+    if (preventDuplicate && liveLabel) {
+      toast(`${name} is already running — stop it first if you want to restart it`, 4000);
+      return;
+    }
     startBtn.disabled = true;
     const original = top.textContent;
     try {
@@ -532,6 +595,9 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         detail: () => trainingDelta(cfg),
         registerDetail: (reload) => deltaLoaders.push(reload),
         registerRunState: (setBadge) => runStateSetters.set(cfg.uuid, setBadge),
+        // Two trainings from one recipe contend for the GPU and race on the
+        // same output model. The badge has always said so; it now also refuses.
+        preventDuplicate: true,
       })),
       trainings === null ? 'Could not load training configs.' : 'No training configs yet —',
       trainings === null ? null : { label: 'define one', tab: 'tab-training-management' },
@@ -581,10 +647,16 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
           typename: 'StreamWatcherTask',
           name: `Watch ${profile.name}`,
           params: { watch_profile_uuid: profile.uuid },
+          // persistent deliberately omitted: StreamWatcherTask.DEFAULT_PERSISTENT
+          // decides, so a watcher survives a service restart wherever it was
+          // started from.
         }),
         configTab: 'tab-watcher-management',
         configUuid: profile.uuid,
         onStarted,
+        registerRunState: (setBadge) => runStateSetters.set(profile.uuid, setBadge),
+        // A second watcher on one profile is never what was meant.
+        preventDuplicate: true,
       })),
       watchers === null ? 'Could not load watch profiles.' : 'No watch profiles yet —',
       watchers === null ? null : { label: 'define one', tab: 'tab-watcher-management' },
