@@ -10,6 +10,10 @@ talking to localhost. `training_server_url` had the identical defect.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import db_client
@@ -214,3 +218,59 @@ class TestTasksResolveThroughManager:
 
         manager.get_training_base_url.assert_called_once()
         assert task._training_base_url == "http://trainer-box:8005"
+
+
+class TestLongRunningTasksDoNotCacheTheClient:
+    """The other half of the same split brain.
+
+    `get_inference_api_client` documents that tasks must fetch the client at the
+    point of use, and `_release_api_client` clears the discarded client's pool on
+    the strength of that. The two tasks that actually run for weeks —
+    StreamWatcher and CollectTrainingImages — fetched it once in `_run` and held
+    it, so a Settings → Servers change never reached them: they kept addressing
+    the old host through a pool that had just been cleared underneath them.
+    """
+
+    async def test_the_filter_chain_backend_resolves_the_client_per_call(self):
+        from apps.tasks_server.tasks.ApplyFilterChainTask import _HttpInferenceBackend
+
+        clients = [MagicMock(name="old-host"), MagicMock(name="new-host")]
+        provider = MagicMock(side_effect=clients)
+        backend = _HttpInferenceBackend(provider, {})
+
+        # Construction alone must not pin a client.
+        provider.assert_not_called()
+        assert backend._inference_api.api_client is clients[0]
+        assert backend._inference_api.api_client is clients[1]
+
+    async def test_pin_renewal_re_reads_the_client_each_cycle(self):
+        """The renewal loop is also what re-pins the models on the new host."""
+        import apps.tasks_server.tasks.StreamWatcherTask as watcher_mod
+        from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
+
+        task = StreamWatcherTask.__new__(StreamWatcherTask)
+        task._cancel_flag = asyncio.Event()
+        task._pin_ids = {"model-a": "pin-1"}
+        task._manager = MagicMock()
+
+        seen: list[Any] = []
+
+        def _models_api(client):
+            seen.append(client)
+            api = MagicMock()
+            api.pin_model_api_api_models_model_name_pin_post.return_value = SimpleNamespace(pin_id="pin-1")
+            return api
+
+        with patch.object(StreamWatcherTask, "_PIN_RENEWAL_INTERVAL_S", 0), patch.object(
+            watcher_mod, "ModelsApi", _models_api
+        ):
+            loop_task = asyncio.create_task(task._renew_pins_periodically())
+            while len(seen) < 2:
+                await asyncio.sleep(0)
+            task._cancel_flag.set()
+            loop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await loop_task
+
+        # Fetched per cycle rather than bound once outside the loop.
+        assert task._manager.get_inference_api_client.call_count >= 2

@@ -11,11 +11,13 @@ import db_client
 import db_client.models as db_models
 import httpx
 import inference_client
+import relay_buffer_client
 from db_client.api.tasks_api import TasksApi
 
 from apps import APPS, APPS_CONFIG, TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
 from apps.helpers.consts import TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.recordings.relayClipClient import RelayClipClient
 from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
 from apps.tasks_server.types import TaskInfo
@@ -73,6 +75,8 @@ class Manager:
         self._training_url_override: Optional[str] = None
         self._training_base_url: str = default_training_url
         self._url_settings_client = httpx.AsyncClient(timeout=10.0)
+        # Built lazily by get_relay_api_client — see there for why it is not injected.
+        self._relay_clip_client: Optional[RelayClipClient] = None
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._completion_tasks: set[asyncio.Task] = set()
         self._pending_oneshot_deletes: set[str] = set()
@@ -98,6 +102,26 @@ class Manager:
         one would keep talking to the previous host.
         """
         return self._inference_api_client
+
+    def get_relay_api_client(self) -> RelayClipClient:
+        """The relay client used to cut event clips out of the rolling buffer.
+
+        Built on first use rather than injected: only a watcher with a `record_clip`
+        action on a buffered source ever needs it.
+
+        The host comes from APPS_CONFIG (so RELAY_BUFFER_SERVER_HOST moves it like
+        any other service) but there is deliberately no Settings → Servers override:
+        inference and training are stateless compute that can sit anywhere, whereas
+        a clip is cut into a `dest` path on the relay's own filesystem, so the relay
+        has to stay wherever the recordings are readable from.
+        """
+        if self._relay_clip_client is None:
+            relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+            api_client = relay_buffer_client.ApiClient(
+                relay_buffer_client.Configuration(f"http://{relay_cfg.host}:{relay_cfg.port}")
+            )
+            self._relay_clip_client = RelayClipClient(api_client)
+        return self._relay_clip_client
 
     def get_training_base_url(self) -> str:
         """Base URL of the training server, honouring the Settings override."""

@@ -10,6 +10,7 @@ have is a real thing to want (a better scan of the same frame), so the caller
 is told and decides.
 """
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -297,3 +298,65 @@ class TestThumbnailFreshness:
 
         assert after.status_code == 200
         assert after.content != before.content, "the cache served the thumbnail of the replaced file"
+
+
+class TestOverwriteBboxPhash:
+    """A box's hash describes a *crop*, and an overwrite changes the crop too.
+
+    The image pHash and the bbox thumbnails are both refreshed on an overwrite;
+    `bboxes.phash` and its per-label index entries were not, so "find similar
+    bboxes" kept matching crops of a picture that is no longer on disk — the
+    same failure HashIndex.replace_image fixes one level up.
+    """
+
+    async def _image_with_a_box(self, http_client, name: str, data: bytes):
+        await _post(http_client, [_upload(name, data)], overwrite="true")
+        label = await http_client.post("/api/labels", json={"name": f"cat-{name}", "color": "#FF0000"})
+        label_uuid = label.json()["label"]["uuid"]
+        bbox_uuid = str(uuid.uuid4())
+        r = await http_client.post(
+            "/api/images/metadata/update",
+            json={
+                "imagePath": name,
+                "boxes": [
+                    {
+                        "uuid": bbox_uuid,
+                        "labelUuid": label_uuid,
+                        "x": 0.1,
+                        "y": 0.1,
+                        "width": 0.6,
+                        "height": 0.6,
+                    }
+                ],
+            },
+        )
+        assert r.status_code == 200
+        return bbox_uuid
+
+    async def _bbox_phash(self, db_client, bbox_uuid: str):
+        rows = await db_client.get_all_bbox_phashes()
+        return next((r["phash"] for r in rows if r["uuid"] == bbox_uuid), None)
+
+    async def test_an_overwrite_rehashes_the_boxes_on_the_image(self, http_client, db_client):
+        bbox_uuid = await self._image_with_a_box(http_client, "boxed.png", _patterned_png(0))
+        original = await self._bbox_phash(db_client, bbox_uuid)
+        assert original is not None
+
+        await _post(http_client, [_upload("boxed.png", _patterned_png(1))], overwrite="true")
+
+        replaced = await self._bbox_phash(db_client, bbox_uuid)
+        assert replaced is not None
+        assert replaced != original, "the bbox row still holds a hash of the replaced picture"
+
+    async def test_the_overwrite_does_not_clear_the_image_phash(self, http_client, db_client):
+        """The bbox refresh writes through update_phashes, which sets the image
+        hash in the same statement — passing the wrong value there would undo
+        the image-level refresh that runs just before it."""
+        bbox_uuid = await self._image_with_a_box(http_client, "kept-hash.png", _patterned_png(0))
+        assert bbox_uuid
+
+        r = await _post(http_client, [_upload("kept-hash.png", _patterned_png(1))], overwrite="true")
+        uuid_ = r.json()["results"][0]["uuid"]
+
+        image = await db_client.get_image_by_uuid(uuid_)
+        assert image.phash is not None

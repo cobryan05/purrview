@@ -18,7 +18,7 @@ import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import NAMESPACE_OID, uuid5
 
 from db_client.api.datasets_api import DatasetsApi
@@ -86,10 +86,17 @@ class _HttpInferenceBackend:
     param exists on that endpoint) — acceptable overhead for a batch task, not a
     hot path like collect-time inference."""
 
-    def __init__(self, inference_api_client, pin_ids: Dict[str, str]):
-        self._inference_api = InferenceApi(inference_api_client)
+    def __init__(self, client_provider: Callable[[], Any], pin_ids: Dict[str, str]):
+        # A provider rather than a client: a collect run can outlive a Settings →
+        # Servers change, and a backend holding the old client would keep talking to
+        # the previous host — whose connection pool has by then been cleared.
+        self._client_provider = client_provider
         self._pin_ids = pin_ids
         self._kind_cache: Dict[str, str] = {}
+
+    @property
+    def _inference_api(self) -> InferenceApi:
+        return InferenceApi(self._client_provider())
 
     async def get_model_kind(self, model_name: str) -> str:
         if model_name not in self._kind_cache:
@@ -216,7 +223,7 @@ class ApplyFilterChainTask(Task):
             self._name_to_label_uuid = await self._build_name_to_label_uuid(labels_api)
 
         await self._pin_detector_models(inference_api_client, steps)
-        backend = _HttpInferenceBackend(inference_api_client, self._pin_ids)
+        backend = _HttpInferenceBackend(self._manager.get_inference_api_client, self._pin_ids)
         runner = FilterChainRunner(steps, backend)
 
         # Deterministic per-instance review tags, so each run's relabels and each

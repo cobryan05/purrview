@@ -364,8 +364,6 @@ class StreamWatcherTask(Task):
         elif needs_mqtt:
             self.log("An MQTT action is configured but no broker is set in Settings — publishes will be skipped")
 
-        relay_client = self._manager.get_relay_api_client() if hasattr(self._manager, "get_relay_api_client") else None
-
         for row in sorted(self._profile.actions, key=lambda a: a.order):
             if not row.enabled:
                 continue
@@ -404,10 +402,10 @@ class StreamWatcherTask(Task):
         if pipeline is None:
             return None
         if pipeline.buffered:
-            relay_client = (
-                self._manager.get_relay_api_client() if hasattr(self._manager, "get_relay_api_client") else None
-            )
-            return PlaybackClipBackend(relay_client) if relay_client else None
+            # No hasattr guard: a manager without this method is a wiring bug, and
+            # swallowing it here is what previously made every clip on a relayed
+            # camera fail with "no clip backend" instead of saying why.
+            return PlaybackClipBackend(self._manager.get_relay_api_client())
         ring = self._frame_rings.get(pipeline.source_uuid)
         return RingClipBackend(ring) if ring is not None else None
 
@@ -447,13 +445,13 @@ class StreamWatcherTask(Task):
             logger.debug("No MQTT broker configured in Settings", exc_info=True)
             return None
 
-    async def _pin_models(self, inference_api_client: inference_client.ApiClient) -> None:
+    async def _pin_models(self) -> None:
         """Hold a pin on every model for the task's lifetime.
 
         Without this the ~10-minute idle auto-unload would evict models between frames
         on a slow-fps watcher, so every inference call would pay a model load.
         """
-        models_api = ModelsApi(inference_api_client)
+        models_api = ModelsApi(self._manager.get_inference_api_client())
         names = {name for p in self._pipelines for name in p.model_names}
         for name in sorted(names):
             try:
@@ -469,12 +467,14 @@ class StreamWatcherTask(Task):
                 logger.exception("Failed to pin model %s", name)
                 self._pin_ids[name] = None
 
-    async def _renew_pins_periodically(self, inference_api_client: inference_client.ApiClient) -> None:
+    async def _renew_pins_periodically(self) -> None:
         """Re-pin on a timer so a run longer than the pin duration never lapses."""
-        models_api = ModelsApi(inference_api_client)
         try:
             while not self._cancel_flag.is_set():
                 await asyncio.sleep(self._PIN_RENEWAL_INTERVAL_S)
+                # Re-read the client each cycle: a watcher outlives a Settings →
+                # Servers change, and this is also what re-pins on the new host.
+                models_api = ModelsApi(self._manager.get_inference_api_client())
                 for name in list(self._pin_ids):
                     try:
                         resp = await asyncio.to_thread(
@@ -615,8 +615,6 @@ class StreamWatcherTask(Task):
     async def _run(self) -> dict[str, Any]:
         self._run_started_at = time.monotonic()
         db_api_client = self._manager.get_db_api_client()
-        inference_api_client = self._manager.get_inference_api_client()
-        inference_api = InferenceApi(inference_api_client)
 
         self._status_msg = "Building pipelines"
         await self._build_pipelines(db_api_client)
@@ -625,8 +623,8 @@ class StreamWatcherTask(Task):
         await self._build_actions(db_api_client)
 
         self._status_msg = "Pinning models"
-        await self._pin_models(inference_api_client)
-        renewal = asyncio.create_task(self._renew_pins_periodically(inference_api_client))
+        await self._pin_models()
+        renewal = asyncio.create_task(self._renew_pins_periodically())
 
         self._status_msg = "Starting sources"
         for pipeline in self._pipelines:
@@ -653,6 +651,10 @@ class StreamWatcherTask(Task):
                     await asyncio.sleep(self._idle_sleep(now))
                     continue
 
+                # Built per pass, not once: a watcher runs for weeks, and a client
+                # cached at start-up would keep addressing the host that Settings →
+                # Servers pointed away from (and whose pool has since been cleared).
+                inference_api = InferenceApi(self._manager.get_inference_api_client())
                 for pipeline in due:
                     if self._cancel_flag.is_set():
                         break

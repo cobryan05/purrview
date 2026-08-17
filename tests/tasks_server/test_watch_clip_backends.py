@@ -18,6 +18,8 @@ import base64
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.recordClipAction import (
     FrameRing,
@@ -101,10 +103,17 @@ class TestBackendSelection:
 
         assert task._clip_backend_for(_context("nope")) is None
 
-    def test_no_relay_client_means_no_playback_backend(self):
-        task = _task([_pipeline("src-1", buffered=True)], relay_client=None)
+    def test_a_manager_without_a_relay_client_fails_loudly(self):
+        """This used to return None, which is how a missing `get_relay_api_client`
+        on the real Manager went unnoticed: every clip on a relayed camera failed
+        with "no clip backend available" and nothing said why. A manager that cannot
+        supply a relay client is a wiring bug, so it must raise.
+        """
+        task = _task([_pipeline("src-1", buffered=True)])
+        task._manager = SimpleNamespace()
 
-        assert task._clip_backend_for(_context("src-1")) is None
+        with pytest.raises(AttributeError):
+            task._clip_backend_for(_context("src-1"))
 
 
 class TestFrameRingWiring:

@@ -697,12 +697,11 @@ class CollectTrainingImagesTask(Task):
                         logger.exception("Failed to pin filter-chain model %s", name)
 
                 self._combined_pin_ids.update({k: v for k, v in self._chain_pin_ids.items() if v})
-                backend = _HttpInferenceBackend(inference_api_client, self._combined_pin_ids)
+                backend = _HttpInferenceBackend(self._manager.get_inference_api_client, self._combined_pin_ids)
                 self._filter_chain_runner = FilterChainRunner(chain_steps, backend)
                 self.log(f"Filter chain '{chain.name}' active ({len(chain_steps)} step(s))")
 
         images_api = ImagesApi(db_api_client)
-        inference_api = InferenceApi(inference_api_client)
         files_root = Path(os.environ.get("FILES_ROOT", "/app/image_datasets"))
 
         # Shared save-task list: appended by _dedup_worker (dedup path) or directly here
@@ -908,6 +907,11 @@ class CollectTrainingImagesTask(Task):
                 if _stop_condition_reached():
                     self.log("Stop condition reached (max_images/max_duration) — stopping")
                     break
+
+                # Rebuilt per pass, not once at start-up: a live collect runs for days,
+                # and a cached client keeps addressing the host that Settings → Servers
+                # pointed away from (whose connection pool has since been cleared).
+                inference_api = InferenceApi(self._manager.get_inference_api_client())
 
                 any_fetched = False
                 for provider in list(active):
@@ -1163,7 +1167,7 @@ class CollectTrainingImagesTask(Task):
             for provider in providers:
                 await provider.stop()
             # Release long-lived model pins so the inference server can unload promptly.
-            unpin_api = ModelsApi(inference_api_client)
+            unpin_api = ModelsApi(self._manager.get_inference_api_client())
             for name, pid in pin_ids.items():
                 if pid:
                     try:
@@ -2009,20 +2013,43 @@ class CollectTrainingImagesTask(Task):
                         self._ambiguity_samples.append((det_meta.get(hi.bbox.uuid, {}).get("model", "?"), value))
                         if not _ambiguity_fires(self._ambiguity_metric, value, self._ambiguity_threshold):
                             continue
-                        for winner, rival in ((hi, lo), (lo, hi)):
-                            self._record_cross_model_flag(winner, rival, value, det_meta)
+                        # Both boxes carry the verdict — a reviewer opening either one
+                        # must see the disagreement — but it is *one* disagreement, and
+                        # counting it per box reported more flags than pairs measured
+                        # and listed every pair twice, once per direction.
+                        keys = [
+                            key
+                            for key in (
+                                self._record_cross_model_flag(hi, lo, value, det_meta),
+                                self._record_cross_model_flag(lo, hi, value, det_meta),
+                            )
+                            if key is not None
+                        ]
+                        if keys:
+                            self._ambiguity_flagged += 1
+                            # keys[0] is the higher-confidence side whenever it passed
+                            # the gates, so the summary attributes the pair to the model
+                            # that actually won it.
+                            self._ambiguity_pairs[keys[0]] = self._ambiguity_pairs.get(keys[0], 0) + 1
 
-    def _record_cross_model_flag(self, winner, rival, value: float, det_meta: dict[str, dict[str, Any]]) -> None:
+    def _record_cross_model_flag(
+        self, winner, rival, value: float, det_meta: dict[str, dict[str, Any]]
+    ) -> Optional[tuple[str, str, str]]:
         """Attach one cross-model verdict to *winner*, respecting the same gates
-        the same-model path applies (review_disabled, the confidence floor)."""
+        the same-model path applies (review_disabled, the confidence floor).
+
+        Returns the pair key for the caller to count, or None if a gate rejected
+        this side. Counting is the caller's job because both directions describe
+        one disagreement — see the note there.
+        """
         meta = det_meta.get(winner.bbox.uuid)
         if meta is None or meta.get("ambiguity") is not None:
-            return  # unknown detection, or same-model already had its say
+            return None  # unknown detection, or same-model already had its say
         band = self._target_label_bands.get(winner.bbox.label_uuid)
         if band is None or band.review_disabled:
-            return
+            return None
         if winner.confidence < self._ambiguity_min_confidence:
-            return
+            return None
         winner_model = meta.get("model") or "?"
         rival_model = (det_meta.get(rival.bbox.uuid) or {}).get("model")
         meta["ambiguity"] = AmbiguityInfo(
@@ -2035,9 +2062,7 @@ class CollectTrainingImagesTask(Task):
             rival_class_str=rival.bbox.class_str,
             rival_confidence=rival.confidence,
         )
-        self._ambiguity_flagged += 1
-        key = (winner_model, winner.bbox.label_uuid or "?", rival.bbox.label_uuid or "?")
-        self._ambiguity_pairs[key] = self._ambiguity_pairs.get(key, 0) + 1
+        return (winner_model, winner.bbox.label_uuid or "?", rival.bbox.label_uuid or "?")
 
     def _label_name(self, label_uuid: str) -> str:
         """Human-readable label name for status text, falling back to whatever

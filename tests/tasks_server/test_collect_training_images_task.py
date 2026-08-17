@@ -4469,6 +4469,39 @@ class TestCrossModelAmbiguity:
         assert dog_info.model == "model-b" and dog_info.rival_model == "model-a"
         assert dog_info.rival_label_uuid == _LABEL_UUID
 
+    async def test_one_disagreement_counts_once(self):
+        """Both boxes carry the verdict, but it is one disagreement.
+
+        Counting per box made `confusable_flagged` twice `confusable_measured` —
+        the status panel read "2 flagged of 1 measured" — and listed the pair
+        twice in the top-pairs summary, once in each direction.
+        """
+        task = await self._task()
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+
+        await self._run(task, [cat], [dog])
+
+        assert task._ambiguity_evaluated == 1
+        assert task._ambiguity_flagged == 1
+        assert sum(task._ambiguity_pairs.values()) == 1
+        # Attributed to the higher-confidence side: model-a said cat, over model-b's dog.
+        assert list(task._ambiguity_pairs) == [("model-a", _LABEL_UUID, self._DOG_UUID)]
+
+    async def test_a_pair_gated_out_on_both_sides_counts_as_measured_not_flagged(self):
+        """`ambiguity_min_confidence` rejecting both boxes means the pair was looked
+        at and found not worth reporting — it must not inflate the flagged tally."""
+        task = await self._task()
+        task._ambiguity_min_confidence = 0.99
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+
+        await self._run(task, [cat], [dog])
+
+        assert task._ambiguity_evaluated == 1
+        assert task._ambiguity_flagged == 0
+        assert task._ambiguity_pairs == {}
+
     async def test_agreeing_models_are_not_flagged(self):
         """Same label on the same object is agreement, not confusion."""
         task = await self._task()

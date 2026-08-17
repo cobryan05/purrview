@@ -1981,9 +1981,10 @@ class Manager:
             # miss the cache on their own. The bbox crops are not: they are keyed
             # on bbox uuid and validated against bbox.updated_at, which nothing
             # here moves.
-            bbox_uuids = [b.uuid for b in await self._db_client.get_bboxes_for_image(image.uuid)]
-            if bbox_uuids:
-                await self.invalidate_bbox_thumbnails(bbox_uuids)
+            bboxes = await self._db_client.get_bboxes_for_image(image.uuid)
+            if bboxes:
+                await self.invalidate_bbox_thumbnails([b.uuid for b in bboxes])
+                await self._rehash_bboxes_after_replace(image.uuid, target, bboxes)
 
         return {
             "path": self._image_rel_path(str(target)),
@@ -1992,6 +1993,49 @@ class Manager:
             "duplicate_distance": duplicate_distance,
             "renamed_from": renamed_from,
         }
+
+    async def _rehash_bboxes_after_replace(self, image_uuid: str, path: Path, bboxes: List[Any]) -> None:
+        """Re-hash every bbox crop after the picture underneath it was replaced.
+
+        The image pHash is refreshed by _find_upload_duplicate, but a box's hash
+        describes a *crop*, and the crop changed too. Left alone, `bboxes.phash`
+        and the per-label index entries keep describing content that is no longer
+        on disk, so "find similar bboxes" matches the replaced picture forever —
+        the same failure HashIndex.replace_image fixes one level up.
+
+        Best-effort, like the duplicate check it follows: the file is already
+        written and registered, and a hash that could not be recomputed must not
+        turn a successful upload into an error.
+        """
+        entries: List[Dict[str, str]] = []
+        for bbox in bboxes:
+            try:
+                new_phash = await asyncio.to_thread(
+                    compute_bbox_phash,
+                    path,
+                    bbox.x,
+                    bbox.y,
+                    bbox.width,
+                    bbox.height,
+                    self._hash_index.bbox_hash_size,
+                )
+            except Exception:
+                logger.exception("Could not re-hash bbox %s after its image was replaced", bbox.uuid)
+                continue
+            entries.append({"uuid": bbox.uuid, "phash": new_phash})
+            if bbox.label_uuid:
+                if bbox.phash:
+                    self._hash_index.remove_bbox(bbox.uuid, bbox.label_uuid)
+                self._hash_index.add_bbox(bbox.uuid, bbox.label_uuid, new_phash)
+        if not entries:
+            return
+        # update_phashes writes the image hash too, so it needs the current one —
+        # passing a stale or empty value here would undo the refresh above it.
+        record = await self._db_client.get_image_by_uuid(image_uuid)
+        image_phash = getattr(record, "phash", None) or await asyncio.to_thread(
+            compute_image_phash, path, self._hash_index.image_hash_size
+        )
+        await self._db_client.update_phashes(image_uuid, image_phash, entries)
 
     async def _find_upload_duplicate(
         self, image_uuid: str, path: Path, replaced: bool = False
