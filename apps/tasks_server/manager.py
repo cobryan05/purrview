@@ -509,38 +509,76 @@ class Manager:
         else:
             logger.warning(f"Unknown task configuration: {task_config_uuid}")
 
-    async def cancel_tasks(self, task_uuids: Union[List[str], str]) -> List[str]:
+    # How long cancel_tasks lingers before answering "still stopping". Purely a
+    # presentation choice: a task that shuts down inside this window lets the UI say
+    # "Stopped", and one that doesn't gets an honest "Stopping…" instead of a lie.
+    _CANCEL_GRACE_S: float = 5.0
+
+    async def cancel_tasks(self, task_uuids: Union[List[str], str]) -> Dict[str, List[str]]:
+        """Ask running tasks to stop, and report per-task what actually happened.
+
+        Returns {"stopped": [...], "stopping": [...], "notRunning": [...]}. The three
+        outcomes exist because the caller is a button: "I asked and it stopped", "I
+        asked and it is still winding down" and "there was nothing there to ask" are
+        different things to show a user, and collapsing them into one list is how a
+        Stop click that did nothing came back as success.
+
+        Registration is deliberately NOT dropped here. This method used to pop the
+        task out of _running_tasks up front and then wait 5s; a task that overran that
+        wait was left orphaned — unreachable by a second Stop click (which then
+        reported success while logging "not found in running tasks"), never given a
+        final DB status, and eventually mistaken by the stale-heartbeat net for a
+        crashed instance and auto-restarted, undoing the user's stop. _on_task_complete
+        is already watching every running task and owns the pop-and-persist; letting it
+        do that job is what makes a slow stop merely slow instead of unrecoverable.
+        """
         if isinstance(task_uuids, str):
             task_uuids = [task_uuids]
 
-        canceled_tasks = []
+        canceled: List[TaskInfo] = []
+        not_running: List[str] = []
         for task_uuid in task_uuids:
-            if task_uuid not in self._running_tasks:
+            task_info = self._running_tasks.get(task_uuid)
+            if task_info is None or task_info.task is None:
                 logger.warning(f"Can't stop task {task_uuid}: not found in running tasks")
+                not_running.append(task_uuid)
+                continue
+            task_info.task.cancel_task()
+            canceled.append(task_info)
+            logger.info(f"Task {task_uuid} cancel request sent")
+
+        stopped: List[str] = []
+        stopping: List[str] = []
+        # Waited on together, not one after another: serial waits made the grace
+        # period cumulative, so stopping four tasks at once could block the request
+        # for four times the budget.
+        results = await asyncio.gather(
+            *(self._await_cancelled(info) for info in canceled),
+            return_exceptions=True,
+        )
+        for task_info, done in zip(canceled, results):
+            if done is True:
+                stopped.append(task_info.instance.uuid)
             else:
-                task_info: TaskInfo = self._running_tasks.pop(task_uuid)
-                task_info.task.cancel_task()
-                canceled_tasks.append(task_info)
-                logger.info(f"Task {task_uuid} cancel request sent")
+                logger.warning(f"Task {task_info.instance.uuid} did not stop within {self._CANCEL_GRACE_S}s")
+                stopping.append(task_info.instance.uuid)
 
-        stopped_tasks = []
-        for task_info in canceled_tasks:
-            try:
-                await task_info.task.wait_for_task_done(5.0)
-                await asyncio.to_thread(
-                    TasksApi(self._db_api_client).set_task_instance_status,
-                    task_info.instance.uuid,
-                    db_models.SetTaskStatusPayload(status=task_info.task.get_status()),
-                )
-                stopped_tasks.append(task_info.instance.uuid)
-            except (asyncio.TimeoutError, TimeoutError):
-                # On Python 3.10 asyncio.TimeoutError (what wait_for_task_done
-                # raises) is a distinct class from the builtin TimeoutError; catch
-                # both so one slow task doesn't abort the whole cancel loop and
-                # leave the remaining tasks' statuses unpersisted.
-                logger.warning(f"Task {task_info.instance.uuid} did not stop in time")
+        return {"stopped": stopped, "stopping": stopping, "notRunning": not_running}
 
-        return stopped_tasks
+    async def _await_cancelled(self, task_info: TaskInfo) -> bool:
+        """Wait out the grace period for one cancelled task. True if it finished.
+
+        Persisting the final status is _on_task_complete's job, not this one's — two
+        writers for one instance is how a status write can land after the row has
+        already been finalised.
+        """
+        try:
+            await task_info.task.wait_for_task_done(self._CANCEL_GRACE_S)
+            return True
+        except (asyncio.TimeoutError, TimeoutError):
+            # On Python 3.10 asyncio.TimeoutError (what wait_for_task_done raises) is
+            # a distinct class from the builtin TimeoutError; catch both.
+            return False
 
     async def save_task_resume_data(self, task_uuid: str, resume_data: Dict[str, Any]) -> None:
         """Write one task instance's checkpoint straight through to the DB.

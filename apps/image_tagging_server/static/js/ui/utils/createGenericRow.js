@@ -1,4 +1,4 @@
-import { createEmojiButton } from './createButton.js'
+import { createEmojiButton, withButtonBusy } from './createButton.js'
 
 /**
  * Creates a generic row with optional color swatch, label/input field, and action buttons.
@@ -40,14 +40,12 @@ export function createGenericRow({
       // Emoji buttons are otherwise indistinguishable to a selector: the label
       // *is* the glyph, and two rows can carry the same one.
       if (testid) btn.dataset.testid = testid;
+      // withButtonBusy already disables for the duration; the guard stays because a
+      // click queued before the disable landed would otherwise re-enter.
+      // `button` is passed on so a handler can drive richer feedback of its own.
       btn.onclick = async () => {
         if (btn.disabled) return;
-        btn.disabled = true;
-        try {
-          await onClick?.({ field, row });
-        } finally {
-          btn.disabled = false;
-        }
+        await withButtonBusy(btn, () => onClick?.({ field, row, button: btn }));
       };
       container.appendChild(btn);
     });

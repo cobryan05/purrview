@@ -363,10 +363,83 @@ function _taskFingerprint(tasks) {
       const logs = t.logLines ?? [];
       const actionCount = (t.statusActions ?? []).length + (t.instance?.result?.actions ?? []).length;
       const progressPart = (t.progress === null || t.progress === undefined) ? 'ind' : Math.round(t.progress);
-      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${progressPart}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}:${actionCount}`;
+      // The stopping flag is part of the fingerprint or the card would keep its
+      // pre-click face until something else about the task happened to change —
+      // which for a task wedged mid-shutdown is never.
+      const stoppingPart = _stoppingTasks.has(id) ? 'stopping' : '';
+      return `${id}:${t.instance?.status}:${t.isPausedInPlace ?? false}:${progressPart}:${logs.length}:${logs[logs.length - 1] ?? ''}:${t.instance?.startedAt ?? ''}:${t.instance?.endedAt ?? ''}:${actionCount}:${stoppingPart}`;
     })
     .sort()
     .join('|');
+}
+
+/** Task uuids the user has asked to stop, that haven't finished stopping yet.
+ *
+ * Module scope on purpose: the card is destroyed and rebuilt on every poll that
+ * changes anything, so per-card state cannot carry "I clicked Stop" across even one
+ * refresh. Entries are cleared in _syncStoppingState once the task's own status shows
+ * it is no longer running, so nothing here can outlive the thing it describes.
+ */
+const _stoppingTasks = new Set();
+
+/** Drop stopping-marks for tasks that have since stopped (or were never running). */
+function _syncStoppingState(tasks) {
+  for (const id of [..._stoppingTasks]) {
+    const status = tasks?.[id]?.instance?.status;
+    if (status === undefined || (status !== 'running' && status !== 'pending')) {
+      _stoppingTasks.delete(id);
+    }
+  }
+}
+
+/** Turn a cancel outcome into something worth telling the user.
+ *
+ * The three cases are genuinely different and used to look identical from the UI:
+ * the task stopped, the task accepted the stop and is still shutting down, or there
+ * was no running task for the server to stop (the state a previously-orphaned task
+ * left behind, where clicking Stop forever appeared to succeed and changed nothing).
+ */
+function _describeStopOutcome(outcome, taskId, taskName) {
+  if (outcome?.stopping?.includes(taskId)) {
+    _stoppingTasks.add(taskId);
+    return { message: `Stopping "${taskName}" — it is still shutting down`, level: 'warning' };
+  }
+  if (outcome?.notRunning?.includes(taskId)) {
+    _stoppingTasks.delete(taskId);
+    return { message: `"${taskName}" was not running, so there was nothing to stop`, level: 'warning' };
+  }
+  _stoppingTasks.delete(taskId);
+  return { message: `Stopped "${taskName}"`, level: 'success' };
+}
+
+/** Run one card action, acknowledging the click whatever the outcome.
+ *
+ * `describe` returns either a string (an ordinary success message) or
+ * `{ message, level }` when the action succeeded but the news isn't simply good —
+ * a stop that is still in progress, say. Returning undefined says nothing, which is
+ * what a cancelled confirm dialog should do.
+ */
+async function _runTaskAction({ verb, taskName, run, describe, confirm, refresh }) {
+  if (confirm && !confirm()) return;
+  let outcome;
+  try {
+    outcome = await run();
+  } catch (error) {
+    toast(error.message || `Failed to ${verb} "${taskName}"`, 6000, 'error');
+    // Still refresh: the action may have partly landed, and a stale card is exactly
+    // what makes a failure hard to reason about.
+    await refresh?.();
+    return;
+  }
+  const described = describe?.(outcome);
+  if (described) {
+    const { message, level } = (typeof described === 'string')
+      ? { message: described, level: 'success' }
+      : described;
+    // A plain confirmation earns less screen time than one carrying a caveat.
+    toast(message, level === 'success' ? 3000 : 6000, level);
+  }
+  await refresh?.();
 }
 
 /**
@@ -499,6 +572,10 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
     try {
       const { tasks } = response;
 
+      // Before the fingerprint, so a task that has finished stopping drops its
+      // marker in the same pass that repaints it without one.
+      _syncStoppingState(tasks);
+
       // Skip re-render entirely when nothing meaningful changed.
       const fingerprint = _taskFingerprint(tasks);
       if (container._lastFingerprint === fingerprint) {
@@ -535,48 +612,59 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       const built = await Promise.all(Object.entries(tasks || {}).map(async ([taskId, task]) => {
         const status = task.instance?.status;
 
+        const taskName = task.config?.name ?? taskId;
+        // Every action goes through _runTaskAction so that success is as visible as
+        // failure. Previously only the error path said anything, which meant the
+        // feedback for "it worked" and for "the server did nothing at all" was
+        // identical: no feedback.
         const deleteButton = {
-          text: 'Delete', emoji: '🗑️',
-          onClick: async () => {
-            if (!window.confirm(`Delete task ${task.config?.name ?? taskId}?`)) return;
-            try { await deleteTasks({ taskUuids: [taskId] }); refresh?.(); }
-            catch (error) { toast(error.message || 'Failed to delete task', 5000, 'error'); }
-          }
+          text: 'Delete', emoji: '🗑️', testid: 'task-delete',
+          onClick: () => _runTaskAction({
+            verb: 'delete', taskName, refresh,
+            confirm: () => window.confirm(`Delete task ${taskName}?`),
+            run: () => deleteTasks({ taskUuids: [taskId] }),
+            describe: () => `Deleted "${taskName}"`,
+          }),
         };
         const stopButton = {
-          text: 'Stop', emoji: '⏹️',
-          onClick: async () => {
-            try { await cancelTasks({ taskUuids: [taskId] }); refresh?.(); }
-            catch (error) { toast(error.message || 'Failed to stop task', 5000, 'error'); }
-          }
+          text: 'Stop', emoji: '⏹️', testid: 'task-stop',
+          onClick: () => _runTaskAction({
+            verb: 'stop', taskName, refresh,
+            run: () => cancelTasks({ taskUuids: [taskId] }),
+            describe: (outcome) => _describeStopOutcome(outcome, taskId, taskName),
+          }),
         };
         const pauseInPlaceButton = {
-          text: 'Pause', emoji: '⏸️',
-          onClick: async () => {
-            try { await pauseTasksInPlace({ taskUuids: [taskId] }); refresh?.(); }
-            catch (error) { toast(error.message || 'Failed to pause task', 5000, 'error'); }
-          }
+          text: 'Pause', emoji: '⏸️', testid: 'task-pause',
+          onClick: () => _runTaskAction({
+            verb: 'pause', taskName, refresh,
+            run: () => pauseTasksInPlace({ taskUuids: [taskId] }),
+            describe: () => `Paused "${taskName}"`,
+          }),
         };
         const resumeInPlaceButton = {
-          text: 'Resume', emoji: '▶️',
-          onClick: async () => {
-            try { await resumeTasksInPlace({ taskUuids: [taskId] }); refresh?.(); }
-            catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
-          }
+          text: 'Resume', emoji: '▶️', testid: 'task-resume',
+          onClick: () => _runTaskAction({
+            verb: 'resume', taskName, refresh,
+            run: () => resumeTasksInPlace({ taskUuids: [taskId] }),
+            describe: () => `Resumed "${taskName}"`,
+          }),
         };
         const suspendButton = {
-          text: 'Suspend', emoji: '💾',
-          onClick: async () => {
-            try { await pauseTasks({ taskUuids: [taskId] }); refresh?.(); }
-            catch (error) { toast(error.message || 'Failed to suspend task', 5000, 'error'); }
-          }
+          text: 'Suspend', emoji: '💾', testid: 'task-suspend',
+          onClick: () => _runTaskAction({
+            verb: 'suspend', taskName, refresh,
+            run: () => pauseTasks({ taskUuids: [taskId] }),
+            describe: () => `Suspended "${taskName}" — its checkpoint was saved`,
+          }),
         };
         const resumeButton = {
-          text: 'Resume', emoji: '▶️',
-          onClick: async () => {
-            try { await resumeTasks({ taskUuids: [taskId] }); refresh?.(); }
-            catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
-          }
+          text: 'Resume', emoji: '▶️', testid: 'task-resume',
+          onClick: () => _runTaskAction({
+            verb: 'resume', taskName, refresh,
+            run: () => resumeTasks({ taskUuids: [taskId] }),
+            describe: () => `Resumed "${taskName}" from its checkpoint`,
+          }),
         };
         // "What is this thing actually running?" — the card names the run, and
         // until now the recipe behind it was only reachable by remembering which
@@ -641,8 +729,19 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         // Pre-render field content so we get a direct DOM handle for state
         // restoration, and so createGenericRow gets an already-resolved Promise
         // (avoids timing uncertainty about when fieldDiv content is populated).
+        // A stop the server accepted but hasn't finished acting on is stated on the
+        // card, not just in a toast that has since faded. Without it the only honest
+        // answer the UI could give a user who clicked Stop two minutes ago was the
+        // same "Running" it showed before the click.
+        const isStopping = _stoppingTasks.has(taskId);
+        const cardValue = { ...task };
+        if (isStopping) {
+          const existing = cardValue.statusMessage ? ` — ${cardValue.statusMessage}` : '';
+          cardValue.statusMessage = `Stopping…${existing}`;
+        }
+
         const fieldInstance = await ActiveTaskField.create({
-          value: { ...task },
+          value: cardValue,
           // Lets the field pre-render its status widgets from cached data when
           // it is replacing a card the user had open, so the rebuild doesn't
           // briefly shrink the page and lose their scroll position.
@@ -696,6 +795,9 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         const row = document.createElement('div');
         row.className = 'task-instance-card';
         row.dataset.taskUuid = taskId;
+        // A hook for styling and for tests: "the user asked this to stop" is card
+        // state, distinct from any status the server reports.
+        if (isStopping) row.dataset.stopping = 'true';
         row.appendChild(contentRow);
 
         if (navButtons.length) {

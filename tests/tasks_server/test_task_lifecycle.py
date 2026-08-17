@@ -93,14 +93,49 @@ async def test_cancel_tasks_survives_asyncio_timeout(manager, tasks_api_mock):
 
     task_info.task.wait_for_task_done = _raise_asyncio_timeout
 
-    # Must not raise: a task that times out is skipped, not fatal.
+    # Must not raise: a task that times out is reported as still stopping, not fatal.
     result = await manager.cancel_tasks([TASK_UUID])
-    assert result == []  # timed-out task is not reported as cleanly stopped
+    assert result["stopped"] == []  # timed-out task is not reported as cleanly stopped
+    assert result["stopping"] == [TASK_UUID]
 
     task_info.task.cancel_task()
 
 
-async def test_cancel_unknown_task_returns_empty_list(http_client):
+async def test_slow_cancel_keeps_the_task_registered(manager, tasks_api_mock):
+    """A task that overruns the cancel grace must stay in _running_tasks.
+
+    Regression guard for the bug that wedged a watcher permanently: cancel_tasks
+    popped the task out of _running_tasks *before* waiting, so a task slow to shut
+    down was orphaned — a second Stop click found nothing to stop yet still reported
+    success, no final status was ever written, and the stale-heartbeat net later read
+    the abandoned 'running' row as a crash and auto-restarted it, undoing the stop.
+    """
+    tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {"duration": 60}
+    await manager.start_new_task(CONFIG_UUID)
+    await asyncio.sleep(0)
+
+    task_info = manager._running_tasks[TASK_UUID]
+
+    async def _never_finishes(timeout=None):
+        raise asyncio.TimeoutError("simulated slow-to-cancel task")
+
+    task_info.task.wait_for_task_done = _never_finishes
+
+    first = await manager.cancel_tasks([TASK_UUID])
+    assert first["stopping"] == [TASK_UUID]
+    assert TASK_UUID in manager._running_tasks, "a slow stop must not de-register the task"
+
+    # The whole point of staying registered: the user can click Stop again and it
+    # still reaches the task, instead of silently succeeding against nothing.
+    second = await manager.cancel_tasks([TASK_UUID])
+    assert second["notRunning"] == []
+    assert second["stopping"] == [TASK_UUID]
+
+    task_info.task.cancel_task()
+
+
+async def test_cancel_reports_a_task_that_was_not_running(http_client):
+    """ "Nothing to stop" is its own outcome — it used to be indistinguishable from success."""
     resp = await http_client.post(
         "/api/tasks/instances/cancel",
         json={"taskUuids": ["non-existent-uuid"]},
@@ -108,6 +143,8 @@ async def test_cancel_unknown_task_returns_empty_list(http_client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["taskUuids"] == []
+    assert data["notRunning"] == ["non-existent-uuid"]
+    assert data["stopping"] == []
 
 
 async def test_delete_task(http_client):

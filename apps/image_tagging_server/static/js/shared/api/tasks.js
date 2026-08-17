@@ -396,20 +396,45 @@ export async function fetchTasksStatus({ taskUuids } = {}) {
 
   return data;
 }
-/** POST taskUuids to a task-instance operation endpoint; throws on failure. */
+/** POST taskUuids to a task-instance operation endpoint; throws on failure.
+ *
+ * Returns the parsed body, so a caller can tell what the server actually did rather
+ * than only that the request arrived. The `status === 'failure'` check matters as
+ * much as `res.ok`: these endpoints catch their own exceptions and answer HTTP 200
+ * with a failure body, so checking the status code alone reported every server-side
+ * error as a successful action.
+ */
 async function _taskOp(endpoint, taskUuids) {
   const res = await apiFetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskUuids }),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || `Task operation failed: ${endpoint}`);
+  let data = null;
+  try { data = await res.json(); } catch { /* an empty or non-JSON body is handled below */ }
+  if (!res.ok || data?.status === 'failure') {
+    throw new Error(data?.message || `Task operation failed: ${endpoint}`);
   }
+  return data ?? {};
 }
 
-export const cancelTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instances/cancel',           taskUuids);
+/** Stop running tasks.
+ *
+ * Resolves to `{ stopped, stopping, notRunning }` — three outcomes, because they need
+ * three different things said to the user. `stopping` is a task that accepted the
+ * cancel but is still winding down (a watcher closing its streams, say); `notRunning`
+ * is a task the server had nothing to stop, which previously came back looking
+ * exactly like success.
+ */
+export async function cancelTasks({ taskUuids }) {
+  const data = await _taskOp('/api/tasks/instances/cancel', taskUuids);
+  return {
+    stopped: data.taskUuids ?? [],
+    stopping: data.stopping ?? [],
+    notRunning: data.notRunning ?? [],
+  };
+}
+
 export const deleteTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instances/delete',           taskUuids);
 export const pauseTasks         = ({ taskUuids }) => _taskOp('/api/tasks/instances/pause',            taskUuids);
 export const resumeTasks        = ({ taskUuids }) => _taskOp('/api/tasks/instances/resume',           taskUuids);

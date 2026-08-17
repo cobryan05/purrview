@@ -90,6 +90,14 @@ def parse_video_stream_banner(line: str) -> Optional[VideoStreamMetadata]:
 
 
 class FFmpegStreamerIn:
+    # Shutdown budget. Every stop path is bounded by these, because the caller is a
+    # task being cancelled by a user clicking Stop: unbounded teardown reads to that
+    # user as a button that does nothing. Class attributes, not module constants, so
+    # a test can shrink them without patching the module.
+    TERMINATE_TIMEOUT_S: float = 5.0
+    KILL_TIMEOUT_S: float = 5.0
+    WORKER_JOIN_TIMEOUT_S: float = 5.0
+
     def __init__(
         self,
         source: str,
@@ -206,15 +214,47 @@ class FFmpegStreamerIn:
             logger.warning(f"Failed to close read transport for {self._source}: {e}")
         self._read_transport = None
 
+    def _reap_process(self, process: Popen) -> None:
+        """Terminate *process*, escalating to SIGKILL, and never block indefinitely.
+
+        A bare `terminate()` + unbounded `wait()` is what wedged a watcher forever:
+        ffmpeg blocked on a read from an RTSP source that stopped delivering does not
+        act on SIGTERM, so the wait never returns. Off the event loop that is worse
+        than slow — `asyncio.to_thread` is not cancellable, so the task awaiting it
+        can never be cancelled either, and the whole Stop path hangs behind one dead
+        camera.
+
+        The escalation therefore lives in a single synchronous function: whichever
+        thread runs it is guaranteed back within TERMINATE + KILL seconds, so the one
+        `to_thread` its async caller awaits is bounded too. Giving up (both waits
+        expiring) is logged and returns rather than raising — a leaked ffmpeg is a
+        far smaller problem than an un-stoppable task, and the caller still has
+        teardown left to do.
+        """
+        process.terminate()
+        try:
+            process.wait(timeout=self.TERMINATE_TIMEOUT_S)
+            return
+        except Exception:  # subprocess.TimeoutExpired
+            logger.warning(f"ffmpeg for {self._source} ignored SIGTERM after {self.TERMINATE_TIMEOUT_S}s — killing")
+        process.kill()
+        try:
+            process.wait(timeout=self.KILL_TIMEOUT_S)
+        except Exception:
+            logger.error(
+                f"ffmpeg for {self._source} (pid {process.pid}) survived SIGKILL for "
+                f"{self.KILL_TIMEOUT_S}s — abandoning it rather than blocking shutdown"
+            )
+
     def stop(self) -> None:
         """Stops the streamer and terminates the process. Safe to call multiple times."""
         self._stop_event.set()
         self._close_read_transport()
         if self._process is None:
             return
-        self._process.terminate()
-        self._process.wait()
+        process = self._process
         self._process = None
+        self._reap_process(process)
 
     def _build_process(self) -> Popen:
         """Builds (spawns) the ffmpeg subprocess. Blocking."""
@@ -262,19 +302,29 @@ class FFmpegStreamerIn:
         if self._process is not None:
             process = self._process
             self._process = None
-            process.terminate()
-            await asyncio.to_thread(process.wait)
+            await asyncio.to_thread(self._reap_process, process)
 
         if self._task is not None:
             task = self._task
             self._task = None
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"Worker task for {self._source} raised during astop: {e}")
+            # asyncio.wait, not wait_for: on timeout wait_for cancels the inner task
+            # and then *awaits* it, so a worker that swallows cancellation (one stuck
+            # in a blocking call) hangs wait_for exactly as hard as the bare `await
+            # task` this replaced. asyncio.wait just stops watching.
+            done, pending = await asyncio.wait({task}, timeout=self.WORKER_JOIN_TIMEOUT_S)
+            if pending:
+                logger.error(
+                    f"Worker task for {self._source} did not stop within "
+                    f"{self.WORKER_JOIN_TIMEOUT_S}s — leaving it detached"
+                )
+            else:
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Worker task for {self._source} raised during astop: {e}")
 
     def _extract_metadata_from_stderr(self) -> None:
         """Extracts metadata from the FFmpeg process's stderr output.

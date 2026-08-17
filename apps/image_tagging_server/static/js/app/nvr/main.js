@@ -265,8 +265,17 @@ function _startStopButton(profile, task) {
     btn.textContent = isRunning ? 'Stopping…' : 'Starting…';
     try {
       if (isRunning) {
-        await cancelTasks({ taskUuids: [task.taskUuid] });
-        toast(`Stopping ${profile.name}`, 3000);
+        const outcome = await cancelTasks({ taskUuids: [task.taskUuid] });
+        // The server now says whether the watcher actually went down inside the
+        // cancel window. Reporting "Stopping" either way is what let a watcher that
+        // never stopped look exactly like one that did.
+        if (outcome.stopped.includes(task.taskUuid)) {
+          toast(`Stopped ${profile.name}`, 3000, 'success');
+        } else if (outcome.notRunning.includes(task.taskUuid)) {
+          toast(`${profile.name} was not running`, 5000, 'warning');
+        } else {
+          toast(`Stopping ${profile.name} — it is still shutting down`, 5000, 'warning');
+        }
       } else {
         await launchRun({
           typename: WATCHER_TYPENAME,

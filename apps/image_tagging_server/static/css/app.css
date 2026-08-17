@@ -5087,6 +5087,16 @@ button.filter-active {
   min-width: 0;
 }
 
+/* The user has clicked Stop and the task has not finished stopping. Marked on the
+   card rather than left to a toast, because a shutdown can outlast any toast — a
+   watcher closing its streams takes seconds, and a wedged one never finishes at all.
+   Muted rather than alarming: this is the expected shape of a stop in progress, not
+   an error. */
+.task-instance-card[data-stopping="true"] {
+  border-color: color-mix(in srgb, var(--color-warning, #b8620a) 55%, var(--border));
+  opacity: 0.75;
+}
+
 /* Arrived here from a launch card that was already running: this is the run
    that was asked about, in a pane that can hold dozens. It fades on its own
    after a few seconds (ui/tasks.js drops the class) — a permanent mark would

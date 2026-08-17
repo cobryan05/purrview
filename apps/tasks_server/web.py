@@ -96,7 +96,13 @@ class CancelTasksPayload(Payload):
 
 
 class CancelTasksResponse(StatusResponse):
+    # `task_uuids` keeps its original meaning — the instances confirmed stopped — so
+    # existing callers are unaffected. The other two are what let the UI tell a stop
+    # that is still winding down apart from one that had nothing to stop; both used to
+    # be indistinguishable from success.
     task_uuids: List[str] = Field(default_factory=list)
+    stopping: List[str] = Field(default_factory=list)
+    not_running: List[str] = Field(default_factory=list)
 
 
 class PauseInPlacePayload(Payload):
@@ -736,8 +742,12 @@ class WebApp:
                 JSONResponse: JSON response with resume result.
             """
             try:
-                uuids = await self._manager.cancel_tasks(payload.task_uuids)
-                return CancelTasksResponse(task_uuids=uuids)
+                outcome = await self._manager.cancel_tasks(payload.task_uuids)
+                return CancelTasksResponse(
+                    task_uuids=outcome["stopped"],
+                    stopping=outcome["stopping"],
+                    not_running=outcome["notRunning"],
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return CancelTasksResponse(status=WebApp.FAILURE_KEY, message=str(e))
