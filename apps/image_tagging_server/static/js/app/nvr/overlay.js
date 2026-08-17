@@ -13,7 +13,20 @@
  * overlay lines up with the pixels the models were shown.
  */
 
-/** Detections and tracks must never be the same colour — see liveViewModal's docstring. */
+/**
+ * Fallbacks only.
+ *
+ * A box is stroked in **its label's** colour (`boxColour`) whenever the watcher knows one,
+ * because "which animal is that?" is the first question asked of any box and a wall of
+ * identically-coloured rectangles cannot answer it. These constants are what's left when
+ * a detection has no label mapping at all — the configuration problem that state
+ * represents is then visible as a box in the generic colour.
+ *
+ * The detection/track distinction the diagnostic view depends on (see liveViewModal's
+ * docstring) therefore rides on *line style*, not hue: detections dashed, tracks solid.
+ * Anchor and event tracks keep their meaning as a coloured glow around a label-coloured
+ * box, so both facts are readable at once.
+ */
 export const DETECTION_COLOUR = '#ffb347';
 export const TRACK_COLOUR = '#4ade80';
 export const ANCHOR_COLOUR = '#60a5fa';
@@ -51,10 +64,49 @@ export function isEventTrack(track) {
   return (track?.eventRules ?? []).length > 0;
 }
 
-/** The colour a track's box is drawn in: event > anchor > plain track. */
+/**
+ * The semantic colour of a track: event > anchor > plain track.
+ *
+ * Now the *glow* colour rather than the stroke — the stroke belongs to the label. Still
+ * the stroke for a track whose label has no colour, so an unmapped track is never
+ * invisible.
+ */
 export function trackColour(track) {
   if (isEventTrack(track)) return EVENT_COLOUR;
   return track?.isAnchor ? ANCHOR_COLOUR : TRACK_COLOUR;
+}
+
+/**
+ * A CSS colour string we are willing to hand to `strokeStyle`.
+ *
+ * Canvas silently ignores an invalid colour and keeps whatever was set before, so a label
+ * whose colour is empty, null or garbage would inherit the *previous* box's stroke rather
+ * than fall back — boxes would be mis-coloured with no error anywhere. Hence a check
+ * instead of a truthiness test.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+export function isDrawableColour(value) {
+  if (typeof value !== 'string') return false;
+  const colour = value.trim();
+  if (!colour) return false;
+  if (/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(colour)) return true;
+  // Functional notations and plain keywords ("tomato"). Anything with whitespace or
+  // punctuation outside those forms is rejected rather than guessed at.
+  if (/^(rgb|rgba|hsl|hsla)\([^()]*\)$/i.test(colour)) return true;
+  return /^[a-z]+$/i.test(colour);
+}
+
+/**
+ * The colour to stroke one detection or track in: its label's, else the semantic fallback.
+ *
+ * @param {?{labelColor?: ?string}} item - a preview detection or track
+ * @param {string} fallback - DETECTION_COLOUR, or `trackColour(track)`
+ * @returns {string}
+ */
+export function boxColour(item, fallback) {
+  return isDrawableColour(item?.labelColor) ? item.labelColor.trim() : fallback;
 }
 
 /**
@@ -62,21 +114,23 @@ export function trackColour(track) {
  *
  * @param {CanvasRenderingContext2D} ctx
  * @param {?number[]} bbox - [x1, y1, x2, y2] in frame pixels
- * @param {string} colour
+ * @param {string} colour - stroke and caption colour (the label's, normally)
  * @param {?string} label - omitted when null
- * @param {{dashed?: boolean, emphasis?: boolean, lineWidth?: number, fontPx?: number}} [opts]
+ * @param {{dashed?: boolean, emphasis?: boolean, lineWidth?: number, fontPx?: number,
+ *          glow?: ?string}} [opts] - `glow` is the halo colour: it carries the box's
+ *          *status* (event, anchor) independently of the label colour on the stroke.
  */
-export function drawBox(ctx, bbox, colour, label, { dashed = false, emphasis = false, lineWidth = 2, fontPx = 12 } = {}) {
+export function drawBox(ctx, bbox, colour, label, { dashed = false, emphasis = false, lineWidth = 2, fontPx = 12, glow = null } = {}) {
   if (!ctx || !bbox || bbox.length !== 4) return;
   const [x1, y1, x2, y2] = bbox;
   ctx.save();
   ctx.strokeStyle = colour;
   ctx.lineWidth = emphasis ? lineWidth * 2 : lineWidth;
-  if (emphasis) {
+  if (emphasis || glow) {
     // Glow as well as weight: on a busy frame a thicker line alone reads as
     // "closer to the camera" rather than "this one matters".
-    ctx.shadowColor = colour;
-    ctx.shadowBlur = 12;
+    ctx.shadowColor = glow ?? colour;
+    ctx.shadowBlur = emphasis ? 12 : 8;
   }
   if (dashed) ctx.setLineDash([5, 4]);
   ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);

@@ -9,8 +9,10 @@
  *   frame → detections (what the models returned) → tracks (what survived the tracker)
  *         → zones/open events (what the rules made of them)
  *
- * Detections and tracks are drawn in different colours and counted separately on
- * purpose. "12 detections, 0 tracks" is a tracker problem; "0 detections" is a model,
+ * Detections and tracks are drawn distinguishably — dashed vs solid — and counted
+ * separately on purpose. Both are stroked in their *label's* colour, so the overlay
+ * answers "what is it?" and "which stage is it from?" at the same time.
+ * "12 detections, 0 tracks" is a tracker problem; "0 detections" is a model,
  * threshold or frame problem; "tracks but no open events" is a rule problem. Collapsing
  * them into one overlay would hide exactly the distinction the view exists to make.
  *
@@ -27,6 +29,7 @@ import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/a
 import {
   DETECTION_COLOUR,
   ZONE_COLOUR,
+  boxColour,
   decodeFrame,
   drawBox as drawOverlayBox,
   isEventTrack,
@@ -306,7 +309,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
     }
     if (state.show.detections) {
       for (const det of preview.detections ?? []) {
-        drawBox(det.bbox, DETECTION_COLOUR, state.show.labels
+        drawBox(det.bbox, boxColour(det, DETECTION_COLOUR), state.show.labels
           ? `${labelText(det.labelName, det.labelUuid, 'det')} ${(det.confidence ?? 0).toFixed(2)}`
           : null, { dashed: true });
       }
@@ -315,7 +318,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
       for (const track of preview.tracks ?? []) {
         const rules = track.eventRules ?? [];
         const active = isEventTrack(track);
-        const colour = trackColour(track);
+        // Stroke by label so the box says *what* it is; the halo keeps saying whether the
+        // watcher is reacting to it (see overlay.js).
+        const status = trackColour(track);
+        const colour = boxColour(track, status);
         const caption = [
           `#${track.trackId}`,
           labelText(track.labelName, track.labelUuid, ''),
@@ -324,7 +330,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
           // knowing *which* one latched onto this object is the whole diagnosis.
           active ? `● ${rules.join(', ')}` : '',
         ].filter(Boolean).join(' ');
-        drawBox(track.bbox, colour, state.show.labels ? caption : null, { emphasis: active });
+        drawBox(track.bbox, colour, state.show.labels ? caption : null, {
+          emphasis: active,
+          glow: active || track.isAnchor ? status : null,
+        });
       }
     }
   }

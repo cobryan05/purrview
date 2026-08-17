@@ -22,6 +22,7 @@ import { fetchTaskLivePreview } from '/app-static/js/shared/api/tasks.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import {
   DETECTION_COLOUR,
+  boxColour,
   decodeFrame,
   drawBox,
   isEventTrack,
@@ -189,15 +190,19 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
       // the drill-down's job. Here they are texture — "the model is seeing things" —
       // while the tracks carry the names.
       for (const det of preview.detections ?? []) {
-        drawBox(ctx, det.bbox, DETECTION_COLOUR, null, { dashed: true, lineWidth: scale });
+        drawBox(ctx, det.bbox, boxColour(det, DETECTION_COLOUR), null, { dashed: true, lineWidth: scale });
       }
       let eventCount = 0;
       for (const track of preview.tracks ?? []) {
         const active = isEventTrack(track);
         if (active) eventCount += 1;
         const name = labelText(track.labelName, track.labelUuid, '');
-        drawBox(ctx, track.bbox, trackColour(track), name || null, {
+        const status = trackColour(track);
+        drawBox(ctx, track.bbox, boxColour(track, status), name || null, {
           emphasis: active,
+          // Only when the glow says something the stroke does not: a plain track's
+          // status colour is the default, and haloing every box says nothing.
+          glow: active || track.isAnchor ? status : null,
           lineWidth: 1.5 * scale,
           fontPx,
         });

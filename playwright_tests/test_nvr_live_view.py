@@ -230,6 +230,42 @@ class TestLiveViewContent:
         expect(stats).to_contain_text("Detections (this frame)")
         expect(page.locator("[data-testid='watch-live-lists']")).to_contain_text("the tracker is discarding them")
 
+    def test_boxes_are_drawn_in_their_label_colour(self, page: Page, base_url: str):
+        """Every box used to be the same green, which cannot say *what* was detected.
+
+        Asserted on the pixels rather than on a call to the overlay: the bug was that the
+        colour the watcher already sends was never reaching the canvas at all.
+        """
+        preview = _preview(
+            detections=[
+                {
+                    "bbox": [4.0, 4.0, 30.0, 30.0],
+                    "labelUuid": "label-cat",
+                    "labelName": "Cat",
+                    "labelColor": "#ff00ff",
+                    "confidence": 0.81,
+                }
+            ],
+            tracks=[],
+        )
+        _mock_nvr(page, preview=preview)
+        _open_live_view(page, base_url)
+
+        page.wait_for_function(
+            "() => document.querySelector(\"[data-testid='watch-live-canvas']\").width === 64",
+            timeout=5000,
+        )
+        # The stroke is centred on the box edge, so the corner pixel is stroke, not frame.
+        rgba = page.evaluate("""() => {
+                const canvas = document.querySelector("[data-testid='watch-live-canvas']");
+                return Array.from(canvas.getContext('2d').getImageData(4, 4, 1, 1).data);
+            }""")
+        red, green, blue, _alpha = rgba
+        # Magenta *hue*, not full intensity: the dashed stroke is antialiased over the
+        # frame, so what identifies the colour is red ≈ blue with green well below both.
+        assert red > 40 and blue > 40, rgba
+        assert green * 2 < min(red, blue), rgba
+
     def test_a_source_error_is_surfaced_not_buried(self, page: Page, base_url: str):
         _mock_nvr(page, preview=_preview(healthy=False, lastError="connection refused"))
         _open_live_view(page, base_url)
