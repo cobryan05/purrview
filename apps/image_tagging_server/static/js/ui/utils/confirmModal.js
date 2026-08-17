@@ -9,14 +9,32 @@ import { createModalShell } from './modalShell.js';
  * @param {Array<{text: string, value: any, className?: string}>} opts.buttons
  * @param {number} [opts.defaultFocusIndex=0]  — which button receives focus after open
  * @param {any}    [opts.defaultCloseValue]     — resolved value when modal is dismissed without a button
+ * @param {?Node}  [opts.bodyNode]              — extra content between the message and the buttons
+ * @param {?{index: number, ms: number}} [opts.arm] — hold one button disabled for `ms`,
+ *   counting down in its label. For confirmations that must not be dismissed by
+ *   reflex; see showEmphasisConfirmModal.
  * @returns {Promise<any>}
  */
-function _buildModal({ title, message, buttons, defaultFocusIndex = 0, defaultCloseValue = null }) {
+function _buildModal({
+  title, message, buttons, defaultFocusIndex = 0, defaultCloseValue = null,
+  bodyNode = null, arm = null,
+}) {
   return new Promise((resolve) => {
     let resolved = false;
-    const finish = (value) => { resolved = true; close(); resolve(value); };
+    let armTimer = null;
+    const finish = (value) => {
+      resolved = true;
+      if (armTimer !== null) clearInterval(armTimer);
+      close();
+      resolve(value);
+    };
     const { dialog, open, close } = createModalShell({
-      onClose: () => { if (!resolved) resolve(defaultCloseValue); },
+      onClose: () => {
+        // Dismissal (Esc / backdrop) skips finish(), so the countdown has to be
+        // stopped here too or it ticks against a detached button forever.
+        if (armTimer !== null) clearInterval(armTimer);
+        if (!resolved) resolve(defaultCloseValue);
+      },
     });
 
     const titleEl = document.createElement('strong');
@@ -38,9 +56,114 @@ function _buildModal({ title, message, buttons, defaultFocusIndex = 0, defaultCl
       return btn;
     });
 
-    dialog.append(titleEl, msgEl, btnRow);
+    dialog.append(titleEl, msgEl, ...(bodyNode ? [bodyNode] : []), btnRow);
+
+    if (arm) {
+      const armed = btnEls[arm.index];
+      const armedText = buttons[arm.index]?.text ?? 'Confirm';
+      let remaining = Math.ceil(arm.ms / 1000);
+      armed.disabled = true;
+      armed.dataset.testid = 'confirm-armed';
+      const tick = () => {
+        // Written as "Delete (3)" rather than a bare number so the button still
+        // says what it does while it is counting.
+        armed.textContent = remaining > 0 ? `${armedText} (${remaining})` : armedText;
+        if (remaining > 0) return;
+        clearInterval(armTimer);
+        armTimer = null;
+        armed.disabled = false;
+      };
+      tick();
+      armTimer = setInterval(() => { remaining -= 1; tick(); }, 1000);
+    }
+
     open();
     btnEls[defaultFocusIndex]?.focus();
+  });
+}
+
+/**
+ * A confirmation whose *number* is the argument.
+ *
+ * Deleting 40 images and deleting 40,000 are the same click through the same
+ * dialog, and the count is the only thing that distinguishes them — so here it
+ * is the loudest thing on screen, grouped with thousands separators (nobody
+ * reads 41273 correctly at a glance) and stated in one unmistakable line.
+ *
+ * Two dials, because "large" and "costly" are not the same claim:
+ *
+ *  - `tone` — 'danger' when the action destroys something that cannot be
+ *    remade, 'caution' when it is merely big. Colouring a bulk removal of
+ *    machine-generated images the same red as one that throws away a week of
+ *    human labelling teaches people to ignore the red.
+ *  - `cooldownMs` — 0 by default. A cooldown only earns its annoyance when
+ *    there is work to lose: this dialog appears *after* an ordinary confirm the
+ *    user has already dismissed, so without one the second dialog goes the same
+ *    way as the first by pure reflex. It is short on purpose — it interrupts a
+ *    reflex, it does not punish someone who did mean it.
+ *
+ * @param {Object} opts
+ * @param {string} opts.title
+ * @param {number} opts.count       — the number the user needs to actually read
+ * @param {string} opts.countNoun   — what is being counted, e.g. 'images'
+ * @param {string} opts.message     — the consequence, in the user's terms
+ * @param {string} [opts.note]      — the line under the count
+ * @param {'danger'|'caution'} [opts.tone='danger']
+ * @param {string} [opts.confirmText='Confirm']
+ * @param {string} [opts.cancelText='Cancel']
+ * @param {number} [opts.cooldownMs=0]
+ * @returns {Promise<boolean>}
+ */
+export function showEmphasisConfirmModal({
+  title,
+  count,
+  countNoun = 'items',
+  message,
+  note = '',
+  tone = 'danger',
+  confirmText = 'Confirm',
+  cancelText = 'Cancel',
+  cooldownMs = 0,
+} = {}) {
+  const callout = document.createElement('div');
+  callout.className = `high-risk-callout is-${tone}`;
+  callout.dataset.testid = 'high-risk-callout';
+  callout.dataset.tone = tone;
+
+  const countEl = document.createElement('strong');
+  countEl.className = 'high-risk-callout__count';
+  countEl.dataset.testid = 'high-risk-count';
+  countEl.textContent = count.toLocaleString();
+
+  const nounEl = document.createElement('span');
+  nounEl.className = 'high-risk-callout__noun';
+  nounEl.textContent = countNoun;
+
+  const line = document.createElement('div');
+  line.className = 'high-risk-callout__headline';
+  line.append(countEl, nounEl);
+
+  callout.appendChild(line);
+
+  if (note) {
+    const noteEl = document.createElement('div');
+    noteEl.className = 'high-risk-callout__note';
+    noteEl.dataset.testid = 'high-risk-note';
+    noteEl.textContent = note;
+    callout.appendChild(noteEl);
+  }
+
+  return _buildModal({
+    title,
+    message,
+    bodyNode: callout,
+    buttons: [
+      { text: cancelText, value: false, className: 'secondary' },
+      { text: confirmText, value: true, className: 'contrast' },
+    ],
+    defaultFocusIndex: 0,   // still the safe action
+    defaultCloseValue: false,
+    arm: cooldownMs > 0 ? { index: 1, ms: cooldownMs } : null,
   });
 }
 

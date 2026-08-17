@@ -5101,6 +5101,59 @@ button.filter-active {
   min-width: 0;
 }
 
+/* ===== High-risk confirmation callout (ui/utils/confirmModal.js) =====
+   Second step of a very large removal. The count is the whole point of the
+   dialog — the first confirm already said what the action does, and this one
+   exists solely so the *size* registers — so it is set large enough to be read
+   before the buttons are, in the danger colour, with thousands separators. */
+.high-risk-callout {
+  margin: 0.6em 0;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--color-danger);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-soft);
+}
+
+/* "Big, but nothing irreplaceable in it." Amber and unfilled, so the red one
+   keeps meaning something — a bulk removal of machine-labelled frames painted
+   the same as one that throws away a week of verification teaches people to
+   click through both. */
+.high-risk-callout.is-caution {
+  border-color: var(--color-warning);
+  background: none;
+}
+
+.high-risk-callout.is-caution .high-risk-callout__count {
+  color: var(--color-warning);
+}
+
+.high-risk-callout__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+}
+
+.high-risk-callout__count {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--color-danger);
+  font-variant-numeric: tabular-nums;
+}
+
+.high-risk-callout__noun {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.high-risk-callout__note {
+  margin-top: 0.2em;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 /* Why an errored task failed (ActiveTaskField). Sits at the top of the card body
    above the timestamps: it's the one thing you opened a failed card to read.
    `pre-wrap` + `break-word` because these are raw exception strings — long URLs

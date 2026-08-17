@@ -595,6 +595,39 @@ class TestBBoxVerificationTerm:
         assert not any("state-ok.png" in f for f in images)
         assert any("state-pending.png" in f for f in images)
 
+    async def test_two_verification_terms_and_within_an_image(self, http_client, files_root, label_uuid):
+        """Both states at once means "this image has one of each", not "neither".
+
+        The review UI's bulk-removal guard asks exactly this to find out how much
+        human work is inside a delete set it has already scoped to unverified
+        boxes: it ANDs a second `verified` term onto the caller's own filter. If
+        the two terms collapsed into one bbox-level predicate (a box cannot be
+        both) the answer would always be zero and the warning would never fire.
+        """
+        _make_image(files_root, "state-mixed.png")
+        _make_image(files_root, "state-pending.png")
+        # One call, not two: _add_bbox REPLACES an image's boxes.
+        await _add_two_bboxes(
+            http_client,
+            "state-mixed.png",
+            (label_uuid, [UNVERIFIED_TAG_UUID]),
+            (label_uuid, [VERIFIED_TAG_UUID]),
+        )
+        await _add_bbox(http_client, "state-pending.png", label_uuid, [UNVERIFIED_TAG_UUID])
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[
+                    {"kind": "bboxVerification", "state": "unverified"},
+                    {"kind": "bboxVerification", "state": "verified"},
+                ],
+            )
+        )
+        assert any("state-mixed.png" in f for f in images)
+        assert not any("state-pending.png" in f for f in images)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bboxConfidence

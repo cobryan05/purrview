@@ -67,7 +67,7 @@ import { fetchViews, createDataset, updateDataset } from '/app-static/js/shared/
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
 import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
-import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, removeSingleImage } from '/app-static/js/app/review/imageBulkActionModal.js';
+import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, countImagesWithVerifiedWork, HIGH_RISK_REMOVAL_COUNT, removeSingleImage } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
@@ -2086,7 +2086,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         // 'delete' takes the file with it; 'removeFromDb' leaves it on disk.
         // Everything downstream (card staleness, IMAGE_DELETED) is identical —
         // as far as the rest of the app is concerned the image is gone.
-        const confirmed = await confirmRemovalAction(action, imageEntries.length);
+        const confirmed = await confirmRemovalAction(action, imageEntries.length, '', {
+          verifiedCount: countImagesWithVerifiedWork(imageEntries),
+        });
         if (!confirmed) return;
 
         // One request per image, issued from here — see setClientSideApplyStatus.
@@ -2287,7 +2289,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     if (kind === 'image') {
       await showImageBulkActionModal(entries, labels, async (action, labelUuids, tagUuids) => {
         if (isRemovalAction(action)) {
-          const confirmed = await confirmRemovalAction(action, entries.length, 'from the full candidate list');
+          const confirmed = await confirmRemovalAction(action, entries.length, 'from the full candidate list', {
+            verifiedCount: countImagesWithVerifiedWork(entries),
+          });
           if (!confirmed) return;
         }
         setServerSideApplyStatus(`Applying to ${entries.length.toLocaleString()} images…`);
@@ -2404,7 +2408,33 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
 
     await showImageBulkActionModal([], labels, async (action, labelUuids, tagUuids) => {
       if (isRemovalAction(action)) {
-        const confirmed = await confirmRemovalAction(action, totalImageCount, 'matching the current filter, across all pages');
+        // The images behind this button were never on screen — the count came
+        // from the server — so how much human work is in them has to come from
+        // the server too. One extra count query, and only once the removal is
+        // already big enough to warrant the second step; below that the guard
+        // never asks, so neither do we.
+        let verifiedCount = null;
+        if (totalImageCount > HIGH_RISK_REMOVAL_COUNT) {
+          try {
+            const { totalCount } = await fetchReviewQueue({
+              ..._baseReviewFilterOpts(fs),
+              requireBboxes: _viewFilter === 'bboxes',
+              requireVerifiedBbox: true,
+              limit: 1,
+            });
+            // -1 is the endpoint's "count query timed out" sentinel, not a
+            // count. Treat it as unknown rather than as a number, or the
+            // dialog headlines "-1 human-verified images".
+            verifiedCount = totalCount >= 0 ? totalCount : null;
+          } catch (err) {
+            // Leave it null: "could not check" is not "nothing to lose", and
+            // confirmRemovalAction reads null as the loud case on purpose.
+            Logger.warn('applyToAllImagesByFilter: verified-count probe failed', err);
+          }
+        }
+        const confirmed = await confirmRemovalAction(
+          action, totalImageCount, 'matching the current filter, across all pages', { verifiedCount },
+        );
         if (!confirmed) return;
       }
       setServerSideApplyStatus('Applying to all matching images…');

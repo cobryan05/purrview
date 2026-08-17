@@ -352,6 +352,10 @@ export async function openClassifierTagConfirmationModal(candidates, ctx) {
     await showImageBulkActionModal(entries, ctx.labels, async (action, labelUuids, tagUuids) => {
       try {
         if (isRemovalAction(action)) {
+          // No verifiedCount: these entries are candidate stubs (uuid + path,
+          // no bboxes), so there is nothing here to tell whether a human ever
+          // verified them. confirmRemovalAction reads that as the loud case,
+          // which is the right direction to be wrong in.
           const confirmed = await confirmRemovalAction(action, entries.length);
           if (!confirmed) return;
 

@@ -70,6 +70,7 @@ function buildReviewFilterBody({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  requireVerifiedBbox = false,
   confidenceMin = null,
   confidenceMax = null,
   confidenceIncludeMissing = false,
@@ -93,6 +94,15 @@ function buildReviewFilterBody({
   if (bboxVerification && bboxVerification !== 'any') {
     // 'verified'/'unverified' are the BBoxVerificationTerm.state literals verbatim.
     terms.push({ kind: 'bboxVerification', state: bboxVerification });
+  }
+  // An ADDITIONAL verification term, not a replacement for the one above: terms
+  // are ANDed as independent per-image EXISTS server-side, so this narrows the
+  // caller's own filter to "…and also carries a human-verified box" rather than
+  // re-scoping it. That distinction is the whole point for the removal guard —
+  // it needs "how many of the images I am about to delete hold human work",
+  // which is a subset of the delete set, not a different set.
+  if (requireVerifiedBbox) {
+    terms.push({ kind: 'bboxVerification', state: 'verified' });
   }
 
   // Confidence band (BBoxConfidenceTerm). Only emitted when a bound is set:
@@ -205,6 +215,9 @@ function buildReviewFilterBody({
  *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain',
  *                           rollUp?: boolean, negate?: boolean}[],  // rollUp defaults true
  *   bboxVerification?: 'any'|'verified'|'unverified',  // 'any' is a no-op
+ *   requireVerifiedBbox?: boolean, // AND an extra "has a human-verified box" term
+ *                                  // on top of the rest of the filter (not instead
+ *                                  // of bboxVerification) — see buildReviewFilterBody
  *   verificationLabelUuids?: string[],  // V2: active training config's target labels,
  *                                        // overrides labelUuids as the verificationCheck target
  *   limit?: number,
@@ -235,6 +248,7 @@ export async function fetchReviewQueue({
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
+  requireVerifiedBbox = false,
   confidenceMin = null,
   confidenceMax = null,
   confidenceIncludeMissing = false,
@@ -268,6 +282,7 @@ export async function fetchReviewQueue({
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
+    requireVerifiedBbox,
     confidenceMin,
     confidenceMax,
     confidenceIncludeMissing,
