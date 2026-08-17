@@ -6392,11 +6392,21 @@ progress.progress-indeterminate:indeterminate {
 
 .watch-live-bar select { width: auto; }
 
+/* The same argument as the dialog width, applied to height. The side panel's content
+   changes several times a second — a detection appears, a track ages out — and while it
+   was a flex item every one of those rows made the dialog taller. A centred dialog that
+   grows downwards also moves *upwards* by half the growth, so the video jumped every
+   time the models saw something. So the side panel is taken out of flow entirely: the
+   row's height is the video's height, which only changes when the camera does. */
 .watch-live-body {
+  position: relative;
   display: flex;
   gap: var(--space-4, 1rem);
   align-items: flex-start;
   margin-top: var(--space-3, 0.75rem);
+  padding-right: calc(300px + var(--space-4, 1rem));
+  /* A portrait or not-yet-connected camera would otherwise leave the panel a sliver. */
+  min-height: 360px;
 }
 
 .watch-live-stage {
@@ -6417,17 +6427,36 @@ progress.progress-indeterminate:indeterminate {
 }
 
 .watch-live-side {
-  flex: 0 0 300px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
   /* Without this a long label name or rule name sets a min-content floor that
-     overrides the flex basis and widens the panel — the same wiggle by another
+     overrides the width and widens the panel — the same wiggle by another
      route, since the side panel's text is what changes on every poll. */
   min-width: 0;
   overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: var(--space-2, 0.5rem);
-  max-height: 70vh;
   overflow-y: auto;
+}
+
+/* Too narrow for two columns: put the panel back in flow underneath the video. It can
+   push the footer around there — nothing is beside it to be jostled. */
+@media (max-width: 720px) {
+  .watch-live-body {
+    flex-wrap: wrap;
+    padding-right: 0;
+    min-height: 0;
+  }
+
+  .watch-live-side {
+    position: static;
+    width: 100%;
+    max-height: 40vh;
+  }
 }
 
 .watch-live-status {

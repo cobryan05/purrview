@@ -1,4 +1,4 @@
-import { init as initImageTagging } from './image-tagging/main.js';
+import { init as initImageTagging, canvasReady } from './image-tagging/main.js';
 import { init as initConfiguration } from './configuration/main.js';
 import { init as initReview, applyFilterWhenReady } from './review/main.js';
 import { init as initRuns } from './runs/main.js';
@@ -137,6 +137,23 @@ export async function init(appState) {
     // Canvas/Files workspace tab inside it.
     _annotateTabs?.activateTab('tab-annotate-workspace');
     activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
+  });
+
+  // "Open this image on the canvas", published from tabs that have no canvas of their
+  // own (the NVR live view's saved frame, today). Annotate is focused first and the
+  // load is forwarded only once its lazy init has actually mounted the canvas — see
+  // OPEN_IMAGE_ON_MAIN_CANVAS in shared/events/types.js.
+  events.subscribe(EventTypes.OPEN_IMAGE_ON_MAIN_CANVAS, async ({ path }) => {
+    if (!path) return;
+    activateMainTab(container, 'tab-image-tagging');
+    _annotateTabs?.activateTab('tab-annotate-workspace');
+    await canvasReady;
+    activateWorkspaceTab('#tab-image-tagging', 'tab-canvas');
+    events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, {
+      path,
+      showCanvas: true,
+      runtimeId: appState.imgRuntime.id,
+    });
   });
 
   events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({

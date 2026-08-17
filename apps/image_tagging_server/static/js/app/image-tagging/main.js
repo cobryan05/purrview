@@ -11,6 +11,16 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 
 
+let _resolveCanvasReady;
+/**
+ * Resolves once this tab's canvas is mounted and its LOAD_IMAGE_ONTO_CANVAS
+ * subscription is live. A caller elsewhere in the app (see OPEN_IMAGE_ON_MAIN_CANVAS
+ * in app/main.js) can focus Annotate and then await this rather than guessing a delay
+ * long enough for the lazy init — publish too early and the image simply never loads.
+ * @type {Promise<void>}
+ */
+export const canvasReady = new Promise(resolve => { _resolveCanvasReady = resolve; });
+
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {HTMLElement} tab_pane
@@ -62,4 +72,6 @@ export async function init(runtime, tab_pane) {
   // activate default workspace tab
   const defaultTabBtn = tab_pane?.querySelector('.workspace-tab-button');
   if (defaultTabBtn) defaultTabBtn.click();
+
+  _resolveCanvasReady();
 }

@@ -65,6 +65,16 @@ export const EventTypes = Object.freeze({
    */
   CANVAS_ENHANCE_CHANGED: "canvas:enhance:changed",
   LOAD_IMAGE_ONTO_CANVAS: "canvas:image:load",
+  /**
+   * "Open this image on the main canvas" from a tab that is not Annotate.
+   *
+   * LOAD_IMAGE_ONTO_CANVAS is canvas-scoped and its subscriber is registered by
+   * Annotate's *lazy* init, so publishing it from NVR or Runs before Annotate has
+   * ever been opened drops it on the floor. This one is handled in app/main.js,
+   * which focuses Annotate, waits for the canvas to exist, and then forwards.
+   * Payload: { path: string }  (FILES_ROOT-relative)
+   */
+  OPEN_IMAGE_ON_MAIN_CANVAS: "canvas:main:open_image",
   /** Fired after image data is fully loaded into runtime state. */
   IMAGE_LOADED_ONTO_CANVAS: "canvas:image:loaded",
   /** Fired when the bboxes collection changes (add / delete / relabel). */

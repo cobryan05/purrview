@@ -17,6 +17,7 @@ Run with:
 """
 
 import json
+import re
 
 from playwright.sync_api import Page, expect
 
@@ -266,6 +267,64 @@ class TestLiveViewContent:
         assert red > 40 and blue > 40, rgba
         assert green * 2 < min(red, blue), rgba
 
+    def test_the_video_does_not_move_when_detections_appear(self, page: Page, base_url: str):
+        """The side panel grows several times a second; the dialog is centred.
+
+        While the panel was an ordinary flex item, one new detection row made the dialog
+        taller, which moved its top edge *up* by half the growth — the video jumped every
+        time a model saw something. The panel is out of flow now, so the row's height is
+        the frame's and nothing but a camera change moves it.
+        """
+        _mock_nvr(page, preview=_preview(detections=[], tracks=[], openEvents=[]))
+        _open_live_view(page, base_url)
+        expect(page.locator("[data-testid='watch-live-canvas']")).to_be_visible()
+        before = page.locator("[data-testid='watch-live-canvas']").bounding_box()
+
+        # A busy frame: eight detections, eight tracks, an open event. Every one of them
+        # is a row in the panel.
+        busy = _preview(
+            detections=[
+                {
+                    "bbox": [1.0 + i, 1.0 + i, 20.0 + i, 20.0 + i],
+                    "labelUuid": "label-cat",
+                    "labelName": f"Cat with a rather long name {i}",
+                    "confidence": 0.5,
+                }
+                for i in range(8)
+            ],
+            tracks=[
+                {
+                    "trackId": i,
+                    "bbox": [1.0 + i, 1.0 + i, 20.0 + i, 20.0 + i],
+                    "labelUuid": "label-cat",
+                    "labelName": f"Cat with a rather long name {i}",
+                    "confidence": 0.5,
+                    "firstSeen": 1.0,
+                    "lastSeen": 2.0,
+                    "hits": 5,
+                    "isAnchor": False,
+                    "ageS": 0.1,
+                    "eventRules": ["cat at the door"],
+                }
+                for i in range(8)
+            ],
+            openEvents=[{"ruleName": "cat at the door", "state": "open", "trackIds": [0, 1]}],
+            frameSeq=8,
+        )
+        page.route(
+            lambda url: "/live-preview" in url,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "preview": busy}),
+            ),
+        )
+        expect(page.locator("[data-testid='watch-live-lists']")).to_contain_text("cat at the door", timeout=5000)
+
+        after = page.locator("[data-testid='watch-live-canvas']").bounding_box()
+        assert abs(after["y"] - before["y"]) < 1, (before, after)
+        assert abs(after["height"] - before["height"]) < 1, (before, after)
+
     def test_a_source_error_is_surfaced_not_buried(self, page: Page, base_url: str):
         _mock_nvr(page, preview=_preview(healthy=False, lastError="connection refused"))
         _open_live_view(page, base_url)
@@ -371,3 +430,40 @@ class TestSaveFrameForAnnotation:
         # No boxes means the metadata call is not made at all, rather than being made
         # with an empty list — which on this endpoint means "delete every box".
         assert "metadata" not in captured
+
+    def test_offers_to_open_the_saved_frame_on_the_canvas(self, page: Page, base_url: str):
+        """Saving is nearly always the first half of "…so I can annotate it".
+
+        Accepting has to work from the NVR tab with Annotate never opened, which is the
+        case that a bare LOAD_IMAGE_ONTO_CANVAS publish silently loses (its subscriber
+        belongs to Annotate's lazy init).
+        """
+        captured: dict = {}
+        _mock_nvr(page)
+        self._mock_save_endpoints(page, captured)
+        _open_live_view(page, base_url)
+
+        page.locator("[data-testid='watch-live-save']").click()
+        page.get_by_role("button", name="Open on canvas").click()
+
+        # The live view closes: the canvas is behind it, and a hidden view that keeps
+        # polling frames is bytes nobody is looking at.
+        expect(page.locator("[data-testid='watch-live-dialog']")).to_have_count(0, timeout=5000)
+        expect(page.locator(".main-tab-button[data-tab='tab-image-tagging']")).to_have_class(
+            re.compile(r"\bactive\b"), timeout=5000
+        )
+        expect(page.locator("#tab-image-tagging .canvas-container")).to_be_visible(timeout=5000)
+
+    def test_declining_leaves_the_live_view_watching(self, page: Page, base_url: str):
+        """Captures are often grabbed in a burst; being yanked off the camera each
+        time would be worse than the walk to Files."""
+        captured: dict = {}
+        _mock_nvr(page)
+        self._mock_save_endpoints(page, captured)
+        _open_live_view(page, base_url)
+
+        page.locator("[data-testid='watch-live-save']").click()
+        page.get_by_role("button", name="Keep watching").click()
+
+        expect(page.locator("[data-testid='watch-live-dialog']")).to_be_visible()
+        expect(page.locator("[data-testid='watch-live-canvas']")).to_be_visible()

@@ -21,8 +21,9 @@
  *  - `sinceSeq` means a poll faster than the camera transfers no image bytes;
  *  - polling stops entirely while the tab is hidden or the view is paused.
  */
-import { createModalShell, Logger, toast } from '/app-static/js/ui/utils/index.js';
+import { createModalShell, Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { fetchTaskLivePreview } from '/app-static/js/shared/api/tasks.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 // Shared with the Live card thumbnails: the same box must mean the same thing in the
 // overview and in this drill-down. See overlay.js.
@@ -490,11 +491,39 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
       });
       savedHint.textContent = `Saved ${result.path}${result.boxesSaved ? ` (${result.boxesSaved} boxes)` : ''}`;
       toast(`Frame saved for annotation${result.boxesSaved ? ` with ${result.boxesSaved} boxes` : ''}`, 4000);
+      await offerToOpenOnCanvas(result);
     } catch (err) {
       Logger.error(err);
     } finally {
       saveBtn.disabled = false;
     }
+  }
+
+  /**
+   * Saving a frame is nearly always the first half of "…so I can annotate it", but the
+   * other half — find it in Files, load it — is several steps away from a modal that is
+   * showing live video. Asking here closes that gap without deciding for the user: some
+   * captures are grabbed in a burst while watching, and being yanked off the camera
+   * after each one would be worse than the walk to Files.
+   *
+   * @param {{path: string, boxesSaved: number}} result
+   */
+  async function offerToOpenOnCanvas(result) {
+    if (!result?.path) return;
+    const open = await showConfirmModal({
+      title: 'Open this frame?',
+      message: `Saved ${result.path}${result.boxesSaved ? ` with ${result.boxesSaved} detected box${result.boxesSaved === 1 ? '' : 'es'}` : ''}. Open it on the annotation canvas now?`,
+      confirmText: 'Open on canvas',
+      cancelText: 'Keep watching',
+    });
+    if (!open) return;
+    // Closed first: the canvas is behind this dialog, and the live view keeps polling
+    // frames the user is no longer looking at until it is.
+    shell.close();
+    // Not LOAD_IMAGE_ONTO_CANVAS directly: that subscription belongs to Annotate's lazy
+    // init, and from the NVR tab Annotate may never have been opened. app/main.js
+    // focuses it and forwards once the canvas exists.
+    events.publish(EventTypes.OPEN_IMAGE_ON_MAIN_CANVAS, { path: result.path });
   }
 
   // ---------------------------------------------------------------- lifecycle
