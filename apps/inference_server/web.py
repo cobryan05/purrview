@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.curatedModels import CURATED_BASE_MODELS
 from apps.helpers.imageUtils import base64_decode_image
+from apps.helpers.landingPage import action, render_landing_page
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.types import (
     InferenceResult,
@@ -28,6 +29,10 @@ from apps.helpers.types import (
 )
 
 from .manager import Manager
+
+
+class UnloadIdleResponse(StatusResponse):
+    unloaded: List[str] = Field(default_factory=list)
 
 
 class AssociateLabelPayload(Payload):
@@ -293,18 +298,54 @@ class WebApp:
     def _register_routes(self):
         """Register all routes for the application."""
 
-        @self._app.get("/", response_class=HTMLResponse)
+        @self._app.get("/", response_class=HTMLResponse, include_in_schema=False)
         async def index(request: Request):
-            """Home Page"""
-            buttons = []
-            return self._templates.TemplateResponse(
-                "dynamic_index.html",
-                {
-                    "request": request,
-                    "app_name": "Inference Server",
-                    "buttons": buttons,
-                },
+            """Operator landing page — this service is often alone on a GPU host."""
+            return HTMLResponse(
+                render_landing_page(
+                    title="WhiskerWatcher Inference Server",
+                    subtitle="ONNX model serving",
+                    status_url="/status",
+                    info_url="/api/info",
+                    actions=[
+                        action(
+                            "Unload idle models",
+                            "/api/models/unload-idle",
+                            description="Free memory held by keep-warm models nothing is using.",
+                        ),
+                    ],
+                    links=[
+                        ("API docs", "/docs"),
+                        ("Status JSON", "/status"),
+                        ("Models JSON", "/api/models"),
+                    ],
+                )
             )
+
+        @self._app.get(
+            "/api/info",
+            operation_id="inference_server_info",
+            response_class=JSONResponse,
+            tags=[ApiTags.MODELS],
+        )
+        async def inference_server_info():
+            """Runtime/model-storage detail for the landing page.
+
+            Split from /status because it stats every model file on disk, and
+            /status is polled every few seconds by the notices loop.
+            """
+            return JSONResponse(content=await asyncio.to_thread(self._manager.get_info))
+
+        @self._app.post(
+            "/api/models/unload-idle",
+            operation_id="unload_idle_models",
+            response_model=UnloadIdleResponse,
+            tags=[ApiTags.MODELS],
+        )
+        async def unload_idle_models():
+            """Unload models that only the implicit keep-warm pin is holding."""
+            unloaded = self._manager.unload_idle_models()
+            return UnloadIdleResponse(status=JsonValues.SUCCESS, unloaded=unloaded)
 
         @self._app.get(
             "/server-config",

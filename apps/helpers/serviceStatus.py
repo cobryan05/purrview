@@ -49,6 +49,18 @@ def section(title: str, rows: Iterable[dict], empty: Optional[str] = None) -> di
     return out
 
 
+def fmt_bytes(num_bytes: Optional[float]) -> str:
+    """Compact human size for status rows: ``512 B``, ``3.4 MB``, ``11.9 GB``."""
+    if num_bytes is None:
+        return "—"
+    value = float(max(num_bytes, 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"  # pragma: no cover - loop always returns
+
+
 def fmt_duration(seconds: Optional[float]) -> str:
     """Compact human duration for status rows: ``42s``, ``7m 12s``, ``2h 3m``."""
     if seconds is None:

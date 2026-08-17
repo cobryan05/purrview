@@ -33,7 +33,7 @@ from apps.helpers.modelFormat import (
     is_conversion_candidate,
 )
 from apps.helpers.modelStaging import STAGING_SUBDIR
-from apps.helpers.serviceStatus import fmt_duration, row, section
+from apps.helpers.serviceStatus import fmt_bytes, fmt_duration, row, section
 from apps.helpers.yoloUtils import load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
@@ -148,6 +148,7 @@ class Manager:
         # get_models_classes(); keyed on mtime so it self-invalidates on edit.
         self._class_map_cache: Dict[str, Tuple[int, Dict[str, Optional[str]]]] = {}
         self._config = {"service": APPS.INFERENCE_SERVER, "models_path": models_path}
+        self._started_at = time.time()
 
     async def get_server_config(self) -> Dict[str, Any]:
         return self._config.copy()
@@ -811,6 +812,96 @@ class Manager:
             logger.info("Periodic task was cancelled.")  # Handle task cancellation
         finally:
             logger.info("Periodic task cleanup.")  # Perform cleanup when the task is stopped
+
+    def unload_idle_models(self) -> List[str]:
+        """Unload models nothing is holding, freeing their GPU/host memory now.
+
+        Only models whose *sole* pin is the implicit keep-warm pin are dropped:
+        that pin means the last pinless recognize() left the session warm for
+        the next call, not that a caller depends on it. A model with a real pin
+        is left alone — pulling its session out from under an in-flight bulk run
+        would fail that run, and it will unload on its own when the pin expires.
+        """
+        unloaded: List[str] = []
+        for model_name, model in list(self._pinned_models.items()):
+            if all(pin_id == Manager.IMPLICIT_PIN_ID for pin_id in model.pins):
+                del self._pinned_models[model_name]
+                unloaded.append(model_name)
+                logger.info("Model '%s' unloaded on operator request (no explicit pins).", model_name)
+        return unloaded
+
+    def get_info(self) -> dict:
+        """Heavier, on-demand detail for the landing page.
+
+        Kept out of :meth:`get_status` on purpose — this stats every model file
+        on disk, and /status is polled by the notices loop every few seconds.
+        Same ``summary``/``details`` shape so both render through one path.
+
+        The runtime section answers the question you actually have when you
+        browse to a remote inference box: is this thing on the GPU, or has it
+        quietly fallen back to CPU?
+        """
+        try:
+            import onnxruntime as ort
+
+            ort_version = ort.__version__
+            available_providers = ort.get_available_providers()
+        except Exception as e:  # onnxruntime missing or broken — say so, don't 500
+            ort_version = f"unavailable ({e})"
+            available_providers = []
+
+        models_dir = Path(self._models_path) if self._models_path else None
+        model_rows = []
+        total_bytes = 0
+        if models_dir is not None and models_dir.is_dir():
+            for path in sorted(models_dir.glob("*.onnx")):
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                total_bytes += size
+                name = path.stem
+                parts = [fmt_bytes(size)]
+                if name in self._pinned_models:
+                    parts.append("loaded")
+                model_rows.append(row(name, "  ·  ".join(parts)))
+
+        gpu = "CUDAExecutionProvider" in available_providers
+        return {
+            "service": "inference_server",
+            "status": "ok",
+            "runtime": {
+                "onnxruntime": ort_version,
+                "providers": available_providers,
+                "gpu": gpu,
+            },
+            "models_path": self._models_path,
+            "models_bytes": total_bytes,
+            "summary": ("GPU (CUDA) available" if gpu else "CPU only"),
+            "details": [
+                section(
+                    "Runtime",
+                    [
+                        row("onnxruntime", ort_version),
+                        row("Execution providers", ", ".join(available_providers) or "none"),
+                        row("Acceleration", "CUDA" if gpu else "CPU only"),
+                        row("Uptime", fmt_duration(time.time() - self._started_at)),
+                    ],
+                ),
+                section(
+                    f"Models on disk ({len(model_rows)})",
+                    model_rows,
+                    empty=f"No .onnx models found in {self._models_path}",
+                ),
+                section(
+                    "Storage",
+                    [
+                        row("Models directory", self._models_path or "unset"),
+                        row("Models size", fmt_bytes(total_bytes)),
+                    ],
+                ),
+            ],
+        }
 
     def get_status(self) -> dict:
         """Return service health and diagnostic info.

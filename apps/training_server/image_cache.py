@@ -228,6 +228,75 @@ class ImageCache:
             except FileNotFoundError:
                 pass
 
+    def stats(self) -> dict:
+        """Return cache occupancy and its configured bounds.
+
+        Walks the cache directory, so this is filesystem I/O — call it from a
+        request handler or a thread, never from the ``/status`` poll path.
+        Does not touch mtimes: asking how big the cache is must not make every
+        file look freshly used to the LRU sweep.
+        """
+        files = 0
+        total_bytes = 0
+        oldest: Optional[float] = None
+        newest: Optional[float] = None
+        if self._dir.exists():
+            for p in self._dir.iterdir():
+                if not p.is_file() or p.name.startswith(".tmp_"):
+                    continue
+                try:
+                    st = p.stat()
+                except FileNotFoundError:
+                    continue
+                files += 1
+                total_bytes += st.st_size
+                oldest = st.st_mtime if oldest is None else min(oldest, st.st_mtime)
+                newest = st.st_mtime if newest is None else max(newest, st.st_mtime)
+        return {
+            "dir": str(self._dir),
+            "exists": self._dir.exists(),
+            "files": files,
+            "bytes": total_bytes,
+            "max_bytes": self._max_bytes,
+            "max_age_seconds": self._max_age_seconds,
+            "pinned": len(self._pinned),
+            "oldest_mtime": oldest,
+            "newest_mtime": newest,
+        }
+
+    def clear(self, include_pinned: bool = False) -> dict:
+        """Delete cached images.
+
+        Pinned UUIDs — the ones belonging to jobs that are awaiting data,
+        queued or running — are kept unless *include_pinned* is set, because
+        deleting them strands a job that can no longer be completed without
+        re-uploading its images. ``include_pinned=True`` exists for the "this
+        box is wedged, wipe it" case and reports what it took with it.
+
+        Returns ``{"removed": n, "freed_bytes": b, "kept_pinned": k}``.
+        """
+        removed = 0
+        freed = 0
+        kept = 0
+        if not self._dir.exists():
+            return {"removed": 0, "freed_bytes": 0, "kept_pinned": 0}
+        for p in self._dir.iterdir():
+            if not p.is_file() or p.name.startswith(".tmp_"):
+                continue
+            uuid = p.name.split(".")[0]
+            if uuid in self._pinned and not include_pinned:
+                kept += 1
+                continue
+            try:
+                size = p.stat().st_size
+                p.unlink()
+            except FileNotFoundError:
+                continue
+            removed += 1
+            freed += size
+        logger.info("Cache clear: removed %d files (%d bytes), kept %d pinned", removed, freed, kept)
+        return {"removed": removed, "freed_bytes": freed, "kept_pinned": kept}
+
     # ── Local (no-copy) ingest ───────────────────────────────────────────────
 
     def ingest_local(

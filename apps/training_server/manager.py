@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from apps import APPS, FILES_ROOT
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.model_type_map import resolve_trainer_type
-from apps.helpers.serviceStatus import fmt_duration, row, section
+from apps.helpers.serviceStatus import fmt_bytes, fmt_duration, row, section
 
 from .image_cache import ImageCache
 from .job_queue import Job, JobQueue
@@ -25,6 +26,11 @@ logger.setLevel(LOG_LEVEL)
 
 _DEFAULT_ARTIFACTS_DIR = "/training-artifacts"
 _DEFAULT_EVICTION_SWEEP_SEC = 3600  # background age/size sweep interval
+
+
+def _fmt_counts(counts: Dict[str, int]) -> str:
+    """``{"done": 2, "running": 1}`` → ``"1 running, 2 done"`` (busiest first)."""
+    return ", ".join(f"{n} {status}" for status, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 class Manager:
@@ -40,6 +46,7 @@ class Manager:
         self._config: Dict[str, Any] = {"service": APPS.TRAINING_SERVER}
         self._eviction_sweep_sec = int(os.environ.get("TRAINING_CACHE_SWEEP_INTERVAL_SEC", _DEFAULT_EVICTION_SWEEP_SEC))
         self._eviction_task: Optional[asyncio.Task] = None
+        self._started_at = time.time()
 
     def start(self) -> None:
         self._cache.ensure_dir()
@@ -262,6 +269,111 @@ class Manager:
 
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._queue.get_job(job_id)
+
+    # ── Cache maintenance (landing page / ops) ───────────────────────────────
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Occupancy and bounds of the image cache. Does filesystem I/O."""
+        return self._cache.stats()
+
+    def clear_cache(self, include_pinned: bool = False) -> Dict[str, Any]:
+        """Delete cached images, keeping images pinned by live jobs unless asked."""
+        return self._cache.clear(include_pinned=include_pinned)
+
+    def evict_cache(self) -> Dict[str, Any]:
+        """Run the age+size eviction sweep now, and report what it changed."""
+        before = self._cache.stats()
+        self._cache.evict()
+        after = self._cache.stats()
+        return {
+            "removed": before["files"] - after["files"],
+            "freed_bytes": before["bytes"] - after["bytes"],
+            "files": after["files"],
+            "bytes": after["bytes"],
+        }
+
+    def _artifacts_stats(self) -> Dict[str, Any]:
+        """Disk used by job artifact directories (trained weights, logs)."""
+        jobs = 0
+        total_bytes = 0
+        if self._artifacts_dir.exists():
+            for job_dir in self._artifacts_dir.iterdir():
+                if not job_dir.is_dir():
+                    continue
+                jobs += 1
+                for path in job_dir.rglob("*"):
+                    try:
+                        if path.is_file():
+                            total_bytes += path.stat().st_size
+                    except OSError:
+                        continue
+        return {"dir": str(self._artifacts_dir), "jobs": jobs, "bytes": total_bytes}
+
+    def get_info(self) -> Dict[str, Any]:
+        """Heavier, on-demand detail for the landing page.
+
+        Deliberately *not* folded into :meth:`get_status`: this walks the cache
+        and artifact directories, and ``/status`` is polled every few seconds by
+        the notices loop. Same ``summary``/``details`` shape, so the landing
+        page renders both with one code path.
+        """
+        from .trainers import TRAINER_REGISTRY
+
+        cache = self.get_cache_stats()
+        artifacts = self._artifacts_stats()
+
+        pct = (cache["bytes"] / cache["max_bytes"] * 100) if cache["max_bytes"] else 0
+        max_age = cache["max_age_seconds"]
+        now = time.time()
+
+        cache_rows = [
+            row("Directory", cache["dir"]),
+            row("Cached images", f"{cache['files']}  ·  {fmt_bytes(cache['bytes'])}"),
+            row("Size limit", f"{fmt_bytes(cache['max_bytes'])}  ·  {pct:.0f}% used"),
+            row("Age limit", fmt_duration(max_age) if max_age else "disabled"),
+            row("Pinned by live jobs", cache["pinned"]),
+        ]
+        if cache["oldest_mtime"] is not None:
+            cache_rows.append(row("Oldest entry", f"{fmt_duration(now - cache['oldest_mtime'])} old"))
+        if cache["newest_mtime"] is not None:
+            cache_rows.append(row("Newest entry", f"{fmt_duration(now - cache['newest_mtime'])} old"))
+
+        jobs = self._queue.list_jobs()
+        by_status: Dict[str, int] = {}
+        for job in jobs:
+            by_status[job.status] = by_status.get(job.status, 0) + 1
+
+        return {
+            "service": "training_server",
+            "status": "ok",
+            "cache": cache,
+            "artifacts": artifacts,
+            "summary": f"cache {fmt_bytes(cache['bytes'])} / {fmt_bytes(cache['max_bytes'])}",
+            "details": [
+                section("Image cache", cache_rows),
+                section(
+                    "Artifacts",
+                    [
+                        row("Directory", artifacts["dir"]),
+                        row("Job directories", artifacts["jobs"]),
+                        row("Disk used", fmt_bytes(artifacts["bytes"])),
+                    ],
+                ),
+                section(
+                    "Server",
+                    [
+                        row("Uptime", fmt_duration(now - self._started_at)),
+                        row("Workers", self._queue._worker_count),
+                        row("Jobs known", f"{len(jobs)}" + (f"  ({_fmt_counts(by_status)})" if by_status else "")),
+                        row("Trainers", ", ".join(sorted(TRAINER_REGISTRY)) or "none registered"),
+                        row(
+                            "Eviction sweep",
+                            fmt_duration(self._eviction_sweep_sec) if self._eviction_sweep_sec else "disabled",
+                        ),
+                    ],
+                ),
+            ],
+        }
 
     def get_status(self) -> Dict[str, Any]:
         """Service health plus per-job training stats for the Service Status panel.

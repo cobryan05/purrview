@@ -12,10 +12,11 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
+from apps.helpers.landingPage import action, render_landing_page
 from apps.helpers.logUtils import LOG_LEVEL
 
 from .manager import Manager
@@ -129,6 +130,19 @@ class StartJobResponse(BaseModel):
 class RestartJobResponse(BaseModel):
     job_id: str
     status: str
+
+
+class CacheClearResponse(BaseModel):
+    removed: int
+    freed_bytes: int
+    kept_pinned: int
+
+
+class CacheEvictResponse(BaseModel):
+    removed: int
+    freed_bytes: int
+    files: int
+    bytes: int
 
 
 def _job_to_info(job) -> JobInfo:
@@ -443,3 +457,86 @@ class WebApp:
         )
         async def status(request: Request):
             return JSONResponse(self._manager.get_status())
+
+        @self._app.get(
+            "/api/training/info",
+            operation_id="training_server_info",
+            response_class=JSONResponse,
+            tags=["training"],
+        )
+        async def info(request: Request):
+            """Cache/artifact/server detail for the landing page.
+
+            Separate from /status because it walks the cache and artifact
+            directories — off the event loop, and never on the status poll path.
+            """
+            return JSONResponse(await asyncio.to_thread(self._manager.get_info))
+
+        @self._app.post(
+            "/api/training/cache/evict",
+            operation_id="evict_training_cache",
+            response_model=CacheEvictResponse,
+            tags=["training"],
+        )
+        async def evict_cache() -> CacheEvictResponse:
+            """Run the age/size eviction sweep now instead of waiting for the timer."""
+            return CacheEvictResponse(**await asyncio.to_thread(self._manager.evict_cache))
+
+        @self._app.delete(
+            "/api/training/cache",
+            operation_id="clear_training_cache",
+            response_model=CacheClearResponse,
+            tags=["training"],
+        )
+        async def clear_cache(include_pinned: bool = False) -> CacheClearResponse:
+            """Delete cached images.
+
+            Images pinned by live jobs are kept unless ``include_pinned`` is
+            set — dropping them leaves a queued job unable to run without a
+            fresh upload of every image it needs.
+            """
+            result = await asyncio.to_thread(self._manager.clear_cache, include_pinned)
+            return CacheClearResponse(**result)
+
+        @self._app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def index() -> HTMLResponse:
+            """Operator landing page — this service is often the only thing on its host."""
+            return HTMLResponse(
+                render_landing_page(
+                    title="WhiskerWatcher Training Server",
+                    subtitle="model training jobs + image cache",
+                    status_url="/status",
+                    info_url="/api/training/info",
+                    actions=[
+                        action(
+                            "Run eviction sweep",
+                            "/api/training/cache/evict",
+                            description="Apply the age and size limits now.",
+                        ),
+                        action(
+                            "Clear unpinned cache",
+                            "/api/training/cache",
+                            method="DELETE",
+                            danger=True,
+                            confirm="Delete all cached images that no live job needs?",
+                            description="Keeps images pinned by awaiting/queued/running jobs.",
+                        ),
+                        action(
+                            "Clear entire cache",
+                            "/api/training/cache?include_pinned=true",
+                            method="DELETE",
+                            danger=True,
+                            confirm=(
+                                "Delete EVERY cached image, including images pinned by live jobs? "
+                                "Those jobs will need their images uploaded again."
+                            ),
+                            description="Includes pinned images — live jobs will need a re-upload.",
+                        ),
+                    ],
+                    links=[
+                        ("API docs", "/docs"),
+                        ("Status JSON", "/status"),
+                        ("Jobs JSON", "/api/training/jobs"),
+                    ],
+                )
+            )
