@@ -109,11 +109,14 @@ class Manager:
         Built on first use rather than injected: only a watcher with a `record_clip`
         action on a buffered source ever needs it.
 
-        The host comes from APPS_CONFIG (so RELAY_BUFFER_SERVER_HOST moves it like
-        any other service) but there is deliberately no Settings → Servers override:
-        inference and training are stateless compute that can sit anywhere, whereas
-        a clip is cut into a `dest` path on the relay's own filesystem, so the relay
-        has to stay wherever the recordings are readable from.
+        No Settings → Servers override, unlike inference and training. Those two are
+        stateless compute and are the only services the deployment model allows onto
+        hosts of their own; the relay ships alongside db_server and
+        image_tagging_server, and a clip is cut into a `dest` path on the relay's
+        filesystem, which is the same filesystem this process can read. The host
+        still comes from APPS_CONFIG, so RELAY_BUFFER_SERVER_HOST moves it within
+        that group — but do not add a UI override here expecting a remote relay to
+        work: the clip path would be written somewhere nothing else can see.
         """
         if self._relay_clip_client is None:
             relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
