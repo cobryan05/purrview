@@ -27,7 +27,7 @@ from db_client.models.tag_kind import TagKind as ApiTagKind  # noqa: F401 (used 
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.inference_payload import InferencePayload
+from inference_client.models.batch_inference_payload import BatchInferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.bboxUtils import iou_xywh
@@ -1742,117 +1742,133 @@ class CollectTrainingImagesTask(Task):
         """
         det_meta: dict[str, dict[str, Any]] = {}
 
-        async def _run_model(name: str) -> list:
-            """Call one model with retries; return its filtered detections."""
+        async def _fetch_batch() -> dict:
+            """One request for the whole model set; returns name -> result (or None).
+
+            Every model here runs over the SAME frame. Sent as one request per
+            model, the server base64-decoded and letterboxed that identical
+            image once per model — ~3.6 ms of decode each for a byte-identical
+            array, plus a full copy of the image on the wire per model. One
+            request lets it decode once and share the letterboxing across models
+            that agree on input size and anchor.
+
+            Retries are per-batch rather than per-model: a timeout here means
+            the inference server is not keeping up with the frame, which is not
+            a condition one model recovers from while its siblings don't. A
+            model that fails *individually* still comes back in `errors` and
+            only costs its own detections.
+            """
+            payload = BatchInferencePayload(
+                image_base64=base64_img,
+                model_names=list(self._model_names),
+                conf_thresh=self._min_all_conf,
+                pin_ids={n: p for n in self._model_names if (p := pin_ids.get(n))},
+                # Runner-up classes, asked for only when the confusable-detection
+                # feature is on so every other run keeps today's response size.
+                top_k=self._ambiguity_top_k if self._enable_ambiguity else 0,
+            )
             for _attempt in range(self._MAX_RETRIES):
                 try:
                     t_start = time.perf_counter()  # PERF
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            inference_api.detect,
-                            name,
-                            InferencePayload(
-                                image_base64=base64_img,
-                                conf_thresh=self._min_all_conf,
-                                pin_id=pin_ids.get(name),
-                                # Runner-up classes, asked for only when the
-                                # confusable-detection feature is on so every
-                                # other run keeps today's response size.
-                                top_k=self._ambiguity_top_k if self._enable_ambiguity else 0,
-                            ),
-                        ),
+                    resp = await asyncio.wait_for(
+                        asyncio.to_thread(inference_api.detect_batch, payload),
                         timeout=self._INFERENCE_TIMEOUT_S,
                     )
+                    results = resp.results or {}
                     # PERF BEGIN
                     logger.debug(
-                        "Inference HTTP round-trip model='%s': %.1fms (%d detections) "
+                        "Inference HTTP round-trip (batch of %d): %.1fms (%d detections total) "
                         "[compare to processImage total= in inference_server log for HTTP overhead]",
-                        name,
+                        len(self._model_names),
                         1000 * (time.perf_counter() - t_start),
-                        len(result.result.detections or []),
+                        sum(len(getattr(r, "detections", None) or []) for r in results.values()),
                     )
                     # PERF END
-                    # Only restrict to target labels here — NOT to each label's
-                    # confidence band. Band filtering must happen AFTER the
-                    # cross-model merge (see _run_inference): filtering first
-                    # would mean a high-confidence detection from one model no
-                    # longer suppresses an overlapping low-confidence/out-of-band
-                    # detection of the same object from another model, since the
-                    # merge would never even see the suppressed one (Phase 5B,
-                    # LIVE_COLLECTION_PLAN.md).
-                    # A model that architecturally cannot rank runners-up (NMS-free
-                    # /E2E export) must say so out loud — an empty alternates list
-                    # is indistinguishable from "nothing was confusable", and that
-                    # ambiguity is exactly how a multi-day run silently collects
-                    # nothing. Recorded once per model; surfaced by get_notices().
-                    if (
-                        self._enable_ambiguity
-                        and result.result is not None
-                        and result.result.alternates_available is False
-                        and name not in self._ambiguity_unavailable_models
-                    ):
-                        self._ambiguity_unavailable_models.add(name)
-                        self.log(
-                            f"Model '{name}' cannot report runner-up classes (NMS-free/E2E export) — "
-                            f"confusable detection is inactive for it"
-                        )
-
-                    dets = []
-                    for det in result.result.detections or []:
-                        luuid = det.bbox.label_uuid
-                        if luuid and luuid in self._target_label_bands:
-                            # Computed HERE — per model, on that model's own
-                            # detections, before the cross-model merge. The merge
-                            # drops losers and blends models together, so anything
-                            # computed after it can no longer say WHICH model was
-                            # confused, which is the only question this feature
-                            # exists to answer.
-                            det_meta[det.bbox.uuid] = {
-                                "model": name,
-                                "ambiguity": self._detect_ambiguity(det, name),
-                            }
-                            dets.append(det)
-                    return dets
+                    for name, message in (resp.errors or {}).items():
+                        logger.error("Inference error on model %s: %s", name, message)
+                    return results
                 except asyncio.TimeoutError:
                     if _attempt < self._MAX_RETRIES - 1:
                         logger.warning(
-                            "Inference timeout on model '%s' (attempt %d/%d), retrying",
-                            name,
+                            "Inference timeout on model batch (attempt %d/%d), retrying",
                             _attempt + 1,
                             self._MAX_RETRIES,
                         )
                     else:
                         logger.warning(
-                            "Inference timed out %d times for model '%s', skipping frame",
+                            "Inference timed out %d times for the model batch, skipping frame",
                             self._MAX_RETRIES,
-                            name,
                         )
-                        self.log(f"Inference timeout on '{name}' after {self._MAX_RETRIES} retries — skipping frame")
+                        self.log(f"Inference timeout after {self._MAX_RETRIES} retries — skipping frame")
                 except Exception:
-                    logger.exception(f"Inference error on model {name}")
+                    logger.exception("Inference error on model batch")
                     break  # don't retry on non-timeout exceptions
-            return []
+            return {}
 
-        # Run all models concurrently.  asyncio.gather preserves input order, so
-        # results_per_model[i] corresponds to self._model_names[i] (priority order).
-        # return_exceptions=True ensures that a CancelledError or unexpected
-        # BaseException in one coroutine doesn't discard results from sibling models.
-        raw_results = await asyncio.gather(
-            *(_run_model(name) for name in self._model_names),
-            return_exceptions=True,
-        )
+        def _filter_model(name: str, result) -> list:
+            """Per-model post-processing of one model's own detections.
 
-        # _run_model catches all Exception internally; only BaseExceptions (e.g.
-        # CancelledError) can appear here.  Re-raise CancelledError so the outer
-        # task cancellation propagates correctly; treat anything else as empty.
-        results_per_model: list[list] = []
-        for r in raw_results:
-            if isinstance(r, asyncio.CancelledError):
-                raise r
-            results_per_model.append(r if isinstance(r, list) else [])
+            Deliberately still per-model and still run BEFORE the cross-model
+            merge: everything here is a statement about which model said what,
+            and the merge blends the models together.
+            """
+            if result is None:
+                return []
+
+            # Only restrict to target labels here — NOT to each label's
+            # confidence band. Band filtering must happen AFTER the
+            # cross-model merge (see _run_inference): filtering first
+            # would mean a high-confidence detection from one model no
+            # longer suppresses an overlapping low-confidence/out-of-band
+            # detection of the same object from another model, since the
+            # merge would never even see the suppressed one (Phase 5B,
+            # LIVE_COLLECTION_PLAN.md).
+            # A model that architecturally cannot rank runners-up (NMS-free
+            # /E2E export) must say so out loud — an empty alternates list
+            # is indistinguishable from "nothing was confusable", and that
+            # ambiguity is exactly how a multi-day run silently collects
+            # nothing. Recorded once per model; surfaced by get_notices().
+            if (
+                self._enable_ambiguity
+                and result.alternates_available is False
+                and name not in self._ambiguity_unavailable_models
+            ):
+                self._ambiguity_unavailable_models.add(name)
+                self.log(
+                    f"Model '{name}' cannot report runner-up classes (NMS-free/E2E export) — "
+                    f"confusable detection is inactive for it"
+                )
+
+            dets = []
+            for det in result.detections or []:
+                luuid = det.bbox.label_uuid
+                if luuid and luuid in self._target_label_bands:
+                    # Computed HERE — per model, on that model's own
+                    # detections, before the cross-model merge. The merge
+                    # drops losers and blends models together, so anything
+                    # computed after it can no longer say WHICH model was
+                    # confused, which is the only question this feature
+                    # exists to answer.
+                    det_meta[det.bbox.uuid] = {
+                        "model": name,
+                        "ambiguity": self._detect_ambiguity(det, name),
+                    }
+                    dets.append(det)
+            return dets
+
+        batch = await _fetch_batch()
+
+        # Built by walking self._model_names, NOT the response mapping: the merge
+        # below is priority-ordered (first model wins an overlap), so
+        # results_per_model[i] must correspond to self._model_names[i]. Reading
+        # the order off the response would make which model wins depend on
+        # mapping order across two serializers instead of on configured priority.
+        # A model missing from the batch (it errored) contributes an empty list,
+        # leaving every other model's position intact.
+        results_per_model: list[list] = [_filter_model(name, batch.get(name)) for name in self._model_names]
 
         # Cross-model disagreement is measured HERE, on the per-model lists, for
-        # the same reason same-model ambiguity is measured inside _run_model:
+        # the same reason same-model ambiguity is measured inside _filter_model:
         # once merged there is no longer a "model-a said cat, model-b said dog"
         # to report, only a flat set of surviving boxes.
         if self._enable_ambiguity and self._ambiguity_cross_model and len(results_per_model) > 1:
@@ -1860,7 +1876,7 @@ class CollectTrainingImagesTask(Task):
 
         # Flatten in priority order then apply cross-model hierarchy-aware IoU dedup.
         # This MUST happen before any confidence-band filtering — see the comment
-        # in _run_model above and _frame_triggers_save below.
+        # in _filter_model above and _frame_triggers_save below.
         deduped = merge_detections_by_iou_and_hierarchy(
             results_per_model,
             label_ancestry=self._label_ancestry,

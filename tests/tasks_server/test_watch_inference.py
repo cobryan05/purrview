@@ -56,9 +56,16 @@ class _FakeInferenceApi:
         self._detections = detections
         self.payloads: List[Any] = []
 
-    def detect(self, model_name: str, payload: Any) -> SimpleNamespace:
+    def detect_batch(self, payload: Any) -> SimpleNamespace:
+        # One request carries the whole model stack now, so the fake answers in
+        # that shape: results keyed by model name, plus errors for any that
+        # failed. The task rebuilds its per-model list from its own model_names,
+        # so this does not need to model response ordering.
         self.payloads.append(payload)
-        return SimpleNamespace(result=SimpleNamespace(detections=list(self._detections)))
+        return SimpleNamespace(
+            results={name: SimpleNamespace(detections=list(self._detections)) for name in payload.model_names},
+            errors={},
+        )
 
 
 def _task() -> StreamWatcherTask:
@@ -111,7 +118,7 @@ class TestRunInference:
         """A failing model must yield no detections, not kill the frame loop."""
 
         class _Boom:
-            def detect(self, model_name: str, payload: Any):
+            def detect_batch(self, payload: Any):
                 raise RuntimeError("model exploded")
 
         assert await _task()._run_inference(_Boom(), "base64-image", ["cat-model"], frame_size=(100, 100)) == []

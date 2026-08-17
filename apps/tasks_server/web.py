@@ -242,7 +242,11 @@ class WebApp:
                 JSONResponse: A JSON-formatted error response.
             """
             exc_str = f"{exc}".replace("\n", " ").replace("   ", " ")
-            logger.error(request, exc_str)
+            # logger.error(msg, *args) does printf-style formatting: passing the
+            # Request as the message and exc_str as an arg made logging try
+            # str(request) % (exc_str,) and raise "not all arguments converted",
+            # so the validation error never reached the log at all.
+            logger.error("Validation error on %s %s: %s", request.method, request.url.path, exc_str)
             content = {"status_code": 10422, "message": exc_str, "data": None}
             return JSONResponse(content=content, status_code=422)
 

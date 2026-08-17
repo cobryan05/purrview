@@ -36,7 +36,7 @@ from db_client.api.model_groups_api import ModelGroupsApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.inference_payload import InferencePayload
+from inference_client.models.batch_inference_payload import BatchInferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.actions.action import ActionContext
@@ -518,33 +518,45 @@ class StreamWatcherTask(Task):
         if not model_names:
             return []
 
-        async def _run_model(name: str) -> list:
-            # Built once, outside the retry loop and outside the try. A malformed payload
-            # is a programming error, not a transient inference failure, and building it
-            # inside the `except Exception` below is exactly how this call spent its first
+        async def _run_stack() -> List[list]:
+            # ONE request for the whole stack. Built once, outside the retry loop
+            # and outside the try. A malformed payload is a programming error, not
+            # a transient inference failure, and building it inside the
+            # `except Exception` below is exactly how this call spent its first
             # week returning zero detections on every frame.
-            payload = InferencePayload(
+            payload = BatchInferencePayload(
                 image_base64=base64_img,
-                pin_id=self._pin_ids.get(name),
+                model_names=list(model_names),
+                pin_ids={n: p for n in model_names if (p := self._pin_ids.get(n))},
                 conf_thresh=self._INFERENCE_CONF_FLOOR,
             )
             for attempt in range(self._MAX_RETRIES):
                 try:
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(inference_api.detect, name, payload),
+                    resp = await asyncio.wait_for(
+                        asyncio.to_thread(inference_api.detect_batch, payload),
                         timeout=self._INFERENCE_TIMEOUT_S,
                     )
-                    return list(result.result.detections or [])
+                    results = resp.results or {}
+                    for name, message in (resp.errors or {}).items():
+                        logger.error("Inference error on model %s: %s", name, message)
+                    # Rebuilt from model_names, NOT by iterating the response: the
+                    # merge below is FIRST_WINS, so the order of this list decides
+                    # which model's label survives an overlap. Taking it from the
+                    # response would make that depend on mapping order across two
+                    # serializers rather than on the stack's configured priority.
+                    # A model that failed contributes an empty list, keeping the
+                    # positions of the ones that succeeded intact.
+                    return [list(getattr(results.get(n), "detections", None) or []) for n in model_names]
                 except asyncio.TimeoutError:
                     if attempt == self._MAX_RETRIES - 1:
-                        self.log(f"Inference timed out on '{name}' — skipping frame")
+                        self.log("Inference timed out — skipping frame")
                 except Exception:
-                    logger.exception("Inference error on model %s", name)
+                    logger.exception("Inference error on model stack %s", list(model_names))
                     break
-            return []
+            return [[] for _ in model_names]
 
         started = time.perf_counter()
-        results_per_model = await asyncio.gather(*(_run_model(n) for n in model_names))
+        results_per_model = await _run_stack()
         self._record_inference_time((time.perf_counter() - started) * 1000.0)
 
         merged = merge_detections_by_iou_and_hierarchy(
@@ -632,10 +644,8 @@ class StreamWatcherTask(Task):
         try:
             while not self._cancel_flag.is_set():
                 await self._check_pause()
-                if self._data_req_flag.is_set():
-                    # Mid-run persistence takes priority over cancel, per the Task contract.
-                    self.set_resume_data(self._build_watch_resume_data())
-                    self.clear_data_request()
+                # Mid-run persistence takes priority over cancel, per the Task contract.
+                self._maybe_checkpoint()
 
                 now = time.monotonic()
                 due = [p for p in self._pipelines if p.due(now)]
@@ -817,6 +827,34 @@ class StreamWatcherTask(Task):
             # offset once rather than making every action re-derive it.
             wallclock_offset=self._wallclock_offset,
         )
+
+    def _maybe_checkpoint(self) -> bool:
+        """Answer a pending checkpoint request. Returns whether one was answered.
+
+        Checkpointing is a two-part handshake with
+        ``Manager._checkpoint_running_tasks``: fill ``_resume_data`` **and** raise
+        ``_data_ready_flag``, because the manager writes nothing until
+        ``is_data_ready()`` says there is something to write.
+
+        This did only the first half. Every checkpoint request built resume data
+        and dropped it on the floor, so the instance reached a restart with
+        ``resume_data=None`` and startup recovery marked it "interrupted without
+        checkpoint — marking error" rather than resuming it. Nothing logged,
+        nothing raised; the only symptom was a watcher that did not come back.
+
+        It also quietly defeated DEFAULT_PERSISTENT, since auto-resume is gated
+        on resume_data — a task that never checkpoints cannot be persistent
+        however it is declared.
+
+        Extracted from the run loop so this is reachable by a test without
+        standing up sources, models and a database.
+        """
+        if not self._data_req_flag.is_set():
+            return False
+        self.set_resume_data(self._build_watch_resume_data())
+        self._data_ready_flag.set()
+        self.clear_data_request()
+        return True
 
     def _build_watch_resume_data(self) -> dict[str, Any]:
         """State this task owns, for checkpointing.

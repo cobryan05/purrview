@@ -23,8 +23,12 @@ def make_png_b64() -> str:
 
 @pytest.fixture
 def models_dir(tmp_path):
-    (tmp_path / "yolo_test.onnx").write_bytes(b"fake onnx")
-    (tmp_path / "yolo_test.json").write_text(json.dumps(MODEL_METADATA))
+    # Two models, because a model *stack* over one image is the case the
+    # detect-batch endpoint exists for and a single-model directory cannot
+    # exercise ordering or per-model error reporting.
+    for name in ("yolo_test", "yolo_test2"):
+        (tmp_path / f"{name}.onnx").write_bytes(b"fake onnx")
+        (tmp_path / f"{name}.json").write_text(json.dumps(MODEL_METADATA))
     return tmp_path
 
 

@@ -169,6 +169,49 @@ def _detection(label_uuid: str = _LABEL_UUID, confidence: float = 0.9) -> MagicM
     return det
 
 
+def _batch_response(per_model: dict) -> MagicMock:
+    """A detect_batch response carrying one result per model.
+
+    The task sends its whole model set in one request now (one image decoded
+    once instead of once per model), so the double has to answer in that shape:
+    ``results`` keyed by model name, plus ``errors`` for models that failed.
+    """
+    resp = MagicMock()
+    resp.results = per_model
+    resp.errors = {}
+    return resp
+
+
+def _result_with(detections) -> MagicMock:
+    """A single model's result carrying *detections*."""
+    r = MagicMock()
+    r.detections = detections
+    return r
+
+
+def _batch_of(result) -> "callable":
+    """detect_batch side_effect giving every requested model the same result."""
+
+    def _call(payload):
+        return _batch_response({name: result for name in payload.model_names})
+
+    return _call
+
+
+def _batch_per_model(fn) -> "callable":
+    """detect_batch side_effect delegating to ``fn(model_name)`` per model.
+
+    Replaces the old per-model ``detect(name, payload)`` side effects. Order is
+    preserved by construction: the task rebuilds its list from its own
+    ``_model_names``, so these fakes do not need to model response ordering.
+    """
+
+    def _call(payload):
+        return _batch_response({name: fn(name) for name in payload.model_names})
+
+    return _call
+
+
 def _make_task(params=None, resume_data=None) -> CollectTrainingImagesTask:
     manager = MagicMock()
     manager.get_db_api_client.return_value = MagicMock()
@@ -219,7 +262,7 @@ async def _run_task(
         else:
             mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.detect.return_value = inf_result
+        mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
@@ -332,14 +375,14 @@ async def test_already_processed_images_are_skipped(tmp_path):
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
         inf_result = MagicMock()
         inf_result.result.detections = [_detection()]
-        mock_inf_cls.return_value.detect.return_value = inf_result
+        mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
         await task.wait_for_task_done(timeout=10.0)
 
         # Inference must not have been called at all — images were skipped.
-        mock_inf_cls.return_value.detect.assert_not_called()
+        mock_inf_cls.return_value.detect_batch.assert_not_called()
 
     # images_saved should remain at the resumed count; no new saves.
     assert task._resume_data["images_saved"] == 2
@@ -417,7 +460,7 @@ async def test_run_inference_dedups_overlapping_boxes_keeping_priority():
         return result
 
     inference_api = MagicMock(spec=InferenceApi)
-    inference_api.detect.side_effect = _inference
+    inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [high_priority]
@@ -444,7 +487,7 @@ async def test_run_inference_keeps_non_overlapping_boxes():
         return result
 
     inference_api = MagicMock(spec=InferenceApi)
-    inference_api.detect.side_effect = _inference
+    inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [box_a, box_b]
@@ -516,7 +559,7 @@ async def test_run_inference_single_model_multiple_boxes_all_kept():
     inference_api = MagicMock(spec=InferenceApi)
     result = MagicMock()
     result.result.detections = [box1, box2, box3]
-    inference_api.detect.return_value = result
+    inference_api.detect_batch.side_effect = _batch_of(result.result)
 
     matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
     assert matching == [box1, box2, box3]
@@ -618,7 +661,7 @@ async def test_run_inference_runs_all_models_even_when_first_has_no_detections()
         return result
 
     inference_api = MagicMock(spec=InferenceApi)
-    inference_api.detect.side_effect = _inference
+    inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
     matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -937,7 +980,7 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.detect.return_value = inf_result
+        mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
@@ -1001,7 +1044,7 @@ async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.detect.return_value = inf_result
+        mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
@@ -1050,7 +1093,7 @@ async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
         mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-        mock_inf_cls.return_value.detect.return_value = inf_result
+        mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
         mock_img_cls.return_value.set_image_tag.return_value = MagicMock()
 
@@ -1300,7 +1343,7 @@ class TestCheckpointRequestHoist:
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1347,7 +1390,7 @@ class TestStopConditions:
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1379,7 +1422,7 @@ class TestStopConditions:
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1431,7 +1474,7 @@ class TestLiveProgress:
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1469,7 +1512,7 @@ class TestLiveProgress:
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.return_value = pin_resp
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1524,7 +1567,7 @@ class TestPinRenewal:
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
             mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.side_effect = _pin_resp
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1585,7 +1628,7 @@ class TestPinRenewal:
             pin_api = mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post
             # Initial pin succeeds; every renewal attempt raises.
             pin_api.side_effect = [pin_resp, Exception("boom"), Exception("boom"), Exception("boom")]
-            mock_inf_cls.return_value.detect.return_value = inf_result
+            mock_inf_cls.return_value.detect_batch.side_effect = _batch_of(inf_result.result)
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
@@ -1785,7 +1828,7 @@ class TestInferenceMergeParity:
             return result
 
         api = MagicMock(spec=InferenceApi)
-        api.detect.side_effect = _inference
+        api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
         return api
 
     # ── Rule 1: same label, two models — priority wins by identity ────────────
@@ -1980,7 +2023,7 @@ class TestInferenceMergeParity:
             return result
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.side_effect = _inference
+        inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2114,7 +2157,7 @@ class TestMergePolicyLastWins:
             return result
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.side_effect = _inference
+        inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2685,7 +2728,7 @@ class TestConfidenceBandScalarBackCompat:
 
         at_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.5)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [at_floor]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([at_floor]))
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == [at_floor]
 
@@ -2696,7 +2739,7 @@ class TestConfidenceBandScalarBackCompat:
 
         below_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.49)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [below_floor]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([below_floor]))
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == []
 
@@ -2709,7 +2752,7 @@ class TestConfidenceBandScalarBackCompat:
 
         very_confident = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.999)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [very_confident]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([very_confident]))
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == [very_confident]
 
@@ -2764,7 +2807,7 @@ class TestConfidenceBandPostMergeOrdering:
             return result
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.side_effect = _inference
+        inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2789,7 +2832,7 @@ class TestConfidenceBandPostMergeOrdering:
             return result
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.side_effect = _inference
+        inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
@@ -2839,7 +2882,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         above_max_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.95)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [in_band_det, above_max_det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([in_band_det, above_max_det]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2860,7 +2903,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         below_own_min_det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.3)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [trigger_det, below_own_min_det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([trigger_det, below_own_min_det]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2876,7 +2919,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         dropped = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_IN_BAND, confidence=0.3)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [kept, dropped]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([kept, dropped]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2889,7 +2932,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         only_out_of_band = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_OUT_OF_BAND, confidence=0.6)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [only_out_of_band]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([only_out_of_band]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == []
@@ -2917,7 +2960,7 @@ class TestConfidenceBandReviewDisabled:
 
         det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=0.9)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([det]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2943,7 +2986,7 @@ class TestConfidenceBandReviewDisabled:
         triggering_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_NORMAL, confidence=0.5)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [review_disabled_det, triggering_det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([review_disabled_det, triggering_det]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2970,7 +3013,7 @@ class TestConfidenceBandReviewDisabled:
         triggering_det = _detection_at(0.7, 0.7, 0.2, 0.2, label_uuid=self._LABEL_NORMAL, confidence=0.5)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [below_min_det, triggering_det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([below_min_det, triggering_det]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -2991,7 +3034,7 @@ class TestConfidenceBandReviewDisabled:
 
         det = _detection_at(0.0, 0.0, 0.2, 0.2, label_uuid=self._LABEL_REVIEW_DISABLED, confidence=1.0)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([det]))
 
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
@@ -3016,7 +3059,7 @@ class TestConfidenceBandBoundaryInclusivity:
     async def _run(self, task, confidence: float):
         det = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=confidence)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [det]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([det]))
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         return matching, det
 
@@ -3615,7 +3658,7 @@ class TestCollectAllWhenNoModelsConfigured:
         assert task.get_status() == TaskStatus.COMPLETED
         assert task._images_saved == 3
         assert len(list(tmp_path.rglob("*.jpg"))) == 3
-        task._test_mocks["inference_api"].detect.assert_not_called()
+        task._test_mocks["inference_api"].detect_batch.assert_not_called()
 
     async def test_saved_frames_carry_no_bboxes(self, tmp_path):
         """Nothing detected anything, so the images land unannotated — the point of
@@ -4160,7 +4203,7 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
 
         confident_and_confused = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [confident_and_confused]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([confident_and_confused]))
 
         frame = _untracked_image()
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
@@ -4181,7 +4224,7 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
 
         confident_and_sure = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.05)])
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = [confident_and_sure]
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([confident_and_sure]))
 
         frame = _untracked_image()
         matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
@@ -4192,17 +4235,17 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         task = _make_task(params=_PARAMS)
         await task._init(_PARAMS, resume_data=None)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = []
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([]))
         await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
-        assert inference_api.detect.call_args.args[1].top_k == 0
+        assert inference_api.detect_batch.call_args.args[0].top_k == 0
 
     async def test_top_k_is_requested_when_the_feature_is_on(self):
         task = _make_task(params=_AMBIGUITY_PARAMS)
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value.result.detections = []
+        inference_api.detect_batch.side_effect = _batch_of(_result_with([]))
         await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
-        assert inference_api.detect.call_args.args[1].top_k == 3
+        assert inference_api.detect_batch.call_args.args[0].top_k == 3
 
 
 class TestAmbiguityAttributionSurvivesTheMerge:
@@ -4233,10 +4276,9 @@ class TestAmbiguityAttributionSurvivesTheMerge:
         b_det = _detection_with_alts(0.7, [_alt(_RIVAL_UUID, 0.10)])  # overlapping, same label
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.side_effect = [
-            MagicMock(result=MagicMock(detections=[a_det], alternates_available=True)),
-            MagicMock(result=MagicMock(detections=[b_det], alternates_available=True)),
-        ]
+        inference_api.detect_batch.side_effect = _batch_per_model(
+            lambda n: MagicMock(detections=[a_det] if n == "model-a" else [b_det], alternates_available=True)
+        )
 
         frame = _untracked_image()
         matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
@@ -4258,10 +4300,9 @@ class TestAmbiguityAttributionSurvivesTheMerge:
         b_det.bbox.x, b_det.bbox.y = 0.7, 0.7  # far away, no IoU overlap
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.side_effect = [
-            MagicMock(result=MagicMock(detections=[a_det], alternates_available=True)),
-            MagicMock(result=MagicMock(detections=[b_det], alternates_available=True)),
-        ]
+        inference_api.detect_batch.side_effect = _batch_per_model(
+            lambda n: MagicMock(detections=[a_det] if n == "model-a" else [b_det], alternates_available=True)
+        )
 
         frame = _untracked_image()
         await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
@@ -4280,7 +4321,7 @@ class TestAmbiguityUnsupportedModels:
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
 
         inference_api = MagicMock(spec=InferenceApi)
-        inference_api.detect.return_value = MagicMock(result=MagicMock(detections=[], alternates_available=False))
+        inference_api.detect_batch.side_effect = _batch_of(MagicMock(detections=[], alternates_available=False))
         await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert _MODEL_NAME in task._ambiguity_unavailable_models
@@ -4402,10 +4443,9 @@ class TestCrossModelAmbiguity:
 
     def _api(self, a_dets, b_dets):
         api = MagicMock(spec=InferenceApi)
-        api.detect.side_effect = [
-            MagicMock(result=MagicMock(detections=a_dets, alternates_available=True)),
-            MagicMock(result=MagicMock(detections=b_dets, alternates_available=True)),
-        ]
+        api.detect_batch.side_effect = _batch_per_model(
+            lambda n: MagicMock(detections=a_dets if n == "model-a" else b_dets, alternates_available=True)
+        )
         return api
 
     async def _run(self, task, a_dets, b_dets):

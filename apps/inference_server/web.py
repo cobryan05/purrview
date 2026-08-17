@@ -157,6 +157,34 @@ class InferenceResponse(StatusResponse):
     result: Optional[InferenceResultModel] = None
 
 
+class BatchInferencePayload(Payload):
+    """One image, several models — the shape a model stack actually has.
+
+    Carries exactly one copy of the image. Sending it once per model meant the
+    server decoded the identical JPEG once per model (3.6 ms each) and
+    letterboxed it once per model on top, for a byte-identical result each
+    time.
+    """
+
+    model_names: List[str] = Field(min_length=1, description="Models to run over this one image")
+    conf_thresh: float = Field(ge=0.0, le=1.0, description="Confidence threshold; must be in [0, 1]")
+    # model name -> that caller's pin id. Per-model because pins are issued per
+    # model, and a stack typically holds one for each.
+    pin_ids: Dict[str, str] = Field(default_factory=dict)
+    top_k: int = Field(default=0, ge=0, le=32, description="See InferencePayload.top_k")
+    image_base64: str
+
+
+class BatchInferenceResponse(StatusResponse):
+    #: model name -> that model's result. Present only for models that
+    #: succeeded.
+    results: Dict[str, InferenceResultModel] = Field(default_factory=dict)
+    #: model name -> error string, for models that failed. A broken model in a
+    #: stack costs its own detections, not every other model's, so these are
+    #: reported alongside the successes rather than replacing them.
+    errors: Dict[str, str] = Field(default_factory=dict)
+
+
 class DetectionResultModel(BaseModel):
     bounding_box: tuple[float, float, float, float]
     confidence: float
@@ -218,7 +246,11 @@ class WebApp:
         async def validation_exception_handler(request: Request, exc: RequestValidationError):
 
             exc_str = f"{exc}".replace("\n", " ").replace("   ", " ")
-            logger.error(request, exc_str)
+            # logger.error(msg, *args) does printf-style formatting: passing the
+            # Request as the message and exc_str as an arg made logging try
+            # str(request) % (exc_str,) and raise "not all arguments converted",
+            # so the validation error never reached the log at all.
+            logger.error("Validation error on %s %s: %s", request.method, request.url.path, exc_str)
             content = {"status_code": 10422, JsonKeys.MESSAGE: exc_str, "data": None}
             return JSONResponse(content=content, status_code=422)
 
@@ -598,6 +630,48 @@ class WebApp:
                 return DeleteModelResponse(status=JsonValues.SUCCESS, model_name=model_name)
             except Exception as e:
                 return DeleteModelResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/detect-batch",
+            tags=[ApiTags.INFERENCE],
+            operation_id="detect_batch",
+            response_model=BatchInferenceResponse,
+        )
+        async def inference_batch_api(payload: BatchInferencePayload) -> BatchInferenceResponse:
+            """Run several models over one image, decoding and letterboxing it once.
+
+            Registered BEFORE /api/models/{model_name}/detect deliberately:
+            FastAPI matches routes in declaration order, and "detect-batch"
+            would otherwise be captured by {model_name} as a model called
+            "detect-batch".
+            """
+            try:
+                image_array: np.ndarray = base64_decode_image(payload.image_base64)
+
+                outcomes = await self._manager.recognize_many(
+                    model_names=payload.model_names,
+                    image=image_array,
+                    conf_thresh=payload.conf_thresh,
+                    pin_ids=payload.pin_ids,
+                    top_k=payload.top_k,
+                )
+
+                results: dict = {}
+                errors: dict = {}
+                for name, outcome in outcomes.items():
+                    if isinstance(outcome, str):
+                        errors[name] = outcome
+                        continue
+                    # The batch path never returns images: it exists for a model
+                    # stack running over a live frame, where N copies of the
+                    # source image in one response is exactly the waste being
+                    # removed here.
+                    outcome.source_image = None
+                    results[name] = InferenceResultModel.model_validate(outcome)
+                return BatchInferenceResponse(results=results, errors=errors)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return BatchInferenceResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/{model_name}/detect",

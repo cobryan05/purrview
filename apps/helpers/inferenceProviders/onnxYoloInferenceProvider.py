@@ -103,7 +103,33 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         return YoloUtils.preprocess_image(image_rgb, self.input_shape, anchor=self.LETTERBOX_ANCHOR)
 
-    async def processImage(self, image: np.ndarray, **kwargs) -> InferenceResult:
+    def preprocess_key(self):
+        """Two YOLO providers preprocess identically iff all three of these match.
+
+        The ``_preprocess`` function object rather than the class: subclasses
+        that override it (YOLOX, which must not normalize) must not share with
+        those that don't, and subclasses that merely change class *attributes*
+        should still share when those attributes agree. Comparing the bound
+        implementation gets both cases right without a registry of which
+        subclass is compatible with which.
+
+        Input shape and letterbox anchor are the two attributes ``_preprocess``
+        actually reads, so they complete the key.
+        """
+        return (type(self)._preprocess, tuple(self.input_shape), self.LETTERBOX_ANCHOR)
+
+    def preprocess_shared(self, image: np.ndarray):
+        return self._preprocess(image)
+
+    async def processImage(self, image: np.ndarray, pre=None, **kwargs) -> InferenceResult:
+        """Run one image through this model.
+
+        *pre* is an already-computed ``(tensor, scale, pad)`` from a provider
+        with an equal :meth:`preprocess_key`, so a stack of models over one
+        frame letterboxes it once rather than once each. It is only ever passed
+        by ``Manager.recognize_many``, which does that grouping; a lone
+        ``recognize`` still preprocesses here as before.
+        """
         original_shape = image.shape[:2]
         imgH, imgW = original_shape
 
@@ -118,7 +144,10 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         # that pool is single-threaded to keep CUDA calls on one thread, so
         # preprocessing there would serialize behind the GPU instead of
         # overlapping with it.
-        img, scale, pad = await asyncio.to_thread(self._preprocess, image)
+        if pre is not None:
+            img, scale, pad = pre
+        else:
+            img, scale, pad = await asyncio.to_thread(self._preprocess, image)
         t_pre = time.perf_counter()  # PERF
 
         if self.cuda_executor:

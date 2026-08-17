@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -71,6 +71,47 @@ class InferenceModel:
     # warm session apart from a stale one after the file is replaced underneath
     # it. None only if the stat failed at load time.
     weights_mtime_ns: Optional[int] = None
+
+
+class _SharedPreprocess:
+    """One frame's preprocessing, computed once per distinct provider recipe.
+
+    Scoped to a single ``recognize_many`` call, so there is no cache to
+    invalidate and nothing outlives the request: the image it holds is the one
+    being processed right now.
+
+    Distinct recipes are computed concurrently, not behind one lock — the lock
+    guards only the "who starts it" bookkeeping. Callers with the same key await
+    the same future, so N models sharing a recipe cost one letterbox and N
+    awaits rather than N letterboxes.
+    """
+
+    def __init__(self, image: np.ndarray):
+        self._image = image
+        self._lock = asyncio.Lock()
+        self._futures: Dict[Any, asyncio.Future] = {}
+
+    async def get(self, provider) -> Optional[Any]:
+        """The shared preprocessing for *provider*, or None if it opts out."""
+        try:
+            key = provider.preprocess_key()
+        except Exception:
+            # A provider that cannot describe its preprocessing is not a reason
+            # to fail the inference — it just does its own, as it always did.
+            logger.debug("preprocess_key failed; not sharing", exc_info=True)
+            return None
+        if key is None:
+            return None
+
+        async with self._lock:
+            future = self._futures.get(key)
+            if future is None:
+                # to_thread: this is the CPU-bound cvtColor+letterbox, and the
+                # event loop must not sit on it while other models' ONNX runs
+                # are in flight.
+                future = asyncio.ensure_future(asyncio.to_thread(provider.preprocess_shared, self._image))
+                self._futures[key] = future
+        return await future
 
 
 class Manager:
@@ -576,6 +617,7 @@ class Manager:
         conf_thresh: float,
         return_annotated_img: bool = False,
         pin_id: Optional[str] = None,
+        shared_pre: Optional["_SharedPreprocess"] = None,
         **kwargs,
     ) -> InferenceResult:
         """
@@ -631,8 +673,20 @@ class Manager:
         if not model or not model.inference:
             raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
 
+        # Only meaningful in a recognize_many batch: several models over one
+        # frame letterbox it to the same tensor, so the first to arrive computes
+        # it and the rest await that. Resolved here rather than earlier because
+        # the provider — and therefore its preprocess_key — only exists once the
+        # pinning above has loaded it.
+        pre = await shared_pre.get(model.inference) if shared_pre is not None else None
+        # Passed only when there is something to pass: providers outside the
+        # YOLO family (the classifiers) do not take a `pre` kwarg at all.
+        pre_kwargs = {"pre": pre} if pre is not None else {}
+
         t0 = time.perf_counter()
-        inference_result: InferenceResult = await model.inference.processImage(image, conf_thresh=conf_thresh, **kwargs)
+        inference_result: InferenceResult = await model.inference.processImage(
+            image, conf_thresh=conf_thresh, **pre_kwargs, **kwargs
+        )
         t_infer = time.perf_counter()
 
         if return_annotated_img:
@@ -663,6 +717,60 @@ class Manager:
             logger.debug(f"recognize '{model_name}': inference={1000*(t_infer-t0):.1f}ms (no detections)")
 
         return inference_result
+
+    async def recognize_many(
+        self,
+        model_names: List[str],
+        image: np.ndarray,
+        conf_thresh: float,
+        pin_ids: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> Dict[str, Union[InferenceResult, str]]:
+        """Run several models over ONE image, doing the shared work once.
+
+        Running a model stack over a frame used to mean one HTTP request per
+        model, each carrying its own copy of the same base64 JPEG. The server
+        then decoded that image once per model — 3.6 ms of base64+cv2.imdecode
+        each, for a byte-identical result — and letterboxed it once per model
+        on top. With four models on a frame that is ~13.7 ms of CPU spent
+        recomputing things it already had, plus three redundant copies of the
+        image on the wire.
+
+        Here the image arrives and is decoded once (in the route), and the
+        letterboxing is shared between every model whose ``preprocess_key``
+        agrees. Models that disagree — a different input size, a different
+        letterbox anchor, YOLOX's un-normalized variant — each get their own,
+        which is why this is keyed rather than assumed: feeding a model a
+        tensor prepared for a different one fails *silently*, returning
+        plausible boxes decoded against the wrong letterbox.
+
+        The ONNX runs themselves are untouched. They are the genuinely
+        per-model work, they already overlap (each provider owns a
+        single-thread CUDA executor), and they are not what was being wasted.
+
+        Returns a dict keyed by model name. A model that fails maps to its
+        error string rather than taking the whole batch down: one broken model
+        in a stack should cost its own detections, not every other model's.
+        """
+        pin_ids = pin_ids or {}
+        shared_pre = _SharedPreprocess(image)
+
+        async def _one(name: str) -> Union[InferenceResult, str]:
+            try:
+                return await self.recognize(
+                    model_name=name,
+                    image=image,
+                    conf_thresh=conf_thresh,
+                    pin_id=pin_ids.get(name),
+                    shared_pre=shared_pre,
+                    **kwargs,
+                )
+            except Exception as e:
+                logger.error(f"recognize_many: model '{name}' failed", exc_info=True)
+                return str(e)
+
+        results = await asyncio.gather(*(_one(n) for n in model_names))
+        return dict(zip(model_names, results))
 
     def _cleanup_expired_pins(self):
         """

@@ -26,7 +26,7 @@
 
 import { parseToolUuid } from './canvas/tools.js';
 import { addInferenceResults } from './canvas/image.js';
-import { runDetection } from '/app-static/js/shared/api/inference.js';
+import { runDetectionBatch } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
@@ -36,10 +36,18 @@ import { createTagPanel } from '/app-static/js/ui/inspector.js';
  * Subscribe this runtime's canvas to RUN_INFERENCE_ON_CANVAS and apply the
  * results to it.
  *
- * Models run sequentially; each one applies `replaceExisting` independently
- * against whatever the canvas looks like when it finishes, so the combined
- * result depends on run order. That's an accepted tradeoff for letting users
- * multi-select models.
+ * The models are inferred in ONE request (see `runDetectionBatch`) rather than
+ * one request each: they all run over the same canvas image, and sending it
+ * per model made the server base64-decode and letterbox the identical image
+ * once per model. Selecting four models used to mean four uploads and four
+ * decodes of the same picture, run back-to-back.
+ *
+ * Results are still APPLIED sequentially, in the order the models were
+ * selected — each one applies `replaceExisting` independently against whatever
+ * the canvas looks like when its turn comes, so the combined result depends on
+ * that order. That is the pre-existing (accepted) tradeoff for multi-select,
+ * and it is deliberately unchanged: batching alters when the inference happens,
+ * never the order its results land in.
  *
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {{ logPrefix?: string }} [opts]  prefix for error logs, e.g. 'Canvas modal: '
@@ -55,12 +63,25 @@ export function wireInferenceRunner(runtime, { logPrefix = '' } = {}) {
         Logger.error(`${logPrefix}Failed to run inference: no image loaded`);
         return;
       }
-      for (const modelName of modelNames) {
+      let outcomes;
+      try {
+        outcomes = await runDetectionBatch(modelNames, img, confThresh);
+      } catch (err) {
+        // The whole request failed (inference server down, bad image). Per-model
+        // failures do not come through here — they arrive as `error` below, so
+        // one broken model still lets the others apply.
+        Logger.error(`${logPrefix}Failed to run inference:`, err);
+        return;
+      }
+      for (const { modelName, result, error } of outcomes) {
+        if (error || !result) {
+          Logger.error(`${logPrefix}Failed to run inference (${modelName}):`, error);
+          continue;
+        }
         try {
-          const result = await runDetection(modelName, img, confThresh);
           await addInferenceResults(runtime, result, { replaceExisting });
         } catch (err) {
-          Logger.error(`${logPrefix}Failed to run inference (${modelName}):`, err);
+          Logger.error(`${logPrefix}Failed to apply inference (${modelName}):`, err);
         }
       }
     },
