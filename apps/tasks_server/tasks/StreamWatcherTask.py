@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import db_client
 import inference_client
+from db_client.api.labels_api import LabelsApi
 from db_client.api.model_groups_api import ModelGroupsApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
 from inference_client.api.inference_api import InferenceApi
@@ -55,6 +56,7 @@ from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarch
 from ._watch_pipeline import WatchPipeline, build_label_lifetimes, resolve_model_names
 from .Registry import register_task
 from .Task import Task
+from .utils.labelHelper import build_label_ancestry_map, build_label_metadata_map
 from .utils.sourceHelper import SourceHelper
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,10 @@ class StreamWatcherTask(Task):
         self._open_event_uuids: Dict[str, str] = {}
         self._run_started_at: float = time.monotonic()
         self._label_ancestry: Dict[str, set] = {}
+        # label_uuid → {"text": name, "color": color}. Inference returns a bare
+        # label_uuid, so without this every detection, track and live-view box would
+        # be captioned with a raw UUID (or nothing at all).
+        self._label_meta: Dict[str, Dict[str, Optional[str]]] = {}
         self._actions: List[tuple] = []
         self._mqtt: Optional[AsyncMqttPublisher] = None
         self._action_successes: int = 0
@@ -267,6 +273,14 @@ class StreamWatcherTask(Task):
 
     async def _build_pipelines(self, db_api_client: db_client.ApiClient) -> None:
         """Construct one pipeline per enabled source in the profile."""
+        # Both maps are keyed by label uuid and read on the per-frame path, so they are
+        # fetched exactly once here. The ancestry map is what lets the cross-model merge
+        # treat "cat" and "animal" as the same object rather than two overlapping ones —
+        # left empty (as it was) the hierarchy arm of the merge silently never fires.
+        labels_api = LabelsApi(db_api_client)
+        self._label_ancestry = await build_label_ancestry_map(labels_api)
+        self._label_meta = await build_label_metadata_map(labels_api)
+
         groups_resp = await asyncio.to_thread(ModelGroupsApi(db_api_client).list_model_groups)
         groups_by_uuid = {g.uuid: g for g in (groups_resp.groups or [])}
 
@@ -549,11 +563,28 @@ class StreamWatcherTask(Task):
                     (det.bbox.y + det.bbox.height) * frame_h,
                 ),
                 label_uuid=det.bbox.label_uuid,
-                label_name=getattr(det.bbox, "label_name", None),
+                label_name=self._label_display_name(det.bbox),
                 confidence=getattr(det, "confidence", 0.0) or 0.0,
             )
             for det in merged
         ]
+
+    def _label_display_name(self, bbox: Any) -> Optional[str]:
+        """A human name for one inference bbox.
+
+        The inference client's bbox carries `label_uuid` and `class_str` and no name, so
+        the DB's label name is the only real answer. `class_str` is the fallback rather
+        than the uuid on purpose: a model class with no label mapping is a *configuration*
+        problem, and showing "person" (the model's own word) makes that visible, whereas
+        a uuid tells the user nothing and looks like a bug in the view.
+        """
+        meta = self._label_meta.get(getattr(bbox, "label_uuid", None) or "")
+        if meta and meta.get("text"):
+            return meta["text"]
+        return getattr(bbox, "label_name", None) or getattr(bbox, "class_str", None)
+
+    def _label_colour(self, label_uuid: Optional[str]) -> Optional[str]:
+        return (self._label_meta.get(label_uuid or "") or {}).get("color")
 
     def _record_inference_time(self, ms: float) -> None:
         # Bounded: this is a "what is it doing now" sample, not a full history.
@@ -915,6 +946,16 @@ class StreamWatcherTask(Task):
         frame = pipeline.last_frame
         quality = int(options.get("quality") or self._PREVIEW_QUALITY)
 
+        open_events = pipeline.engine.open_events()
+        # track_id → the rules currently holding an event open on it. The view draws
+        # these boxes differently, which is the fastest way to answer the question the
+        # live view is really asked: "of everything moving out there, what is the
+        # watcher actually reacting to?"
+        rules_by_track: Dict[int, List[str]] = {}
+        for event in open_events:
+            for track_id in event.get("trackIds") or ():
+                rules_by_track.setdefault(int(track_id), []).append(str(event.get("ruleName") or "rule"))
+
         payload.update(
             {
                 "analysisFps": pipeline.analysis_fps,
@@ -932,16 +973,25 @@ class StreamWatcherTask(Task):
                         "bbox": [round(v, 2) for v in det.bbox],
                         "labelUuid": det.label_uuid,
                         "labelName": det.label_name,
+                        "labelColor": self._label_colour(det.label_uuid),
                         "confidence": round(det.confidence, 4),
                     }
                     for det in pipeline.detections
                 ],
-                "tracks": [{**t.to_dict(), "ageS": round(t.age_s(now), 2)} for t in pipeline.tracks],
+                "tracks": [
+                    {
+                        **t.to_dict(),
+                        "ageS": round(t.age_s(now), 2),
+                        "labelColor": self._label_colour(t.label_uuid),
+                        "eventRules": rules_by_track.get(t.track_id, []),
+                    }
+                    for t in pipeline.tracks
+                ],
                 "zones": [
                     {"uuid": z.uuid, "name": z.name, "kind": z.kind, "points": [list(p) for p in z.points]}
                     for z in pipeline.engine.zones.values()
                 ],
-                "openEvents": pipeline.engine.open_events(),
+                "openEvents": open_events,
             }
         )
 

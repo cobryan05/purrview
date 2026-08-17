@@ -33,6 +33,11 @@ def _bbox(x1: float, y1: float, x2: float, y2: float, label_uuid: str = CAT) -> 
     Corners are taken as arguments only because they read more naturally at the call
     sites; they are stored the way the client stores them, as relative x/y/width/height.
     See TestRealClientBboxShape, which uses the generated model itself.
+
+    ⚠️ `label_name` is absent for the same reason. This fake used to carry one, and the
+    watcher read it — so every detection, track and live-view caption in the real app was
+    labelled `None` (the live view showed bare uuids) while these tests read "Cat".
+    The real model has `class_str`, and the *name* has to be resolved from the DB.
     """
     return SimpleNamespace(
         x=x1,
@@ -40,7 +45,7 @@ def _bbox(x1: float, y1: float, x2: float, y2: float, label_uuid: str = CAT) -> 
         width=x2 - x1,
         height=y2 - y1,
         label_uuid=label_uuid,
-        label_name="Cat",
+        class_str="cat",
     )
 
 
@@ -65,6 +70,7 @@ def _task() -> StreamWatcherTask:
     task = StreamWatcherTask.__new__(StreamWatcherTask)
     task._pin_ids = {}
     task._label_ancestry = {}
+    task._label_meta = {CAT: {"text": "Cat", "color": "#ff8800"}}
     task._inference_ms = []
     return task
 
@@ -109,6 +115,42 @@ class TestRunInference:
                 raise RuntimeError("model exploded")
 
         assert await _task()._run_inference(_Boom(), "base64-image", ["cat-model"], frame_size=(100, 100)) == []
+
+
+class TestLabelNames:
+    """Inference returns a label *uuid*; humans need a *name*.
+
+    The watcher read `bbox.label_name`, which the client model has never had, so every
+    detection carried `label_name=None`. That propagates: the tracker copies the name
+    onto the track, so the status table and the live view both fell back to raw uuids —
+    "#1 3f2a9c1e-…" is the symptom this class exists to prevent.
+    """
+
+    async def test_label_name_comes_from_the_db_label_map(self):
+        api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.9)])
+
+        detections = await _task()._run_inference(api, "img", ["cat-model"], frame_size=(100, 100))
+
+        assert detections[0].label_name == "Cat"
+
+    async def test_unmapped_class_falls_back_to_the_models_own_word(self):
+        """A model class with no label mapping is a configuration problem — showing the
+        model's class name makes that legible, where a uuid just looks broken."""
+        task = _task()
+        task._label_meta = {}
+        api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10, label_uuid=None), confidence=0.9)])
+
+        detections = await task._run_inference(api, "img", ["cat-model"], frame_size=(100, 100))
+
+        assert detections[0].label_name == "cat"
+
+    async def test_a_real_client_bbox_has_no_label_name_to_read(self):
+        """Pins the shape that caused the bug, so the fake above cannot drift back."""
+        from inference_client.models.bounding_box_metadata_model import (
+            BoundingBoxMetadataModel,
+        )
+
+        assert "label_name" not in BoundingBoxMetadataModel.model_fields
 
 
 class TestRealClientBboxShape:

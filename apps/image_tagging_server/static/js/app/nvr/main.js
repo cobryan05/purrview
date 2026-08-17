@@ -16,10 +16,14 @@
  */
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
-import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
+import { cancelTasks, fetchTaskStatusData, fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
+import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
+import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
-import { Logger, showPaneError } from '/app-static/js/ui/utils/index.js';
+import { Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
+import { attachCardPreviews, stopAllCardPreviews } from '/app-static/js/app/nvr/cardPreview.js';
 
 /**
  * Small local button helper.
@@ -61,10 +65,20 @@ const LIVE_STATUSES = new Set(['running', 'pending', 'paused']);
  *
  * @returns {Promise<Map<string, object>>}
  */
+/**
+ * Which watchers were live as of the last read — see `_watcherSignature`.
+ *
+ * Module scope so the render path and the stream subscription share one value: if the
+ * stream kept its own, a tab entry would render once from `fetchRunningWatchers` and
+ * again on the next tick, restarting every preview poller for nothing.
+ */
+let _watcherSig = null;
+
 async function fetchRunningWatchers() {
   const running = new Map();
   try {
     const { tasks } = await fetchTasksStatus();
+    _watcherSig = _watcherSignature(tasks);
     for (const [taskUuid, task] of Object.entries(tasks ?? {})) {
       if (task?.config?.typename !== WATCHER_TYPENAME) continue;
       // The instance list includes *finished* instances, which are retained after a
@@ -87,45 +101,114 @@ async function fetchRunningWatchers() {
 }
 
 /**
+ * Each running watcher's sources, for the card thumbnails.
+ *
+ * One batched call for the whole pane. The live-preview endpoint could answer this too,
+ * but its job is to return a *frame* — it would encode and ship a JPEG per card purely
+ * to learn some names. The status payload already carries the sources and encodes
+ * nothing, which is the difference between a free pane and one that costs a JPEG per
+ * watcher every time you open it.
+ *
+ * @param {string[]} taskUuids
+ * @returns {Promise<Map<string, Array<{sourceUuid: string, sourceName: string}>>>}
+ */
+async function fetchWatcherSources(taskUuids) {
+  const byTask = new Map();
+  if (!taskUuids.length) return byTask;
+  try {
+    const statusData = await fetchTaskStatusData(taskUuids);
+    for (const [taskUuid, data] of statusData) {
+      const sources = (data?.sources ?? []).map(row => ({
+        sourceUuid: row.sourceUuid,
+        // `source` is the status table's column name for the human name.
+        sourceName: row.source,
+      })).filter(s => s.sourceUuid);
+      if (sources.length) byTask.set(taskUuid, sources);
+    }
+  } catch (err) {
+    // Thumbnails are an enhancement; the cards are still worth showing without them.
+    Logger.warn('nvr: could not read watcher sources', err);
+  }
+  return byTask;
+}
+
+/** Guards renderLive against overlapping calls — see the note there. */
+let _rendering = false;
+/** A render that arrived while one was in flight, and must happen after it. */
+let _renderQueued = false;
+
+/**
  * Live — one card per watch profile, showing whether it is currently running.
+ *
+ * ⚠️ Two callers can fire this at once: the tab activation and the task stream. It is
+ * async between reading and writing, so an unguarded version clears the pane, awaits,
+ * and appends — and two overlapping runs both append, listing every watcher twice.
+ * (That is exactly what happened when the stream subscription was added.)
+ *
+ * Hence both halves of the fix: the guard below, and a single atomic `replaceChildren`
+ * at the end instead of an early wipe. The atomic swap also means a slow render no
+ * longer blanks the pane while it waits on three API calls.
  */
 async function renderLive({ target = 'nvr-live-box' } = {}) {
   const container = document.getElementById(target);
   if (!container) return;
-  container.innerHTML = '';
-
-  let profiles;
+  if (_rendering) {
+    // Not simply dropped: the caller that lost the race may be the one reporting a
+    // watcher that just started, and swallowing it would leave the pane stale until
+    // the next state change.
+    _renderQueued = true;
+    return;
+  }
+  _rendering = true;
   try {
-    // ⚠️ A Map keyed by uuid, not an array (same convention as fetchLabels —
-    // see CLAUDE.md "Key Gotchas"). Iterate with .values().
-    profiles = await fetchWatchProfiles();
-  } catch (err) {
-    Logger.warn('nvr: could not load watch profiles', err);
-    showPaneError(container, 'Could not load watch profiles');
-    return;
+    let profiles;
+    try {
+      // ⚠️ A Map keyed by uuid, not an array (same convention as fetchLabels —
+      // see CLAUDE.md "Key Gotchas"). Iterate with .values().
+      profiles = await fetchWatchProfiles();
+    } catch (err) {
+      Logger.warn('nvr: could not load watch profiles', err);
+      stopAllCardPreviews();
+      container.replaceChildren();
+      showPaneError(container, 'Could not load watch profiles');
+      return;
+    }
+
+    const running = await fetchRunningWatchers();
+    const sourcesByTask = await fetchWatcherSources([...running.values()].map(t => t.taskUuid));
+    const rows = [...(profiles?.values?.() ?? [])];
+
+    // Every card about to be discarded owns polling timers, and a timer left running
+    // against detached DOM is a leak that compounds each time the pane re-renders.
+    // Deliberately here rather than at the top: until this point nothing has been
+    // replaced, so an earlier render's thumbnails keep updating while this one loads.
+    stopAllCardPreviews();
+
+    if (!rows.length) {
+      container.replaceChildren(_emptyState(
+        'No watch profiles yet',
+        'A watch profile is a set of interaction rules — "cat is inside litter box" — plus the sources to watch and the model stack to detect with.',
+        { label: 'Define one in Configuration', onClick: () => navigateTabs('tab-configuration', 'tab-watcher-management') },
+      ));
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'nvr-live-list';
+
+    for (const profile of rows) {
+      const task = running.get(profile.uuid) ?? null;
+      list.appendChild(_profileCard(profile, task, sourcesByTask.get(task?.taskUuid) ?? []));
+    }
+
+    container.replaceChildren(list);
+  } finally {
+    _rendering = false;
+    if (_renderQueued) {
+      _renderQueued = false;
+      void renderLive({ target });
+    }
   }
-
-  const running = await fetchRunningWatchers();
-  const rows = [...(profiles?.values?.() ?? [])];
-
-  if (!rows.length) {
-    container.appendChild(_emptyState(
-      'No watch profiles yet',
-      'A watch profile is a set of interaction rules — "cat is inside litter box" — plus the sources to watch and the model stack to detect with.',
-      { label: 'Define one in Configuration', onClick: () => navigateTabs('tab-configuration', 'tab-watcher-management') },
-    ));
-    return;
-  }
-
-  const list = document.createElement('div');
-  list.className = 'nvr-live-list';
-
-  for (const profile of rows) {
-    const task = running.get(profile.uuid) ?? null;
-    list.appendChild(_profileCard(profile, task));
-  }
-
-  container.appendChild(list);
 }
 
 /**
@@ -160,13 +243,66 @@ function _analysisFpsText(profile, task) {
 }
 
 /**
+ * "Start watching" / "Stop", for one card.
+ *
+ * Starting is exactly what the Runs launcher does — a temporary task config plus an
+ * instance — rather than a second mechanism: two ways to start a watcher that differ in
+ * what they write to the DB is how you end up with watchers that behave differently
+ * depending on which button started them.
+ *
+ * The pane is not re-rendered here. The task stream reports the state change (see
+ * `init`), so a card that flipped itself optimistically would either duplicate that
+ * render or, if the start failed, show a lie until the next one.
+ *
+ * @param {object} profile
+ * @param {?object} task
+ * @returns {HTMLButtonElement}
+ */
+function _startStopButton(profile, task) {
+  const isRunning = task !== null;
+  const btn = _panelButton(isRunning ? 'Stop' : 'Start watching', async () => {
+    btn.disabled = true;
+    btn.textContent = isRunning ? 'Stopping…' : 'Starting…';
+    try {
+      if (isRunning) {
+        await cancelTasks({ taskUuids: [task.taskUuid] });
+        toast(`Stopping ${profile.name}`, 3000);
+      } else {
+        await launchRun({
+          typename: WATCHER_TYPENAME,
+          name: `Watch ${profile.name}`,
+          params: { watch_profile_uuid: profile.uuid },
+        });
+        toast(`Starting ${profile.name}`, 3000);
+      }
+    } catch (err) {
+      Logger.error(err);
+      toast(`Could not ${isRunning ? 'stop' : 'start'} ${profile.name}`, 5000, 'error');
+      // Only on failure: on success the stream's re-render replaces this button, and
+      // restoring it here would fight that render.
+      btn.disabled = false;
+      btn.textContent = isRunning ? 'Stop' : 'Start watching';
+    }
+  });
+  btn.dataset.testid = isRunning ? 'nvr-stop-watcher' : 'nvr-start-watcher';
+  return btn;
+}
+
+/**
  * @param {object} profile
  * @param {?object} task - live task info, or null when not running
+ * @param {Array<{sourceUuid: string, sourceName: string}>} [sources] - for the thumbnails
  * @returns {HTMLElement}
  */
-function _profileCard(profile, task) {
+function _profileCard(profile, task, sources = []) {
   const card = document.createElement('section');
   card.className = 'panel-box nvr-profile-card';
+  // The one case that justifies a wide card: several cameras' thumbnails side by side.
+  // A single-source watcher gets a normal grid cell, so a screen of them packs tightly
+  // instead of each being a full-width line of text.
+  if ((profile.sources ?? []).filter(s => s.enabled !== false).length > 1) {
+    card.classList.add('nvr-profile-card--multi-source');
+  }
   card.dataset.tour = 'nvr.profileCard';
   card.dataset.profileUuid = profile.uuid;
 
@@ -199,6 +335,11 @@ function _profileCard(profile, task) {
     bar.appendChild(liveBtn);
   }
 
+  // Start/stop belongs here as well as in Runs. This pane is where you *look* to see
+  // whether the house is being watched, and a card that reports "stopped" and then
+  // sends you to another tab to do anything about it is a dead end.
+  bar.appendChild(_startStopButton(profile, task));
+
   // `selectUuid` is not optional decoration: without it the Watchers pane opens on
   // whatever was last selected, so "Edit rules" on card B lands you in card A's editor.
   bar.appendChild(_panelButton(
@@ -219,6 +360,12 @@ function _profileCard(profile, task) {
 
   const body = document.createElement('div');
   body.className = 'panel-box__body nvr-profile-card__body';
+
+  // Only for a running watcher: a stopped one has no frames, and a strip of permanent
+  // "no frame yet" placeholders would make every stopped card look broken.
+  if (isRunning) {
+    attachCardPreviews(body, { taskUuid: task.taskUuid, sources });
+  }
 
   const rules = profile.rules ?? profile.interactionRules ?? [];
   const meta = document.createElement('div');
@@ -279,6 +426,25 @@ function _emptyState(title, detail, action = null) {
   return box;
 }
 
+/**
+ * A signature of which watchers are live, for spotting real changes in the stream.
+ *
+ * The stream pushes the whole task map on every tick, and the pane must not re-render
+ * on each one: a render tears down the preview strips and restarts their polling, so
+ * following the stream literally would turn 10-second thumbnails into a hidden
+ * per-tick refresh. Only the *set* of running watchers matters here.
+ *
+ * @param {object} tasks - the stream's task map
+ * @returns {string}
+ */
+function _watcherSignature(tasks) {
+  return Object.entries(tasks ?? {})
+    .filter(([, t]) => t?.config?.typename === WATCHER_TYPENAME && LIVE_STATUSES.has(t?.instance?.status))
+    .map(([uuid, t]) => `${uuid}:${t?.instance?.status}`)
+    .sort()
+    .join('|');
+}
+
 export async function init() {
   const { container } = setupWorkspaceTabs('#tab-nvr', async (tabName) => {
     if (tabName === 'tab-nvr-live') {
@@ -288,7 +454,42 @@ export async function init() {
     }
   });
 
+  // Without this the pane only learned about a watcher starting on a full page reload —
+  // including a watcher this pane's own Start button had just launched.
+  let unsubscribe = null;
+
+  function openStream() {
+    if (unsubscribe !== null) return;
+    unsubscribe = subscribeTaskStream({
+      onMessage: (data) => {
+        if (!data?.tasks) return;
+        const next = _watcherSignature(data.tasks);
+        if (next === _watcherSig) return;
+        _watcherSig = next;
+        void renderLive({ target: 'nvr-live-box' });
+      },
+    });
+  }
+
+  function closeStream() {
+    // Both halves, or the pane keeps working off-screen: the stream is shared with Runs
+    // and costs a connection while subscribed, and the thumbnails would otherwise keep
+    // fetching frames for a pane nobody is looking at.
+    unsubscribe?.();
+    unsubscribe = null;
+    stopAllCardPreviews();
+  }
+
+  events.subscribe(EventTypes.MAIN_TAB_CHANGED, ({ tabName }) => {
+    if (tabName === 'tab-nvr') openStream();
+    else closeStream();
+  });
+
   // activate default NVR tab
   const defaultTabBtn = container?.querySelector('.workspace-tab-button');
   if (defaultTabBtn) defaultTabBtn.click();
+
+  // This module is lazy-loaded on the NVR tab's first focus, so by the time init runs
+  // the pane is on screen — and no MAIN_TAB_CHANGED will fire to say so.
+  openStream();
 }

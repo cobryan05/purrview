@@ -22,6 +22,17 @@
 import { createModalShell, Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { fetchTaskLivePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
+// Shared with the Live card thumbnails: the same box must mean the same thing in the
+// overview and in this drill-down. See overlay.js.
+import {
+  DETECTION_COLOUR,
+  ZONE_COLOUR,
+  decodeFrame,
+  drawBox as drawOverlayBox,
+  isEventTrack,
+  labelText,
+  trackColour,
+} from '/app-static/js/app/nvr/overlay.js';
 
 /** Poll rates offered, in Hz. */
 const POLL_RATES = [
@@ -31,12 +42,6 @@ const POLL_RATES = [
   { label: '5 /s', hz: 5 },
 ];
 const DEFAULT_HZ = 2;
-
-/** Detections and tracks must never be the same colour — see the module docstring. */
-const DETECTION_COLOUR = '#ffb347';
-const TRACK_COLOUR = '#4ade80';
-const ANCHOR_COLOUR = '#60a5fa';
-const ZONE_COLOUR = '#c084fc';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -65,39 +70,6 @@ function checkbox(labelText, checked, onChange, testid) {
   wrap.appendChild(input);
   wrap.appendChild(document.createTextNode(` ${labelText}`));
   return wrap;
-}
-
-/**
- * Decode a base64 JPEG into something drawable.
- *
- * Kept as one place because the *bytes* are wanted too — "save frame for annotation"
- * stores exactly the JPEG the watcher analysed rather than a canvas re-encode, so the
- * saved image is byte-identical to what the models were shown.
- *
- * @param {string} base64
- * @returns {{blob: Blob, decode: () => Promise<HTMLImageElement>}}
- */
-function decodeFrame(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const blob = new Blob([bytes], { type: 'image/jpeg' });
-  return {
-    blob,
-    decode: async () => {
-      const url = URL.createObjectURL(blob);
-      try {
-        const img = new Image();
-        img.src = url;
-        await img.decode();
-        return img;
-      } finally {
-        // Safe immediately after decode(): the bitmap is already in memory, and not
-        // revoking here leaks one object URL per frame for as long as the view is open.
-        URL.revokeObjectURL(url);
-      }
-    },
-  };
 }
 
 /**
@@ -335,39 +307,31 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
     if (state.show.detections) {
       for (const det of preview.detections ?? []) {
         drawBox(det.bbox, DETECTION_COLOUR, state.show.labels
-          ? `${det.labelName || 'det'} ${(det.confidence ?? 0).toFixed(2)}`
+          ? `${labelText(det.labelName, det.labelUuid, 'det')} ${(det.confidence ?? 0).toFixed(2)}`
           : null, { dashed: true });
       }
     }
     if (state.show.tracks) {
       for (const track of preview.tracks ?? []) {
-        const colour = track.isAnchor ? ANCHOR_COLOUR : TRACK_COLOUR;
-        drawBox(track.bbox, colour, state.show.labels
-          ? `#${track.trackId} ${track.labelName || ''}`.trim()
-          : null);
+        const rules = track.eventRules ?? [];
+        const active = isEventTrack(track);
+        const colour = trackColour(track);
+        const caption = [
+          `#${track.trackId}`,
+          labelText(track.labelName, track.labelUuid, ''),
+          track.confidence != null ? track.confidence.toFixed(2) : '',
+          // The rule name, not just "active": with several rules on one profile,
+          // knowing *which* one latched onto this object is the whole diagnosis.
+          active ? `● ${rules.join(', ')}` : '',
+        ].filter(Boolean).join(' ');
+        drawBox(track.bbox, colour, state.show.labels ? caption : null, { emphasis: active });
       }
     }
   }
 
-  function drawBox(bbox, colour, label, { dashed = false } = {}) {
-    if (!bbox || bbox.length !== 4) return;
-    const [x1, y1, x2, y2] = bbox;
-    ctx.save();
-    ctx.strokeStyle = colour;
-    ctx.lineWidth = 2;
-    if (dashed) ctx.setLineDash([5, 4]);
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-    if (label) {
-      ctx.setLineDash([]);
-      ctx.font = '12px sans-serif';
-      const metrics = ctx.measureText(label);
-      const boxTop = Math.max(0, y1 - 15);
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(x1, boxTop, metrics.width + 6, 14);
-      ctx.fillStyle = colour;
-      ctx.fillText(label, x1 + 3, boxTop + 11);
-    }
-    ctx.restore();
+  /** Binds this view's canvas to the shared box renderer. */
+  function drawBox(bbox, colour, label, opts = {}) {
+    drawOverlayBox(ctx, bbox, colour, label, opts);
   }
 
   function drawZone(zone, width, height) {
@@ -418,7 +382,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
       ['Tracks', (preview.tracks ?? []).length],
       ['Open events', (preview.openEvents ?? []).length],
       ['Frames analysed', preview.framesAnalysed ?? 0],
-      ['Frame age (s)', age ?? '—'],
+      ['Frame age (s)', age == null ? '—' : age.toFixed(2)],
       ['Analysis', preview.frameWidth ? `${preview.frameWidth}×${preview.frameHeight} @ ${preview.analysisFps} fps` : '—'],
       ['Models', (preview.modelNames ?? []).join(', ') || '— none configured —'],
       ['Buffer', preview.buffer ?? '—'],
@@ -432,14 +396,37 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
     }
 
     listBox.innerHTML = '';
-    listBox.appendChild(_list('Tracks', (preview.tracks ?? []).map(
-      t => `#${t.trackId} ${t.labelName || t.labelUuid || '?'} · ${(t.confidence ?? 0).toFixed(2)}${t.isAnchor ? ' · anchor' : ''} · ${t.ageS}s`,
-    ), 'No tracks. If detections above is non-zero, the tracker is discarding them — check its confidence threshold.'));
-    listBox.appendChild(_list('Open events', (preview.openEvents ?? []).map(
-      e => `${e.ruleName} · ${e.state}`,
-    ), 'No open events.'));
+    listBox.appendChild(_list('Detections (this frame)', (preview.detections ?? []).map(d => ({
+      swatch: d.labelColor,
+      text: `${labelText(d.labelName, d.labelUuid, 'det')} · ${(d.confidence ?? 0).toFixed(2)}`,
+    })), 'No detections in this frame.'));
+    listBox.appendChild(_list('Tracks', (preview.tracks ?? []).map(t => ({
+      swatch: t.labelColor,
+      active: (t.eventRules ?? []).length > 0,
+      text: [
+        `#${t.trackId}`,
+        labelText(t.labelName, t.labelUuid),
+        (t.confidence ?? 0).toFixed(2),
+        t.isAnchor ? 'anchor' : '',
+        // Fixed decimals, not the raw number: JSON drops a trailing zero, so an age of
+        // 0.10 arrives as "0.1" and the row is one character narrower for that frame.
+        `${Number(t.ageS ?? 0).toFixed(2)}s`,
+        (t.eventRules ?? []).length ? `● ${t.eventRules.join(', ')}` : '',
+      ].filter(Boolean).join(' · '),
+    })), 'No tracks. If detections above is non-zero, the tracker is discarding them — check its confidence threshold.'));
+    listBox.appendChild(_list('Open events', (preview.openEvents ?? []).map(e => ({
+      active: true,
+      // The track ids tie a rule back to the highlighted boxes on the canvas; without
+      // them an open event and a red box are two facts the user has to guess relate.
+      text: `${e.ruleName} · ${e.state}${(e.trackIds ?? []).length ? ` · tracks ${e.trackIds.map(id => `#${id}`).join(' ')}` : ''}`,
+    })), 'No open events.'));
   }
 
+  /**
+   * @param {string} title
+   * @param {Array<{text: string, swatch?: string|null, active?: boolean}>} items
+   * @param {string} emptyText
+   */
   function _list(title, items, emptyText) {
     const box = el('div', 'watch-live-list');
     box.appendChild(el('strong', null, title));
@@ -447,7 +434,17 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
       box.appendChild(el('div', 'panel-hint', emptyText));
       return box;
     }
-    for (const item of items) box.appendChild(el('div', 'watch-live-list__row', item));
+    for (const item of items) {
+      const row = el('div', 'watch-live-list__row');
+      if (item.active) row.classList.add('watch-live-list__row--active');
+      if (item.swatch) {
+        const dot = el('span', 'watch-live-list__swatch');
+        dot.style.background = item.swatch;
+        row.appendChild(dot);
+      }
+      row.appendChild(el('span', 'watch-live-list__text', item.text));
+      box.appendChild(row);
+    }
     return box;
   }
 

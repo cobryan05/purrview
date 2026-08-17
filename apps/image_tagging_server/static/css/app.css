@@ -669,10 +669,86 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 }
 
 /* ===== NVR ===== */
+/* A grid, not a column: as a full-width stack every card was one short line of text
+   across a 2500px monitor — 95% whitespace, and only two watchers visible per screen.
+   auto-fill with a min track means one wide card on a laptop and three or four side by
+   side on a desktop, without a breakpoint per screen size. */
 .nvr-live-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(28rem, 100%), 1fr));
   gap: var(--space-3);
+  align-items: start;
+}
+
+/* A multi-source profile earns a wider card: its thumbnails sit side by side, and
+   squeezing four cameras into one column track would make each unreadable. */
+.nvr-profile-card--multi-source {
+  grid-column: span 2;
+}
+
+@media (max-width: 60rem) {
+  .nvr-profile-card--multi-source { grid-column: span 1; }
+}
+
+.nvr-preview-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.nvr-preview-tile {
+  margin: 0;
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+  background: #000;
+  min-width: 0;
+}
+
+/* Matches EVENT_COLOUR in overlay.js — a card with something happening on it should be
+   identifiable while scrolling past, before any caption is read. */
+.nvr-preview-tile--event {
+  border-color: #f87171;
+  box-shadow: 0 0 0 1px #f87171;
+}
+
+.nvr-preview-tile canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.nvr-preview-tile__caption {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2, 0.5rem);
+  padding: 0.15rem 0.35rem;
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--text-muted);
+  background: var(--surface-raised, #1c1c1c);
+}
+
+.nvr-preview-tile__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* tabular-nums and a right edge: the counts change every refresh, and a caption that
+   reflows on each update draws the eye to the wrong thing. */
+.nvr-preview-tile__stat {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.nvr-preview-tile__stat--error { color: var(--color-danger, #f87171); }
+
+.nvr-preview-more {
+  align-self: center;
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--text-faint);
 }
 
 .nvr-profile-card__body {
@@ -6123,7 +6199,17 @@ progress.progress-indeterminate:indeterminate {
 }
 
 /* ===== Watcher live view ===== */
-.watch-live-dialog { max-width: 1100px; }
+/* An explicit width, not just a max: the dialog is a flex item that would otherwise
+   shrink-to-fit its content, and this content changes several times a second. A track
+   row appearing, or "1.2s" becoming "12.05s", would move the dialog edge a few pixels,
+   which resizes the stage, which changes the canvas height (it is `width: 100%` with
+   `height: auto` off the frame's aspect ratio) — the whole view visibly wiggles while
+   nothing about the video changed. */
+.watch-live-dialog {
+  width: min(1100px, 92vw);
+  max-width: 1100px;
+  max-height: 90vh;
+}
 
 .watch-live-bar,
 .watch-live-footer {
@@ -6180,6 +6266,11 @@ progress.progress-indeterminate:indeterminate {
 
 .watch-live-side {
   flex: 0 0 300px;
+  /* Without this a long label name or rule name sets a min-content floor that
+     overrides the flex basis and widens the panel — the same wiggle by another
+     route, since the side panel's text is what changes on every poll. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: var(--space-2, 0.5rem);
@@ -6204,7 +6295,8 @@ progress.progress-indeterminate:indeterminate {
 }
 
 .watch-live-stat__label { color: var(--text-faint); }
-.watch-live-stat__value { color: var(--text-muted); text-align: right; }
+/* tabular-nums so a counter ticking 9→10 doesn't reflow the row it sits in. */
+.watch-live-stat__value { color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
 
 .watch-live-lists {
   display: flex;
@@ -6213,7 +6305,27 @@ progress.progress-indeterminate:indeterminate {
 }
 
 .watch-live-list__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1, 0.25rem);
   font-size: var(--text-xs, 0.75rem);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* Matches EVENT_COLOUR in liveViewModal.js — the row and the highlighted box on the
+   canvas are the same fact, so they have to be the same colour. */
+.watch-live-list__row--active {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.watch-live-list__swatch {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  align-self: center;
+}
+
+.watch-live-list__text { min-width: 0; }

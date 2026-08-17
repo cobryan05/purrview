@@ -18,6 +18,7 @@ import numpy as np
 from apps.helpers.tracking.tracker import Detection, Track
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.geometry import Zone
+from apps.helpers.watch.rules import RuleSpec
 from apps.tasks_server.tasks._watch_pipeline import WatchPipeline
 from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
 
@@ -53,13 +54,15 @@ def _pipeline(
     )
 
 
-def _task(pipelines) -> StreamWatcherTask:
+def _task(pipelines, label_meta=None) -> StreamWatcherTask:
     """A task with only what `get_live_preview` touches — no manager, DB or profile."""
     task = StreamWatcherTask.__new__(StreamWatcherTask)
     task._pipelines = list(pipelines)
     task._profile = SimpleNamespace(uuid="profile-1", name="Litter box")
     task._dry_run = False
     task._preview_cache = {}
+    # `is None`, not `or`: an empty map is a meaningful case (no label resolved).
+    task._label_meta = dict({CAT: {"text": "Cat", "color": "#ff8800"}} if label_meta is None else label_meta)
     return task
 
 
@@ -186,6 +189,73 @@ class TestLivePreviewContent:
         preview = await task.get_live_preview()
 
         assert preview["modelNames"] == []
+
+
+class TestLivePreviewLabelling:
+    """Everything the view needs to caption a box.
+
+    A box drawn as "#1" over a uuid is unreadable, and a frame full of identical green
+    rectangles cannot answer the question the view is really opened to ask: of all this
+    movement, what is the watcher actually reacting to?
+    """
+
+    async def test_detections_and_tracks_carry_the_label_colour(self):
+        pipeline = _pipeline(tracks=[_track()])
+        pipeline.prepare_frame(_frame())
+        pipeline.step([_detection()], now=100.0)
+        task = _task([pipeline])
+
+        preview = await task.get_live_preview()
+
+        assert preview["detections"][0]["labelColor"] == "#ff8800"
+        assert preview["tracks"][0]["labelColor"] == "#ff8800"
+        assert preview["tracks"][0]["labelName"] == "Cat"
+
+    async def test_an_unknown_label_yields_no_colour_rather_than_an_error(self):
+        pipeline = _pipeline(tracks=[])
+        pipeline.prepare_frame(_frame())
+        pipeline.step([_detection()], now=100.0)
+        task = _task([pipeline], label_meta={})
+
+        preview = await task.get_live_preview()
+
+        assert preview["detections"][0]["labelColor"] is None
+
+    async def test_a_track_holding_an_event_open_names_the_rule(self):
+        """The highlight the canvas draws in the event colour comes from this field."""
+        rule = RuleSpec(
+            uuid="r1",
+            name="Cat in litter box",
+            subject_a_kind="label",
+            subject_a_ref=CAT,
+            relation="present",
+            subject_b_kind="none",
+            subject_b_ref=None,
+            min_duration_s=0.0,
+        )
+        pipeline = _pipeline(tracks=[_track()])
+        pipeline.engine = WatchEngine(rules=[rule], zones=(), source_uuid="src-1")
+        pipeline.prepare_frame(_frame())
+        # Two frames: the machine goes IDLE → PENDING on the first and only reaches
+        # ACTIVE once min_duration_s has demonstrably elapsed on a later one.
+        pipeline.step([_detection()], now=100.0)
+        pipeline.step([_detection()], now=100.5)
+        task = _task([pipeline])
+
+        preview = await task.get_live_preview()
+
+        assert preview["openEvents"], "rule should be open — the rest of this test is meaningless otherwise"
+        assert preview["tracks"][0]["eventRules"] == ["Cat in litter box"]
+
+    async def test_a_track_no_rule_matched_is_not_highlighted(self):
+        pipeline = _pipeline(tracks=[_track()])
+        pipeline.prepare_frame(_frame())
+        pipeline.step([_detection()], now=100.0)
+        task = _task([pipeline])
+
+        preview = await task.get_live_preview()
+
+        assert preview["tracks"][0]["eventRules"] == []
 
 
 class TestLivePreviewCost:
