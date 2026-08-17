@@ -72,9 +72,55 @@ const DEFAULT_BINDINGS = {
  * @param {Record<string,string>} stored - mutated in place
  * @returns {boolean} true if anything was added
  */
-function _mergeNewDefaults(stored) {
-  const alreadyBound = new Set(Object.values(stored));
+/**
+ * Combos Select and Draw-bbox used to default to, before Reset and Verify took
+ * them over. Kept only so a stored map holding the old layout can be migrated —
+ * do not extend this for later default changes; see _migrateLegacyToolKeys.
+ */
+const LEGACY_TOOL_DEFAULTS = {
+  'v': 'action:select',
+  'r': 'action:bbox',
+};
+
+function _defaultComboFor(action) {
+  return Object.keys(DEFAULT_BINDINGS).find(combo => DEFAULT_BINDINGS[combo] === action) || null;
+}
+
+/**
+ * Move the tools off V and R if they are still sitting on the old defaults.
+ *
+ * _mergeNewDefaults alone cannot help here: it skips a default whose combo is
+ * taken, and for every pre-existing user V and R *were* taken — by the very
+ * tools whose defaults moved in the same release. Reset and Verify therefore
+ * arrived permanently unbound for everyone who had ever saved a map, reachable
+ * only by rebinding them by hand.
+ *
+ * Deliberately narrow: only the two known old defaults, only when the stored
+ * combo still holds exactly the action it used to, and only into a combo that
+ * is free. A user who rebound either tool elsewhere is left alone, and a future
+ * default change gets no automatic reshuffle — it would have to make the same
+ * judgement about its own users.
+ *
+ * @param {Record<string,string>} stored - mutated in place
+ * @returns {boolean} true if anything moved
+ */
+function _migrateLegacyToolKeys(stored) {
   let changed = false;
+  for (const [legacyCombo, action] of Object.entries(LEGACY_TOOL_DEFAULTS)) {
+    if (stored[legacyCombo] !== action) continue;   // not the old layout — leave it alone
+    const target = _defaultComboFor(action);
+    if (!target || stored[target] !== undefined) continue;  // nowhere free to move it to
+    delete stored[legacyCombo];
+    stored[target] = action;
+    changed = true;
+  }
+  return changed;
+}
+
+function _mergeNewDefaults(stored) {
+  let migrated = _migrateLegacyToolKeys(stored);
+  const alreadyBound = new Set(Object.values(stored));
+  let changed = migrated;
   for (const [combo, action] of Object.entries(DEFAULT_BINDINGS)) {
     if (alreadyBound.has(action)) continue;      // user has a key for it already
     if (stored[combo] !== undefined) continue;   // default combo is taken by something else

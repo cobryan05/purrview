@@ -205,3 +205,71 @@ class TestPromptRestartAffectedTasks:
             return { threw, n };
         }""")
         assert result == {"threw": False, "n": 0}
+
+
+class TestIndirectReferences:
+    """A watcher names only its *profile*; the cameras and filter chains it uses
+    live in the profile row.
+
+    So the params scan on its own could never see them: editing a camera's URL
+    while a watcher was running matched nothing and offered no restart — exactly
+    the silence this module exists to break, for the one config kind most likely
+    to be edited mid-run.
+    """
+
+    _SETUP_WITH_PROFILES = """
+        const { findTasksUsing } =
+            await import('/app-static/js/ui/utils/restartAffectedTasks.js');
+        const { clearWatchProfilesCache } =
+            await import('/app-static/js/shared/api/watchProfiles.js');
+        // The fetcher caches across tests on a shared page, and other tests have
+        // already primed it with an empty list.
+        clearWatchProfilesCache();
+
+        const _realFetch = window.fetch;
+        window.fetch = async (url, opts) => {
+            let payload = { status: 'success' };
+            if (String(url).includes('/api/watch-profiles')) {
+                payload = { status: 'success', profiles: window.__profiles || [] };
+            } else if (String(url).includes('/api/tasks/instances/get')) {
+                payload = { status: 'success', tasks: window.__tasks };
+            }
+            return new Response(JSON.stringify(payload), {
+                status: 200, headers: { 'Content-Type': 'application/json' },
+            });
+        };
+        window.__restoreFetch = () => { window.fetch = _realFetch; clearWatchProfilesCache(); };
+    """
+
+    def _run(self, page: Page, profiles: str, needle: str) -> list:
+        return page.evaluate(f"""async () => {{
+            {self._SETUP_WITH_PROFILES}
+            window.__profiles = {profiles};
+            window.__tasks = {_running_task("{ watch_profile_uuid: 'prof-1' }")};
+            const found = await findTasksUsing('{needle}');
+            window.__restoreFetch();
+            delete window.__tasks; delete window.__profiles;
+            return found.map(f => f.taskUuid);
+        }}""")
+
+    def test_a_source_used_through_a_watch_profile_is_found(self, shared_page: Page):
+        profiles = "[{ uuid: 'prof-1', name: 'P', sources: [{ sourceUuid: 'src-9' }] }]"
+        assert self._run(shared_page, profiles, "src-9") == ["task-1"]
+
+    def test_a_filter_chain_referenced_by_an_action_is_found(self, shared_page: Page):
+        """The chain hangs off an action's params, deeper than the source list."""
+        profiles = (
+            "[{ uuid: 'prof-1', name: 'P', sources: [], "
+            "actions: [{ kind: 'apply_filter_chain', paramsJson: { filterChainUuid: 'chain-7' } }] }]"
+        )
+        assert self._run(shared_page, profiles, "chain-7") == ["task-1"]
+
+    def test_a_source_in_some_other_profile_is_not_matched(self, shared_page: Page):
+        """A spurious "restart your watcher?" on an unrelated save would be worse
+        than the silence this replaced."""
+        profiles = "[{ uuid: 'prof-2', name: 'Other', sources: [{ sourceUuid: 'src-9' }] }]"
+        assert self._run(shared_page, profiles, "src-9") == []
+
+    def test_the_profile_itself_still_matches_directly(self, shared_page: Page):
+        profiles = "[{ uuid: 'prof-1', name: 'P', sources: [{ sourceUuid: 'src-9' }] }]"
+        assert self._run(shared_page, profiles, "prof-1") == ["task-1"]

@@ -24,6 +24,7 @@
  */
 
 import { cancelTasks, fetchTasksStatus, startTask } from '/app-static/js/shared/api/tasks.js';
+import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
 import { showConfirmModal } from './confirmModal.js';
 // Note the argument order: toast(message, duration, type). Several older call
 // sites pass the type as the second argument, where it lands on `duration`.
@@ -64,7 +65,42 @@ function referencesUuid(value, uuid, depth = 0) {
 }
 
 /**
- * Running/queued task instances whose params reference `configUuid`.
+ * UUIDs to look for, given the one that was actually saved.
+ *
+ * The params scan only sees what a task stores *directly*, and a watcher stores
+ * one thing: `watch_profile_uuid`. Its sources and its actions' filter chains
+ * live in the profile row, so editing a camera's URL while a watcher was running
+ * matched nothing and offered no restart — the exact scenario this module opens
+ * by describing.
+ *
+ * Rather than teach the scan about watcher params, this widens the *needle*: a
+ * profile that references the saved uuid anywhere makes that profile's uuid
+ * worth searching for too. Same deep, name-agnostic match as the params scan, so
+ * a new field on a profile is covered without a change here.
+ *
+ * @param {string} configUuid
+ * @returns {Promise<string[]>} the saved uuid, plus any profile that holds it
+ */
+async function _uuidsToMatch(configUuid) {
+  let profiles;
+  try {
+    profiles = await fetchWatchProfiles();
+  } catch {
+    return [configUuid];  // Prompt on what we can see rather than not at all.
+  }
+  const uuids = [configUuid];
+  // ⚠️ A Map keyed by uuid, not an array (see fetchWatchProfiles). Iterate .values().
+  for (const profile of profiles.values()) {
+    if (profile?.uuid && profile.uuid !== configUuid && referencesUuid(profile, configUuid)) {
+      uuids.push(profile.uuid);
+    }
+  }
+  return uuids;
+}
+
+/**
+ * Running/queued task instances whose params reference `configUuid`, directly or
+ * through a watch profile that holds it.
  *
  * @param {string} configUuid
  * @returns {Promise<Array<{taskUuid: string, configUuid: string, name: string}>>}
@@ -72,8 +108,11 @@ function referencesUuid(value, uuid, depth = 0) {
 export async function findTasksUsing(configUuid) {
   if (!configUuid) return [];
   let tasks;
+  let needles;
   try {
-    ({ tasks } = await fetchTasksStatus());
+    // In parallel: the profile lookup is usually a cache hit, and when it is not
+    // there is no reason for it to sit behind the task poll.
+    [{ tasks }, needles] = await Promise.all([fetchTasksStatus(), _uuidsToMatch(configUuid)]);
   } catch {
     // A restart prompt is a convenience. If the task server can't be reached,
     // the save itself still succeeded — say nothing rather than surfacing a
@@ -84,7 +123,8 @@ export async function findTasksUsing(configUuid) {
   for (const [taskUuid, info] of Object.entries(tasks || {})) {
     const status = info?.instance?.status;
     if (!LIVE_STATUSES.has(status)) continue;
-    if (!referencesUuid(info?.config?.params ?? {}, configUuid)) continue;
+    const params = info?.config?.params ?? {};
+    if (!needles.some(uuid => referencesUuid(params, uuid))) continue;
     affected.push({
       taskUuid,
       configUuid: info?.config?.uuid,

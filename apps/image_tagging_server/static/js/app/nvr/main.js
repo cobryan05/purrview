@@ -471,6 +471,11 @@ export async function init() {
     });
   }
 
+  // Set by closeStream, cleared on the way back in. A plain "re-render on entry"
+  // would also fire on the *first* entry — the one that lazy-loaded this module and
+  // has already rendered — costing every card a second frame fetch on open.
+  let previewsStopped = false;
+
   function closeStream() {
     // Both halves, or the pane keeps working off-screen: the stream is shared with Runs
     // and costs a connection while subscribed, and the thumbnails would otherwise keep
@@ -478,11 +483,24 @@ export async function init() {
     unsubscribe?.();
     unsubscribe = null;
     stopAllCardPreviews();
+    previewsStopped = true;
   }
 
   events.subscribe(EventTypes.MAIN_TAB_CHANGED, ({ tabName }) => {
-    if (tabName === 'tab-nvr') openStream();
-    else closeStream();
+    if (tabName !== 'tab-nvr') {
+      closeStream();
+      return;
+    }
+    openStream();
+    // Re-render, don't just re-subscribe: closeStream() stopped every card preview,
+    // and nothing else brings them back on a main-tab switch — the sub-tab callback
+    // doesn't re-fire, and the stream only re-renders when the watcher signature
+    // changes. Without this, leaving NVR and returning left every tile frozen on its
+    // last frame until a watcher happened to start or stop.
+    if (previewsStopped) {
+      previewsStopped = false;
+      void renderLive({ target: 'nvr-live-box' });
+    }
   });
 
   // activate default NVR tab

@@ -151,7 +151,7 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
     tile.appendChild(caption);
     strip.appendChild(tile);
 
-    const state = { frameSeq: null, image: null, inFlight: false, preview: null };
+    const state = { frameSeq: null, image: null, inFlight: false, preview: null, timer: null };
 
     function placeholder(text) {
       ctx.fillStyle = '#111';
@@ -278,13 +278,33 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
       }
     }
 
-    function schedule() {
-      if (stopped) return;
+    /**
+     * Arm this tile's single timer, replacing whatever was pending.
+     *
+     * The replacement is the point. Three places start a new chain — poll()'s
+     * `finally`, its `inFlight` early return, and refreshSoon() on every
+     * visibilitychange — and none of them used to cancel the previous one, so
+     * each tile accumulated one independent chain per tab switch. After N
+     * switches a tile polled, and made the server encode a JPEG, N+1 times per
+     * interval, for as long as the pane stayed open.
+     */
+    function armTimer(delay, run) {
+      if (state.timer !== null) {
+        clearTimeout(state.timer);
+        timers.delete(state.timer);
+      }
       const timer = setTimeout(() => {
         timers.delete(timer);
-        void poll();
-      }, refreshMs);
+        state.timer = null;
+        run();
+      }, delay);
+      state.timer = timer;
       timers.add(timer);
+    }
+
+    function schedule() {
+      if (stopped) return;
+      armTimer(refreshMs, () => void poll());
     }
 
     /**
@@ -293,11 +313,8 @@ export function attachCardPreviews(host, { taskUuid, sources = [], refreshMs = R
      * profile is a visible hitch.
      */
     function refreshSoon() {
-      const timer = setTimeout(() => {
-        timers.delete(timer);
-        void poll({ immediate: true });
-      }, index * STAGGER_MS);
-      timers.add(timer);
+      if (stopped) return;
+      armTimer(index * STAGGER_MS, () => void poll({ immediate: true }));
     }
 
     refreshSoon();

@@ -267,12 +267,45 @@ class TestNewDefaultsMerged:
         )
 
     def test_stored_map_without_the_new_actions_gains_them(self, page: Page, base_url: str):
-        self._seed(page, {"v": "action:select", "ctrl+z": "action:undo"})
+        self._seed(page, {"k": "action:select", "ctrl+z": "action:undo"})
         goto(page, base_url)
-        result = self._init_and_read(page, ["s", "i", "v"])
+        result = self._init_and_read(page, ["s", "i", "k"])
         assert result["s"] == "action:save"
         assert result["i"] == "action:runInference"
-        assert result["v"] == "action:select"  # existing bindings untouched
+        assert result["k"] == "action:select"  # existing bindings untouched
+
+    def test_the_legacy_tool_layout_frees_v_and_r(self, page: Page, base_url: str):
+        """Every pre-existing user held V=Select and R=Draw-bbox, the old defaults.
+        Because _mergeNewDefaults skips a default whose combo is taken, Verify and
+        Reset arrived unbound for all of them — the two headline actions of the
+        release that added them were unreachable without manual rebinding."""
+        self._seed(page, {"v": "action:select", "r": "action:bbox", "ctrl+z": "action:undo"})
+        goto(page, base_url)
+        result = self._init_and_read(page, ["v", "r", "q", "b", "ctrl+z"])
+        assert result["v"] == "action:verifyAll"
+        assert result["r"] == "action:resetLabels"
+        # The tools move to their new defaults rather than being dropped.
+        assert result["q"] == "action:select"
+        assert result["b"] == "action:bbox"
+        assert result["ctrl+z"] == "action:undo"  # unrelated bindings untouched
+
+    def test_a_tool_rebound_by_hand_is_not_migrated(self, page: Page, base_url: str):
+        """Only the exact old layout migrates. Someone who chose V for Draw-bbox
+        keeps it, and Verify stays unbound rather than stealing their key."""
+        self._seed(page, {"v": "action:bbox"})
+        goto(page, base_url)
+        result = self._init_and_read(page, ["v", "b"])
+        assert result["v"] == "action:bbox"
+        assert result["b"] is None
+
+    def test_migration_skips_a_tool_whose_new_combo_is_taken(self, page: Page, base_url: str):
+        """Q already spoken for means there is nowhere free to move Select to, so
+        nothing moves — a migration must never silently drop a binding."""
+        self._seed(page, {"v": "action:select", "q": "action:undo"})
+        goto(page, base_url)
+        result = self._init_and_read(page, ["v", "q"])
+        assert result["v"] == "action:select"
+        assert result["q"] == "action:undo"
 
     def test_default_combo_already_used_is_not_stolen(self, page: Page, base_url: str):
         self._seed(page, {"s": "action:select"})

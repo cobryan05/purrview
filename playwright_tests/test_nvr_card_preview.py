@@ -238,3 +238,62 @@ class TestPreviewCost:
         # One first frame per render, and no refresh has come due yet (they are 10s
         # apart). More than that means an earlier render's loop is still running.
         assert len(calls) <= 4, f"preview polls piling up across renders: {len(calls)}"
+
+
+class TestPollScheduling:
+    """One poll chain per tile, and it survives leaving the tab.
+
+    Both halves were wrong in opposite directions: schedule() never cleared the
+    pending timer, so every visibilitychange forked another chain that polled
+    forever alongside the first; and leaving the NVR tab stopped the previews
+    without anything restarting them on the way back.
+    """
+
+    def test_visibility_changes_do_not_fork_extra_poll_chains(self, page: Page, base_url: str):
+        """Each fork costs a server-side JPEG encode per interval, permanently."""
+        calls = _mock(page, count_previews=True)
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        polls = page.evaluate(
+            """async (taskUuid) => {
+            const m = await import('/app-static/js/app/nvr/cardPreview.js');
+            const host = document.createElement('div');
+            document.body.appendChild(host);
+            const stop = m.attachCardPreviews(host, {
+              taskUuid,
+              sources: [{ sourceUuid: 'src-1', sourceName: 'Litter cam' }],
+              refreshMs: 50,
+            });
+            // Each of these used to start an independent chain on top of the running one.
+            for (let i = 0; i < 5; i++) document.dispatchEvent(new Event('visibilitychange'));
+            await new Promise(r => setTimeout(r, 600));
+            stop();
+            host.remove();
+            return true;
+        }""",
+            TASK_UUID,
+        )
+        assert polls
+
+        # ~12 at one poll per 50ms; six concurrent chains would be ~70. The bound is
+        # loose because timer scheduling under a loaded browser is not exact — it is
+        # the order of magnitude that distinguishes one chain from six.
+        assert len(calls) < 30, f"poll chains multiplied across visibility changes: {len(calls)}"
+
+    def test_returning_to_the_tab_starts_the_thumbnails_again(self, page: Page, base_url: str):
+        """Leaving the tab stops every preview; nothing else re-renders the pane on
+        the way back, so the tiles used to stay frozen on their last frame until a
+        watcher happened to start or stop."""
+        calls = _mock(page, count_previews=True)
+        _open_live_pane(page, base_url)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        before = len(calls)
+
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
+        page.locator(".main-tab-button[data-tab='tab-nvr']").click()
+        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_function("count => window.__nvrPreviewCalls === undefined || true", arg=before, timeout=1000)
+        page.wait_for_timeout(500)
+
+        assert len(calls) > before, "no frame was fetched after returning to the NVR tab"
