@@ -6054,23 +6054,44 @@ class DbClient:
                     setattr(mc, key, value)
 
             if isinstance(nodes_data, list):
-                await session.exec(delete(ModelConfigNode).where(ModelConfigNode.model_config_uuid == uuid))
-                if nodes_data:
-                    seen: set = set()
-                    for node in nodes_data:
-                        key_lbl = node.get("label_uuid")
-                        if key_lbl in seen:
-                            raise ValueError(f"Duplicate label_uuid in nodes: {key_lbl!r}")
-                        seen.add(key_lbl)
-                        session.add(
-                            ModelConfigNode(
-                                model_config_uuid=uuid,
-                                label_uuid=node.get("label_uuid"),
-                                model_type=node["model_type"],
-                                architecture=node["architecture"],
-                                roll_up_unchecked=node.get("roll_up_unchecked", False),
-                            )
-                        )
+                # Reconcile by label_uuid rather than replacing the node rows
+                # wholesale. A node UUID is a reference target, not an internal
+                # detail — training_configs.model_config_node_uuid is an FK to it
+                # (ON DELETE SET NULL) and every trained model stamps it into its
+                # metadata. Deleting and re-inserting would mint fresh UUIDs and
+                # silently unassign every training config using this shape, even
+                # when the edit changed nothing about their node.
+                #
+                # label_uuid is the right identity: it is unique within a config
+                # (enforced just below, as create_model_config does) and it is what
+                # the editor UI keys its rows on.
+                seen: set = set()
+                for node in nodes_data:
+                    key_lbl = node.get("label_uuid")
+                    if key_lbl in seen:
+                        raise ValueError(f"Duplicate label_uuid in nodes: {key_lbl!r}")
+                    seen.add(key_lbl)
+
+                existing_nodes = (
+                    await session.exec(select(ModelConfigNode).where(ModelConfigNode.model_config_uuid == uuid))
+                ).all()
+                by_label: Dict[Optional[str], ModelConfigNode] = {n.label_uuid: n for n in existing_nodes}
+
+                for node in nodes_data:
+                    label_uuid = node.get("label_uuid")
+                    row = by_label.pop(label_uuid, None)
+                    if row is None:
+                        row = ModelConfigNode(model_config_uuid=uuid, label_uuid=label_uuid)
+                    row.model_type = node["model_type"]
+                    row.architecture = node["architecture"]
+                    row.roll_up_unchecked = node.get("roll_up_unchecked", False)
+                    session.add(row)
+
+                # Whatever is left was dropped from the shape. These genuinely go
+                # away, and the FK's SET NULL correctly unassigns anything pointing
+                # at them — that is a real change, not incidental churn.
+                for stale in by_label.values():
+                    await session.delete(stale)
 
             mc.updated_at = datetime.now(timezone.utc)
             session.add(mc)

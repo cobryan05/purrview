@@ -591,3 +591,126 @@ async def test_targets_childless_boundary_has_empty_classes(http_client):
 
 async def test_targets_db_client_returns_none_for_missing_config(db_client):
     assert await db_client.derive_training_targets("no-such-uuid") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node identity stability
+#
+# `training_configs.model_config_node_uuid` is an FK to a node (ON DELETE SET
+# NULL), and every trained model records the node UUID in its metadata. So a
+# node UUID is a reference target, not an internal detail: editing a shape must
+# keep the UUIDs of the nodes that survive the edit, or every training config
+# pointing into that shape silently loses its assignment.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNodeIdentityStability:
+    async def test_adding_a_node_keeps_existing_node_uuids(self, http_client):
+        cat = await _create_label(http_client, "StableCat")
+        cfg = await _create_config(
+            http_client,
+            "StableAdd",
+            nodes=[dict(_VALID_NODE)],
+        )
+        root_uuid = cfg["nodes"][0]["uuid"]
+
+        r = await http_client.patch(
+            f"/api/model-configs/{cfg['uuid']}",
+            json={
+                "nodes": [
+                    dict(_VALID_NODE),
+                    {
+                        "label_uuid": cat,
+                        "model_type": "crop_classifier",
+                        "architecture": "mobilenet_v3_small",
+                    },
+                ]
+            },
+        )
+        assert r.status_code == 200, r.text
+        nodes = {n["labelUuid"]: n for n in r.json()["config"]["nodes"]}
+        assert len(nodes) == 2
+        assert nodes[None]["uuid"] == root_uuid
+
+    async def test_editing_a_node_in_place_keeps_its_uuid(self, http_client):
+        cfg = await _create_config(http_client, "StableEdit", nodes=[dict(_VALID_NODE)])
+        root_uuid = cfg["nodes"][0]["uuid"]
+
+        r = await http_client.patch(
+            f"/api/model-configs/{cfg['uuid']}",
+            json={
+                "nodes": [
+                    {
+                        "label_uuid": None,
+                        "model_type": "image_classifier",
+                        "architecture": "resnet_18",
+                        "roll_up_unchecked": True,
+                    }
+                ]
+            },
+        )
+        assert r.status_code == 200, r.text
+        node = r.json()["config"]["nodes"][0]
+        assert node["uuid"] == root_uuid
+        assert node["modelType"] == "image_classifier"
+        assert node["architecture"] == "resnet_18"
+        assert node["rollUpUnchecked"] is True
+
+    async def test_removed_node_is_gone_and_re_added_one_is_new(self, http_client):
+        cat = await _create_label(http_client, "DropCat")
+        cfg = await _create_config(
+            http_client,
+            "StableDrop",
+            nodes=[
+                dict(_VALID_NODE),
+                {
+                    "label_uuid": cat,
+                    "model_type": "crop_classifier",
+                    "architecture": "mobilenet_v3_small",
+                },
+            ],
+        )
+        by_label = {n["labelUuid"]: n["uuid"] for n in cfg["nodes"]}
+
+        r = await http_client.patch(
+            f"/api/model-configs/{cfg['uuid']}",
+            json={"nodes": [dict(_VALID_NODE)]},
+        )
+        assert r.status_code == 200, r.text
+        remaining = r.json()["config"]["nodes"]
+        assert len(remaining) == 1
+        assert remaining[0]["uuid"] == by_label[None]
+
+    async def test_training_config_keeps_its_node_through_a_shape_edit(self, http_client):
+        """The reported bug: editing a Model Shape unassigned every Training
+        Config that pointed into it, even when the edit was compatible."""
+        cat = await _create_label(http_client, "KeepCat")
+        cfg = await _create_config(http_client, "KeepShape", nodes=[dict(_VALID_NODE)])
+        node_uuid = cfg["nodes"][0]["uuid"]
+
+        r = await http_client.post(
+            "/api/training-configs",
+            json={"name": "KeepTraining", "datasetUuids": [], "modelConfigNodeUuid": node_uuid},
+        )
+        assert r.status_code == 200, r.text
+        tc_uuid = r.json()["config"]["uuid"]
+
+        # A compatible edit: add a sub-model node for a new label.
+        r = await http_client.patch(
+            f"/api/model-configs/{cfg['uuid']}",
+            json={
+                "nodes": [
+                    dict(_VALID_NODE),
+                    {
+                        "label_uuid": cat,
+                        "model_type": "crop_classifier",
+                        "architecture": "mobilenet_v3_small",
+                    },
+                ]
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        r = await http_client.get(f"/api/training-configs/{tc_uuid}")
+        assert r.status_code == 200, r.text
+        assert r.json()["config"]["modelConfigNodeUuid"] == node_uuid
