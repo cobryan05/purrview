@@ -78,6 +78,9 @@ class FakeFfmpegStreamer:
     async def wait_for_metadata(self) -> None:
         return None
 
+    def metadata_ready(self) -> bool:
+        return True
+
     def get_frame_size(self):
         return (2, 2)
 
@@ -429,3 +432,102 @@ class TestUrlImageProviderKeepsTheCamerasOwnEncoding:
         provided = await provider.getNextImage()
 
         assert provided.encoded_b64 is None
+
+
+class TestFfmpegImageProviderReconnect:
+    """Recovering a dropped camera without disturbing what other readers share.
+
+    The provider gives up on its own stream after `_MAX_STREAM_RESTARTS` frameless
+    reads and returns None from then on. That is the right call for one getNextImage()
+    — but nothing re-armed it, so the source stayed dark for the rest of the run no
+    matter how patiently its consumer retried. reconnect() is what re-arms it.
+    """
+
+    async def test_reconnect_rebuilds_the_reader(self, monkeypatch):
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        old = FakeFfmpegStreamer([])
+        provider._stream = old
+        provider._stream_url = "rtsp://cam.invalid/stream"
+
+        built = []
+        monkeypatch.setattr(
+            ffmpeg_provider_module,
+            "FFmpegStreamerIn",
+            lambda url, **kw: built.append(url) or FakeFfmpegStreamer([]),
+        )
+
+        await provider.reconnect()
+
+        assert old.astop_calls == 1, "the dead reader must be torn down"
+        assert built == ["rtsp://cam.invalid/stream"], "a fresh reader must be built"
+        assert provider._stream is not old
+
+    async def test_reconnect_clears_the_giving_up_state(self, monkeypatch):
+        """Without this the rebuilt stream inherits a spent restart budget and a
+        cached frame size, and gives up again on its first read."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = FakeFfmpegStreamer([])
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        provider._restart_count = provider._MAX_STREAM_RESTARTS + 5
+        provider._frame_size = (2, 2)
+        provider._buffer = b"stale"
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: FakeFfmpegStreamer([]))
+
+        await provider.reconnect()
+
+        assert provider._restart_count == 0
+        # Re-read rather than trusted: a camera can come back at a different
+        # resolution, and a stale frame size misaligns every read off the pipe.
+        assert provider._frame_size is None
+        assert provider._buffer == b""
+
+    async def test_reconnect_keeps_the_relay_lease(self, monkeypatch):
+        """The path is shared and refcounted. stop()/start() on every retry would
+        churn a lease other watchers on the same camera are also holding — and drop
+        the rewind buffer's continuity each time a flapping camera bounced."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = FakeFfmpegStreamer([])
+        provider._stream_url = "rtsp://relay/path"
+        provider._lease_id = "lease-123"
+        released = []
+        monkeypatch.setattr(provider, "_release_lease_quietly", lambda: released.append(True) or asyncio.sleep(0))
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: FakeFfmpegStreamer([]))
+
+        await provider.reconnect()
+
+        assert released == [], "reconnect must not hand the lease back"
+        assert provider._lease_id == "lease-123"
+
+    async def test_reconnect_does_not_wait_for_the_camera_to_come_up(self, monkeypatch):
+        """It rebuilds and returns; readiness is asked separately.
+
+        Blocking here for a camera that is not coming back would cost every *other*
+        camera its frame rate, since one loop services them all.
+        """
+
+        class _NeverReady(FakeFfmpegStreamer):
+            async def wait_for_metadata(self):
+                await asyncio.sleep(3600)
+
+            def metadata_ready(self) -> bool:
+                return False
+
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider._stream = FakeFfmpegStreamer([])
+        provider._stream_url = "rtsp://cam.invalid/stream"
+        monkeypatch.setattr(ffmpeg_provider_module, "FFmpegStreamerIn", lambda url, **kw: _NeverReady([]))
+
+        await asyncio.wait_for(provider.reconnect(), timeout=5.0)
+
+        assert provider.is_ready() is False, "a source that has not come up is not ready"
+
+    async def test_a_provider_that_never_started_cannot_reconnect(self):
+        """There is nothing to rebuild against — only a full start() recovers this."""
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+
+        with pytest.raises(RuntimeError):
+            await provider.reconnect()
+
+    async def test_is_ready_is_false_without_a_stream(self):
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        assert provider.is_ready() is False

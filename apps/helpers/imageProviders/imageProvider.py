@@ -74,6 +74,36 @@ class ImageProvider:
     async def stop(self) -> None:
         """Stops the image provider and releases any resources"""
 
+    async def reconnect(self) -> None:
+        """Re-establish this provider's connection to its source after a failure.
+
+        Called by a long-running consumer that has decided this source is down and is
+        due another attempt; the consumer owns the retry schedule, so this must do one
+        attempt and return rather than loop or sleep. It may raise — a caller treats
+        that as one more failed attempt, not as fatal.
+
+        The default is stop-then-start, which is correct for a provider holding no
+        shared state. One that does (a relay lease, a device handle refcounted with
+        other readers) should override to rebuild only its own connection: going
+        through stop()/start() would hand that shared thing back and re-take it on
+        every attempt, and a camera that is down for an hour makes that a lot of churn
+        on something other readers are also holding.
+        """
+        await self.stop()
+        await self.start()
+
+    def is_ready(self) -> bool:
+        """Whether a getNextImage() call can be expected to reach the source.
+
+        Exists so a consumer can decline to call getNextImage() on a provider that is
+        still connecting, rather than discovering it by blocking for the fetch timeout.
+        That distinction matters to a watcher servicing several cameras from one loop:
+        the stall would be paid by every *other* camera too.
+
+        Default True — a provider with nothing to connect to is always ready.
+        """
+        return True
+
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
         """

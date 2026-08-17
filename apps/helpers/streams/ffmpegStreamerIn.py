@@ -163,6 +163,15 @@ class FFmpegStreamerIn:
         """Returns True if each item in the frame queue is exactly one whole raw frame."""
         return self._is_frame_aligned
 
+    def metadata_ready(self) -> bool:
+        """Non-blocking form of wait_for_metadata(): has ffmpeg reported geometry yet?
+
+        For a live source that never connects, stderr never reaches EOF and the banner
+        never parses, so waiting is indistinguishable from waiting forever. A caller
+        polling a reconnect needs to ask without committing to that.
+        """
+        return self._metadata_event.is_set()
+
     async def wait_for_metadata(self) -> None:
         """Waits for metadata to become available"""
         await self._metadata_event.wait()

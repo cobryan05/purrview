@@ -95,6 +95,9 @@ class FfmpegImageProvider(ImageProvider):
         self._rtsp_relay_api: Optional[relay_buffer_client.ApiClient] = None
         self._relayed_name: str = ""
         self._stream: Optional[FFmpegStreamerIn] = None
+        #: Where the reader reads from, learned in start(). reconnect() rebuilds the
+        #: reader against it without re-running the lease handshake.
+        self._stream_url: str = ""
         self._video_path: str = video_path.strip()
         self._ffmpeg_args: dict = output_args
         self._min_capture_interval: float = min_capture_interval
@@ -160,6 +163,9 @@ class FfmpegImageProvider(ImageProvider):
                     f"rtsp://{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].host}:"
                     f"{APPS_CONFIG[APPS.MEDIA_MTX_RTSP].port}/{self._relayed_name}"
                 )
+                # Kept so reconnect() can rebuild the reader without re-running the
+                # whole lease handshake to rediscover where to read from.
+                self._stream_url = stream_url
                 self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
                 await self._stream.astart()
             except BaseException:
@@ -170,8 +176,52 @@ class FfmpegImageProvider(ImageProvider):
             self._renew_task = asyncio.get_running_loop().create_task(self._renew_lease_forever())
             return
 
+        self._stream_url = self._video_path
         self._stream = FFmpegStreamerIn(self._video_path, output_args=self._ffmpeg_args)
         await self._stream.astart()
+
+    async def reconnect(self) -> None:
+        """Rebuild the ffmpeg reader, keeping the relay lease.
+
+        A camera going down does not take the relay path with it: MediaMTX retries its
+        source forever by design, and our lease is what keeps the path armed and
+        recording while the camera is away. So the thing that has actually broken is
+        our reader off that path, and that is all this rebuilds.
+
+        The inherited stop()/start() would be wrong here twice over — it would release
+        and re-acquire a lease that other watchers on the same camera share the
+        refcount of, and it would drop the rewind buffer's continuity every time a
+        flapping camera bounced.
+
+        Returns as soon as ffmpeg has been spawned; it does NOT wait for the stream to
+        come up. Whether it did is `is_ready()`, asked on a later pass, because a
+        source that is genuinely down would otherwise block this call for the full
+        metadata timeout — and the caller servicing several cameras from one loop pays
+        that stall on all of them.
+        """
+        if self._stream is not None:
+            stream, self._stream = self._stream, None
+            await stream.astop()
+
+        if not self._stream_url:
+            # start() never got far enough to learn where to read from, so there is no
+            # reader to rebuild — only a full start() can recover this one.
+            raise RuntimeError("Cannot reconnect a provider that never started")
+
+        self._stream = FFmpegStreamerIn(self._stream_url, output_args=self._ffmpeg_args)
+        await self._stream.astart()
+        self._buffer = b""
+        # Re-read on the new stream rather than trusting the old geometry: a camera can
+        # come back at a different resolution, and a stale frame size silently
+        # misaligns every subsequent read off the rawvideo pipe.
+        self._frame_size = None
+        # The inner per-call restart budget is spent; this attempt is the caller's
+        # retry, so it starts with a full one.
+        self._restart_count = 0
+
+    def is_ready(self) -> bool:
+        """True once ffmpeg has reported geometry — i.e. the source is actually there."""
+        return self._stream is not None and self._stream.metadata_ready()
 
     async def _renew_lease_forever(self) -> None:
         """Heartbeat the relay for as long as this provider is reading.

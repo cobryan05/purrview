@@ -27,7 +27,7 @@ import base64
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import db_client
 import inference_client
@@ -53,7 +53,7 @@ from apps.helpers.watch.geometry import zone_from_row
 from apps.helpers.watch.rules import RuleSpec
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
-from ._watch_pipeline import WatchPipeline, build_label_lifetimes, resolve_model_names
+from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifetimes, resolve_model_names
 from .Registry import register_task
 from .Task import Task
 from .utils.labelHelper import build_label_ancestry_map, build_label_metadata_map
@@ -83,6 +83,9 @@ class StreamWatcherTask(Task):
     _PIN_DURATION_S: int = 3600
     _PIN_RENEWAL_INTERVAL_S: float = _PIN_DURATION_S / 2
     _FETCH_TIMEOUT_S: float = 30.0
+    # Rebuilding a reader is spawning a process, not waiting for a camera — this bounds
+    # the spawn only, so it stays short. The waiting is the caller's backoff.
+    _RECONNECT_TIMEOUT_S: float = 15.0
     _INFERENCE_TIMEOUT_S: float = 60.0
     _MAX_RETRIES: int = 2
     # Deliberately low: thresholding is the *tracker's* job, not this call's.
@@ -103,6 +106,10 @@ class StreamWatcherTask(Task):
         # so every field it reads needs a safe value here rather than only in _init().
         self._profile: Optional[Any] = None
         self._pipelines: List[WatchPipeline] = []
+        #: Source uuids currently past the failed threshold. Drives the task-level
+        #: status message, so a watcher with a dead camera stops reporting the
+        #: unqualified "Watching" it reports when everything is fine.
+        self._failed_sources: Set[str] = set()
         self._pin_ids: Dict[str, Optional[str]] = {}
         self._dry_run: bool = False
         self._analysis_fps_cap: Optional[float] = None
@@ -660,6 +667,7 @@ class StreamWatcherTask(Task):
                         break
                     await self._service_source(pipeline, inference_api)
 
+                self._status_msg = self._watching_status_msg()
                 await self.heartbeat()
         finally:
             renewal.cancel()
@@ -684,22 +692,91 @@ class StreamWatcherTask(Task):
             return self._IDLE_SLEEP_S
         return max(self._IDLE_SLEEP_S, min(self._MAX_IDLE_SLEEP_S, min(upcoming) - now))
 
+    def _watching_status_msg(self) -> str:
+        """The one line the run's card gets. A dead camera has to reach it.
+
+        A watcher over four cameras with one unplugged is still "Watching" by any
+        internal measure, and that is exactly the reading that let a source stay down
+        unnoticed for the rest of a run.
+        """
+        failed = len(self._failed_sources)
+        if not failed:
+            return "Watching"
+        if failed == len(self._pipelines):
+            return f"No sources available — retrying {failed} failed source(s)"
+        return f"Watching ({failed} of {len(self._pipelines)} source(s) failed)"
+
+    async def _reconnect_source(self, pipeline: WatchPipeline, now: float) -> bool:
+        """Try to bring one failed source back. True if it is ready to be read.
+
+        Deliberately two passes for a source that is genuinely down: this rebuilds the
+        connection and returns, and readiness is asked on a later attempt. Waiting here
+        for a camera that is not coming back would block for the metadata timeout, and
+        the loop that calls this services every other camera too — one dead source
+        would cost the healthy ones their frame rate.
+        """
+        try:
+            await asyncio.wait_for(pipeline.provider.reconnect(), timeout=self._RECONNECT_TIMEOUT_S)
+        except (asyncio.TimeoutError, TimeoutError):
+            self._record_source_failure(pipeline, now, "reconnect timed out")
+            return False
+        except Exception as e:
+            # Expected while a camera is off: the relay path has no source to read.
+            logger.debug("Reconnect failed for source %s: %s", pipeline.source_uuid, e)
+            self._record_source_failure(pipeline, now, f"reconnect failed: {e}")
+            return False
+
+        if not pipeline.provider.is_ready():
+            self._record_source_failure(pipeline, now, "source has not come back yet")
+            return False
+        return True
+
+    def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:
+        """Record a failed attempt, and say so the first time it becomes a fault.
+
+        Logged on the transition only. A source retried every five minutes for a day
+        would otherwise write 288 identical lines into a ring buffer that holds far
+        fewer, pushing out the history that explains what happened.
+        """
+        pipeline.health.record_failure(now, error)
+        # "Have we said this already?" is the membership, not a recomputation of
+        # is_failed() from before the call: downtime has already crossed the threshold
+        # by the time the crossing attempt is recorded, so comparing before-and-after
+        # never sees an edge and the line was never logged at all.
+        if pipeline.health.is_failed(now) and pipeline.source_uuid not in self._failed_sources:
+            self._failed_sources.add(pipeline.source_uuid)
+            self.log(
+                f"Source '{pipeline.source_name}' has had no frames for "
+                f"{_format_duration(pipeline.health.downtime_s(now))} — marking it failed. "
+                f"Still retrying every {int(pipeline.health.BACKOFF_MAX_S)}s. Last error: {error}"
+            )
+
     async def _service_source(self, pipeline: WatchPipeline, inference_api: InferenceApi) -> None:
         """Fetch, analyse and step one source. Never raises — failures back off."""
         now = time.monotonic()
         pipeline.schedule_next(now)
+
+        # A source that has already failed gets its connection rebuilt before anything
+        # else is asked of it. Without this the retry was theatre: the provider gives
+        # up on its own stream after a few frameless reads and returns None from then
+        # on, so the watcher's backoff was re-asking a reader that had permanently
+        # stopped trying, forever, at ever-longer intervals.
+        if not pipeline.health.healthy:
+            if not await self._reconnect_source(pipeline, now):
+                return
+
         try:
             provided = await asyncio.wait_for(pipeline.provider.getNextImage(), timeout=self._FETCH_TIMEOUT_S)
         except asyncio.TimeoutError:
-            pipeline.health.record_failure(now, "frame fetch timed out")
+            self._record_source_failure(pipeline, now, "frame fetch timed out")
             return
         except Exception as e:
             logger.exception("Error fetching from source %s", pipeline.source_uuid)
-            pipeline.health.record_failure(now, str(e))
+            self._record_source_failure(pipeline, now, str(e))
             return
 
         if provided is None:
-            pipeline.health.record_failure(now, "source returned no frame")
+            self._record_source_failure(pipeline, now, "source returned no frame")
             return
 
         analysed = pipeline.prepare_frame(provided.image)
@@ -724,7 +801,17 @@ class StreamWatcherTask(Task):
         )
 
         now = time.monotonic()
+        was_failing = not pipeline.health.healthy
+        recovered_after = pipeline.health.downtime_s(now)
         pipeline.health.record_success(now)
+        if was_failing:
+            # Announced, because the matching "went down" line is in the log above it
+            # and a run that only ever reports losses reads as though nothing ever
+            # comes back.
+            self.log(
+                f"Source '{pipeline.source_name}' is back after " f"{_format_duration(recovered_after)} — reconnected"
+            )
+            self._failed_sources.discard(pipeline.source_uuid)
         self._frames_analysed += 1
 
         for signal in pipeline.step(detections, now):
@@ -1009,6 +1096,11 @@ class StreamWatcherTask(Task):
                 "modelNames": list(pipeline.model_names),
                 "framesAnalysed": pipeline.health.frames_analysed,
                 "healthy": pipeline.health.healthy,
+                # `healthy` alone cannot distinguish a source that blinked from one
+                # that has been gone for an hour, and the live view is where someone
+                # looks precisely when a camera has stopped showing anything.
+                "sourceState": pipeline.health.state(now),
+                "downtimeS": round(pipeline.health.downtime_s(now), 1),
                 "lastError": pipeline.health.last_error,
                 "buffer": pipeline._buffer_label(),
                 "frameAgeS": (round(now - pipeline.health.last_frame_at, 2) if pipeline.health.last_frame_at else None),

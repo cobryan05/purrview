@@ -48,6 +48,18 @@ def downscale_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
     return cv2.resize(image, (target_width, new_height), interpolation=cv2.INTER_AREA)
 
 
+def _format_duration(seconds: float) -> str:
+    """Coarse, readable elapsed time — "8s", "4m", "2h 15m"."""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+
+
 @dataclass
 class SourceHealth:
     """Per-source liveness, mirroring CollectTrainingImagesTask's backoff behaviour.
@@ -63,9 +75,19 @@ class SourceHealth:
     last_frame_at: Optional[float] = None
     last_error: Optional[str] = None
     frames_analysed: int = 0
+    #: When the current run of failures began, or None while healthy. Downtime is
+    #: measured from here rather than counted in failures, because the retry interval
+    #: grows: ten failures is 30 seconds early on and over half an hour later, so a
+    #: failure count says almost nothing about how long a camera has been away.
+    failing_since: Optional[float] = None
 
     BACKOFF_BASE_S = 5.0
     BACKOFF_MAX_S = 300.0
+    #: Downtime past which the source stops being "a camera that dropped" and starts
+    #: being a fault worth reporting. Retries do not stop here — they continue at
+    #: BACKOFF_MAX_S forever, because a camera that has been unplugged for a day is
+    #: still expected to come back when it is plugged in again.
+    FAILED_AFTER_S = 120.0
 
     def record_success(self, now: float) -> None:
         self.consecutive_failures = 0
@@ -73,11 +95,17 @@ class SourceHealth:
         self.next_attempt_at = 0.0
         self.last_frame_at = now
         self.last_error = None
+        self.failing_since = None
         self.frames_analysed += 1
 
     def record_failure(self, now: float, error: str) -> None:
+        if self.failing_since is None:
+            self.failing_since = now
         self.consecutive_failures += 1
         self.last_error = error
+        # The exponent is capped, not the failure count: retries continue indefinitely,
+        # they just settle at BACKOFF_MAX_S apart rather than growing until the next
+        # attempt is scheduled after the heat death of the universe.
         self.backoff_s = min(
             self.BACKOFF_MAX_S,
             self.BACKOFF_BASE_S * (2 ** min(self.consecutive_failures - 1, 8)),
@@ -87,6 +115,25 @@ class SourceHealth:
     @property
     def healthy(self) -> bool:
         return self.consecutive_failures == 0
+
+    def downtime_s(self, now: float) -> float:
+        """How long this source has been failing. 0.0 while healthy."""
+        if self.failing_since is None:
+            return 0.0
+        return max(0.0, now - self.failing_since)
+
+    def is_failed(self, now: float) -> bool:
+        """Whether this source has been down long enough to call it failed.
+
+        A reporting distinction only — nothing stops retrying on the strength of it.
+        """
+        return self.failing_since is not None and self.downtime_s(now) >= self.FAILED_AFTER_S
+
+    def state(self, now: float) -> str:
+        """One of ``ok`` / ``reconnecting`` / ``failed``, for display."""
+        if self.healthy:
+            return "ok"
+        return "failed" if self.is_failed(now) else "reconnecting"
 
 
 @dataclass
@@ -188,13 +235,28 @@ class WatchPipeline:
             "analysisWidth": self.analysis_width,
             "framesAnalysed": self.health.frames_analysed,
             "lastFrameAgoS": round(now - last_frame, 1) if last_frame else None,
-            "health": "ok" if self.health.healthy else f"failing ({self.health.consecutive_failures})",
+            # A source that has been down for an hour must not read the same as one
+            # that missed a frame two seconds ago. The duration is what says which.
+            "health": self._health_label(now),
             # Four-state, not yes/no: this is what stops a user configuring 10 s of
             # pre-roll on a snapshot camera and silently getting three choppy frames.
             "buffer": self._buffer_label(),
             "tracks": len(self._last_tracks),
             "lastError": self.health.last_error,
         }
+
+    def _health_label(self, now: float) -> str:
+        """Human-readable health, leading with how long rather than how many.
+
+        "failing (37)" invited the reading that something had gone wrong 37 times;
+        what it meant was that one camera had been away for an hour and a half.
+        """
+        if self.health.healthy:
+            return "ok"
+        down = _format_duration(self.health.downtime_s(now))
+        if self.health.is_failed(now):
+            return f"failed — no frames for {down}, still retrying"
+        return f"reconnecting — no frames for {down}"
 
     def _buffer_label(self) -> str:
         if not self.buffered:

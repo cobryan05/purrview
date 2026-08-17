@@ -202,8 +202,28 @@ class TestStatusRow:
         pipeline = _pipeline()
         pipeline.health.record_failure(now=1.0, error="connection refused")
         row = pipeline.status_row(now=2.0)
-        assert "failing" in row["health"]
+        assert row["health"] != "ok"
         assert row["lastError"] == "connection refused"
+
+    def test_health_says_how_long_a_source_has_been_down(self):
+        """The label leads with duration, not with a failure count.
+
+        "failing (37)" invited the reading that something had gone wrong 37 times;
+        what it meant was that one camera had been away for an hour and a half. With
+        a backoff that grows, the count says almost nothing about the downtime.
+        """
+        pipeline = _pipeline()
+        pipeline.health.record_failure(now=0.0, error="connection refused")
+
+        recent = pipeline.status_row(now=30.0)["health"]
+        assert "reconnecting" in recent
+        assert "30s" in recent
+
+        long_gone = pipeline.status_row(now=5400.0)["health"]
+        assert "failed" in long_gone
+        assert "1h 30m" in long_gone
+        # Reporting it failed must not imply it has been abandoned.
+        assert "still retrying" in long_gone
 
 
 class TestLabelLifetimes:
