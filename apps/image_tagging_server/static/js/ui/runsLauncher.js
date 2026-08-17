@@ -26,6 +26,7 @@ import { launchRun, launchSavedConfig } from '/app-static/js/ui/utils/launchRun.
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
+import { RUN_KINDS, SAVED_TASK_BADGE } from '/app-static/js/ui/utils/runKinds.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 
 let _rendering = false;
@@ -189,29 +190,15 @@ async function trainingDelta(config) {
 let _runStateByConfig = new Map();
 
 /**
- * Task types whose live instances a launch card should know about, and the
- * param that ties a running instance back to the definition on the card.
+ * Which task types a launch card can recognise a live instance of lives in
+ * RUN_KINDS, shared with the Active pane so the two screens cannot disagree
+ * about what a running instance was launched from.
  *
- * The launcher starts these through a throwaway task config carrying the
- * definition's uuid, so that param is the only link between a running job and
- * the card that would start another one.
- *
- * Wording is per-type because the badge is the whole point: "Training in
- * progress" and "Watching now" answer different questions, and a generic
- * "Running" on a wall of watcher cards says nothing useful.
+ * Only kinds carrying a `badge` are shown here: the wording is the whole point
+ * ("Training in progress" and "Watching now" answer different questions, and a
+ * generic "Running" on a wall of watcher cards says nothing useful), so a kind
+ * with nothing worth saying gets no badge rather than a filler one.
  */
-const LIVE_RUN_KINDS = {
-  TrainModelTask: {
-    paramKey: 'training_config_uuid',
-    running: 'Training in progress',
-    paused: 'Training paused',
-  },
-  StreamWatcherTask: {
-    paramKey: 'watch_profile_uuid',
-    running: 'Watching now',
-    paused: 'Watcher paused',
-  },
-};
 
 /**
  * How a live run should read on the card that launches it.
@@ -219,14 +206,14 @@ const LIVE_RUN_KINDS = {
  * Start as a running one.
  *
  * @param {string} status
- * @param {{running: string, paused: string}} kind
+ * @param {{running: string, paused: string}} badge - the kind's per-status wording
  * @returns {?{text: string, tone: string}}
  */
-function _runLabel(status, kind) {
+function _runLabel(status, badge) {
   if (TERMINAL_STATUSES.has(status)) return null;
   if (status === 'cancelled') return null;
-  if (status === 'paused') return { text: kind.paused, tone: 'paused' };
-  if (status === 'running') return { text: kind.running, tone: 'running' };
+  if (status === 'paused') return { text: badge.paused, tone: 'paused' };
+  if (status === 'running') return { text: badge.running, tone: 'running' };
   // 'new'/'pending', plus any status this UI has not been taught yet — treating
   // an unknown state as live is the safe direction.
   return { text: 'Queued', tone: 'queued' };
@@ -238,33 +225,70 @@ function _runLabel(status, kind) {
  * A queued watcher has no frames yet and a paused one has stopped producing
  * them, so opening a live view on either shows an empty modal — which teaches
  * people that the button does not work.
+ *
+ * Only the *live view* is gated on this. Every live run, queued and paused
+ * included, can still be shown on Active: that pane's whole job is to list runs
+ * in whatever state they are in.
  */
 const _VIEWABLE_TONES = new Set(['running']);
 
 /**
- * Index the live runs in a task-status payload by the definition (training
- * config / watch profile) they were launched from.
+ * Show a running instance where runs are actually watched.
+ *
+ * The default answer to pressing a card whose run is already going. Refusing
+ * with a toast told the user what would not happen and left them to find the
+ * run themselves, one sub-tab away; this takes them to it and marks it.
+ *
+ * @param {?string} taskUuid
+ */
+function showRunOnActive(taskUuid) {
+  navigateTabs('tab-runs', 'tab-runs-active', { selectUuid: taskUuid ?? null });
+}
+
+/**
+ * Index the live runs in a task-status payload by the thing a launch card
+ * launches: the definition (training config / watch profile) a throwaway config
+ * was built around, or — for a saved task, which is started as itself — the
+ * task config's own uuid.
  *
  * @param {Record<string, any>} tasks - `tasks` from fetchTasksStatus / the stream
  * @returns {Map<string, {text: string, tone: string}>}
  */
 function indexLiveRuns(tasks) {
   const byConfig = new Map();
-  for (const entry of Object.values(tasks || {})) {
-    const kind = LIVE_RUN_KINDS[entry?.config?.typename];
-    if (!kind) continue;
-    const configUuid = entry.config?.params?.[kind.paramKey];
-    if (!configUuid) continue;
-    const label = _runLabel(entry.instance?.status, kind);
-    if (!label) continue;
+
+  const record = (configUuid, label, entry, taskId) => {
+    if (!configUuid || !label) return;
     // The instance uuid rides along so a card can open the running thing, not
-    // just describe it. Only for statuses that have something to show.
-    label.taskUuid = _VIEWABLE_TONES.has(label.tone) ? entry.instance?.uuid ?? null : null;
+    // just describe it. Falls back to the payload's own key, which is what the
+    // Active pane hangs its rows off (`data-task-uuid`), so the highlight lands
+    // even if an entry ever arrives without an inner uuid.
+    label.taskUuid = entry.instance?.uuid ?? taskId ?? null;
+    // Whether that instance is worth *looking at* is a narrower question than
+    // whether it can be pointed at on Active.
+    label.liveViewable = _VIEWABLE_TONES.has(label.tone);
     // Running beats queued when a definition has both in flight — the stronger
     // statement is the true one, and two badges do not fit on a card.
     const current = byConfig.get(configUuid);
-    if (current && current.tone === 'running') continue;
+    if (current && current.tone === 'running') return;
     byConfig.set(configUuid, label);
+  };
+
+  for (const [taskId, entry] of Object.entries(tasks || {})) {
+    const status = entry?.instance?.status;
+    const kind = RUN_KINDS[entry?.config?.typename];
+    if (kind?.badge) {
+      record(entry.config?.params?.[kind.paramKey], _runLabel(status, kind.badge), entry, taskId);
+    }
+    // A saved task config is started directly rather than cloned, so a live
+    // instance of it points back at the very config a Saved-tasks card offers.
+    // Temporary configs are launcher scaffolding and appear on no card, so
+    // indexing them would only key the map on uuids nothing can match — and a
+    // run launched from a training/watcher card is already badged above, on the
+    // card that actually launched it.
+    if (!entry?.config?.isTemporary) {
+      record(entry?.config?.uuid, _runLabel(status, SAVED_TASK_BADGE), entry, taskId);
+    }
   }
   return byConfig;
 }
@@ -312,6 +336,14 @@ export function applyRunsLauncherTaskState(tasks) {
  * @param {?(setBadge: (label: ?{text: string, tone: string}) => void) => void} [opts.registerRunState] -
  *   handed a setter for the card's live-run badge, so task-status updates can
  *   reach this card without re-rendering the launcher.
+ * @param {boolean} [opts.preventDuplicate] - refuse to start a second run while
+ *   this card's definition already has a live one. On by default: nothing the
+ *   launcher starts is improved by a second concurrent copy, and a card can
+ *   only ever be guarded when it has a badge to guard from — without
+ *   registerRunState there is no live label and this is inert.
+ * @param {?(label: {text: string, tone: string, taskUuid: ?string, liveViewable: boolean}) => void} [opts.onLiveClick] -
+ *   what pressing an already-running card does instead of starting. Defaults to
+ *   showing the run on Active; watchers override it with their live view.
  * @returns {HTMLElement}
  */
 function launchCard({
@@ -325,9 +357,12 @@ function launchCard({
   detail = null,
   registerDetail = null,
   registerRunState = null,
-  preventDuplicate = false,
+  preventDuplicate = true,
   onLiveClick = null,
 }) {
+  // Every live card leads somewhere: to the run itself on Active, unless the
+  // caller has something better to show (a watcher's live frames).
+  const livePress = onLiveClick ?? ((label) => showRunOnActive(label.taskUuid));
   // The card's current live-run label, kept in the closure so the click handler
   // can read what the badge is showing. Only meaningful with registerRunState.
   let liveLabel = null;
@@ -364,28 +399,17 @@ function launchCard({
       liveLabel = label;
       badge.hidden = label === null;
       card.classList.toggle('is-live', label !== null);
-      // What a live card looks like depends on what pressing it will now do.
-      //
-      // With onLiveClick, the card is not blocked at all — it stops being a
-      // Start button and becomes a way into the running thing, which is what
-      // you actually want from a card that says "Watching now". It keeps the
-      // normal pointer and says so in the title.
-      //
-      // Without one, pressing only explains why it will not start a second.
-      // That is still deliberately NOT aria-disabled (nor `disabled`): the
-      // control does do something, so marking it disabled would be a lie to
-      // assistive tech, and it would also make the button unclickable, which
-      // would swallow the explanation.
+      // A live card is never *blocked*, only repurposed: it stops being a Start
+      // button and becomes the way into the run it already has — the live view
+      // for a watcher, the Active pane for everything else. So it keeps the
+      // normal pointer, is never `disabled` or aria-disabled (both would be a
+      // lie to assistive tech about a control that does act), and says in its
+      // title what the press will now do.
       if (preventDuplicate) {
-        const live = label !== null;
-        startBtn.classList.toggle('is-blocked', live && !onLiveClick);
-        if (!live) {
-          startBtn.removeAttribute('title');
-        } else if (onLiveClick) {
-          startBtn.title = `Open the live view for ${name}`;
-        } else {
-          startBtn.title = `${name} is already running`;
-        }
+        if (label === null) startBtn.removeAttribute('title');
+        else startBtn.title = onLiveClick
+          ? `Open the live view for ${name}`
+          : `${name} is already running — show it on Active`;
       }
       if (label === null) return;
       badge.className = `runs-launch-card__run-badge is-${label.tone}`;
@@ -458,33 +482,26 @@ function launchCard({
     //
     // Disabling the *button*, not the card: the card is a div now, where
     // `disabled` is an inert unknown property that silently does nothing.
-    // Nothing this launcher starts is actually improved by a second concurrent
-    // copy: two watchers on one profile open the same cameras and double-fire
-    // every action (duplicate clips, duplicate MQTT, and a "stop" that stops
-    // one of them); two trainings from one recipe contend for the GPU and race
-    // on the same output model. So this is opt-in only because it is opt-in to
-    // *detect* — a card can be guarded exactly when LIVE_RUN_KINDS knows which
-    // param ties a running instance back to it. The Saved-tasks cards have no
-    // such link, so an unguarded card here means "we cannot tell", not "go
-    // ahead".
+    // Nothing this launcher starts is improved by a second concurrent copy:
+    // two watchers on one profile open the same cameras and double-fire every
+    // action (duplicate clips, duplicate MQTT, and a "stop" that stops one of
+    // them); two trainings from one recipe contend for the GPU and race on the
+    // same output model; a saved task run twice does its work twice. So the
+    // guard is on by default and a card opts *out* of it, not in — the only
+    // cards it cannot cover are the ones with no way to detect a live run
+    // (a filter chain), where an unguarded press means "we cannot tell".
     //
-    // Read from the badge rather than re-queried, so the refusal matches what
+    // Read from the badge rather than re-queried, so what happens matches what
     // the user could actually see when they pressed.
     if (preventDuplicate && liveLabel) {
       // A card that is already running is the wrong place to offer "start
-      // again" and the right place to offer "show me it". Where the run has a
-      // live view, pressing opens it; the refusal is only the fallback for
-      // runs that have nothing to show.
-      if (onLiveClick) {
-        try {
-          onLiveClick(liveLabel);
-        } catch (err) {
-          Logger.warn('runsLauncher: could not open live view', err);
-          toast(err.message || `Could not open the live view for ${name}`, 5000, 'error');
-        }
-        return;
+      // again" and the right place to offer "show me it".
+      try {
+        livePress(liveLabel);
+      } catch (err) {
+        Logger.warn('runsLauncher: could not show the running instance', err);
+        toast(err.message || `Could not show the run for ${name}`, 5000, 'error');
       }
-      toast(`${name} is already running — stop it first if you want to restart it`, 4000);
       return;
     }
     startBtn.disabled = true;
@@ -629,9 +646,8 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         detail: () => trainingDelta(cfg),
         registerDetail: (reload) => deltaLoaders.push(reload),
         registerRunState: (setBadge) => runStateSetters.set(cfg.uuid, setBadge),
-        // Two trainings from one recipe contend for the GPU and race on the
-        // same output model. The badge has always said so; it now also refuses.
-        preventDuplicate: true,
+        // Guarded by the default: two trainings from one recipe contend for the
+        // GPU and race on the same output model.
       })),
       trainings === null ? 'Could not load training configs.' : 'No training configs yet —',
       trainings === null ? null : { label: 'define one', tab: 'tab-training-management' },
@@ -689,15 +705,18 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         configUuid: profile.uuid,
         onStarted,
         registerRunState: (setBadge) => runStateSetters.set(profile.uuid, setBadge),
-        // A second watcher on one profile is never what was meant.
-        preventDuplicate: true,
-        // Pressing a watcher that is already watching opens the same drill-down
-        // the NVR pane uses, rather than telling the user it will not start a
-        // second one. "Watching now" invites a press, and the useful answer to
-        // that press is the live view — the thing they came to see.
-        onLiveClick: ({ taskUuid }) => {
-          if (!taskUuid) {
-            toast(`${profile.name} has no live view yet`, 4000);
+        // Guarded by the default: a second watcher on one profile is never what
+        // was meant. Pressing one that is already watching opens the same
+        // drill-down the NVR pane uses — "Watching now" invites a press, and
+        // the useful answer to that press is the live view, which is more than
+        // the default (a row on Active) can show.
+        onLiveClick: ({ taskUuid, liveViewable }) => {
+          if (!liveViewable || !taskUuid) {
+            // A queued watcher has no frames yet and a paused one has stopped
+            // producing them, so the modal would open empty. Fall back to the
+            // default: the run itself, on the pane that lists it in that state.
+            toast(`${profile.name} has no live view right now`, 4000);
+            showRunOnActive(taskUuid);
             return;
           }
           openWatcherLiveView({ taskUuid, profileName: profile.name });
@@ -719,6 +738,10 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         configTab: 'tab-task-management',
         configUuid: cfg.uuid,
         onStarted,
+        // Started as itself, so a live instance names this very config — the
+        // card can both say it is already running and, via the default guard,
+        // decline to start a second copy of work already in flight.
+        registerRunState: (setBadge) => runStateSetters.set(cfg.uuid, setBadge),
       })),
       taskConfigs === null ? 'Could not load task configs.' : 'No saved tasks yet —',
       taskConfigs === null ? null : { label: 'define one', tab: 'tab-task-management' },

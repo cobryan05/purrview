@@ -8,7 +8,9 @@ import {
 import { confirmStartIfDirty, createGenericRow, Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
-import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { configTargetForTask } from '/app-static/js/ui/utils/runKinds.js';
+import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
 
 /** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
@@ -24,6 +26,81 @@ const RUNS_TAB_ID = 'tab-runs';
 
 let _rendering = false;
 let _navGuardController = null;
+
+// ── "show me that run" ───────────────────────────────────────────────────────
+//
+// Pressing a launch card whose run is already going brings the user here. A
+// pane listing every job, three sections deep, is not an answer on its own — the
+// run they asked about has to be findable at a glance, so it is scrolled to and
+// marked.
+//
+// The mark has to outlive a re-render: this pane rebuilds every card whenever a
+// running task appends a log line (see the flash-free swap below), which would
+// otherwise wipe the highlight within a second of arriving. So it is held as
+// state with a deadline and re-applied after each swap, rather than being a
+// class set once on a node.
+
+/** How long an arriving-from-a-card highlight stays on the row. */
+const HIGHLIGHT_MS = 6000;
+/** @type {?string} */
+let _highlightUuid = null;
+let _highlightUntil = 0;
+/** Scrolling is a one-off; re-applying the class across re-renders is not. */
+let _highlightScrolled = false;
+/** @type {?number} pending removal, so re-renders do not stack timers. */
+let _highlightTimer = null;
+
+/**
+ * Pick up a "open with this run showing" request left by navigateTabs.
+ *
+ * Consumed as early as the render, not at the end: a fingerprint-unchanged
+ * render returns before ever touching the DOM, and the request must not be left
+ * in the map to ambush the user's next ordinary visit to this pane.
+ */
+function _takeHighlightRequest() {
+  const uuid = takePendingSelection(ACTIVITY_TAB_ID);
+  if (!uuid) return;
+  if (_highlightTimer !== null) {
+    // A second arrival replaces the first, deadline and all.
+    clearTimeout(_highlightTimer);
+    _highlightTimer = null;
+  }
+  _highlightUuid = uuid;
+  _highlightUntil = Date.now() + HIGHLIGHT_MS;
+  _highlightScrolled = false;
+}
+
+/**
+ * Mark the requested run's card, for as long as the request is still fresh.
+ *
+ * @param {HTMLElement} container
+ */
+function _applyHighlight(container) {
+  if (!_highlightUuid) return;
+  if (Date.now() > _highlightUntil) {
+    _highlightUuid = null;
+    return;
+  }
+  const row = container.querySelector(`[data-task-uuid="${CSS.escape(_highlightUuid)}"]`);
+  // Not there yet (or not any more — a cleared task): leave the request armed
+  // until it expires, so a card that arrives with the next stream message is
+  // still marked.
+  if (!row) return;
+  row.classList.add('is-highlighted');
+  if (!_highlightScrolled) {
+    _highlightScrolled = true;
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  // One timer per request, not per render — this runs after every swap, and a
+  // task that keeps logging would otherwise schedule one a second.
+  if (_highlightTimer !== null) return;
+  _highlightTimer = setTimeout(() => {
+    _highlightTimer = null;
+    _highlightUuid = null;
+    document.querySelectorAll('.task-instance-card.is-highlighted')
+      .forEach(el => el.classList.remove('is-highlighted'));
+  }, Math.max(0, _highlightUntil - Date.now()) + 50);
+}
 
 /**
  * Mark the form dirty on any edit anywhere inside it.
@@ -409,6 +486,10 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   if (container._rendering) return;
   container._rendering = true;
 
+  // Only once this render is actually going ahead: taken earlier, a request
+  // would be consumed by a call that returns without ever painting.
+  _takeHighlightRequest();
+
   // Use pre-loaded data from SSE if provided, otherwise fetch from the API.
   const dataPromise = preloadedTasks != null
     ? Promise.resolve({ tasks: preloadedTasks })
@@ -420,7 +501,12 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
 
       // Skip re-render entirely when nothing meaningful changed.
       const fingerprint = _taskFingerprint(tasks);
-      if (container._lastFingerprint === fingerprint) return;
+      if (container._lastFingerprint === fingerprint) {
+        // Nothing to rebuild, but the user may have just arrived here asking
+        // for a particular run — the cards it needs are already on screen.
+        _applyHighlight(container);
+        return;
+      }
 
       // Snapshot the page scroll too. A running task appends log lines, which
       // changes the fingerprint and rebuilds every card; emptying the container
@@ -492,6 +578,35 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
             catch (error) { toast(error.message || 'Failed to resume task', 5000, 'error'); }
           }
         };
+        // "What is this thing actually running?" — the card names the run, and
+        // until now the recipe behind it was only reachable by remembering which
+        // Configuration screen defines that task type and finding it by name.
+        // Points at the *definition* (training config, watch profile, filter
+        // chain) where there is one; see configTargetForTask.
+        const configTarget = configTargetForTask(task.config);
+        const configButton = configTarget && {
+          text: 'Configuration', emoji: '⚙️', testid: 'task-config-jump',
+          onClick: () => navigateTabs('tab-configuration', configTarget.tab, { selectUuid: configTarget.uuid }),
+        };
+
+        // A watcher is the one task whose output is a live picture, and the
+        // drill-down already exists for the NVR pane and the launcher card.
+        // Only while running: a queued watcher has no frames yet and a paused
+        // one has stopped producing them, so the modal would open empty.
+        const liveViewButton = task.config?.typename === 'StreamWatcherTask' && status === 'running' && {
+          text: 'Live view', emoji: '📺', testid: 'task-live-view',
+          onClick: () => {
+            try {
+              openWatcherLiveView({
+                taskUuid: task.instance?.uuid ?? taskId,
+                profileName: task.config?.name ?? '',
+              });
+            } catch (error) {
+              toast(error.message || 'Could not open the live view', 5000, 'error');
+            }
+          },
+        };
+
         const isPausedInPlace = task.isPausedInPlace === true;
         let leftButtons = [];
         let rightButtons = [];
@@ -513,6 +628,15 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           leftButtons = [deleteButton];
           rightButtons = [];
         }
+
+        // Deliberately NOT folded into leftButtons/rightButtons: those sit in
+        // the same flex row as the card's content, and that row's horizontal
+        // budget is already spent — an expanded card's sweep tables and
+        // histograms have an intrinsic min width that at 760px fits with
+        // nothing to spare (test_status_widgets pins it). Two more buttons in
+        // that row pushed the widgets 24px past the card's own border. On their
+        // own strip they cost the content nothing.
+        const navButtons = [liveViewButton, configButton].filter(Boolean);
 
         // Pre-render field content so we get a direct DOM handle for state
         // restoration, and so createGenericRow gets an already-resolved Promise
@@ -562,9 +686,34 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
           getValue: () => ({}),
         };
 
-        const row = createGenericRow({ field: preRendered, leftButtons, rightButtons });
-        row.classList.add('task-instance-card');
+        const contentRow = createGenericRow({ field: preRendered, leftButtons, rightButtons });
+
+        // The card is now the wrapper rather than the row itself, so the nav
+        // strip can sit under the content instead of beside it. Everything that
+        // addresses a card (the open/scroll snapshot, the Clear-completed
+        // sweep, the tests) goes through [data-task-uuid] and descendant
+        // queries, so moving the hook outwards leaves all of it working.
+        const row = document.createElement('div');
+        row.className = 'task-instance-card';
         row.dataset.taskUuid = taskId;
+        row.appendChild(contentRow);
+
+        if (navButtons.length) {
+          const nav = document.createElement('div');
+          nav.className = 'task-instance-card__nav';
+          for (const { text, emoji, onClick, testid } of navButtons) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'task-instance-card__nav-btn';
+            btn.dataset.testid = testid;
+            btn.textContent = `${emoji} ${text}`;
+            btn.title = text;
+            btn.addEventListener('click', onClick);
+            nav.appendChild(btn);
+          }
+          row.appendChild(nav);
+        }
+
         return {
           row,
           isCompleted: TERMINAL_STATUSES.has(status),
@@ -655,6 +804,10 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
 
       // Record fingerprint only after a successful swap.
       container._lastFingerprint = fingerprint;
+
+      // Re-applied after every swap, not set once: the rebuild above replaces
+      // the very node the mark was on.
+      _applyHighlight(container);
 
     } finally {
       container._rendering = false;

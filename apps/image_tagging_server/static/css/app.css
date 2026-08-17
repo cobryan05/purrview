@@ -482,20 +482,6 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   cursor: progress;
 }
 
-/* A card that will refuse to start a second run (a watcher already watching)
-   should read as unavailable *before* it is pressed. Not `disabled`: the click
-   still needs to land so it can explain why, and a disabled button is skipped
-   by the keyboard and announces nothing. aria-disabled carries that meaning to
-   assistive tech while leaving the element focusable. */
-.runs-launch-card__start.is-blocked {
-  cursor: not-allowed;
-}
-
-.runs-launch-card__start.is-blocked .runs-launch-card__name,
-.runs-launch-card__start.is-blocked .runs-launch-card__hint {
-  opacity: 0.55;
-}
-
 .runs-launch-card__name {
   font-size: var(--text-sm);
   font-weight: 600;
@@ -5099,6 +5085,46 @@ button.filter-active {
   border-radius: var(--radius-md);
   padding: var(--space-2);
   min-width: 0;
+}
+
+/* Arrived here from a launch card that was already running: this is the run
+   that was asked about, in a pane that can hold dozens. It fades on its own
+   after a few seconds (ui/tasks.js drops the class) — a permanent mark would
+   still be here, meaning nothing, the next time the pane is opened. */
+.task-instance-card.is-highlighted {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 45%, transparent);
+  transition: box-shadow 0.4s ease, border-color 0.4s ease;
+}
+
+/* "Where does this run come from / what is it seeing" — a strip under the card
+   rather than two more controls in the button row beside it. The row's width is
+   spoken for by the status widgets (see the note in ui/tasks.js); these are also
+   navigation rather than run control, which is the other half of why they are
+   not mixed in with pause/stop/delete. */
+.task-instance-card__nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border);
+}
+
+.task-instance-card__nav-btn {
+  width: auto;
+  margin: 0;
+  padding: 0 var(--space-1);
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.task-instance-card__nav-btn:hover {
+  color: var(--text);
 }
 
 /* ===== High-risk confirmation callout (ui/utils/confirmModal.js) =====

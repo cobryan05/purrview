@@ -206,6 +206,11 @@ def _config(page: Page, name: str):
     return _card(page, name).locator(".runs-launch-card__config")
 
 
+def _active_row(page: Page, task_uuid: str):
+    """A run's card on Runs > Active, where a live launch card sends you."""
+    return page.locator(f"#active-tasks-list [data-task-uuid='{task_uuid}']")
+
+
 class TestLauncherContents:
     def test_lists_every_kind_of_launchable_thing(self, page: Page, base_url: str):
         _open_launcher(page, base_url)
@@ -609,7 +614,6 @@ class TestWatcherAlreadyRunning:
         _open_launcher(page, base_url)
 
         start = _start(page, "Test")
-        expect(start).not_to_have_class(re.compile(r"\bis-blocked\b"))
         expect(start).to_have_attribute("title", re.compile(r"live view"))
         expect(start).to_be_enabled()
 
@@ -618,8 +622,7 @@ class TestWatcherAlreadyRunning:
         _mock_task_status(page, {})
         _open_launcher(page, base_url)
 
-        start = _start(page, "Test")
-        expect(start).not_to_have_class(re.compile(r"\bis-blocked\b"))
+        expect(_start(page, "Test")).not_to_have_attribute("title", re.compile(r".+"))
         expect(_card(page, "Test")).not_to_have_class(re.compile(r"\bis-live\b"))
 
     def test_the_launcher_opens_no_stream_of_its_own(self, page: Page, base_url: str):
@@ -748,7 +751,7 @@ class TestWatcherDrillDown:
     def test_a_paused_watcher_offers_no_live_view(self, page: Page, base_url: str):
         """A paused watcher has stopped producing frames, so the modal would be
         empty — and a button that opens an empty modal teaches people to ignore
-        it."""
+        it. It still gets the default: the run, on the pane that lists it."""
         _mock_live_preview(page)
         _mock_task_status(page, {"task-w1": _watcher_instance("paused")})
         _open_launcher(page, base_url)
@@ -757,17 +760,165 @@ class TestWatcherDrillDown:
 
         expect(page.get_by_test_id("watch-live-dialog")).not_to_be_visible()
         expect(page.get_by_text(re.compile(r"no live view"))).to_be_visible()
+        expect(page.locator("#tab-runs-active")).to_have_class(re.compile(r"\bactive\b"))
 
-    def test_a_training_card_keeps_the_plain_refusal(self, page: Page, base_url: str):
-        """Only watchers have a live view; a running training still just says
-        it will not start a second."""
+    def test_a_training_card_shows_the_run_on_active_instead(self, page: Page, base_url: str):
+        """Only a watcher has a live view. Every other live card used to answer
+        a press with a toast saying what would not happen, leaving the user to
+        find the run themselves on the next pane over — so it hands them to it."""
         _mock_task_status(page, {"task-1": _training_instance("running")})
         _open_launcher(page, base_url)
 
         _start(page, "Primary Model").click()
 
-        expect(page.get_by_text(re.compile(r"already running"))).to_be_visible()
+        expect(page.locator("#tab-runs-active")).to_have_class(re.compile(r"\bactive\b"))
+        expect(_active_row(page, "task-1")).to_have_class(re.compile(r"\bis-highlighted\b"))
         expect(page.get_by_test_id("watch-live-dialog")).not_to_be_visible()
+
+
+def _saved_task_instance(status: str = "running", config_uuid: str = "task-cfg-1") -> dict:
+    """A running saved task, shaped the way the launcher starts one: the saved
+    config itself, not a throwaway clone of it."""
+    return {
+        "config": {
+            "uuid": config_uuid,
+            "name": "Clean Database",
+            "typename": "DatabaseMaintenanceTask",
+            "params": {},
+            "isTemporary": False,
+        },
+        "instance": {"uuid": "task-s1", "status": status},
+        "continuous": False,
+    }
+
+
+class TestSavedTaskAlreadyRunning:
+    """Trainings and watchers say on the card when they are already running;
+    a saved task said nothing, so the only way to know you were about to start a
+    second copy of a maintenance job was to check the Active sub-tab first.
+
+    A saved task is started as itself rather than cloned, so the link back to
+    the card is the task config's own uuid.
+    """
+
+    def _badge(self, page: Page, name: str):
+        return _card(page, name).get_by_test_id("runs-launch-run-badge")
+
+    def test_a_running_saved_task_is_named_on_its_card(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-s1": _saved_task_instance("running")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Clean Database")).to_have_text("Running now")
+        expect(_card(page, "Clean Database")).to_have_class(re.compile(r"\bis-live\b"))
+
+    def test_a_paused_saved_task_still_counts(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-s1": _saved_task_instance("paused")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Clean Database")).to_have_text("Paused")
+
+    def test_a_queued_saved_task_counts_too(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-s1": _saved_task_instance("pending")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Clean Database")).to_have_text("Queued")
+
+    def test_a_finished_saved_task_leaves_no_badge(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-s1": _saved_task_instance("completed")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Clean Database")).to_be_hidden()
+        expect(_card(page, "Clean Database")).not_to_have_class(re.compile(r"\bis-live\b"))
+
+    def test_another_saved_tasks_run_does_not_mark_this_card(self, page: Page, base_url: str):
+        _mock_task_status(page, {"task-s1": _saved_task_instance("running", config_uuid="task-cfg-other")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Clean Database")).to_be_hidden()
+
+    def test_a_launcher_scaffolding_run_marks_no_saved_task_card(self, page: Page, base_url: str):
+        """A training started from here runs through a temporary config. It is
+        badged on the training card that launched it and must not leak into the
+        Saved-tasks group."""
+        _mock_task_status(page, {"task-1": _training_instance("running")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Primary Model")).to_be_visible()
+        expect(self._badge(page, "Clean Database")).to_be_hidden()
+
+    def test_pressing_it_does_not_start_a_second_copy(self, page: Page, base_url: str):
+        """The same guard the other kinds get: a saved task already in flight
+        would simply do its work twice."""
+        started: list = []
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: (
+                started.append(route.request.post_data_json),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "taskUuid": "should-not-happen"}),
+                ),
+            )[-1],
+        )
+        _mock_task_status(page, {"task-s1": _saved_task_instance("running")})
+        _open_launcher(page, base_url)
+
+        expect(self._badge(page, "Clean Database")).to_have_text("Running now")
+        _start(page, "Clean Database").click()
+
+        expect(page.locator("#tab-runs-active")).to_have_class(re.compile(r"\bactive\b"))
+        assert started == []
+
+    def test_pressing_it_shows_the_run_on_active(self, page: Page, base_url: str):
+        """A saved task has no live view of its own, so the useful answer to
+        "it is already running" is the run itself, marked in a pane that can
+        list dozens."""
+        _mock_task_status(page, {"task-s1": _saved_task_instance("running")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Clean Database").click()
+
+        expect(_active_row(page, "task-s1")).to_be_visible()
+        expect(_active_row(page, "task-s1")).to_have_class(re.compile(r"\bis-highlighted\b"))
+
+    def test_a_paused_saved_task_is_blocked_and_shown_too(self, page: Page, base_url: str):
+        """Restarting a paused run is not "starting" it — it would leave the
+        paused one behind. Resume lives on Active, which is where this lands."""
+        started: list = []
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: (started.append(1), route.fulfill(status=500, body="{}"))[-1],
+        )
+        _mock_task_status(page, {"task-s1": _saved_task_instance("paused")})
+        _open_launcher(page, base_url)
+
+        _start(page, "Clean Database").click()
+
+        expect(_active_row(page, "task-s1")).to_have_class(re.compile(r"\bis-highlighted\b"))
+        assert started == []
+
+    def test_an_idle_saved_task_still_starts(self, page: Page, base_url: str):
+        """The guard must not leak into the normal case."""
+        started: list = []
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: (
+                started.append(route.request.post_data_json),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "taskUuid": "task-s2"}),
+                ),
+            )[-1],
+        )
+        _mock_task_status(page, {})
+        _open_launcher(page, base_url)
+
+        _start(page, "Clean Database").click()
+
+        wait_until(page, lambda: bool(started), "An idle saved task must still start")
+        assert started[0]["configUuid"] == "task-cfg-1"
 
 
 class TestUnscopedFilterChainGuard:

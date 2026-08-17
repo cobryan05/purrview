@@ -6,8 +6,8 @@ import { createEmojiButton } from './createButton.js'
  * @param {Object} config
  * @param {import('./fields/Field.js').Field} config.field - A Field instance (TextField, RadioField, MultiSelectField, etc.)
  * @param {number} [config.indentLevel=0] - Indentation level.
- * @param {Array} [config.leftButtons=[]] - Left-side button configs.
- * @param {Array} [config.rightButtons=[]] - Right-side button configs.
+ * @param {Array<{text: string, emoji?: string, onClick?: Function, testid?: string}>} [config.leftButtons=[]] - Left-side button configs.
+ * @param {Array<{text: string, emoji?: string, onClick?: Function, testid?: string}>} [config.rightButtons=[]] - Right-side button configs.
  * @returns {HTMLDivElement} The created row element.
  */
 export function createGenericRow({
@@ -35,8 +35,11 @@ export function createGenericRow({
     // Buttons keep their size; the field column is what gives way (see below).
     container.style.flexShrink = '0';
 
-    btns.forEach(({ text, emoji, onClick }) => {
+    btns.forEach(({ text, emoji, onClick, testid = null }) => {
       const btn = createEmojiButton({ text, emoji });
+      // Emoji buttons are otherwise indistinguishable to a selector: the label
+      // *is* the glyph, and two rows can carry the same one.
+      if (testid) btn.dataset.testid = testid;
       btn.onclick = async () => {
         if (btn.disabled) return;
         btn.disabled = true;
