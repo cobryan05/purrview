@@ -104,8 +104,12 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   opacity: 1;
 }
 
+/* Deliberately NOT the brand red (--pico-primary). Red on a tab *label* reads as
+   "this tab is in an error state" rather than "you are pointing at it", and the
+   selected tab already says which one it is with its underline. Blue is the
+   app's interactive/informational colour and carries no alarm. */
 .main-tab-button:hover {
-  color: var(--pico-primary);
+  color: var(--color-info);
 }
 
 .main-tab-button.active {
@@ -237,8 +241,9 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: 0.95em;
 }
 
+/* Same reasoning as .main-tab-button:hover — a red tab label reads as an error. */
 .workspace-tab-button:hover {
-  color: var(--pico-primary);
+  color: var(--color-info);
 }
 
 .workspace-tab-button.active {
@@ -279,8 +284,9 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: 0.95em;
 }
 
+/* Same reasoning as .main-tab-button:hover — a red tab label reads as an error. */
 .section-tab-button:hover {
-  color: var(--pico-primary);
+  color: var(--color-info);
 }
 
 .section-tab-button.active {
@@ -880,8 +886,9 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: 0.85em;
 }
 
+/* Same reasoning as .main-tab-button:hover — a red tab label reads as an error. */
 .sidebar-tab-button:hover {
-  color: var(--pico-primary);
+  color: var(--color-info);
 }
 
 .sidebar-tab-button.active {
