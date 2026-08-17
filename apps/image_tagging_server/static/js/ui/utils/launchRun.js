@@ -19,11 +19,14 @@ import { createTaskConfig, startTask } from '/app-static/js/shared/api/tasks.js'
  * @param {string} opts.name - Human-readable run name, shown in Runs.
  * @param {Object} opts.params - Task params; the shape is the task's own.
  * @param {boolean} [opts.persistent] - Survive a server restart and auto-resume.
- *   False for one-offs: a transient runner must never silently resume a
- *   training the user started by hand hours ago.
+ *   Leave undefined to use the task type's own default: batch work stays
+ *   non-persistent (a transient runner must never silently resume a training
+ *   the user started by hand hours ago), while a watcher defaults to
+ *   persistent, since a watcher that quietly stopped watching is the one
+ *   failure an NVR must not have. Pass an explicit boolean to override.
  * @returns {Promise<string>} the started task instance's uuid
  */
-export async function launchRun({ typename, name, params, persistent = false }) {
+export async function launchRun({ typename, name, params, persistent }) {
   const configUuid = await createTaskConfig({
     typename,
     name,

@@ -34,7 +34,11 @@ class CreateTaskConfigPayload(Payload):
     name: str
     typename: str
     params: dict
-    persistent: bool = True
+    # None = "no opinion, use the task type's DEFAULT_PERSISTENT". A caller that
+    # cares still sends true/false and is obeyed; omitting it is how a client
+    # says the task type should decide (a watcher defaults persistent, batch
+    # work does not).
+    persistent: Optional[bool] = None
     is_temporary: bool = False
 
 

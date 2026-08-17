@@ -271,11 +271,22 @@ class Manager:
         return ret_info
 
     async def create_new_task_config(
-        self, name: str, typename: str, params: Dict[str, Any], persistent: bool, is_temporary: bool = False
+        self,
+        name: str,
+        typename: str,
+        params: Dict[str, Any],
+        persistent: Optional[bool] = None,
+        is_temporary: bool = False,
     ) -> db_models.TaskConfigRead:
         if typename not in task_registry:
             raise ValueError(f"Unknown task: {typename}")
 
+        # None means "the caller has no opinion" — ask the task class rather than
+        # letting whichever UI launched it decide. Resolved here, the single place
+        # every creation path funnels through, so a task type cannot end up
+        # persistent from one button and not from another.
+        if persistent is None:
+            persistent = task_registry[typename].DEFAULT_PERSISTENT
         params[Task.InternalKeys.PERSISTENT] = persistent
         resp = await asyncio.to_thread(
             TasksApi(self._db_api_client).create_task_config,

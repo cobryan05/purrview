@@ -252,16 +252,22 @@ export async function deleteTaskConfigs({ uuids }) {
  * Creates a new task config.
  *
  * `persistent` controls whether the task auto-restarts after a server restart/reboot.
- * It must be explicit opt-in: default it to `false` here rather than relying on the
- * backend's default, and only surface a way to set it to `true` in UI where restarting
- * on its own makes sense (e.g. the task-config management form). Transient/preview
- * one-shot task runners should never set it.
+ * Pass it explicitly when the caller has an opinion — a preview/one-shot runner
+ * should pass `false`, and the task-config management form passes whatever the user
+ * ticked. **Omit it** to let the task type decide via its `DEFAULT_PERSISTENT`
+ * (StreamWatcherTask defaults to persistent; batch work does not).
+ *
+ * This used to default to `false` here, which meant a watcher launched from the UI
+ * stopped silently on every service restart no matter what the task type wanted —
+ * the frontend was overriding a decision that belongs to the task.
  */
-export async function createTaskConfig({ persistent = false, ...config }) {
+export async function createTaskConfig({ persistent, ...config }) {
   const res = await apiFetch('/api/tasks/configs/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ persistent, ...config }),
+    // Omitted entirely when undefined, so the server sees "no opinion" rather
+    // than an explicit null it would have to distinguish from false.
+    body: JSON.stringify(persistent === undefined ? config : { persistent, ...config }),
   });
 
   if (!res.ok) {

@@ -74,6 +74,12 @@ class StreamWatcherTask(Task):
     # ends it, never on its own.
     CONTINUOUS: bool = True
 
+    # A watcher is the one task whose whole value is that it is still running.
+    # Left non-persistent, a service restart stops it silently: nothing errors,
+    # the cameras are simply no longer watched until somebody notices. It
+    # checkpoints every 60 s (above), so it is genuinely resumable.
+    DEFAULT_PERSISTENT: bool = True
+
     _PIN_DURATION_S: int = 3600
     _PIN_RENEWAL_INTERVAL_S: float = _PIN_DURATION_S / 2
     _FETCH_TIMEOUT_S: float = 30.0

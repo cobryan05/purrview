@@ -57,6 +57,25 @@ class Task(ABC):
     # persistent.
     CONTINUOUS: bool = False
 
+    # Should a config for this task be persistent when the caller does not say?
+    #
+    # "Persistent" means the instance auto-resumes after a server restart (see
+    # Manager._reconcile_interrupted). Callers that care still pass an explicit
+    # value; this only decides the default, and it belongs to the task type
+    # rather than to whichever UI happened to launch it — a watcher started
+    # from the Runs launcher and one started from an NVR card should not differ
+    # in whether they survive a restart.
+    #
+    # False for batch work, deliberately: a one-off that silently resumed hours
+    # later would be a surprise. True for the always-on kinds, where the
+    # surprise runs the other way — a watcher that quietly stopped watching
+    # because a service restarted is exactly the failure an NVR must not have.
+    #
+    # Note this only has teeth for tasks that checkpoint: auto-resume requires
+    # resume_data, so a task that never calls set_resume_data is marked ERROR on
+    # an interrupted restart no matter what this says.
+    DEFAULT_PERSISTENT: bool = False
+
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid
         self._instance_uuid: Optional[str] = None
