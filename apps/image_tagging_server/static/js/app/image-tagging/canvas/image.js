@@ -145,9 +145,38 @@ export function clearUnmatched(runtime) {
 }
 
 /**
+ * One save chain per runtime — see saveAnnotations.
+ * @type {WeakMap<object, Promise<boolean>>}
+ */
+const _saveChains = new WeakMap();
+
+/**
+ * Persist the canvas annotations, never more than one save at a time.
+ *
+ * Saves are queued behind each other rather than fired concurrently. Two
+ * overlapping `updateImage` POSTs for the same image are two full replacements
+ * of its bbox set, and nothing makes them land in the order they were sent — a
+ * second Save clicked while the first is still in flight could be overtaken,
+ * leaving the *older* payload as the stored state and silently undoing whatever
+ * was drawn in between. Chaining also means the queued save serialises the
+ * canvas after its predecessor returns, so it sends the latest state rather
+ * than a snapshot taken before the previous write landed.
+ *
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @returns {Promise<boolean>}
  */
 export async function saveAnnotations(runtime) {
+  const previous = _saveChains.get(runtime) ?? Promise.resolve(true);
+  // `catch` so one failed save doesn't poison every save that follows it.
+  const next = previous.catch(() => false).then(() => _saveAnnotationsNow(runtime));
+  _saveChains.set(runtime, next);
+  return next;
+}
+
+/**
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+async function _saveAnnotationsNow(runtime) {
   if (!runtime.state?.image) {
     toast('No image loaded to save annotations!');
     return false;
