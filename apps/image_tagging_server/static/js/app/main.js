@@ -15,6 +15,7 @@ import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig
 import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
 import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
+import { seedRunsBadge } from '/app-static/js/ui/runsBadge.js';
 
 const initializedFeatures = new Set();
 
@@ -178,6 +179,12 @@ export async function init(appState) {
   // Activate default top-level tab
   const defaultTabBtn = container?.querySelector('.main-tab-button.active');
   if (defaultTabBtn) defaultTabBtn.click();
+
+  // The Runs badge is the one piece of a tab that must be right before the tab
+  // is ever opened — it exists to tell you something is running from wherever
+  // you are. Runs' own init is lazy, so seed the count here with a single fetch
+  // (no SSE stream: the stream is Runs' to open when it has focus).
+  seedRunsBadge();
 
 }
 

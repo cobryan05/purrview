@@ -110,15 +110,16 @@ class TestBadge:
     def _badge(self, page: Page):
         return page.locator("#task-activity-badge")
 
-    def test_badge_counts_jobs_only(self, page: Page, base_url: str):
+    def test_badge_counts_everything_listed_under_active(self, page: Page, base_url: str):
+        """Jobs and continuous runs alike. Counting jobs only made the number
+        unexplainable from the pane it describes: Active listed the watcher and
+        the badge silently disagreed."""
         _open_runs(page, base_url, {"t-watch": WATCHER, "t-train": TRAINING})
-        expect(self._badge(page)).to_have_text("1")
+        expect(self._badge(page)).to_have_text("2")
 
-    def test_an_armed_watcher_alone_leaves_the_badge_hidden(self, page: Page, base_url: str):
-        """The whole point: a watcher is supposed to stay armed for weeks, so it
-        must not permanently light the badge."""
+    def test_an_armed_watcher_alone_still_lights_the_badge(self, page: Page, base_url: str):
         _open_runs(page, base_url, {"t-watch": WATCHER})
-        expect(self._badge(page)).to_be_hidden()
+        expect(self._badge(page)).to_have_text("1")
 
     def _active_tab_badge(self, page: Page):
         return page.locator("#task-activity-badge-active")
@@ -127,10 +128,10 @@ class TestBadge:
         """From inside Runs the main-tab badge is out of the eyeline, and the
         count is about the Active pane — so it belongs beside it too."""
         _open_runs(page, base_url, {"t-watch": WATCHER, "t-train": TRAINING})
-        expect(self._active_tab_badge(page)).to_have_text("1")
+        expect(self._active_tab_badge(page)).to_have_text("2")
 
     def test_the_active_sub_tab_badge_hides_at_zero(self, page: Page, base_url: str):
-        _open_runs(page, base_url, {"t-watch": WATCHER})
+        _open_runs(page, base_url, {})
         expect(self._active_tab_badge(page)).to_be_hidden()
 
     def test_the_badge_is_reseeded_on_return(self, page: Page, base_url: str):
@@ -185,10 +186,14 @@ class TestStreamLifetimeFollowsTheCount:
         assert counts["opened"] == 1
 
     def test_nothing_running_closes_the_stream_off_tab(self, page: Page, base_url: str):
-        """Nothing can finish behind your back, so an idle app holds no socket."""
+        """Nothing can finish behind your back, so an idle app holds no socket.
+
+        A watcher is the interesting case rather than an empty list: it lights
+        the badge (it *is* running) but never finishes, so there is no
+        completion to stay connected for."""
         page.add_init_script(self._COUNTER)
-        _open_runs(page, base_url, {"t-watch": WATCHER})  # continuous: not a job
-        expect(page.locator("#task-activity-badge")).to_be_hidden()
+        _open_runs(page, base_url, {"t-watch": WATCHER})  # continuous: never finishes
+        expect(page.locator("#task-activity-badge")).to_have_text("1")
 
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
         page.wait_for_timeout(700)

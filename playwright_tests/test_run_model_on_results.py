@@ -512,7 +512,18 @@ class _FakeSequentialTasks:
 
         def handle_get(route: Route):
             body = json.loads(route.request.post_data or "{}")
-            task_uuid = body["taskUuids"][0]
+            task_uuids = body.get("taskUuids") or []
+            if not task_uuids:
+                # The unfiltered form of this endpoint — "everything running" —
+                # which the Runs badge polls once at page load. Nothing to do
+                # with this test's preview polling, but it shares the route.
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "tasks": {}}),
+                )
+                return
+            task_uuid = task_uuids[0]
             self._poll_counts[task_uuid] = self._poll_counts.get(task_uuid, 0) + 1
             status = "running" if self._poll_counts[task_uuid] < 2 else "completed"
             progress = 50.0 if status == "running" else 100.0

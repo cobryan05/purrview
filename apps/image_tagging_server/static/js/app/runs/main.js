@@ -13,8 +13,8 @@
  */
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { countAdvancingTasks, countRunningTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
-import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
+import { countAdvancingTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
+import { seedRunsBadge, updateRunsBadge } from '/app-static/js/ui/runsBadge.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
 import { applyRunsLauncherTaskState, renderRunsLauncher } from '/app-static/js/ui/runsLauncher.js';
@@ -25,14 +25,8 @@ export async function init() {
 
   let unsubscribeTaskStream = null;
 
-  // Two badges, one count: the main Runs tab (visible from anywhere in the app)
-  // and the Active sub-tab, which is the pane the count is actually about — from
-  // inside Runs the main-tab badge is out of the eyeline, and a count next to
-  // "Start a run"'s sibling is what says where the running things are.
-  const badges = [
-    document.getElementById('task-activity-badge'),
-    document.getElementById('task-activity-badge-active'),
-  ].filter(Boolean);
+  // The badge itself lives in ui/runsBadge.js: it is painted at page load,
+  // before this init has ever run, so it cannot be owned by this module.
 
   /** Jobs that can still finish on their own; drives the stream's lifetime. */
   let advancingCount = 0;
@@ -40,18 +34,15 @@ export async function init() {
   let onRunsTab = true;
 
   /**
-   * Show how many tasks are still live on the Runs tab buttons. Hidden at zero
-   * rather than showing "0": a permanent badge stops being a signal.
+   * Repaint the badge, and re-derive whether the SSE stream is still worth
+   * holding once the user leaves Runs.
    */
   function updateBadge(tasks) {
-    const n = countRunningTasks(tasks);
-    for (const badge of badges) {
-      badge.textContent = String(n);
-      badge.hidden = n === 0;
-    }
-    // Deliberately not the badge count: a paused job still counts as unfinished
-    // (so the badge shows it) but cannot finish without the user, so it must not
-    // hold the stream. See countAdvancingTasks.
+    updateRunsBadge(tasks);
+    // Deliberately not the badge count: a paused job still counts as running
+    // (so the badge shows it) but cannot finish without the user, so it must
+    // not hold the stream — nor may an armed watcher, which never finishes at
+    // all. See countAdvancingTasks.
     advancingCount = countAdvancingTasks(tasks);
     // The last job finishing is what makes an off-tab stream pointless — drop
     // it at that moment rather than holding it until the user comes back.
@@ -59,20 +50,13 @@ export async function init() {
   }
 
   /**
-   * Seed the badge from a one-off fetch when the Runs tab opens.
+   * Re-poll the badge; SSE keeps it fresh but only pushes *on change*.
    *
-   * SSE keeps it fresh afterwards, but the stream only pushes *on change* — so
-   * without this the badge stays blank on arrival until something happens to a
-   * task, which is precisely the case where it should already read "2 running".
+   * Routed through this tab's own `updateBadge` rather than the module default,
+   * so the poll also refreshes `advancingCount` — otherwise leaving Runs while
+   * a job is running drops the stream on a count that was never filled in.
    */
-  async function seedBadge() {
-    try {
-      const { tasks } = await fetchTasksStatus();
-      updateBadge(tasks);
-    } catch {
-      // A failed poll is not worth a toast here; the SSE stream will correct it.
-    }
-  }
+  const seedBadge = () => seedRunsBadge(updateBadge);
 
   const refreshTaskTab = () => {
     renderActiveTasks({ target: 'active-tasks-list', refresh: refreshTaskTab });

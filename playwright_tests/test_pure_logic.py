@@ -870,12 +870,14 @@ class TestBuildHierarchy:
 class TestTaskCounts:
     """Two counts over the same task map, answering two different questions.
 
-    The badge asks "is something still working?" — a paused job has not
-    finished, so it counts. The off-tab SSE stream asks "can anything finish
-    behind the user's back?" — a paused job cannot, so it must not. Conflating
-    them held an EventSource open per browser tab for the life of the app,
-    because restart recovery writes `paused` for any interrupted task that had a
-    checkpoint, and nothing but the user can move it out of that state.
+    The badge asks "how many things are running?" — a paused job has not
+    finished and an armed watcher is running, so both count, and both appear
+    under Active where the badge's number is read. The off-tab SSE stream asks
+    "can anything finish behind the user's back?" — a paused job cannot (only
+    the user can restart it) and a continuous run never finishes at all, so
+    neither may hold it. Conflating them held an EventSource open per browser
+    tab for the life of the app, because restart recovery writes `paused` for
+    any interrupted task that had a checkpoint.
     """
 
     TASKS = """{
@@ -889,16 +891,20 @@ class TestTaskCounts:
     def _counts(self, page: Page, tasks: str):
         return page.evaluate(
             """async (tasksSrc) => {
-            const { countRunningTasks, countAdvancingTasks } =
+            const { countLiveTasks, countLiveTasksByKind, countAdvancingTasks } =
                 await import('/app-static/js/ui/tasks.js');
             const tasks = eval('(' + tasksSrc + ')');
-            return { running: countRunningTasks(tasks), advancing: countAdvancingTasks(tasks) };
+            return {
+                live: countLiveTasks(tasks),
+                advancing: countAdvancingTasks(tasks),
+                byKind: countLiveTasksByKind(tasks),
+            };
         }""",
             tasks,
         )
 
     def test_the_badge_counts_a_paused_job(self, shared_page: Page):
-        assert self._counts(shared_page, self.TASKS)["running"] == 2  # running + paused
+        assert self._counts(shared_page, self.TASKS)["live"] == 3  # running + paused + watcher
 
     def test_the_stream_condition_does_not_count_a_paused_job(self, shared_page: Page):
         assert self._counts(shared_page, self.TASKS)["advancing"] == 1  # running only
@@ -907,16 +913,23 @@ class TestTaskCounts:
         """The leak itself: one paused instance and an otherwise idle app."""
         counts = self._counts(shared_page, "{ p: { instance: { status: 'paused' }, continuous: false } }")
         assert counts["advancing"] == 0, "a paused job kept the off-tab stream alive"
-        assert counts["running"] == 1, "a paused job is still unfinished and belongs on the badge"
+        assert counts["live"] == 1, "a paused job is still unfinished and belongs on the badge"
 
-    def test_neither_count_includes_a_watcher(self, shared_page: Page):
-        """A watcher stays armed for weeks; counting it pins both at >= 1 forever."""
+    def test_a_watcher_counts_on_the_badge_but_never_holds_the_stream(self, shared_page: Page):
+        """It is listed under Active, so it belongs in Active's number — but it
+        never finishes, so there is no completion to stay connected for."""
         counts = self._counts(shared_page, "{ w: { instance: { status: 'running' }, continuous: true } }")
-        assert counts == {"running": 0, "advancing": 0}
+        assert counts["live"] == 1
+        assert counts["advancing"] == 0
+
+    def test_the_badge_count_splits_into_jobs_and_continuous_runs(self, shared_page: Page):
+        """The tooltip explains the number; the split is what it says."""
+        assert self._counts(shared_page, self.TASKS)["byKind"] == {"jobs": 2, "continuous": 1}
 
     def test_terminal_jobs_are_excluded_from_both(self, shared_page: Page):
         counts = self._counts(
             shared_page,
             "{ a: { instance: { status: 'completed' } }, b: { instance: { status: 'error' } } }",
         )
-        assert counts == {"running": 0, "advancing": 0}
+        assert counts["live"] == 0
+        assert counts["advancing"] == 0

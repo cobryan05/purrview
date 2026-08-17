@@ -312,30 +312,46 @@ function _scrollParent(el) {
 // polling on it) so the card and this list can't disagree about what "finished" means.
 
 /**
- * Count live *jobs*, for the Runs tab's badge.
+ * Count everything still live, for the Runs tab's badge.
  *
- * Continuous tasks are deliberately excluded. A watcher is meant to stay armed
- * for weeks, so counting it would pin the badge at ≥1 permanently — and a badge
- * that never clears has stopped being a signal about anything. The badge answers
- * "is something still working?", which is a question only jobs can answer.
+ * Jobs and continuous runs both count. Excluding continuous work kept the badge
+ * transient (a watcher stays armed for weeks and would pin it at ≥1), but it
+ * also made the number impossible to explain from the screen it describes:
+ * Active lists a running watcher under Continuous and the badge disagreed with
+ * no visible rule. The badge answers "how many things are running?", which is
+ * the question the tab's own list answers too. `countContinuousTasks` is still
+ * here for anyone who needs the split.
  *
  * @param {Record<string, any>} tasks
  * @returns {number}
  */
-export function countRunningTasks(tasks) {
+export function countLiveTasks(tasks) {
   return Object.values(tasks || {})
-    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status) && !t.continuous)
+    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status))
     .length;
+}
+
+/**
+ * The badge count, split by kind — for the tooltip that explains it.
+ *
+ * @param {Record<string, any>} tasks
+ * @returns {{jobs: number, continuous: number}}
+ */
+export function countLiveTasksByKind(tasks) {
+  const live = Object.values(tasks || {}).filter(t => !TERMINAL_STATUSES.has(t.instance?.status));
+  const continuous = live.filter(t => t.continuous).length;
+  return { jobs: live.length - continuous, continuous };
 }
 
 /**
  * Count jobs that can still change state on their own.
  *
  * Narrower than the badge count, and for a different question. The badge asks
- * "is something still working?", which a paused job answers yes to — it has not
- * finished. The off-tab stream asks "can anything finish behind the user's
- * back?", which a paused job answers no to: only the user can restart it, and
- * they have to come back to Runs to do it.
+ * "how many things are running?", which a paused job and an armed watcher both
+ * belong in. The off-tab stream asks "can anything finish behind the user's
+ * back?", which a paused job answers no to (only the user can restart it, and
+ * they have to come back to Runs to do it) and a continuous run answers no to
+ * by definition — it does not finish, so there is no completion to miss.
  *
  * Counting paused here is what pinned an EventSource open for the life of every
  * browser tab. A single paused instance is not exotic — restart recovery writes
