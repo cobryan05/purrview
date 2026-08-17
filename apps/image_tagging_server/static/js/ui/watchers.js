@@ -1023,7 +1023,7 @@ export async function renderWatchProfileManager({ target }) {
       async function save() {
         const payload = collect();
         if (!payload.name) {
-          toast('A watcher needs a name', 'error');
+          toast('A watcher needs a name', 5000, 'error');
           return;
         }
         try {
@@ -1031,7 +1031,7 @@ export async function renderWatchProfileManager({ target }) {
             ? await updateWatchProfile(profile.uuid, payload)
             : await createWatchProfile(payload);
           profilesMap.set(saved.uuid, saved);
-          toast(`Saved watcher "${saved.name}"`, 'success');
+          toast(`Saved watcher "${saved.name}"`, 5000, 'success');
           bar.setDirty(false);
           renderList(saved.uuid);
           // Await the re-render: an unawaited one silently swallows its errors.
@@ -1041,7 +1041,7 @@ export async function renderWatchProfileManager({ target }) {
           // edits until it restarts. No-op when nothing is running on it.
           await promptRestartAffectedTasks(saved.uuid, { label: 'watcher' });
         } catch (e) {
-          toast(e.message || 'Failed to save watcher', 'error');
+          toast(e.message || 'Failed to save watcher', 5000, 'error');
         }
       }
 
@@ -1049,12 +1049,12 @@ export async function renderWatchProfileManager({ target }) {
         try {
           await deleteWatchProfile(profile.uuid);
           profilesMap.delete(profile.uuid);
-          toast(`Deleted watcher "${profile.name}"`, 'success');
+          toast(`Deleted watcher "${profile.name}"`, 5000, 'success');
           screen.editorBody.innerHTML = '';
           screen.editorBar.innerHTML = '';
           renderList(null);
         } catch (e) {
-          toast(e.message || 'Failed to delete watcher', 'error');
+          toast(e.message || 'Failed to delete watcher', 5000, 'error');
         }
       }
 

@@ -49,7 +49,43 @@ export const Logger = {
 };
 
 
+/** Toast kinds that carry a colour. Anything else renders as the neutral default. */
+const TOAST_TYPES = new Set(['info', 'success', 'warning', 'error']);
+
+/**
+ * Transient message at the top of the screen.
+ *
+ * @param {string} message
+ * @param {number|string} [duration=5000] - ms to stay up. **Also accepts a type
+ *   string** for callers written as `toast(msg, 'error')` — see below.
+ * @param {string} [type='info'] - 'info' | 'success' | 'warning' | 'error'
+ * @param {number} [maxToasts=3]
+ *
+ * The `(message, duration, type)` order is easy to get wrong, and ~7 call sites
+ * did: `toast('Failed to save', 'error')` put the type where the duration goes.
+ * That failed twice over, silently. The toast rendered neutral grey instead of
+ * red, because `type` kept its default; and `setTimeout(fn, 'error')` coerces
+ * to NaN, which the spec clamps to 0 — so error messages appeared and vanished
+ * in the same frame, which is worse than not showing them at all.
+ *
+ * Rather than only fixing the call sites and waiting for the next one, a string
+ * in the duration slot is now read as the type. Callers stay free to pass
+ * `(msg, 8000, 'error')` when they want a specific duration.
+ */
 export function toast(message, duration = 5000, type = "info", maxToasts = 3) {
+  if (typeof duration === 'string') {
+    // Only a recognised kind is treated as a misplaced type; an unrecognised
+    // string is a bug worth surfacing rather than silently swallowing.
+    if (TOAST_TYPES.has(duration)) {
+      type = duration;
+    } else {
+      Logger.warn(`toast: ignoring unrecognised duration/type "${duration}"`);
+    }
+    duration = 5000;
+  }
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) {
+    duration = 5000;
+  }
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
@@ -80,6 +116,10 @@ export function toast(message, duration = 5000, type = "info", maxToasts = 3) {
     background = '#c0392b';
   } else if (type === 'warning') {
     background = '#b8620a';
+  } else if (type === 'success') {
+    // Call sites have been asking for 'success' all along; it had no colour, so
+    // "Saved" and "Failed to save" were the same shade of grey.
+    background = '#1e7a4a';
   }
   Object.assign(toast.style, {
     background,

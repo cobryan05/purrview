@@ -229,11 +229,11 @@ export async function showImageBulkActionModal(entries, labels, onConfirm, title
     const isLabelAction = LABEL_ACTIONS.includes(selectedAction);
     const selectedTagUuids = isTagAction ? tagField.getValue() : [];
     if (isTagAction && selectedTagUuids.length === 0) {
-      toast('Select at least one tag', 'error');
+      toast('Select at least one tag', 5000, 'error');
       return;
     }
     if (isLabelAction && selectedLabelUuids.length === 0) {
-      toast('Select at least one label', 'error');
+      toast('Select at least one label', 5000, 'error');
       return;
     }
     closeImageBulk();
