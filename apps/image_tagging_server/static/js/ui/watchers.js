@@ -8,6 +8,7 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { openZonesModal } from '/app-static/js/ui/watchZonesModal.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
@@ -1036,6 +1037,9 @@ export async function renderWatchProfileManager({ target }) {
           // Await the re-render: an unawaited one silently swallows its errors.
           await showValidation(saved.uuid);
           openEditor(saved);
+          // A running watcher loaded its rules at start and will not see these
+          // edits until it restarts. No-op when nothing is running on it.
+          await promptRestartAffectedTasks(saved.uuid, { label: 'watcher' });
         } catch (e) {
           toast(e.message || 'Failed to save watcher', 'error');
         }

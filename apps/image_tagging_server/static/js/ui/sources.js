@@ -15,6 +15,7 @@ import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { createSource, deleteSources, fetchSourceList, updateSource } from '/app-static/js/shared/api/sources.js';
 import { FIELD_EDIT_EVENT, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -162,6 +163,9 @@ export async function renderSourceManager({ target = 'source-management-box' } =
               updateTitle(sourceName);
               toast('Source saved', 3000);
               await refreshList();
+              // A running collector/watcher opened this source with the old
+              // connection details. No-op when nothing is running on it.
+              await promptRestartAffectedTasks(source.uuid, { label: 'source' });
             } else {
               // createSource returns the full created record and writes it into
               // the sources cache, so refreshList() below already sees it.

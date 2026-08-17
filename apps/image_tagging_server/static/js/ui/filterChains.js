@@ -8,6 +8,7 @@ import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/util
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { DropDownField } from '/app-static/js/ui/utils/fields/index.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -410,6 +411,9 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
               updateTitle(updated.name);
               toast('Filter chain saved', 3000);
               await refreshList();
+              // A task that loaded this chain at start keeps the old steps
+              // until it restarts. No-op when nothing is running on it.
+              await promptRestartAffectedTasks(chain.uuid, { label: 'filter chain' });
             } else {
               const created = await createFilterChain({
                 name,
