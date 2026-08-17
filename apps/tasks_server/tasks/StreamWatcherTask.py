@@ -757,7 +757,16 @@ class StreamWatcherTask(Task):
         pipeline.schedule_next(now)
 
         provider = pipeline.provider
-        if not provider.is_ready():
+        # Two questions, and both have to be asked. Readiness catches a source that
+        # never came up; health catches one that came up and then went silent — and
+        # readiness cannot see that second case at all. `is_ready()` means "ffmpeg
+        # reported geometry", which it does once, at the start; a camera that stopped
+        # sending an hour ago still answers yes. Gating the rebuild on readiness alone
+        # therefore skipped it for precisely the failure it exists to fix, and by then
+        # the provider's own restart budget is spent and only reconnect() clears it, so
+        # the source stayed dark for the rest of the run while the status surfaces
+        # cheerfully reported it as "failed, still retrying".
+        if not provider.is_ready() or not pipeline.health.healthy:
             # Not ready splits two ways, and they want opposite treatment.
             if provider.is_connecting():
                 # Coming up. Leave it entirely alone — an RTSP camera behind a relay

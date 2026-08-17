@@ -30,12 +30,20 @@ from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
 class _FakeProvider:
     """Stands in for an ImageProvider whose camera can be turned off and on."""
 
-    def __init__(self, *, ready: bool = True, reconnect_error: Optional[Exception] = None) -> None:
+    def __init__(
+        self,
+        *,
+        ready: bool = True,
+        connecting: bool = False,
+        reconnect_error: Optional[Exception] = None,
+    ) -> None:
         self.ready = ready
+        self.connecting = connecting
         self.reconnect_error = reconnect_error
         self.reconnect_calls = 0
         self.stop_calls = 0
         self.start_calls = 0
+        self.frames: list = []
 
     async def reconnect(self) -> None:
         self.reconnect_calls += 1
@@ -45,6 +53,12 @@ class _FakeProvider:
     def is_ready(self) -> bool:
         return self.ready
 
+    def is_connecting(self) -> bool:
+        return self.connecting
+
+    async def getNextImage(self):
+        return self.frames.pop(0) if self.frames else None
+
     async def stop(self) -> None:
         self.stop_calls += 1
 
@@ -53,12 +67,15 @@ class _FakeProvider:
 
 
 def _pipeline(provider=None, name="Front door", uuid="src-1") -> SimpleNamespace:
-    return SimpleNamespace(
+    pipeline = SimpleNamespace(
         source_uuid=uuid,
         source_name=name,
         provider=provider or _FakeProvider(),
         health=SourceHealth(),
     )
+    # Only what _service_source touches before the first frame arrives.
+    pipeline.schedule_next = lambda now: None
+    return pipeline
 
 
 def _task() -> StreamWatcherTask:
@@ -204,6 +221,74 @@ class TestReconnectDrive:
 
         assert ok is False
         assert "timed out" in (pipeline.health.last_error or "")
+
+
+class TestASilentButReadySourceIsRebuilt:
+    """The rebuild must key off "has this source delivered?", not "is the reader up?".
+
+    `is_ready()` is `ffmpeg reported geometry`, and geometry is reported once, at the
+    start. A camera that connects and then goes silent keeps answering yes forever, so
+    a readiness-only gate skips the rebuild for exactly the failure it exists to fix —
+    and the provider's own restart budget is spent by then and is cleared only by
+    `reconnect()`. The source stays dark for the rest of the run while every status
+    surface reports it as merely "failed, still retrying".
+    """
+
+    async def test_a_ready_source_that_returns_no_frames_is_still_reconnected(self):
+        task = _task()
+        provider = _FakeProvider(ready=True)
+        pipeline = _pipeline(provider)
+        task._pipelines = [pipeline]
+
+        # First pass: healthy and "ready", so nothing is rebuilt — the fetch is what
+        # discovers the silence.
+        await task._service_source(pipeline, inference_api=None)
+        assert provider.reconnect_calls == 0
+        assert not pipeline.health.healthy
+
+        # Second pass: still "ready", but now known to be delivering nothing. This is
+        # the one that has to rebuild the reader.
+        await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls == 1, "a silent source must be rebuilt even while it reports ready"
+
+    async def test_a_source_down_for_an_hour_keeps_being_rebuilt(self):
+        """Not one rebuild and then silence: every scheduled retry must re-arm it."""
+        task = _task()
+        provider = _FakeProvider(ready=True)
+        pipeline = _pipeline(provider)
+        task._pipelines = [pipeline]
+
+        for _ in range(12):
+            await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls >= 10
+
+    async def test_a_healthy_source_is_never_rebuilt(self):
+        """The gate must not tear down a working reader between good frames."""
+        task = _task()
+        provider = _FakeProvider(ready=True)
+        pipeline = _pipeline(provider)
+        pipeline.health.record_success(0.0)
+        task._pipelines = [pipeline]
+
+        # A healthy, ready source that happens to have no frame queued this instant.
+        await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls == 0
+
+    async def test_a_source_still_connecting_is_left_alone_even_when_unhealthy(self):
+        """Patience outranks the rebuild: restarting a handshake restarts its clock."""
+        task = _task()
+        provider = _FakeProvider(ready=False, connecting=True)
+        pipeline = _pipeline(provider)
+        pipeline.health.record_failure(0.0, "no frame")
+        task._pipelines = [pipeline]
+
+        await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls == 0
+        assert pipeline.health.connecting is True
 
 
 class TestFailureReporting:
