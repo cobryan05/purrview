@@ -10,6 +10,7 @@ are made in ~1 ms via sqlite3.Connection.backup(), so the ~80 ms initial build
 is paid once per session regardless of how many tests run.
 """
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -25,6 +26,11 @@ ALEMBIC_INI = Path(__file__).parent.parent.parent / "apps/helpers/db/alembic.ini
 
 # Revision just before the model_type / architecture / model_config_node_uuid redesign.
 _PRE_REDESIGN_REV = "307a345162a9"
+
+# Revision just before source_regions replaced watch_zones. Zones only exist as a table
+# from partway through the chain, so the pre-redesign fixture above is too early to hold
+# any.
+_PRE_REGIONS_REV = "293b86a081d3"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -133,6 +139,22 @@ def pre_redesign_copy(_pre_redesign_engine):
     """Per-test in-memory copy of the pre-redesign schema (~1 ms via backup)."""
     engine = _make_engine()
     _backup(_pre_redesign_engine, engine)
+    return engine
+
+
+@pytest.fixture(scope="session")
+def _pre_regions_engine():
+    """Schema at 293b86a081d3 — the last revision where watch_zones still exists."""
+    engine = _make_engine()
+    _run_migrations(engine, _PRE_REGIONS_REV)
+    return engine
+
+
+@pytest.fixture
+def pre_regions_copy(_pre_regions_engine):
+    """Per-test in-memory copy of the pre-source_regions schema."""
+    engine = _make_engine()
+    _backup(_pre_regions_engine, engine)
     return engine
 
 
@@ -672,3 +694,125 @@ class TestVerifiedBBoxConfidenceCleanup:
         with pre_redesign_copy.connect() as conn:
             value = conn.exec_driver_sql("SELECT confidence FROM bboxes WHERE uuid = 'verified-2'").scalar()
         assert value is None
+
+
+class TestWatchZonesBecomeSourceRegions:
+    """b0811d8fbe8d must carry hand-drawn zones across, not just drop the table.
+
+    Zone geometry is human work — someone traced a litter tray on a camera view — and
+    it is referenced from another table: `interaction_rules` names zones by uuid. So
+    the migration has two obligations beyond copying pixels. It must preserve the
+    uuids, or every zone rule in every watcher silently stops firing, and it must not
+    produce two same-named zones on one source, because the write path rejects that
+    and the user would be unable to save the region editor until they guessed why.
+
+    The duplicate case is not exotic — it is the *expected* pre-migration state. Zones
+    used to hang off a watcher's use of a source, so two watchers on one camera each
+    kept their own copy of the same tray, which is the redundancy this whole revision
+    exists to remove.
+    """
+
+    _TS = "2026-01-01 00:00:00"
+
+    def _seed(self, engine) -> None:
+        with engine.connect() as conn:
+            for uuid, name in (("src-a", "Hallway cam"), ("src-b", "Kitchen cam")):
+                conn.exec_driver_sql(
+                    "INSERT INTO sources (uuid, name, typename, params, created_at, updated_at)"
+                    " VALUES (?, ?, 'ffmpeg', '{}', ?, ?)",
+                    (uuid, name, self._TS, self._TS),
+                )
+            for uuid in ("prof-1", "prof-2"):
+                conn.exec_driver_sql(
+                    "INSERT INTO watch_profiles (uuid, name, enabled, tracker_typename,"
+                    " default_analysis_fps, default_analysis_width, created_at, updated_at)"
+                    " VALUES (?, ?, 1, 'bytetrack', 5.0, 640, ?, ?)",
+                    (uuid, uuid, self._TS, self._TS),
+                )
+            # Both watchers point at src-a: the redundancy the revision removes.
+            for uuid, profile, source in (
+                ("ps-1", "prof-1", "src-a"),
+                ("ps-2", "prof-2", "src-a"),
+                ("ps-3", "prof-1", "src-b"),
+            ):
+                conn.exec_driver_sql(
+                    'INSERT INTO watch_profile_sources (uuid, profile_uuid, source_uuid, "order",'
+                    " enabled, buffer_mode, ring_seconds, ring_max_mb)"
+                    " VALUES (?, ?, ?, 0, 1, 'auto', 20.0, 32.0)",
+                    (uuid, profile, source),
+                )
+            for uuid, ps, name, points in (
+                ("zone-tray", "ps-1", "Litter tray", "[[0.1,0.1],[0.4,0.1],[0.4,0.5]]"),
+                ("zone-door", "ps-1", "Doorway", "[[0.6,0.6],[0.9,0.6],[0.9,0.9]]"),
+                # prof-2's own copy of the same tray, on the same camera.
+                ("zone-tray-2", "ps-2", "Litter tray", "[[0.1,0.1],[0.4,0.1],[0.4,0.5]]"),
+                ("zone-bowl", "ps-3", "Water bowl", "[[0.2,0.2],[0.5,0.2],[0.5,0.6]]"),
+            ):
+                conn.exec_driver_sql(
+                    "INSERT INTO watch_zones (uuid, profile_source_uuid, name, kind, points_json,"
+                    " reference_width, reference_height) VALUES (?, ?, ?, 'polygon', ?, 1920, 1080)",
+                    (uuid, ps, name, points),
+                )
+            conn.commit()
+
+    def _regions(self, engine) -> dict:
+        with engine.connect() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT uuid, source_uuid, name, role, kind, points_json,"
+                " reference_width, reference_height FROM source_regions"
+            ).fetchall()
+        return {r[0]: r for r in rows}
+
+    def test_every_zone_survives_with_its_uuid(self, pre_regions_copy):
+        """The uuid is the part rules depend on, so it is the part that must not move."""
+        self._seed(pre_regions_copy)
+        _run_migrations(pre_regions_copy)
+
+        regions = self._regions(pre_regions_copy)
+        assert set(regions) == {"zone-tray", "zone-door", "zone-tray-2", "zone-bowl"}
+
+    def test_zones_land_on_the_source_not_the_watcher(self, pre_regions_copy):
+        self._seed(pre_regions_copy)
+        _run_migrations(pre_regions_copy)
+
+        regions = self._regions(pre_regions_copy)
+        assert regions["zone-tray"][1] == "src-a"
+        assert regions["zone-tray-2"][1] == "src-a"
+        assert regions["zone-bowl"][1] == "src-b"
+
+    def test_geometry_and_role_are_preserved(self, pre_regions_copy):
+        self._seed(pre_regions_copy)
+        _run_migrations(pre_regions_copy)
+
+        row = self._regions(pre_regions_copy)["zone-door"]
+        _uuid, _source, name, role, kind, points, width, height = row
+        assert (name, role, kind, width, height) == ("Doorway", "zone", "polygon", 1920, 1080)
+        assert json.loads(points) == [[0.6, 0.6], [0.9, 0.6], [0.9, 0.9]]
+
+    def test_same_named_zones_on_one_source_are_disambiguated(self, pre_regions_copy):
+        """Two watchers' copies of one tray must not collide.
+
+        `replace_source_regions` rejects two regions sharing (role, name) on a source,
+        so leaving both called "Litter tray" would migrate cleanly and then make the
+        region editor unsaveable for that camera.
+        """
+        self._seed(pre_regions_copy)
+        _run_migrations(pre_regions_copy)
+
+        regions = self._regions(pre_regions_copy)
+        names = sorted(r[2] for r in regions.values() if r[1] == "src-a" and r[2] != "Doorway")
+        assert names == ["Litter tray", "Litter tray (2)"]
+
+    def test_a_zone_on_a_source_of_its_own_keeps_its_plain_name(self, pre_regions_copy):
+        """Disambiguation is per source, so an unambiguous name is left alone."""
+        self._seed(pre_regions_copy)
+        _run_migrations(pre_regions_copy)
+
+        assert self._regions(pre_regions_copy)["zone-bowl"][2] == "Water bowl"
+
+    def test_an_empty_watch_zones_table_migrates_cleanly(self, pre_regions_copy):
+        """The overwhelmingly common case: nobody had drawn a zone."""
+        _run_migrations(pre_regions_copy)
+
+        assert self._regions(pre_regions_copy) == {}
+        assert "watch_zones" not in _tables(pre_regions_copy)

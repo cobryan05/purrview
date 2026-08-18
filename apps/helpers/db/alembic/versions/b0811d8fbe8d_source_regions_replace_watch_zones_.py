@@ -20,6 +20,70 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _copy_zones_to_regions() -> None:
+    """Carry hand-drawn zones from `watch_zones` onto the sources they were drawn on.
+
+    Zone geometry is human work, so dropping the table without this loses it for good.
+    The owning source is one join away — `watch_zones.profile_source_uuid` →
+    `watch_profile_sources.source_uuid` — which is precisely the attribution the
+    downgrade cannot reconstruct and the upgrade can.
+
+    **Uuids are carried across unchanged.** `interaction_rules` names zones by uuid from
+    a different table, so regenerating them here would leave every zone rule pointing at
+    nothing: no error, no integrity failure, just a rule that never fires again.
+
+    **Names are disambiguated per source.** Zones used to hang off a watcher's *use* of
+    a source, so two watchers on one camera each kept their own copy of the same tray —
+    the redundancy this revision exists to remove. Collapsing them onto the source makes
+    those copies siblings, and `replace_source_regions` rejects two regions sharing
+    (role, name). Left alone, the migration would succeed and then make the region
+    editor unsaveable for that camera, with an error naming a zone the user only drew
+    once. Suffixing the later copies keeps every uuid alive and the invariant intact;
+    the user can merge or delete the duplicates at their leisure.
+    """
+    conn = op.get_bind()
+    zones = conn.execute(
+        sa.text(
+            "SELECT wz.uuid, wps.source_uuid, wz.name, wz.kind, wz.points_json, "
+            "       wz.reference_width, wz.reference_height "
+            "  FROM watch_zones wz "
+            "  JOIN watch_profile_sources wps ON wps.uuid = wz.profile_source_uuid "
+            # Deterministic, so a rerun on a copy of the same DB assigns the same
+            # suffixes rather than shuffling which duplicate is "(2)".
+            " ORDER BY wps.source_uuid, wz.name, wz.uuid"
+        )
+    ).fetchall()
+
+    seen_names: dict = {}
+    next_order: dict = {}
+    for zone in zones:
+        uuid, source_uuid, name, kind, points_json, width, height = zone
+        key = (source_uuid, (name or "").strip().lower())
+        occurrence = seen_names.get(key, 0) + 1
+        seen_names[key] = occurrence
+        order = next_order.get(source_uuid, 0)
+        next_order[source_uuid] = order + 1
+
+        conn.execute(
+            sa.text(
+                "INSERT INTO source_regions (uuid, source_uuid, name, role, kind, points_json, "
+                '                            reference_width, reference_height, "order") '
+                "VALUES (:uuid, :source_uuid, :name, 'zone', :kind, :points_json, "
+                "        :width, :height, :order)"
+            ),
+            {
+                "uuid": uuid,
+                "source_uuid": source_uuid,
+                "name": name if occurrence == 1 else f"{name} ({occurrence})",
+                "kind": kind,
+                "points_json": points_json,
+                "width": width,
+                "height": height,
+                "order": order,
+            },
+        )
+
+
 def upgrade() -> None:
     # Autogenerate also proposed a REAL -> Float retype of `bboxes.confidence`. That is
     # a no-op on SQLite (both are NUMERIC affinity) and was dropped by hand: applying it
@@ -41,6 +105,8 @@ def upgrade() -> None:
     )
     with op.batch_alter_table("source_regions", schema=None) as batch_op:
         batch_op.create_index(batch_op.f("ix_source_regions_source_uuid"), ["source_uuid"], unique=False)
+
+    _copy_zones_to_regions()
 
     with op.batch_alter_table("watch_zones", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_watch_zones_profile_source_uuid"))
