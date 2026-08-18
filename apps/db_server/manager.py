@@ -29,7 +29,8 @@ from apps import (
     THUMB_CACHE_MAX_MB,
 )
 from apps.db_server.hash_index import HashIndex
-from apps.helpers.actions.saveTimelapseAction import resolve_output_dir as resolve_timelapse_dir
+from apps.helpers.actions.outputDir import resolve_output_dir
+from apps.helpers.actions.saveTimelapseAction import DEFAULT_TIMELAPSE_DIR
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
 from apps.helpers.db.types import (
@@ -4319,7 +4320,7 @@ class Manager:
                 if action.kind != TIMELAPSE_ACTION_KIND:
                     continue
                 try:
-                    root = resolve_timelapse_dir((action.params_json or {}).get("output_dir") or "")
+                    root = resolve_output_dir((action.params_json or {}).get("output_dir") or "", DEFAULT_TIMELAPSE_DIR)
                 except (ValueError, OSError) as e:
                     # A path that no longer resolves is a misconfiguration to report, not
                     # a reason to abandon the sweep for every other watcher.

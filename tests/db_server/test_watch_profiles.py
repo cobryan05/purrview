@@ -765,6 +765,71 @@ class TestMaskOptOut:
         assert body["status"] == "success", body
 
 
+class TestActionNames:
+    """An action can carry a note. The engine never reads it — it exists because three
+    "Save snapshot" rows scoped to different cameras are otherwise indistinguishable in
+    the list, and the parameters that tell them apart are spread across a dense row."""
+
+    async def test_a_name_round_trips(self, http_client):
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid}],
+                actions=[
+                    {
+                        "kind": "save_timelapse",
+                        "trigger": "frame_analysed",
+                        "name": "Back garden timelapse every 30s",
+                    }
+                ],
+            )
+        )["profile"]
+        assert profile["actions"][0]["name"] == "Back garden timelapse every 30s"
+
+    async def test_an_omitted_name_is_null_not_empty(self, http_client):
+        """Every action that existed before this field has none, and an empty string
+        would render as a blank label rather than as "unnamed"."""
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                actions=[{"kind": "publish_mqtt", "trigger": "event_started"}],
+            )
+        )["profile"]
+        assert profile["actions"][0]["name"] is None
+
+    async def test_a_blank_name_is_stored_as_null(self, http_client):
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                actions=[{"kind": "publish_mqtt", "trigger": "event_started", "name": "   "}],
+            )
+        )["profile"]
+        assert profile["actions"][0]["name"] is None
+
+    async def test_a_name_survives_an_update(self, http_client):
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                actions=[{"kind": "publish_mqtt", "trigger": "event_started", "name": "shout at me"}],
+            )
+        )["profile"]
+        r = await http_client.patch(
+            f"/api/watch-profiles/{profile['uuid']}",
+            json={
+                "name": "House cams",
+                "actions": [
+                    {"kind": "publish_mqtt", "trigger": "event_started", "name": "shout at me louder"},
+                ],
+            },
+        )
+        assert r.json()["profile"]["actions"][0]["name"] == "shout at me louder"
+
+
 class TestValidateEndpoint:
     async def test_a_profile_with_no_sources_is_invalid(self, http_client):
         profile = (await _create_profile(http_client, "House cams"))["profile"]

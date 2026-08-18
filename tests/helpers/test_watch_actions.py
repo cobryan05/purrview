@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import pytest
 
-from apps.helpers.actions import saveTimelapseAction
+from apps.helpers.actions import outputDir, saveTimelapseAction
 from apps.helpers.actions.action import ActionContext, ActionResult
 from apps.helpers.actions.mqttPublishAction import MqttPublishAction, slugify_topic
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
@@ -585,8 +585,12 @@ class TestSaveSnapshotAction:
 
     async def test_an_unwritable_directory_is_reported_not_raised(self):
         frame = np.zeros((8, 8, 3), dtype=np.uint8)
-        action = SaveSnapshotAction(output_dir="/proc/definitely-not-writable")
-        result = await action.run(_signal(phase=EventPhase.START), _context(frame=frame))
+        # The dataset root itself is what has to be unwritable: a path outside it is now
+        # re-rooted rather than honoured, so "/proc/..." as an `output_dir` would land
+        # somewhere perfectly writable and stop testing anything.
+        with patch.object(outputDir, "FILES_ROOT", Path("/proc")):
+            action = SaveSnapshotAction(output_dir="definitely-not-writable")
+            result = await action.run(_signal(phase=EventPhase.START), _context(frame=frame))
         assert result.ok is False
 
 
@@ -601,7 +605,7 @@ class TestSaveTimelapseAction:
     def _action(self, tmp_path, **params):
         # Constructed against a FILES_ROOT the test owns, since the action resolves its
         # directory relative to it at construction time.
-        with patch.object(saveTimelapseAction, "FILES_ROOT", Path(tmp_path)):
+        with patch.object(outputDir, "FILES_ROOT", Path(tmp_path)):
             return SaveTimelapseAction(**params)
 
     async def test_writes_one_frame_into_a_per_day_directory(self, tmp_path):
@@ -685,8 +689,8 @@ class TestTimelapseOutputDirResolution:
     own root — the picker's `/timelapse` is rooted at FILES_ROOT, not at `/`."""
 
     def _resolve(self, root, value):
-        with patch.object(saveTimelapseAction, "FILES_ROOT", Path(root)):
-            return saveTimelapseAction.resolve_output_dir(value)
+        with patch.object(outputDir, "FILES_ROOT", Path(root)):
+            return outputDir.resolve_output_dir(value, saveTimelapseAction.DEFAULT_TIMELAPSE_DIR)
 
     def test_a_relative_path_is_joined_onto_the_dataset_root(self, tmp_path):
         assert self._resolve(tmp_path, "timelapse/front") == tmp_path / "timelapse/front"
@@ -703,3 +707,63 @@ class TestTimelapseOutputDirResolution:
     def test_climbing_out_of_the_root_is_refused(self, tmp_path):
         with pytest.raises(ValueError):
             self._resolve(tmp_path, "../../etc/cron.d")
+
+
+class TestSnapshotDirectoryTemplates:
+    """The snapshot folder is a template over the same vocabulary the topics use.
+
+    That is what makes "a folder per camera" or "a folder per day" a thing you can write
+    rather than a feature request — and it is also a path built from user input, so the
+    substituted values must not be able to change the *shape* of the path.
+    """
+
+    def _path(self, tmp_path, output_dir, **ctx):
+        with patch.object(outputDir, "FILES_ROOT", Path(tmp_path)):
+            action = SaveSnapshotAction(output_dir=output_dir)
+            when = datetime(2026, 8, 18, 14, 30, 0).astimezone()
+            return action.snapshot_path(_signal(phase=EventPhase.START), _context(**ctx), when)
+
+    def test_a_plain_folder_still_gets_the_day_level(self, tmp_path):
+        path = self._path(tmp_path, "watch_snapshots")
+        assert path.parent == tmp_path / "watch_snapshots" / "2026-08-18"
+
+    def test_source_and_rule_can_name_folders(self, tmp_path):
+        path = self._path(tmp_path, "snaps/{source}/{rule}")
+        assert path.parent == tmp_path / "snaps/litter-cam/cat-using-litter-box/2026-08-18"
+
+    def test_placing_the_date_suppresses_the_automatic_day_level(self, tmp_path):
+        """Otherwise saying where the date goes silently gets you a second one."""
+        path = self._path(tmp_path, "snaps/{date}/{source}")
+        assert path.parent == tmp_path / "snaps/2026-08-18/litter-cam"
+
+    def test_the_time_token_is_filename_safe(self, tmp_path):
+        path = self._path(tmp_path, "snaps/{date}/{hour}")
+        assert path.parent == tmp_path / "snaps/2026-08-18/14"
+
+    def test_a_slash_in_a_value_cannot_add_a_folder_level(self, tmp_path):
+        """A camera named "Kitchen / Upstairs" must not fan one folder out into two."""
+        path = self._path(tmp_path, "snaps/{source}", source_name="Kitchen / Upstairs")
+        assert path.parent == tmp_path / "snaps/kitchen-upstairs/2026-08-18"
+
+    def test_a_value_cannot_climb_out_of_the_root(self, tmp_path):
+        path = self._path(tmp_path, "snaps/{source}", source_name="../../etc")
+        assert tmp_path in path.parents
+
+    def test_an_absolute_legacy_path_inside_the_root_still_works(self, tmp_path):
+        """A watcher configured before the picker existed must keep writing where it did."""
+        path = self._path(tmp_path, str(tmp_path / "watch_snapshots"))
+        assert path.parent == tmp_path / "watch_snapshots" / "2026-08-18"
+
+    def test_the_pickers_leading_slash_is_the_dataset_root(self, tmp_path):
+        path = self._path(tmp_path, "/snaps")
+        assert path.parent == tmp_path / "snaps" / "2026-08-18"
+
+    async def test_a_templated_folder_is_actually_written(self, tmp_path):
+        frame = np.zeros((16, 16, 3), dtype=np.uint8)
+        with patch.object(outputDir, "FILES_ROOT", Path(tmp_path)):
+            action = SaveSnapshotAction(output_dir="snaps/{source}")
+            result = await action.run(_signal(phase=EventPhase.START), _context(frame=frame))
+        assert result.ok is True
+        written = Path(result.data["path"])
+        assert written.exists()
+        assert written.parent.parent == tmp_path / "snaps" / "litter-cam"

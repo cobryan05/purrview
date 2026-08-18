@@ -39,11 +39,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from apps import FILES_ROOT
-
 from ..imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
 from ..watch.events import WatchEventSignal
 from .action import Action, ActionContext, ActionResult
+from .outputDir import resolve_output_dir
 from .Registry import register_action
 
 logger = logging.getLogger(__name__)
@@ -57,44 +56,6 @@ DEFAULT_TIMELAPSE_DIR = "timelapse"
 
 #: Seconds between frames. 30 s is one day compressed to ~2 minutes at 24 fps.
 DEFAULT_INTERVAL_S = 30.0
-
-
-def resolve_output_dir(output_dir: str) -> Path:
-    """Turn a configured directory into an absolute path inside `FILES_ROOT`.
-
-    Accepts all three spellings that reach it, because they all occur in practice:
-
-    * ``timelapse`` — a hand-typed relative path.
-    * ``/timelapse`` — what the directory picker returns. Its paths are rooted at
-      `FILES_ROOT`, so its leading slash means "top of the dataset root", not "top of
-      the filesystem". Treating it as absolute would write jpgs into the container's
-      own root every 30 seconds.
-    * ``/app/image_datasets/timelapse`` — an absolute path that is already inside
-      `FILES_ROOT`, honoured as-is so a path copied from `save_snapshot` still works.
-
-    Anything that lands outside `FILES_ROOT` — an absolute path elsewhere, or enough
-    ``..`` to climb out — raises. The picker cannot reach outside it, nothing else in
-    the app writes outside it, and a watcher is a long-running process writing an
-    unbounded number of files: it is the wrong thing to point at an arbitrary path.
-    """
-    root = FILES_ROOT.resolve()
-    raw = (str(output_dir).strip() or DEFAULT_TIMELAPSE_DIR).rstrip("/")
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            # Not under the root, so its leading slash was the picker's, not the
-            # filesystem's. Re-root it rather than rejecting: that spelling is what the
-            # UI produces, and rejecting it would make the Browse button unusable.
-            candidate = root / candidate.relative_to("/")
-    else:
-        candidate = root / candidate
-
-    resolved = Path(os.path.normpath(str(candidate)))
-    if resolved != root and root not in resolved.parents:
-        raise ValueError(f"output_dir {output_dir!r} resolves outside {root}")
-    return resolved
 
 
 @register_action("save_timelapse")
@@ -114,7 +75,7 @@ class SaveTimelapseAction(Action):
         super().__init__(**params)
         # Resolved once, at construction, so a path that climbs out of FILES_ROOT fails
         # when the watcher starts rather than silently every frame for a week.
-        self.output_dir = resolve_output_dir(output_dir)
+        self.output_dir = resolve_output_dir(output_dir, DEFAULT_TIMELAPSE_DIR)
         # A zero or negative interval would write every analysed frame — several a
         # second, forever. That is never what "timelapse" means, and the disk cost is
         # not recoverable, so it is clamped rather than honoured.

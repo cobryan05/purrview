@@ -7,22 +7,35 @@ NVR feeds its own retraining.
 
 Writes a JSON sidecar next to the image, matching the convention the rest of the app
 already uses for image metadata.
+
+The output directory is a **template**, over the same placeholder vocabulary the MQTT
+topics use. That is the difference between one folder of everything and a folder per
+camera, per rule or per day, and it costs nothing that a fixed path was buying: a value
+that contains a `/` is slugified before substitution, so the shape of the path stays
+exactly what the template says. The automatic `YYYY-MM-DD` level is only added when the
+template does **not** place `{date}` itself — otherwise saying where the date goes would
+also silently get you a second one.
 """
 
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
 from ..watch.events import EventPhase, WatchEventSignal
+from ..watch.templating import build_template_params, describe_params, render_path
 from .action import Action, ActionContext, ActionResult
+from .outputDir import resolve_output_dir
 from .Registry import register_action
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SNAPSHOT_ROOT = "/app/image_datasets/watch_snapshots"
+#: Relative to `FILES_ROOT`, like every other directory the picker can reach. The old
+#: absolute default named the same folder — `resolve_output_dir` still honours that
+#: spelling, so a watcher configured before the picker existed writes where it always did.
+DEFAULT_SNAPSHOT_DIR = "watch_snapshots"
 
 
 @register_action("save_snapshot")
@@ -31,12 +44,14 @@ class SaveSnapshotAction(Action):
 
     def __init__(
         self,
-        output_dir: str = DEFAULT_SNAPSHOT_ROOT,
+        output_dir: str = DEFAULT_SNAPSHOT_DIR,
         quality: int = 90,
         **params: Any,
     ) -> None:
         super().__init__(**params)
-        self.output_dir = Path(output_dir)
+        # Kept as written, not resolved here: it is a template, and what it resolves to
+        # depends on the event being written. Resolution happens per snapshot.
+        self.output_dir = str(output_dir).strip() or DEFAULT_SNAPSHOT_DIR
         self.quality = int(quality)
 
     @classmethod
@@ -47,10 +62,15 @@ class SaveSnapshotAction(Action):
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {
             "output_dir": {
-                "type": "str",
+                "type": "directory",
                 "required": False,
-                "default": DEFAULT_SNAPSHOT_ROOT,
-                "help": "Directory to write snapshots into. Under image_datasets so they can be curated later.",
+                "default": DEFAULT_SNAPSHOT_DIR,
+                "help": (
+                    "Directory to write snapshots into, relative to the image dataset root, so they "
+                    "can be curated later. Placeholders are substituted and slugified per path "
+                    f"segment. Available: {describe_params()}. A YYYY-MM-DD level is added "
+                    "automatically unless the template already uses {date}."
+                ),
             },
             "quality": {"type": "int", "required": False, "default": 90, "help": "JPEG quality, 1-100."},
         }
@@ -58,9 +78,16 @@ class SaveSnapshotAction(Action):
     def snapshot_path(self, signal: WatchEventSignal, context: ActionContext, when: datetime) -> Path:
         from .mqttPublishAction import slugify_topic
 
+        params = build_template_params(signal, context, when=when)
+        rendered = render_path(self.output_dir, params)
+        root = resolve_output_dir(rendered, DEFAULT_SNAPSHOT_DIR)
+        # Only when the user has not placed the date themselves — see the module docs.
+        if "{date}" not in self.output_dir:
+            root = root / when.strftime("%Y-%m-%d")
+
         source = slugify_topic(context.source_name or context.source_uuid or "source")
         rule = slugify_topic(signal.rule_name)
-        return self.output_dir / when.strftime("%Y-%m-%d") / f"{when.strftime('%H-%M-%S')}_{source}_{rule}.jpg"
+        return root / f"{when.strftime('%H-%M-%S')}_{source}_{rule}.jpg"
 
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         if context.frame is None:
@@ -70,7 +97,12 @@ class SaveSnapshotAction(Action):
         if signal.phase is EventPhase.END:
             return ActionResult(ok=True, detail="skipped on event end")
 
-        when = datetime.now(timezone.utc)
+        # Local, and tz-aware. The folder and filename this produces are read by a human
+        # browsing a file tree, so they have to agree with the clock on the wall — a UTC
+        # day boundary files an evening's snapshots under tomorrow for most of the world.
+        # `capturedAt` in the sidecar keeps its offset, so nothing about the instant is
+        # ambiguous; only the spelling changed.
+        when = datetime.now().astimezone()
         dest = self.snapshot_path(signal, context, when)
         try:
             size = await asyncio.to_thread(self._write, context.frame, dest, signal, context, when)

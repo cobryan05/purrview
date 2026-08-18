@@ -6637,6 +6637,7 @@ class DbClient:
                     source_uuids_json=[str(s) for s in (action.source_uuids_json or [])],
                     order=action.order,
                     enabled=action.enabled,
+                    name=(action.name or "").strip() or None,
                     kind=action.kind,
                     params_json=action.params_json,
                     trigger=action.trigger.value,

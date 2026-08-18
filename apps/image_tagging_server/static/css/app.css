@@ -6496,7 +6496,6 @@ progress.progress-indeterminate:indeterminate {
 /* The `(?)` that opens the topic placeholder list. A hover tooltip on the input was
    not discoverable — this is a visible affordance sitting beside the field it explains. */
 .watch-template-help {
-  position: relative;
   display: inline-flex;
   align-items: center;
 }
@@ -6523,14 +6522,18 @@ progress.progress-indeterminate:indeterminate {
   color: var(--pico-primary, var(--color-info));
 }
 
+/* Placement is `openAnchoredPopup`'s job, not this rule's — see `helpPopover`. This used
+   to be `position: absolute; right: 0` inside the 1.35em button's wrapper, which put a
+   24rem panel ~23rem to the *left* of the `(?)`: correct-looking beside a field near the
+   right of a wide window, and most of the way off the left edge of the screen anywhere
+   else. Deliberately no `z-index` either: leaving it `auto` is what lets the popup
+   acquire a modal layer, so a `(?)` opened inside a dialog lands above it.
+
+   `max-width` matters now that the panel is clamped into the viewport rather than
+   overflowing it: on a narrow window 24rem is wider than the screen. */
 .watch-template-help__panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  /* Right-aligned: the topic field sits well into the row, and a left-aligned panel
-     this wide would hang off the editor's right edge. */
-  right: 0;
-  z-index: var(--layer-dropdown);
   width: 24rem;
+  max-width: calc(100vw - 1rem);
   max-height: 60vh;
   overflow-y: auto;
   padding: 0.5rem;
@@ -6664,6 +6667,16 @@ progress.progress-indeterminate:indeterminate {
   flex: 0 0 auto;
   margin: 0;
 }
+/* The optional note on an action row. Sized small and allowed to shrink: it is the one
+   control on the row carrying no configuration, so it is the one that should give up
+   width first when the row gets tight. */
+.watch-action-name {
+  flex: 0 1 8rem;
+  min-width: 4rem;
+  font-style: italic;
+}
+.watch-action-name::placeholder { font-style: italic; }
+
 /* Directory field: a path input with its Browse button flush against it, so the pair
    reads as one control on a row that already holds four others. The input takes the
    slack because the path is the part whose length varies. */

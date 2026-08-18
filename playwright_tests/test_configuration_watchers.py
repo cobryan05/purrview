@@ -1680,3 +1680,176 @@ class TestTimelapseAction:
         # normally does not exist until the user makes it here.
         expect(page.get_by_text("Select Directory").last).to_be_visible()
         expect(page.get_by_role("button", name="+ New Folder").last).to_be_visible()
+
+
+class TestSnapshotDirectoryField:
+    """ "Save snapshot" gets the same directory affordances as the timelapse action.
+
+    It was a bare text box holding an absolute container path — no way to see what
+    existed, no way to create a folder, and no hint that anything could be substituted
+    into it.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        page.locator("[data-testid='watch-action-kind']").first.select_option("save_snapshot")
+
+    def test_it_has_a_browse_button(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-action-dir-browse']").first).to_be_visible()
+
+    def test_it_has_a_token_help_marker(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
+
+    def test_the_date_token_is_offered_and_inserts_at_the_caret(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        field = page.locator("[data-testid='watch-action-dir']").first
+        field.fill("snaps/")
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-template-help-panel']").first
+        expect(panel).to_be_visible()
+        panel.locator("button", has_text="{date}").first.click()
+        expect(field).to_have_value("snaps/{date}")
+
+    def test_the_preview_shows_where_a_snapshot_lands(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        field = page.locator("[data-testid='watch-action-dir']").first
+        hint = page.locator("[data-testid='watch-action-snapshot-example']").first
+        field.fill("snaps/{source}")
+        expect(hint).to_contain_text("snaps/back-room/2026-08-18/")
+
+    def test_placing_the_date_drops_the_automatic_day_level_from_the_preview(self, page: Page, base_url: str):
+        """The preview must not claim a folder the action will not create."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        field = page.locator("[data-testid='watch-action-dir']").first
+        hint = page.locator("[data-testid='watch-action-snapshot-example']").first
+        field.fill("snaps/{date}/{source}")
+        expect(hint).to_contain_text("snaps/2026-08-18/back-room/14-30-00_")
+
+    def test_it_saves_the_folder_template(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-dir']").first.fill("snaps/{source}")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["paramsJson"]["output_dir"] == "snaps/{source}"
+
+
+class TestHelpPopoverStaysOnScreen:
+    """The `(?)` panels used to open ~23rem to the left of a 1.35em button.
+
+    `position: absolute; right: 0` inside the button's own wrapper meant the panel hung
+    off the left of the viewport for every field that was not near the right edge of a
+    wide window — visible in the DOM, unreadable on screen.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def _assert_within_viewport(self, page: Page, panel):
+        box = panel.bounding_box()
+        assert box is not None, "panel should be laid out"
+        width = page.evaluate("() => window.innerWidth")
+        height = page.evaluate("() => window.innerHeight")
+        assert box["x"] >= 0, f"panel starts {box['x']}px off the left edge"
+        assert box["y"] >= 0, f"panel starts {box['y']}px off the top edge"
+        assert box["x"] + box["width"] <= width + 1, "panel runs off the right edge"
+        assert box["y"] + box["height"] <= height + 1, "panel runs off the bottom edge"
+
+    def test_the_topic_help_opens_inside_the_viewport(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-template-help-panel']").first
+        expect(panel).to_be_visible()
+        self._assert_within_viewport(page, panel)
+
+    def test_it_stays_on_screen_in_a_narrow_window(self, page: Page, base_url: str):
+        """The case that was worst: no room to hang left, and none to hang right either."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        page.set_viewport_size({"width": 700, "height": 800})
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-template-help-panel']").first
+        expect(panel).to_be_visible()
+        self._assert_within_viewport(page, panel)
+
+    def test_the_trigger_help_opens_inside_the_viewport(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-kind']").first.select_option("record_clip")
+        page.locator("[data-testid='watch-action-trigger-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-action-trigger-help-panel']").first
+        expect(panel).to_be_visible()
+        self._assert_within_viewport(page, panel)
+
+    def test_clicking_the_marker_again_closes_it(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        btn = page.locator("[data-testid='watch-template-help-btn']").first
+        btn.click()
+        expect(page.locator("[data-testid='watch-template-help-panel']").first).to_be_visible()
+        btn.click()
+        expect(page.locator("[data-testid='watch-template-help-panel']")).to_have_count(0)
+
+
+class TestActionName:
+    """An action can carry a note, so a list of them is readable.
+
+    Three "Save snapshot" rows scoped to different cameras are otherwise
+    indistinguishable, and what tells them apart is spread across a dense row of
+    dropdowns.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def test_the_field_is_offered_on_every_action(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-action-name']").first).to_be_visible()
+
+    def test_it_saves_the_note(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-name']").first.fill("Shout when the cat arrives")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["name"] == "Shout when the cat arrives"
+
+    def test_a_blank_note_is_sent_as_null(self, page: Page, base_url: str):
+        """An empty string would render as a blank label rather than as "unnamed"."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-name']").first.fill("   ")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["name"] is None

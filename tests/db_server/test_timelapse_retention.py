@@ -20,7 +20,7 @@ from apps.db_server.manager import (
     TIMELAPSE_RETENTION_SETTING_KEY,
     Manager,
 )
-from apps.helpers.actions import saveTimelapseAction
+from apps.helpers.actions import outputDir
 from apps.helpers.db.types import WatchAction, WatchProfile
 
 
@@ -33,7 +33,7 @@ def timelapse_root(tmp_path, monkeypatch):
     """
     root = tmp_path / "files"
     (root / "timelapse").mkdir(parents=True)
-    monkeypatch.setattr(saveTimelapseAction, "FILES_ROOT", root)
+    monkeypatch.setattr(outputDir, "FILES_ROOT", root)
     return root / "timelapse"
 
 

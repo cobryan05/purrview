@@ -1778,6 +1778,11 @@ class WatchAction(SQLModel, table=True):
     source_uuids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     order: int = Field(default=0)
     enabled: bool = Field(default=True)
+    # A label for humans, never read by the engine. A watcher's actions are otherwise
+    # identified only by kind, so three "Save snapshot" rows scoped to different cameras
+    # are indistinguishable in the list — and the parameters that tell them apart are
+    # spread across a dense row. Optional: an unnamed action still says what kind it is.
+    name: Optional[str] = Field(default=None)
     kind: str  # registry key, e.g. "publish_mqtt" / "record_clip" / "save_snapshot"
     params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     trigger: str = Field(default=WatchActionTrigger.EVENT_ENDED.value)
@@ -2105,6 +2110,7 @@ class WatchActionRead(OrmModel):
     source_uuids_json: List[Any] = Field(default_factory=list)
     order: int = 0
     enabled: bool = True
+    name: Optional[str] = None
     kind: str
     params_json: Dict[str, Any] = Field(default_factory=dict)
     trigger: str
@@ -2117,6 +2123,7 @@ class WatchActionWrite(ApiModel):
     source_uuids_json: List[Any] = Field(default_factory=list)
     order: int = 0
     enabled: bool = True
+    name: Optional[str] = None
     kind: str
     params_json: Dict[str, Any] = Field(default_factory=dict)
     trigger: WatchActionTrigger = WatchActionTrigger.EVENT_ENDED

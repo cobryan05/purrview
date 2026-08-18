@@ -130,18 +130,23 @@ class TestSnapshotActionChannelOrder:
         provider that was itself wrong and blue-shifted every snapshot from the other
         three.
         """
-        from types import SimpleNamespace
+        from unittest.mock import patch
 
+        from apps.helpers.actions import outputDir
         from apps.helpers.actions.action import ActionContext
         from apps.helpers.actions.saveSnapshotAction import SaveSnapshotAction
-        from apps.helpers.watch.events import EventPhase
+        from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
         frame = np.full((8, 8, 3), RED_BGR, dtype=np.uint8)
-        action = SaveSnapshotAction(output_dir=str(tmp_path))
-        signal = SimpleNamespace(
-            phase=EventPhase.START,
+        # A real signal, not a stub: the output folder is a template now, and the
+        # renderer reads slots a hand-rolled namespace does not have.
+        signal = WatchEventSignal(
+            rule_uuid="r1",
             rule_name="cat_in_box",
-            to_dict=lambda: {"ruleName": "cat_in_box"},
+            phase=EventPhase.START,
+            at=10.0,
+            started_at=10.0,
+            source_uuid="s1",
         )
         context = ActionContext(
             profile_uuid="p1",
@@ -151,7 +156,11 @@ class TestSnapshotActionChannelOrder:
             frame=frame,
         )
 
-        result = await action.run(signal, context)
+        # The dataset root the action resolves against, so this writes into the test's
+        # tmp dir rather than the container's real image_datasets.
+        with patch.object(outputDir, "FILES_ROOT", tmp_path):
+            action = SaveSnapshotAction(output_dir="snaps")
+            result = await action.run(signal, context)
 
         assert result.ok, result.detail
         written = cv2.imread(result.data["path"])

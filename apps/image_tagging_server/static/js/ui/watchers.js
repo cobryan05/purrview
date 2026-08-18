@@ -13,6 +13,7 @@ import { openSourceRegionsModal } from '/app-static/js/ui/sourceRegionsModal.js'
 import { fetchSourceRegions, REGION_ROLE_MASK, REGION_ROLE_ZONE } from '/app-static/js/shared/api/sourceRegions.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
 import { openFileBrowserModal } from '/app-static/js/ui/utils/openFileBrowserModal.js';
+import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
@@ -103,6 +104,12 @@ const DEFAULT_IMAGE_TOPIC_TEMPLATE = '{watcher}/{source}/image';
 const DEFAULT_TIMELAPSE_DIR = 'timelapse';
 
 /**
+ * Default snapshot folder, relative to the image dataset root. Mirrors
+ * `DEFAULT_SNAPSHOT_DIR` in `apps/helpers/actions/saveSnapshotAction.py`.
+ */
+const DEFAULT_SNAPSHOT_DIR = 'watch_snapshots';
+
+/**
  * Default MQTT topic template — reproduces the historical hard-coded scheme exactly, so
  * an action saved before templates existed publishes where it always did.
  * Mirrors `DEFAULT_TOPIC_TEMPLATE` in `apps/helpers/actions/mqttPublishAction.py`.
@@ -133,6 +140,14 @@ const TEMPLATE_PLACEHOLDER_HELP = [
   { token: '{target_uuid}', help: 'Stable id of the matched target.' },
   { token: '{phase}', help: 'start, update or end.' },
   { token: '{event_uuid}', help: 'Stable id of this one event, for correlating topics.' },
+  // Local time, not UTC: these name folders a human browses, and a UTC day boundary
+  // files an evening under tomorrow. Dashes in {time} because it goes into filenames.
+  { token: '{date}', help: 'The local date, as 2026-08-18.' },
+  { token: '{time}', help: 'The local time, as 14-30-00. Dashes, so it is safe in a filename.' },
+  { token: '{year}', help: 'Local year, as 2026.' },
+  { token: '{month}', help: 'Local month, zero-padded, as 08.' },
+  { token: '{day}', help: 'Local day of the month, zero-padded, as 18.' },
+  { token: '{hour}', help: 'Local hour, 24-hour and zero-padded, as 14.' },
 ];
 
 /** Names only, for the places that just need to list them. */
@@ -158,6 +173,12 @@ const TEMPLATE_EXAMPLE = {
   target_uuid: 'zone-uuid',
   phase: 'start',
   event_uuid: 'event-uuid',
+  date: '2026-08-18',
+  time: '14-30-00',
+  year: '2026',
+  month: '08',
+  day: '18',
+  hour: '14',
 };
 
 /**
@@ -319,12 +340,12 @@ function numberInput(value, { step = '1', min = null, placeholder = '' } = {}) {
  * `/api/images/list` and `/api/images/mkdir` endpoints behind it accept. Leading slashes
  * are cosmetic here; the action's `resolve_output_dir` accepts either spelling.
  */
-function dirPickerField(value, onAnyChange) {
+function dirPickerField(value, onAnyChange, { placeholder = 'dataset root' } = {}) {
   const wrap = el('div', 'watch-dir-picker');
   const input = document.createElement('input');
   input.type = 'text';
   input.value = value ?? '';
-  input.placeholder = 'dataset root';
+  input.placeholder = placeholder;
   input.dataset.testid = 'watch-action-dir';
   const listeners = [];
   const changed = () => { listeners.forEach(fn => fn()); onAnyChange?.(); };
@@ -349,6 +370,9 @@ function dirPickerField(value, onAnyChange) {
   wrap.append(input, browse);
   return {
     element: wrap,
+    // Exposed so a `(?)` can insert a token at the caret, which needs the input itself
+    // rather than its value — see `templateHelp`.
+    input,
     getValue: () => input.value,
     onChange: (fn) => listeners.push(fn),
   };
@@ -383,72 +407,42 @@ function wfield(labelText, control, { width = null } = {}) {
  *
  * @param {HTMLInputElement} input the topic field tokens are inserted into
  */
-function templateHelp(input) {
-  const wrap = el('span', 'watch-template-help');
+function templateHelp(input, { intro, testid = 'watch-template-help', label } = {}) {
+  return helpPopover({
+    testid,
+    label: label || 'Placeholders you can use here',
+    build: (panel, close) => {
+      panel.appendChild(el(
+        'p',
+        'watch-template-help__intro',
+        intro
+        || 'Substituted per topic level and slugified. Click one to insert it. An unknown '
+        + 'placeholder is left as-is, so a typo shows up on the broker rather than '
+        + 'silently collapsing a level.',
+      ));
 
-  const btn = el('button', 'watch-template-help__btn', '?');
-  btn.type = 'button';
-  btn.dataset.testid = 'watch-template-help-btn';
-  btn.title = 'Placeholders you can use in this topic';
-  btn.setAttribute('aria-label', 'Show topic placeholders');
-  btn.setAttribute('aria-expanded', 'false');
-
-  const panel = el('div', 'watch-template-help__panel');
-  panel.dataset.testid = 'watch-template-help-panel';
-  panel.hidden = true;
-
-  panel.appendChild(el(
-    'p',
-    'watch-template-help__intro',
-    'Substituted per topic level and slugified. Click one to insert it. An unknown '
-    + 'placeholder is left as-is, so a typo shows up on the broker rather than '
-    + 'silently collapsing a level.',
-  ));
-
-  for (const { token, help } of TEMPLATE_PLACEHOLDER_HELP) {
-    const item = el('button', 'watch-template-help__item');
-    item.type = 'button';
-    item.appendChild(el('code', 'watch-template-help__token', token));
-    item.appendChild(el('span', 'watch-template-help__desc', help));
-    item.addEventListener('click', () => {
-      // At the cursor, not appended: a template is usually edited in the middle, and
-      // an insert that always lands at the end would have to be cut and re-pasted.
-      const start = input.selectionStart ?? input.value.length;
-      const end = input.selectionEnd ?? start;
-      input.value = input.value.slice(0, start) + token + input.value.slice(end);
-      const caret = start + token.length;
-      input.setSelectionRange(caret, caret);
-      input.focus();
-      // The field's own listeners drive the live example and the dirty flag, and a
-      // programmatic value change fires neither on its own.
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    panel.appendChild(item);
-  }
-
-  function close() {
-    panel.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
-    document.removeEventListener('click', onDocClick, true);
-  }
-  function onDocClick(e) {
-    // Anywhere outside closes, so the panel cannot be left covering the row below it.
-    if (!wrap.contains(e.target)) close();
-  }
-  btn.addEventListener('click', () => {
-    if (panel.hidden) {
-      panel.hidden = false;
-      btn.setAttribute('aria-expanded', 'true');
-      document.addEventListener('click', onDocClick, true);
-    } else {
-      close();
-    }
+      for (const { token, help } of TEMPLATE_PLACEHOLDER_HELP) {
+        const item = el('button', 'watch-template-help__item');
+        item.type = 'button';
+        item.appendChild(el('code', 'watch-template-help__token', token));
+        item.appendChild(el('span', 'watch-template-help__desc', help));
+        item.addEventListener('click', () => {
+          // At the cursor, not appended: a template is usually edited in the middle, and
+          // an insert that always lands at the end would have to be cut and re-pasted.
+          const start = input.selectionStart ?? input.value.length;
+          const end = input.selectionEnd ?? start;
+          input.value = input.value.slice(0, start) + token + input.value.slice(end);
+          const caret = start + token.length;
+          input.setSelectionRange(caret, caret);
+          input.focus();
+          // The field's own listeners drive the live example and the dirty flag, and a
+          // programmatic value change fires neither on its own.
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        panel.appendChild(item);
+      }
+    },
   });
-  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
-
-  wrap.appendChild(btn);
-  wrap.appendChild(panel);
-  return wrap;
 }
 
 /**
@@ -466,6 +460,31 @@ function templateHelp(input) {
  * @param {{testid?: string, label?: string}} [opts]
  */
 function noteHelp(text, { testid = 'watch-note-help', label = 'Show more information' } = {}) {
+  return helpPopover({
+    testid,
+    label,
+    build: (panel) => panel.appendChild(el('p', 'watch-template-help__intro', text)),
+  });
+}
+
+/**
+ * The `(?)` affordance both help flavours are built from.
+ *
+ * Positioning is delegated to `openAnchoredPopup` rather than done in CSS, which is the
+ * whole reason this exists as one function. The panel used to be `position: absolute;
+ * right: 0` inside the 1.35em button's wrapper, so a 24rem panel hung ~23rem to the left
+ * of the button — fine for a field near the right of a wide window, and most of the way
+ * off the left edge of the screen for every other case. `openAnchoredPopup` measures the
+ * panel, clamps it into the viewport on both axes, flips it above or below depending on
+ * the room available, and brings the outside-click and ESC dismissal with it.
+ *
+ * The panel therefore lives on `document.body` while open and is removed on close, which
+ * also frees it from the action row's `overflow` — the other reason a popover anchored
+ * inside a dense row is hard to see.
+ *
+ * @param {{testid: string, label: string, build: (panel: HTMLElement, close: () => void) => void}} opts
+ */
+function helpPopover({ testid, label, build }) {
   const wrap = el('span', 'watch-template-help');
 
   const btn = el('button', 'watch-template-help__btn', '?');
@@ -475,32 +494,25 @@ function noteHelp(text, { testid = 'watch-note-help', label = 'Show more informa
   btn.setAttribute('aria-label', label);
   btn.setAttribute('aria-expanded', 'false');
 
-  const panel = el('div', 'watch-template-help__panel');
-  panel.dataset.testid = `${testid}-panel`;
-  panel.hidden = true;
-  panel.appendChild(el('p', 'watch-template-help__intro', text));
-
+  let popup = null;
   function close() {
-    panel.hidden = true;
+    popup?.close();
+    popup = null;
     btn.setAttribute('aria-expanded', 'false');
-    document.removeEventListener('click', onDocClick, true);
-  }
-  function onDocClick(e) {
-    if (!wrap.contains(e.target)) close();
   }
   btn.addEventListener('click', () => {
-    if (panel.hidden) {
-      panel.hidden = false;
-      btn.setAttribute('aria-expanded', 'true');
-      document.addEventListener('click', onDocClick, true);
-    } else {
+    if (popup) {
       close();
+      return;
     }
+    const panel = el('div', 'watch-template-help__panel');
+    panel.dataset.testid = `${testid}-panel`;
+    build(panel, close);
+    popup = openAnchoredPopup(btn, panel);
+    btn.setAttribute('aria-expanded', 'true');
   });
-  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 
   wrap.appendChild(btn);
-  wrap.appendChild(panel);
   return wrap;
 }
 
@@ -1189,6 +1201,25 @@ function buildActionRow(action, ctx) {
     ruleScopeField.hidden = trigger.value === FRAME_ANALYSED_TRIGGER;
   }
 
+  // A label for humans, never read by the engine. Three "Save snapshot" rows scoped to
+  // different cameras are otherwise indistinguishable in the list, and the parameters
+  // that tell them apart are spread across a dense row. Placeholdered rather than
+  // required: an unnamed action still says what kind it is.
+  //
+  // Deliberately label-less and narrow. The row's single-line density is an invariant
+  // with a test behind it, and a "Name" caption plus a comfortable input was a third
+  // line on its own — the placeholder carries the same information for a field that is
+  // empty exactly when it needs explaining.
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.value = action.name || '';
+  name.placeholder = 'note…';
+  name.dataset.testid = 'watch-action-name';
+  name.className = 'watch-action-name';
+  name.title = 'A note for you — e.g. "timelapse of the back garden every 30s". Not used by the watcher.';
+  name.addEventListener('input', ctx.onAnyChange);
+  row.appendChild(name);
+
   row.appendChild(wfield('Action', kind));
   row.appendChild(wfield('on', trigger));
   row.appendChild(triggerHelp);
@@ -1388,13 +1419,40 @@ function buildActionRow(action, ctx) {
         annotate: annotate.checked,
       });
     } else {
-      const dir = document.createElement('input');
-      dir.type = 'text';
-      dir.value = stored.output_dir || '';
-      dir.placeholder = 'default snapshot directory';
-      dir.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Output dir', dir, { width: '14rem' }));
-      readParams = () => (dir.value.trim() ? { output_dir: dir.value.trim() } : {});
+      // A template, not a fixed path — the same vocabulary the topics use, so "a folder
+      // per camera" or "a folder per rule" is a thing you can write rather than a
+      // feature request. Browsable for the same reason the timelapse field is: the
+      // folder usually does not exist yet, and the picker can make it.
+      const dir = dirPickerField(stored.output_dir ?? DEFAULT_SNAPSHOT_DIR, ctx.onAnyChange, {
+        placeholder: DEFAULT_SNAPSHOT_DIR,
+      });
+      params.appendChild(wfield('Output dir', dir.element, { width: '15rem' }));
+      params.appendChild(templateHelp(dir.input, {
+        label: 'Placeholders you can use in this folder',
+        intro: 'Substituted per path segment and slugified, so a camera named "Kitchen / Cam" '
+          + 'cannot turn one folder into two. Click one to insert it. A YYYY-MM-DD folder is '
+          + 'added automatically unless you place {date} yourself.',
+      }));
+
+      const example = el('span', 'watch-hint watch-hint--truncate', '');
+      example.dataset.testid = 'watch-action-snapshot-example';
+      function syncExample() {
+        const root = (dir.getValue().trim() || DEFAULT_SNAPSHOT_DIR).replace(/^\/+|\/+$/g, '');
+        // `renderTopicExample` substitutes and collapses empty segments, which is exactly
+        // what `render_path` does to a folder template — the two differ only in what the
+        // result is fed to, so there is no second renderer to keep in step.
+        const rendered = renderTopicExample(root);
+        // The automatic day level, shown only when it is actually added — otherwise the
+        // preview claims a folder the action will not create.
+        const day = root.includes('{date}') ? '' : `${TEMPLATE_EXAMPLE.date}/`;
+        example.textContent = `→ ${rendered}/${day}14-30-00_back-room_cat-using-litter-box.jpg`;
+        example.title = example.textContent;
+      }
+      dir.onChange(syncExample);
+      syncExample();
+      params.appendChild(example);
+
+      readParams = () => ({ output_dir: dir.getValue().trim() || DEFAULT_SNAPSHOT_DIR });
     }
   }
 
@@ -1418,6 +1476,8 @@ function buildActionRow(action, ctx) {
       sourceUuidsJson: [...sourceScope],
       order: 0,
       enabled: true,
+      // Blank means unnamed, not an empty label — the backend stores null either way.
+      name: name.value.trim() || null,
       kind: kind.value,
       trigger: trigger.value,
       paramsJson: readParams(),

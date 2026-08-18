@@ -23,6 +23,7 @@ broken the first time anyone looks at the broker.
 """
 
 import re
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 _PLACEHOLDER = re.compile(r"\{([a-zA-Z][a-zA-Z0-9_]*)\}")
@@ -39,7 +40,7 @@ def slugify(value: str) -> str:
     return slug or "unnamed"
 
 
-def build_template_params(signal, context) -> Dict[str, str]:
+def build_template_params(signal, context, when: Optional[datetime] = None) -> Dict[str, str]:
     """The placeholder vocabulary available to an action's templates.
 
     Every value is a string so a template never has to care about types. Names fall back
@@ -48,9 +49,18 @@ def build_template_params(signal, context) -> Dict[str, str]:
 
     :param signal: the :class:`WatchEventSignal` being dispatched
     :param context: the :class:`ActionContext` the task built for it
+    :param when: wallclock for the time placeholders. Passed in by an action that also
+        writes the time somewhere else — a snapshot's filename and its `{date}` folder
+        must not be able to disagree by a millisecond and land either side of midnight.
+        Defaults to now, which is what a topic template wants.
     """
     event_label = signal.metadata.get("eventLabel") if signal.metadata else None
     rule_display = event_label or signal.rule_name or ""
+    # Local, not UTC. These exist to name folders a human browses, and a UTC day boundary
+    # files an evening under tomorrow for most of the world. `signal.at` is deliberately
+    # not used: it is monotonic (see `StreamWatcherTask._dispatch_frame`), so it says
+    # nothing about the calendar.
+    when = when or datetime.now().astimezone()
 
     params: Dict[str, str] = {
         # The rule, under both the name it was given and the label it publishes as.
@@ -77,6 +87,14 @@ def build_template_params(signal, context) -> Dict[str, str]:
         # The transition itself.
         "phase": getattr(signal.phase, "value", str(signal.phase)),
         "event_uuid": str((context.extra or {}).get("event_uuid") or ""),
+        # When. Dashes rather than colons in `{time}`: these are substituted into
+        # filesystem paths as well as topics, and a colon is not portable in a filename.
+        "date": when.strftime("%Y-%m-%d"),
+        "time": when.strftime("%H-%M-%S"),
+        "year": when.strftime("%Y"),
+        "month": when.strftime("%m"),
+        "day": when.strftime("%d"),
+        "hour": when.strftime("%H"),
     }
     return params
 
@@ -114,6 +132,26 @@ def render_topic(template: str, params: Dict[str, str]) -> str:
     return "/".join(levels)
 
 
+def render_path(template: str, params: Dict[str, str]) -> str:
+    """Render a template into a directory path, slugifying each substituted value.
+
+    Distinct from `render_topic` in exactly one way, and it is the important one: a `/`
+    the *user typed* is a real directory separator and survives, while a `/` inside a
+    substituted value does not. A camera named "Kitchen / Upstairs" must not silently
+    fan a snapshot folder out into two levels, and a value containing `..` must not be
+    able to climb — slugification removes both, so the path shape stays exactly what the
+    template says it is.
+
+    Empty segments are dropped rather than left, so a template naming a slot the rule
+    does not have (`{subject}/`) yields one level fewer instead of an anonymous empty
+    directory.
+    """
+    rendered = render(template, params, slug=True)
+    keep = [segment for segment in rendered.split("/") if segment]
+    prefix = "/" if rendered.startswith("/") else ""
+    return prefix + "/".join(keep)
+
+
 def render_text(template: str, params: Dict[str, str]) -> str:
     """Render a template as prose, substituting raw (un-slugified) values."""
     return render(template, params, slug=False)
@@ -143,4 +181,10 @@ _EXAMPLE_PARAMS: Dict[str, str] = {
     "target_uuid": "",
     "phase": "",
     "event_uuid": "",
+    "date": "",
+    "time": "",
+    "year": "",
+    "month": "",
+    "day": "",
+    "hour": "",
 }
