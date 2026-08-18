@@ -52,6 +52,35 @@ const TRIGGERS = [
 const FRAME_ANALYSED_TRIGGER = 'frame_analysed';
 
 /**
+ * Triggers each action kind can actually do something on. Absent = every trigger.
+ *
+ * Only `record_clip` is constrained, and the constraint is real rather than a policy:
+ * `RecordClipAction.run` returns early unless the phase is END, because the window to
+ * cut is not known until the event closes — that is the whole point of recording into
+ * a rewindable buffer. Offering the other two triggers let a watcher be saved with a
+ * clip action that could never fire, with no error at save time and no clip at run
+ * time. Keyed by kind so a second constrained action is one line here.
+ */
+const ACTION_TRIGGERS = {
+  record_clip: ['event_ended'],
+};
+
+/** Why an action kind's trigger list is shorter than the full set. */
+const TRIGGER_LIMIT_HELP = {
+  record_clip:
+    'A clip can only be cut when the event ends. Its length is not known until then — '
+    + 'the pre-roll is taken retroactively out of the rolling buffer, which is what lets '
+    + 'you record the seconds before the rule fired. Use the pre-roll and post-roll '
+    + 'settings to cover what happened either side.',
+};
+
+/** The triggers offered for one action kind. */
+function triggersFor(kind) {
+  const allowed = ACTION_TRIGGERS[kind];
+  return allowed ? TRIGGERS.filter((t) => allowed.includes(t.key)) : TRIGGERS;
+}
+
+/**
  * Default image topic template, mirroring `DEFAULT_IMAGE_TOPIC_TEMPLATE` in
  * `apps/helpers/actions/mqttPublishImageAction.py`. Keyed by source rather than by
  * rule: the frame belongs to the camera, whatever happened to fire on it.
@@ -339,6 +368,59 @@ function templateHelp(input) {
   }
   function onDocClick(e) {
     // Anywhere outside closes, so the panel cannot be left covering the row below it.
+    if (!wrap.contains(e.target)) close();
+  }
+  btn.addEventListener('click', () => {
+    if (panel.hidden) {
+      panel.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('click', onDocClick, true);
+    } else {
+      close();
+    }
+  });
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  wrap.appendChild(btn);
+  wrap.appendChild(panel);
+  return wrap;
+}
+
+/**
+ * A `(?)` that opens a short static explanation.
+ *
+ * Shares `templateHelp`'s classes and open/close behaviour deliberately: the two read
+ * as the same affordance because they are, and a second set of styles for a popover
+ * that differs only in having nothing clickable inside it would drift apart.
+ *
+ * Exists because a *removed* option explains itself least of all — a trigger list that
+ * silently has one entry looks like the feature was never built, so the reason it is
+ * short has to be reachable from where the choice would have been.
+ *
+ * @param {string} text the explanation
+ * @param {{testid?: string, label?: string}} [opts]
+ */
+function noteHelp(text, { testid = 'watch-note-help', label = 'Show more information' } = {}) {
+  const wrap = el('span', 'watch-template-help');
+
+  const btn = el('button', 'watch-template-help__btn', '?');
+  btn.type = 'button';
+  btn.dataset.testid = `${testid}-btn`;
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('aria-expanded', 'false');
+
+  const panel = el('div', 'watch-template-help__panel');
+  panel.dataset.testid = `${testid}-panel`;
+  panel.hidden = true;
+  panel.appendChild(el('p', 'watch-template-help__intro', text));
+
+  function close() {
+    panel.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDocClick, true);
+  }
+  function onDocClick(e) {
     if (!wrap.contains(e.target)) close();
   }
   btn.addEventListener('click', () => {
@@ -926,10 +1008,53 @@ function buildActionRow(action, ctx) {
   const row = el('div', 'watch-action-row watch-row');
   row.dataset.testid = 'watch-action-row';
 
-  const kind = select(ACTION_KINDS, action.kind || 'publish_mqtt', () => { syncParams(); ctx.onAnyChange(); });
+  const kind = select(ACTION_KINDS, action.kind || 'publish_mqtt', () => {
+    syncTriggers();
+    syncParams();
+    ctx.onAnyChange();
+  });
   kind.dataset.testid = 'watch-action-kind';
   const trigger = select(TRIGGERS, action.trigger || 'event_ended', () => { syncScopeVisibility(); ctx.onAnyChange(); });
   trigger.dataset.testid = 'watch-action-trigger';
+
+  // Sits beside the trigger, and only when that kind's list is short — a `(?)` next to
+  // an unconstrained dropdown is a promise of information that isn't there.
+  const triggerHelp = el('span', 'watch-action-trigger-help');
+  triggerHelp.dataset.testid = 'watch-action-trigger-help';
+
+  /**
+   * Rebuild the trigger options for the current action kind.
+   *
+   * Rebuilt rather than disabled: a greyed-out option still reads as "this ought to
+   * work", and the honest thing for a trigger the action can never fire on is not to
+   * offer it. A stored value that is no longer offered falls back to the first allowed
+   * one, so switching an existing per-frame action to "Record clip" leaves a
+   * configuration that actually runs instead of one that silently does nothing.
+   */
+  function syncTriggers() {
+    const allowed = triggersFor(kind.value);
+    const previous = trigger.value;
+    trigger.innerHTML = '';
+    for (const opt of allowed) {
+      const o = document.createElement('option');
+      o.value = opt.key;
+      o.textContent = opt.text;
+      trigger.appendChild(o);
+    }
+    trigger.value = allowed.some((t) => t.key === previous) ? previous : allowed[0].key;
+
+    triggerHelp.innerHTML = '';
+    const help = TRIGGER_LIMIT_HELP[kind.value];
+    if (help && allowed.length < TRIGGERS.length) {
+      triggerHelp.appendChild(noteHelp(help, {
+        testid: 'watch-action-trigger-help',
+        label: 'Why this action only has one trigger',
+      }));
+    }
+    // The trigger drives whether a rule scope makes sense, so a coerced value has to
+    // take the scope picker with it.
+    syncScopeVisibility();
+  }
 
   // Scope: two lists, both empty-means-all, mirroring `helpers/watch/scoping.py`.
   // Deliberately *not* a rules × sources grid — that grid is almost entirely empty and
@@ -1001,6 +1126,7 @@ function buildActionRow(action, ctx) {
 
   row.appendChild(wfield('Action', kind));
   row.appendChild(wfield('on', trigger));
+  row.appendChild(triggerHelp);
   // Appended bare, not through `wfield`: the dropdown's trigger already reads "Rules" /
   // "Sources", so a field label repeats the word and spends the horizontal budget that
   // keeps this row on one line. `wfield` also wraps its control in a `<label>`, which
@@ -1009,7 +1135,9 @@ function buildActionRow(action, ctx) {
   row.appendChild(sourceScopeField);
 
   buildScopes();
-  syncScopeVisibility();
+  // Before syncScopeVisibility's own call site: syncTriggers may coerce the trigger,
+  // and the scope picker follows from whatever value survives that.
+  syncTriggers();
 
   const params = el('div', 'watch-action-params');
   row.appendChild(params);

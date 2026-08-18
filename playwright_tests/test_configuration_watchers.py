@@ -1503,3 +1503,79 @@ class TestTemplateHelp:
         self._open(page, base_url)
         page.locator("[data-testid='watch-action-kind']").first.select_option("publish_mqtt_image")
         expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
+
+
+class TestClipTriggerIsConstrained:
+    """ "Record clip" only works on the closing edge, so it only offers that trigger.
+
+    `RecordClipAction.run` returns early unless the phase is END — the window to cut is
+    not known until the event closes. Offering the other two triggers let a watcher be
+    saved with a clip action that could never fire: no error at save time, no clip at run
+    time, and nothing on screen to explain why.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def _kind(self, page: Page):
+        return page.locator("[data-testid='watch-action-kind']").first
+
+    def _trigger(self, page: Page):
+        return page.locator("[data-testid='watch-action-trigger']").first
+
+    def test_a_clip_action_offers_only_the_end_trigger(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("record_clip")
+        options = self._trigger(page).locator("option")
+        expect(options).to_have_count(1)
+        expect(options.first).to_have_attribute("value", "event_ended")
+
+    def test_an_unconstrained_action_still_offers_every_trigger(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("publish_mqtt")
+        expect(self._trigger(page).locator("option")).to_have_count(3)
+
+    def test_switching_to_clip_coerces_an_impossible_trigger(self, page: Page, base_url: str):
+        """Otherwise the row keeps a stored value the dropdown no longer offers."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._trigger(page).select_option("frame_analysed")
+        self._kind(page).select_option("record_clip")
+        expect(self._trigger(page)).to_have_value("event_ended")
+
+    def test_switching_away_restores_the_full_list(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("record_clip")
+        self._kind(page).select_option("save_snapshot")
+        expect(self._trigger(page).locator("option")).to_have_count(3)
+
+    def test_the_shortened_list_explains_itself(self, page: Page, base_url: str):
+        """A dropdown that silently has one entry reads as an unbuilt feature."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("record_clip")
+        help_btn = page.locator("[data-testid='watch-action-trigger-help-btn']").first
+        expect(help_btn).to_be_visible()
+
+        help_btn.click()
+        panel = page.locator("[data-testid='watch-action-trigger-help-panel']").first
+        expect(panel).to_be_visible()
+        expect(panel).to_contain_text("only be cut when the event ends")
+
+    def test_no_help_marker_when_nothing_is_constrained(self, page: Page, base_url: str):
+        """A `(?)` beside a full dropdown promises information that isn't there."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("publish_mqtt")
+        expect(page.locator("[data-testid='watch-action-trigger-help-btn']")).to_have_count(0)

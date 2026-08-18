@@ -6483,6 +6483,16 @@ progress.progress-indeterminate:indeterminate {
    scope stayed on screen after the trigger was switched. */
 .watch-action-scope[hidden] { display: none; }
 
+/* The `(?)` beside a trigger whose list is constrained by the action kind. */
+.watch-action-trigger-help {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Empty for every unconstrained action kind, and an empty flex child still earns the
+   row's `gap` — so it has to be removed from layout, not merely left blank. */
+.watch-action-trigger-help:empty { display: none; }
+
 /* The `(?)` that opens the topic placeholder list. A hover tooltip on the input was
    not discoverable — this is a visible affordance sitting beside the field it explains. */
 .watch-template-help {
