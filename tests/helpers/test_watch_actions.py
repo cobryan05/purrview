@@ -15,6 +15,7 @@ import pytest
 from apps.helpers.actions.action import ActionContext, ActionResult
 from apps.helpers.actions.mqttPublishAction import MqttPublishAction, slugify_topic
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
+from apps.helpers.actions.mqttPublishImageAction import MqttPublishImageAction
 from apps.helpers.actions.recordClipAction import (
     FrameRing,
     PlaybackClipBackend,
@@ -22,6 +23,7 @@ from apps.helpers.actions.recordClipAction import (
 )
 from apps.helpers.actions.Registry import action_registry, create_action
 from apps.helpers.actions.saveSnapshotAction import SaveSnapshotAction
+from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
 
@@ -56,8 +58,8 @@ def _context(**overrides) -> ActionContext:
 
 
 class TestRegistry:
-    def test_the_three_actions_are_registered(self):
-        assert {"publish_mqtt", "record_clip", "save_snapshot"} <= set(action_registry)
+    def test_the_actions_are_registered(self):
+        assert {"publish_mqtt", "publish_mqtt_image", "record_clip", "save_snapshot"} <= set(action_registry)
 
     def test_create_by_kind(self):
         assert isinstance(create_action("publish_mqtt"), MqttPublishAction)
@@ -92,12 +94,14 @@ class TestSlugifyTopic:
 class _FakePublisher:
     def __init__(self, fail=False):
         self.messages = []
+        self.coalesced = []
         self.fail = fail
 
-    def publish(self, topic, payload, retain=False, qos=0):
+    def publish(self, topic, payload, retain=False, qos=0, coalesce=False):
         if self.fail:
             raise RuntimeError("broker exploded")
         self.messages.append((topic, payload, retain, qos))
+        self.coalesced.append(coalesce)
 
 
 class TestMqttPublishAction:
@@ -139,13 +143,110 @@ class TestMqttPublishAction:
         assert result.ok is False
 
 
+def _det(x1=10, y1=10, x2=40, y2=40, label_uuid="lab-1", name="tabby", confidence=0.8):
+    return Detection(bbox=(x1, y1, x2, y2), label_uuid=label_uuid, label_name=name, confidence=confidence)
+
+
+class TestMqttPublishImageAction:
+    def _frame(self):
+        return np.zeros((120, 160, 3), dtype=np.uint8)
+
+    async def test_publishes_raw_jpeg_bytes_to_a_source_keyed_topic(self):
+        """Not base64 in JSON: an MQTT camera wants the bytes, and base64 costs a third."""
+        publisher = _FakePublisher()
+        action = MqttPublishImageAction(publisher=publisher)
+        result = await action.run(_signal(), _context(frame=self._frame(), detections=[_det()]))
+
+        assert result.ok is True
+        topic, payload, retain, _ = publisher.messages[0]
+        assert topic == "house-cams/litter-cam/image"
+        assert isinstance(payload, bytes)
+        assert payload[:2] == b"\xff\xd8", "should be a JPEG"
+
+    async def test_publishes_coalescing_so_a_backlog_collapses(self):
+        publisher = _FakePublisher()
+        action = MqttPublishImageAction(publisher=publisher)
+        await action.run(_signal(), _context(frame=self._frame()))
+        assert publisher.coalesced == [True]
+
+    async def test_retains_by_default_unlike_the_event_action(self):
+        """An image is state; retaining it is what makes a subscriber show one at once."""
+        publisher = _FakePublisher()
+        await MqttPublishImageAction(publisher=publisher).run(_signal(), _context(frame=self._frame()))
+        assert publisher.messages[0][2] is True
+
+    async def test_annotating_does_not_mutate_the_pipeline_frame(self):
+        """The same array is written by snapshots and held in the rewind ring.
+
+        Burning boxes into it would put annotations in the saved training images.
+        """
+        frame = self._frame()
+        before = frame.copy()
+        action = MqttPublishImageAction(publisher=_FakePublisher())
+        await action.run(_signal(), _context(frame=frame, detections=[_det()]))
+        assert np.array_equal(frame, before)
+
+    async def test_annotation_actually_draws(self):
+        action = MqttPublishImageAction(publisher=_FakePublisher())
+        context = _context(frame=self._frame(), detections=[_det()], label_colours={"lab-1": "#ff0000"})
+        drawn = action.render_jpeg(context)
+        plain = MqttPublishImageAction(annotate=False, publisher=_FakePublisher()).render_jpeg(context)
+        assert drawn != plain
+
+    async def test_max_width_shrinks_the_payload(self):
+        big = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+        context = _context(frame=big)
+        small = MqttPublishImageAction(max_width=160, publisher=_FakePublisher()).render_jpeg(context)
+        full = MqttPublishImageAction(publisher=_FakePublisher()).render_jpeg(context)
+        assert len(small) < len(full)
+
+    async def test_max_fps_throttles_per_source_and_reports_ok(self):
+        """Throttling is the ceiling working, so it must not count as a failed action."""
+        publisher = _FakePublisher()
+        action = MqttPublishImageAction(max_fps=1.0, publisher=publisher)
+        first = await action.run(_signal(), _context(frame=self._frame()))
+        second = await action.run(_signal(), _context(frame=self._frame()))
+
+        assert first.ok is True and second.ok is True
+        assert second.detail == "throttled"
+        assert len(publisher.messages) == 1
+
+    async def test_one_busy_source_does_not_spend_another_sources_budget(self):
+        publisher = _FakePublisher()
+        action = MqttPublishImageAction(max_fps=1.0, publisher=publisher)
+        await action.run(_signal(), _context(frame=self._frame(), source_uuid="src-1"))
+        await action.run(_signal(), _context(frame=self._frame(), source_uuid="src-2"))
+        assert len(publisher.messages) == 2
+
+    async def test_zero_max_fps_publishes_every_frame(self):
+        publisher = _FakePublisher()
+        action = MqttPublishImageAction(publisher=publisher)
+        for _ in range(5):
+            await action.run(_signal(), _context(frame=self._frame()))
+        assert len(publisher.messages) == 5
+
+    async def test_no_frame_is_reported_not_raised(self):
+        result = await MqttPublishImageAction(publisher=_FakePublisher()).run(_signal(), _context(frame=None))
+        assert result.ok is False and "frame" in result.detail.lower()
+
+    async def test_no_broker_configured_is_reported_not_raised(self):
+        result = await MqttPublishImageAction(publisher=None).run(_signal(), _context(frame=self._frame()))
+        assert result.ok is False and "Settings" in result.detail
+
+    async def test_a_failing_broker_never_raises(self):
+        result = await MqttPublishImageAction(publisher=_FakePublisher(fail=True)).run(
+            _signal(), _context(frame=self._frame())
+        )
+        assert result.ok is False
+
+
 class TestAsyncMqttPublisher:
     def test_publish_is_bounded_and_drops_oldest(self):
         """Unbounded growth against a dead broker is the failure this prevents."""
         publisher = AsyncMqttPublisher(MqttSettings(host="localhost"), queue_size=5)
         for i in range(20):
             publisher.publish("topic", {"i": i})
-        assert publisher._queue.qsize() == 5
+        assert len(publisher._pending) == 5
         assert publisher.dropped == 15
 
     def test_publish_never_raises_without_a_connection(self):
@@ -155,8 +256,7 @@ class TestAsyncMqttPublisher:
     def test_non_string_payloads_are_json_encoded(self):
         publisher = AsyncMqttPublisher(MqttSettings(host="localhost"))
         publisher.publish("topic", {"a": 1})
-        _, payload, _, _ = publisher._queue.get_nowait()
-        assert payload == '{"a": 1}'
+        assert publisher._pending[0].payload == '{"a": 1}'
 
     def test_stats_expose_counters_for_the_status_panel(self):
         publisher = AsyncMqttPublisher(MqttSettings(host="localhost"), queue_size=1)
@@ -164,6 +264,67 @@ class TestAsyncMqttPublisher:
         publisher.publish("t", "b")
         stats = publisher.stats()
         assert stats["dropped"] == 1 and stats["queued"] == 1
+
+    def test_publish_is_bounded_by_bytes_not_only_by_count(self):
+        """A message count alone was only ever right for small JSON events.
+
+        An annotated-frame feed publishes JPEGs, where a 1000-message allowance is
+        ~100 MB of RAM held for a broker that is not reading.
+        """
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"), queue_size=1000, queue_bytes=1000)
+        for i in range(20):
+            publisher.publish(f"topic/{i}", "x" * 300)
+        assert publisher._queued_bytes <= 1000
+        assert len(publisher._pending) == 3
+        assert publisher.dropped == 17
+
+    def test_an_over_budget_message_is_still_sent_once(self):
+        """Silently discarding every oversized payload would read as broker refusal."""
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"), queue_bytes=10)
+        publisher.publish("topic", "x" * 500)
+        assert len(publisher._pending) == 1
+
+    def test_coalescing_replaces_a_queued_payload_for_the_same_topic(self):
+        """A live feed's backlog must be one frame per topic, not a run of stale ones."""
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"))
+        for i in range(10):
+            publisher.publish("cam/image", f"frame-{i}", coalesce=True)
+        assert len(publisher._pending) == 1
+        assert publisher._pending[0].payload == "frame-9"
+        # Superseded, not lost: counted apart from `dropped` so a working live feed
+        # does not read as a failing broker.
+        assert publisher.coalesced == 9
+        assert publisher.dropped == 0
+
+    def test_coalescing_is_per_topic(self):
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"))
+        publisher.publish("cam/a", "a1", coalesce=True)
+        publisher.publish("cam/b", "b1", coalesce=True)
+        publisher.publish("cam/a", "a2", coalesce=True)
+        assert [m.payload for m in publisher._pending] == ["a2", "b1"]
+
+    def test_coalescing_tracks_bytes_when_it_replaces(self):
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"))
+        publisher.publish("cam/image", "x" * 100, coalesce=True)
+        publisher.publish("cam/image", "x" * 10, coalesce=True)
+        assert publisher._queued_bytes == 10
+
+    def test_event_edges_are_not_coalesced(self):
+        """Every transition is its own fact; collapsing two loses information."""
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"))
+        publisher.publish("evt", "started")
+        publisher.publish("evt", "ended")
+        assert [m.payload for m in publisher._pending] == ["started", "ended"]
+
+    def test_a_sent_message_is_not_coalesced_onto(self):
+        """The queued entry a topic coalesces onto must be forgotten once it leaves."""
+        publisher = AsyncMqttPublisher(MqttSettings(host="localhost"))
+        publisher.publish("cam/image", "first", coalesce=True)
+        sent = publisher._pending.popleft()
+        publisher._forget(sent)
+        publisher.publish("cam/image", "second", coalesce=True)
+        assert [m.payload for m in publisher._pending] == ["second"]
+        assert publisher._queued_bytes == len("second")
 
     def test_settings_from_dict_applies_defaults(self):
         settings = MqttSettings.from_dict({"host": "broker.lan"})

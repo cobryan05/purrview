@@ -75,7 +75,8 @@ FAKE_PROFILE = {
         {
             "uuid": "act-1",
             "profileUuid": "99999999-cccc-0000-0000-000000000001",
-            "ruleUuid": None,
+            "ruleUuidsJson": [],
+            "sourceUuidsJson": [],
             "order": 0,
             "enabled": True,
             "kind": "publish_mqtt",
@@ -1253,3 +1254,135 @@ class TestIncludeChildLabels:
 
         wait_until(page, lambda: bool(saved.get("rules")))
         assert saved["rules"][0]["subjectBIncludeDescendants"] is False, saved["rules"][0]
+
+
+class TestActionScoping:
+    """Per-rule and per-source action scope.
+
+    This is what lets one watcher serve several cameras: the rule "cats using the litter
+    box" is written once, and only the *recording* is narrowed to the camera pointed at
+    it. Both pickers default to "All", so an action nobody has narrowed still fires
+    everywhere — the behaviour every watcher written before scoping existed relies on.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def test_both_scope_pickers_are_shown(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-action-rule-scope']").first).to_be_visible()
+        expect(page.locator("[data-testid='watch-action-source-scope']").first).to_be_visible()
+
+    def test_an_unscoped_action_reads_as_all(self, page: Page, base_url: str):
+        """ "All" is the honest summary — an empty scope really does fire everywhere."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        # The trigger, not the container — the container's hidden panel has a "Select
+        # All" row that would satisfy this assertion however the trigger read.
+        trigger = page.locator("[data-testid='watch-action-source-scope'] .ms-dropdown__trigger").first
+        expect(trigger).to_contain_text("All")
+
+    def test_an_unscoped_action_saves_empty_lists(self, page: Page, base_url: str):
+        """Empty means all, and it has to survive a round trip unchanged.
+
+        Edits an unrelated field first: Save is disabled until the form is dirty, so a
+        test that touches nothing can never click it.
+        """
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-action-topic']").fill("cats/{rule}")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["ruleUuidsJson"] == []
+        assert saved["actions"][0]["sourceUuidsJson"] == []
+
+    def test_picking_a_source_scopes_the_action_to_it(self, page: Page, base_url: str):
+        """The whole feature: record on this camera, not on the other four."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        scope = page.locator("[data-testid='watch-action-source-scope']").first
+        scope.locator("button").first.click()
+        scope.locator("input[type='checkbox']").first.check()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["sourceUuidsJson"] == ["src-1"], saved["actions"][0]
+
+    def test_a_saved_source_scope_loads_back(self, page: Page, base_url: str):
+        scoped = {
+            **FAKE_PROFILE,
+            "actions": [{**FAKE_PROFILE["actions"][0], "sourceUuidsJson": ["src-1"]}],
+        }
+        _mock_watch_apis(page, profiles=[scoped])
+        self._open(page, base_url)
+        # The trigger button, not the container: the container also holds the (hidden)
+        # panel, whose "Select All" row matches any assertion about the word "All".
+        trigger = page.locator("[data-testid='watch-action-source-scope'] .ms-dropdown__trigger").first
+        # Names the camera, rather than reading as unscoped — a scope that silently
+        # displayed as "All" would be worse than no scoping at all.
+        expect(trigger).to_contain_text("Litter cam")
+
+
+class TestLiveImageFeed:
+    """The per-frame annotated MQTT feed."""
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def test_the_image_action_kind_is_offered(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        kind = page.locator("[data-testid='watch-action-kind']").first
+        kind.select_option("publish_mqtt_image")
+        expect(page.locator("[data-testid='watch-action-image-topic']")).to_be_visible()
+
+    def test_the_image_topic_defaults_to_a_source_keyed_one(self, page: Page, base_url: str):
+        """The frame belongs to the camera, not to whichever rule fired."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-action-kind']").first.select_option("publish_mqtt_image")
+        expect(page.locator("[data-testid='watch-action-image-topic']")).to_have_value("{watcher}/{source}/image")
+
+    def test_the_per_frame_trigger_is_offered(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        trigger = page.locator("[data-testid='watch-action-trigger']").first
+        trigger.select_option("frame_analysed")
+        expect(trigger).to_have_value("frame_analysed")
+
+    def test_the_rule_scope_is_hidden_for_a_per_frame_action(self, page: Page, base_url: str):
+        """A frame belongs to no rule, so there is nothing to scope it against."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-action-trigger']").first.select_option("frame_analysed")
+        expect(page.locator("[data-testid='watch-action-rule-scope']").first).to_be_hidden()
+        # The source scope stays: it is exactly how a live feed is limited to one camera.
+        expect(page.locator("[data-testid='watch-action-source-scope']").first).to_be_visible()
+
+    def test_a_live_feed_action_saves_its_params(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-kind']").first.select_option("publish_mqtt_image")
+        page.locator("[data-testid='watch-action-trigger']").first.select_option("frame_analysed")
+        page.locator("[data-testid='watch-action-image-max-fps']").fill("2")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        action = saved["actions"][0]
+        assert action["kind"] == "publish_mqtt_image"
+        assert action["trigger"] == "frame_analysed"
+        assert action["paramsJson"]["max_fps"] == 2
+        assert action["paramsJson"]["annotate"] is True
+        # Not sent even though the trigger changed after a scope could have been picked.
+        assert action["ruleUuidsJson"] == []

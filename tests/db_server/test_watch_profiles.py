@@ -395,10 +395,27 @@ class TestReferentialIntegrity:
         body = await _create_profile(
             http_client,
             "House cams",
-            actions=[{"kind": "record_clip", "ruleUuid": "no-such-rule"}],
+            actions=[{"kind": "record_clip", "ruleUuidsJson": ["no-such-rule"]}],
         )
         assert body["status"] == "failure"
         assert "rule" in body["message"].lower()
+
+    async def test_action_targeting_a_source_not_in_the_profile_is_rejected(self, http_client):
+        """The source axis needs the same guard as the rule axis.
+
+        A scope naming a camera the watcher does not watch is silently never satisfied,
+        so the action simply never fires — the hardest kind of misconfiguration to spot,
+        because everything looks saved and correct.
+        """
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            actions=[{"kind": "record_clip", "sourceUuidsJson": ["no-such-source"]}],
+        )
+        assert body["status"] == "failure"
+        assert "source" in body["message"].lower()
 
     async def test_deleting_a_source_in_use_fails_loudly(self, http_client):
         """RESTRICT, not CASCADE: a silent unlink would empty the watcher unnoticed."""

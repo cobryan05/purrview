@@ -2,7 +2,7 @@
 
 import base64
 import json
-from typing import List
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import lz4.frame
@@ -209,3 +209,100 @@ def annotate_image(image: np.ndarray, detections: List[DetectionResult]) -> np.n
             2,
         )
     return image
+
+
+#: Fallback box colour (BGR) for a label with no colour of its own.
+DEFAULT_BOX_BGR = (0, 255, 0)
+
+
+def hex_to_bgr(value: Optional[str]) -> Tuple[int, int, int]:
+    """Turn a `#rrggbb` label colour into the BGR triple OpenCV wants.
+
+    Falls back rather than raising: a malformed colour in the label vocabulary must
+    not be able to stop a 24/7 watcher from drawing its frame.
+    """
+    if not value:
+        return DEFAULT_BOX_BGR
+    text = value.strip().lstrip("#")
+    if len(text) == 3:  # #abc shorthand
+        text = "".join(c * 2 for c in text)
+    if len(text) != 6:
+        return DEFAULT_BOX_BGR
+    try:
+        r, g, b = (int(text[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return DEFAULT_BOX_BGR
+    return (b, g, r)
+
+
+def annotate_detections(
+    image: np.ndarray,
+    detections: Sequence[Any],
+    colours: Optional[Dict[str, str]] = None,
+    copy: bool = True,
+) -> np.ndarray:
+    """Draw the watcher's `Detection` boxes onto a frame.
+
+    Distinct from `annotate_image` because the input type is genuinely different, not
+    merely differently named: a `DetectionResult` carries a *relative* `bounding_box`
+    and a model class string, whereas `apps.helpers.tracking.Detection` carries
+    **absolute pixel corners** and a resolved label name. Feeding one to the other's
+    renderer silently draws every box in the top-left corner.
+
+    Copies by default. The caller's frame is `WatchPipeline.last_frame`, which is also
+    what snapshot actions write and what the rewind ring holds — drawing into it in
+    place would put boxes in the saved training images, which is exactly the data you
+    do not want annotations burnt into.
+    """
+    canvas = image.copy() if copy else image
+    height, width = canvas.shape[:2]
+    palette = colours or {}
+
+    for det in detections:
+        try:
+            x1, y1, x2, y2 = (int(round(v)) for v in det.bbox)
+        except (TypeError, ValueError):
+            continue
+        # Clamp: a box from a model can sit slightly outside the frame, and cv2 draws
+        # nothing at all for a rectangle it considers degenerate.
+        x1, x2 = max(0, min(x1, width - 1)), max(0, min(x2, width - 1))
+        y1, y2 = max(0, min(y1, height - 1)), max(0, min(y2, height - 1))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        colour = hex_to_bgr(palette.get(getattr(det, "label_uuid", None) or ""))
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), colour, 2)
+
+        name = getattr(det, "label_name", None) or "object"
+        text = f"{name} {getattr(det, 'confidence', 0.0):.2f}"
+        # Below the box when there is no room above it, so a detection touching the top
+        # edge is still labelled instead of drawing off-frame.
+        baseline = y1 - 6 if y1 - 6 > 10 else min(height - 4, y2 + 16)
+        cv2.putText(canvas, text, (x1, baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
+
+    return canvas
+
+
+def encode_jpg_bytes(image: np.ndarray, quality: int = 80) -> bytes:
+    """Encode to raw JPEG bytes.
+
+    The counterpart to `base64_encode_jpg`, which wraps its output in a JSON packet for
+    the inference API. A binary MQTT payload wants the bytes themselves — base64 inside
+    JSON would inflate every frame by a third for a subscriber (Home Assistant's MQTT
+    camera among them) that only wants to decode a JPEG.
+    """
+    success, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not success:
+        raise RuntimeError("Failed to encode JPEG image")
+    return buffer.tobytes()
+
+
+def downscale_to_width(image: np.ndarray, max_width: int) -> np.ndarray:
+    """Shrink to `max_width` if wider, preserving aspect. Never upscales."""
+    if max_width <= 0:
+        return image
+    height, width = image.shape[:2]
+    if width <= max_width:
+        return image
+    scale = max_width / float(width)
+    return cv2.resize(image, (max_width, max(1, int(round(height * scale)))), interpolation=cv2.INTER_AREA)

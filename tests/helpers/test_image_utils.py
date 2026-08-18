@@ -8,7 +8,17 @@ that differs from the current dataclass definition in types.py.
 import numpy as np
 import pytest
 
-from apps.helpers.imageUtils import compute_iou, letterbox, nms
+from apps.helpers.imageUtils import (
+    DEFAULT_BOX_BGR,
+    annotate_detections,
+    compute_iou,
+    downscale_to_width,
+    encode_jpg_bytes,
+    hex_to_bgr,
+    letterbox,
+    nms,
+)
+from apps.helpers.tracking.tracker import Detection
 
 # ──────────────────────────────────────────────────────────────────────────────
 # letterbox
@@ -171,3 +181,92 @@ class TestNMS:
         keep = nms(boxes, scores, iou_threshold=0.3)
         assert 0 in keep  # highest score always kept
         assert len(keep) >= 1
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# annotate_detections / hex_to_bgr / downscale_to_width
+#
+# These take the watcher's `Detection` (absolute pixel corners, resolved label name),
+# not `DetectionResult` (relative box, model class string) — which is exactly why they
+# are a separate renderer. See the note at the top of this file about annotate_image.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _det(x1=10, y1=10, x2=40, y2=40, label_uuid="lab-1", name="tabby", confidence=0.8):
+    return Detection(bbox=(x1, y1, x2, y2), label_uuid=label_uuid, label_name=name, confidence=confidence)
+
+
+class TestHexToBgr:
+    def test_converts_and_swaps_channel_order(self):
+        assert hex_to_bgr("#ff0000") == (0, 0, 255)
+
+    def test_shorthand_is_expanded(self):
+        assert hex_to_bgr("#f00") == (0, 0, 255)
+
+    def test_a_malformed_colour_falls_back_rather_than_raising(self):
+        """A bad colour in the vocabulary must not stop a 24/7 watcher drawing."""
+        for bad in (None, "", "nonsense", "#12345", "#zzzzzz"):
+            assert hex_to_bgr(bad) == DEFAULT_BOX_BGR
+
+
+class TestAnnotateDetections:
+    def test_copies_by_default(self):
+        """The caller's frame is also written by snapshots and held in the rewind ring."""
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        out = annotate_detections(frame, [_det()])
+        assert np.array_equal(frame, np.zeros((100, 100, 3), dtype=np.uint8))
+        assert not np.array_equal(out, frame)
+
+    def test_draws_in_the_label_colour(self):
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        out = annotate_detections(frame, [_det()], colours={"lab-1": "#ff0000"})
+        # Red in BGR is (0, 0, 255) — the blue channel must stay untouched.
+        assert out[:, :, 2].max() == 255
+        assert out[:, :, 0].max() == 0
+
+    def test_a_box_outside_the_frame_is_clamped_not_dropped(self):
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        out = annotate_detections(frame, [_det(x1=-20, y1=-20, x2=50, y2=50)])
+        assert out.max() > 0
+
+    def test_a_degenerate_box_is_skipped(self):
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        out = annotate_detections(frame, [_det(x1=50, y1=50, x2=50, y2=50)])
+        assert out.max() == 0
+
+    def test_a_box_at_the_top_edge_is_still_labelled(self):
+        """Text above a box at y=0 would draw off-frame and vanish."""
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        top = annotate_detections(frame, [_det(x1=10, y1=0, x2=60, y2=30)])
+        # More lit pixels than the rectangle alone would produce.
+        assert top.max() > 0
+        assert np.count_nonzero(top) > 4 * (60 - 10)
+
+    def test_a_malformed_detection_is_skipped_not_raised(self):
+        class _Bad:
+            bbox = "not a box"
+
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        assert annotate_detections(frame, [_Bad()]).max() == 0
+
+
+class TestDownscaleToWidth:
+    def test_shrinks_and_preserves_aspect(self):
+        out = downscale_to_width(np.zeros((480, 640, 3), dtype=np.uint8), 320)
+        assert out.shape[:2] == (240, 320)
+
+    def test_never_upscales(self):
+        img = np.zeros((100, 160, 3), dtype=np.uint8)
+        assert downscale_to_width(img, 640).shape == img.shape
+
+    def test_zero_is_a_no_op(self):
+        img = np.zeros((100, 160, 3), dtype=np.uint8)
+        assert downscale_to_width(img, 0).shape == img.shape
+
+
+class TestEncodeJpgBytes:
+    def test_returns_bare_jpeg_bytes_not_a_json_packet(self):
+        """`base64_encode_jpg`'s packet is for the inference API; MQTT wants the bytes."""
+        payload = encode_jpg_bytes(np.zeros((32, 32, 3), dtype=np.uint8))
+        assert isinstance(payload, bytes)
+        assert payload[:2] == b"\xff\xd8"

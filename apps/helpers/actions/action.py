@@ -34,6 +34,14 @@ class ActionContext:
     retention_s: float = 0.0
     #: Latest analysed frame, for snapshot actions. Numpy array or None.
     frame: Any = None
+    #: The detections on that frame, in its pixel space — mask-filtered, so this is what
+    #: the tracker actually saw rather than raw model output. Carried beside the frame
+    #: because an action that wants to draw them has no other way to get them: the event
+    #: signal reports track ids, not boxes, and the pipeline is not reachable from here.
+    detections: List[Any] = field(default_factory=list)
+    #: label uuid → `#rrggbb`, so a drawn box matches the colour the label has
+    #: everywhere else in the app. Resolved by the task, which owns the vocabulary.
+    label_colours: Dict[str, str] = field(default_factory=dict)
     #: Wallclock (epoch seconds) matching the event's monotonic timestamps. The buffer
     #: is addressed by wallclock, but rule timing uses a monotonic clock, so the task
     #: supplies the offset rather than every action re-deriving it.

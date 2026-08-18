@@ -1594,6 +1594,11 @@ class WatchActionTrigger(str, Enum):
     TRACK_STARTED = "track_started"
     EVENT_STARTED = "event_started"
     EVENT_ENDED = "event_ended"
+    # Fires once per analysed frame per source, whether or not any rule is open. Every
+    # other trigger is an *event* transition, which is the wrong shape for a live feed:
+    # a feed that only publishes while an event is open shows a frozen frame for the
+    # 99% of the day when nothing is happening.
+    FRAME_ANALYSED = "frame_analysed"
 
 
 class BufferMode(str, Enum):
@@ -1739,13 +1744,28 @@ class LabelLifetime(SQLModel, table=True):
 
 
 class WatchAction(SQLModel, table=True):
-    """A side effect to run at some point in an event's life."""
+    """A side effect to run at some point in an event's life.
+
+    Scoped on two axes, both **empty-means-all** — see `apps.helpers.watch.scoping` for
+    why the scope lives here rather than on the rule. Lists rather than the single
+    nullable FK this started as: "record on these two cameras" is one action, and
+    spelling it as two rows means two sets of parameters to keep in step.
+
+    Neither list is a foreign key, which is a deliberate trade. The nested write path
+    replaces every child row of a profile wholesale, so an FK would have to be
+    satisfied mid-transaction against rules that have not been inserted yet.
+    `_validate_watch_children` enforces the same integrity at the API boundary, where
+    it can say which action and which rule rather than raising an integrity error.
+    """
 
     __tablename__ = "watch_actions"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
-    # NULL means "every rule in this profile".
-    rule_uuid: Optional[str] = Field(default=None, foreign_key="interaction_rules.uuid", ondelete="CASCADE")
+    # Empty means "every rule in this profile".
+    rule_uuids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    # Empty means "every source in this profile". This is the axis that removes the
+    # reason to duplicate a watcher per camera.
+    source_uuids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     order: int = Field(default=0)
     enabled: bool = Field(default=True)
     kind: str  # registry key, e.g. "publish_mqtt" / "record_clip" / "save_snapshot"
@@ -2032,7 +2052,8 @@ class LabelLifetimeWrite(ApiModel):
 class WatchActionRead(OrmModel):
     uuid: str
     profile_uuid: str
-    rule_uuid: Optional[str] = None
+    rule_uuids_json: List[Any] = Field(default_factory=list)
+    source_uuids_json: List[Any] = Field(default_factory=list)
     order: int = 0
     enabled: bool = True
     kind: str
@@ -2042,7 +2063,9 @@ class WatchActionRead(OrmModel):
 
 class WatchActionWrite(ApiModel):
     uuid: Optional[str] = None
-    rule_uuid: Optional[str] = None  # None = all rules in the profile
+    # Both empty = every rule / every source in the profile. See helpers.watch.scoping.
+    rule_uuids_json: List[Any] = Field(default_factory=list)
+    source_uuids_json: List[Any] = Field(default_factory=list)
     order: int = 0
     enabled: bool = True
     kind: str

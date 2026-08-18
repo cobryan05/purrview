@@ -6190,11 +6190,34 @@ progress.progress-indeterminate:indeterminate {
 .watch-row-rates,
 .watch-rule-tuning,
 .watch-action-params,
+.watch-action-scope,
 .watch-row-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.25rem 0.5rem;
+}
+
+/* `hidden` loses to the `display: flex` above, which is why a per-frame action's rule
+   scope stayed on screen after the trigger was switched. */
+.watch-action-scope[hidden] { display: none; }
+
+.watch-action-scope { align-items: center; }
+.watch-action-scope .ms-dropdown { display: flex; }
+
+/* Pico gives every `button` a `margin-bottom: var(--pico-spacing)` — sensible for a
+   form's submit button, meaningless for a dropdown trigger sitting inline in a row.
+   Left alone it made the trigger occupy 43px against the 32px of the selects beside
+   it, which is the whole of the extra height that pushed the action row over its
+   density budget. The trigger itself is only 27px.
+
+   Width is capped for the same reason the rule slot's is: an action scoped to four
+   cameras lists them all, and an uncapped trigger would widen the row until it wraps. */
+.watch-action-scope .ms-dropdown__trigger {
+  margin-bottom: 0;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Buffer/tier badge beside the pre-roll field. Muted while the source can rewind —

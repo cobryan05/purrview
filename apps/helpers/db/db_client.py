@@ -6535,11 +6535,17 @@ class DbClient:
                         f"Source {src.source_uuid!r} disables mask {ref!r}, which is not drawn on that source"
                     )
 
+        # Both scope lists are validated here rather than by a foreign key: the nested
+        # write replaces every child row wholesale, so an FK would fire against rules
+        # that have not been inserted yet. Saying which action and which uuid is also
+        # far more useful than an integrity error.
         for action in actions:
-            if action.rule_uuid and action.rule_uuid not in rule_uuids:
-                raise ValueError(
-                    f"Action {action.kind!r} targets rule {action.rule_uuid!r}, which is not in this profile"
-                )
+            for ref in action.rule_uuids_json or []:
+                if str(ref) not in rule_uuids:
+                    raise ValueError(f"Action {action.kind!r} targets rule {ref!r}, which is not in this profile")
+            for ref in action.source_uuids_json or []:
+                if str(ref) not in seen_sources:
+                    raise ValueError(f"Action {action.kind!r} targets source {ref!r}, which is not in this profile")
 
     @staticmethod
     def _add_watch_children(
@@ -6598,7 +6604,8 @@ class DbClient:
                 WatchAction(
                     **({"uuid": action.uuid} if action.uuid else {}),
                     profile_uuid=profile_uuid,
-                    rule_uuid=action.rule_uuid,
+                    rule_uuids_json=[str(r) for r in (action.rule_uuids_json or [])],
+                    source_uuids_json=[str(s) for s in (action.source_uuids_json or [])],
                     order=action.order,
                     enabled=action.enabled,
                     kind=action.kind,

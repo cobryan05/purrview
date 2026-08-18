@@ -33,6 +33,7 @@ const RELATIONS = [
 
 const ACTION_KINDS = [
   { key: 'publish_mqtt', text: 'Publish MQTT' },
+  { key: 'publish_mqtt_image', text: 'Publish MQTT image' },
   { key: 'record_clip', text: 'Record clip' },
   { key: 'save_snapshot', text: 'Save snapshot' },
 ];
@@ -40,7 +41,22 @@ const ACTION_KINDS = [
 const TRIGGERS = [
   { key: 'event_started', text: 'event start' },
   { key: 'event_ended', text: 'event end' },
+  { key: 'frame_analysed', text: 'every analysed frame' },
 ];
+
+/**
+ * The trigger that fires per frame rather than per event, mirroring
+ * `FRAME_ANALYSED` in `apps/helpers/watch/scoping.py`. A frame belongs to no rule, so
+ * an action on it has no rule scope to show.
+ */
+const FRAME_ANALYSED_TRIGGER = 'frame_analysed';
+
+/**
+ * Default image topic template, mirroring `DEFAULT_IMAGE_TOPIC_TEMPLATE` in
+ * `apps/helpers/actions/mqttPublishImageAction.py`. Keyed by source rather than by
+ * rule: the frame belongs to the camera, whatever happened to fire on it.
+ */
+const DEFAULT_IMAGE_TOPIC_TEMPLATE = '{watcher}/{source}/image';
 
 /**
  * Default MQTT topic template — reproduces the historical hard-coded scheme exactly, so
@@ -399,7 +415,12 @@ function buildSourceRow(src, ctx) {
   const row = el('div', 'watch-source-row watch-row');
   row.dataset.testid = 'watch-source-row';
 
-  const sourceSel = select(ctx.sourceOptions, src.sourceUuid, ctx.onAnyChange);
+  // Repointing a row at a different camera changes the uuid the actions' source scopes
+  // are written against, so they have to be rebuilt — not just marked dirty.
+  const sourceSel = select(ctx.sourceOptions, src.sourceUuid, () => {
+    ctx.onSourceChanged?.();
+    ctx.onAnyChange();
+  });
   sourceSel.dataset.testid = 'watch-source-select';
   row.appendChild(wfield('Source', sourceSel));
 
@@ -562,6 +583,9 @@ function buildRuleRow(rule, ctx) {
   nameInput.placeholder = 'e.g. cat using litter box';
   nameInput.dataset.testid = 'watch-rule-name';
   nameInput.addEventListener('input', ctx.onAnyChange);
+  // `change` fires on commit (blur / Enter), not per keystroke — the actions' scope
+  // pickers name this rule, and rebuilding them mid-word would steal focus.
+  nameInput.addEventListener('change', () => ctx.onNameCommitted?.());
   // Explicitly narrow so the name and the sentence share a line. At its natural width
   // the pair overflowed the row by a handful of pixels and cost a whole extra line.
   row.appendChild(wfield('Rule', nameInput, { width: '10rem' }));
@@ -779,16 +803,88 @@ function buildActionRow(action, ctx) {
 
   const kind = select(ACTION_KINDS, action.kind || 'publish_mqtt', () => { syncParams(); ctx.onAnyChange(); });
   kind.dataset.testid = 'watch-action-kind';
-  const trigger = select(TRIGGERS, action.trigger || 'event_ended', ctx.onAnyChange);
-  const ruleSel = select(
-    [{ key: '', text: 'all rules' }, ...ctx.ruleOptions],
-    action.ruleUuid || '',
-    ctx.onAnyChange,
-  );
+  const trigger = select(TRIGGERS, action.trigger || 'event_ended', () => { syncScopeVisibility(); ctx.onAnyChange(); });
+  trigger.dataset.testid = 'watch-action-trigger';
+
+  // Scope: two lists, both empty-means-all, mirroring `helpers/watch/scoping.py`.
+  // Deliberately *not* a rules × sources grid — that grid is almost entirely empty and
+  // stops fitting on screen at about four cameras, while two "All" chips keep the
+  // common case a thing you never open.
+  let ruleScope = [...(action.ruleUuidsJson || [])];
+  let sourceScope = [...(action.sourceUuidsJson || [])];
+  let ruleDropdown = null;
+  let sourceDropdown = null;
+
+  const ruleScopeField = el('div', 'watch-action-scope');
+  ruleScopeField.dataset.testid = 'watch-action-rule-scope';
+  const sourceScopeField = el('div', 'watch-action-scope');
+  sourceScopeField.dataset.testid = 'watch-action-source-scope';
+
+  /**
+   * Rebuild both scope pickers from the current rules and sources.
+   *
+   * Rebuilt rather than mutated for the same reason `buildRuleRow` rebuilds its zone
+   * dropdown in `refreshZones`: the multi-select takes its items at construction, and
+   * a watcher's rules and sources are edited in the same form, right above this row.
+   * Selections survive, minus anything that no longer exists — keeping a uuid whose
+   * rule was just deleted would fail validation on save with no visible cause.
+   */
+  function buildScopes() {
+    const ruleItems = ctx.ruleScopeItems();
+    const sourceItems = ctx.sourceScopeItems();
+    ruleScope = ruleScope.filter(uuid => ruleItems.some(i => i.uuid === uuid));
+    sourceScope = sourceScope.filter(uuid => sourceItems.some(i => i.uuid === uuid));
+
+    ruleDropdown?.destroy();
+    sourceDropdown?.destroy();
+    ruleScopeField.innerHTML = '';
+    sourceScopeField.innerHTML = '';
+
+    ruleDropdown = createMultiSelectDropdown({
+      label: 'Rules',
+      items: ruleItems,
+      defaultSelected: ruleScope,
+      showModeToggle: false,
+      allowExclude: false,
+      // "All" is the honest summary of an empty selection here: an unscoped action
+      // really does fire for every rule, so "None selected" would read as the opposite
+      // of what it does.
+      emptySummary: 'All',
+      // A rule has no uuid until the watcher has been saved once, so it cannot be
+      // referenced yet. Saying so beats an empty panel that looks broken.
+      emptyText: 'No saved rules yet — save the watcher first',
+      onChange: (selected) => { ruleScope = [...selected]; ctx.onAnyChange(); },
+    });
+    sourceDropdown = createMultiSelectDropdown({
+      label: 'Sources',
+      items: sourceItems,
+      defaultSelected: sourceScope,
+      showModeToggle: false,
+      allowExclude: false,
+      emptySummary: 'All',
+      emptyText: 'This watcher has no sources yet',
+      onChange: (selected) => { sourceScope = [...selected]; ctx.onAnyChange(); },
+    });
+    ruleScopeField.appendChild(ruleDropdown.element);
+    sourceScopeField.appendChild(sourceDropdown.element);
+  }
+
+  /** A per-frame action has no rule to be scoped against, so the picker is hidden. */
+  function syncScopeVisibility() {
+    ruleScopeField.hidden = trigger.value === FRAME_ANALYSED_TRIGGER;
+  }
 
   row.appendChild(wfield('Action', kind));
-  row.appendChild(wfield('for', ruleSel));
   row.appendChild(wfield('on', trigger));
+  // Appended bare, not through `wfield`: the dropdown's trigger already reads "Rules" /
+  // "Sources", so a field label repeats the word and spends the horizontal budget that
+  // keeps this row on one line. `wfield` also wraps its control in a `<label>`, which
+  // around a panel of checkboxes means clicking the caption toggles the first one.
+  row.appendChild(ruleScopeField);
+  row.appendChild(sourceScopeField);
+
+  buildScopes();
+  syncScopeVisibility();
 
   const params = el('div', 'watch-action-params');
   row.appendChild(params);
@@ -853,6 +949,68 @@ function buildActionRow(action, ctx) {
         // Blank means "unset", not "publish to the empty topic".
         topic_template: topic.value.trim() || DEFAULT_TOPIC_TEMPLATE,
       });
+    } else if (kind.value === 'publish_mqtt_image') {
+      // Its own topic, defaulting to a source-keyed one: the frame belongs to the
+      // camera, not to whichever rule happened to fire on it.
+      const topic = document.createElement('input');
+      topic.type = 'text';
+      topic.value = stored.topic_template || DEFAULT_IMAGE_TOPIC_TEMPLATE;
+      topic.placeholder = DEFAULT_IMAGE_TOPIC_TEMPLATE;
+      topic.dataset.testid = 'watch-action-image-topic';
+      topic.title =
+        'Topic for the JPEG. Placeholders are substituted per level and slugified. '
+        + 'Available: ' + TEMPLATE_PLACEHOLDERS.join(', ')
+        + '. Broker is configured in Settings.';
+      topic.addEventListener('input', ctx.onAnyChange);
+      params.appendChild(wfield('Topic', topic, { width: '13rem' }));
+
+      const example = el('span', 'watch-hint watch-hint--truncate', '');
+      example.dataset.testid = 'watch-action-image-topic-example';
+      function syncExample() {
+        example.textContent = `e.g. ${renderTopicExample(topic.value || DEFAULT_IMAGE_TOPIC_TEMPLATE)}`;
+        example.title = example.textContent;
+      }
+      topic.addEventListener('input', syncExample);
+      syncExample();
+      params.appendChild(example);
+
+      const annotate = document.createElement('input');
+      annotate.type = 'checkbox';
+      annotate.checked = stored.annotate !== false;
+      annotate.dataset.testid = 'watch-action-image-annotate';
+      annotate.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Draw boxes', annotate));
+
+      // On by default, unlike the event action's: an image is state, and retaining it
+      // is what makes a subscriber show a picture at once instead of waiting for the
+      // next frame. A retained event edge would replay as though it were live.
+      const retain = document.createElement('input');
+      retain.type = 'checkbox';
+      retain.checked = stored.retain !== false;
+      retain.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Retain', retain));
+
+      const quality = numberInput(stored.quality ?? 80, { step: '5', min: 1, max: 100 });
+      const maxWidth = numberInput(stored.max_width ?? 0, { step: '80', min: 0 });
+      const maxFps = numberInput(stored.max_fps ?? 0, { step: '0.5', min: 0 });
+      maxFps.dataset.testid = 'watch-action-image-max-fps';
+      maxFps.title =
+        'Ceiling on publishes per second per source. 0 publishes every analysed frame.';
+      maxWidth.title = 'Shrink to at most this width before encoding. 0 keeps the analysis size.';
+      for (const i of [quality, maxWidth, maxFps]) i.addEventListener('input', ctx.onAnyChange);
+      params.appendChild(wfield('Quality', quality, { width: '4.5rem' }));
+      params.appendChild(wfield('max width', maxWidth, { width: '5rem' }));
+      params.appendChild(wfield('max fps', maxFps, { width: '4.5rem' }));
+
+      readParams = () => ({
+        topic_template: topic.value.trim() || DEFAULT_IMAGE_TOPIC_TEMPLATE,
+        annotate: annotate.checked,
+        retain: retain.checked,
+        qos: 0,
+        quality: num(quality, 80),
+        max_width: num(maxWidth, 0),
+        max_fps: num(maxFps, 0),
+      });
     } else {
       const dir = document.createElement('input');
       dir.type = 'text';
@@ -870,9 +1028,18 @@ function buildActionRow(action, ctx) {
 
   return {
     element: row,
+    refreshScopes: buildScopes,
+    destroy: () => {
+      ruleDropdown?.destroy();
+      sourceDropdown?.destroy();
+    },
     getAction: () => ({
       uuid: action.uuid || null,
-      ruleUuid: ruleSel.value || null,
+      // A per-frame action has no rule, so its rule scope is not sent even if one was
+      // picked before the trigger was switched — the backend ignores it, and saving it
+      // anyway would leave a stale scope to reappear if the trigger changed back.
+      ruleUuidsJson: trigger.value === FRAME_ANALYSED_TRIGGER ? [] : [...ruleScope],
+      sourceUuidsJson: [...sourceScope],
       order: 0,
       enabled: true,
       kind: kind.value,
@@ -1061,18 +1228,24 @@ export async function renderWatchProfileManager({ target }) {
           ingestTierFor,
           masksForSource: uuid => regionsFor(uuid, REGION_ROLE_MASK),
           onRegionsChanged: () => refreshRegions(),
+          onSourceChanged: () => { refreshActionScopes(); for (const rule of ruleRows) rule.refreshZones?.(); },
           onAnyChange,
           onDelete: () => {
             entry.element.remove();
             sourceRows.splice(sourceRows.indexOf(entry), 1);
             // Removing a source removes its zones from the rules' options.
             for (const rule of ruleRows) rule.refreshZones?.();
+            // ...and removes it from every action that was scoped to it, which would
+            // otherwise be saved as a scope pointing at a source the watcher no
+            // longer has and rejected by the backend with no visible cause.
+            refreshActionScopes();
             onAnyChange();
           },
         });
         sourceRows.push(entry);
         sourcesBox.appendChild(entry.element);
         for (const rule of ruleRows) rule.refreshZones?.();
+        refreshActionScopes();
       }
 
       addSourceBtn.addEventListener('click', () => {
@@ -1175,6 +1348,38 @@ export async function renderWatchProfileManager({ target }) {
         return items;
       }
 
+      /**
+       * The rules an action can be scoped to.
+       *
+       * Only saved rules: a rule gets its uuid from the backend on first save, and
+       * offering an unsaved one would let the user pick a scope that cannot be stored.
+       */
+      function ruleScopeItems() {
+        return ruleRows
+          .map(r => r.getRule())
+          .filter(rule => rule.uuid)
+          .map(rule => ({ uuid: rule.uuid, name: rule.name }));
+      }
+
+      /** The sources an action can be scoped to — the ones this watcher actually uses. */
+      function sourceScopeItems() {
+        return sourceRows
+          .map(entry => entry.getSourceUuid())
+          .filter(Boolean)
+          .map(uuid => ({ uuid, name: sourceNameFor(uuid) }));
+      }
+
+      /**
+       * Push the current rules and sources into every action's scope pickers.
+       *
+       * Called on structural changes only (a rule or source added, removed or
+       * repointed), never from `onAnyChange` — that fires on every keystroke, and
+       * rebuilding a dropdown under the cursor would drop focus mid-word.
+       */
+      function refreshActionScopes() {
+        for (const entry of actionRows) entry.refreshScopes?.();
+      }
+
       /** Re-read regions from the server and push them into every row that shows them. */
       async function refreshRegions() {
         await loadRegions();
@@ -1191,11 +1396,18 @@ export async function renderWatchProfileManager({ target }) {
             entry.destroy?.();
             entry.element.remove();
             ruleRows.splice(ruleRows.indexOf(entry), 1);
+            // A deleted rule must leave the scope of every action that named it.
+            refreshActionScopes();
             onAnyChange();
           },
+          // A renamed rule should read by its new name in the scope pickers. On
+          // `change` (commit), not `input` — rebuilding a dropdown on every keystroke
+          // would fight the user for focus.
+          onNameCommitted: refreshActionScopes,
         });
         ruleRows.push(entry);
         rulesBox.appendChild(entry.element);
+        refreshActionScopes();
       }
 
       addRuleBtn.addEventListener('click', () => { addRule({}); onAnyChange(); });
@@ -1211,9 +1423,11 @@ export async function renderWatchProfileManager({ target }) {
 
       function addAction(action) {
         const entry = buildActionRow(action, {
-          ruleOptions: ruleRows.map(r => ({ key: r.getRule().uuid || '', text: r.getRule().name })),
+          ruleScopeItems,
+          sourceScopeItems,
           onAnyChange,
           onDelete: () => {
+            entry.destroy?.();
             entry.element.remove();
             actionRows.splice(actionRows.indexOf(entry), 1);
             onAnyChange();

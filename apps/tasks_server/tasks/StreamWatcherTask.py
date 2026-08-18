@@ -50,9 +50,10 @@ from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.tracking.Registry import create_tracker
 from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.engine import WatchEngine
-from apps.helpers.watch.events import EventPhase
+from apps.helpers.watch.events import EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
 from apps.helpers.watch.rules import RuleSpec, expand_descendants
+from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifetimes, resolve_model_names
@@ -62,6 +63,11 @@ from .utils.labelHelper import build_label_ancestry_map, build_label_metadata_ma
 from .utils.sourceHelper import SourceHelper
 
 logger = logging.getLogger(__name__)
+
+#: Action kinds that need the watcher's shared broker connection injected. Membership,
+#: not an equality check, because there are two of them now and a third would otherwise
+#: silently build with `publisher=None` and report "no broker configured" forever.
+MQTT_ACTION_KINDS = frozenset({"publish_mqtt", "publish_mqtt_image"})
 
 
 @register_task()
@@ -129,9 +135,16 @@ class StreamWatcherTask(Task):
         # be captioned with a raw UUID (or nothing at all).
         self._label_meta: Dict[str, Dict[str, Optional[str]]] = {}
         self._actions: List[tuple] = []
+        # The `frame_analysed` subset, kept apart so the per-frame path can skip its
+        # whole dispatch with one truth test. Every watcher pays that test 5x a second
+        # per source; almost none of them have a live feed configured.
+        self._frame_actions: List[tuple] = []
         self._mqtt: Optional[AsyncMqttPublisher] = None
         self._action_successes: int = 0
         self._action_failures: int = 0
+        # action uuid → the last failure message logged for it, so a per-frame action
+        # against a dead broker reports once rather than flooding the log ring.
+        self._last_action_failure: Dict[str, str] = {}
         self._last_clip_path: Optional[str] = None
         # Converts the loop's monotonic timestamps to wallclock, which is how the
         # rolling buffer is addressed. Captured once so a clock adjustment mid-run
@@ -195,6 +208,8 @@ class StreamWatcherTask(Task):
                     {"id": "actionsFailed", "label": "Actions failed"},
                     {"id": "mqttPublished", "label": "MQTT published"},
                     {"id": "mqttDropped", "label": "MQTT dropped"},
+                    {"id": "mqttCoalesced", "label": "MQTT superseded"},
+                    {"id": "mqttQueuedKb", "label": "MQTT queued (KB)"},
                 ],
             },
             {
@@ -399,7 +414,7 @@ class StreamWatcherTask(Task):
         clip backend depends on the relay client the task already holds.
         """
         mqtt_settings = await self._load_mqtt_settings(db_api_client)
-        needs_mqtt = any(a.kind == "publish_mqtt" and a.enabled for a in self._profile.actions)
+        needs_mqtt = any(a.kind in MQTT_ACTION_KINDS and a.enabled for a in self._profile.actions)
         if needs_mqtt and mqtt_settings is not None:
             self._mqtt = AsyncMqttPublisher(mqtt_settings)
             await self._mqtt.start()
@@ -411,7 +426,7 @@ class StreamWatcherTask(Task):
                 continue
             params = dict(row.params_json or {})
             try:
-                if row.kind == "publish_mqtt":
+                if row.kind in MQTT_ACTION_KINDS:
                     action = create_action(row.kind, publisher=self._mqtt, **params)
                 elif row.kind == "record_clip":
                     # A resolver, not a backend: which one is right depends on the source
@@ -429,8 +444,12 @@ class StreamWatcherTask(Task):
                 continue
             self._actions.append((row, action))
 
+        self._frame_actions = [entry for entry in self._actions if entry[0].trigger == FRAME_ANALYSED]
+
         if self._actions:
             self.log(f"Loaded {len(self._actions)} action(s)")
+        if self._frame_actions:
+            self.log(f"{len(self._frame_actions)} action(s) will run on every analysed frame")
 
     def _clip_backend_for(self, context: ActionContext):
         """Pick the clip backend for the source an event fired on.
@@ -872,6 +891,11 @@ class StreamWatcherTask(Task):
             self._note_event(signal)
             await self._dispatch(signal, pipeline)
 
+        # After `step`, not before: the pipeline's `detections` are the mask-filtered
+        # ones the tracker actually saw, so a live feed draws the same boxes the rules
+        # were evaluated against rather than raw model output the watcher then ignored.
+        await self._dispatch_frame(pipeline)
+
     def _push_to_ring(
         self, pipeline: WatchPipeline, base64_img: str, now: float, full_res: Optional[str] = None
     ) -> None:
@@ -937,21 +961,17 @@ class StreamWatcherTask(Task):
         if len(self._recent_events) > 50:
             del self._recent_events[:-50]
 
-    def _actions_for(self, signal) -> List[Any]:
-        """Actions that should fire for this transition.
+    def _actions_for(self, signal, trigger: str) -> List[Any]:
+        """Actions that should fire for this transition, after rule and source scoping.
 
-        An action with no `rule_uuid` applies to every rule in the profile; one with a
-        `rule_uuid` is scoped to that rule alone.
+        Both scope lists are empty-means-all, so an action nobody has narrowed still
+        fires everywhere. See `apps.helpers.watch.scoping` for why the scope hangs off
+        the action rather than off the rule.
         """
-        trigger = {
-            EventPhase.START: "event_started",
-            EventPhase.UPDATE: "event_started",
-            EventPhase.END: "event_ended",
-        }[signal.phase]
         return [
             (row, action)
             for row, action in self._actions
-            if row.enabled and row.trigger == trigger and (row.rule_uuid in (None, "", signal.rule_uuid))
+            if action_applies(row, trigger, rule_uuid=signal.rule_uuid or None, source_uuid=signal.source_uuid or None)
         ]
 
     async def _dispatch(self, signal, pipeline: Optional[WatchPipeline] = None) -> None:
@@ -963,8 +983,49 @@ class StreamWatcherTask(Task):
         if self._dry_run:
             return
 
+        trigger = {
+            EventPhase.START: "event_started",
+            EventPhase.UPDATE: "event_started",
+            EventPhase.END: "event_ended",
+        }[signal.phase]
         context = self._action_context(signal, pipeline)
-        for row, action in self._actions_for(signal):
+        await self._run_actions(self._actions_for(signal, trigger), signal, context)
+
+    async def _dispatch_frame(self, pipeline: WatchPipeline) -> None:
+        """Fire `frame_analysed` actions for one just-analysed frame.
+
+        Separate from `_dispatch` because a frame is not an event: nothing opened, so
+        there is no rule, no phase and nothing to log or persist. It exists so a live
+        annotated feed can publish continuously — an image action on an event trigger
+        would show a frozen frame for the whole of the day that nothing happens.
+
+        Cheap when unused: `_frame_actions` is empty for every watcher that has no
+        such action, so the common case is one truth test per frame.
+        """
+        if self._dry_run or not self._frame_actions:
+            return
+        now = time.monotonic()
+        signal = WatchEventSignal(
+            # A frame belongs to no rule. Empty rather than a placeholder name so a
+            # topic template's `{rule}` level collapses instead of publishing a level
+            # that looks deliberate.
+            rule_uuid="",
+            rule_name="",
+            phase=EventPhase.UPDATE,
+            # Monotonic, like every signal the engine emits. `ActionContext` carries the
+            # wallclock offset for anything that needs real time, and a signal mixing
+            # the two clocks would make one action's timestamps silently disagree with
+            # another's.
+            at=now,
+            started_at=now,
+            source_uuid=pipeline.source_uuid,
+        )
+        context = self._action_context(signal, pipeline)
+        await self._run_actions(self._actions_for(signal, FRAME_ANALYSED), signal, context)
+
+    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> None:
+        """Run a resolved action list, counting outcomes. Never raises."""
+        for row, action in rows:
             try:
                 result = await action.run(signal, context)
             except Exception as e:
@@ -972,15 +1033,30 @@ class StreamWatcherTask(Task):
                 # though Action.run promises not to raise — a third-party action might.
                 logger.exception("Action %s raised", row.kind)
                 self._action_failures += 1
-                self.log(f"Action {row.kind} errored: {e}")
+                self._log_action_failure(row, f"Action {row.kind} errored: {e}")
                 continue
             if result.ok:
                 self._action_successes += 1
+                self._last_action_failure.pop(row.uuid, None)
                 if result.data.get("path"):
                     self._last_clip_path = result.data["path"]
             else:
                 self._action_failures += 1
-                self.log(f"Action {row.kind} failed: {result.detail}")
+                self._log_action_failure(row, f"Action {row.kind} failed: {result.detail}")
+
+    def _log_action_failure(self, row: Any, message: str) -> None:
+        """Log an action failure once per distinct message, not once per occurrence.
+
+        A `frame_analysed` action fires several times a second on every source. One
+        broken broker would otherwise write hundreds of identical lines into a ring
+        buffer that holds far fewer, pushing out the history that explains what went
+        wrong — the same reason `_record_source_failure` logs only on the transition.
+        The counter still increments every time, so the rate stays visible.
+        """
+        if self._last_action_failure.get(row.uuid) == message:
+            return
+        self._last_action_failure[row.uuid] = message
+        self.log(message)
 
     def _action_context(self, signal, pipeline: Optional[WatchPipeline]) -> ActionContext:
         return ActionContext(
@@ -992,10 +1068,20 @@ class StreamWatcherTask(Task):
             buffered=bool(pipeline and pipeline.buffered),
             retention_s=pipeline.retention_s if pipeline else 0.0,
             frame=pipeline.last_frame if pipeline else None,
+            detections=list(pipeline.detections) if pipeline else [],
+            label_colours=self._label_colours(),
             # Rule timing is monotonic; the buffer is addressed by wallclock. Carry the
             # offset once rather than making every action re-derive it.
             wallclock_offset=self._wallclock_offset,
         )
+
+    def _label_colours(self) -> dict:
+        """label uuid → colour, for actions that draw boxes.
+
+        Built from the same `_label_meta` the status panel and slot-name resolution use,
+        so a box drawn onto an MQTT frame is the colour the label has in the UI.
+        """
+        return {uuid: meta["color"] for uuid, meta in self._label_meta.items() if meta.get("color")}
 
     def _maybe_checkpoint(self) -> bool:
         """Answer a pending checkpoint request. Returns whether one was answered.
@@ -1107,6 +1193,13 @@ class StreamWatcherTask(Task):
                 # A dropped publish means the broker is gone rather than slow; surfacing
                 # it is the difference between a visible problem and a silent one.
                 "mqttDropped": (self._mqtt.dropped if self._mqtt else 0),
+                # Counted apart from dropped: a superseded frame is a live feed working
+                # as designed, and merging the two would make a healthy feed read as a
+                # failing broker. Rising *dropped* on a live feed is the real warning.
+                "mqttCoalesced": (self._mqtt.coalesced if self._mqtt else 0),
+                # In KB because the interesting number for an image feed is a backlog in
+                # megabytes, which a raw byte count buries in digits.
+                "mqttQueuedKb": (round(self._mqtt.stats()["queuedBytes"] / 1024, 1) if self._mqtt else 0),
             },
             "sources": [p.status_row(now) for p in self._pipelines],
             "activeTracksTable": tracks_rows,
