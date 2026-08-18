@@ -356,3 +356,122 @@ class TestTheDetailModal:
 
         expect(page.locator("[data-testid='event-detail-video']")).to_have_count(0)
         expect(page.locator("[data-testid='event-detail-snapshot']")).to_be_visible()
+
+
+class TestThePagerSurvivesAShrinkingResultSet:
+    """Deleting the last event on the last page must not strand the reviewer.
+
+    Paging is server-side offset paging, so `offset` is state the page holds on its own
+    and the server knows nothing about. Delete the only event on the final page and that
+    offset is suddenly past the end of a result set one page shorter: the request comes
+    back empty, and an empty page renders as "no events match these filters" — over a
+    result set that is merely one page smaller. The pager hides itself at that point too,
+    so there is no control left to get back.
+    """
+
+    PAGE_SIZE = 60
+
+    def _mock_paged(self, page: Page, store: dict):
+        """Route the Events page against a mutable store that honours offset/limit."""
+
+        def _fulfil_events(route):
+            url = route.request.url
+            if "facets" in url:
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", **_facets()}),
+                )
+                return
+            if "/snapshot" in url:
+                route.fulfill(status=200, content_type="image/jpeg", body=PIXEL_JPEG)
+                return
+            query = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+            offset = int(query.get("offset", 0))
+            limit = int(query.get("limit", self.PAGE_SIZE))
+            rows = store["events"]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "events": rows[offset : offset + limit], "total": len(rows)}),
+            )
+
+        def _fulfil_delete(route):
+            # The page deletes by uuid; drop it from the store so the next search sees a
+            # genuinely shorter result set rather than a mocked-away one.
+            uuid = route.request.url.rstrip("/").rsplit("/", 1)[-1]
+            store["events"] = [e for e in store["events"] if e["uuid"] != uuid]
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        # Registered before the general route so the DELETE is claimed first; Playwright
+        # matches the most recently added route, so this must come last of the two.
+        page.route(re.compile(r"/api/watch-events"), _fulfil_events)
+        page.route(
+            re.compile(r"/api/watch-events/[^/?]+$"),
+            lambda r: _fulfil_delete(r) if r.request.method == "DELETE" else _fulfil_events(r),
+        )
+        page.route(
+            re.compile(r"/api/recordings"),
+            lambda r: r.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "recording": None}),
+            ),
+        )
+        page.route(
+            re.compile(r"/api/sources/get"),
+            lambda r: r.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        # Keyed by uuid, not a list — `fetchSourceList` returns a Map.
+                        "sources": {
+                            "src-1": {
+                                "uuid": "src-1",
+                                "name": "Litter cam",
+                                "typename": "FfmpegImageProvider",
+                                "params": {},
+                            }
+                        },
+                    }
+                ),
+            ),
+        )
+
+    def _store(self, count: int) -> dict:
+        return {
+            "events": [
+                _event(uuid=f"event-{i:04d}", recordingUuid=None, startedAt=f"2026-08-18T09:{i % 60:02d}:00")
+                for i in range(count)
+            ]
+        }
+
+    def test_deleting_the_only_event_on_the_last_page_falls_back_to_the_previous_one(self, page: Page, base_url: str):
+        store = self._store(self.PAGE_SIZE + 1)
+        self._mock_paged(page, store)
+        _open_events_pane(page, base_url)
+
+        page.locator("[data-testid='event-search-next']").click()
+        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+
+        page.locator("[data-testid='event-card']").first.click()
+        page.locator("[data-testid='event-detail-delete']").click()
+        page.get_by_role("button", name="Delete", exact=True).click()
+
+        # The full previous page, not an empty grid claiming nothing matches.
+        expect(page.locator("[data-testid='event-card']")).to_have_count(self.PAGE_SIZE)
+        expect(page.locator("[data-testid='event-search-empty']")).to_have_count(0)
+
+    def test_a_genuinely_empty_result_still_says_so(self, page: Page, base_url: str):
+        """The clamp must not paper over an actually-empty result set."""
+        store = self._store(1)
+        self._mock_paged(page, store)
+        _open_events_pane(page, base_url)
+
+        page.locator("[data-testid='event-card']").first.click()
+        page.locator("[data-testid='event-detail-delete']").click()
+        page.get_by_role("button", name="Delete", exact=True).click()
+
+        expect(page.locator("[data-testid='event-search-empty']")).to_be_visible()

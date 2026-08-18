@@ -143,6 +143,20 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       if (seq !== requestSeq) return;
 
       total = result.total;
+
+      // The result set can shrink under a held offset — deleting the only event on the
+      // last page is the ordinary way. Left alone, the empty response renders as "no
+      // events match these filters" over a set that is merely one page shorter, and
+      // renderPager() hides itself once total <= PAGE_SIZE, so there is no control left
+      // to get back. Re-asking for the last page that does exist is the honest answer.
+      // Cannot loop: offset is strictly below total on the retry, so the next response
+      // is non-empty unless total reached zero, which this guard excludes.
+      if (!result.events.length && total > 0 && offset >= total) {
+        offset = (Math.ceil(total / PAGE_SIZE) - 1) * PAGE_SIZE;
+        await search();
+        return;
+      }
+
       grid.innerHTML = '';
       if (!result.events.length) {
         renderEmpty();
