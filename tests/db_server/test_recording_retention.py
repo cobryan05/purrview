@@ -12,12 +12,15 @@ that "keep everything" is expressible, that files go with their rows, and that a
 with no event still expires.
 """
 
+import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from apps.db_server.manager import (
     DEFAULT_RECORDING_RETENTION_DAYS,
+    RECORDING_MAX_TOTAL_MB_SETTING_KEY,
     RECORDING_RETENTION_SETTING_KEY,
     Manager,
 )
@@ -25,9 +28,20 @@ from apps.helpers.db.types import Recording, WatchEvent, WatchProfile
 
 
 @pytest.fixture
-def manager(db_client, files_root):
+def recording_roots(tmp_path):
+    clips = tmp_path / "recordings" / "clips"
+    snapshots = tmp_path / "recordings" / "event_snapshots"
+    clips.mkdir(parents=True)
+    snapshots.mkdir(parents=True)
+    return clips, snapshots
+
+
+@pytest.fixture
+def manager(db_client, files_root, recording_roots):
     m = Manager(db_client=db_client, files_root=files_root)
     m._db_ready = True
+    # Never let a directory-walking deleter loose on the real /data/recordings.
+    m._recording_roots = recording_roots
     return m
 
 
@@ -123,12 +137,16 @@ class TestTheSweep:
         assert await db_client.get_watch_event(old) is None
         assert await db_client.get_watch_event(young) is not None
 
-    async def test_zero_keeps_everything(self, manager, db_client, tmp_path, profile_uuid):
-        """There has to be a way to opt out that isn't deleting the setting."""
+    async def test_zero_disables_the_age_bound_only(self, manager, db_client, tmp_path, profile_uuid):
+        """Both bounds are independent — switching one off must not switch off the other.
+
+        Asserted through `prune_recordings_by_age` rather than the full pass, because the
+        full pass still runs the size cap and the orphan sweep, which is the point.
+        """
         await db_client.set_setting(RECORDING_RETENTION_SETTING_KEY, "0")
         uuid, snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=9999, name="ancient")
 
-        result = await manager.prune_expired_recordings()
+        result = await manager.prune_recordings_by_age()
 
         assert result == {"events": 0, "recordings": 0}
         assert await db_client.get_watch_event(uuid) is not None
@@ -200,3 +218,207 @@ class TestTheSweepSchedule:
 
         monkeypatch.setattr(manager, "prune_expired_recordings", boom)
         await manager._maybe_prune_expired_recordings()  # must not raise
+
+
+class TestTheOrphanSweep:
+    """Files under the recordings roots that no row points at.
+
+    Rows normally take their files with them, but a row can vanish without passing
+    through that path — deleting a watch profile cascades to its events in the database
+    and leaves their snapshots behind, and a crashed ffmpeg leaves a `.part` nothing ever
+    referenced. Nothing looks at those files again, so without a sweep they are permanent.
+    """
+
+    def _orphan(self, root, name="stray.mp4", age_s=10_000):
+        path = root / name
+        path.write_bytes(b"x" * 2048)
+        os.utime(path, (time.time() - age_s, time.time() - age_s))
+        return path
+
+    async def test_a_file_no_row_points_at_is_removed(self, manager, recording_roots):
+        clips, _snapshots = recording_roots
+        stray = self._orphan(clips)
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 1
+        assert result["bytes"] == 2048
+        assert not stray.exists()
+
+    async def test_a_referenced_file_is_never_touched(self, manager, db_client, recording_roots):
+        """The safety rail. Deleting a live clip is the failure mode here."""
+        clips, _snapshots = recording_roots
+        live = self._orphan(clips, "live.mp4")
+        await db_client.create_recording(Recording(file_path=str(live), started_at=_ago(0.1), status="complete"))
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 0
+        assert live.exists()
+
+    async def test_a_referenced_snapshot_is_never_touched(self, manager, db_client, recording_roots, profile_uuid):
+        _clips, snapshots = recording_roots
+        live = self._orphan(snapshots, "card.jpg")
+        await db_client.create_watch_event(
+            WatchEvent(profile_uuid=profile_uuid, started_at=_ago(0.1), snapshot_path=str(live))
+        )
+
+        await manager.sweep_orphan_recording_files()
+
+        assert live.exists()
+
+    async def test_a_freshly_written_file_is_left_alone(self, manager, recording_roots):
+        """A clip exists on disk before the row referencing it does — without the grace
+        period the sweep races clip extraction and deletes its output mid-write."""
+        clips, _snapshots = recording_roots
+        fresh = self._orphan(clips, "in-flight.mp4", age_s=0)
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 0
+        assert fresh.exists()
+
+    async def test_nested_day_folders_are_swept(self, manager, recording_roots):
+        """Clips are written under a per-day folder, so a flat listdir would miss them."""
+        clips, _snapshots = recording_roots
+        day = clips / "2026-01-01"
+        day.mkdir()
+        stray = self._orphan(day, "old.mp4")
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 1
+        assert not stray.exists()
+
+    async def test_files_outside_the_managed_roots_are_untouched(self, manager, tmp_path):
+        """A hand-set `output_dir` is the user's own space, not the sweep's."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        mine = elsewhere / "mine.mp4"
+        mine.write_bytes(b"x")
+        os.utime(mine, (0, 0))
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 0
+        assert mine.exists()
+
+    async def test_a_missing_root_is_not_an_error(self, manager, tmp_path):
+        manager._recording_roots = (tmp_path / "nope", tmp_path / "also-nope")
+        assert await manager.sweep_orphan_recording_files() == {"files": 0, "bytes": 0}
+
+
+class TestTheSizeCap:
+    async def test_the_oldest_events_are_evicted_until_under_the_cap(
+        self, manager, db_client, recording_roots, profile_uuid
+    ):
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+
+        # Six events, ~512 KB of clip each: comfortably over a 1 MB cap.
+        uuids = []
+        for i in range(6):
+            clip = clips / f"clip-{i}.mp4"
+            clip.write_bytes(b"x" * (512 * 1024))
+            event = await db_client.create_watch_event(
+                WatchEvent(profile_uuid=profile_uuid, started_at=_ago(30 - i), rule_name=f"e{i}")
+            )
+            recording = await db_client.create_recording(
+                Recording(file_path=str(clip), started_at=_ago(30 - i), event_uuid=event.uuid, status="complete")
+            )
+            await db_client.update_watch_event(event.uuid, recording_uuid=recording.uuid)
+            uuids.append(event.uuid)
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result["events"] > 0
+        # Oldest first: index 0 is the oldest, so it must go before the newest does.
+        assert await db_client.get_watch_event(uuids[0]) is None
+        assert await db_client.get_watch_event(uuids[-1]) is not None
+        remaining = sum(p.stat().st_size for p in clips.rglob("*") if p.is_file())
+        assert remaining <= 1024 * 1024
+
+    async def test_a_cap_of_zero_evicts_nothing(self, manager, db_client, recording_roots, profile_uuid):
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "0")
+        big = clips / "huge.mp4"
+        big.write_bytes(b"x" * (2 * 1024 * 1024))
+        event = await db_client.create_watch_event(WatchEvent(profile_uuid=profile_uuid, started_at=_ago(1)))
+        await db_client.create_recording(
+            Recording(file_path=str(big), started_at=_ago(1), event_uuid=event.uuid, status="complete")
+        )
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result == {"events": 0, "recordings": 0, "bytes": 0}
+        assert await db_client.get_watch_event(event.uuid) is not None
+
+    async def test_under_the_cap_nothing_is_evicted(self, manager, db_client, recording_roots, profile_uuid):
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "100")
+        (clips / "small.mp4").write_bytes(b"x" * 1024)
+        event = await db_client.create_watch_event(WatchEvent(profile_uuid=profile_uuid, started_at=_ago(1)))
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result["events"] == 0
+        assert await db_client.get_watch_event(event.uuid) is not None
+
+    async def test_being_over_cap_with_nothing_deletable_terminates(self, manager, db_client, recording_roots):
+        """A fresh orphan is over the cap but exempt from both sweeps — this must report
+        and stop rather than spin the worker."""
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+        (clips / "fresh-and-huge.mp4").write_bytes(b"x" * (2 * 1024 * 1024))
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result["events"] == 0
+        assert result["recordings"] == 0
+
+    async def test_orphan_recordings_are_evicted_when_no_events_remain(self, manager, db_client, recording_roots):
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+        rec_uuids = []
+        for i in range(4):
+            clip = clips / f"orphan-{i}.mp4"
+            clip.write_bytes(b"x" * (512 * 1024))
+            rec = await db_client.create_recording(
+                Recording(file_path=str(clip), started_at=_ago(10 - i), status="complete")
+            )
+            rec_uuids.append(rec.uuid)
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result["recordings"] > 0
+        assert await db_client.get_recording(rec_uuids[0]) is None
+
+
+class TestTheWholePass:
+    async def test_all_three_phases_report_together(self, manager, db_client, tmp_path, recording_roots, profile_uuid):
+        clips, _snapshots = recording_roots
+        stray = clips / "stray.mp4"
+        stray.write_bytes(b"x" * 128)
+        os.utime(stray, (0, 0))
+        old, _ = await _event(db_client, tmp_path, profile_uuid, age_days=40, name="old")
+
+        result = await manager.prune_expired_recordings()
+
+        assert result["events"] == 1
+        assert result["orphanFiles"] == 1
+        assert result["bytes"] >= 128
+        assert await db_client.get_watch_event(old) is None
+        assert not stray.exists()
+
+    async def test_the_orphan_sweep_runs_even_with_the_age_bound_off(self, manager, db_client, recording_roots):
+        """Orphans are wasted bytes regardless of how long anything is kept for."""
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_RETENTION_SETTING_KEY, "0")
+        stray = clips / "stray.mp4"
+        stray.write_bytes(b"x" * 64)
+        os.utime(stray, (0, 0))
+
+        result = await manager.prune_expired_recordings()
+
+        assert result["orphanFiles"] == 1
+        assert not stray.exists()

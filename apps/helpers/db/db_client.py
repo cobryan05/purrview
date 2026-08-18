@@ -6911,6 +6911,27 @@ class DbClient:
             result = await session.exec(select(Recording.uuid).where(started < cutoff).order_by(started).limit(limit))
             return list(result.all())
 
+    async def referenced_recording_paths(self) -> Set[str]:
+        """Every file path any surviving row points at.
+
+        The orphan sweep's safety rail: a file under the recordings roots that is not in
+        this set has no row and nothing will ever show it, so deleting it loses nothing.
+        Fetched as one set rather than asked per file, because the question is asked once
+        per file on disk and the answer does not change during a sweep.
+
+        Deliberately covers all three columns that can name a file — a clip, its
+        thumbnail, and an event's snapshot. Missing one would make the sweep delete live
+        files, which is the failure mode that makes directory-walking sweeps dangerous.
+        """
+        paths: Set[str] = set()
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Recording.file_path, Recording.thumbnail_path))
+            for file_path, thumbnail_path in result.all():
+                paths.update(p for p in (file_path, thumbnail_path) if p)
+            result = await session.exec(select(WatchEvent.snapshot_path))
+            paths.update(p for p in result.all() if p)
+        return paths
+
     async def close_watch_event(
         self,
         uuid: str,

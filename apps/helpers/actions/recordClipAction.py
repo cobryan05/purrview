@@ -28,13 +28,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from apps import RECORDINGS_CLIP_DIR
+
 from ..watch.events import EventPhase, WatchEventSignal
 from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CLIP_ROOT = Path("/data/recordings/clips")
+#: Shared with db_server's retention sweep, which has to find these files to delete
+#: them — see `apps/__init__.py`. A clip written anywhere else (a hand-set
+#: `output_dir`) is outside the managed area and is never swept.
+DEFAULT_CLIP_ROOT = RECORDINGS_CLIP_DIR
 
 
 class ClipBackend(ABC):

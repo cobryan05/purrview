@@ -108,3 +108,15 @@ STREAM_BUFFER_RETENTION_S = float(os.environ.get("STREAM_BUFFER_RETENTION_S", "4
 # Set either to 0 to disable that bound.
 TASK_RETENTION_DAYS = int(os.environ.get("TASK_RETENTION_DAYS", "15"))
 TASK_RETENTION_MAX_COMPLETED = int(os.environ.get("TASK_RETENTION_MAX_COMPLETED", "200"))
+
+# Where the NVR's durable artifacts land. Both live here rather than beside the code
+# that writes them because db_server has to *sweep* them and cannot import
+# tasks_server to find out where they are. Deliberately outside FILES_ROOT: these are
+# not training images and must not turn up in the annotation file browser.
+RECORDINGS_CLIP_DIR = Path(os.environ.get("RECORDINGS_CLIP_DIR", "/data/recordings/clips"))
+RECORDINGS_SNAPSHOT_DIR = Path(os.environ.get("RECORDINGS_SNAPSHOT_DIR", "/data/recordings/event_snapshots"))
+
+# A file under those roots younger than this is left alone by the orphan sweep. An
+# in-flight clip exists on disk before the row that references it does, so without a
+# grace period the sweep races clip extraction and deletes the output from under it.
+RECORDINGS_ORPHAN_GRACE_S = float(os.environ.get("RECORDINGS_ORPHAN_GRACE_S", "900"))

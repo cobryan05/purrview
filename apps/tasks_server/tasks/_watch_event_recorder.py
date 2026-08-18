@@ -36,6 +36,7 @@ import db_client
 from db_client.api.recordings_api import RecordingsApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
 
+from apps import RECORDINGS_SNAPSHOT_DIR
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.consts import JsonValues
 from apps.helpers.imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
@@ -44,8 +45,9 @@ from apps.helpers.watch.events import EventPhase, WatchEventSignal
 logger = logging.getLogger(__name__)
 
 #: Outside `image_datasets` on purpose — these are not training images and must not turn
-#: up in the annotation file browser.
-DEFAULT_SNAPSHOT_ROOT = Path("/data/recordings/event_snapshots")
+#: up in the annotation file browser. Defined in `apps/__init__.py` because db_server's
+#: retention sweep has to find these files to delete them and cannot import this module.
+DEFAULT_SNAPSHOT_ROOT = RECORDINGS_SNAPSHOT_DIR
 
 #: Card art, not evidence. The clip is the evidence, and at 480 px a snapshot is a few
 #: tens of KB, so a busy week of events costs megabytes rather than gigabytes.

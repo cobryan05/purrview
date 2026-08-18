@@ -846,8 +846,14 @@ def _retention_field(page: Page):
     return page.locator("#settings-section-retention [data-testid='settings-retention-days']")
 
 
-def _retention_status(page: Page):
-    return page.locator("#settings-section-retention .settings-server-status")
+def _retention_size_field(page: Page):
+    return page.locator("#settings-section-retention [data-testid='settings-retention-max-mb']")
+
+
+def _retention_status(page: Page, index: int = 0):
+    """The panel now has a row per bound, so a status line has to be picked by row:
+    0 is the age bound, 1 is the size bound."""
+    return page.locator("#settings-section-retention .settings-server-status").nth(index)
 
 
 class TestRecordingRetention:
@@ -877,7 +883,7 @@ class TestRecordingRetention:
         _navigate_to_settings(page, base_url)
 
         expect(_retention_field(page)).to_have_value("0")
-        expect(_retention_status(page)).to_contain_text("Keeping every event")
+        expect(_retention_status(page)).to_contain_text("No age limit")
 
     def test_an_unreadable_stored_value_falls_back_to_the_default(self, page: Page, base_url: str):
         _mock_server_config(page)
@@ -901,7 +907,7 @@ class TestRecordingRetention:
         page.route(lambda url: "/api/settings/" in url, handle_put)
 
         _retention_field(page).fill("14")
-        page.locator("[data-testid='settings-retention-save']").click()
+        page.locator("[data-testid='settings-retention-days-save']").click()
 
         wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/recording_retention_days")
         url, body = put_calls[0]
@@ -924,7 +930,65 @@ class TestRecordingRetention:
         )
 
         _retention_field(page).fill("-5")
-        page.locator("[data-testid='settings-retention-save']").click()
+        page.locator("[data-testid='settings-retention-days-save']").click()
 
         expect(_retention_status(page)).to_contain_text("whole number of days")
         assert not put_calls
+
+    def test_the_size_bound_defaults_to_ten_gigabytes(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_size_field(page)).to_have_value("10240")
+        expect(_retention_status(page, 1)).to_contain_text("10240 MB")
+
+    def test_a_stored_size_bound_populates_the_field(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page, {"recording_max_total_mb": "512"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_size_field(page)).to_have_value("512")
+        expect(_retention_status(page, 1)).to_contain_text("512 MB")
+
+    def test_the_two_bounds_are_independent(self, page: Page, base_url: str):
+        """Switching one off must not read as switching both off — that is the whole
+        point of having two, and the copy has to say so."""
+        _mock_server_config(page)
+        _mock_settings_get(page, {"recording_retention_days": "0", "recording_max_total_mb": "2048"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_status(page, 0)).to_contain_text("No age limit")
+        expect(_retention_status(page, 0)).to_contain_text("size limit")
+        expect(_retention_status(page, 1)).to_contain_text("2048 MB")
+
+    def test_saving_the_size_bound_writes_its_own_key(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+
+        def handle_put(route: Route):
+            if route.request.method == "PUT":
+                put_calls.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route(lambda url: "/api/settings/" in url, handle_put)
+
+        _retention_size_field(page).fill("4096")
+        page.locator("[data-testid='settings-retention-max-mb-save']").click()
+
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/recording_max_total_mb")
+        url, body = put_calls[0]
+        assert url.rstrip("/").endswith("/recording_max_total_mb")
+        assert body["value"] == "4096"
+
+    def test_the_unmanaged_folder_caveat_is_stated(self, page: Page, base_url: str):
+        """A custom clip `output_dir` is neither counted nor swept, which is surprising
+        enough that the panel has to say it rather than leave it to be discovered."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(page.locator("[data-testid='settings-retention-caveat']")).to_contain_text("custom output folder")

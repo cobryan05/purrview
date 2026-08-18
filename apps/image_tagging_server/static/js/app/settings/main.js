@@ -280,71 +280,130 @@ function _buildServerRow({ label, serverType, settingKey, description, defaultUr
  */
 export const RETENTION_SETTING_KEY = 'recording_retention_days';
 
-/** Mirrors `DEFAULT_RECORDING_RETENTION_DAYS` in `apps/db_server/manager.py`. */
+/**
+ * Ceiling on total recording bytes, in MB.
+ * Mirrors `RECORDING_MAX_TOTAL_MB_SETTING_KEY` in `apps/db_server/manager.py`.
+ */
+export const RETENTION_MAX_MB_SETTING_KEY = 'recording_max_total_mb';
+
+/** Mirror `DEFAULT_RECORDING_*` in `apps/db_server/manager.py`. */
 const RETENTION_DEFAULT_DAYS = 30;
+const RETENTION_DEFAULT_MAX_MB = 10240;
 
-async function _buildRetentionSection() {
-  const { section, body } = _panel('Recording Retention', { id: 'settings-section-retention' });
-
+/**
+ * Read one numeric setting, falling back when it is absent or unreadable.
+ *
+ * `Number('')`, `Number(null)` and `Number(false)` are all a finite 0, which here would
+ * read as the deliberate "no bound" value rather than as "unset" — so emptiness is
+ * checked before the parse is trusted, not after.
+ */
+async function _numericSetting(key, fallback) {
   let stored = null;
   try {
-    stored = await getSetting(RETENTION_SETTING_KEY);
+    stored = await getSetting(key);
   } catch (_) {}
-  // `Number('')` is a finite 0, which would read as "keep nothing" — check for a
-  // non-empty string before trusting the parse.
   const parsed = stored != null && String(stored).trim() !== '' ? Number(stored) : NaN;
-  const current = Number.isFinite(parsed) ? Math.trunc(parsed) : RETENTION_DEFAULT_DAYS;
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+}
 
-  const note = document.createElement('p');
-  note.className = 'settings-dedup-warning';
-  note.textContent =
-    'Event clips and the snapshots shown on event cards are deleted once they are older than this. ' +
-    'Frames you saved for annotation are never touched — those live under the image datasets and are yours ' +
-    'to curate. The sweep runs about once an hour, and measures age from when the event started, not from ' +
-    'when the clip was written.';
-  body.appendChild(note);
-
+/**
+ * One "bound" row: a number input, a Save button, and a live description.
+ *
+ * @param {{label:string, description:string, testid:string, settingKey:string,
+ *          value:number, describe:(n:number)=>[string,string], unit:string}} opts
+ */
+function _boundRow({ label, description, testid, settingKey, value, describe, unit }) {
   const input = document.createElement('input');
   input.type = 'number';
   input.min = '0';
   input.className = 'settings-server-input settings-server-input--narrow';
-  input.dataset.testid = 'settings-retention-days';
-  input.value = String(current);
+  input.dataset.testid = testid;
+  input.value = String(value);
 
   const saveBtn = _rowButton('Save');
-  saveBtn.dataset.testid = 'settings-retention-save';
+  saveBtn.dataset.testid = `${testid}-save`;
 
-  const { row, setStatus } = _buildRow({
-    label: 'Keep recordings for',
-    description: 'Days. Set to 0 to keep everything forever — nothing is deleted automatically.',
-    controls: [input, saveBtn],
-  });
+  const { row, setStatus } = _buildRow({ label, description, controls: [input, saveBtn] });
 
-  const describe = (days) =>
-    days > 0
-      ? setStatus(`Deleting events older than ${days} day${days === 1 ? '' : 's'}.`, 'info')
-      : setStatus('Keeping every event — disk use is unbounded.', 'muted');
-  describe(current);
+  const show = (n) => {
+    const [text, tone] = describe(n);
+    setStatus(text, tone);
+  };
+  show(value);
 
   saveBtn.addEventListener('click', async () => {
-    const value = Number(input.value);
-    if (input.value.trim() === '' || !Number.isFinite(value) || value < 0) {
-      setStatus('Enter a whole number of days, or 0 to keep everything.', 'error');
+    const parsed = Number(input.value);
+    if (input.value.trim() === '' || !Number.isFinite(parsed) || parsed < 0) {
+      setStatus(`Enter a whole number of ${unit}, or 0 for no limit.`, 'error');
       return;
     }
-    const days = Math.trunc(value);
+    const next = Math.trunc(parsed);
     await _withSaveFeedback(
       saveBtn,
       async () => {
-        await setSetting(RETENTION_SETTING_KEY, String(days));
-        input.value = String(days);
-        describe(days);
+        await setSetting(settingKey, String(next));
+        input.value = String(next);
+        show(next);
       },
       (msg) => setStatus(`✗ ${msg}`, 'error')
     );
   });
 
-  body.appendChild(row);
+  return row;
+}
+
+async function _buildRetentionSection() {
+  const { section, body } = _panel('Recording Retention', { id: 'settings-section-retention' });
+
+  const [days, maxMb] = await Promise.all([
+    _numericSetting(RETENTION_SETTING_KEY, RETENTION_DEFAULT_DAYS),
+    _numericSetting(RETENTION_MAX_MB_SETTING_KEY, RETENTION_DEFAULT_MAX_MB),
+  ]);
+
+  const note = document.createElement('p');
+  note.className = 'settings-dedup-warning';
+  note.textContent =
+    'Event clips and the snapshots shown on event cards are removed once they pass either bound — '
+    + 'whichever is reached first. Both are independent, so switching one off with 0 leaves the other '
+    + 'working. Files nothing points at any more are cleaned up on the same pass. Frames you saved for '
+    + 'annotation are never touched: those live under the image datasets and are yours to curate. The '
+    + 'sweep runs about once an hour and measures age from when the event started, not from when the '
+    + 'clip was written.';
+  body.appendChild(note);
+
+  body.appendChild(_boundRow({
+    label: 'Keep recordings for',
+    description: 'Days. Set to 0 to apply no age limit.',
+    testid: 'settings-retention-days',
+    settingKey: RETENTION_SETTING_KEY,
+    value: days,
+    unit: 'days',
+    describe: (n) => (n > 0
+      ? [`Deleting events older than ${n} day${n === 1 ? '' : 's'}.`, 'info']
+      : ['No age limit — events are kept until the size limit evicts them.', 'muted']),
+  }));
+
+  body.appendChild(_boundRow({
+    label: 'Use at most',
+    description: 'MB of disk for clips and snapshots. Set to 0 to apply no size limit.',
+    testid: 'settings-retention-max-mb',
+    settingKey: RETENTION_MAX_MB_SETTING_KEY,
+    value: maxMb,
+    unit: 'MB',
+    describe: (n) => (n > 0
+      ? [`Evicting the oldest events once recordings exceed ${n} MB.`, 'info']
+      : ['No size limit — disk use grows until the age limit removes something.', 'muted']),
+  }));
+
+  const caveat = document.createElement('p');
+  caveat.className = 'settings-dedup-warning';
+  caveat.dataset.testid = 'settings-retention-caveat';
+  caveat.textContent =
+    'Only the default clip and snapshot folders are managed. A "Record clip" action pointed at a '
+    + 'custom output folder writes outside them, so those files are neither counted toward the size '
+    + 'limit nor deleted.';
+  body.appendChild(caveat);
+
   return section;
 }
 

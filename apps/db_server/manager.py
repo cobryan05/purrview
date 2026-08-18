@@ -19,7 +19,14 @@ import aiofiles
 import jstyleson
 from sqlalchemy.orm import make_transient
 
-from apps import CACHE_DIR, STREAM_BUFFER_RETENTION_S, THUMB_CACHE_MAX_MB
+from apps import (
+    CACHE_DIR,
+    RECORDINGS_CLIP_DIR,
+    RECORDINGS_ORPHAN_GRACE_S,
+    RECORDINGS_SNAPSHOT_DIR,
+    STREAM_BUFFER_RETENTION_S,
+    THUMB_CACHE_MAX_MB,
+)
 from apps.db_server.hash_index import HashIndex
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
@@ -117,9 +124,28 @@ RECORDING_RETENTION_SETTING_KEY = "recording_retention_days"
 #: disk before anyone notices. 0 or less disables the sweep entirely.
 DEFAULT_RECORDING_RETENTION_DAYS = 30
 
+#: Settings key holding the ceiling on total recording bytes, in MB.
+#: Mirrored in `app/settings/main.js` — keep the two in sync.
+RECORDING_MAX_TOTAL_MB_SETTING_KEY = "recording_max_total_mb"
+
+#: Both bounds apply, whichever is reached first, for the same reason the task-instance
+#: bounds do: they answer different questions. The age limit is "how far back do I still
+#: care?"; the size limit is what actually caps storage when a busy watcher produces
+#: clips faster than they age out. 0 or less disables that bound.
+DEFAULT_RECORDING_MAX_TOTAL_MB = 10240
+
 #: How often the sweep runs. The window it enforces is measured in days, so anything
 #: tighter than hourly is filesystem work for no benefit.
 RETENTION_SWEEP_INTERVAL_S = 3600.0
+
+#: Events deleted per size-eviction pass before the total is re-measured. Re-walking is
+#: how the total stays truthful (it counts snapshots, which carry no size column), and
+#: batching keeps the number of walks down.
+SIZE_EVICTION_BATCH = 50
+
+#: Cap on eviction passes, so a mis-set cap or an undeletable file cannot spin the
+#: worker. Whatever is left over is reported and picked up on the next sweep.
+SIZE_EVICTION_MAX_PASSES = 20
 logger.setLevel(LOG_LEVEL)
 
 # Only bboxes explicitly carrying this tag produce PRESENT image-label rows.
@@ -209,6 +235,11 @@ class Manager:
         # references to tasks, so a bare create_task() can be garbage-collected
         # mid-run. Doubles as a coalescing flag — one trim at a time is plenty.
         self._thumb_trim_task: Optional[asyncio.Task] = None
+        # The directories the retention sweep may walk and delete inside. An instance
+        # attribute rather than a module constant read directly, so a test can point it
+        # at a tmp dir: a sweep that walks a directory and unlinks must never be able to
+        # run against the developer's own /data/recordings just because a test called it.
+        self._recording_roots: Tuple[Path, ...] = (RECORDINGS_CLIP_DIR, RECORDINGS_SNAPSHOT_DIR)
         # When the retention sweep last ran, so it happens on a clock of its own rather
         # than on every worker tick. None means "not yet", which makes the first sweep
         # run shortly after startup — the point at which a long-stopped deployment has
@@ -3834,7 +3865,204 @@ class Manager:
             )
             return DEFAULT_RECORDING_RETENTION_DAYS
 
-    async def prune_expired_recordings(self, now: Optional[datetime] = None) -> Dict[str, int]:
+    async def get_recording_max_total_mb(self) -> int:
+        """Ceiling on total recording bytes, in MB. See `get_recording_retention_days`
+        for why an unreadable value falls back rather than raising."""
+        raw = await self._db_client.get_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY)
+        if raw is None or str(raw).strip() == "":
+            return DEFAULT_RECORDING_MAX_TOTAL_MB
+        try:
+            return int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Unreadable %s setting %r; falling back to %s MB",
+                RECORDING_MAX_TOTAL_MB_SETTING_KEY,
+                raw,
+                DEFAULT_RECORDING_MAX_TOTAL_MB,
+            )
+            return DEFAULT_RECORDING_MAX_TOTAL_MB
+
+    def _scan_recording_files(self) -> List[Tuple[Path, int, float]]:
+        """Every file under the recordings roots, with size and mtime. Blocking.
+
+        Only the managed roots are walked. A clip written to a hand-set `output_dir` is
+        outside the managed area: not swept, and not counted toward the size cap. Walking
+        wherever a param happens to point would mean deleting files in a directory the
+        user chose for their own reasons.
+        """
+        entries: List[Tuple[Path, int, float]] = []
+        for root in self._recording_roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                try:
+                    if not path.is_file():
+                        continue
+                    stat = path.stat()
+                except OSError:
+                    # Raced with another deleter, or unreadable. Either way it is not
+                    # this sweep's business.
+                    continue
+                entries.append((path, stat.st_size, stat.st_mtime))
+        return entries
+
+    async def sweep_orphan_recording_files(self, now_ts: Optional[float] = None) -> Dict[str, int]:
+        """Delete files under the recordings roots that no row points at.
+
+        Rows are deleted through paths that unlink their own files, but a row can also
+        vanish without passing through one — a watch profile deleted while events hang
+        off it cascades in the database and leaves their snapshots behind, and a crashed
+        ffmpeg leaves a `.part` file no row ever referenced. Nothing else ever looks at
+        those files again, so without this they are permanent.
+
+        Two rails, because a sweep that walks a directory and deletes is exactly the kind
+        of thing that eats live data when it is subtly wrong:
+
+        * every path any surviving row names is exempt, compared on the real path so a
+          symlinked or non-normalised stored path still matches; and
+        * anything younger than the grace period is exempt, because a clip exists on
+          disk before the row referencing it is written — without this the sweep races
+          clip extraction and deletes its output mid-write.
+        """
+        now_ts = time.time() if now_ts is None else now_ts
+        referenced = await self._db_client.referenced_recording_paths()
+        # Normalised on both sides: a stored path and a walked path can name the same
+        # file in different spellings, and treating a live file as an orphan deletes it.
+        safe = {os.path.realpath(p) for p in referenced}
+        entries = await asyncio.to_thread(self._scan_recording_files)
+
+        removed = 0
+        freed = 0
+        for path, size, mtime in entries:
+            if os.path.realpath(path) in safe:
+                continue
+            if now_ts - mtime < RECORDINGS_ORPHAN_GRACE_S:
+                continue
+            try:
+                await asyncio.to_thread(path.unlink)
+            except OSError as e:
+                logger.warning("Could not remove orphaned recording file %s: %s", path, e)
+                continue
+            removed += 1
+            freed += size
+
+        if removed:
+            logger.info("Retention sweep removed %s orphaned file(s), freeing %.1f MB", removed, freed / 1048576)
+        return {"files": removed, "bytes": freed}
+
+    @staticmethod
+    def _path_size(path: Optional[str], size_by_path: Dict[str, int]) -> int:
+        """Bytes *path* occupies, per the walk. 0 when it lies outside the managed roots.
+
+        Zero is the safe answer rather than a stat: a file the sweep does not manage
+        contributes nothing to the total it is trying to reduce, so counting it would
+        make eviction stop before the cap was actually met.
+        """
+        if not path:
+            return 0
+        return size_by_path.get(os.path.realpath(path), 0)
+
+    async def _event_disk_usage(self, uuid: str, size_by_path: Dict[str, int]) -> int:
+        """Bytes one event will free: its snapshot plus the clip it owns."""
+        total = self._path_size(await self._db_client.get_watch_event_snapshot_path(uuid), size_by_path)
+        event = await self._db_client.get_watch_event(uuid)
+        recording_uuid = getattr(event, "recording_uuid", None)
+        if recording_uuid:
+            recording = await self._db_client.get_recording(recording_uuid)
+            total += self._path_size(getattr(recording, "file_path", None), size_by_path)
+            total += self._path_size(getattr(recording, "thumbnail_path", None), size_by_path)
+        return total
+
+    async def enforce_recording_size_cap(self) -> Dict[str, int]:
+        """Delete the oldest events until the recordings roots fit under the cap.
+
+        Oldest-first because an NVR's value decays with age — the same order the time
+        bound already imposes, so the two agree rather than fighting.
+
+        Eviction stops the moment the total is back under the cap, which means the
+        running total has to be decremented *per deletion* rather than re-measured per
+        batch. Deleting a whole batch and then re-walking overshoots badly: with a batch
+        of fifty and a cap one clip over, it would evict fifty events to reclaim one.
+
+        The decrement is looked up in a path→size map built from the walk, so it reflects
+        the bytes actually on disk — a clip's recorded `size_bytes` can disagree with its
+        file, and snapshots carry no size column at all. The reported total is re-measured
+        at the end rather than accumulated, so it stays honest even if a lookup missed.
+        """
+        max_mb = await self.get_recording_max_total_mb()
+        if max_mb <= 0:
+            return {"events": 0, "recordings": 0, "bytes": 0}
+        max_bytes = max_mb * 1024 * 1024
+
+        entries = await asyncio.to_thread(self._scan_recording_files)
+        initial_total = sum(size for _p, size, _m in entries)
+        if initial_total <= max_bytes:
+            return {"events": 0, "recordings": 0, "bytes": 0}
+        size_by_path = {os.path.realpath(path): size for path, size, _m in entries}
+        total = initial_total
+
+        events = 0
+        recordings = 0
+        for _ in range(SIZE_EVICTION_MAX_PASSES):
+            if total <= max_bytes:
+                break
+            deleted_this_pass = 0
+            now = datetime.now(timezone.utc)
+
+            for uuid in await self._db_client.watch_event_uuids_before(now, limit=SIZE_EVICTION_BATCH):
+                if total <= max_bytes:
+                    break
+                freed = await self._event_disk_usage(uuid, size_by_path)
+                try:
+                    if await self.delete_watch_event(uuid):
+                        events += 1
+                        deleted_this_pass += 1
+                        total -= freed
+                except Exception:
+                    logger.exception("Size eviction could not delete watch event %s", uuid)
+
+            if total > max_bytes and not deleted_this_pass:
+                # No events left to shed, so the bytes belong to recordings with no event.
+                for uuid in await self._db_client.recording_uuids_before(now, limit=SIZE_EVICTION_BATCH):
+                    if total <= max_bytes:
+                        break
+                    recording = await self._db_client.get_recording(uuid)
+                    freed = self._path_size(getattr(recording, "file_path", None), size_by_path)
+                    freed += self._path_size(getattr(recording, "thumbnail_path", None), size_by_path)
+                    try:
+                        if await self.delete_recording(uuid):
+                            recordings += 1
+                            deleted_this_pass += 1
+                            total -= freed
+                    except Exception:
+                        logger.exception("Size eviction could not delete recording %s", uuid)
+
+            if not deleted_this_pass:
+                # Over the cap with nothing left that this sweep owns — files outside the
+                # managed roots, or inside the orphan grace period. Saying so is the
+                # useful outcome; looping is not.
+                logger.warning(
+                    "Recordings occupy %.1f MB, over the %s MB cap, but no deletable rows "
+                    "remain — the excess is files outside the managed roots or younger "
+                    "than the orphan grace period.",
+                    total / 1048576,
+                    max_mb,
+                )
+                break
+
+        final = sum(size for _p, size, _m in await asyncio.to_thread(self._scan_recording_files))
+        freed = max(0, initial_total - final)
+        if events or recordings:
+            logger.info(
+                "Size cap (%s MB): evicted %s event(s) and %s orphan recording(s), freeing %.1f MB",
+                max_mb,
+                events,
+                recordings,
+                freed / 1048576,
+            )
+        return {"events": events, "recordings": recordings, "bytes": freed}
+
+    async def prune_recordings_by_age(self, now: Optional[datetime] = None) -> Dict[str, int]:
         """Delete events and clips past the retention window. Returns what it removed.
 
         Events are swept first because `delete_watch_event` already cascades to the clip
@@ -3876,6 +4104,30 @@ class Manager:
                 recordings,
             )
         return {"events": events, "recordings": recordings}
+
+    async def prune_expired_recordings(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Run the whole retention pass: age, then orphans, then the size cap.
+
+        The order is what makes the size cap cheap and correct. Age first sheds whatever
+        is simply too old; the orphan sweep then reclaims files nothing points at, and
+        those bytes count toward the cap — so a directory full of stranded snapshots is
+        fixed by deleting *them* rather than by evicting events a user still wants.
+        Only what is left over gets to force an eviction.
+
+        Both bounds are independent, matching the task-instance precedent in
+        `apps/__init__.py`: either can be switched off with 0 without disabling the other,
+        because "how far back do I care?" and "how much disk may this take?" are
+        different questions.
+        """
+        aged = await self.prune_recordings_by_age(now=now)
+        orphans = await self.sweep_orphan_recording_files()
+        capped = await self.enforce_recording_size_cap()
+        return {
+            "events": aged["events"] + capped["events"],
+            "recordings": aged["recordings"] + capped["recordings"],
+            "orphanFiles": orphans["files"],
+            "bytes": orphans["bytes"] + capped["bytes"],
+        }
 
     # ── Model groups ───────────────────────────────────────────────────────────
 
