@@ -7,12 +7,13 @@ import io
 import logging
 import os
 import random
+import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple
 from uuid import uuid4
 
 import aiofiles
@@ -28,6 +29,7 @@ from apps import (
     THUMB_CACHE_MAX_MB,
 )
 from apps.db_server.hash_index import HashIndex
+from apps.helpers.actions.saveTimelapseAction import resolve_output_dir as resolve_timelapse_dir
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
 from apps.helpers.db.types import (
@@ -75,6 +77,7 @@ from apps.helpers.db.types import (
     PreviewRunUpdate,
     Recording,
     RecordingRead,
+    RecordingStatus,
     RegionRole,
     Source,
     SourceRegionRead,
@@ -133,6 +136,45 @@ RECORDING_MAX_TOTAL_MB_SETTING_KEY = "recording_max_total_mb"
 #: care?"; the size limit is what actually caps storage when a busy watcher produces
 #: clips faster than they age out. 0 or less disables that bound.
 DEFAULT_RECORDING_MAX_TOTAL_MB = 10240
+
+#: Statuses whose rows are *expected* to have no file yet, so their absence is not a
+#: deleted clip. Spelled as strings because the column stores the enum's value.
+_RECORDING_IN_PROGRESS_STATUSES = frozenset({RecordingStatus.PENDING.value, RecordingStatus.WRITING.value})
+
+#: Circuit breaker on the reconcile pass. When most rows lose their file at once the
+#: cause is almost never "the user deleted almost everything" — it is a volume that did
+#: not mount, and deleting the history of a month of events because a bind mount was
+#: late is not a recoverable mistake. Below the row floor the fraction is meaningless
+#: (one missing clip out of two is 50%), so both have to be exceeded to trip it.
+RECONCILE_GUARD_MAX_FRACTION = 0.5
+RECONCILE_GUARD_MIN_ROWS = 8
+
+#: Settings keys for the timelapse bounds. Deliberately *separate* from the recording
+#: ones, because the two answer different questions about different material: a clip is
+#: kept because something happened, a timelapse frame is kept because nothing did. A
+#: month of events is a modest folder; a month of 30-second frames is hundreds of GB per
+#: camera, so one pair of numbers cannot serve both.
+#: Mirrored in `app/settings/main.js` — keep the two in sync.
+TIMELAPSE_RETENTION_SETTING_KEY = "timelapse_retention_days"
+TIMELAPSE_MAX_TOTAL_MB_SETTING_KEY = "timelapse_max_total_mb"
+
+#: Shorter than the recording default: a timelapse writes ~2900 frames per camera per
+#: day at the default 30 s interval, so the size cap is what normally binds and the day
+#: window mostly exists to keep the folder navigable. 0 or less disables either bound.
+DEFAULT_TIMELAPSE_RETENTION_DAYS = 14
+DEFAULT_TIMELAPSE_MAX_TOTAL_MB = 20480
+
+#: The action's registry key, spelled out rather than imported from the registry: this
+#: module reads action rows out of the database and never instantiates one.
+TIMELAPSE_ACTION_KIND = "save_timelapse"
+
+#: What `SaveTimelapseAction` writes: `<camera>_HH-MM-SS.jpg`, inside a `YYYY-MM-DD`
+#: directory. Both halves are matched before anything is deleted, and that pattern is the
+#: whole safety story for this sweep. Unlike recordings, a timelapse lives under
+#: FILES_ROOT — the same tree as the images a user has spent months annotating — and its
+#: directory is one they chose. A sweep that deleted whatever it found in there would
+#: eventually be pointed at a dataset folder and take the annotations with it.
+TIMELAPSE_FRAME_RE = re.compile(r"^.+_\d{2}-\d{2}-\d{2}\.jpe?g$", re.IGNORECASE)
 
 #: How often the sweep runs. The window it enforces is measured in days, so anything
 #: tighter than hourly is filesystem work for no benefit.
@@ -327,6 +369,20 @@ class Manager:
             await self.prune_expired_recordings()
         except Exception:
             logger.exception("Retention sweep failed")
+        # After the retention pass, not before: retention deletes rows *and* their files
+        # together, so reconciling first would stat paths that are about to go anyway.
+        try:
+            await self.reconcile_missing_recording_files()
+        except Exception:
+            logger.exception("Recording reconcile failed")
+        # Its own try, not a second statement inside the one above: the two sweeps share
+        # a schedule and nothing else, and a recordings failure that also silently
+        # skipped the timelapse pass would let a disk fill for a reason the logs blame
+        # on the wrong subsystem.
+        try:
+            await self.prune_expired_timelapse()
+        except Exception:
+            logger.exception("Timelapse retention sweep failed")
 
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
@@ -3871,36 +3927,12 @@ class Manager:
         prevent. Zero or negative means "keep everything", so there is a way to opt out
         that does not involve deleting the setting and guessing at the default.
         """
-        raw = await self._db_client.get_setting(RECORDING_RETENTION_SETTING_KEY)
-        if raw is None or str(raw).strip() == "":
-            return DEFAULT_RECORDING_RETENTION_DAYS
-        try:
-            return int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            logger.warning(
-                "Unreadable %s setting %r; falling back to %s days",
-                RECORDING_RETENTION_SETTING_KEY,
-                raw,
-                DEFAULT_RECORDING_RETENTION_DAYS,
-            )
-            return DEFAULT_RECORDING_RETENTION_DAYS
+        return await self._numeric_setting(RECORDING_RETENTION_SETTING_KEY, DEFAULT_RECORDING_RETENTION_DAYS, "days")
 
     async def get_recording_max_total_mb(self) -> int:
         """Ceiling on total recording bytes, in MB. See `get_recording_retention_days`
         for why an unreadable value falls back rather than raising."""
-        raw = await self._db_client.get_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY)
-        if raw is None or str(raw).strip() == "":
-            return DEFAULT_RECORDING_MAX_TOTAL_MB
-        try:
-            return int(float(str(raw).strip()))
-        except (TypeError, ValueError):
-            logger.warning(
-                "Unreadable %s setting %r; falling back to %s MB",
-                RECORDING_MAX_TOTAL_MB_SETTING_KEY,
-                raw,
-                DEFAULT_RECORDING_MAX_TOTAL_MB,
-            )
-            return DEFAULT_RECORDING_MAX_TOTAL_MB
+        return await self._numeric_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, DEFAULT_RECORDING_MAX_TOTAL_MB, "MB")
 
     def _scan_recording_files(self) -> List[Tuple[Path, int, float]]:
         """Every file under the recordings roots, with size and mtime. Blocking.
@@ -4148,6 +4180,302 @@ class Manager:
             "orphanFiles": orphans["files"],
             "bytes": orphans["bytes"] + capped["bytes"],
         }
+
+    async def reconcile_missing_recording_files(self, now_ts: Optional[float] = None) -> Dict[str, int]:
+        """Clear rows whose media file is no longer on disk.
+
+        The exact inverse of `sweep_orphan_recording_files`, and needed for the same
+        reason in the other direction: a user tidying up in a file manager deletes clips
+        and snapshots without going through the app, and what is left is an event card
+        with a player that will never load and a "last clip" link that 404s.
+
+        A recording row is deleted outright — the row exists to index a file, and an
+        index entry for a file nobody can produce again is worth nothing. An *event* is
+        not: it is the record that something happened, which stays true after its
+        snapshot is gone, so only `snapshot_path` is cleared and the event survives.
+
+        Three exemptions, all of which stop this from eating live data:
+
+        * rows still `pending`/`writing`, which are *supposed* to have no file yet;
+        * anything inside the same grace period the orphan sweep uses, because a clip's
+          row is written around the time its file appears and the two orderings vary; and
+        * paths outside the managed roots, matching the rule the rest of retention
+          follows — a clip written to a custom `output_dir` on a drive that happens to be
+          unplugged must not lose its row over it.
+
+        Plus a circuit breaker: if most rows look missing at once, that is far more
+        likely to be an unmounted volume than a user who deleted almost everything, so
+        the pass reports and does nothing. Stale rows are recoverable; deleted history
+        is not.
+        """
+        now_ts = time.time() if now_ts is None else now_ts
+        if not any(root.is_dir() for root in self._recording_roots):
+            # No managed root on disk at all: nothing to compare against, and every row
+            # would look missing. This is the unmounted case in its clearest form.
+            logger.warning("Skipping recording reconcile: none of the managed roots exist")
+            return {"recordings": 0, "snapshots": 0}
+
+        roots = [os.path.realpath(root) for root in self._recording_roots]
+        rows = await self._db_client.rows_naming_recording_files()
+
+        candidates: List[Tuple[Dict[str, Any], List[str]]] = []
+        for row in rows:
+            if str(row.get("status") or "") in _RECORDING_IN_PROGRESS_STATUSES:
+                continue
+            at = row.get("at")
+            if isinstance(at, datetime):
+                age = now_ts - at.replace(tzinfo=at.tzinfo or timezone.utc).timestamp()
+                if age < RECORDINGS_ORPHAN_GRACE_S:
+                    continue
+            managed = [p for p in row["paths"] if any(os.path.realpath(p).startswith(root + os.sep) for root in roots)]
+            if managed:
+                candidates.append((row, managed))
+
+        # One hop to the thread pool for the whole stat pass, not one per path: this runs
+        # on the worker loop, and a row-at-a-time await would put a context switch between
+        # every stat for no benefit.
+        def _existing(paths: Sequence[str]) -> Set[str]:
+            return {p for p in paths if os.path.exists(p)}
+
+        present = await asyncio.to_thread(_existing, [p for _row, managed in candidates for p in managed])
+
+        considered = len(candidates)
+        missing = [row for row, managed in candidates if not any(p in present for p in managed)]
+
+        if not missing:
+            return {"recordings": 0, "snapshots": 0}
+        if considered >= RECONCILE_GUARD_MIN_ROWS and len(missing) / considered > RECONCILE_GUARD_MAX_FRACTION:
+            logger.warning(
+                "Skipping recording reconcile: %s of %s rows have no file, which looks like an "
+                "unavailable volume rather than deleted media. Nothing was removed.",
+                len(missing),
+                considered,
+            )
+            return {"recordings": 0, "snapshots": 0}
+
+        recordings = 0
+        snapshots = 0
+        for row in missing:
+            try:
+                if row["kind"] == "recording":
+                    if await self.delete_recording(row["uuid"]):
+                        recordings += 1
+                else:
+                    await self._db_client.update_watch_event(row["uuid"], snapshot_path=None)
+                    snapshots += 1
+            except Exception:
+                # One unreadable row must not stop the pass; the stale index is the point.
+                logger.exception("Reconcile could not clear %s %s", row["kind"], row["uuid"])
+
+        logger.info(
+            "Recording reconcile: dropped %s row(s) for deleted clips and cleared %s missing snapshot(s)",
+            recordings,
+            snapshots,
+        )
+        return {"recordings": recordings, "snapshots": snapshots}
+
+    # ── Timelapse retention ────────────────────────────────────────────────────
+
+    async def get_timelapse_retention_days(self) -> int:
+        """How many days of timelapse frames to keep. 0 or less keeps everything.
+
+        Falls back on an unreadable value for the same reason the recording bounds do:
+        this runs from the worker loop, and a stuck sweep is a disk that fills silently.
+        """
+        return await self._numeric_setting(TIMELAPSE_RETENTION_SETTING_KEY, DEFAULT_TIMELAPSE_RETENTION_DAYS, "days")
+
+    async def get_timelapse_max_total_mb(self) -> int:
+        """Ceiling on total timelapse bytes, in MB. 0 or less means no ceiling."""
+        return await self._numeric_setting(TIMELAPSE_MAX_TOTAL_MB_SETTING_KEY, DEFAULT_TIMELAPSE_MAX_TOTAL_MB, "MB")
+
+    async def _numeric_setting(self, key: str, fallback: int, unit: str) -> int:
+        raw = await self._db_client.get_setting(key)
+        if raw is None or str(raw).strip() == "":
+            return fallback
+        try:
+            return int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            logger.warning("Unreadable %s setting %r; falling back to %s %s", key, raw, fallback, unit)
+            return fallback
+
+    async def timelapse_roots(self) -> List[Path]:
+        """Every directory a `save_timelapse` action writes into.
+
+        Taken from the actions themselves rather than from a single configured root,
+        because the directory is per-action: two watchers can keep their timelapses
+        apart, and neither should have to know about a global setting to be swept.
+
+        A **disabled** action still contributes its directory. Disabling stops new frames
+        being written; it does not make the ones already on disk somebody else's problem,
+        and the alternative is a folder that grows to the size the user set and then
+        silently stops being managed. Deleting the action entirely does orphan its
+        frames — the same trade the recording sweep makes for a custom `output_dir`, and
+        for the same reason: nothing left in the database names the directory.
+        """
+        roots: List[Path] = []
+        seen: Set[str] = set()
+        for profile in await self._db_client.list_watch_profiles():
+            for action in profile.actions:
+                if action.kind != TIMELAPSE_ACTION_KIND:
+                    continue
+                try:
+                    root = resolve_timelapse_dir((action.params_json or {}).get("output_dir") or "")
+                except (ValueError, OSError) as e:
+                    # A path that no longer resolves is a misconfiguration to report, not
+                    # a reason to abandon the sweep for every other watcher.
+                    logger.warning("Skipping timelapse root for action %s: %s", action.uuid, e)
+                    continue
+                key = str(root)
+                if key not in seen:
+                    seen.add(key)
+                    roots.append(root)
+        return roots
+
+    def _scan_timelapse_frames(self, roots: Sequence[Path]) -> List[Tuple[Path, int, date]]:
+        """Every deletable frame under the timelapse roots, with its size and its day.
+
+        Blocking. Three rails decide what is deletable, and all three exist because these
+        roots live under FILES_ROOT alongside a user's annotated images:
+
+        * only immediate subdirectories that parse as `YYYY-MM-DD`,
+        * only files inside them matching the frame naming, and
+        * never a file with a JSON sidecar beside it — that is the app's marker for an
+          image someone has curated, and a timelapse frame deliberately has none.
+
+        The day comes from the *directory name*, not from mtime. The name records when
+        the frame was filmed, which is the thing retention is about; mtime would make a
+        restored backup or a `cp -r` look like today's footage.
+        """
+        entries: List[Tuple[Path, int, date]] = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                day_dirs = sorted(root.iterdir())
+            except OSError:
+                continue
+            for day_dir in day_dirs:
+                if not day_dir.is_dir():
+                    continue
+                try:
+                    day = datetime.strptime(day_dir.name, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                try:
+                    candidates = sorted(day_dir.iterdir())
+                except OSError:
+                    continue
+                for path in candidates:
+                    if not TIMELAPSE_FRAME_RE.match(path.name):
+                        continue
+                    if path.with_suffix(path.suffix + ".json").exists():
+                        continue
+                    try:
+                        if not path.is_file():
+                            continue
+                        size = path.stat().st_size
+                    except OSError:
+                        # Raced with another deleter, or unreadable. Not this sweep's
+                        # business either way.
+                        continue
+                    entries.append((path, size, day))
+        return entries
+
+    def _delete_timelapse_frames(self, paths: Sequence[Path]) -> Tuple[int, int]:
+        """Unlink frames and tidy up any day directory left empty. Blocking.
+
+        Returns `(files, bytes)`. The empty-directory pass is what stops a year-old
+        timelapse leaving 365 empty folders behind — `rmdir` only, so a directory holding
+        anything the sweep chose not to delete survives untouched.
+        """
+        files = 0
+        freed = 0
+        day_dirs: Set[Path] = set()
+        for path in paths:
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError:
+                continue
+            files += 1
+            freed += size
+            day_dirs.add(path.parent)
+        for day_dir in day_dirs:
+            try:
+                day_dir.rmdir()
+            except OSError:
+                # Not empty, or gone already. Both are fine.
+                pass
+        return files, freed
+
+    async def prune_timelapse_by_age(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Delete timelapse frames filmed before the retention window opens."""
+        days = await self.get_timelapse_retention_days()
+        if days <= 0:
+            return {"files": 0, "bytes": 0}
+
+        # Local dates, because the day directories are named in local time — comparing
+        # them against a UTC "today" would shed a day early or late for most of the world.
+        today = (now or datetime.now().astimezone()).date()
+        cutoff = today - timedelta(days=days)
+
+        roots = await self.timelapse_roots()
+        entries = await asyncio.to_thread(self._scan_timelapse_frames, roots)
+        expired = [path for path, _size, day in entries if day < cutoff]
+        if not expired:
+            return {"files": 0, "bytes": 0}
+
+        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, expired)
+        logger.info(
+            "Timelapse retention (%s day window): removed %s frame(s), freeing %.1f MB",
+            days,
+            files,
+            freed / 1048576,
+        )
+        return {"files": files, "bytes": freed}
+
+    async def enforce_timelapse_size_cap(self) -> Dict[str, int]:
+        """Delete the oldest timelapse frames until the roots fit under the cap.
+
+        Oldest-first, and frame-by-frame rather than whole days: a timelapse degrades
+        gracefully under partial deletion in a way an event clip does not, and evicting
+        an entire day to reclaim a few MB would put a visible hole in the playback.
+        """
+        max_mb = await self.get_timelapse_max_total_mb()
+        if max_mb <= 0:
+            return {"files": 0, "bytes": 0}
+        max_bytes = max_mb * 1024 * 1024
+
+        roots = await self.timelapse_roots()
+        entries = await asyncio.to_thread(self._scan_timelapse_frames, roots)
+        total = sum(size for _p, size, _d in entries)
+        if total <= max_bytes:
+            return {"files": 0, "bytes": 0}
+
+        # Sorted by (day, name) rather than by mtime, so the order matches the one the
+        # age bound already imposes and the two bounds cannot disagree about what "oldest"
+        # means. The name carries the time within the day.
+        doomed: List[Path] = []
+        for path, size, day in sorted(entries, key=lambda e: (e[2], e[0].name)):
+            if total <= max_bytes:
+                break
+            doomed.append(path)
+            total -= size
+
+        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, doomed)
+        logger.info("Timelapse size cap (%s MB): evicted %s frame(s), freeing %.1f MB", max_mb, files, freed / 1048576)
+        return {"files": files, "bytes": freed}
+
+    async def prune_expired_timelapse(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Run both timelapse bounds: age first, then the size cap over what is left.
+
+        Age first for the same reason the recording pass does it: whatever is simply too
+        old should go before anything still inside the window is forced out, so the cap
+        only ever evicts frames a user might otherwise have kept.
+        """
+        aged = await self.prune_timelapse_by_age(now=now)
+        capped = await self.enforce_timelapse_size_cap()
+        return {"files": aged["files"] + capped["files"], "bytes": aged["bytes"] + capped["bytes"]}
 
     # ── Model groups ───────────────────────────────────────────────────────────
 

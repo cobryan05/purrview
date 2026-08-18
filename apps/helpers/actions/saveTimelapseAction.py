@@ -22,10 +22,14 @@ land on the interval boundary (:00 and :30 for 30 s) and stay aligned across a w
 restart, where a gap-based timer would drift by up to one frame period every restart and
 by the frame interval itself over a long run.
 
-⚠️ Nothing prunes this directory. Unlike event clips and snapshots, which the recording
-retention sweep bounds, a timelapse is an unbounded write — at 30 s and ~200 KB a frame
-that is roughly 0.6 GB per camera per year. Point `output_dir` somewhere you are willing
-to let grow, or age it out from outside the app.
+Retention is **not** this action's job. It writes; `Manager.prune_expired_timelapse` in
+db_server bounds what accumulates, on its own pair of settings (Settings → Timelapse
+Retention) separate from the recording ones. They have to be separate: at a 30 s interval
+a single camera writes ~2,900 frames a day, so ~500 MB daily and ~15 GB a month at a
+typical frame size — one or two orders of magnitude more than the event clips the
+recording bounds were sized for. The sweep only touches directories a `save_timelapse`
+action names, and only files shaped like the ones written below, because these live under
+`FILES_ROOT` beside images a user may have spent months annotating.
 """
 
 import asyncio
@@ -137,8 +141,8 @@ class SaveTimelapseAction(Action):
                 "default": DEFAULT_TIMELAPSE_DIR,
                 "help": (
                     "Directory to write frames into, relative to the image dataset root. A per-day "
-                    "subdirectory (YYYY-MM-DD, local time) is created under it. Nothing prunes "
-                    "this — it grows until you remove it."
+                    "subdirectory (YYYY-MM-DD, local time) is created under it. How much accumulates "
+                    "is bounded by Settings → Timelapse Retention."
                 ),
             },
             "interval_s": {

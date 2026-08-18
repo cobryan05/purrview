@@ -6932,6 +6932,61 @@ class DbClient:
             paths.update(p for p in result.all() if p)
         return paths
 
+    async def rows_naming_recording_files(self) -> List[Dict[str, Any]]:
+        """Every row that names a media file, for the reverse of the orphan sweep.
+
+        The orphan sweep asks "is there a row for this file?"; this answers "is there a
+        file for this row?", which is the question a user deleting clips in a file
+        manager creates. Both are needed: neither direction repairs the other's damage.
+
+        Returned as plain dicts rather than read models because the caller only stats
+        paths and deletes rows, and the read models deliberately omit `snapshot_path`.
+        `status` and `created_at` come along because a row is *expected* to have no file
+        while it is still being written — without them the reconciler would race clip
+        extraction and delete the row of a clip being cut right now.
+        """
+        rows: List[Dict[str, Any]] = []
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(
+                    Recording.uuid,
+                    Recording.file_path,
+                    Recording.thumbnail_path,
+                    Recording.status,
+                    Recording.created_at,
+                )
+            )
+            for uuid, file_path, thumbnail_path, status, created_at in result.all():
+                if file_path or thumbnail_path:
+                    rows.append(
+                        {
+                            "kind": "recording",
+                            "uuid": uuid,
+                            "paths": [p for p in (file_path, thumbnail_path) if p],
+                            "status": status,
+                            "at": created_at,
+                        }
+                    )
+            result = await session.exec(
+                select(WatchEvent.uuid, WatchEvent.snapshot_path, WatchEvent.started_at).where(
+                    WatchEvent.snapshot_path.is_not(None)
+                )
+            )
+            for uuid, snapshot_path, started_at in result.all():
+                if snapshot_path:
+                    rows.append(
+                        {
+                            "kind": "event_snapshot",
+                            "uuid": uuid,
+                            "paths": [snapshot_path],
+                            # A snapshot is written synchronously when the event opens, so
+                            # there is no in-progress state to exempt the way a clip has.
+                            "status": None,
+                            "at": started_at,
+                        }
+                    )
+        return rows
+
     async def close_watch_event(
         self,
         uuid: str,

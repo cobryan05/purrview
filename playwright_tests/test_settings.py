@@ -274,9 +274,9 @@ class TestSettingsLayout:
 
         wrap = page.locator("#tab-settings .settings-wrap")
         expect(wrap).to_have_css("display", "grid")
-        # Servers, MQTT Broker, Recording Retention, Deduplication, Interface,
-        # Keyboard Shortcuts
-        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(6)
+        # Servers, MQTT Broker, Recording Retention, Timelapse Retention,
+        # Deduplication, Interface, Keyboard Shortcuts
+        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(7)
 
         # At a desktop width the grid resolves to more than one column.
         columns = page.evaluate(
@@ -390,7 +390,7 @@ class TestMqttSettings:
         _navigate_to_settings(page, base_url)
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
-        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(6)
+        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(7)
 
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
         _mock_server_config(page)
@@ -992,3 +992,110 @@ class TestRecordingRetention:
         _navigate_to_settings(page, base_url)
 
         expect(page.locator("[data-testid='settings-retention-caveat']")).to_contain_text("custom output folder")
+
+
+# ---------------------------------------------------------------------------
+# 3e. Timelapse retention panel
+# ---------------------------------------------------------------------------
+
+
+def _timelapse_field(page: Page):
+    return page.locator("#settings-section-timelapse-retention [data-testid='settings-timelapse-days']")
+
+
+def _timelapse_size_field(page: Page):
+    return page.locator("#settings-section-timelapse-retention [data-testid='settings-timelapse-max-mb']")
+
+
+def _timelapse_status(page: Page, index: int = 0):
+    return page.locator("#settings-section-timelapse-retention .settings-server-status").nth(index)
+
+
+class TestTimelapseRetention:
+    """Timelapse frames get their own bounds, in their own panel.
+
+    Not two more rows under Recording Retention: a clip is kept because something
+    happened and a month of them is a modest folder, while a timelapse keeps shooting
+    when nothing does — ~2,900 frames per camera per day. One pair of numbers cannot
+    serve both without the bulkier material silently evicting the other.
+    """
+
+    def test_it_is_a_panel_of_its_own(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(page.locator("#settings-section-timelapse-retention")).to_be_visible()
+        # And distinct from the recording one, whose values it must not share.
+        expect(page.locator("#settings-section-retention")).to_be_visible()
+
+    def test_defaults_when_unset(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(_timelapse_field(page)).to_have_value("14")
+        expect(_timelapse_size_field(page)).to_have_value("20480")
+
+    def test_stored_values_populate_the_fields(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page, {"timelapse_retention_days": "3", "timelapse_max_total_mb": "512"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_timelapse_field(page)).to_have_value("3")
+        expect(_timelapse_status(page, 0)).to_contain_text("3 days")
+        expect(_timelapse_size_field(page)).to_have_value("512")
+        expect(_timelapse_status(page, 1)).to_contain_text("512 MB")
+
+    def test_it_does_not_read_the_recording_keys(self, page: Page, base_url: str):
+        """Sharing a key would make one panel silently rewrite the other's bound."""
+        _mock_server_config(page)
+        _mock_settings_get(page, {"recording_retention_days": "99", "recording_max_total_mb": "99"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_timelapse_field(page)).to_have_value("14")
+        expect(_timelapse_size_field(page)).to_have_value("20480")
+
+    def test_zero_is_shown_as_keeping_everything(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page, {"timelapse_retention_days": "0"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_timelapse_status(page, 0)).to_contain_text("No age limit")
+
+    def test_save_writes_the_timelapse_keys(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+
+        def handle_put(route: Route):
+            if route.request.method == "PUT":
+                put_calls.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route(lambda url: "/api/settings/" in url, handle_put)
+
+        _timelapse_field(page).fill("7")
+        page.locator("[data-testid='settings-timelapse-days-save']").click()
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/timelapse_retention_days")
+        assert put_calls[0][0].rstrip("/").endswith("/timelapse_retention_days")
+        assert put_calls[0][1]["value"] == "7"
+
+        _timelapse_size_field(page).fill("4096")
+        page.locator("[data-testid='settings-timelapse-max-mb-save']").click()
+        wait_until(page, lambda: len(put_calls) > 1, "Expected PUT to /api/settings/timelapse_max_total_mb")
+        assert put_calls[1][0].rstrip("/").endswith("/timelapse_max_total_mb")
+        assert put_calls[1][1]["value"] == "4096"
+
+    def test_the_sweep_scope_is_stated(self, page: Page, base_url: str):
+        """These folders live under the image datasets, beside a user's annotated images.
+        What the sweep will and will not touch is the thing they need to know."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        caveat = page.locator("[data-testid='settings-timelapse-caveat']")
+        expect(caveat).to_contain_text("JSON sidecar")
+        expect(caveat).to_contain_text("YYYY-MM-DD")

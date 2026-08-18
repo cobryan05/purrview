@@ -33,15 +33,18 @@ export async function init() {
   // The settings panels load their values concurrently — each awaits its
   // own settings reads, so building them in sequence would serialise round-trips
   // that have nothing to do with each other.
-  const [serverPanel, mqttPanel, retentionPanel, dedupPanel, uiPanel] = await Promise.all([
+  const [serverPanel, mqttPanel, retentionPanel, timelapsePanel, dedupPanel, uiPanel] = await Promise.all([
     _buildServerSection(),
     _buildMqttSection(),
     _buildRetentionSection(),
+    _buildTimelapseRetentionSection(),
     _buildDedupSection(),
     _buildUiSettingsSection(),
   ]);
 
-  wrap.append(serverPanel, mqttPanel, retentionPanel, dedupPanel, uiPanel, _buildHotkeySection());
+  wrap.append(
+    serverPanel, mqttPanel, retentionPanel, timelapsePanel, dedupPanel, uiPanel, _buildHotkeySection(),
+  );
   container.appendChild(wrap);
 }
 
@@ -402,6 +405,78 @@ async function _buildRetentionSection() {
     'Only the default clip and snapshot folders are managed. A "Record clip" action pointed at a '
     + 'custom output folder writes outside them, so those files are neither counted toward the size '
     + 'limit nor deleted.';
+  body.appendChild(caveat);
+
+  return section;
+}
+
+/**
+ * Timelapse bounds, mirroring `TIMELAPSE_*` in `apps/db_server/manager.py`.
+ *
+ * A separate panel from Recording Retention rather than two more rows inside it,
+ * because the numbers are not comparable: a clip is kept because something happened and
+ * a month of them is a modest folder, while a timelapse keeps shooting when nothing
+ * happens and a month at 30-second intervals is hundreds of GB per camera. Sharing one
+ * pair of bounds would mean whichever material is bulkier silently evicts the other.
+ */
+export const TIMELAPSE_RETENTION_SETTING_KEY = 'timelapse_retention_days';
+export const TIMELAPSE_MAX_MB_SETTING_KEY = 'timelapse_max_total_mb';
+
+/** Mirror `DEFAULT_TIMELAPSE_*` in `apps/db_server/manager.py`. */
+const TIMELAPSE_DEFAULT_DAYS = 14;
+const TIMELAPSE_DEFAULT_MAX_MB = 20480;
+
+async function _buildTimelapseRetentionSection() {
+  const { section, body } = _panel('Timelapse Retention', { id: 'settings-section-timelapse-retention' });
+
+  const [days, maxMb] = await Promise.all([
+    _numericSetting(TIMELAPSE_RETENTION_SETTING_KEY, TIMELAPSE_DEFAULT_DAYS),
+    _numericSetting(TIMELAPSE_MAX_MB_SETTING_KEY, TIMELAPSE_DEFAULT_MAX_MB),
+  ]);
+
+  const note = document.createElement('p');
+  note.className = 'settings-dedup-warning';
+  note.textContent =
+    'Frames written by a "Save timelapse" action are removed once they pass either bound — whichever '
+    + 'is reached first, and either can be switched off with 0 without disabling the other. A camera '
+    + 'shooting every 30 seconds writes about 2,900 frames a day, so the size limit is usually the one '
+    + 'that binds. Age is measured from the day folder the frame was filmed in, not from when the file '
+    + 'was last touched, and the sweep runs about once an hour.';
+  body.appendChild(note);
+
+  body.appendChild(_boundRow({
+    label: 'Keep timelapse frames for',
+    description: 'Days. Set to 0 to apply no age limit.',
+    testid: 'settings-timelapse-days',
+    settingKey: TIMELAPSE_RETENTION_SETTING_KEY,
+    value: days,
+    unit: 'days',
+    describe: (n) => (n > 0
+      ? [`Deleting frames filmed more than ${n} day${n === 1 ? '' : 's'} ago.`, 'info']
+      : ['No age limit — frames are kept until the size limit evicts them.', 'muted']),
+  }));
+
+  body.appendChild(_boundRow({
+    label: 'Use at most',
+    description: 'MB of disk for timelapse frames. Set to 0 to apply no size limit.',
+    testid: 'settings-timelapse-max-mb',
+    settingKey: TIMELAPSE_MAX_MB_SETTING_KEY,
+    value: maxMb,
+    unit: 'MB',
+    describe: (n) => (n > 0
+      ? [`Evicting the oldest frames once timelapses exceed ${n} MB.`, 'info']
+      : ['No size limit — disk use grows until the age limit removes something.', 'muted']),
+  }));
+
+  const caveat = document.createElement('p');
+  caveat.className = 'settings-dedup-warning';
+  caveat.dataset.testid = 'settings-timelapse-caveat';
+  caveat.textContent =
+    'Only the output folders your "Save timelapse" actions name are swept, and only files that match '
+    + 'what the action writes — a day folder named YYYY-MM-DD holding <camera>_HH-MM-SS.jpg frames. '
+    + 'Anything else in those folders is left alone, including any image with a JSON sidecar, so a '
+    + 'folder you also annotate in is safe. Deleting the action itself stops its old frames being '
+    + 'managed, because nothing left names the folder — clear them out before removing it.';
   body.appendChild(caveat);
 
   return section;
