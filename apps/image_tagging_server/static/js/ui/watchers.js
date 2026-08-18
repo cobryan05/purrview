@@ -573,6 +573,11 @@ function buildRuleRow(rule, ctx) {
 
   let subjectARefs = [...(rule.subjectARefsJson || [])];
   let subjectBRefs = [...(rule.subjectBRefsJson || [])];
+  // "…and everything under it in the label tree". Stored as a flag and expanded when the
+  // watcher starts, so a label added to the tree later is covered without editing the
+  // rule — which also means it takes effect on the watcher's next restart, not instantly.
+  let subjectADescendants = Boolean(rule.subjectAIncludeDescendants);
+  let subjectBDescendants = Boolean(rule.subjectBIncludeDescendants);
 
   const subjectAHost = el('span', 'watch-rule-slot');
   subjectAHost.dataset.testid = 'watch-rule-subject-a';
@@ -596,6 +601,14 @@ function buildRuleRow(rule, ctx) {
       emptySummary: 'None selected',
       emptyText: '(no labels defined)',
       filterKey: 'watch-rule-subject-a',
+      hierarchyToggle: {
+        label: 'Include child labels',
+        default: subjectADescendants,
+        onChange: (value) => {
+          subjectADescendants = value;
+          ctx.onAnyChange();
+        },
+      },
       onChange: (selected) => {
         subjectARefs = selected;
         ctx.onAnyChange();
@@ -619,10 +632,15 @@ function buildRuleRow(rule, ctx) {
       // uuids selected in a zone picker — the shape of the bug that used to silently
       // rewrite "is inside Litter Box" as "is inside Cat" on the next save.
       subjectBRefs = [];
+      // Zones have no hierarchy, and the backend rejects the flag on a zone slot, so a
+      // leftover true would make the whole save fail with a message about a control the
+      // user can no longer see.
+      subjectBDescendants = false;
       buildSubjectB();
       ctx.onAnyChange();
     },
   );
+  subjectBKind.dataset.testid = 'watch-rule-subject-b-kind';
 
   const subjectBHost = el('span', 'watch-rule-slot');
   subjectBHost.dataset.testid = 'watch-rule-subject-b';
@@ -649,6 +667,18 @@ function buildRuleRow(rule, ctx) {
       emptySummary: 'None selected',
       emptyText: isLabel ? '(no labels defined)' : '(no zones drawn on this watcher’s sources)',
       filterKey: 'watch-rule-subject-b',
+      // Zones have no hierarchy, so the toggle only exists for a label-kind subject B —
+      // and the backend rejects the flag on a zone slot rather than ignoring it.
+      hierarchyToggle: isLabel
+        ? {
+          label: 'Include child labels',
+          default: subjectBDescendants,
+          onChange: (value) => {
+            subjectBDescendants = value;
+            ctx.onAnyChange();
+          },
+        }
+        : null,
       onChange: (selected) => {
         subjectBRefs = selected;
         ctx.onAnyChange();
@@ -723,9 +753,14 @@ function buildRuleRow(rule, ctx) {
         enabled: true,
         subjectAKind: 'label',
         subjectARefsJson: subjectARefs,
+        subjectAIncludeDescendants: subjectADescendants,
         relation: relation.value,
         subjectBKind: isUnary ? 'none' : subjectBKind.value,
         subjectBRefsJson: isUnary ? [] : subjectBRefs,
+        // Never sent true for a unary or zone-kind slot — the backend rejects the flag
+        // where there is no hierarchy to descend.
+        subjectBIncludeDescendants:
+          !isUnary && subjectBKind.value === 'label' && subjectBDescendants,
         threshold: num(threshold, 0.6),
         // These three defaults are not arbitrary: without them a raw threshold flaps
         // into an MQTT storm and a dozen clips for one visit.

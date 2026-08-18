@@ -1696,9 +1696,16 @@ class InteractionRule(SQLModel, table=True):
     # litter box" is one rule, not three. Which member actually matched is reported on
     # the event so an action's template can name it.
     subject_a_refs_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    # "…and everything under it in the label tree", resolved when the watcher starts
+    # rather than stored expanded. Storing the descendants would freeze the rule at the
+    # moment it was written: a label added to the tree later would silently not match,
+    # which is exactly the maintenance this flag exists to avoid. Label slots only —
+    # zones have no hierarchy.
+    subject_a_include_descendants: bool = Field(default=False)
     relation: str = Field(default=RuleRelation.CONTAINS.value)
     subject_b_kind: str = Field(default=RuleSubjectKind.NONE.value)
     subject_b_refs_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    subject_b_include_descendants: bool = Field(default=False)
     threshold: float = Field(default=0.5)
     # The predicate must hold continuously this long before the event STARTS.
     min_duration_s: float = Field(default=2.0)
@@ -1926,9 +1933,11 @@ class InteractionRuleRead(OrmModel):
     enabled: bool = True
     subject_a_kind: str
     subject_a_refs_json: List[Any] = Field(default_factory=list)
+    subject_a_include_descendants: bool = False
     relation: str
     subject_b_kind: str
     subject_b_refs_json: List[Any] = Field(default_factory=list)
+    subject_b_include_descendants: bool = False
     threshold: float = 0.5
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
@@ -1943,9 +1952,11 @@ class InteractionRuleWrite(ApiModel):
     enabled: bool = True
     subject_a_kind: RuleSubjectKind = RuleSubjectKind.LABEL
     subject_a_refs_json: List[Any] = Field(default_factory=list)
+    subject_a_include_descendants: bool = False
     relation: RuleRelation = RuleRelation.CONTAINS
     subject_b_kind: RuleSubjectKind = RuleSubjectKind.NONE
     subject_b_refs_json: List[Any] = Field(default_factory=list)
+    subject_b_include_descendants: bool = False
     threshold: float = 0.5
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
@@ -1976,6 +1987,19 @@ class InteractionRuleWrite(ApiModel):
             # A zone slot naming several zones is "inside any of these", which is a
             # coherent thing to want; a *subject* slot of zones is not, since zones
             # aren't tracked. That is already prevented by kind, not by count.
+
+        # Only labels form a tree, so "include descendants" against a zone slot is a
+        # control that silently does nothing. Rejected rather than ignored — the UI
+        # hides the toggle for zones, so a payload carrying it means something is wrong.
+        for kind, expand, side in (
+            (self.subject_a_kind, self.subject_a_include_descendants, "a"),
+            (self.subject_b_kind, self.subject_b_include_descendants, "b"),
+        ):
+            if expand and kind != RuleSubjectKind.LABEL:
+                raise ValueError(
+                    f"subject_{side}_include_descendants needs subject_{side}_kind 'label'; "
+                    f"{kind.value!r} has no hierarchy to descend"
+                )
 
         if self.min_duration_s < 0 or self.rearm_delay_s < 0:
             raise ValueError("min_duration_s and rearm_delay_s must not be negative")

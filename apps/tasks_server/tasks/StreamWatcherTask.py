@@ -52,7 +52,7 @@ from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventPhase
 from apps.helpers.watch.geometry import zone_from_row
-from apps.helpers.watch.rules import RuleSpec
+from apps.helpers.watch.rules import RuleSpec, expand_descendants
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifetimes, resolve_model_names
@@ -301,7 +301,19 @@ class StreamWatcherTask(Task):
 
         source_helper = SourceHelper(db_api_client)
         lifetimes = build_label_lifetimes(self._profile.label_lifetimes)
-        rule_specs = [RuleSpec.from_row(r) for r in self._profile.rules if r.enabled]
+        # Rules whose label slots opted into "include children" are widened here, once,
+        # against the ancestry map fetched just above. Expanding at start rather than
+        # storing the closure means a label added to the tree later is picked up on the
+        # watcher's next restart, instead of never.
+        rule_specs = [
+            expand_descendants(RuleSpec.from_row(r), self._label_ancestry) for r in self._profile.rules if r.enabled
+        ]
+        for spec in rule_specs:
+            if spec.subject_a_include_descendants or spec.subject_b_include_descendants:
+                self.log(
+                    f"Rule {spec.name!r} covers {len(spec.subject_a_refs)} subject label(s) "
+                    f"and {len(spec.subject_b_refs)} target(s) after including descendants"
+                )
 
         for src in sorted(self._profile.sources, key=lambda s: s.order):
             if not src.enabled:

@@ -26,7 +26,7 @@ re-fire inside the rearm window rejoins the event in progress rather than openin
 new one.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -56,6 +56,12 @@ class RuleSpec:
     relation: str = "contains"  # "present" | "iou" | "contains" | "overlaps" | "centroid_in" | "distance"
     subject_b_kind: str = "none"  # "label" | "zone" | "none"
     subject_b_refs: List[str] = field(default_factory=list)
+    #: Whether each slot's refs were widened to include their label descendants. Recorded
+    #: for reporting only — `expand_descendants` has already rewritten the ref lists by
+    #: the time the engine sees a spec, so matching never consults these. The engine is
+    #: pure and has no label tree to consult even if it wanted to.
+    subject_a_include_descendants: bool = False
+    subject_b_include_descendants: bool = False
     threshold: float = 0.5
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
@@ -74,6 +80,8 @@ class RuleSpec:
             relation=get("relation", "contains"),
             subject_b_kind=get("subject_b_kind", "none"),
             subject_b_refs=[str(r) for r in (get("subject_b_refs_json") or [])],
+            subject_a_include_descendants=bool(get("subject_a_include_descendants", False)),
+            subject_b_include_descendants=bool(get("subject_b_include_descendants", False)),
             threshold=get("threshold", 0.5),
             min_duration_s=get("min_duration_s", 2.0),
             rearm_delay_s=get("rearm_delay_s", 10.0),
@@ -81,6 +89,52 @@ class RuleSpec:
             enabled=get("enabled", True),
             event_label=get("event_label"),
         )
+
+
+def descendants_of(label_uuid: str, ancestry: Dict[str, Sequence[str]]) -> List[str]:
+    """Every label under `label_uuid`, from an {uuid: ancestors} map.
+
+    Inverted from the ancestry map the watcher already builds rather than fetching a
+    second parent→children view of the same tree.
+    """
+    return sorted(uuid for uuid, ancestors in ancestry.items() if label_uuid in set(ancestors or ()))
+
+
+def expand_descendants(spec: RuleSpec, ancestry: Dict[str, Sequence[str]]) -> RuleSpec:
+    """Widen a rule's label slots to cover their descendants, returning a new spec.
+
+    Done here, once at watcher start, rather than inside the matching loop: the engine is
+    pure and has no label tree, and re-deriving the closure per frame would be pointless
+    work at 5 fps per camera.
+
+    Storing the expansion instead of the flag was the alternative and is worse — it
+    freezes the rule at the moment it was written, so a label added to the tree later
+    silently stops being matched. The cost of doing it here is that a *newly added* label
+    is picked up when the watcher restarts, not the instant it is created.
+
+    Only label slots expand. Zones have no hierarchy, and a zone uuid appears in no
+    ancestry map, so a zone slot would silently widen to nothing.
+    """
+    if not ancestry:
+        return spec
+
+    def widen(kind: str, refs: List[str], enabled: bool) -> List[str]:
+        if not enabled or kind != "label":
+            return refs
+        widened = list(refs)
+        seen = set(refs)
+        for ref in refs:
+            for child in descendants_of(ref, ancestry):
+                if child not in seen:
+                    seen.add(child)
+                    widened.append(child)
+        return widened
+
+    return replace(
+        spec,
+        subject_a_refs=widen(spec.subject_a_kind, spec.subject_a_refs, spec.subject_a_include_descendants),
+        subject_b_refs=widen(spec.subject_b_kind, spec.subject_b_refs, spec.subject_b_include_descendants),
+    )
 
 
 @dataclass

@@ -881,3 +881,83 @@ class TestTrackerListing:
         resp = await http_client.get("/api/watch-profiles/trackers")
 
         assert resp.json().get("trackers"), "the parameterised route swallowed the literal one"
+
+
+class TestIncludeDescendants:
+    """The flag is stored, not expanded at write time.
+
+    Expanding on save would freeze the rule at the moment it was written: a label added
+    to the tree later would silently stop matching, which is the maintenance the flag
+    exists to remove.
+    """
+
+    async def test_the_flag_round_trips(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectAIncludeDescendants=True)],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["subjectAIncludeDescendants"] is True
+
+    async def test_it_defaults_off(self, http_client):
+        """An existing rule meant exactly the labels it named."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule()],
+        )
+        assert body["profile"]["rules"][0]["subjectAIncludeDescendants"] is False
+        assert body["profile"]["rules"][0]["subjectBIncludeDescendants"] is False
+
+    async def test_the_refs_are_not_expanded_on_save(self, http_client):
+        """Storing the closure is exactly what this design avoids."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        parent = await _make_label(http_client, "Cat")
+        r = await http_client.post("/api/labels", json={"name": "Tabby", "color": "#abc", "parentUuid": parent})
+        assert r.json()["status"] == "success"
+
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectARefsJson=[parent], subjectAIncludeDescendants=True)],
+        )
+        assert body["profile"]["rules"][0]["subjectARefsJson"] == [parent]
+
+    async def test_a_label_subject_b_may_include_descendants(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[
+                _rule(
+                    subjectBKind="label",
+                    subjectBRefsJson=["label-carrier"],
+                    subjectBIncludeDescendants=True,
+                )
+            ],
+        )
+        assert body["status"] == "success", body
+
+    async def test_a_zone_slot_may_not_include_descendants(self, http_client):
+        """Zones have no hierarchy, so the flag would be a control that does nothing."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectBIncludeDescendants=True)],
+        )
+        assert body["status"] == "failure"
+        assert "no hierarchy" in body["message"]

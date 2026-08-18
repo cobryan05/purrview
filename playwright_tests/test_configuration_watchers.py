@@ -180,6 +180,13 @@ MULTI_LABEL_PROFILE = {
     ],
 }
 
+# A rule whose subject slot opted into "include child labels" — stored as a flag and
+# expanded when the watcher starts, not as an expanded ref list.
+DESCENDANTS_PROFILE = {
+    **FAKE_PROFILE,
+    "rules": [{**FAKE_PROFILE["rules"][0], "subjectAIncludeDescendants": True}],
+}
+
 # A watcher that has opted out of the source's mask.
 MASK_DISABLED_PROFILE = {
     **FAKE_PROFILE,
@@ -521,7 +528,9 @@ class TestWatcherEditor:
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
         page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__trigger").first.click()
-        page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__panel input[type='checkbox']").nth(1).check()
+        # Scoped to the item list, not the whole panel: the panel also holds the
+        # "Include child labels" toggle, which would shift every index by one.
+        page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__items input[type='checkbox']").nth(1).check()
         page.locator("#watcher-management-box button:has-text('Save')").first.click()
 
         wait_until(page, lambda: bool(saved.get("rules")))
@@ -952,12 +961,17 @@ class TestZonesReachTheRules:
         page.locator("[data-testid='watch-zones-save']").click()
 
     def _zone_choices(self, page: Page):
-        """The zone picker's checkbox rows, opening the panel if it is closed."""
+        """The zone picker's checkbox rows, opening the panel if it is closed.
+
+        Scoped to `__items` rather than the whole panel: a label-kind slot also renders
+        an "Include child labels" checkbox in there, and counting both would make this
+        assert on a control that is not a zone.
+        """
         subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
         panel = subject_b.locator(".ms-dropdown__panel")
         if not panel.is_visible():
             subject_b.locator(".ms-dropdown__trigger").click()
-        return panel.locator("input[type='checkbox']")
+        return panel.locator(".ms-dropdown__items input[type='checkbox']")
 
     def test_a_new_zone_becomes_selectable_in_an_existing_rule(self, page: Page, base_url: str):
         """Drawing a zone and then being unable to point a rule at it without saving
@@ -1170,3 +1184,72 @@ class TestRingFieldsSurviveASave:
         assert source["bufferMode"] == FAKE_PROFILE["sources"][0]["bufferMode"]
         assert source["ringSeconds"] == FAKE_PROFILE["sources"][0]["ringSeconds"]
         assert source["ringMaxMb"] == FAKE_PROFILE["sources"][0]["ringMaxMb"]
+
+
+class TestIncludeChildLabels:
+    """The label pickers reuse the shared multi-select's own hierarchy toggle.
+
+    Stored as a flag and expanded when the watcher starts, so a label added to the tree
+    later is covered without editing the rule.
+    """
+
+    def _open(self, page: Page, base_url: str, profile=None):
+        _mock_watch_apis(page, profiles=[profile or FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def _toggle(self, page: Page, slot: str):
+        host = page.locator(f"[data-testid='watch-rule-subject-{slot}']").first
+        panel = host.locator(".ms-dropdown__panel")
+        if not panel.is_visible():
+            host.locator(".ms-dropdown__trigger").click()
+        return panel.locator(".ms-hierarchy-toggle input[type='checkbox']")
+
+    def test_the_subject_a_picker_offers_it(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(self._toggle(page, "a")).to_have_count(1)
+
+    def test_it_is_off_by_default(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(self._toggle(page, "a")).not_to_be_checked()
+
+    def test_a_saved_flag_loads_ticked(self, page: Page, base_url: str):
+        self._open(page, base_url, profile=DESCENDANTS_PROFILE)
+        expect(self._toggle(page, "a")).to_be_checked()
+
+    def test_a_zone_subject_b_has_no_toggle(self, page: Page, base_url: str):
+        """Zones have no hierarchy — the backend rejects the flag there."""
+        self._open(page, base_url)
+        expect(self._toggle(page, "b")).to_have_count(0)
+
+    def test_a_label_subject_b_has_one(self, page: Page, base_url: str):
+        self._open(page, base_url, profile=LABEL_SUBJECT_PROFILE)
+        expect(self._toggle(page, "b")).to_have_count(1)
+
+    def test_ticking_it_is_saved(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        self._toggle(page, "a").check()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        rule = saved["rules"][0]
+        assert rule["subjectAIncludeDescendants"] is True, rule
+        # Stored as a flag, not as an expanded list.
+        assert rule["subjectARefsJson"] == ["label-cat"], rule
+
+    def test_switching_subject_b_to_a_zone_clears_the_flag(self, page: Page, base_url: str):
+        """A leftover true would fail the save with a message about a hidden control."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[LABEL_SUBJECT_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        self._toggle(page, "b").check()
+        page.locator("[data-testid='watch-rule-subject-b-kind']").first.select_option("zone")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["subjectBIncludeDescendants"] is False, saved["rules"][0]

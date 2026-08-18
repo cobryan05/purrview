@@ -676,3 +676,122 @@ class TestMasking:
         )
         assert is_masked((250, 250, 350, 350), [l_shape], FRAME_W, FRAME_H)
         assert not is_masked((750, 750, 850, 850), [l_shape], FRAME_W, FRAME_H)
+
+
+class TestIncludeDescendants:
+    """ "Include child labels" is stored as a flag and expanded when the watcher starts.
+
+    Storing the expansion instead would freeze the rule at the moment it was written, so
+    a label added to the tree later silently stops matching — which is the maintenance
+    this flag exists to remove.
+    """
+
+    # Cat
+    #  ├── Tabby
+    #  │    └── Kitten
+    #  └── Ginger
+    ANCESTRY = {
+        "cat": set(),
+        "tabby": {"cat"},
+        "kitten": {"tabby", "cat"},
+        "ginger": {"cat"},
+        "dog": set(),
+    }
+
+    def test_descendants_are_found_transitively(self):
+        from apps.helpers.watch.rules import descendants_of
+
+        assert descendants_of("cat", self.ANCESTRY) == ["ginger", "kitten", "tabby"]
+
+    def test_a_leaf_has_no_descendants(self):
+        from apps.helpers.watch.rules import descendants_of
+
+        assert descendants_of("kitten", self.ANCESTRY) == []
+
+    def test_the_slot_widens_to_the_whole_subtree(self):
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=True)
+        widened = expand_descendants(spec, self.ANCESTRY)
+        assert set(widened.subject_a_refs) == {"cat", "tabby", "kitten", "ginger"}
+
+    def test_the_flag_off_changes_nothing(self):
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=False)
+        assert expand_descendants(spec, self.ANCESTRY).subject_a_refs == ["cat"]
+
+    def test_the_original_pick_is_kept_and_comes_first(self):
+        """The rule still matches the parent itself, not only its children."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=True)
+        assert expand_descendants(spec, self.ANCESTRY).subject_a_refs[0] == "cat"
+
+    def test_overlapping_subtrees_do_not_duplicate(self):
+        """Picking a parent and its child must not evaluate the child twice."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat", "tabby"], subject_a_include_descendants=True)
+        refs = expand_descendants(spec, self.ANCESTRY).subject_a_refs
+        assert len(refs) == len(set(refs))
+
+    def test_a_zone_slot_never_widens(self):
+        """Zones have no hierarchy; a zone uuid is in no ancestry map, so widening it
+        would quietly produce nothing."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(
+            subject_b_kind="zone",
+            subject_b_refs=[ZONE_UUID],
+            subject_b_include_descendants=True,
+        )
+        assert expand_descendants(spec, self.ANCESTRY).subject_b_refs == [ZONE_UUID]
+
+    def test_both_slots_widen_independently(self):
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(
+            subject_a_refs=["cat"],
+            subject_a_include_descendants=True,
+            subject_b_kind="label",
+            subject_b_refs=["dog"],
+            subject_b_include_descendants=False,
+        )
+        widened = expand_descendants(spec, self.ANCESTRY)
+        assert len(widened.subject_a_refs) == 4
+        assert widened.subject_b_refs == ["dog"]
+
+    def test_an_empty_ancestry_map_is_a_no_op(self):
+        """A watcher that could not load labels must not silently empty its rules."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=True)
+        assert expand_descendants(spec, {}).subject_a_refs == ["cat"]
+
+    def test_expansion_returns_a_new_spec(self):
+        """The stored spec is shared across sources; widening in place would compound."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=True)
+        expand_descendants(spec, self.ANCESTRY)
+        assert spec.subject_a_refs == ["cat"]
+
+    def test_a_widened_rule_matches_a_child_label(self):
+        """End to end: the point of the flag."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = expand_descendants(_rule(subject_a_refs=["cat"], subject_a_include_descendants=True), self.ANCESTRY)
+        kitten = _track(bbox=(450, 450, 550, 550), label="kitten")
+        result = evaluate_predicate(spec, [kitten], {ZONE_UUID: LITTER_ZONE}, FRAME_W, FRAME_H)
+        assert result.holds
+        # The reported slot names the *specific* label that matched, not the parent that
+        # was picked — which is what makes a per-cat MQTT topic work.
+        assert result.subject_ref == "kitten"
+
+    def test_an_unrelated_label_still_does_not_match(self):
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = expand_descendants(_rule(subject_a_refs=["cat"], subject_a_include_descendants=True), self.ANCESTRY)
+        dog = _track(bbox=(450, 450, 550, 550), label="dog")
+        assert not evaluate_predicate(spec, [dog], {ZONE_UUID: LITTER_ZONE}, FRAME_W, FRAME_H).holds
