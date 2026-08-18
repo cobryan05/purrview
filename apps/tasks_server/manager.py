@@ -13,14 +13,14 @@ import db_client
 import db_client.models as db_models
 import httpx
 import inference_client
-import relay_buffer_client
+import stream_client
 from db_client.api.tasks_api import TasksApi
 
 from apps import APPS, APPS_CONFIG, TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMPLETED
 from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
 from apps.helpers.consts import TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
-from apps.helpers.recordings.relayClipClient import RelayClipClient
+from apps.helpers.recordings.streamClipClient import StreamClipClient
 from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
 from apps.tasks_server.types import TaskInfo
@@ -98,7 +98,7 @@ class Manager:
         self._training_base_url: str = default_training_url
         self._url_settings_client = httpx.AsyncClient(timeout=10.0)
         # Built lazily by get_relay_api_client — see there for why it is not injected.
-        self._relay_clip_client: Optional[RelayClipClient] = None
+        self._relay_clip_client: Optional[StreamClipClient] = None
         self._running_tasks: Dict[str, TaskInfo] = {}
         self._completion_tasks: set[asyncio.Task] = set()
         self._pending_oneshot_deletes: set[str] = set()
@@ -135,7 +135,7 @@ class Manager:
         """
         return self._inference_api_client
 
-    def get_relay_api_client(self) -> RelayClipClient:
+    def get_relay_api_client(self) -> StreamClipClient:
         """The relay client used to cut event clips out of the rolling buffer.
 
         Built on first use rather than injected: only a watcher with a `record_clip`
@@ -146,22 +146,20 @@ class Manager:
         hosts of their own; the relay ships alongside db_server and
         image_tagging_server, and a clip is cut into a `dest` path on the relay's
         filesystem, which is the same filesystem this process can read. The host
-        still comes from APPS_CONFIG, so RELAY_BUFFER_SERVER_HOST moves it within
+        still comes from APPS_CONFIG, so STREAM_SERVER_HOST moves it within
         that group — but do not add a UI override here expecting a remote relay to
         work: the clip path would be written somewhere nothing else can see.
         """
         if self._relay_clip_client is None:
-            relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+            relay_cfg = APPS_CONFIG[APPS.STREAM_SERVER]
             # Bound long as a whole: this client exists solely to cut clips, and
             # remuxing a minute of video out of the rolling buffer is real work. The
             # relay's own fast calls (leases, readiness) go through a different client.
             api_client = bind_default_timeout(
-                relay_buffer_client.ApiClient(
-                    relay_buffer_client.Configuration(f"http://{relay_cfg.host}:{relay_cfg.port}")
-                ),
+                stream_client.ApiClient(stream_client.Configuration(f"http://{relay_cfg.host}:{relay_cfg.port}")),
                 timeout=LONG_TIMEOUT,
             )
-            self._relay_clip_client = RelayClipClient(api_client)
+            self._relay_clip_client = StreamClipClient(api_client)
         return self._relay_clip_client
 
     def get_training_base_url(self) -> str:

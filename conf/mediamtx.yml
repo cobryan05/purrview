@@ -5,7 +5,7 @@ logLevel: debug
 protocols: [tcp]
 
 # Playback server. Recording itself is enabled per-path at runtime by
-# relay_buffer_server (record / recordPath / recordDeleteAfter), which points
+# stream_server (record / recordPath / recordDeleteAfter), which points
 # each watched camera at the in-RAM /buffer tmpfs. This server is what turns
 # those segments into retroactive clips: /list reports the buffered time ranges
 # and /get concatenates an arbitrary window into a single mp4, which is how an

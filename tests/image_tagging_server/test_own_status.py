@@ -41,7 +41,7 @@ class TestOwnStatusShape:
             "tasks_server",
             "inference_server",
             "training_server",
-            "relay_buffer_server",
+            "stream_server",
         }
 
     def test_reports_the_configured_upstream_urls(self, manager):

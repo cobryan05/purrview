@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from apps.relay_buffer_server.manager import Lease, Manager, master_path_name
+from apps.stream_server.manager import Lease, Manager, master_path_name
 
 SOURCE = "rtsp://camera.invalid:8554/stream"
 OTHER_SOURCE = "rtsp://other.invalid:8554/stream"
@@ -35,7 +35,7 @@ def lease_manager(tmp_path, monkeypatch):
     mgr._lease_file = tmp_path / "leases.json"
     monkeypatch.setattr(mgr, "refresh_streams", AsyncMock())
     monkeypatch.setattr(mgr, "_create_master_path", AsyncMock())
-    monkeypatch.setattr("apps.relay_buffer_server.manager.ConfigurationApi", MagicMock())
+    monkeypatch.setattr("apps.stream_server.manager.ConfigurationApi", MagicMock())
     return mgr
 
 
@@ -56,7 +56,7 @@ def _add_lease(mgr, lease_id, source=SOURCE, holder="watcher-1", age_s=0.0):
 
 class TestReapingDeadHolders:
     async def test_a_lease_nobody_renews_is_reaped(self, lease_manager, monkeypatch):
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "stale-1", age_s=301)
 
         await lease_manager._expire_stale_leases()
@@ -64,7 +64,7 @@ class TestReapingDeadHolders:
         assert "stale-1" not in lease_manager._leases
 
     async def test_a_renewed_lease_survives(self, lease_manager, monkeypatch):
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "live-1", age_s=299)
 
         await lease_manager._expire_stale_leases()
@@ -72,7 +72,7 @@ class TestReapingDeadHolders:
         assert "live-1" in lease_manager._leases
 
     async def test_renewing_resets_the_clock(self, lease_manager, monkeypatch):
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "live-1", age_s=299)
 
         assert lease_manager.renew_lease("live-1") is True
@@ -85,7 +85,7 @@ class TestReapingDeadHolders:
         assert lease_manager.renew_lease("never-existed") is False
 
     async def test_reaping_the_last_holder_tears_the_path_down(self, lease_manager, monkeypatch):
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "stale-1", age_s=999)
         lease_manager._streams[master_path_name(SOURCE)] = Manager.StreamInfo(name=master_path_name(SOURCE))
 
@@ -96,7 +96,7 @@ class TestReapingDeadHolders:
 
     async def test_one_dead_holder_does_not_evict_a_live_one(self, lease_manager, monkeypatch):
         """Two watchers on one camera: reaping one must leave the path up for the other."""
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "stale-1", holder="watcher-1", age_s=999)
         _add_lease(lease_manager, "live-1", holder="watcher-2", age_s=0)
         lease_manager._streams[master_path_name(SOURCE)] = Manager.StreamInfo(name=master_path_name(SOURCE))
@@ -108,7 +108,7 @@ class TestReapingDeadHolders:
         assert master_path_name(SOURCE) in lease_manager._streams, "the surviving holder must keep its path"
 
     async def test_expiry_sweeps_every_source_not_just_the_first(self, lease_manager, monkeypatch):
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "stale-1", source=SOURCE, age_s=999)
         _add_lease(lease_manager, "stale-2", source=OTHER_SOURCE, age_s=999)
 
@@ -125,7 +125,7 @@ class TestAnOfflineCameraIsNotADeadHolder:
         that still wants it. Reaping here would mean the camera never comes back on its
         own, defeating the infinite retry MediaMTX is configured for.
         """
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         lease = _add_lease(lease_manager, "live-1", age_s=0)
         name = master_path_name(SOURCE)
         # Never ready, nothing received, for far longer than the TTL: as dead as a
@@ -149,7 +149,7 @@ class TestHolderKeyedEnsure:
         assert len(lease_manager._leases) == 1, "a re-ensure must not stack a second lease"
 
     async def test_re_ensuring_refreshes_the_clock(self, lease_manager, monkeypatch):
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         ensured = await lease_manager.ensure_stream(SOURCE, holder="watcher-1")
         lease_manager._leases[ensured.lease_id].last_seen = time.time() - 999
 
@@ -188,7 +188,7 @@ class TestRestartGivesHoldersTimeToCheckIn:
         Holders live in other processes and have had no chance to renew yet, so the
         clock restarts on load; a genuinely dead holder is reaped one TTL later.
         """
-        monkeypatch.setattr("apps.relay_buffer_server.manager.LEASE_TTL_S", 300.0)
+        monkeypatch.setattr("apps.stream_server.manager.LEASE_TTL_S", 300.0)
         _add_lease(lease_manager, "survivor", age_s=0)
         lease_manager._leases["survivor"].last_seen = time.time() - 99999
         lease_manager._save_leases()

@@ -1,6 +1,12 @@
-"""Web API for Relay Buffer Server"""
+"""Web API for Stream Server.
 
-import json
+JSON only. This service used to serve its own Jinja2/HTMX pages — an index, a
+create-stream form and HTML renderings of the stream and config listings — from before
+the SPA existed. They were the only route to the delayed-stream path and had no other
+caller, so they went with it. Anything a human needs to see about this service is on
+the Operations status panel, which reads `/status`.
+"""
+
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -9,9 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse
 from mediamtx_client.api_client import ApiClient
 
 from apps.helpers.logUtils import LOG_LEVEL
@@ -36,12 +40,7 @@ class WebApp:
         self._manager: Manager = manager
         self._app_name: str = app_name
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
-        self._templates: Jinja2Templates = Jinja2Templates(directory="/app/templates")
-        self._dflt_args: dict[str, str] = {"app_name": self._app_name}
         self._api_client: ApiClient = manager._media_mtx_api_client
-
-        # Mount static files
-        self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
 
         # Register routes
         self._register_routes()
@@ -63,33 +62,8 @@ class WebApp:
         """Return the FastAPI application instance"""
         return self._app
 
-    def _error_response(self, request: Request, message: str):
-        """Render an error response using the dynamic response template"""
-        return self._templates.TemplateResponse(
-            "dynamic_response.html",
-            {
-                "request": request,
-                "title": "Error",
-                "response_data": {self.ERROR_KEY: message},
-                **self._dflt_args,
-            },
-        )
-
     def _register_routes(self):
         """Register all routes for the application"""
-
-        @self._app.get("/", response_class=HTMLResponse)
-        def index(request: Request):
-            """Render the index page using the dynamic index template"""
-            buttons = [
-                {"label": "Create Stream", "action": "/create-stream-form"},
-                {"label": "List Streams", "action": "/list-streams"},
-                {"label": "Show Configuration", "action": "/list-config"},
-            ]
-            return self._templates.TemplateResponse(
-                "dynamic_index.html",
-                {"request": request, "buttons": buttons, **self._dflt_args},
-            )
 
         @self._app.get(
             "/server-config",
@@ -116,79 +90,11 @@ class WebApp:
 
         @self._app.get(
             "/status",
-            operation_id="relay_buffer_server_status",
+            operation_id="stream_server_status",
             response_class=JSONResponse,
         )
-        async def relay_buffer_server_status():
+        async def stream_server_status():
             return JSONResponse(content=self._manager.get_status())
-
-        @self._app.post(
-            "/api/streams/create",
-            response_class=JSONResponse,
-            operation_id="createStream",
-            tags=[WebApp.STREAM_API_TAG_NAME],
-        )
-        async def create_stream_api(
-            request: Request,
-            source_url: str = Form(..., description="RTSP source URL"),
-            stream_name: str = Form(..., description="Name for relay stream"),
-            delay: float = Form(0.0, description="Delay in seconds"),
-        ) -> JSONResponse:
-            """Create a stream and return success status"""
-            try:
-                logging.info(
-                    f"Creating stream with Source URL: {source_url}, Destination Name: {stream_name}, Delay: {delay}"
-                )
-                if delay > 0:
-                    await self._manager.create_delay_stream(rtsp_url=source_url, stream_name=stream_name, delay=delay)
-                else:
-                    await self._manager.create_rtsp_relay_stream(rtsp_url=source_url, stream_name=stream_name)
-                return JSONResponse(content={WebApp.SUCCESS_KEY: True})
-            except Exception as e:
-                logging.exception(f"Stream creation failed: {str(e)}")
-                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
-
-        @self._app.post("/create-stream", response_class=HTMLResponse, include_in_schema=False)
-        async def create_stream_html(
-            request: Request,
-            source_url: str = Form(...),
-            stream_name: str = Form(...),
-            delay: float = Form(0.0),
-        ) -> HTMLResponse:
-            """Handle stream creation via HTML form"""
-            response = await create_stream_api(
-                request=request,
-                source_url=source_url,
-                stream_name=stream_name,
-                delay=delay,
-            )
-            result = json.loads(response.body.decode("utf-8"))
-            if result.get(WebApp.SUCCESS_KEY):
-                return await list_streams_html(request)
-            else:
-                return self._error_response(
-                    request,
-                    f"Failed to create stream: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
-                )
-
-        @self._app.get("/create-stream-form", response_class=HTMLResponse, include_in_schema=False)
-        async def create_stream_form_html(request: Request) -> HTMLResponse:
-            """Render the form for creating a new stream"""
-            fields = {
-                "source_url": {"label": "RTSP Source URL", "type": "text"},
-                "stream_name": {"label": "Stream Name", "type": "text"},
-                "delay": {"label": "Delay (seconds)", "type": "text"},
-            }
-            return self._templates.TemplateResponse(
-                "dynamic_form.html",
-                {
-                    "request": request,
-                    "title": "Create Stream",
-                    "action_url": "/create-stream",
-                    "fields": fields,
-                    "submit_label": "Create Stream",
-                },
-            )
 
         @self._app.post(
             "/api/streams/ensure",
@@ -347,22 +253,6 @@ class WebApp:
                 logging.exception(f"Stream destruction failed: {str(e)}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
-        @self._app.post("/destroy-stream", response_class=HTMLResponse, include_in_schema=False)
-        async def destroy_stream_html(
-            request: Request,
-            stream_name: str = Form(..., description="Name of stream to destroy"),
-        ) -> HTMLResponse:
-            """Handle the destruction of a stream"""
-            response = await destroy_stream_api(request=request, stream_name=stream_name)
-            result = json.loads(response.body.decode("utf-8"))
-            if result.get(WebApp.SUCCESS_KEY):
-                return await list_streams_html(request)
-            else:
-                return self._error_response(
-                    request,
-                    f"Failed to destroy stream: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
-                )
-
         @self._app.get(
             "/api/config/list",
             response_class=JSONResponse,
@@ -377,27 +267,6 @@ class WebApp:
             except Exception as e:
                 logging.exception(f"Config listing failed: {str(e)}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
-
-        @self._app.get("/list-config", response_class=HTMLResponse, include_in_schema=False)
-        async def list_configs_html(request: Request) -> HTMLResponse:
-            """List the global configuration"""
-            response = await list_configs_api(request)
-            result = json.loads(response.body.decode("utf-8"))
-            if result.get(WebApp.SUCCESS_KEY):
-                return self._templates.TemplateResponse(
-                    "dynamic_response.html",
-                    {
-                        "request": request,
-                        "title": "Configuration",
-                        "response_data": {self.RESULT_KEY: result[self.RESULT_KEY]},
-                        **self._dflt_args,
-                    },
-                )
-            else:
-                return self._error_response(
-                    request,
-                    f"Failed to list configuration: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
-                )
 
         @self._app.get(
             "/api/streams/list",
@@ -428,24 +297,3 @@ class WebApp:
             except Exception as e:
                 logging.exception(f"Fetching streams failed: {str(e)}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
-
-        @self._app.get("/list-streams", response_class=HTMLResponse, include_in_schema=False)
-        async def list_streams_html(request: Request) -> HTMLResponse:
-            """List all available streams"""
-            response = await list_streams_api(request)
-            result = json.loads(response.body.decode("utf-8"))
-            if result.get(WebApp.SUCCESS_KEY):
-                return self._templates.TemplateResponse(
-                    "dynamic_response.html",
-                    {
-                        "request": request,
-                        "title": "Stream List",
-                        "response_data": {self.RESULT_KEY: result[self.RESULT_KEY]},
-                        **self._dflt_args,
-                    },
-                )
-            else:
-                return self._error_response(
-                    request,
-                    f"Failed to list streams: {result.get(WebApp.ERROR_KEY, 'Unknown error')}",
-                )

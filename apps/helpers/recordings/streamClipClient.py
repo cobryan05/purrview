@@ -1,4 +1,4 @@
-"""Async adapter over the generated relay_buffer_client, shaped for clip extraction.
+"""Async adapter over the generated stream_client, shaped for clip extraction.
 
 `PlaybackClipBackend` wants one thing from the relay: an awaitable
 ``extract_clip(path, start: datetime, duration_s, dest: Path) -> dict``. The generated
@@ -16,19 +16,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-import relay_buffer_client
+import stream_client
 
 logger = logging.getLogger(__name__)
 
 
-class RelayClipClient:
-    """Cut clips out of the relay's rolling buffer over the relay_buffer_server API."""
+class StreamClipClient:
+    """Cut clips out of the relay's rolling buffer over the stream_server API."""
 
-    def __init__(self, api_client: relay_buffer_client.ApiClient) -> None:
+    def __init__(self, api_client: stream_client.ApiClient) -> None:
         self._api_client = api_client
 
     @property
-    def api_client(self) -> relay_buffer_client.ApiClient:
+    def api_client(self) -> stream_client.ApiClient:
         return self._api_client
 
     async def extract_clip(self, path: str, start: datetime, duration_s: float, dest: Path) -> Dict[str, Any]:
@@ -39,7 +39,7 @@ class RelayClipClient:
         """
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
-        api = relay_buffer_client.StreamsApi(self._api_client)
+        api = stream_client.StreamsApi(self._api_client)
         result = await asyncio.to_thread(
             api.extract_clip,
             path=path,

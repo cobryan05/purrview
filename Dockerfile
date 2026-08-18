@@ -69,7 +69,7 @@ COPY requirements.txt requirements-cpu.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt -r requirements-cpu.txt openapi-generator-cli[jdk4py]
 
-# Generate mediamtx_client wheel — needed by relay_buffer_server at import time
+# Generate mediamtx_client wheel — needed by stream_server at import time
 # and by the app image at runtime.
 RUN curl -fsSL https://raw.githubusercontent.com/bluenviron/mediamtx/v${MEDIAMTX_VERSION}/apidocs/openapi.yaml \
         -o /tmp/mediamtx-openapi.yaml \

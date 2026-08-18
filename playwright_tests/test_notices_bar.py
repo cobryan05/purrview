@@ -44,7 +44,7 @@ SERVICES = [
     "inference_server",
     "tasks_server",
     "training_server",
-    "relay_buffer_server",
+    "stream_server",
 ]
 
 # What a total backend outage actually produces: one warning per service.

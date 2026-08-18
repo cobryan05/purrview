@@ -25,10 +25,10 @@ if "db" in targets:
         json.dump(db_server_app.openapi(), f, indent=2)
 
 if "relay" in targets:
-    from .relay_buffer_server.main import app as relay_server_app
+    from .stream_server.main import app as relay_server_app
 
     with open(
-        os.path.join(output_dir, "relay_buffer_server_openapi.json"),
+        os.path.join(output_dir, "stream_server_openapi.json"),
         "w",
         encoding="utf-8",
     ) as f:

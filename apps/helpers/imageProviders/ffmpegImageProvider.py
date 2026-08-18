@@ -28,7 +28,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(LOG_LEVEL)
 
 if os.getenv("GENERATING_OPENAPI_CLIENTS") != "1":
-    import relay_buffer_client
+    import stream_client
 
 # How often a live provider tells the relay it is still there. Must stay comfortably
 # under the relay's RELAY_LEASE_TTL_S (default 300s) so a slow event loop or a brief
@@ -103,7 +103,7 @@ class FfmpegImageProvider(ImageProvider):
         self._loop: bool = loop
         self._frame_size: Optional[Tuple[int, int]] = None
         self._buffer: bytes = b""
-        self._rtsp_relay_api: Optional[relay_buffer_client.ApiClient] = None
+        self._rtsp_relay_api: Optional[stream_client.ApiClient] = None
         self._relayed_name: str = ""
         self._stream: Optional[FFmpegStreamerIn] = None
         #: Where the reader reads from, learned in start(). reconnect() rebuilds the
@@ -138,11 +138,11 @@ class FfmpegImageProvider(ImageProvider):
         self.buffered: bool = False
         if rtsp_relay and self._ingest_plan.buffered:
             relay_host, relay_port = (
-                APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].host,
-                APPS_CONFIG[APPS.RELAY_BUFFER_SERVER].port,
+                APPS_CONFIG[APPS.STREAM_SERVER].host,
+                APPS_CONFIG[APPS.STREAM_SERVER].port,
             )
-            config = relay_buffer_client.Configuration(f"http://{relay_host}:{relay_port}")
-            self._rtsp_relay_api = bind_default_timeout(relay_buffer_client.ApiClient(config))
+            config = stream_client.Configuration(f"http://{relay_host}:{relay_port}")
+            self._rtsp_relay_api = bind_default_timeout(stream_client.ApiClient(config))
             self._relayed_name = f"provider-{uuid.uuid4()}"
 
     def __repr__(self):
@@ -150,7 +150,7 @@ class FfmpegImageProvider(ImageProvider):
 
     async def start(self) -> None:
         if self._rtsp_relay_api:
-            api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+            api: stream_client.StreamsApi = stream_client.StreamsApi(self._rtsp_relay_api)
             # Take a lease on the shared master path and read it directly. The old code
             # created a second, per-consumer path sourced from the master over RTSP
             # loopback — an extra hop and an extra MediaMTX reader per consumer, for
@@ -281,7 +281,7 @@ class FfmpegImageProvider(ImageProvider):
             if not self._lease_id:
                 return
             try:
-                api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+                api: stream_client.StreamsApi = stream_client.StreamsApi(self._rtsp_relay_api)
                 result = await asyncio.to_thread(api.renew_stream, self._lease_id)
                 if not result.get("renewed"):
                     # The relay has forgotten us: reaped, or its lease file was lost.
@@ -308,7 +308,7 @@ class FfmpegImageProvider(ImageProvider):
         lease_id, self._lease_id = self._lease_id, ""
         self._lease_returned = True
         try:
-            api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+            api: stream_client.StreamsApi = stream_client.StreamsApi(self._rtsp_relay_api)
             await asyncio.to_thread(api.release_stream, lease_id)
         except Exception as e:
             # Swallowed on purpose: the caller needs to see why the *stream* failed,
@@ -361,7 +361,7 @@ class FfmpegImageProvider(ImageProvider):
                 # returned — a failed `start()` already did the right thing, and
                 # destroying here would yank the path out from under other holders.
                 try:
-                    api: relay_buffer_client.StreamsApi = relay_buffer_client.StreamsApi(self._rtsp_relay_api)
+                    api: stream_client.StreamsApi = stream_client.StreamsApi(self._rtsp_relay_api)
                     await asyncio.to_thread(api.destroy_stream, self._relayed_name)
                 except Exception as e:
                     logger.error(f"Failed to destroy relay stream {self._relayed_name}: {e}")

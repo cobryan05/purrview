@@ -36,7 +36,7 @@ combined-api.json
 db_server_openapi.json
 image_tagging_server_openapi.json
 inference_server_openapi.json
-relay_buffer_server_openapi.json
+stream_server_openapi.json
 tasks_server_openapi.json
 training_server_openapi.json
 openapi_jsons/

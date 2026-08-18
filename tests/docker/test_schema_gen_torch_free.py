@@ -28,7 +28,7 @@ import os, sys, json
 os.environ["GENERATING_OPENAPI_CLIENTS"] = "1"
 # Mirror the modules generate_openapi_modules.sh introspects, in dependency order.
 from apps.db_server.main import app as a1
-from apps.relay_buffer_server.main import app as a2
+from apps.stream_server.main import app as a2
 from apps.inference_server.main import app as a3
 from apps.training_server.main import app as a4
 from apps.tasks_server.main import app as a5

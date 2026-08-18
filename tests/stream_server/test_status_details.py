@@ -6,7 +6,7 @@ are recording — which is the whole reason to look at this row.
 
 from unittest.mock import MagicMock
 
-from apps.relay_buffer_server.manager import Manager
+from apps.stream_server.manager import Manager
 
 
 def _stream(manager, name: str, **kwargs) -> None:
@@ -89,7 +89,7 @@ class TestRelayStatusDetails:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["service"] == "relay_buffer_server"
+        assert data["service"] == "stream_server"
         # The counters the collapsed panel reads must survive the move to details.
         assert data["streams"]["active"] == 1
         assert "buffer" in data

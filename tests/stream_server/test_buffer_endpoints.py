@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from apps.relay_buffer_server.manager import EnsureResult, master_path_name
+from apps.stream_server.manager import EnsureResult, master_path_name
 
 
 class TestEnsureEndpoint:

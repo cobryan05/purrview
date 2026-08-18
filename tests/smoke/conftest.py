@@ -13,7 +13,7 @@ _SERVICES = [
     APPS.DB_SERVER,
     APPS.INFERENCE_SERVER,
     APPS.TASKS_SERVER,
-    APPS.RELAY_BUFFER_SERVER,
+    APPS.STREAM_SERVER,
     APPS.IMAGE_TAGGING_SERVER,
 ]
 
@@ -107,7 +107,7 @@ def tasks_url(smoke_services):
 
 @pytest.fixture(scope="session")
 def relay_url(smoke_services):
-    return smoke_services[APPS.RELAY_BUFFER_SERVER]
+    return smoke_services[APPS.STREAM_SERVER]
 
 
 @pytest.fixture(scope="session")

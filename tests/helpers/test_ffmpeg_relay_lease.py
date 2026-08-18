@@ -70,7 +70,7 @@ def relay_state(monkeypatch):
         ApiClient=FakeApiClient,
         StreamsApi=FakeStreamsApi,
     )
-    monkeypatch.setattr(ffmpeg_module, "relay_buffer_client", fake_module)
+    monkeypatch.setattr(ffmpeg_module, "stream_client", fake_module)
 
     provider = FfmpegImageProvider(video_path=SOURCE_URL, rtsp_relay=True)
     yield provider, provider._rtsp_relay_api.state

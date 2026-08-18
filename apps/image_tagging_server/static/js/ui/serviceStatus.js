@@ -42,7 +42,7 @@ const SERVICE_DISPLAY = {
   inference_server:    { label: 'Inference Server',   icon: '🤖' },
   tasks_server:        { label: 'Tasks Server',       icon: '⚙' },
   training_server:     { label: 'Training Server',    icon: '🏋' },
-  relay_buffer_server: { label: 'Relay Buffer Server',icon: '📡' },
+  stream_server: { label: 'Stream Server',icon: '📡' },
 };
 
 function _statusColor(status) {

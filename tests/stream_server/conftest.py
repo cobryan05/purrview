@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from apps.relay_buffer_server.manager import Manager
-from apps.relay_buffer_server.web import WebApp
+from apps.stream_server.manager import Manager
+from apps.stream_server.web import WebApp
 
 
 @pytest.fixture
@@ -18,8 +18,6 @@ def manager(monkeypatch, tmp_path):
 
     # Patch all methods that make real network calls to mediamtx
     monkeypatch.setattr(mgr, "refresh_streams", AsyncMock())
-    monkeypatch.setattr(mgr, "create_rtsp_relay_stream", AsyncMock())
-    monkeypatch.setattr(mgr, "create_delay_stream", AsyncMock())
     monkeypatch.setattr(mgr, "destroy_stream", AsyncMock())
     monkeypatch.setattr(mgr, "get_config", AsyncMock(return_value="rtspAddress: :8554\n"))
 

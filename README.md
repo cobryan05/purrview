@@ -24,7 +24,7 @@ run together by `supervisord`:
 | `inference_server` | 8001 | ONNX model inference |
 | `tasks_server` | 8002 | Long-running jobs kicked off by the UI |
 | `db_server` | 8003 | SQLite-backed data store |
-| `relay_buffer_server` | 8004 | RTSP/stream buffering (with `mediamtx`) |
+| `stream_server` | 8004 | Owns `mediamtx`: camera fan-out, stream leases, clip extraction |
 | `training_server` | 8005 | Model training (**optional, GPU**) |
 
 These collapse into **two image tiers**:

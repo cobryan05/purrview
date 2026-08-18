@@ -18,7 +18,7 @@ SERVICES = [
     {"service": "inference_server", "status": "ok", "models": {"loaded": 1, "available": 3}},
     {"service": "tasks_server", "status": "ok", "tasks": {"running": 2}},
     {"service": "training_server", "status": "ok"},
-    {"service": "relay_buffer_server", "status": "unreachable", "message": "connection refused"},
+    {"service": "stream_server", "status": "unreachable", "message": "connection refused"},
 ]
 
 
@@ -81,9 +81,7 @@ class TestServiceStatusInRuns:
         expect(page.locator("[data-testid='service-status-row-tasks_server']")).to_contain_text("running: 2")
         expect(page.locator("[data-testid='service-status-row-inference_server']")).to_contain_text("loaded: 1/3")
         # Unreachable services surface their message rather than a detail summary.
-        expect(page.locator("[data-testid='service-status-row-relay_buffer_server']")).to_contain_text(
-            "connection refused"
-        )
+        expect(page.locator("[data-testid='service-status-row-stream_server']")).to_contain_text("connection refused")
 
     def test_refresh_button_refetches(self, page: Page, base_url: str):
         calls: list[str] = []
@@ -156,7 +154,7 @@ DETAILED_SERVICES = [
     # Down services must not render a detail body: the payload is either absent
     # or stale, and either way it would read as live.
     {
-        "service": "relay_buffer_server",
+        "service": "stream_server",
         "status": "unreachable",
         "message": "connection refused",
         "details": [{"title": "Streams (9)", "rows": [{"label": "ghost", "value": "ready"}]}],
@@ -211,9 +209,9 @@ class TestServiceStatusDetails:
         _navigate_to_runs(page, base_url)
         _expand_service_status(page)
 
-        row = page.locator("[data-testid='service-status-row-relay_buffer_server']")
+        row = page.locator("[data-testid='service-status-row-stream_server']")
         expect(row).to_contain_text("connection refused")
-        expect(page.locator("[data-testid='service-status-details-relay_buffer_server']")).to_have_count(0)
+        expect(page.locator("[data-testid='service-status-details-stream_server']")).to_have_count(0)
 
     def test_the_open_button_does_not_toggle_the_disclosure(self, page: Page, base_url: str):
         """Training Server both expands and opens a modal; the `›` must do only
@@ -293,7 +291,7 @@ class TestServiceStatusCollapsedSummary:
 
         summary = page.locator("[data-testid='service-status-summary']")
         expect(summary).to_be_visible()
-        expect(summary).to_contain_text("Relay Buffer Server")
+        expect(summary).to_contain_text("Stream Server")
         expect(summary).to_have_attribute("data-tone", "warn")
 
     def test_expanded_state_survives_a_reload(self, page: Page, base_url: str):

@@ -291,14 +291,14 @@ class Manager:
         talking to" are different claims, and this panel is where you go to tell
         them apart. Kept to in-memory reads, per the /status contract.
         """
-        relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+        relay_cfg = APPS_CONFIG[APPS.STREAM_SERVER]
         overrides = sum(1 for u in (self._inference_url_override, self._training_url_override) if u)
         rows = [
             serviceStatus.row("db_server", self._db_server_url),
             serviceStatus.row("tasks_server", self._tasks_api_client.configuration.host),
             serviceStatus.row("inference_server", self.effective_inference_url),
             serviceStatus.row("training_server", self.effective_training_url),
-            serviceStatus.row("relay_buffer_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
+            serviceStatus.row("stream_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
         ]
         status: dict = {
             "service": "image_tagging_server",
@@ -311,7 +311,7 @@ class Manager:
 
     async def get_all_service_status(self) -> List[dict]:
         """Probe each backend service's /status endpoint and return aggregated results."""
-        relay_cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+        relay_cfg = APPS_CONFIG[APPS.STREAM_SERVER]
         services = [
             ("db_server", self._db_server_url),
             # Effective, not default: probing localhost while the app proxies to a
@@ -319,7 +319,7 @@ class Manager:
             ("inference_server", self.effective_inference_url),
             ("tasks_server", self._tasks_api_client.configuration.host),
             ("training_server", self.effective_training_url),
-            ("relay_buffer_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
+            ("stream_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
         ]
 
         def _unreachable_notice(name: str, message: str) -> dict:

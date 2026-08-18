@@ -20,7 +20,7 @@ import inference_client
 import pytest
 
 from apps.helpers.actions.recordClipAction import PlaybackClipBackend
-from apps.helpers.recordings.relayClipClient import RelayClipClient
+from apps.helpers.recordings.streamClipClient import StreamClipClient
 from apps.helpers.watch.engine import WatchEngine
 from apps.tasks_server.manager import Manager
 from apps.tasks_server.tasks._watch_pipeline import WatchPipeline
@@ -47,17 +47,17 @@ def _buffered_pipeline(source_uuid: str = "src-1") -> WatchPipeline:
 
 class TestManagerExposesTheRelay:
     def test_the_manager_has_a_relay_client(self):
-        assert isinstance(_make_manager().get_relay_api_client(), RelayClipClient)
+        assert isinstance(_make_manager().get_relay_api_client(), StreamClipClient)
 
     def test_the_client_is_reused_across_calls(self):
         """One client, so the connection pool is not rebuilt per event."""
         mgr = _make_manager()
         assert mgr.get_relay_api_client() is mgr.get_relay_api_client()
 
-    def test_it_points_at_the_relay_buffer_server(self):
+    def test_it_points_at_the_stream_server(self):
         from apps import APPS, APPS_CONFIG
 
-        cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+        cfg = APPS_CONFIG[APPS.STREAM_SERVER]
         host = _make_manager().get_relay_api_client().api_client.configuration.host
         assert host == f"http://{cfg.host}:{cfg.port}"
 
@@ -75,14 +75,14 @@ class TestManagerExposesTheRelay:
         assert isinstance(backend, PlaybackClipBackend)
 
 
-class TestRelayClipClient:
+class TestStreamClipClient:
     async def test_it_passes_the_window_through_as_the_api_expects(self):
         api = MagicMock()
         api.extract_clip.return_value = {"success": True, "path": "/clips/a.mp4", "sizeBytes": 10}
         start = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 
-        with patch("apps.helpers.recordings.relayClipClient.relay_buffer_client.StreamsApi", return_value=api):
-            result = await RelayClipClient(MagicMock()).extract_clip(
+        with patch("apps.helpers.recordings.streamClipClient.stream_client.StreamsApi", return_value=api):
+            result = await StreamClipClient(MagicMock()).extract_clip(
                 path="cam-1", start=start, duration_s=8.0, dest=Path("/clips/a.mp4")
             )
 
@@ -98,8 +98,8 @@ class TestRelayClipClient:
         api = MagicMock()
         api.extract_clip.return_value = {"success": True}
 
-        with patch("apps.helpers.recordings.relayClipClient.relay_buffer_client.StreamsApi", return_value=api):
-            await RelayClipClient(MagicMock()).extract_clip(
+        with patch("apps.helpers.recordings.streamClipClient.stream_client.StreamsApi", return_value=api):
+            await StreamClipClient(MagicMock()).extract_clip(
                 path="cam-1", start=datetime(2026, 8, 17, 12, 0), duration_s=1.0, dest=Path("/clips/a.mp4")
             )
 
@@ -111,8 +111,8 @@ class TestRelayClipClient:
         api = MagicMock()
         api.extract_clip.return_value = {"success": False, "error": "window has aged out"}
 
-        with patch("apps.helpers.recordings.relayClipClient.relay_buffer_client.StreamsApi", return_value=api):
+        with patch("apps.helpers.recordings.streamClipClient.stream_client.StreamsApi", return_value=api):
             with pytest.raises(RuntimeError, match="aged out"):
-                await RelayClipClient(MagicMock()).extract_clip(
+                await StreamClipClient(MagicMock()).extract_clip(
                     path="cam-1", start=datetime.now(timezone.utc), duration_s=1.0, dest=Path("/clips/a.mp4")
                 )

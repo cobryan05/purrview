@@ -140,7 +140,7 @@ async def test_started_task_reports_running_status(tasks):
             await tasks.post("/api/tasks/configs/delete", json={"configUuids": [config_uuid]})
 
 
-# --- relay_buffer_server ---
+# --- stream_server ---
 
 
 async def test_streams_list(relay):

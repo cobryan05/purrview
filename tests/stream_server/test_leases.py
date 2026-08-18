@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from apps.helpers.recordings.playbackClient import PlaybackError
-from apps.relay_buffer_server.manager import (
+from apps.stream_server.manager import (
     BufferFullError,
     Lease,
     Manager,
@@ -35,7 +35,7 @@ def lease_manager(tmp_path, monkeypatch):
     # _create_master_path is exercised directly in its own tests; here we only care
     # about lease bookkeeping, so stub the mediamtx round-trip.
     monkeypatch.setattr(
-        "apps.relay_buffer_server.manager.ConfigurationApi",
+        "apps.stream_server.manager.ConfigurationApi",
         MagicMock(),
     )
     return mgr

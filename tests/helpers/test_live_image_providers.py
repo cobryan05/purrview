@@ -397,7 +397,7 @@ class TestFfmpegImageProviderStopGuards:
 
         provider._rtsp_relay_api = object()
         monkeypatch.setattr(
-            ffmpeg_provider_module.relay_buffer_client,
+            ffmpeg_provider_module.stream_client,
             "StreamsApi",
             lambda api_client: ExplodingRelayApi(),
         )

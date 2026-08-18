@@ -39,11 +39,11 @@ _install_or_wheel() {
 python -m apps.generate_openapi_jsons db relay inference "$JSON_OUT_DIR"
 
 # Generate and install the python API modules from the JSONs
-openapi-generator-cli generate -i "$JSON_OUT_DIR/relay_buffer_server_openapi.json" -g python -o "$TMP_DIR/relay_buffer_client" --package-name relay_buffer_client
+openapi-generator-cli generate -i "$JSON_OUT_DIR/stream_server_openapi.json" -g python -o "$TMP_DIR/stream_client" --package-name stream_client
 openapi-generator-cli generate -i "$JSON_OUT_DIR/inference_server_openapi.json" -g python -o "$TMP_DIR/inference_client" --package-name inference_client
 openapi-generator-cli generate -i "$JSON_OUT_DIR/db_server_openapi.json" -g python -o "$TMP_DIR/db_client" --package-name db_client
 
-_install_or_wheel "$TMP_DIR/relay_buffer_client"
+_install_or_wheel "$TMP_DIR/stream_client"
 _install_or_wheel "$TMP_DIR/inference_client"
 _install_or_wheel "$TMP_DIR/db_client"
 

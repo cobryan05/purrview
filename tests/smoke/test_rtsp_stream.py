@@ -55,7 +55,7 @@ def provider_relay_url():
     """
     from apps import APPS, APPS_CONFIG
 
-    cfg = APPS_CONFIG[APPS.RELAY_BUFFER_SERVER]
+    cfg = APPS_CONFIG[APPS.STREAM_SERVER]
     return f"http://{cfg.host}:{cfg.port}"
 
 
@@ -213,7 +213,7 @@ class TestRtspIngest:
         master over RTSP loopback — an extra hop and an extra reader for nothing.
         """
         from apps.helpers.imageProviders.ffmpegImageProvider import FfmpegImageProvider
-        from apps.relay_buffer_server.manager import master_path_name
+        from apps.stream_server.manager import master_path_name
 
         provider = FfmpegImageProvider(video_path=fake_camera, loop=True, rtsp_relay=True)
         await provider.start()

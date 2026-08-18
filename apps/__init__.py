@@ -16,7 +16,7 @@ class APPS(str, Enum):
     INFERENCE_SERVER = "inference_server"
     TASKS_SERVER = "tasks_server"
     DB_SERVER = "db_server"
-    RELAY_BUFFER_SERVER = "relay_buffer_server"
+    STREAM_SERVER = "stream_server"
     TRAINING_SERVER = "training_server"
     MEDIA_MTX_RTSP = "media_mtx_rtsp"
     MEDIA_MTX_API = "media_mtx_api"
@@ -31,7 +31,7 @@ APP_BASE_PORTS = {
     APPS.INFERENCE_SERVER: 8001,
     APPS.TASKS_SERVER: 8002,
     APPS.DB_SERVER: 8003,
-    APPS.RELAY_BUFFER_SERVER: 8004,
+    APPS.STREAM_SERVER: 8004,
     APPS.TRAINING_SERVER: 8005,
 }
 
@@ -56,10 +56,10 @@ APPS_CONFIG = {
         os.environ.get("DB_SERVER_HOST", "localhost"),
         APP_BASE_PORTS[APPS.DB_SERVER] + _port_offset,
     ),
-    APPS.RELAY_BUFFER_SERVER: AppConfig(
-        "RTSP/Relay Buffer Server",
-        os.environ.get("RELAY_BUFFER_SERVER_HOST", "localhost"),
-        APP_BASE_PORTS[APPS.RELAY_BUFFER_SERVER] + _port_offset,
+    APPS.STREAM_SERVER: AppConfig(
+        "Stream Server",
+        os.environ.get("STREAM_SERVER_HOST", "localhost"),
+        APP_BASE_PORTS[APPS.STREAM_SERVER] + _port_offset,
     ),
     APPS.TRAINING_SERVER: AppConfig(
         "Training Server",
@@ -96,7 +96,7 @@ STREAM_BUFFER_DIR = Path(os.environ.get("STREAM_BUFFER_DIR", "/buffer"))
 STREAM_BUFFER_SIZE = os.environ.get("STREAM_BUFFER_SIZE", "512m")
 # Default seconds of rewind a recorded path keeps. Deliberately under a minute: the
 # buffer is RAM, and the design trades depth for costing ~nothing while idle. Lives
-# here rather than in relay_buffer_server so db_server can validate a watch profile's
+# here rather than in stream_server so db_server can validate a watch profile's
 # pre-roll against it without importing another service.
 STREAM_BUFFER_RETENTION_S = float(os.environ.get("STREAM_BUFFER_RETENTION_S", "45"))
 

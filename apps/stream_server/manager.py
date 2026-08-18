@@ -1,11 +1,17 @@
 """Manages streams on the MediaMTX server.
 
-Beyond fanning one camera connection out to many consumers, this manager owns the
-NVR's **rolling buffer**: each master relay path records keyframe-aligned fMP4
-segments into an in-RAM tmpfs (``/buffer``) with a short ``recordDeleteAfter``, and
-MediaMTX's playback server cuts arbitrary windows back out of it on demand. That is
-what lets an event choose its pre-roll *after* it has happened, instead of a fixed
-delay decided when the stream was created.
+This service does not hold any media itself. It owns the *policy* around the NVR's
+rolling buffer while MediaMTX owns the bytes: each master relay path records
+keyframe-aligned fMP4 segments into an in-RAM tmpfs (``/buffer``) with a short
+``recordDeleteAfter``, and MediaMTX's playback server cuts arbitrary windows back out
+of it on demand. That is what lets an event choose its pre-roll *after* it has
+happened, instead of a fixed delay decided when the stream was created.
+
+It used to buffer in Python — a `DelayedStreamer` holding chunks in a bounded queue and
+re-publishing them N seconds late. That was removed (see `67adce87`), and with it the
+whole notion of a stream that is permanently behind. Nothing here queues frames now;
+the only reason this process exists between the app and MediaMTX is the state below,
+which MediaMTX has no concept of.
 
 Three properties this file is responsible for keeping true:
 
@@ -50,9 +56,6 @@ from apps.helpers.streams.bufferBudget import (
     measure_mount_bytes,
     parse_size,
 )
-from apps.helpers.streams.delayedStreamer import DelayedStreamer
-from apps.helpers.streams.ffmpegStreamerIn import FFmpegStreamerIn
-from apps.helpers.streams.ffmpegStreamerOut import FFmpegStreamerOut
 from apps.helpers.streams.ingest import IngestPlan, IngestTier, resolve_ingest_tier
 
 logging.basicConfig(stream=sys.stdout)
@@ -157,7 +160,6 @@ class Manager:
     class StreamInfo:
         name: str
         url: Optional[str] = None
-        streamer: Optional[DelayedStreamer] = None
         mtx_path: Optional[MtxPath] = None
         active: bool = False
         expected_active: Optional[bool] = None
@@ -577,97 +579,6 @@ class Manager:
             "partialPreroll": truncated,
         }
 
-    # ------------------------------------------------------------------ legacy API
-
-    async def _get_or_create_master_stream(self, rtsp_url: str) -> str:
-        """Ensure a single MediaMTX stream exists for a given RTSP URL, return master stream name."""
-        relay_info = self._source_relays.get(rtsp_url)
-        if relay_info:
-            relay_info.refcount += 1
-            return relay_info.master_stream_name
-
-        name = master_path_name(rtsp_url)
-        await self._create_master_path(rtsp_url, name, DEFAULT_RETENTION_S, record=True)
-        self._source_relays[rtsp_url].refcount = 1
-        return name
-
-    async def create_delay_stream(self, rtsp_url: str, stream_name: str, delay: float, overwrite: bool = True) -> None:
-        """Create a new stream that replays an RTSP stream with a delay.
-
-        NOT part of the NVR path — event clips come from the recorded buffer via the
-        playback server, which gives retroactive, per-event pre-roll instead of a feed
-        that is permanently N seconds late. This remains only to serve a live delayed
-        *view*; do not build recording on it.
-        """
-        await self.create_new_publish_stream(stream_name, overwrite)
-
-        master_name = await self._get_or_create_master_stream(rtsp_url)
-        relay_url = f"rtsp://{self._hostname}:{self._rtsp_port}/{master_name}"
-        self._streams[stream_name].source_url = rtsp_url
-
-        # Wait until master stream is active
-        for _ in range(10):
-            await self.refresh_streams()
-            master_stream = self._streams.get(master_name)
-            if master_stream and master_stream.active:
-                break
-            await asyncio.sleep(0.5)
-        else:
-            raise RuntimeError(f"Timed out waiting for master stream {master_name} to become active")
-
-        input_stream = FFmpegStreamerIn(relay_url)
-        delayed_stream = self._streams[stream_name]
-        if delayed_stream.url is None:
-            raise ValueError("Publish URL is missing. Failed to create publish stream?")
-        output = FFmpegStreamerOut(delayed_stream.url)
-        delayed_stream.streamer = DelayedStreamer(input_stream, output, delay)
-        delayed_stream.streamer.start()
-
-    async def create_new_publish_stream(self, stream_name: str, overwrite: bool = True):
-        """Create a new stream with the given source and name"""
-        if stream_name in self._streams:
-            if overwrite:
-                await self.destroy_stream(stream_name)
-            else:
-                raise KeyError(f"Stream named {stream_name} already exists")
-
-        await self.destroy_stream(stream_name)
-
-        path_conf: PathConf = PathConf(name=stream_name, source="publisher", sourceOnDemand=False)
-        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
-
-        self._streams[stream_name] = Manager.StreamInfo(name=stream_name)
-        await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
-        await self.refresh_streams()
-
-    async def create_rtsp_relay_stream(self, rtsp_url: str, stream_name: str, overwrite: bool = True) -> None:
-        """Create a named RTSP relay that proxies another rtsp url.
-
-        Superseded by ``ensure_stream``, which hands the caller the master path
-        directly. Kept for the existing create-stream API surface.
-        """
-        if stream_name in self._streams:
-            if overwrite:
-                await self.destroy_stream(stream_name)
-            else:
-                raise KeyError(f"Stream named {stream_name} already exists")
-
-        master_name = await self._get_or_create_master_stream(rtsp_url)
-        relay_url = f"rtsp://{self._hostname}:{self._rtsp_port}/{master_name}"
-
-        path_conf = PathConf(name=stream_name, source=relay_url)
-        api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
-        await asyncio.to_thread(api.config_paths_add, name=stream_name, path_conf=path_conf)
-
-        self._streams[stream_name] = Manager.StreamInfo(
-            name=stream_name,
-            url=f"rtsp://{self._hostname}:{self._rtsp_port}/{stream_name}",
-            owned=True,
-            source_url=rtsp_url,
-        )
-
-        await self.refresh_streams()
-
     async def destroy_stream(self, stream_name: str) -> None:
         """Destroy a stream with the given name, and possibly its master relay."""
         api: ConfigurationApi = ConfigurationApi(self._media_mtx_api_client)
@@ -794,7 +705,7 @@ class Manager:
         ]
 
         return {
-            "service": "relay_buffer_server",
+            "service": "stream_server",
             "status": "ok",
             "streams": {"active": len(streams), "recording": recording, "readers": readers},
             "buffer": usage.to_dict(),
