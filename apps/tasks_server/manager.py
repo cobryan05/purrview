@@ -1473,8 +1473,10 @@ class Manager:
                 parts.append(ti.instance.status)
             progress = ti.task.get_progress() if ti.task else None
             # None is indeterminate progress, not 0% — don't render it as a number.
+            # Already a percent (0-100), as every _update_progress() caller passes
+            # and the task list's own bar reads it — do not scale it again.
             if progress is not None:
-                parts.append(f"{progress * 100:.0f}%")
+                parts.append(f"{progress:.0f}%")
             message = ti.task.get_status_message() if ti.task else ""
             if message:
                 parts.append(message)
@@ -1515,14 +1517,23 @@ class Manager:
         wedged = len(self._wedged_tasks)
         if wedged:
             summary += f" · {wedged} not responding"
-            longest = max(self._wedged_tasks.values())
+            # Name them. The notice bar is read away from the Operations page, so
+            # "1 task is not responding" otherwise sends the reader looking for
+            # which one — and the answer is already in hand here.
+            named = ", ".join(
+                sorted(
+                    f"{self._running_tasks[uuid].config.name} ({silent_for / 60:.0f}m)"
+                    for uuid, silent_for in self._wedged_tasks.items()
+                    if uuid in self._running_tasks
+                )
+            )
+            subject = f"Task(s) not reporting progress: {named}." if named else f"{wedged} running task(s)."
             notices.append(
                 {
                     "key": "tasks_server:wedged",
                     "level": "warning",
                     "message": (
-                        f"{wedged} running task(s) have not reported progress for up to "
-                        f"{longest / 60:.0f} minute(s). They are still attached to this server, so "
+                        f"{subject} They are still attached to this server, so "
                         "they are not being recovered automatically and Stop may not reach them. "
                         "If they do not resume, restarting tasks_server will clear them."
                     ),

@@ -62,7 +62,10 @@ class TestTasksStatusDetails:
         assert [r["label"].split(" ")[0] for r in rows] == ["Alpha", "zebra"]
 
     def test_row_carries_status_progress_and_message(self, manager):
-        _running(manager, "scan", progress=0.5, message="halfway")
+        # 0-100, not a fraction: that is what every _update_progress() caller
+        # passes and what the task list divides by 100 to draw its bar. This
+        # panel used to re-scale it, which rendered a half-done training "5000%".
+        _running(manager, "scan", progress=50.0, message="halfway")
 
         value = manager.get_status()["details"][0]["rows"][0]["value"]
 

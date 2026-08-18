@@ -12,11 +12,13 @@ task only watches it. Everything here is about that asymmetry:
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from apps.tasks_server.tasks._training_job_runner import _StreamDropped
 from apps.tasks_server.tasks.TrainModelTask import TrainModelTask
 
 
@@ -235,3 +237,136 @@ class TestSseReconnect:
 
         assert result["cancelled"] is True
         task._cancel_remote_job.assert_awaited_once_with("job-1")
+
+
+class _FakeResponse:
+    """An httpx.Response stand-in whose line stream the test drives."""
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            if callable(line):
+                await line()
+                continue
+            yield line
+
+
+class _FakeStream:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeClient:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, *_args, **_kwargs):
+        return _FakeStream(self._response)
+
+
+def _patch_stream(response):
+    return patch(
+        "apps.tasks_server.tasks._training_job_runner.httpx.AsyncClient",
+        lambda *a, **kw: _FakeClient(response),
+    )
+
+
+class TestQuietStream:
+    """A job queued behind another emits nothing until its turn comes.
+
+    The training server runs one job at a time, so the wait is however long the
+    job ahead of it takes — hours on a real training. Everything this task does
+    between events happens on the SSE loop, so a loop that simply blocks on the
+    next line is a task that neither beats nor reads its cancel flag: it is
+    reported as not responding, and Stop never reaches it.
+    """
+
+    async def test_a_silent_stream_still_beats(self):
+        task = _make_task()
+        task.STREAM_IDLE_WAKEUP = 0.01
+        task.HEARTBEAT_INTERVAL = 0  # every pass, so the test needn't wait 30s
+
+        beats = {"n": 0}
+
+        async def _quiet():
+            # Enough dead air for several wake-ups, then let the stream end so
+            # the call returns instead of hanging the suite.
+            while beats["n"] < 3:
+                await asyncio.sleep(0.01)
+
+        async def _beat(*_args, **_kwargs):
+            beats["n"] += 1
+
+        task._manager.update_task_heartbeat = AsyncMock(side_effect=_beat)
+
+        with _patch_stream(_FakeResponse([_quiet])):
+            with pytest.raises(_StreamDropped):
+                await task._stream_job_events("job-1")
+
+        assert beats["n"] >= 3, "a queued job's watcher must keep beating through the wait"
+
+    async def test_stop_reaches_a_task_waiting_on_a_silent_stream(self):
+        task = _make_task()
+        task.STREAM_IDLE_WAKEUP = 0.01
+        task._cancel_remote_job = AsyncMock()
+
+        async def _quiet():
+            task._cancel_flag.set()
+            # The stream never says anything again; only the idle wake-up can
+            # notice the flag.
+            await asyncio.sleep(30)
+
+        with _patch_stream(_FakeResponse([_quiet])):
+            result = await asyncio.wait_for(task._stream_job_events("job-1"), timeout=5)
+
+        assert result["cancelled"] is True
+        task._cancel_remote_job.assert_awaited_once_with("job-1")
+
+    async def test_events_still_arrive_and_are_handled(self):
+        """The idle path must not cost the stream its actual job."""
+        task = _make_task()
+        task.STREAM_IDLE_WAKEUP = 0.01
+        task._save_artifact = AsyncMock()
+
+        lines = [
+            "event: progress",
+            'data: {"progress": 0.5, "log": "epoch 1"}',
+            "",
+            "event: done",
+            'data: {"val_accuracy": 0.9}',
+            "",
+        ]
+        task._job_id = "job-1"
+
+        with _patch_stream(_FakeResponse(lines)):
+            result = await task._stream_job_events("job-1")
+
+        assert result["job_id"] == "job-1"
+        assert result["val_accuracy"] == 0.9
+
+    async def test_a_read_error_mid_stream_still_surfaces(self):
+        """Relaying lines through a queue must not swallow the failure that the
+        reconnect logic exists to catch."""
+        task = _make_task()
+        task.STREAM_IDLE_WAKEUP = 0.01
+
+        async def _boom():
+            raise httpx.ReadError("connection reset")
+
+        with _patch_stream(_FakeResponse(["event: progress", _boom])):
+            with pytest.raises(httpx.ReadError):
+                await task._stream_job_events("job-1")

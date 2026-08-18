@@ -62,6 +62,10 @@ _EPOCH_METRIC_KEYS = ("train_loss", "val_loss", "val_accuracy")
 # shared), long enough that one stalled epoch doesn't swing the estimate.
 _ETA_WINDOW = 5
 
+# Sentinel put on the line queue when the stream ends cleanly. A bare None can't
+# serve: None is already the idle wake-up the consumer yields.
+_STREAM_END = object()
+
 
 def format_eta(seconds: float) -> str:
     """Render an ETA the way a person reads one: coarse, and never false-precise.
@@ -95,6 +99,13 @@ class TrainingJobRunnerMixin:
     # into a server that is never coming back.
     MAX_STREAM_RECONNECTS: int = 40
     _RECONNECT_DELAYS: tuple[int, ...] = (2, 5, 10, 20, 30)
+
+    # How long a quiet event stream is left alone before the watcher wakes itself
+    # to beat and re-check its cancel flag. Not a read timeout — the connection is
+    # never dropped for being quiet, because quiet is the normal state of a queued
+    # job. Well under Task.HEARTBEAT_INTERVAL so the beat stays on its own
+    # schedule rather than this one's.
+    STREAM_IDLE_WAKEUP: float = 5.0
 
     def _reconnect_delay(self, attempt: int) -> int:
         return self._RECONNECT_DELAYS[min(attempt, len(self._RECONNECT_DELAYS) - 1)]
@@ -426,35 +437,107 @@ class TrainingJobRunnerMixin:
 
         Raises _StreamDropped if the connection ends without a terminal event —
         the caller decides whether that is recoverable.
+
+        A silent stream is normal, not a fault. The training server runs one job
+        at a time, so a job sitting behind another in its queue emits nothing for
+        as long as the job ahead of it trains — hours on a real run. The watcher
+        must survive that dead air *and* stay responsive through it: everything
+        this task does between events happens on this loop, so a loop that simply
+        blocks on the next line leaves the task neither beating (and so reported
+        wedged, since silence is all the wedged check can see) nor reading its
+        cancel flag (and so Stop never lands).
+
+        Hence the pump: the read runs in its own task feeding a queue, and this
+        loop waits on the queue with a timeout, turning on a timer whether or not
+        the server has said anything. The timeout goes on the queue rather than
+        on ``aiter_lines()`` directly because cancelling that iterator mid-await —
+        which is what ``wait_for`` does on expiry — leaves the stream
+        part-consumed, corrupting the very connection the wake-up exists to keep.
+        Cancelling a ``Queue.get()`` costs nothing and loses nothing.
         """
         stream_url = f"{self._training_base_url}/api/training/jobs/{job_id}/stream"
 
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("GET", stream_url) as response:
-                event_type: Optional[str] = None
-                async for raw_line in response.aiter_lines():
-                    if self._cancel_flag.is_set():
-                        await self._cancel_remote_job(job_id)
-                        return {"cancelled": True, "job_id": job_id}
-
-                    line = raw_line.strip()
-                    if not line:
-                        event_type = None
-                        continue
-                    if line.startswith("event:"):
-                        event_type = line[len("event:") :].strip()
-                    elif line.startswith("data:"):
-                        data_str = line[len("data:") :].strip()
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        result = await self._handle_event(event_type, data)
-                        if result is not None:
-                            return result
+                queue: asyncio.Queue = asyncio.Queue()
+                pump = asyncio.create_task(self._pump_lines(response, queue))
+                try:
+                    result = await self._read_stream_queue(job_id, queue)
+                finally:
+                    # Ordinary coroutines, not an async generator: the early
+                    # `return` on a terminal event has to be able to await this
+                    # cleanup, and a generator cannot await anything once it is
+                    # being closed.
+                    pump.cancel()
+                    try:
+                        await pump
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if result is not None:
+                    return result
 
         raise _StreamDropped(f"stream for job {job_id} ended without a terminal event")
+
+    async def _pump_lines(self, response: httpx.Response, queue: asyncio.Queue) -> None:
+        """Read *response*'s lines into *queue*, ending with a sentinel or the error.
+
+        A failure is relayed rather than raised here: it belongs to the consumer,
+        whose caller is the reconnect logic that knows what to do with it.
+        """
+        try:
+            async for raw_line in response.aiter_lines():
+                await queue.put(raw_line)
+            await queue.put(_STREAM_END)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            await queue.put(exc)
+
+    async def _read_stream_queue(self, job_id: str, queue: asyncio.Queue) -> Optional[dict[str, Any]]:
+        """Parse pumped lines into events.
+
+        Returns a result dict on a terminal event or a cancel, or None if the
+        stream ended without one.
+        """
+        event_type: Optional[str] = None
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), self.STREAM_IDLE_WAKEUP)
+            except asyncio.TimeoutError:
+                item = None  # idle wake-up: nothing to parse, but still a pass
+
+            # Runs on every pass, line or wake-up. heartbeat() is rate-limited
+            # internally, so beating unconditionally here costs one DB write per
+            # HEARTBEAT_INTERVAL no matter how chatty the stream is, and none of
+            # the branches below can forget to do it.
+            if self._cancel_flag.is_set():
+                await self._cancel_remote_job(job_id)
+                return {"cancelled": True, "job_id": job_id}
+            await self.heartbeat()
+
+            if item is None:
+                continue
+            if item is _STREAM_END:
+                return None
+            if isinstance(item, BaseException):
+                raise item
+
+            line = item.strip()
+            if not line:
+                event_type = None
+                continue
+            if line.startswith("event:"):
+                event_type = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data_str = line[len("data:") :].strip()
+                try:
+                    data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                result = await self._handle_event(event_type, data)
+                if result is not None:
+                    return result
 
     def _record_epoch_metrics(self, data: dict) -> None:
         """Append one per-epoch metric sample from a progress event to the history.

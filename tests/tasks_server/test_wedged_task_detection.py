@@ -150,6 +150,40 @@ class TestReporting:
         # The user's next question is "so what do I do" — the notice has to answer it.
         assert "restarting tasks_server" in notice["message"]
 
+    def test_the_notice_names_the_stuck_task(self, manager):
+        """The notice bar is read from anywhere in the app, not just the Operations
+        page, so a bare count sends the reader hunting for which task it means."""
+        manager._running_tasks = {"task-1": _task_double(silent_for=_threshold(manager) + 600)}
+        manager._check_wedged_tasks()
+
+        notice = next(n for n in manager.get_status()["notices"] if n["key"] == "tasks_server:wedged")
+
+        assert "Watch Test" in notice["message"]
+
+    def test_the_notice_names_every_stuck_task(self, manager):
+        manager._running_tasks = {
+            "task-1": _task_double(silent_for=_threshold(manager) + 600, name="Watch Test", uuid="task-1"),
+            "task-2": _task_double(silent_for=_threshold(manager) + 600, name="Train Poop", uuid="task-2"),
+        }
+        manager._check_wedged_tasks()
+
+        notice = next(n for n in manager.get_status()["notices"] if n["key"] == "tasks_server:wedged")
+
+        assert "Watch Test" in notice["message"]
+        assert "Train Poop" in notice["message"]
+
+    def test_progress_is_shown_as_the_percent_it_already_is(self, manager):
+        """_update_progress() takes 0-100 everywhere in the codebase, and the task
+        list's own bar reads it that way — scaling it again here rendered a
+        half-finished training as "5000%"."""
+        info = _task_double(silent_for=1.0)
+        info.task.get_progress = lambda: 50.0
+        manager._running_tasks = {"task-1": info}
+
+        rows = manager.get_status()["details"][0]["rows"]
+
+        assert any("50%" in r["value"] for r in rows)
+
     def test_the_row_says_which_task_is_stuck(self, manager):
         """A stuck task's own status message is whatever it last set, which reads as
         though it were still doing that."""
