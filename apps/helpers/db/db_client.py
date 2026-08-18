@@ -6563,6 +6563,14 @@ class DbClient:
                         f"Source {src.source_uuid!r} disables mask {ref!r}, which is not drawn on that source"
                     )
 
+        # A rule's source scope is validated the same way, and for the same reason: a
+        # rule naming a source this watcher does not have would simply never be
+        # evaluated, which looks identical to a rule that is broken.
+        for rule in rules:
+            for ref in rule.source_uuids_json or []:
+                if str(ref) not in seen_sources:
+                    raise ValueError(f"Rule {rule.name!r} targets source {ref!r}, which is not in this profile")
+
         # Both scope lists are validated here rather than by a foreign key: the nested
         # write replaces every child row wholesale, so an FK would fire against rules
         # that have not been inserted yet. Saying which action and which uuid is also
@@ -6613,6 +6621,7 @@ class DbClient:
                     order=rule.order,
                     name=rule.name,
                     enabled=rule.enabled,
+                    source_uuids_json=[str(s) for s in (rule.source_uuids_json or [])],
                     subject_a_kind=rule.subject_a_kind.value,
                     subject_a_refs_json=[str(r) for r in (rule.subject_a_refs_json or [])],
                     subject_a_include_descendants=rule.subject_a_include_descendants,

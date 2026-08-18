@@ -20,11 +20,13 @@ written before either axis existed, or written by someone who never opens the sc
 dropdowns, applies everywhere — and an action stays applying to a camera added to the
 watcher later, rather than silently not covering it.
 
-Note this is deliberately *action* scoping, not *rule* scoping. Narrowing the action
-leaves the rule evaluating everywhere, so the event is still raised, still logged and
-still visible on every camera — only the side effect is narrowed. Narrowing the rule
-instead (which `InteractionRule` could grow separately) suppresses the event itself.
-They are different questions and this answers only the first one.
+A rule carries a source scope too, on the same empty-means-all terms, and the two are
+deliberately different instruments. Narrowing the **action** leaves the rule evaluating
+everywhere, so the event is still raised, still logged and still visible on every camera
+— only the side effect is narrowed. Narrowing the **rule** suppresses the event itself.
+"A cat is present" is the case that needs the second one: it is true in every room all
+day, so scoping only the action would keep the event browser full of events the user
+said they did not care about.
 """
 
 from typing import Any, Optional, Sequence
@@ -45,6 +47,20 @@ def in_scope(scope: Optional[Sequence[Any]], value: Optional[str]) -> bool:
     if not scope:
         return True
     return value in {str(entry) for entry in scope}
+
+
+def rule_applies_to_source(scope: Optional[Sequence[Any]], source_uuid: Optional[str]) -> bool:
+    """Whether a rule with this source scope should be evaluated on this source.
+
+    Differs from `in_scope` in exactly one case, which is the one that matters: an engine
+    with **no source identity** (`source_uuid=None` — a preview, or a test) evaluates
+    every rule rather than none. Falling through to `in_scope` there would silently make
+    every scoped rule dead, and a rule that never fires is indistinguishable from a rule
+    whose predicate is simply never true.
+    """
+    if source_uuid is None:
+        return True
+    return in_scope(scope, source_uuid)
 
 
 def action_applies(

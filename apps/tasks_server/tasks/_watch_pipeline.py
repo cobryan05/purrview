@@ -313,6 +313,23 @@ class WatchPipeline:
     def detections(self) -> List[Detection]:
         return list(self._last_detections)
 
+    def adopt_buffer_capabilities(self, provider: Any) -> None:
+        """Take the source's buffer facts from the provider, which got them from the relay.
+
+        All three move together on purpose. They were copied field-by-field at the call
+        site and `retention_s` was simply forgotten, which is invisible until something
+        reads it: the badge showed "0s rewind" for a camera with a 45 s window, and
+        `RecordClipAction.plan_window` guards its pre-roll clamp on `retention_s > 0`, so
+        the clamp never ran. Neither failure raises anything.
+
+        Defaults are the unbuffered ones, so a provider that reports nothing (a snapshot
+        poller, a test double) is described as having no rewind rather than inheriting
+        whatever the previous source had.
+        """
+        self.buffered = bool(getattr(provider, "buffered", False))
+        self.ingest_tier = getattr(provider, "ingest_tier_name", "none")
+        self.retention_s = float(getattr(provider, "retention_s", 0.0) or 0.0)
+
     def status_row(self, now: float) -> Dict[str, Any]:
         """One row of the status panel's Sources table."""
         last_frame = self.health.last_frame_at

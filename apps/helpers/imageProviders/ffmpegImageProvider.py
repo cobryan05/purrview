@@ -136,6 +136,10 @@ class FfmpegImageProvider(ImageProvider):
         # path is actually recording.
         self.ingest_tier_name: str = self._ingest_plan.tier.value
         self.buffered: bool = False
+        #: Seconds of rewind the relay actually armed. Read from the same ensure
+        #: response as `buffered` — the relay is the only thing that knows, and a value
+        #: inferred here would let the badge and the clip's pre-roll disagree.
+        self.retention_s: float = 0.0
         if rtsp_relay and self._ingest_plan.buffered:
             relay_host, relay_port = (
                 APPS_CONFIG[APPS.STREAM_SERVER].host,
@@ -165,6 +169,7 @@ class FfmpegImageProvider(ImageProvider):
             self._lease_id = ensured["leaseId"]
             self._relayed_name = ensured["path"]
             self.buffered = bool(ensured.get("recording"))
+            self.retention_s = float(ensured.get("retentionS") or 0.0)
             self.ingest_tier_name = ensured.get("ingestTier", self._ingest_plan.tier.value)
 
             # From here on the lease is ours, and only `stop()` gives it back. A caller

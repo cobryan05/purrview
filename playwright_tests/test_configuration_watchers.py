@@ -1331,6 +1331,83 @@ class TestActionScoping:
         expect(trigger).to_contain_text("Litter cam")
 
 
+class TestRuleSourceScope:
+    """Per-source *rule* scope — the sharper sibling of action scope.
+
+    Scoping the action leaves the event raised, logged and browsable on every camera and
+    only silences the side effect. Scoping the rule stops the event existing, which is
+    what "record a clip when a cat is present in this one room" actually needs: a cat is
+    present in every room all day.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_the_picker_is_shown_on_a_rule(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-rule-source-scope']").first).to_be_visible()
+
+    def test_an_unscoped_rule_reads_as_all_sources(self, page: Page, base_url: str):
+        """The empty state must not read as the opposite of what it does."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        trigger = page.locator("[data-testid='watch-rule-source-scope'] .ms-dropdown__trigger").first
+        expect(trigger).to_contain_text("All sources")
+
+    def test_an_unscoped_rule_saves_an_empty_list(self, page: Page, base_url: str):
+        """A nested write is a whole-list replace, so the field must always be sent."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-rule-name']").first.fill("cat in the litter box")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["sourceUuidsJson"] == [], saved["rules"][0]
+
+    def test_picking_a_source_scopes_the_rule_to_it(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        scope = page.locator("[data-testid='watch-rule-source-scope']").first
+        scope.locator("button").first.click()
+        scope.locator("input[type='checkbox']").first.check()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["sourceUuidsJson"] == ["src-1"], saved["rules"][0]
+
+    def test_a_saved_scope_loads_back_naming_the_camera(self, page: Page, base_url: str):
+        """A scope that silently reopened as "All" would be worse than no scoping."""
+        scoped = {
+            **FAKE_PROFILE,
+            "rules": [{**FAKE_PROFILE["rules"][0], "sourceUuidsJson": ["src-1"]}],
+        }
+        _mock_watch_apis(page, profiles=[scoped])
+        self._open(page, base_url)
+        trigger = page.locator("[data-testid='watch-rule-source-scope'] .ms-dropdown__trigger").first
+        expect(trigger).to_contain_text("Litter cam")
+
+    def test_the_scope_survives_a_save_untouched(self, page: Page, base_url: str):
+        """Load, edit something else, save — the scope must come back out unchanged."""
+        saved = {}
+        scoped = {
+            **FAKE_PROFILE,
+            "rules": [{**FAKE_PROFILE["rules"][0], "sourceUuidsJson": ["src-1"]}],
+        }
+        _mock_watch_apis(page, profiles=[scoped], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-rule-name']").first.fill("cat in the litter box")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["sourceUuidsJson"] == ["src-1"], saved["rules"][0]
+
+
 class TestLiveImageFeed:
     """The per-frame annotated MQTT feed."""
 

@@ -68,6 +68,12 @@ class RuleSpec:
     max_duration_s: float = 300.0
     enabled: bool = True
     event_label: Optional[str] = None
+    #: Sources this rule is evaluated on; empty means all of them. Applied by
+    #: `WatchEngine`, which is already per-source, rather than inside the predicate — a
+    #: rule that does not apply to a camera must have no *state* on that camera either,
+    #: or its machine would sit in CLOSING and emit a stray END later.
+    #: Declared last so the field order the rest of the dataclass exposes is unchanged.
+    source_uuids: List[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row) -> "RuleSpec":
@@ -88,6 +94,7 @@ class RuleSpec:
             max_duration_s=get("max_duration_s", 300.0),
             enabled=get("enabled", True),
             event_label=get("event_label"),
+            source_uuids=[str(s) for s in (get("source_uuids_json") or [])],
         )
 
 

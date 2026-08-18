@@ -366,7 +366,14 @@ class StreamWatcherTask(Task):
             disabled_masks = set(src.disabled_mask_uuids_json or [])
             zones = [zone_from_row(r) for r in regions if r.role == "zone"]
             masks = [zone_from_row(r) for r in regions if r.role == "mask" and r.uuid not in disabled_masks]
+            # Every rule is handed to every source's engine; the engine keeps only the
+            # ones scoped to it (empty scope = all). Filtering there rather than here
+            # keeps "which rules run on this camera" a single answer, so a preview or a
+            # future second caller cannot get it subtly wrong.
             engine = WatchEngine(rules=rule_specs, zones=zones, source_uuid=src.source_uuid)
+            skipped = len(rule_specs) - len(engine.rule_uuids)
+            if skipped:
+                self.log(f"Source {src.source_uuid} skips {skipped} rule(s) scoped to other sources")
 
             # A source that names either a stack or a model overrides the profile
             # wholesale; only a source that names neither inherits the default. Falling
@@ -720,10 +727,10 @@ class StreamWatcherTask(Task):
             except Exception as e:
                 logger.exception("Failed to start source %s", pipeline.source_uuid)
                 pipeline.health.record_failure(time.monotonic(), str(e))
-            # The relay tells us whether this source actually has a rewind buffer;
-            # never infer it locally, or the UI badge and the clip backend can disagree.
-            pipeline.buffered = bool(getattr(pipeline.provider, "buffered", False))
-            pipeline.ingest_tier = getattr(pipeline.provider, "ingest_tier_name", "none")
+            # The relay tells us whether this source actually has a rewind buffer and
+            # how deep it is; never infer either locally, or the UI badge, the clip
+            # backend and the pre-roll clamp can disagree.
+            pipeline.adopt_buffer_capabilities(pipeline.provider)
 
         self._status_msg = "Watching"
         try:

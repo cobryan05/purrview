@@ -996,7 +996,42 @@ function buildRuleRow(rule, ctx) {
   }
   buildSubjectB();
 
+  // Which cameras this rule is evaluated on. Empty means all of them, exactly as an
+  // action's scope does — and it is the *sharper* of the two: scoping the action leaves
+  // the event raised on every camera and only silences the side effect, while scoping
+  // the rule stops the event existing. "A cat is present" is the case that needs this
+  // one, being true in every room all day.
+  let sourceScope = [...(rule.sourceUuidsJson || [])];
+  let sourceScopeDropdown = null;
+  const sourceScopeHost = el('span', 'watch-rule-slot');
+  sourceScopeHost.dataset.testid = 'watch-rule-source-scope';
+
+  function buildSourceScope() {
+    const items = ctx.sourceScopeItems();
+    // A source removed or repointed in the rows above must not survive here as a uuid
+    // this watcher no longer has — the backend rejects it, from a control the user can
+    // no longer see.
+    sourceScope = sourceScope.filter(uuid => items.some(i => i.uuid === uuid));
+    sourceScopeDropdown?.destroy();
+    sourceScopeHost.innerHTML = '';
+    sourceScopeDropdown = createMultiSelectDropdown({
+      label: '',
+      items,
+      defaultSelected: sourceScope,
+      showModeToggle: false,
+      allowExclude: false,
+      // "All sources" rather than "None selected": an unscoped rule really does run
+      // everywhere, so the empty state must not read as the opposite of what it does.
+      emptySummary: 'All sources',
+      emptyText: 'This watcher has no sources yet',
+      onChange: (selected) => { sourceScope = [...selected]; ctx.onAnyChange(); },
+    });
+    sourceScopeHost.appendChild(sourceScopeDropdown.element);
+  }
+  buildSourceScope();
+
   sentence.append(el('span', null, 'When'), subjectAHost, relation, subjectBKind, subjectBHost);
+  sentence.append(el('span', null, 'on'), sourceScopeHost);
   row.appendChild(sentence);
 
   function syncArity() {
@@ -1048,9 +1083,12 @@ function buildRuleRow(rule, ctx) {
     refreshZones: () => {
       if (subjectBKind.value !== 'label') buildSubjectB();
     },
+    /** Adopt the watcher's current source list — see `buildScopes` on the action row. */
+    refreshScopes: () => buildSourceScope(),
     destroy: () => {
       subjectADropdown?.destroy();
       subjectBDropdown?.destroy();
+      sourceScopeDropdown?.destroy();
     },
     getRule: () => {
       const isUnary = relation.value === 'present';
@@ -1059,6 +1097,9 @@ function buildRuleRow(rule, ctx) {
         order: 0,
         name: nameInput.value.trim() || 'Unnamed rule',
         enabled: true,
+        // Always sent: a watch profile saves as a whole-list replace, so a field the
+        // editor omits is a field the save resets to its default.
+        sourceUuidsJson: [...sourceScope],
         subjectAKind: 'label',
         subjectARefsJson: subjectARefs,
         subjectAIncludeDescendants: subjectADescendants,
@@ -1675,7 +1716,7 @@ export async function renderWatchProfileManager({ target }) {
           ingestTierFor,
           masksForSource: uuid => regionsFor(uuid, REGION_ROLE_MASK),
           onRegionsChanged: () => refreshRegions(),
-          onSourceChanged: () => { refreshActionScopes(); for (const rule of ruleRows) rule.refreshZones?.(); },
+          onSourceChanged: () => { refreshScopes(); for (const rule of ruleRows) rule.refreshZones?.(); },
           onAnyChange,
           onDelete: () => {
             entry.element.remove();
@@ -1685,14 +1726,14 @@ export async function renderWatchProfileManager({ target }) {
             // ...and removes it from every action that was scoped to it, which would
             // otherwise be saved as a scope pointing at a source the watcher no
             // longer has and rejected by the backend with no visible cause.
-            refreshActionScopes();
+            refreshScopes();
             onAnyChange();
           },
         });
         sourceRows.push(entry);
         sourcesBox.appendChild(entry.element);
         for (const rule of ruleRows) rule.refreshZones?.();
-        refreshActionScopes();
+        refreshScopes();
       }
 
       addSourceBtn.addEventListener('click', () => {
@@ -1817,13 +1858,15 @@ export async function renderWatchProfileManager({ target }) {
       }
 
       /**
-       * Push the current rules and sources into every action's scope pickers.
+       * Push the current rules and sources into every scope picker — the actions' pair
+       * and each rule's source scope.
        *
        * Called on structural changes only (a rule or source added, removed or
        * repointed), never from `onAnyChange` — that fires on every keystroke, and
        * rebuilding a dropdown under the cursor would drop focus mid-word.
        */
-      function refreshActionScopes() {
+      function refreshScopes() {
+        for (const entry of ruleRows) entry.refreshScopes?.();
         for (const entry of actionRows) entry.refreshScopes?.();
       }
 
@@ -1838,23 +1881,24 @@ export async function renderWatchProfileManager({ target }) {
         const entry = buildRuleRow(rule, {
           labelItems,
           zoneItems,
+          sourceScopeItems,
           onAnyChange,
           onDelete: () => {
             entry.destroy?.();
             entry.element.remove();
             ruleRows.splice(ruleRows.indexOf(entry), 1);
             // A deleted rule must leave the scope of every action that named it.
-            refreshActionScopes();
+            refreshScopes();
             onAnyChange();
           },
           // A renamed rule should read by its new name in the scope pickers. On
           // `change` (commit), not `input` — rebuilding a dropdown on every keystroke
           // would fight the user for focus.
-          onNameCommitted: refreshActionScopes,
+          onNameCommitted: refreshScopes,
         });
         ruleRows.push(entry);
         rulesBox.appendChild(entry.element);
-        refreshActionScopes();
+        refreshScopes();
       }
 
       addRuleBtn.addEventListener('click', () => { addRule({}); onAnyChange(); });

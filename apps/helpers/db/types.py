@@ -1706,6 +1706,22 @@ class InteractionRule(SQLModel, table=True):
     order: int = Field(default=0)
     name: str
     enabled: bool = Field(default=True)
+    # Which sources this rule is evaluated on. **Empty means every source in the
+    # profile**, matching `WatchAction`'s two scope lists, so a rule written before this
+    # column existed — or by someone who never opens the picker — still runs everywhere.
+    #
+    # This is the sharper instrument of the two scopes, and the reason both exist:
+    # narrowing the *action* leaves the event raised, logged and visible on every camera
+    # and only silences the side effect, while narrowing the rule suppresses the event
+    # itself. "A cat is present" is true in every room and is only worth recording in
+    # one, so scoping the action there would fill the event browser with events the user
+    # explicitly does not care about.
+    #
+    # Not a foreign key, for the same reason as `WatchAction`'s lists: the nested write
+    # replaces every child row of a profile wholesale, so an FK would fire against
+    # sources not yet inserted. `_validate_watch_profile` enforces it at the API
+    # boundary, where it can name the rule and the uuid.
+    source_uuids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     subject_a_kind: str = Field(default=RuleSubjectKind.LABEL.value)
     # A *list* of label (or zone) uuids: "when any of these three cats is inside the
     # litter box" is one rule, not three. Which member actually matched is reported on
@@ -2005,6 +2021,7 @@ class InteractionRuleRead(OrmModel):
     order: int = 0
     name: str
     enabled: bool = True
+    source_uuids_json: List[Any] = Field(default_factory=list)
     subject_a_kind: str
     subject_a_refs_json: List[Any] = Field(default_factory=list)
     subject_a_include_descendants: bool = False
@@ -2024,6 +2041,8 @@ class InteractionRuleWrite(ApiModel):
     order: int = 0
     name: str
     enabled: bool = True
+    # Empty means "every source in this profile" — see `InteractionRule`.
+    source_uuids_json: List[Any] = Field(default_factory=list)
     subject_a_kind: RuleSubjectKind = RuleSubjectKind.LABEL
     subject_a_refs_json: List[Any] = Field(default_factory=list)
     subject_a_include_descendants: bool = False
@@ -2074,6 +2093,9 @@ class InteractionRuleWrite(ApiModel):
                     f"subject_{side}_include_descendants needs subject_{side}_kind 'label'; "
                     f"{kind.value!r} has no hierarchy to descend"
                 )
+
+        if len(set(map(str, self.source_uuids_json))) != len(self.source_uuids_json):
+            raise ValueError("source_uuids_json contains duplicates")
 
         if self.min_duration_s < 0 or self.rearm_delay_s < 0:
             raise ValueError("min_duration_s and rearm_delay_s must not be negative")

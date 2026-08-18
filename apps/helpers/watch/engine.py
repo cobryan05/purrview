@@ -8,7 +8,8 @@ under test needs no services to run.
 
 One engine per source. Rules are shared across a profile, but their *state* is
 per-source: two cameras watching two litter boxes must open two independent events for
-the same rule.
+the same rule. A rule may also opt out of a source entirely (`RuleSpec.source_uuids`),
+in which case this engine simply has no machine for it.
 """
 
 from typing import Dict, List, Optional, Sequence
@@ -17,6 +18,7 @@ from ..tracking.tracker import Track
 from .events import WatchEventSignal
 from .geometry import Zone
 from .rules import RuleMachine, RuleSpec, evaluate_predicate
+from .scoping import rule_applies_to_source
 
 
 class WatchEngine:
@@ -32,8 +34,15 @@ class WatchEngine:
     ) -> None:
         self.source_uuid = source_uuid
         self._zones: Dict[str, Zone] = {z.uuid: z for z in zones}
+        # A rule scoped to other sources gets no machine here at all, rather than a
+        # machine that is asked never to fire. That is the difference between "this
+        # camera does not run this rule" and "this rule happens to be false" — the
+        # status panel, the tuning hints and `close_all` all read the machine map, and a
+        # dormant machine would show up in every one of them.
         self._machines: Dict[str, RuleMachine] = {
-            rule.uuid: RuleMachine(rule, source_uuid=source_uuid) for rule in rules
+            rule.uuid: RuleMachine(rule, source_uuid=source_uuid)
+            for rule in rules
+            if rule_applies_to_source(rule.source_uuids, source_uuid)
         }
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -53,6 +62,11 @@ class WatchEngine:
     @property
     def zones(self) -> Dict[str, Zone]:
         return dict(self._zones)
+
+    @property
+    def rule_uuids(self) -> List[str]:
+        """The rules this engine actually evaluates — the profile's, minus those scoped away."""
+        return list(self._machines)
 
     # ------------------------------------------------------------------ step
 

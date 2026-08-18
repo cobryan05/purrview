@@ -5,6 +5,8 @@ frame downscaling, per-source pacing, backoff, model-stack flattening and the st
 row the UI reads. The rule logic itself is tested in `tests/helpers/test_watch_engine.py`.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -202,6 +204,33 @@ class TestStatusRow:
         assert row["framesAnalysed"] == 1
         assert row["lastFrameAgoS"] == 2.0
         assert row["health"] == "ok"
+
+    def test_buffer_capabilities_are_adopted_from_the_provider(self):
+        """The relay is the only authority on all three, so they must travel together.
+
+        `buffered` and `ingest_tier` were copied off the provider and `retention_s` was
+        not, so every buffered camera reported "0s rewind" and `plan_window`'s pre-roll
+        clamp — guarded on `retention_s > 0` — silently never ran.
+        """
+        pipeline = _pipeline()
+        provider = SimpleNamespace(buffered=True, ingest_tier_name="native", retention_s=45.0)
+
+        pipeline.adopt_buffer_capabilities(provider)
+
+        assert pipeline.buffered is True
+        assert pipeline.ingest_tier == "native"
+        assert pipeline.retention_s == 45.0
+        assert "45s rewind" in pipeline.status_row(0.0)["buffer"]
+
+    def test_a_provider_reporting_nothing_leaves_the_source_unbuffered(self):
+        """A provider with none of these attributes must not fake a rewind window."""
+        pipeline = _pipeline()
+
+        pipeline.adopt_buffer_capabilities(SimpleNamespace())
+
+        assert pipeline.buffered is False
+        assert pipeline.retention_s == 0.0
+        assert "no buffer" in pipeline.status_row(0.0)["buffer"]
 
     def test_buffer_label_is_four_state_not_yes_no(self):
         """The honesty affordance: a snapshot camera must not look like it has rewind."""

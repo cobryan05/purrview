@@ -765,6 +765,100 @@ class TestMaskOptOut:
         assert body["status"] == "success", body
 
 
+class TestRuleSourceScope:
+    """A rule may be restricted to particular sources; empty means every source.
+
+    The case it exists for is `present`: "a cat is in the scene" is true in every room
+    all day, and only worth an event in one of them. Scoping the action instead would
+    leave the event raised, logged and browsable on every camera.
+    """
+
+    async def test_a_rule_is_unscoped_by_default(self, http_client):
+        """Empty means all — a rule written before this column existed still runs everywhere."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule()],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["sourceUuidsJson"] == []
+
+    async def test_a_scope_round_trips(self, http_client):
+        kitchen = await _make_source(http_client, "kitchen")
+        hallway = await _make_source(http_client, "hallway")
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": kitchen}, {"sourceUuid": hallway}],
+            rules=[_rule(relation="present", subjectBKind="none", subjectBRef=None, sourceUuidsJson=[kitchen])],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["sourceUuidsJson"] == [kitchen]
+
+        r = await http_client.get(f"/api/watch-profiles/{body['profile']['uuid']}")
+        assert r.json()["profile"]["rules"][0]["sourceUuidsJson"] == [kitchen]
+
+    async def test_a_scope_survives_an_update(self, http_client):
+        """A nested write replaces every child row, so this is where a dropped field shows."""
+        kitchen = await _make_source(http_client, "kitchen")
+        created = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": kitchen}],
+            rules=[_rule(relation="present", subjectBKind="none", subjectBRef=None, sourceUuidsJson=[kitchen])],
+        )
+        uuid = created["profile"]["uuid"]
+        r = await http_client.patch(
+            f"/api/watch-profiles/{uuid}",
+            json={
+                "sources": [{"sourceUuid": kitchen}],
+                "rules": [_rule(relation="present", subjectBKind="none", subjectBRef=None, sourceUuidsJson=[kitchen])],
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["profile"]["rules"][0]["sourceUuidsJson"] == [kitchen]
+
+    async def test_a_rule_scoped_to_a_source_not_in_the_profile_is_rejected(self, http_client):
+        """Same guard as the action's source axis: a scope naming a camera this watcher
+        does not watch is never satisfied, so the rule silently never fires."""
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[
+                _rule(
+                    relation="present",
+                    subjectBKind="none",
+                    subjectBRef=None,
+                    sourceUuidsJson=["no-such-source"],
+                )
+            ],
+        )
+        assert body["status"] == "failure"
+        assert "source" in body["message"].lower()
+
+    async def test_a_duplicated_source_in_the_scope_is_rejected(self, http_client):
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[
+                _rule(
+                    relation="present",
+                    subjectBKind="none",
+                    subjectBRef=None,
+                    sourceUuidsJson=[source_uuid, source_uuid],
+                )
+            ],
+        )
+        assert body["status"] == "failure"
+
+
 class TestActionNames:
     """An action can carry a note. The engine never reads it — it exists because three
     "Save snapshot" rows scoped to different cameras are otherwise indistinguishable in
@@ -900,6 +994,55 @@ class TestValidateEndpoint:
         )["profile"]
         report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
         assert any("pre-roll" in w for w in report["warnings"])
+
+    async def test_a_rule_scoped_away_from_its_zone_is_an_error(self, http_client):
+        """A zone belongs to one camera, so a rule narrowed to another can never fire.
+
+        Only reachable by editing the source scope after the rule, which is exactly when
+        nobody re-reads the rule — and the editor shows a fully configured row either way.
+        """
+        kitchen = await _make_source(http_client, "kitchen")
+        hallway = await _make_source(http_client, "hallway")
+        await _set_regions(http_client, kitchen, [_zone()])
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": kitchen}, {"sourceUuid": hallway}],
+                rules=[_rule(sourceUuidsJson=[hallway])],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert report["valid"] is False
+        assert any("none of its zones are drawn on" in e for e in report["errors"]), report
+
+    async def test_a_rule_scoped_to_the_source_its_zone_is_on_is_fine(self, http_client):
+        kitchen = await _make_source(http_client, "kitchen")
+        hallway = await _make_source(http_client, "hallway")
+        await _set_regions(http_client, kitchen, [_zone()])
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": kitchen}, {"sourceUuid": hallway}],
+                rules=[_rule(sourceUuidsJson=[kitchen])],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert not any("none of its zones are drawn on" in e for e in report["errors"]), report
+
+    async def test_a_rule_scoped_only_to_disabled_sources_warns(self, http_client):
+        kitchen = await _make_source(http_client, "kitchen")
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": kitchen, "enabled": False}],
+                rules=[_rule(relation="present", subjectBKind="none", subjectBRef=None, sourceUuidsJson=[kitchen])],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert any("never be evaluated" in w for w in report["warnings"]), report
 
     async def test_high_analysis_fps_warns_about_throughput(self, http_client):
         source_uuid = await _make_source(http_client)

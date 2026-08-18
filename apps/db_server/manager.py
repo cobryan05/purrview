@@ -3738,6 +3738,15 @@ class Manager:
         zone_uuids = {
             r.uuid for regions in regions_by_source.values() for r in regions if r.role == RegionRole.ZONE.value
         }
+        # Which source each zone is drawn on, for checking a rule's source scope against
+        # the zones it names.
+        zone_source = {
+            r.uuid: source_uuid
+            for source_uuid, regions in regions_by_source.items()
+            for r in regions
+            if r.role == RegionRole.ZONE.value
+        }
+        disabled_sources = {src.source_uuid for src in profile.sources if not src.enabled}
         for rule in profile.rules:
             for kind, refs, side in (
                 (rule.subject_a_kind, rule.subject_a_refs_json, "A"),
@@ -3751,6 +3760,27 @@ class Manager:
                         f"Rule {rule.name!r}: subject {side} references "
                         f"{len(missing)} zone(s) that no longer exist on this watcher's sources."
                     )
+            # A rule narrowed to sources it cannot run on is the same class of silent
+            # failure as a missing zone: the editor shows a fully configured rule that
+            # never fires. Both cases below are reachable only by editing the source list
+            # after the rule, which is exactly when nobody re-reads the rule.
+            scope = [str(u) for u in (rule.source_uuids_json or [])]
+            if scope:
+                if all(u in disabled_sources for u in scope):
+                    warnings.append(
+                        f"Rule {rule.name!r} is restricted to source(s) that are disabled on this "
+                        "watcher, so it will never be evaluated."
+                    )
+                # Zones belong to one source each, so a rule scoped to camera A and
+                # pointing at a zone drawn on camera B has no reachable target at all.
+                if rule.subject_b_kind == "zone" and rule.subject_b_refs_json:
+                    reachable = [ref for ref in rule.subject_b_refs_json if zone_source.get(ref) in set(scope)]
+                    if not reachable:
+                        errors.append(
+                            f"Rule {rule.name!r} is restricted to source(s) that none of its zones are "
+                            "drawn on, so it can never fire."
+                        )
+
             # A slot naming nothing can never fire, and reads in the editor as though it
             # were merely unconfigured rather than broken.
             for kind, refs, side in (

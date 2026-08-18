@@ -795,3 +795,99 @@ class TestIncludeDescendants:
         spec = expand_descendants(_rule(subject_a_refs=["cat"], subject_a_include_descendants=True), self.ANCESTRY)
         dog = _track(bbox=(450, 450, 550, 550), label="dog")
         assert not evaluate_predicate(spec, [dog], {ZONE_UUID: LITTER_ZONE}, FRAME_W, FRAME_H).holds
+
+
+class TestRuleSourceScope:
+    """A rule can be restricted to particular sources; empty means every source.
+
+    The motivating case is `present`: "a cat is in the scene" is true in every room all
+    day, and is only worth an event in one of them. Scoping the *action* would leave the
+    event raised on every camera — this suppresses the event itself.
+    """
+
+    def _engine(self, source_uuid, **rule_overrides):
+        return WatchEngine(
+            rules=[_rule(min_duration_s=1.0, rearm_delay_s=5.0, **rule_overrides)],
+            zones=[LITTER_ZONE],
+            source_uuid=source_uuid,
+            frame_width=FRAME_W,
+            frame_height=FRAME_H,
+        )
+
+    def test_an_unscoped_rule_runs_on_every_source(self):
+        engine = self._engine("src-2")
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        assert [s.phase for s in engine.step(inside, now=1.5)] == [EventPhase.START]
+
+    def test_a_rule_scoped_to_this_source_still_fires(self):
+        engine = self._engine("src-1", source_uuids=["src-1"])
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        assert [s.phase for s in engine.step(inside, now=1.5)] == [EventPhase.START]
+
+    def test_a_rule_scoped_to_another_source_never_fires(self):
+        """The regression this feature is: the same tracks, a different camera."""
+        engine = self._engine("src-2", source_uuids=["src-1"])
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        assert engine.step(inside, now=1.5) == []
+        assert engine.step(inside, now=99.0) == []
+
+    def test_a_scoped_out_rule_holds_no_state_at_all(self):
+        """Not merely silenced: no machine, so nothing to show, close or hint about.
+
+        A dormant machine would appear in the status panel's open-events table and in
+        `close_all`, and could emit a stray END if the scope ever changed under it.
+        """
+        engine = self._engine("src-2", source_uuids=["src-1"])
+        assert engine.rule_uuids == []
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        engine.step(inside, now=1.5)
+        assert engine.open_events() == []
+        assert engine.close_all(now=2.0) == []
+
+    def test_a_multi_source_scope_covers_each_of_them(self):
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        for source in ("src-1", "src-3"):
+            engine = self._engine(source, source_uuids=["src-1", "src-3"])
+            engine.step(inside, now=0.0)
+            assert [s.phase for s in engine.step(inside, now=1.5)] == [EventPhase.START]
+        excluded = self._engine("src-2", source_uuids=["src-1", "src-3"])
+        excluded.step(inside, now=0.0)
+        assert excluded.step(inside, now=1.5) == []
+
+    def test_an_engine_with_no_source_identity_evaluates_every_rule(self):
+        """A preview has no source to judge against; dropping every scoped rule there
+        would look exactly like a predicate that is never true."""
+        engine = self._engine(None, source_uuids=["src-1"])
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        assert [s.phase for s in engine.step(inside, now=1.5)] == [EventPhase.START]
+
+    def test_the_scope_is_read_off_a_row(self):
+        """`from_row` is what the watcher actually builds specs with."""
+        row = {
+            "uuid": "rule-1",
+            "name": "cat present",
+            "subject_a_kind": "label",
+            "subject_a_refs_json": [CAT],
+            "relation": "present",
+            "subject_b_kind": "none",
+            "source_uuids_json": ["src-1"],
+        }
+        assert RuleSpec.from_row(row).source_uuids == ["src-1"]
+
+    def test_a_row_without_the_column_scopes_to_nothing(self):
+        """Empty means all — a rule stored before the column existed runs everywhere."""
+        row = {"uuid": "r", "name": "n", "subject_a_kind": "label", "subject_a_refs_json": [CAT]}
+        assert RuleSpec.from_row(row).source_uuids == []
+
+    def test_expanding_descendants_preserves_the_scope(self):
+        """`expand_descendants` rebuilds the spec, and a dropped field would silently
+        widen the rule back to every camera."""
+        from apps.helpers.watch.rules import expand_descendants
+
+        spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=True, source_uuids=["src-1"])
+        assert expand_descendants(spec, {"cat": set(), "tabby": {"cat"}}).source_uuids == ["src-1"]

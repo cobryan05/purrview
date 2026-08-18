@@ -40,6 +40,7 @@ class FakeStreamsApi:
             "leaseId": "lease-1",
             "path": "relay_master_deadbeef",
             "recording": True,
+            "retentionS": 45.0,
             "ingestTier": "native",
             "rtspUrl": "rtsp://localhost:8554/relay_master_deadbeef",
         }
@@ -171,6 +172,42 @@ class TestSuccessfulStartIsUnaffected:
         assert provider._lease_id == "lease-1"
         assert state["released"] == [], "a healthy stream must hold on to its lease"
         assert provider.buffered is True
+        # Read off the same ensure response as `buffered`, and dropped for exactly as
+        # long as nobody read it: the watcher reports "0s rewind" for a camera with a
+        # 45 s buffer, and `plan_window`'s pre-roll clamp is guarded on `> 0` so it
+        # never runs. Both failures are silent.
+        assert provider.retention_s == 45.0
+
+    async def test_a_relay_that_reports_no_retention_leaves_it_at_zero(self, relay_state, monkeypatch):
+        """An older relay omits the field; zero is the honest answer, not a made-up 45."""
+
+        def ensure(self, source_url, holder):
+            return {
+                "success": True,
+                "leaseId": "lease-1",
+                "path": "relay_master_deadbeef",
+                "recording": False,
+                "ingestTier": "none",
+                "rtspUrl": "rtsp://localhost:8554/relay_master_deadbeef",
+            }
+
+        async def ready(api, stream_name, timeout, poll_interval=0.5):
+            return True
+
+        class QuietStreamer:
+            def __init__(self, url, output_args=None):
+                self.url = url
+
+            async def astart(self):
+                return None
+
+        provider, _state = relay_state
+        monkeypatch.setattr(FakeStreamsApi, "ensure_stream", ensure)
+        monkeypatch.setattr(FfmpegImageProvider, "_wait_for_stream", staticmethod(ready))
+        monkeypatch.setattr(ffmpeg_module, "FFmpegStreamerIn", QuietStreamer)
+
+        await provider.start()
+        assert provider.retention_s == 0.0
 
     async def test_the_lease_is_released_exactly_once_across_start_failure_and_stop(self, relay_state, monkeypatch):
         """Defensive `stop()` in a caller's `finally` must not double-release."""
