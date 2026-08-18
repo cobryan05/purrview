@@ -8,11 +8,13 @@ an exception on the frame loop.
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 import pytest
 
+from apps.helpers.actions import saveTimelapseAction
 from apps.helpers.actions.action import ActionContext, ActionResult
 from apps.helpers.actions.mqttPublishAction import MqttPublishAction, slugify_topic
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
@@ -24,6 +26,7 @@ from apps.helpers.actions.recordClipAction import (
 )
 from apps.helpers.actions.Registry import action_registry, create_action
 from apps.helpers.actions.saveSnapshotAction import SaveSnapshotAction
+from apps.helpers.actions.saveTimelapseAction import SaveTimelapseAction
 from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
@@ -60,7 +63,13 @@ def _context(**overrides) -> ActionContext:
 
 class TestRegistry:
     def test_the_actions_are_registered(self):
-        assert {"publish_mqtt", "publish_mqtt_image", "record_clip", "save_snapshot"} <= set(action_registry)
+        assert {
+            "publish_mqtt",
+            "publish_mqtt_image",
+            "record_clip",
+            "save_snapshot",
+            "save_timelapse",
+        } <= set(action_registry)
 
     def test_create_by_kind(self):
         assert isinstance(create_action("publish_mqtt"), MqttPublishAction)
@@ -579,3 +588,118 @@ class TestSaveSnapshotAction:
         action = SaveSnapshotAction(output_dir="/proc/definitely-not-writable")
         result = await action.run(_signal(phase=EventPhase.START), _context(frame=frame))
         assert result.ok is False
+
+
+class TestSaveTimelapseAction:
+    """The interval gate is the whole action: everything else is a jpg write.
+
+    A timelapse runs on `frame_analysed`, which fires several times a second per camera,
+    so "not due" is the outcome for ~99.5% of calls at the default 30 s. Getting that
+    wrong does not fail loudly — it silently fills a disk.
+    """
+
+    def _action(self, tmp_path, **params):
+        # Constructed against a FILES_ROOT the test owns, since the action resolves its
+        # directory relative to it at construction time.
+        with patch.object(saveTimelapseAction, "FILES_ROOT", Path(tmp_path)):
+            return SaveTimelapseAction(**params)
+
+    async def test_writes_one_frame_into_a_per_day_directory(self, tmp_path):
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse")
+        result = await action.run(_signal(), _context(frame=frame))
+        assert result.ok is True
+        written = Path(result.data["path"])
+        assert written.exists()
+        # output_dir / YYYY-MM-DD / <source>_HH-MM-SS.jpg
+        assert written.parent.parent == tmp_path / "timelapse"
+        datetime.strptime(written.parent.name, "%Y-%m-%d")
+        assert written.name.startswith("litter-cam_")
+        # No sidecar: 2880 of them a day describe nothing anyone will query.
+        assert not written.with_suffix(".jpg.json").exists()
+
+    async def test_a_second_frame_in_the_same_interval_is_skipped(self, tmp_path):
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse", interval_s=3600)
+        first = await action.run(_signal(), _context(frame=frame))
+        second = await action.run(_signal(), _context(frame=frame))
+        assert first.ok is True and "wrote" in first.detail
+        # Skipping is a success, not a failure — a failure would be counted against the
+        # watcher and logged on every frame.
+        assert second.ok is True and second.detail == "not due"
+        assert len(list((tmp_path / "timelapse").rglob("*.jpg"))) == 1
+
+    async def test_the_next_interval_writes_again(self, tmp_path):
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse", interval_s=30)
+        # 1_699_999_980 is a multiple of 30, so the bucket it opens runs to +30.
+        start = 1_699_999_980.0
+        assert action._due("src-1", start) is not None
+        action._written_bucket["src-1"] = int(start // 30)
+        assert action._due("src-1", start + 29.9) is None
+        assert action._due("src-1", start + 30.0) is not None
+
+    async def test_the_interval_is_per_source(self, tmp_path):
+        """One busy camera must not consume another camera's interval budget."""
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse", interval_s=3600)
+        await action.run(_signal(), _context(frame=frame, source_uuid="src-1", source_name="one"))
+        other = await action.run(_signal(), _context(frame=frame, source_uuid="src-2", source_name="two"))
+        assert other.ok is True and "wrote" in other.detail
+
+    async def test_a_zero_interval_is_clamped(self, tmp_path):
+        """Honouring it would write every analysed frame, forever, to a disk."""
+        assert self._action(tmp_path, interval_s=0).interval_s >= 1.0
+
+    async def test_prefers_the_full_resolution_frame(self, tmp_path):
+        analysed = np.zeros((32, 32, 3), dtype=np.uint8)
+        full = np.zeros((64, 64, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse")
+        result = await action.run(_signal(), _context(frame=analysed, full_frame=full))
+        assert cv2.imread(result.data["path"]).shape[:2] == (64, 64)
+
+    async def test_falls_back_to_the_analysis_frame(self, tmp_path):
+        analysed = np.zeros((32, 32, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse")
+        result = await action.run(_signal(), _context(frame=analysed, full_frame=None))
+        assert cv2.imread(result.data["path"]).shape[:2] == (32, 32)
+
+    async def test_no_frame_is_reported_not_raised(self, tmp_path):
+        action = self._action(tmp_path, output_dir="timelapse")
+        result = await action.run(_signal(), _context(frame=None, full_frame=None))
+        assert result.ok is False
+
+    async def test_an_unwritable_directory_does_not_retry_every_frame(self, tmp_path):
+        """A misconfiguration must not become a hot loop of encode attempts."""
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        action = self._action(tmp_path, output_dir="timelapse", interval_s=3600)
+        action.output_dir = Path("/proc/definitely-not-writable")
+        first = await action.run(_signal(), _context(frame=frame))
+        second = await action.run(_signal(), _context(frame=frame))
+        assert first.ok is False
+        assert second.detail == "not due"
+
+
+class TestTimelapseOutputDirResolution:
+    """Three spellings reach `output_dir`, and one of them used to mean the container's
+    own root — the picker's `/timelapse` is rooted at FILES_ROOT, not at `/`."""
+
+    def _resolve(self, root, value):
+        with patch.object(saveTimelapseAction, "FILES_ROOT", Path(root)):
+            return saveTimelapseAction.resolve_output_dir(value)
+
+    def test_a_relative_path_is_joined_onto_the_dataset_root(self, tmp_path):
+        assert self._resolve(tmp_path, "timelapse/front") == tmp_path / "timelapse/front"
+
+    def test_the_pickers_leading_slash_is_the_dataset_root(self, tmp_path):
+        assert self._resolve(tmp_path, "/timelapse") == tmp_path / "timelapse"
+
+    def test_an_absolute_path_already_inside_the_root_is_kept(self, tmp_path):
+        assert self._resolve(tmp_path, str(tmp_path / "snaps")) == tmp_path / "snaps"
+
+    def test_an_empty_value_falls_back_to_the_default(self, tmp_path):
+        assert self._resolve(tmp_path, "  ") == tmp_path / saveTimelapseAction.DEFAULT_TIMELAPSE_DIR
+
+    def test_climbing_out_of_the_root_is_refused(self, tmp_path):
+        with pytest.raises(ValueError):
+            self._resolve(tmp_path, "../../etc/cron.d")

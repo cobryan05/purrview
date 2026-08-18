@@ -12,6 +12,7 @@ import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffec
 import { openSourceRegionsModal } from '/app-static/js/ui/sourceRegionsModal.js';
 import { fetchSourceRegions, REGION_ROLE_MASK, REGION_ROLE_ZONE } from '/app-static/js/shared/api/sourceRegions.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
+import { openFileBrowserModal } from '/app-static/js/ui/utils/openFileBrowserModal.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
@@ -36,6 +37,7 @@ const ACTION_KINDS = [
   { key: 'publish_mqtt_image', text: 'Publish MQTT image' },
   { key: 'record_clip', text: 'Record clip' },
   { key: 'save_snapshot', text: 'Save snapshot' },
+  { key: 'save_timelapse', text: 'Save timelapse' },
 ];
 
 const TRIGGERS = [
@@ -63,6 +65,7 @@ const FRAME_ANALYSED_TRIGGER = 'frame_analysed';
  */
 const ACTION_TRIGGERS = {
   record_clip: ['event_ended'],
+  save_timelapse: ['frame_analysed'],
 };
 
 /** Why an action kind's trigger list is shorter than the full set. */
@@ -72,6 +75,12 @@ const TRIGGER_LIMIT_HELP = {
     + 'the pre-roll is taken retroactively out of the rolling buffer, which is what lets '
     + 'you record the seconds before the rule fired. Use the pre-roll and post-roll '
     + 'settings to cover what happened either side.',
+  save_timelapse:
+    'A timelapse has to keep shooting through the hours when nothing happens, so it '
+    + 'runs on the frame the watcher is already pulling from the camera rather than on '
+    + 'an event. Its own interval decides how often a frame is kept — everything in '
+    + 'between is discarded without being written. For a picture of one event, use '
+    + 'Save snapshot instead.',
 };
 
 /** The triggers offered for one action kind. */
@@ -86,6 +95,12 @@ function triggersFor(kind) {
  * rule: the frame belongs to the camera, whatever happened to fire on it.
  */
 const DEFAULT_IMAGE_TOPIC_TEMPLATE = '{watcher}/{source}/image';
+
+/**
+ * Default timelapse directory, relative to the image dataset root. Mirrors
+ * `DEFAULT_TIMELAPSE_DIR` in `apps/helpers/actions/saveTimelapseAction.py`.
+ */
+const DEFAULT_TIMELAPSE_DIR = 'timelapse';
 
 /**
  * Default MQTT topic template — reproduces the historical hard-coded scheme exactly, so
@@ -287,6 +302,56 @@ function numberInput(value, { step = '1', min = null, placeholder = '' } = {}) {
   input.placeholder = placeholder;
   input.value = value ?? '';
   return input;
+}
+
+/**
+ * A text input plus a `Browse…` button that opens the shared directory picker.
+ *
+ * Reuses `openFileBrowserModal` rather than growing a picker of its own, so creating a
+ * directory that does not exist yet — which is the normal case for a new timelapse — is
+ * the same "New Folder" affordance as everywhere else in the app.
+ *
+ * The input stays editable, unlike `DirBrowserField`'s read-only one: an action row is
+ * a dense inline form, and typing `timelapse/front-door` is faster than three clicks
+ * for a user who already knows where it goes.
+ *
+ * Paths are **dataset-root relative**, which is what the picker deals in and what the
+ * `/api/images/list` and `/api/images/mkdir` endpoints behind it accept. Leading slashes
+ * are cosmetic here; the action's `resolve_output_dir` accepts either spelling.
+ */
+function dirPickerField(value, onAnyChange) {
+  const wrap = el('div', 'watch-dir-picker');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = value ?? '';
+  input.placeholder = 'dataset root';
+  input.dataset.testid = 'watch-action-dir';
+  const listeners = [];
+  const changed = () => { listeners.forEach(fn => fn()); onAnyChange?.(); };
+  input.addEventListener('input', changed);
+
+  const browse = document.createElement('button');
+  browse.type = 'button';
+  browse.className = 'outline secondary watch-dir-picker__browse';
+  browse.textContent = 'Browse…';
+  browse.dataset.testid = 'watch-action-dir-browse';
+  browse.addEventListener('click', async () => {
+    const picked = await openFileBrowserModal({
+      initialPath: input.value.trim() ? `/${input.value.trim().replace(/^\/+/, '')}` : '/',
+      allowCreateDir: true,
+    });
+    // null is "cancelled", which must leave the typed value alone.
+    if (picked === null) return;
+    input.value = picked.replace(/^\/+/, '');
+    changed();
+  });
+
+  wrap.append(input, browse);
+  return {
+    element: wrap,
+    getValue: () => input.value,
+    onChange: (fn) => listeners.push(fn),
+  };
 }
 
 /**
@@ -1260,6 +1325,67 @@ function buildActionRow(action, ctx) {
         quality: num(quality, 80),
         max_width: num(maxWidth, 0),
         max_fps: num(maxFps, 0),
+      });
+    } else if (kind.value === 'save_timelapse') {
+      // Browsed rather than typed, unlike `save_snapshot`'s: a timelapse directory is
+      // one the user makes for the purpose (and the picker can make it), where a
+      // snapshot directory is normally left at its default. The path is dataset-root
+      // relative — the only space the browser and /api/images/mkdir speak — and
+      // `resolve_output_dir` in the action accepts that spelling.
+      const dir = dirPickerField(stored.output_dir ?? DEFAULT_TIMELAPSE_DIR, ctx.onAnyChange);
+      params.appendChild(wfield('Output dir', dir.element, { width: '15rem' }));
+
+      // The per-day subdirectory is created by the action, not picked here, so the
+      // hint is the only place the user learns the frames are not written flat.
+      const layout = el('span', 'watch-hint', '');
+      layout.dataset.testid = 'watch-action-timelapse-layout';
+      function syncLayout() {
+        const root = (dir.getValue() || DEFAULT_TIMELAPSE_DIR).replace(/^\/+|\/+$/g, '') || DEFAULT_TIMELAPSE_DIR;
+        layout.textContent = `→ ${root}/2026-08-18/back-room_14-30-00.jpg`;
+        layout.title = 'One directory per day, named for the camera and the local time.';
+      }
+      dir.onChange(syncLayout);
+      syncLayout();
+      params.appendChild(layout);
+
+      const every = numberInput(stored.interval_s ?? 30, { step: '5', min: 1 });
+      every.dataset.testid = 'watch-action-timelapse-interval';
+      every.title =
+        'Seconds between kept frames, per camera. Aligned to the clock, so 30 lands on '
+        + ':00 and :30 and stays aligned across a restart.';
+      const quality = numberInput(stored.quality ?? 90, { step: '5', min: 1, max: 100 });
+      const maxWidth = numberInput(stored.max_width ?? 0, { step: '80', min: 0 });
+      maxWidth.title = 'Shrink to at most this width before encoding. 0 keeps the frame\'s own size.';
+      for (const i of [every, quality, maxWidth]) i.addEventListener('input', ctx.onAnyChange);
+      params.appendChild(wfield('Every s', every, { width: '4.5rem' }));
+      params.appendChild(wfield('quality', quality, { width: '4.5rem' }));
+      params.appendChild(wfield('max width', maxWidth, { width: '5rem' }));
+
+      // On by default, like the MQTT image action: the analysis downscale exists to
+      // make inference cheap, and a timelapse is watched by a human.
+      const fullRes = document.createElement('input');
+      fullRes.type = 'checkbox';
+      fullRes.checked = stored.full_resolution !== false;
+      fullRes.dataset.testid = 'watch-action-timelapse-full-res';
+      fullRes.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Full res', fullRes));
+
+      // Off by default: burnt-in boxes make the frames useless as training data and
+      // flicker distractingly at playback speed.
+      const annotate = document.createElement('input');
+      annotate.type = 'checkbox';
+      annotate.checked = Boolean(stored.annotate);
+      annotate.dataset.testid = 'watch-action-timelapse-annotate';
+      annotate.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Draw boxes', annotate));
+
+      readParams = () => ({
+        output_dir: dir.getValue().trim() || DEFAULT_TIMELAPSE_DIR,
+        interval_s: num(every, 30),
+        quality: num(quality, 90),
+        max_width: num(maxWidth, 0),
+        full_resolution: fullRes.checked,
+        annotate: annotate.checked,
       });
     } else {
       const dir = document.createElement('input');

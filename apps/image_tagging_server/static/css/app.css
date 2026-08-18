@@ -6664,6 +6664,26 @@ progress.progress-indeterminate:indeterminate {
   flex: 0 0 auto;
   margin: 0;
 }
+/* Directory field: a path input with its Browse button flush against it, so the pair
+   reads as one control on a row that already holds four others. The input takes the
+   slack because the path is the part whose length varies. */
+.watch-dir-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.watch-dir-picker input { flex: 1 1 auto; min-width: 0; }
+.watch-dir-picker__browse {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0.1em 0.5em !important;
+  font-size: 0.85em !important;
+  min-height: unset !important;
+  margin-bottom: 0 !important;
+  white-space: nowrap;
+}
+
 /* `hidden` must beat the flex display the sentence would otherwise impose —
    `present` is arity 1 and hides its second subject. */
 .watch-rule-sentence [hidden] { display: none !important; }

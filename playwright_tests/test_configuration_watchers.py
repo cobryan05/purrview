@@ -1579,3 +1579,104 @@ class TestClipTriggerIsConstrained:
 
         self._kind(page).select_option("publish_mqtt")
         expect(page.locator("[data-testid='watch-action-trigger-help-btn']")).to_have_count(0)
+
+
+class TestTimelapseAction:
+    """ "Save timelapse" — one frame every N seconds into per-day directories.
+
+    Constrained to the per-frame trigger for the opposite reason "Record clip" is
+    constrained to the end edge: a timelapse has to keep shooting through the hours when
+    no event is open, and an event trigger would give it nothing to shoot on.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def _kind(self, page: Page):
+        return page.locator("[data-testid='watch-action-kind']").first
+
+    def test_it_offers_only_the_per_frame_trigger(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("save_timelapse")
+        options = page.locator("[data-testid='watch-action-trigger']").first.locator("option")
+        expect(options).to_have_count(1)
+        expect(options.first).to_have_attribute("value", "frame_analysed")
+
+    def test_switching_to_it_coerces_an_impossible_trigger(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-trigger']").first.select_option("event_ended")
+        self._kind(page).select_option("save_timelapse")
+        expect(page.locator("[data-testid='watch-action-trigger']").first).to_have_value("frame_analysed")
+
+    def test_the_shortened_list_explains_itself(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("save_timelapse")
+        page.locator("[data-testid='watch-action-trigger-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-action-trigger-help-panel']").first
+        expect(panel).to_contain_text("keep shooting through the hours when nothing happens")
+
+    def test_the_per_day_layout_is_shown_before_saving(self, page: Page, base_url: str):
+        """The day subdirectory is the action's doing, so nothing else reveals it."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        self._kind(page).select_option("save_timelapse")
+        hint = page.locator("[data-testid='watch-action-timelapse-layout']").first
+        expect(hint).to_contain_text("timelapse/")
+        page.locator("[data-testid='watch-action-dir']").first.fill("cams/front")
+        expect(hint).to_contain_text("cams/front/")
+
+    def test_it_saves_its_params(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        self._kind(page).select_option("save_timelapse")
+        page.locator("[data-testid='watch-action-dir']").first.fill("cams/front")
+        page.locator("[data-testid='watch-action-timelapse-interval']").first.fill("60")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        action = saved["actions"][0]
+        assert action["kind"] == "save_timelapse"
+        assert action["trigger"] == "frame_analysed"
+        assert action["paramsJson"]["output_dir"] == "cams/front"
+        assert action["paramsJson"]["interval_s"] == 60
+        # Defaults the row never touched still reach the backend, so the action does not
+        # silently fall back to a different set of them.
+        assert action["paramsJson"]["full_resolution"] is True
+        assert action["paramsJson"]["annotate"] is False
+
+    def test_browse_opens_the_shared_directory_picker(self, page: Page, base_url: str):
+        """The picker is what makes a directory that does not exist yet creatable."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        page.route(
+            lambda url: url.split("?")[0].rstrip("/").endswith("/api/images/list"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "files": [{"name": "timelapse", "path": "/timelapse", "is_dir": True}],
+                        "has_more": False,
+                    }
+                ),
+            ),
+        )
+        self._open(page, base_url)
+
+        self._kind(page).select_option("save_timelapse")
+        page.locator("[data-testid='watch-action-dir-browse']").first.click()
+        # "New Folder" is the affordance this reuse exists for — a timelapse directory
+        # normally does not exist until the user makes it here.
+        expect(page.get_by_text("Select Directory").last).to_be_visible()
+        expect(page.get_by_role("button", name="+ New Folder").last).to_be_visible()

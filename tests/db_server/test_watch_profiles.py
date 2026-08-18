@@ -848,6 +848,35 @@ class TestValidateEndpoint:
         report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
         assert any("throughput ceiling" in w for w in report["warnings"])
 
+    async def test_a_timelapse_faster_than_the_analysis_rate_warns(self, http_client):
+        """A timelapse can only keep a frame the watcher pulled, and nothing at run time
+        says the interval was quietly widened to the analysis period."""
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                # One frame every 10 s, against an action asking for one every 5.
+                sources=[{"sourceUuid": source_uuid, "analysisFps": 0.1}],
+                actions=[{"kind": "save_timelapse", "trigger": "frame_analysed", "paramsJson": {"interval_s": 5}}],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert any("written at the slower rate" in w for w in report["warnings"])
+
+    async def test_a_timelapse_slower_than_the_analysis_rate_is_silent(self, http_client):
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid, "analysisFps": 5.0}],
+                actions=[{"kind": "save_timelapse", "trigger": "frame_analysed", "paramsJson": {"interval_s": 30}}],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert not any("slower rate" in w for w in report["warnings"])
+
     async def test_unknown_profile_reports_not_found(self, http_client):
         r = await http_client.get("/api/watch-profiles/nope/validate")
         assert r.json()["status"] == "failure"

@@ -3737,6 +3737,26 @@ class Manager:
                         f"{source_uuid} only buffers {retention:g}s. The clip will be clamped."
                     )
 
+        # A timelapse can only keep a frame the watcher actually pulled, so an interval
+        # shorter than the analysis period silently becomes the analysis period. Nothing
+        # at run time says so — the frames just arrive further apart than configured.
+        fps_by_source = {src.source_uuid: (src.analysis_fps or profile.default_analysis_fps) for src in profile.sources}
+        for action in profile.actions:
+            if action.kind != "save_timelapse":
+                continue
+            interval = float(action.params_json.get("interval_s", 30) or 30)
+            scope = {str(u) for u in (action.source_uuids_json or [])}
+            for source_uuid, fps in fps_by_source.items():
+                if scope and source_uuid not in scope:
+                    continue
+                period = 1.0 / fps if fps else 0.0
+                if period > interval:
+                    warnings.append(
+                        f"A save_timelapse action asks for a frame every {interval:g}s, but source "
+                        f"{source_uuid} is only analysed every {period:g}s. Frames will be written "
+                        "at the slower rate."
+                    )
+
         return {
             "valid": not errors,
             "errors": errors,
