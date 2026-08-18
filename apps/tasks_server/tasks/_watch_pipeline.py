@@ -226,6 +226,17 @@ class WatchPipeline:
     #: Most recent analysed frame, kept for snapshot actions. One frame per source,
     #: replaced each time — deliberately not a history.
     last_frame: Optional[np.ndarray] = None
+    #: The same frame *before* the analysis downscale — i.e. at the resolution the
+    #: camera actually sent. Kept so the live MQTT feed can publish a full-resolution
+    #: image while inference keeps running on the cheap one; the two are different
+    #: questions and `analysis_width` should only answer the first.
+    #:
+    #: ⚠️ Detections are in `last_frame`'s pixel space, never this one. Anything drawing
+    #: onto this frame must scale the boxes (see `annotate_detections(scale=...)`).
+    #:
+    #: When no downscale happened this is the *same array object* as `last_frame`, not a
+    #: copy — so the extra cost for an already-small camera is one reference.
+    last_full_frame: Optional[np.ndarray] = None
     #: Increments once per analysed frame. Lets the live view's encode cache and its
     #: caller both ask "is this the frame I already have?" without comparing pixels —
     #: which is what keeps a 5 Hz poll of a 1 fps camera free.
@@ -252,6 +263,10 @@ class WatchPipeline:
         """Downscale and remember the analysis geometry the zones scale against."""
         analysed = downscale_to_width(image, self.analysis_width)
         self.last_frame = analysed
+        # Held before the downscale, so an action that wants the camera's own resolution
+        # has it. `downscale_to_width` returns its input unchanged when nothing needs
+        # shrinking, in which case these two names point at one array.
+        self.last_full_frame = image
         self.frame_seq += 1
         height, width = analysed.shape[:2]
         if self._last_frame_shape != (height, width):

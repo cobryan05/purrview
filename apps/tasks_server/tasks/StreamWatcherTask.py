@@ -1077,6 +1077,7 @@ class StreamWatcherTask(Task):
             buffered=bool(pipeline and pipeline.buffered),
             retention_s=pipeline.retention_s if pipeline else 0.0,
             frame=pipeline.last_frame if pipeline else None,
+            full_frame=pipeline.last_full_frame if pipeline else None,
             detections=list(pipeline.detections) if pipeline else [],
             label_colours=self._label_colours(),
             # Rule timing is monotonic; the buffer is addressed by wallclock. Carry the

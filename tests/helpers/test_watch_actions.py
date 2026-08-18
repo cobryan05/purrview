@@ -9,6 +9,7 @@ an exception on the frame loop.
 from datetime import datetime, timezone
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -238,6 +239,110 @@ class TestMqttPublishImageAction:
             _signal(), _context(frame=self._frame())
         )
         assert result.ok is False
+
+
+class TestMqttPublishImageResolution:
+    """The published frame is the camera's, not the watcher's analysis downscale.
+
+    `analysis_width` exists to make inference cheap. Letting it also decide what the
+    live feed looks like is what made the feed soft, so the action prefers
+    `context.full_frame` and scales the detections — which are in the *analysis*
+    frame's pixel space — up to match.
+    """
+
+    def _frames(self):
+        """An analysis frame and the 4x-wider frame it was downscaled from."""
+        analysis = np.zeros((120, 160, 3), dtype=np.uint8)
+        full = np.zeros((480, 640, 3), dtype=np.uint8)
+        return analysis, full
+
+    def _decode(self, payload: bytes) -> np.ndarray:
+        return cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    async def test_publishes_at_the_full_frames_resolution_by_default(self):
+        analysis, full = self._frames()
+        publisher = _FakePublisher()
+        await MqttPublishImageAction(publisher=publisher).run(_signal(), _context(frame=analysis, full_frame=full))
+        assert self._decode(publisher.messages[0][1]).shape[:2] == (480, 640)
+
+    async def test_existing_configs_get_full_resolution_without_being_edited(self):
+        """The stored params_json predates this option, so the default is the migration."""
+        assert MqttPublishImageAction.params_schema()["full_resolution"]["default"] is True
+
+    async def test_opting_out_publishes_the_analysis_frame(self):
+        analysis, full = self._frames()
+        publisher = _FakePublisher()
+        await MqttPublishImageAction(full_resolution=False, publisher=publisher).run(
+            _signal(), _context(frame=analysis, full_frame=full)
+        )
+        assert self._decode(publisher.messages[0][1]).shape[:2] == (120, 160)
+
+    async def test_boxes_are_scaled_into_the_published_frames_space(self):
+        """Unscaled, every box would land in the top-left quadrant of a 4x frame."""
+        analysis, full = self._frames()
+        det = _det(x1=10, y1=10, x2=40, y2=40)
+        action = MqttPublishImageAction(publisher=_FakePublisher(), quality=100)
+        image = self._decode(
+            action.render_jpeg(
+                _context(frame=analysis, full_frame=full, detections=[det], label_colours={"lab-1": "#ff0000"})
+            )
+        )
+
+        # The 4x-scaled box spans 40..160; its far corner only has ink if it was scaled.
+        assert image[160, 160].any()
+
+    async def test_a_source_that_never_downscaled_still_publishes(self):
+        """`full_frame` is the same array as `frame` when no downscale happened."""
+        analysis = np.zeros((120, 160, 3), dtype=np.uint8)
+        publisher = _FakePublisher()
+        result = await MqttPublishImageAction(publisher=publisher).run(
+            _signal(), _context(frame=analysis, full_frame=analysis, detections=[_det()])
+        )
+        assert result.ok is True
+        assert self._decode(publisher.messages[0][1]).shape[:2] == (120, 160)
+
+    async def test_a_missing_full_frame_falls_back_to_the_analysis_frame(self):
+        analysis, _ = self._frames()
+        publisher = _FakePublisher()
+        result = await MqttPublishImageAction(publisher=publisher).run(
+            _signal(), _context(frame=analysis, full_frame=None, detections=[_det()])
+        )
+        assert result.ok is True
+        assert self._decode(publisher.messages[0][1]).shape[:2] == (120, 160)
+
+    async def test_max_width_caps_the_full_resolution_frame(self):
+        """The bandwidth knob still applies once the resolution ceiling is lifted."""
+        analysis, full = self._frames()
+        publisher = _FakePublisher()
+        await MqttPublishImageAction(max_width=320, publisher=publisher).run(
+            _signal(), _context(frame=analysis, full_frame=full)
+        )
+        assert self._decode(publisher.messages[0][1]).shape[:2] == (240, 320)
+
+    async def test_boxes_are_scaled_to_the_capped_size_not_the_full_one(self):
+        """max_width applies before annotation, so the scale must follow it."""
+        analysis, full = self._frames()
+        det = _det(x1=10, y1=10, x2=40, y2=40)
+        action = MqttPublishImageAction(max_width=320, publisher=_FakePublisher(), quality=100)
+        image = self._decode(
+            action.render_jpeg(
+                _context(frame=analysis, full_frame=full, detections=[det], label_colours={"lab-1": "#ff0000"})
+            )
+        )
+
+        # 320/160 = 2x, so the far corner is at 80 — not the 160 the full frame implies.
+        assert image[80, 80].any()
+        assert not image[160, 160].any()
+
+    async def test_neither_pipeline_frame_is_mutated(self):
+        """Both are live pipeline arrays: the ring holds one and snapshots write it."""
+        analysis, full = self._frames()
+        before_analysis, before_full = analysis.copy(), full.copy()
+        action = MqttPublishImageAction(publisher=_FakePublisher())
+        await action.run(_signal(), _context(frame=analysis, full_frame=full, detections=[_det()]))
+
+        assert np.array_equal(analysis, before_analysis)
+        assert np.array_equal(full, before_full)
 
 
 class TestAsyncMqttPublisher:

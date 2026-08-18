@@ -167,6 +167,22 @@ class TestPipelineStep:
         assert pipeline.engine.frame_width == 500
         assert pipeline.engine.frame_height == 500
 
+    def test_prepare_frame_keeps_the_pre_downscale_frame(self):
+        """The MQTT live feed publishes at the camera's resolution, not the model's."""
+        pipeline = _pipeline(analysis_width=500)
+        pipeline.prepare_frame(np.zeros((1000, 1000, 3), dtype=np.uint8))
+
+        assert pipeline.last_frame.shape[:2] == (500, 500)
+        assert pipeline.last_full_frame.shape[:2] == (1000, 1000)
+
+    def test_an_undownscaled_frame_costs_a_reference_not_a_copy(self):
+        """A camera already at or below the analysis width must not double its RAM."""
+        pipeline = _pipeline(analysis_width=640)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        pipeline.prepare_frame(frame)
+
+        assert pipeline.last_full_frame is pipeline.last_frame
+
     def test_closing_open_events_emits_an_end(self):
         pipeline = _pipeline(analysis_width=640)
         pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))

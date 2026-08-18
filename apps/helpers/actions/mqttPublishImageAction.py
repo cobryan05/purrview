@@ -17,6 +17,14 @@ subscriber expects, and it avoids inflating every frame by a third. The matching
 event still goes out on its own topic via `publish_mqtt`, and the two correlate through
 `eventUuid` — one payload trying to be both an image and an event serves neither.
 
+**Resolution** is the camera's, not the watcher's. The frame inference sees is
+downscaled to `analysis_width` to keep GPU cost down; that is a decision about the
+model, and letting it also decide what the live feed looks like is what made this feed
+soft. So the full-resolution frame is published and the detections — which are in the
+analysis frame's pixel space — are scaled up to match. `max_width` is the knob for
+bandwidth, and it applies before the boxes are drawn so their weight suits the size
+actually going out.
+
 Combined with the `frame_analysed` trigger this is a **live feed**: one publish per
 analysed frame per source, rate-limited here and coalesced in the publisher, so a slow
 broker costs stale frames rather than RAM.
@@ -51,6 +59,7 @@ class MqttPublishImageAction(Action):
         self,
         topic_template: str = DEFAULT_IMAGE_TOPIC_TEMPLATE,
         annotate: bool = True,
+        full_resolution: bool = True,
         quality: int = 80,
         max_width: int = 0,
         max_fps: float = DEFAULT_MAX_FPS,
@@ -63,6 +72,7 @@ class MqttPublishImageAction(Action):
         # A blank template means "unset", not "publish to the empty topic".
         self._topic_template = (topic_template or "").strip() or DEFAULT_IMAGE_TOPIC_TEMPLATE
         self._annotate = bool(annotate)
+        self._full_resolution = bool(full_resolution)
         self._quality = max(1, min(100, int(quality)))
         self._max_width = max(0, int(max_width))
         self._max_fps = max(0.0, float(max_fps))
@@ -98,14 +108,25 @@ class MqttPublishImageAction(Action):
                 "default": True,
                 "help": "Draw detection boxes and labels on the frame before publishing.",
             },
+            "full_resolution": {
+                "type": "bool",
+                "required": False,
+                "default": True,
+                "help": (
+                    "Publish the frame at the resolution the camera sent, rather than at the "
+                    "watcher's analysis width. On by default: the analysis downscale exists to "
+                    "make inference cheap, and there is no reason for that to decide how the live "
+                    "feed looks. Use max_width to cap bandwidth instead."
+                ),
+            },
             "quality": {"type": "int", "required": False, "default": 80, "help": "JPEG quality, 1-100."},
             "max_width": {
                 "type": "int",
                 "required": False,
                 "default": 0,
                 "help": (
-                    "Shrink the frame to at most this width before encoding. 0 keeps the analysis "
-                    "resolution. Never upscales."
+                    "Shrink the frame to at most this width before encoding. 0 keeps whatever "
+                    "full_resolution selected. Never upscales."
                 ),
             },
             "max_fps": {
@@ -148,15 +169,36 @@ class MqttPublishImageAction(Action):
         return False
 
     def render_jpeg(self, context: ActionContext) -> bytes:
-        """Annotate, downscale and encode. Blocking — call via `to_thread`."""
-        frame = context.frame
-        if self._annotate and context.detections:
-            # Copies: `context.frame` is the pipeline's live frame, also written by
-            # snapshot actions and held in the rewind ring. Burning boxes into it would
-            # put them in the saved training images.
-            frame = annotate_detections(frame, context.detections, colours=context.label_colours)
+        """Select the source frame, downscale, annotate and encode.
+
+        Blocking — call via `to_thread`.
+
+        Downscaling happens *before* annotation, not after. Annotating first and
+        shrinking the result thins every line and softens every label by exactly the
+        ratio it shrank, so a capped feed would get boxes drawn for a resolution it is
+        not published at. Sizing the canvas first lets `annotate_detections` pick stroke
+        weights that suit what is actually going out.
+        """
+        # The analysis frame is the detections' pixel space whichever frame we publish,
+        # so it is what any scale factor is measured against.
+        analysis = context.frame
+        frame = analysis
+        if self._full_resolution and context.full_frame is not None:
+            frame = context.full_frame
         if self._max_width:
             frame = downscale_to_width(frame, self._max_width)
+
+        if self._annotate and context.detections:
+            scale = None
+            if analysis is not None and frame is not analysis:
+                a_h, a_w = analysis.shape[:2]
+                f_h, f_w = frame.shape[:2]
+                if a_w > 0 and a_h > 0 and (f_w, f_h) != (a_w, a_h):
+                    scale = (f_w / float(a_w), f_h / float(a_h))
+            # Copies: `context.frame` and `context.full_frame` are the pipeline's live
+            # frames, also written by snapshot actions and held in the rewind ring.
+            # Burning boxes into either would put them in the saved training images.
+            frame = annotate_detections(frame, context.detections, colours=context.label_colours, scale=scale)
         return encode_jpg_bytes(frame, quality=self._quality)
 
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:

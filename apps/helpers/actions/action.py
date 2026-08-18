@@ -38,8 +38,18 @@ class ActionContext:
     buffered: bool = False
     #: Seconds of rewind actually configured, for clamping pre-roll at cut time.
     retention_s: float = 0.0
-    #: Latest analysed frame, for snapshot actions. Numpy array or None.
+    #: Latest analysed frame, for snapshot actions. Numpy array or None. This is the
+    #: *downscaled* frame — the one inference ran on, and the one `detections` are in
+    #: the pixel space of.
     frame: Any = None
+    #: The same frame at the camera's own resolution, before the analysis downscale.
+    #: None when the source never provided one. May be the identical array as `frame`
+    #: when no downscale was needed, so an action must not write into it in place.
+    #:
+    #: ⚠️ `detections` are NOT in this frame's pixel space. Scale them by
+    #: `full_frame.width / frame.width` before drawing, or every box lands in the
+    #: top-left quadrant.
+    full_frame: Any = None
     #: The detections on that frame, in its pixel space — mask-filtered, so this is what
     #: the tracker actually saw rather than raw model output. Carried beside the frame
     #: because an action that wants to draw them has no other way to get them: the event

@@ -9,8 +9,10 @@ import numpy as np
 import pytest
 
 from apps.helpers.imageUtils import (
+    ANNOTATION_MAX_STROKE_SCALE,
     DEFAULT_BOX_BGR,
     annotate_detections,
+    annotation_stroke_scale,
     compute_iou,
     downscale_to_width,
     encode_jpg_bytes,
@@ -248,6 +250,71 @@ class TestAnnotateDetections:
 
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
         assert annotate_detections(frame, [_Bad()]).max() == 0
+
+
+class TestAnnotationScaling:
+    """Detections and canvas need not share a pixel space.
+
+    The watcher infers on a frame downscaled to `analysis_width`, so its boxes are in
+    that space, while the MQTT live feed publishes the camera's full-resolution frame.
+    `scale` is what lets the one set of boxes annotate the other.
+    """
+
+    def test_boxes_are_drawn_in_the_scaled_position(self):
+        """The corner moves to 2x; without the scale it would stay at 1x."""
+        frame = np.zeros((960, 1280, 3), dtype=np.uint8)
+        det = _det(x1=10, y1=10, x2=40, y2=40)
+        out = annotate_detections(frame, [det], colours={"lab-1": "#ff0000"}, scale=(2.0, 2.0))
+
+        assert out[20, 20].any(), "the scaled corner should be on the box outline"
+
+    def test_without_a_scale_the_box_stays_in_the_detections_own_space(self):
+        """The regression guard: a full-res publish that forgets to scale draws here."""
+        frame = np.zeros((960, 1280, 3), dtype=np.uint8)
+        det = _det(x1=10, y1=10, x2=40, y2=40)
+        unscaled = annotate_detections(frame, [det], colours={"lab-1": "#ff0000"})
+
+        assert unscaled[10, 10].any()
+        # Interior of the unscaled box, so it is only lit if the box actually moved.
+        assert not unscaled[20, 20].any()
+
+    def test_a_scale_of_one_matches_no_scale_at_all(self):
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        det = _det()
+        assert np.array_equal(
+            annotate_detections(frame, [det], scale=(1.0, 1.0)),
+            annotate_detections(frame, [det]),
+        )
+
+    def test_non_square_scales_are_applied_per_axis(self):
+        """A camera whose aspect the analysis downscale did not preserve exactly."""
+        frame = np.zeros((400, 1280, 3), dtype=np.uint8)
+        out = annotate_detections(frame, [_det(x1=10, y1=10, x2=40, y2=40)], scale=(4.0, 2.0))
+        assert out[20, 40].any()
+
+    def test_stroke_weight_grows_with_the_canvas(self):
+        """A 2 px box is right at 640 px wide and invisible at 2560."""
+        assert annotation_stroke_scale(640) == 1.0
+        assert annotation_stroke_scale(1280) == 2.0
+
+    def test_a_small_canvas_keeps_the_reference_weights(self):
+        """The reference stroke is already the thinnest that survives JPEG."""
+        assert annotation_stroke_scale(320) == 1.0
+
+    def test_stroke_growth_is_capped(self):
+        """Uncapped, a 4K frame gets borders thick enough to hide the cat."""
+        assert annotation_stroke_scale(8000) == ANNOTATION_MAX_STROKE_SCALE
+
+    def test_a_wider_canvas_actually_draws_more_ink(self):
+        """The scale is not just arithmetic — it must reach cv2."""
+        small = annotate_detections(np.zeros((480, 640, 3), dtype=np.uint8), [_det(x1=10, y1=10, x2=110, y2=110)])
+        large = annotate_detections(
+            np.zeros((960, 1280, 3), dtype=np.uint8),
+            [_det(x1=10, y1=10, x2=110, y2=110)],
+            scale=(2.0, 2.0),
+        )
+        # Twice the perimeter at twice the thickness is ~4x the pixels; well clear of 2x.
+        assert np.count_nonzero(large) > 2 * np.count_nonzero(small)
 
 
 class TestDownscaleToWidth:

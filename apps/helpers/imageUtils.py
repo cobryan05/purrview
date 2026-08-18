@@ -235,11 +235,32 @@ def hex_to_bgr(value: Optional[str]) -> Tuple[int, int, int]:
     return (b, g, r)
 
 
+#: Canvas width the box/label weights below were chosen against. Wider canvases scale
+#: their strokes up from here so a 2 px box does not disappear on a 4K frame.
+ANNOTATION_REFERENCE_WIDTH = 640
+
+#: Ceiling on that scaling. Without it a 4K frame gets 12 px borders and text tall
+#: enough to cover the animal the box is pointing at.
+ANNOTATION_MAX_STROKE_SCALE = 4.0
+
+
+def annotation_stroke_scale(width: int) -> float:
+    """Stroke multiplier for a canvas of *width* pixels.
+
+    Never below 1.0: the reference weights are already the thinnest that stay legible
+    after JPEG encoding, so a sub-640 canvas keeps them rather than shrinking further.
+    """
+    if width <= ANNOTATION_REFERENCE_WIDTH:
+        return 1.0
+    return min(ANNOTATION_MAX_STROKE_SCALE, width / float(ANNOTATION_REFERENCE_WIDTH))
+
+
 def annotate_detections(
     image: np.ndarray,
     detections: Sequence[Any],
     colours: Optional[Dict[str, str]] = None,
     copy: bool = True,
+    scale: Optional[Tuple[float, float]] = None,
 ) -> np.ndarray:
     """Draw the watcher's `Detection` boxes onto a frame.
 
@@ -249,6 +270,18 @@ def annotate_detections(
     **absolute pixel corners** and a resolved label name. Feeding one to the other's
     renderer silently draws every box in the top-left corner.
 
+    `scale` is `(sx, sy)`, applied to every box before drawing. It exists because the
+    detections and the canvas need not share a pixel space: the watcher runs inference
+    on a frame downscaled to `analysis_width`, so its boxes are in *that* space, while
+    the MQTT live feed publishes the camera's full-resolution frame. Scaling the boxes
+    up is what lets one set of detections annotate either. `None` means the two already
+    agree, which is the common case.
+
+    Stroke weight and text size follow the canvas width (see `annotation_stroke_scale`)
+    rather than being fixed. A box drawn 2 px wide is right at 640 px and invisible at
+    2560; the alternative — annotating small and upscaling the result — throws away the
+    resolution this whole path exists to preserve.
+
     Copies by default. The caller's frame is `WatchPipeline.last_frame`, which is also
     what snapshot actions write and what the rewind ring holds — drawing into it in
     place would put boxes in the saved training images, which is exactly the data you
@@ -257,10 +290,21 @@ def annotate_detections(
     canvas = image.copy() if copy else image
     height, width = canvas.shape[:2]
     palette = colours or {}
+    sx, sy = scale if scale else (1.0, 1.0)
+
+    stroke = annotation_stroke_scale(width)
+    thickness = max(1, int(round(2 * stroke)))
+    font_scale = 0.5 * stroke
+    # The gaps that keep the label off the box scale with the text, or a big label sits
+    # on top of the line it is meant to sit above.
+    gap = max(1, int(round(6 * stroke)))
+    below_drop = max(1, int(round(16 * stroke)))
 
     for det in detections:
         try:
-            x1, y1, x2, y2 = (int(round(v)) for v in det.bbox)
+            x1, y1, x2, y2 = det.bbox
+            x1, x2 = int(round(x1 * sx)), int(round(x2 * sx))
+            y1, y2 = int(round(y1 * sy)), int(round(y2 * sy))
         except (TypeError, ValueError):
             continue
         # Clamp: a box from a model can sit slightly outside the frame, and cv2 draws
@@ -271,14 +315,14 @@ def annotate_detections(
             continue
 
         colour = hex_to_bgr(palette.get(getattr(det, "label_uuid", None) or ""))
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), colour, 2)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), colour, thickness)
 
         name = getattr(det, "label_name", None) or "object"
         text = f"{name} {getattr(det, 'confidence', 0.0):.2f}"
         # Below the box when there is no room above it, so a detection touching the top
         # edge is still labelled instead of drawing off-frame.
-        baseline = y1 - 6 if y1 - 6 > 10 else min(height - 4, y2 + 16)
-        cv2.putText(canvas, text, (x1, baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
+        baseline = y1 - gap if y1 - gap > gap + 4 else min(height - 4, y2 + below_drop)
+        cv2.putText(canvas, text, (x1, baseline), cv2.FONT_HERSHEY_SIMPLEX, font_scale, colour, thickness)
 
     return canvas
 
