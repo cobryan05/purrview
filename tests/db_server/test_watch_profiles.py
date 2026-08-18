@@ -612,6 +612,39 @@ class TestSourceRegionCrud:
         assert body["status"] == "success"
         assert body["orphanedRules"] == ["cat using litter box"]
 
+    async def test_removing_several_zones_at_once_reports_every_rule(self, http_client):
+        """The orphan check takes the whole removed set in one pass, so it must not
+        report only the rules broken by whichever region it happened to look at first."""
+        second_zone = "66666666-6666-6666-6666-666666666666"
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone(), _zone(uuid=second_zone, name="water bowl area")])
+        await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[
+                _rule(),
+                _rule(
+                    uuid="77777777-7777-7777-7777-777777777777",
+                    name="cat drinking",
+                    subjectBRef=second_zone,
+                ),
+            ],
+        )
+
+        body = await _set_regions(http_client, source_uuid, [])
+        assert body["status"] == "success"
+        assert body["orphanedRules"] == ["cat drinking", "cat using litter box"]
+
+    async def test_a_surviving_zone_orphans_nothing(self, http_client):
+        """Only the removed regions are checked — re-saving an unchanged list is quiet."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        await _create_profile(http_client, "House cams", sources=[{"sourceUuid": source_uuid}], rules=[_rule()])
+
+        body = await _set_regions(http_client, source_uuid, [_zone(name="litter tray")])
+        assert body["orphanedRules"] == []
+
     async def test_deleting_a_source_takes_its_regions_with_it(self, http_client, db_client):
         from sqlmodel import select
 

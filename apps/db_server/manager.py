@@ -516,9 +516,7 @@ class Manager:
         """
         existing = {r.uuid for r in await self._db_client.list_source_regions(source_uuid)}
         surviving = {r.uuid for r in regions if r.uuid}
-        orphaned: List[str] = []
-        for removed in existing - surviving:
-            orphaned.extend(await self._db_client.find_rules_referencing_region(removed))
+        orphaned = await self._db_client.find_rules_referencing_regions(existing - surviving)
 
         saved = await self._db_client.replace_source_regions(source_uuid, regions)
         return saved, sorted(set(orphaned))

@@ -104,6 +104,7 @@ from .types import (
     Recording,
     RecordingRead,
     RegionRole,
+    RuleSubjectKind,
     Source,
     SourceRead,
     SourceRegion,
@@ -2959,14 +2960,34 @@ class DbClient:
         async with self._async_session_maker() as session:
             return await session.get(Source, source_uuid) is not None
 
-    async def find_rules_referencing_region(self, region_uuid: str) -> List[str]:
-        """Names of rules pointing at a region, so deleting one can warn instead of silently breaking rules."""
+    async def find_rules_referencing_regions(self, region_uuids: Sequence[str]) -> List[str]:
+        """Names of rules pointing at any of *region_uuids*.
+
+        So deleting a region can warn instead of silently breaking rules.
+
+        Takes the whole set rather than one uuid at a time: the refs live in JSON
+        columns, so the membership test happens in Python either way, and asking once
+        per region turned a single scan of `interaction_rules` into one scan per deleted
+        region. Only zone-kind rules can name a region at all, so the rest never leave
+        the database.
+        """
+        wanted = {str(u) for u in region_uuids}
+        if not wanted:
+            return []
         async with self._async_session_maker() as session:
-            result = await session.exec(select(InteractionRule))
+            result = await session.exec(
+                select(InteractionRule).where(
+                    or_(
+                        InteractionRule.subject_a_kind == RuleSubjectKind.ZONE.value,
+                        InteractionRule.subject_b_kind == RuleSubjectKind.ZONE.value,
+                    )
+                )
+            )
             return [
                 rule.name
                 for rule in result.all()
-                if region_uuid in (rule.subject_a_refs_json or []) or region_uuid in (rule.subject_b_refs_json or [])
+                if wanted.intersection(rule.subject_a_refs_json or [])
+                or wanted.intersection(rule.subject_b_refs_json or [])
             ]
 
     ################################################################################
@@ -6517,19 +6538,26 @@ class DbClient:
 
         # A mask this watcher disables must actually exist on the source it is listed
         # under, or the opt-out is a no-op that reads as though it were doing something.
-        for src in sources:
-            disabled = [str(u) for u in (src.disabled_mask_uuids_json or [])]
-            if not disabled:
-                continue
+        #
+        # The *check* is per source, but the fetch is not: one query over every source
+        # with an opt-out, keyed by source on the way out, exactly as the zone lookup
+        # above does. Asking per source opened a session per iteration on the save path.
+        opted_out = {src.source_uuid for src in sources if src.disabled_mask_uuids_json}
+        masks_by_source: Dict[str, set] = {}
+        if opted_out:
             async with self._async_session_maker() as session:
                 result = await session.exec(
-                    select(SourceRegion.uuid).where(
-                        SourceRegion.source_uuid == src.source_uuid,
+                    select(SourceRegion.source_uuid, SourceRegion.uuid).where(
+                        SourceRegion.source_uuid.in_(opted_out),
                         SourceRegion.role == RegionRole.MASK.value,
                     )
                 )
-                mask_uuids = set(result.all())
-            for ref in disabled:
+                for source_uuid, mask_uuid in result.all():
+                    masks_by_source.setdefault(source_uuid, set()).add(mask_uuid)
+
+        for src in sources:
+            mask_uuids = masks_by_source.get(src.source_uuid, set())
+            for ref in (str(u) for u in (src.disabled_mask_uuids_json or [])):
                 if ref not in mask_uuids:
                     raise ValueError(
                         f"Source {src.source_uuid!r} disables mask {ref!r}, which is not drawn on that source"
