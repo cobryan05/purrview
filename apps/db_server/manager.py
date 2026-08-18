@@ -67,7 +67,10 @@ from apps.helpers.db.types import (
     PreviewRunRead,
     PreviewRunUpdate,
     RecordingRead,
+    RegionRole,
     Source,
+    SourceRegionRead,
+    SourceRegionWrite,
     Tag,
     TagRead,
     TagUpdate,
@@ -490,6 +493,33 @@ class Manager:
             typename=image_provider,
             params=provider_params,
         )
+
+    async def list_source_regions(
+        self, source_uuid: Optional[str] = None, role: Optional[str] = None
+    ) -> List[SourceRegionRead]:
+        """Zones and masks for one source, or for all sources when `source_uuid` is None."""
+        if role is not None and role not in {r.value for r in RegionRole}:
+            raise ValueError(f"Unknown region role: {role}")
+        return await self._db_client.list_source_regions(source_uuid, role)
+
+    async def set_source_regions(
+        self, source_uuid: str, regions: List[SourceRegionWrite]
+    ) -> tuple[List[SourceRegionRead], List[str]]:
+        """Replace a source's regions, reporting any rules the write orphaned.
+
+        The orphan check runs *before* the write, while the removed uuids are still
+        resolvable. It is a warning rather than a refusal: deleting a zone whose rule is
+        also on its way out is legitimate, and blocking it would make the two edits
+        impossible to sequence.
+        """
+        existing = {r.uuid for r in await self._db_client.list_source_regions(source_uuid)}
+        surviving = {r.uuid for r in regions if r.uuid}
+        orphaned: List[str] = []
+        for removed in existing - surviving:
+            orphaned.extend(await self._db_client.find_rules_referencing_region(removed))
+
+        saved = await self._db_client.replace_source_regions(source_uuid, regions)
+        return saved, sorted(set(orphaned))
 
     async def list_avail_image_providers(self) -> List[str]:
         """
@@ -3569,14 +3599,47 @@ class Manager:
         if not enabled_rules:
             warnings.append("No enabled rules — the watcher will track objects but never raise an event.")
 
-        zone_uuids = {z.uuid for s in profile.sources for z in s.zones}
+        # Zones now live on the sources, so this needs a lookup rather than a walk of the
+        # profile — the uuids a rule may name are not in the profile at all any more.
+        regions_by_source = {}
+        for src in profile.sources:
+            regions_by_source[src.source_uuid] = await self._db_client.list_source_regions(src.source_uuid)
+        zone_uuids = {
+            r.uuid for regions in regions_by_source.values() for r in regions if r.role == RegionRole.ZONE.value
+        }
         for rule in profile.rules:
-            for kind, ref, side in (
-                (rule.subject_a_kind, rule.subject_a_ref, "A"),
-                (rule.subject_b_kind, rule.subject_b_ref, "B"),
+            for kind, refs, side in (
+                (rule.subject_a_kind, rule.subject_a_refs_json, "A"),
+                (rule.subject_b_kind, rule.subject_b_refs_json, "B"),
             ):
-                if kind == "zone" and ref not in zone_uuids:
-                    errors.append(f"Rule {rule.name!r}: subject {side} references a zone that no longer exists.")
+                if kind != "zone":
+                    continue
+                missing = [ref for ref in (refs or []) if ref not in zone_uuids]
+                if missing:
+                    errors.append(
+                        f"Rule {rule.name!r}: subject {side} references "
+                        f"{len(missing)} zone(s) that no longer exist on this watcher's sources."
+                    )
+            # A slot naming nothing can never fire, and reads in the editor as though it
+            # were merely unconfigured rather than broken.
+            for kind, refs, side in (
+                (rule.subject_a_kind, rule.subject_a_refs_json, "A"),
+                (rule.subject_b_kind, rule.subject_b_refs_json, "B"),
+            ):
+                if kind in ("label", "zone") and not refs:
+                    errors.append(f"Rule {rule.name!r}: subject {side} selects nothing, so the rule can never fire.")
+
+        # A mask a watcher disables but which has since been deleted from the source is
+        # an opt-out pointing at nothing — harmless, but it means the UI shows a checkbox
+        # state derived from a mask that no longer exists.
+        for src in profile.sources:
+            mask_uuids = {r.uuid for r in regions_by_source.get(src.source_uuid, []) if r.role == RegionRole.MASK.value}
+            stale = [u for u in (src.disabled_mask_uuids_json or []) if u not in mask_uuids]
+            if stale:
+                warnings.append(
+                    f"Source {src.source_uuid} disables {len(stale)} mask(s) that no longer exist on it; "
+                    "the setting has no effect and can be cleared."
+                )
 
         for src in profile.sources:
             has_own = bool(src.model_group_uuid or src.model_name)

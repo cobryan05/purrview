@@ -14,6 +14,7 @@ import { runPreviewSourceTest, showPaneError, toast } from './utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { createSource, deleteSources, fetchSourceList, updateSource } from '/app-static/js/shared/api/sources.js';
+import { openSourceRegionsModal } from '/app-static/js/ui/sourceRegionsModal.js';
 import { FIELD_EDIT_EVENT, SourceConfigField } from '/app-static/js/ui/utils/fields/index.js';
 import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 
@@ -149,6 +150,23 @@ export async function renderSourceManager({ target = 'source-management-box' } =
           await runPreviewSourceTest({ provider, providerParams });
         });
         editorFooter.appendChild(testBtn);
+
+        // Zones and masks describe this camera's view, so they belong here rather than
+        // inside whichever watcher happens to use it — draw once, and every watcher on
+        // this camera sees them. Only for a saved source: regions hang off a source uuid
+        // that does not exist yet during creation.
+        if (source) {
+          const regionsBtn = document.createElement('button');
+          regionsBtn.type = 'button';
+          regionsBtn.textContent = 'Zones & Masks';
+          regionsBtn.title = 'Draw zones a rule can point at, and masks that hide detections';
+          regionsBtn.className = 'panel-btn secondary';
+          regionsBtn.dataset.testid = 'source-regions-btn';
+          regionsBtn.addEventListener('click', async () => {
+            await openSourceRegionsModal({ sourceUuid: source.uuid, sourceName: source.name });
+          });
+          editorFooter.appendChild(regionsBtn);
+        }
 
         async function _doSave(navigateAfterCreate = false) {
           const { sourceName, provider, providerParams } = field.getValue();

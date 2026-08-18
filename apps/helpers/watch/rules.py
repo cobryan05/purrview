@@ -49,10 +49,13 @@ class RuleSpec:
     uuid: str
     name: str
     subject_a_kind: str  # "label" | "zone" | "any"
-    subject_a_ref: Optional[str]
-    relation: str  # "present" | "iou" | "contains" | "overlaps" | "centroid_in" | "distance"
-    subject_b_kind: str  # "label" | "zone" | "none"
-    subject_b_ref: Optional[str]
+    #: Every label (or zone) uuid this slot accepts. "any of these three cats" is one
+    #: rule rather than three, and the member that actually matched is reported back on
+    #: the event so an action's template can name it.
+    subject_a_refs: List[str] = field(default_factory=list)
+    relation: str = "contains"  # "present" | "iou" | "contains" | "overlaps" | "centroid_in" | "distance"
+    subject_b_kind: str = "none"  # "label" | "zone" | "none"
+    subject_b_refs: List[str] = field(default_factory=list)
     threshold: float = 0.5
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
@@ -67,10 +70,10 @@ class RuleSpec:
             uuid=get("uuid"),
             name=get("name"),
             subject_a_kind=get("subject_a_kind", "label"),
-            subject_a_ref=get("subject_a_ref"),
+            subject_a_refs=[str(r) for r in (get("subject_a_refs_json") or [])],
             relation=get("relation", "contains"),
             subject_b_kind=get("subject_b_kind", "none"),
-            subject_b_ref=get("subject_b_ref"),
+            subject_b_refs=[str(r) for r in (get("subject_b_refs_json") or [])],
             threshold=get("threshold", 0.5),
             min_duration_s=get("min_duration_s", 2.0),
             rearm_delay_s=get("rearm_delay_s", 10.0),
@@ -88,13 +91,20 @@ class PredicateResult:
     track_ids: List[int] = field(default_factory=list)
     score: float = 0.0
     confidence: float = 0.0
+    #: Which member of each slot the strongest matching pair used. With multi-ref slots
+    #: "a cat is in a litter box" is no longer enough to build an MQTT topic from — the
+    #: caller needs to know *which* cat and *which* litter box, and only the evaluation
+    #: knows that.
+    subject_ref: Optional[str] = None
+    target_ref: Optional[str] = None
 
 
-def _matching_tracks(tracks: Sequence[Track], kind: str, ref: Optional[str]) -> List[Track]:
+def _matching_tracks(tracks: Sequence[Track], kind: str, refs: Sequence[str]) -> List[Track]:
     if kind == "any":
         return list(tracks)
     if kind == "label":
-        return [t for t in tracks if t.label_uuid == ref]
+        wanted = set(refs)
+        return [t for t in tracks if t.label_uuid in wanted]
     return []
 
 
@@ -106,7 +116,7 @@ def evaluate_predicate(
     frame_height: float,
 ) -> PredicateResult:
     """Evaluate a rule against one frame's tracks. Pure — no state, no I/O."""
-    subjects_a = _matching_tracks(tracks, spec.subject_a_kind, spec.subject_a_ref)
+    subjects_a = _matching_tracks(tracks, spec.subject_a_kind, spec.subject_a_refs)
     if not subjects_a:
         return PredicateResult(holds=False)
 
@@ -114,29 +124,38 @@ def evaluate_predicate(
     # which is why single-object rules need no special case downstream.
     if spec.relation == "present":
         best = max(subjects_a, key=lambda t: t.confidence)
+        holds = best.confidence >= spec.threshold
         return PredicateResult(
-            holds=best.confidence >= spec.threshold,
+            holds=holds,
             track_ids=[t.track_id for t in subjects_a if t.confidence >= spec.threshold],
             score=best.confidence,
             confidence=best.confidence,
+            subject_ref=best.label_uuid if holds else None,
         )
 
-    # Subject B is either a zone (the common, most reliable case) or another label.
+    # Subject B is either one or more zones (the common, most reliable case) or another
+    # label. Multiple zones read as "inside any of these", which is what a rule spanning
+    # two litter boxes needs.
     if spec.subject_b_kind == "zone":
-        zone = zones.get(spec.subject_b_ref or "")
-        if zone is None:
+        targets: List[Any] = [zones[ref] for ref in spec.subject_b_refs if ref in zones]
+        if not targets:
             # A dangling zone reference can only ever be false. The validate endpoint
             # surfaces this at config time; here it must simply not fire.
             return PredicateResult(holds=False)
-        targets: List[Any] = [zone]
     else:
-        targets = _matching_tracks(tracks, spec.subject_b_kind, spec.subject_b_ref)
+        targets = _matching_tracks(tracks, spec.subject_b_kind, spec.subject_b_refs)
         if not targets:
             return PredicateResult(holds=False)
 
     best_score = 0.0
     best_conf = 0.0
     matched: List[int] = []
+    # The slot values reported belong to the best-scoring *matching* pair, tracked
+    # separately from `best_score` — which also moves for pairs that never fired, and
+    # would otherwise name a cat that failed the threshold.
+    best_match_score = -1.0
+    subject_ref: Optional[str] = None
+    target_ref: Optional[str] = None
 
     for track_a in subjects_a:
         for target in targets:
@@ -179,6 +198,10 @@ def evaluate_predicate(
             fired = score > 0.0 if spec.relation in ("centroid_in", "distance") else score >= spec.threshold
             if fired:
                 matched.append(track_a.track_id)
+                if score > best_match_score:
+                    best_match_score = score
+                    subject_ref = track_a.label_uuid
+                    target_ref = target.uuid if isinstance(target, Zone) else target.label_uuid
             if score > best_score:
                 best_score = score
                 best_conf = track_a.confidence
@@ -188,6 +211,8 @@ def evaluate_predicate(
         track_ids=sorted(set(matched)),
         score=best_score,
         confidence=best_conf,
+        subject_ref=subject_ref,
+        target_ref=target_ref,
     )
 
 
@@ -205,6 +230,12 @@ class RuleMachine:
         self._event_started_at: Optional[float] = None
         self._track_ids: List[int] = []
         self._peak_confidence: float = 0.0
+        #: Slot values from the strongest observation seen while this event was open.
+        #: Latched alongside `_peak_confidence` rather than taken from the first or last
+        #: frame: a rule spanning several cats should name the one it saw most clearly,
+        #: not whichever happened to be in the frame when hysteresis expired.
+        self._subject_ref: Optional[str] = None
+        self._target_ref: Optional[str] = None
         #: How many times the predicate flapped while an event was open. Surfaced as a
         #: tuning hint — a rule that flaps a lot wants a longer rearm delay.
         self.flap_count: int = 0
@@ -222,6 +253,8 @@ class RuleMachine:
             track_ids=list(self._track_ids),
             peak_confidence=self._peak_confidence,
             truncated=truncated,
+            subject_ref=self._subject_ref,
+            target_ref=self._target_ref,
             metadata={"eventLabel": self.spec.event_label} if self.spec.event_label else {},
         )
 
@@ -232,6 +265,8 @@ class RuleMachine:
         self._event_started_at = None
         self._track_ids = []
         self._peak_confidence = 0.0
+        self._subject_ref = None
+        self._target_ref = None
 
     # ------------------------------------------------------------------ step
 
@@ -249,6 +284,13 @@ class RuleMachine:
 
         if result.holds:
             self._track_ids = sorted(set(self._track_ids) | set(result.track_ids))
+            # Slot values move with the peak, so they always describe the same
+            # observation the reported confidence came from.
+            if result.confidence >= self._peak_confidence or self._subject_ref is None:
+                if result.subject_ref is not None:
+                    self._subject_ref = result.subject_ref
+                if result.target_ref is not None:
+                    self._target_ref = result.target_ref
             self._peak_confidence = max(self._peak_confidence, result.confidence)
             self._false_since = None
 

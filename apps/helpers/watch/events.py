@@ -34,6 +34,17 @@ class WatchEventSignal:
     #: True when the event was closed by `max_duration_s` rather than by the predicate
     #: going false. A stuck detection looks exactly like a very long event otherwise.
     truncated: bool = False
+    #: Which member of each multi-ref slot actually matched — a label uuid for the
+    #: subject, a zone uuid (or label uuid) for the target. Uuids, not names: the engine
+    #: is pure and has no vocabulary to resolve them with. The task that owns the DB
+    #: turns these into the human names an action's template interpolates.
+    subject_ref: Optional[str] = None
+    target_ref: Optional[str] = None
+    #: Resolved display names for the two slots, filled in above the engine. Kept beside
+    #: the uuids rather than replacing them so a consumer can key on a stable id while a
+    #: template prints something a human recognises.
+    subject_name: Optional[str] = None
+    target_name: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -52,5 +63,9 @@ class WatchEventSignal:
             "trackIds": list(self.track_ids),
             "peakConfidence": round(self.peak_confidence, 4),
             "truncated": self.truncated,
+            "subjectRef": self.subject_ref,
+            "targetRef": self.target_ref,
+            "subjectName": self.subject_name,
+            "targetName": self.target_name,
             "metadata": dict(self.metadata),
         }

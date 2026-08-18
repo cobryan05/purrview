@@ -20,7 +20,7 @@ from apps.helpers.imageProviders.imageProvider import ImageProvider
 from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, Tracker
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import WatchEventSignal
-from apps.helpers.watch.geometry import Zone
+from apps.helpers.watch.geometry import Zone, is_masked
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,10 @@ class WatchPipeline:
     #: BufferMode.OFF means the user has asked for no buffering at all on this source,
     #: which must also suppress the ring — otherwise "off" would still cost RAM.
     buffer_mode: str = "auto"
+    #: Regions that suppress detections, already filtered to the ones this watcher has
+    #: not opted out of. Unlike zones these are not addressable by any rule — a mask acts
+    #: on everything or not at all, which is exactly why a watcher can disable one.
+    masks: List[Zone] = field(default_factory=list)
     health: SourceHealth = field(default_factory=SourceHealth)
     _next_frame_at: float = 0.0
     _last_tracks: List[Track] = field(default_factory=list)
@@ -210,6 +214,10 @@ class WatchPipeline:
     #: identical from the tracks alone, and they have opposite fixes.
     _last_detections: List[Detection] = field(default_factory=list)
     _last_frame_shape: Optional[tuple] = None
+    #: How many detections the masks suppressed on the last analysed frame. Surfaced in
+    #: the status row because a mask that is silently eating every detection and a model
+    #: that has stopped detecting look identical otherwise — and they have opposite fixes.
+    _last_masked_count: int = 0
     #: Most recent analysed frame, kept for snapshot actions. One frame per source,
     #: replaced each time — deliberately not a history.
     last_frame: Optional[np.ndarray] = None
@@ -248,10 +256,30 @@ class WatchPipeline:
             self.engine.set_frame_size(width, height)
         return analysed
 
+    def apply_masks(self, detections: Sequence[Detection]) -> List[Detection]:
+        """Drop detections whose centre falls inside a mask.
+
+        Applied *before* the tracker, not after, so a masked object never forms a track
+        at all. Filtering tracks instead would let one build up history, satisfy a rule's
+        `min_duration_s`, and then vanish — and a track that flickers in and out of
+        existence is far worse for hysteresis than one that never existed.
+        """
+        if not self.masks:
+            self._last_masked_count = 0
+            return list(detections)
+
+        width, height = self.engine.frame_width, self.engine.frame_height
+        kept = [d for d in detections if not is_masked(d.bbox, self.masks, width, height)]
+        self._last_masked_count = len(detections) - len(kept)
+        return kept
+
     def step(self, detections: Sequence[Detection], now: float) -> List[WatchEventSignal]:
         """Advance the tracker and rule engine for one analysed frame."""
-        self._last_detections = list(detections)
-        self._last_tracks = self.tracker.update(list(detections), now)
+        surviving = self.apply_masks(detections)
+        # `_last_detections` is what the tracker actually saw, so the live view shows the
+        # same picture the rules are reasoning about.
+        self._last_detections = list(surviving)
+        self._last_tracks = self.tracker.update(list(surviving), now)
         return self.engine.step(self._last_tracks, now)
 
     def close_open_events(self, now: float) -> List[WatchEventSignal]:
@@ -282,6 +310,8 @@ class WatchPipeline:
             # pre-roll on a snapshot camera and silently getting three choppy frames.
             "buffer": self._buffer_label(),
             "tracks": len(self._last_tracks),
+            "masks": len(self.masks),
+            "maskedLastFrame": self._last_masked_count,
             "lastError": self.health.last_error,
         }
 

@@ -9,7 +9,10 @@ import {
 import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
-import { openZonesModal } from '/app-static/js/ui/watchZonesModal.js';
+import { openSourceRegionsModal } from '/app-static/js/ui/sourceRegionsModal.js';
+import { fetchSourceRegions, REGION_ROLE_MASK, REGION_ROLE_ZONE } from '/app-static/js/shared/api/sourceRegions.js';
+import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
+import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
 let _rendering = false;
@@ -38,6 +41,55 @@ const TRIGGERS = [
   { key: 'event_started', text: 'event start' },
   { key: 'event_ended', text: 'event end' },
 ];
+
+/**
+ * Default MQTT topic template — reproduces the historical hard-coded scheme exactly, so
+ * an action saved before templates existed publishes where it always did.
+ * Mirrors `DEFAULT_TOPIC_TEMPLATE` in `apps/helpers/actions/mqttPublishAction.py`.
+ */
+const DEFAULT_TOPIC_TEMPLATE = '{watcher}/{source}/event/{rule}';
+
+/**
+ * The placeholder vocabulary, mirroring `apps/helpers/watch/templating.py`.
+ * Kept in sync by hand — the backend is the authority; this list is for help text only.
+ */
+const TEMPLATE_PLACEHOLDERS = [
+  '{rule}', '{rule_name}', '{event_label}', '{rule_uuid}',
+  '{watcher}', '{watcher_uuid}', '{source}', '{source_uuid}',
+  '{subject}', '{subject_uuid}', '{target}', '{target_uuid}',
+  '{phase}', '{event_uuid}',
+];
+
+/** Stand-in values for the topic preview, so the shape of the result is visible. */
+const TEMPLATE_EXAMPLE = {
+  rule: 'cat-using-litter-box',
+  rule_name: 'cat-using-litter-box',
+  event_label: 'litterbox',
+  rule_uuid: 'rule-uuid',
+  watcher: 'house-cams',
+  watcher_uuid: 'watcher-uuid',
+  source: 'back-room',
+  source_uuid: 'source-uuid',
+  subject: 'tabby',
+  subject_uuid: 'label-uuid',
+  target: 'carpeted-litter-box',
+  target_uuid: 'zone-uuid',
+  phase: 'start',
+  event_uuid: 'event-uuid',
+};
+
+/**
+ * Render a topic template against example values, for the live hint under the field.
+ *
+ * Mirrors `render_topic`: unknown placeholders are left verbatim so a typo is visible,
+ * and empty levels collapse rather than emitting `a//b`.
+ */
+function renderTopicExample(template) {
+  const rendered = template.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (match, key) => (
+    Object.prototype.hasOwnProperty.call(TEMPLATE_EXAMPLE, key) ? TEMPLATE_EXAMPLE[key] : match
+  ));
+  return rendered.split('/').filter(Boolean).join('/');
+}
 
 /**
  * Read a numeric input, falling back when it is blank.
@@ -412,36 +464,67 @@ function buildSourceRow(src, ctx) {
 
   row.appendChild(rates);
 
-  // Zones live behind a modal because they need a video frame as a backdrop, which
-  // is far too heavy to inline in a list row.
-  let zones = (src.zones || []).map(z => ({ ...z }));
+  // Regions live behind a modal because they need a video frame as a backdrop, which is
+  // far too heavy to inline in a list row. They belong to the *source*, so editing them
+  // saves immediately rather than waiting for this watcher to be saved — the camera's
+  // geometry is not this watcher's to hold hostage.
   const actions = el('div', 'watch-row-actions');
-  const zonesBtn = el('button', 'panel-btn', `Zones (${zones.length})…`);
-  zonesBtn.type = 'button';
-  zonesBtn.dataset.testid = 'watch-zones-btn';
-  zonesBtn.addEventListener('click', async () => {
-    const result = await openZonesModal({
+  const regionsBtn = el('button', 'panel-btn', 'Regions…');
+  regionsBtn.type = 'button';
+  regionsBtn.dataset.testid = 'watch-zones-btn';
+  regionsBtn.addEventListener('click', async () => {
+    const result = await openSourceRegionsModal({
       sourceUuid: sourceSel.value,
       sourceName: ctx.sourceNameFor(sourceSel.value),
-      zones,
+      // Opened from a watcher, so each mask also offers "applies to this watcher".
+      // Opened from the Sources pane there is no watcher to scope it to, and the modal
+      // renders the geometry alone.
+      maskOptOut: {
+        disabled: disabledMasks,
+        onChange: (next) => { disabledMasks = next; ctx.onAnyChange(); },
+      },
     });
     if (result) {
-      zones = result;
-      zonesBtn.textContent = `Zones (${zones.length})…`;
-      // The rules' zone dropdowns are derived from these zones, so they have to be
-      // rebuilt here. Marking the editor dirty is not enough — nothing re-reads the
-      // zone list until the profile is saved and reopened.
-      ctx.onZonesChanged?.();
+      // Rules offer zones from every source, and the mask checkboxes below are derived
+      // from this source's masks, so both have to be rebuilt. Marking the editor dirty
+      // is not enough — nothing re-reads regions until the pane is reopened.
+      await ctx.onRegionsChanged?.();
       ctx.onAnyChange();
     }
   });
-  actions.appendChild(zonesBtn);
+  actions.appendChild(regionsBtn);
   actions.appendChild(removeButton(() => ctx.onDelete(), 'Remove source'));
   row.appendChild(actions);
 
+  // ── Mask opt-out ──
+  // Masks act on every detection, so a source owning them is right for the common case
+  // ("ignore the driveway, always") and wrong for the rare one (a people-watcher masking
+  // a street a car-watcher needs). All ticked by default: a mask added to a camera
+  // tomorrow must protect the watchers written today without anyone revisiting them.
+  // The per-watcher mask opt-out is edited inside the Regions modal, beside the masks it
+  // refers to, rather than as another control in this row. Two reasons: the row is
+  // already a full line and a permanent control here costs everyone a line, and this is
+  // a *rare* setting — the whole point of the default is that it needs no configuration.
+  let disabledMasks = new Set((src.disabledMaskUuidsJson || []).map(String));
+  function renderMasks() {
+    // Masks the camera no longer has cannot stay opted out: the uuid is rejected on save
+    // and the checkbox it came from no longer exists to clear it.
+    const live = new Set(ctx.masksForSource(sourceSel.value).map(m => m.uuid));
+    disabledMasks = new Set([...disabledMasks].filter(u => live.has(u)));
+  }
+  renderMasks();
+  sourceSel.addEventListener('change', () => {
+    // A different camera has different masks; carrying the old source's opt-outs across
+    // would disable masks by uuid that this source has never heard of, which the backend
+    // rejects on save.
+    disabledMasks = new Set();
+    renderMasks();
+  });
+
   return {
     element: row,
-    getZones: () => zones,
+    getSourceUuid: () => sourceSel.value,
+    refreshMasks: renderMasks,
     getSource: () => ({
       sourceUuid: sourceSel.value,
       order: 0,
@@ -458,14 +541,12 @@ function buildSourceRow(src, ctx) {
       bufferMode: src.bufferMode ?? 'auto',
       ringSeconds: ringSeconds.value === '' ? 20.0 : num(ringSeconds, 20.0),
       ringMaxMb: ringMaxMb.value === '' ? 32.0 : num(ringMaxMb, 32.0),
-      zones: zones.map(z => ({
-        uuid: z.uuid,
-        name: z.name,
-        kind: z.kind,
-        pointsJson: z.pointsJson,
-        referenceWidth: z.referenceWidth ?? 0,
-        referenceHeight: z.referenceHeight ?? 0,
-      })),
+      // Only masks that still exist on this source — a stale uuid is rejected on save,
+      // and a mask deleted in the editor must not keep a dead opt-out alive.
+      disabledMaskUuidsJson: ctx
+        .masksForSource(sourceSel.value)
+        .filter(m => disabledMasks.has(m.uuid))
+        .map(m => m.uuid),
     }),
   };
 }
@@ -481,52 +562,111 @@ function buildRuleRow(rule, ctx) {
   nameInput.placeholder = 'e.g. cat using litter box';
   nameInput.dataset.testid = 'watch-rule-name';
   nameInput.addEventListener('input', ctx.onAnyChange);
-  row.appendChild(wfield('Rule', nameInput));
+  // Explicitly narrow so the name and the sentence share a line. At its natural width
+  // the pair overflowed the row by a handful of pixels and cost a whole extra line.
+  row.appendChild(wfield('Rule', nameInput, { width: '10rem' }));
 
-  // The sentence: [subject A] [relation] [subject B].
+  // The sentence: [subject A] [relation] [subject B]. Each subject is a *list* — "any of
+  // these three cats is inside any of these two litter boxes" is one rule, not six, and
+  // the engine reports which members actually matched so an action can name them.
   const sentence = el('div', 'watch-rule-sentence');
-  const subjectA = select(ctx.labelOptions, rule.subjectARef || ctx.labelOptions[0]?.key, ctx.onAnyChange);
+
+  let subjectARefs = [...(rule.subjectARefsJson || [])];
+  let subjectBRefs = [...(rule.subjectBRefsJson || [])];
+
+  const subjectAHost = el('span', 'watch-rule-slot');
+  subjectAHost.dataset.testid = 'watch-rule-subject-a';
+  let subjectADropdown = null;
+
+  function buildSubjectA() {
+    subjectADropdown?.destroy();
+    subjectAHost.innerHTML = '';
+    subjectADropdown = createMultiSelectDropdown({
+      // No "Labels:" prefix — the sentence around it already says what this slot is, and
+      // the prefix is wide enough to push the tuning fields onto another line.
+      label: '',
+      items: ctx.labelItems,
+      defaultSelected: subjectARefs,
+      // A rule slot picks things; it does not build a query. Mode and exclusion are
+      // filter concepts and would read here as though a rule could match "all of" three
+      // cats at once, which is not what the engine does.
+      showModeToggle: false,
+      allowExclude: false,
+      searchable: true,
+      emptySummary: 'None selected',
+      emptyText: '(no labels defined)',
+      filterKey: 'watch-rule-subject-a',
+      onChange: (selected) => {
+        subjectARefs = selected;
+        ctx.onAnyChange();
+      },
+    });
+    subjectAHost.appendChild(subjectADropdown.element);
+  }
+  buildSubjectA();
+
   const relation = select(RELATIONS, rule.relation || 'contains', () => {
     syncArity();
     ctx.onAnyChange();
   });
   relation.dataset.testid = 'watch-rule-relation';
+
   const subjectBKind = select(
     [{ key: 'zone', text: 'Zone' }, { key: 'label', text: 'Label' }],
     rule.subjectBKind === 'label' ? 'label' : 'zone',
-    () => { syncSubjectB(); ctx.onAnyChange(); },
+    () => {
+      // Switching kind changes what the uuids *mean*, so keeping them would leave label
+      // uuids selected in a zone picker — the shape of the bug that used to silently
+      // rewrite "is inside Litter Box" as "is inside Cat" on the next save.
+      subjectBRefs = [];
+      buildSubjectB();
+      ctx.onAnyChange();
+    },
   );
-  // Build the second subject from the option set its *own* kind implies. Seeding it
-  // from the zone options regardless meant a label uuid never matched an <option>,
-  // the select fell back to the first zone, and the later syncSubjectB() — which only
-  // preserves a value still on offer — landed it on the first label instead: a saved
-  // "is inside Litter Box" silently reopened, and re-saved, as "is inside Cat".
-  const subjectBOptions = subjectBKind.value === 'label' ? ctx.labelOptions : ctx.zoneOptions;
-  const subjectB = select(subjectBOptions, rule.subjectBRef || subjectBOptions[0]?.key, ctx.onAnyChange);
-  subjectB.dataset.testid = 'watch-rule-subject-b';
 
-  sentence.append(el('span', null, 'When'), subjectA, relation, subjectBKind, subjectB);
-  row.appendChild(sentence);
+  const subjectBHost = el('span', 'watch-rule-slot');
+  subjectBHost.dataset.testid = 'watch-rule-subject-b';
+  let subjectBDropdown = null;
 
-  function syncSubjectB() {
-    const options = subjectBKind.value === 'label' ? ctx.labelOptions : ctx.zoneOptions;
-    const current = subjectB.value;
-    subjectB.innerHTML = '';
-    for (const opt of options) {
-      const o = document.createElement('option');
-      o.value = opt.key;
-      o.textContent = opt.text;
-      subjectB.appendChild(o);
-    }
-    if (options.some(o => o.key === current)) subjectB.value = current;
+  function buildSubjectB() {
+    subjectBDropdown?.destroy();
+    subjectBHost.innerHTML = '';
+    const isLabel = subjectBKind.value === 'label';
+    const items = isLabel ? ctx.labelItems : ctx.zoneItems();
+    // Drop refs that are no longer on offer — a zone deleted in the region editor must
+    // not linger as an invisible selection that fails validation on save.
+    const available = new Set(items.map(i => i.uuid));
+    subjectBRefs = subjectBRefs.filter(r => available.has(r));
+    subjectBDropdown = createMultiSelectDropdown({
+      // Unprefixed for the same reason as subject A: the `Zone`/`Label` select sitting
+      // immediately to its left already names the kind.
+      label: '',
+      items,
+      defaultSelected: subjectBRefs,
+      showModeToggle: false,
+      allowExclude: false,
+      searchable: isLabel,
+      emptySummary: 'None selected',
+      emptyText: isLabel ? '(no labels defined)' : '(no zones drawn on this watcher’s sources)',
+      filterKey: 'watch-rule-subject-b',
+      onChange: (selected) => {
+        subjectBRefs = selected;
+        ctx.onAnyChange();
+      },
+    });
+    subjectBHost.appendChild(subjectBDropdown.element);
   }
+  buildSubjectB();
+
+  sentence.append(el('span', null, 'When'), subjectAHost, relation, subjectBKind, subjectBHost);
+  row.appendChild(sentence);
 
   function syncArity() {
     // `present` is arity 1; showing a second subject for it would imply a
     // comparison that never happens.
     const isUnary = relation.value === 'present';
     subjectBKind.hidden = isUnary;
-    subjectB.hidden = isUnary;
+    subjectBHost.hidden = isUnary;
   }
 
   // Tuning keeps its four inputs in threshold / start / clear / max order — the
@@ -556,26 +696,23 @@ function buildRuleRow(rule, ctx) {
 
   row.appendChild(removeButton(() => ctx.onDelete(), 'Remove rule'));
 
-  syncSubjectB();
   syncArity();
 
   return {
     element: row,
     /**
-     * Adopt a new set of zone options.
+     * Adopt a newly-drawn set of zones.
      *
-     * `refreshZoneOptions()` has always called this, but the row never returned it and
-     * the `?.` on the call site swallowed the miss — so a zone drawn in the modal was
-     * unreachable from any rule until the whole watcher was saved and reopened, which
-     * is the wrong order to build a rule in.
-     *
-     * `syncSubjectB` re-selects the current value when it is still on offer, so a rule
-     * already pointing at a zone keeps it; only a rule whose zone genuinely went away
-     * falls back to the first option.
+     * Called after the region editor saves. Rebuilding preserves any selection still on
+     * offer and drops the rest, so a rule already pointing at a zone keeps it and only a
+     * rule whose zone genuinely went away loses its reference.
      */
-    refreshZones: (options) => {
-      ctx.zoneOptions = options;
-      if (subjectBKind.value !== 'label') syncSubjectB();
+    refreshZones: () => {
+      if (subjectBKind.value !== 'label') buildSubjectB();
+    },
+    destroy: () => {
+      subjectADropdown?.destroy();
+      subjectBDropdown?.destroy();
     },
     getRule: () => {
       const isUnary = relation.value === 'present';
@@ -585,10 +722,10 @@ function buildRuleRow(rule, ctx) {
         name: nameInput.value.trim() || 'Unnamed rule',
         enabled: true,
         subjectAKind: 'label',
-        subjectARef: subjectA.value,
+        subjectARefsJson: subjectARefs,
         relation: relation.value,
         subjectBKind: isUnary ? 'none' : subjectBKind.value,
-        subjectBRef: isUnary ? null : subjectB.value,
+        subjectBRefsJson: isUnary ? [] : subjectBRefs,
         threshold: num(threshold, 0.6),
         // These three defaults are not arbitrary: without them a raw threshold flaps
         // into an MQTT storm and a dozen clips for one visit.
@@ -645,12 +782,42 @@ function buildActionRow(action, ctx) {
       retain.checked = Boolean(stored.retain);
       retain.addEventListener('change', ctx.onAnyChange);
       params.appendChild(wfield('Retain', retain));
-      // The topic pattern is reference material, not a control — a tooltip keeps it
-      // available without spending a full line under every MQTT action.
-      const hint = el('span', 'watch-hint', 'topic pattern');
-      hint.title = 'Topic: <prefix>/<watcher>/<source>/event/<rule>. Broker is configured in Settings.';
-      params.appendChild(hint);
-      readParams = () => ({ retain: retain.checked, qos: 0 });
+
+      // The topic is a template now, not a fixed path: a rule matching several cats and
+      // several litter boxes knows which ones fired, and routing on them is the whole
+      // point of exposing those values.
+      const topic = document.createElement('input');
+      topic.type = 'text';
+      topic.value = stored.topic_template || DEFAULT_TOPIC_TEMPLATE;
+      topic.placeholder = DEFAULT_TOPIC_TEMPLATE;
+      topic.dataset.testid = 'watch-action-topic';
+      topic.title =
+        'Placeholders are substituted per topic level and slugified. Available: '
+        + TEMPLATE_PLACEHOLDERS.join(', ')
+        + '. An unknown placeholder is left as-is, so a typo shows up on the broker '
+        + 'rather than silently collapsing a level. Broker is configured in Settings.';
+      topic.addEventListener('input', ctx.onAnyChange);
+      params.appendChild(wfield('Topic', topic, { width: '13rem' }));
+
+      // Ellipsised rather than wrapped: a resolved topic is long, and letting it push
+      // the action row onto a second line is what made a small watcher scroll. The full
+      // value stays available as a tooltip, and textContent is complete either way.
+      const example = el('span', 'watch-hint watch-hint--truncate', '');
+      example.dataset.testid = 'watch-action-topic-example';
+      function syncExample() {
+        example.textContent = `e.g. ${renderTopicExample(topic.value || DEFAULT_TOPIC_TEMPLATE)}`;
+        example.title = example.textContent;
+      }
+      topic.addEventListener('input', syncExample);
+      syncExample();
+      params.appendChild(example);
+
+      readParams = () => ({
+        retain: retain.checked,
+        qos: 0,
+        // Blank means "unset", not "publish to the empty topic".
+        topic_template: topic.value.trim() || DEFAULT_TOPIC_TEMPLATE,
+      });
     } else {
       const dir = document.createElement('input');
       dir.type = 'text';
@@ -721,7 +888,46 @@ export async function renderWatchProfileManager({ target }) {
     ]);
 
     const sourceOptions = [...sourcesMap.values()].map(s => ({ key: s.uuid, text: s.name || s.uuid }));
-    const labelOptions = [...labelsMap.values()].map(l => ({ key: l.uuid, text: l.name || l.uuid }));
+    // Indented tree rather than a flat list: a vocabulary of cats under "Cat" under
+    // "Animal" is unnavigable alphabetically, and the rule slots are multi-select so the
+    // user needs to *find* three siblings, not just one label.
+    const labelItems = flattenHierarchy(labelsMap).map(l => ({
+      uuid: l.uuid,
+      name: l.name || l.uuid,
+      color: l.color || null,
+      depth: l.depth,
+      parentUuid: l.parentUuid ?? null,
+    }));
+    // Flat `<select>` options for the label-lifetime rows, which pick exactly one label.
+    // Indented so the same hierarchy is legible there too — a plain alphabetical list of
+    // every cat, breed and species is not.
+    const labelOptions = labelItems.map(l => ({
+      key: l.uuid,
+      text: `${'  '.repeat(l.depth || 0)}${l.name}`,
+    }));
+
+    // Regions are keyed by source and fetched in one call rather than per source: a
+    // watcher with eight cameras would otherwise open the editor with eight requests.
+    let regionsBySource = new Map();
+    async function loadRegions() {
+      try {
+        const all = await fetchSourceRegions(null);
+        const next = new Map();
+        for (const region of all) {
+          if (!next.has(region.sourceUuid)) next.set(region.sourceUuid, []);
+          next.get(region.sourceUuid).push(region);
+        }
+        regionsBySource = next;
+      } catch {
+        // An empty map degrades to "no zones on offer", which the pickers already say
+        // out loud. Failing the whole pane over it would be worse.
+        regionsBySource = new Map();
+      }
+    }
+    await loadRegions();
+
+    const regionsFor = (sourceUuid, role) =>
+      (regionsBySource.get(sourceUuid) || []).filter(r => r.role === role);
     const modelGroupOptions = [...modelGroups.values()].map(g => ({ key: g.uuid, text: g.name || g.uuid }));
     const sourceNameFor = uuid => sourcesMap.get(uuid)?.name || uuid;
     // Undefined (not null) for an unknown source, so the badge renders nothing rather
@@ -818,22 +1024,24 @@ export async function renderWatchProfileManager({ target }) {
           modelNames,
           sourceNameFor,
           ingestTierFor,
-          onZonesChanged: () => refreshZoneOptions(),
+          masksForSource: uuid => regionsFor(uuid, REGION_ROLE_MASK),
+          onRegionsChanged: () => refreshRegions(),
           onAnyChange,
           onDelete: () => {
             entry.element.remove();
             sourceRows.splice(sourceRows.indexOf(entry), 1);
-            refreshZoneOptions();
+            // Removing a source removes its zones from the rules' options.
+            for (const rule of ruleRows) rule.refreshZones?.();
             onAnyChange();
           },
         });
         sourceRows.push(entry);
         sourcesBox.appendChild(entry.element);
-        refreshZoneOptions();
+        for (const rule of ruleRows) rule.refreshZones?.();
       }
 
       addSourceBtn.addEventListener('click', () => {
-        addSource({ sourceUuid: sourceOptions[0]?.key, zones: [] });
+        addSource({ sourceUuid: sourceOptions[0]?.key });
         onAnyChange();
       });
 
@@ -914,28 +1122,38 @@ export async function renderWatchProfileManager({ target }) {
       rulesBox.dataset.testid = 'watch-rules-box';
       screen.editorBody.appendChild(rulesBox);
 
-      // Zone options are derived from the sources' zones, so a rule can only ever
-      // reference a zone that actually exists in this profile.
-      function zoneOptions() {
-        const opts = [];
+      // Zones on offer come from the sources this watcher actually uses, so a rule can
+      // only ever reference a zone the watcher will have loaded at runtime. Prefixed
+      // with the camera name because two cameras may each have a "Doorway".
+      function zoneItems() {
+        const items = [];
+        const multipleSources = sourceRows.length > 1;
         for (const entry of sourceRows) {
-          for (const zone of entry.getZones()) {
-            opts.push({ key: zone.uuid, text: zone.name });
+          const sourceUuid = entry.getSourceUuid();
+          for (const zone of regionsFor(sourceUuid, REGION_ROLE_ZONE)) {
+            items.push({
+              uuid: zone.uuid,
+              name: multipleSources ? `${sourceNameFor(sourceUuid)} — ${zone.name}` : zone.name,
+            });
           }
         }
-        return opts.length ? opts : [{ key: '', text: '(no zones defined)' }];
+        return items;
       }
 
-      function refreshZoneOptions() {
-        for (const entry of ruleRows) entry.refreshZones?.(zoneOptions());
+      /** Re-read regions from the server and push them into every row that shows them. */
+      async function refreshRegions() {
+        await loadRegions();
+        for (const entry of ruleRows) entry.refreshZones?.();
+        for (const entry of sourceRows) entry.refreshMasks?.();
       }
 
       function addRule(rule) {
         const entry = buildRuleRow(rule, {
-          labelOptions: labelOptions.length ? labelOptions : [{ key: '', text: '(no labels)' }],
-          zoneOptions: zoneOptions(),
+          labelItems,
+          zoneItems,
           onAnyChange,
           onDelete: () => {
+            entry.destroy?.();
             entry.element.remove();
             ruleRows.splice(ruleRows.indexOf(entry), 1);
             onAnyChange();

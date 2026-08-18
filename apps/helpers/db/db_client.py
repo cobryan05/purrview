@@ -103,8 +103,12 @@ from .types import (
     PreviewRunTTL,
     Recording,
     RecordingRead,
+    RegionRole,
     Source,
     SourceRead,
+    SourceRegion,
+    SourceRegionRead,
+    SourceRegionWrite,
     Tag,
     TagKind,
     TaskConfig,
@@ -125,8 +129,6 @@ from .types import (
     WatchProfileSource,
     WatchProfileSourceWrite,
     WatchProfileUpdate,
-    WatchZone,
-    WatchZoneWrite,
     strip_bbox_confidence,
 )
 
@@ -2890,6 +2892,82 @@ class DbClient:
             await session.refresh(source)
         await self._sync_sources_to_json()
         return source
+
+    ################################################################################
+    # Source Regions (zones and masks)
+    ################################################################################
+    #
+    # Regions belong to the source rather than to a watcher's use of it: the geometry
+    # describes the camera's view, so drawing it once per watcher only ever meant
+    # redrawing it in every watcher when a camera moved.
+
+    async def list_source_regions(
+        self, source_uuid: Optional[str] = None, role: Optional[str] = None
+    ) -> List[SourceRegionRead]:
+        """Regions for one source, or for every source when `source_uuid` is None."""
+        async with self._async_session_maker() as session:
+            stmt = select(SourceRegion)
+            if source_uuid is not None:
+                stmt = stmt.where(SourceRegion.source_uuid == source_uuid)
+            if role is not None:
+                stmt = stmt.where(SourceRegion.role == role)
+            stmt = stmt.order_by(SourceRegion.source_uuid, SourceRegion.order, SourceRegion.name)
+            result = await session.exec(stmt)
+            return [SourceRegionRead.model_validate(r) for r in result.all()]
+
+    async def replace_source_regions(
+        self, source_uuid: str, regions: List[SourceRegionWrite]
+    ) -> List[SourceRegionRead]:
+        """Whole-list replace of one source's regions, following the nested-write precedent.
+
+        Caller-supplied uuids are preserved. That matters more here than anywhere else in
+        the codebase: a rule points at a zone by uuid from a *different* table, so
+        regenerating uuids on save would break every zone rule in every watcher at once,
+        with no error and no obvious cause.
+        """
+        if not await self.source_exists(source_uuid):
+            raise ValueError(f"Source {source_uuid!r} does not exist")
+
+        seen_names: set = set()
+        for region in regions:
+            key = (region.role.value, region.name.strip().lower())
+            if key in seen_names:
+                raise ValueError(f"Two {region.role.value}s on this source are both named {region.name!r}")
+            seen_names.add(key)
+
+        async with self._async_session_maker() as session:
+            await session.exec(delete(SourceRegion).where(SourceRegion.source_uuid == source_uuid))
+            await session.flush()
+            for index, region in enumerate(regions):
+                session.add(
+                    SourceRegion(
+                        **({"uuid": region.uuid} if region.uuid else {}),
+                        source_uuid=source_uuid,
+                        name=region.name,
+                        role=region.role.value,
+                        kind=region.kind.value,
+                        points_json=region.points_json,
+                        reference_width=region.reference_width,
+                        reference_height=region.reference_height,
+                        order=region.order or index,
+                    )
+                )
+            await session.commit()
+        return await self.list_source_regions(source_uuid)
+
+    async def source_exists(self, source_uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            return await session.get(Source, source_uuid) is not None
+
+    async def find_rules_referencing_region(self, region_uuid: str) -> List[str]:
+        """Names of rules pointing at a region, so deleting one can warn instead of silently breaking rules."""
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(InteractionRule))
+            return [
+                rule.name
+                for rule in result.all()
+                if region_uuid in (rule.subject_a_refs_json or []) or region_uuid in (rule.subject_b_refs_json or [])
+            ]
 
     ################################################################################
     # Image Labels
@@ -6376,19 +6454,23 @@ class DbClient:
         fetched whole.
         """
         return (
-            selectinload(WatchProfile.sources).selectinload(WatchProfileSource.zones),
+            selectinload(WatchProfile.sources),
             selectinload(WatchProfile.rules),
             selectinload(WatchProfile.actions),
             selectinload(WatchProfile.label_lifetimes),
         )
 
-    @staticmethod
-    def _validate_watch_profile(data) -> None:
+    async def _validate_watch_profile(self, data) -> None:
         """Cross-entity checks the per-model validators cannot see.
 
-        Zone references are the important one: a rule naming a zone that isn't attached
-        to any of the profile's sources would simply never fire, which is invisible at
+        Zone references are the important one: a rule naming a zone that isn't drawn on
+        any of the profile's sources would simply never fire, which is invisible at
         runtime and maddening to debug.
+
+        This became a DB query when regions moved to `source_regions`: the zone uuids a
+        rule may legally name are no longer anywhere in the payload, they belong to the
+        sources the payload merely *references*. Validating against the payload alone
+        would have meant accepting every zone uuid, silently.
         """
         sources = data.sources if data.sources is not None else []
         rules = data.rules if data.rules is not None else []
@@ -6400,18 +6482,57 @@ class DbClient:
                 raise ValueError(f"Source {src.source_uuid!r} is listed twice in this watch profile")
             seen_sources.add(src.source_uuid)
 
-        zone_uuids = {zone.uuid for src in sources for zone in src.zones if zone.uuid}
+        # Only the zone-kind refs need resolving, so skip the query when no rule uses one.
+        needs_zones = any(
+            getattr(kind, "value", kind) == "zone"
+            for rule in rules
+            for kind in (rule.subject_a_kind, rule.subject_b_kind)
+        )
+        zone_uuids: set = set()
+        if needs_zones and seen_sources:
+            async with self._async_session_maker() as session:
+                result = await session.exec(
+                    select(SourceRegion.uuid).where(
+                        SourceRegion.source_uuid.in_(seen_sources),
+                        SourceRegion.role == RegionRole.ZONE.value,
+                    )
+                )
+                zone_uuids = set(result.all())
+
         rule_uuids = {rule.uuid for rule in rules if rule.uuid}
 
         for rule in rules:
-            for kind, ref, side in (
-                (rule.subject_a_kind, rule.subject_a_ref, "a"),
-                (rule.subject_b_kind, rule.subject_b_ref, "b"),
+            for kind, refs, side in (
+                (rule.subject_a_kind, rule.subject_a_refs_json, "a"),
+                (rule.subject_b_kind, rule.subject_b_refs_json, "b"),
             ):
-                if getattr(kind, "value", kind) == "zone" and ref and ref not in zone_uuids:
+                if getattr(kind, "value", kind) != "zone":
+                    continue
+                for ref in refs or []:
+                    if ref not in zone_uuids:
+                        raise ValueError(
+                            f"Rule {rule.name!r} references zone {ref!r} (subject {side}), "
+                            "which is not drawn on any source in this profile"
+                        )
+
+        # A mask this watcher disables must actually exist on the source it is listed
+        # under, or the opt-out is a no-op that reads as though it were doing something.
+        for src in sources:
+            disabled = [str(u) for u in (src.disabled_mask_uuids_json or [])]
+            if not disabled:
+                continue
+            async with self._async_session_maker() as session:
+                result = await session.exec(
+                    select(SourceRegion.uuid).where(
+                        SourceRegion.source_uuid == src.source_uuid,
+                        SourceRegion.role == RegionRole.MASK.value,
+                    )
+                )
+                mask_uuids = set(result.all())
+            for ref in disabled:
+                if ref not in mask_uuids:
                     raise ValueError(
-                        f"Rule {rule.name!r} references zone {ref!r} (subject {side}), "
-                        "which is not defined on any source in this profile"
+                        f"Source {src.source_uuid!r} disables mask {ref!r}, which is not drawn on that source"
                     )
 
         for action in actions:
@@ -6445,22 +6566,9 @@ class DbClient:
                 buffer_mode=src.buffer_mode.value,
                 ring_seconds=src.ring_seconds,
                 ring_max_mb=src.ring_max_mb,
+                disabled_mask_uuids_json=[str(u) for u in (src.disabled_mask_uuids_json or [])],
             )
             session.add(row)
-            for zone in src.zones:
-                session.add(
-                    WatchZone(
-                        # Keep the caller's uuid so rules referring to this zone survive
-                        # the delete-and-reinsert.
-                        **({"uuid": zone.uuid} if zone.uuid else {}),
-                        profile_source_uuid=row.uuid,
-                        name=zone.name,
-                        kind=zone.kind.value,
-                        points_json=zone.points_json,
-                        reference_width=zone.reference_width,
-                        reference_height=zone.reference_height,
-                    )
-                )
 
         for rule in rules or []:
             session.add(
@@ -6471,10 +6579,10 @@ class DbClient:
                     name=rule.name,
                     enabled=rule.enabled,
                     subject_a_kind=rule.subject_a_kind.value,
-                    subject_a_ref=rule.subject_a_ref,
+                    subject_a_refs_json=[str(r) for r in (rule.subject_a_refs_json or [])],
                     relation=rule.relation.value,
                     subject_b_kind=rule.subject_b_kind.value,
-                    subject_b_ref=rule.subject_b_ref,
+                    subject_b_refs_json=[str(r) for r in (rule.subject_b_refs_json or [])],
                     threshold=rule.threshold,
                     min_duration_s=rule.min_duration_s,
                     rearm_delay_s=rule.rearm_delay_s,
@@ -6521,7 +6629,7 @@ class DbClient:
             return None if profile is None else self._wp_to_read(profile)
 
     async def create_watch_profile(self, data: WatchProfileCreate) -> WatchProfileRead:
-        self._validate_watch_profile(data)
+        await self._validate_watch_profile(data)
         async with self._async_session_maker() as session:
             profile = WatchProfile(
                 name=data.name,
@@ -6546,7 +6654,7 @@ class DbClient:
             return self._wp_to_read(result.one())
 
     async def update_watch_profile(self, uuid: str, data: WatchProfileUpdate) -> Optional[WatchProfileRead]:
-        self._validate_watch_profile(data)
+        await self._validate_watch_profile(data)
         async with self._async_session_maker() as session:
             result = await session.exec(select(WatchProfile).where(WatchProfile.uuid == uuid))
             profile = result.one_or_none()

@@ -33,7 +33,9 @@ import db_client
 import inference_client
 from db_client.api.labels_api import LabelsApi
 from db_client.api.model_groups_api import ModelGroupsApi
+from db_client.api.sources_api import SourcesApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
+from db_client.models.get_source_regions_payload import GetSourceRegionsPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.batch_inference_payload import BatchInferencePayload
@@ -321,7 +323,13 @@ class StreamWatcherTask(Task):
                 label_lifetimes=lifetimes,
                 **(src.tracker_params_json or self._profile.tracker_params_json or {}),
             )
-            zones = [zone_from_row(z) for z in src.zones]
+            # Regions belong to the source, so they are fetched per source rather than
+            # read off the profile. Masks are filtered by this watcher's opt-out list
+            # here, once, rather than per frame.
+            regions = await asyncio.to_thread(self._fetch_source_regions, db_api_client, src.source_uuid)
+            disabled_masks = set(src.disabled_mask_uuids_json or [])
+            zones = [zone_from_row(r) for r in regions if r.role == "zone"]
+            masks = [zone_from_row(r) for r in regions if r.role == "mask" and r.uuid not in disabled_masks]
             engine = WatchEngine(rules=rule_specs, zones=zones, source_uuid=src.source_uuid)
 
             # A source that names either a stack or a model overrides the profile
@@ -350,11 +358,26 @@ class StreamWatcherTask(Task):
                     ring_seconds=getattr(src, "ring_seconds", 20.0) or 20.0,
                     ring_max_mb=getattr(src, "ring_max_mb", 32.0) or 32.0,
                     buffer_mode=str(getattr(src, "buffer_mode", "auto") or "auto"),
+                    masks=masks,
                 )
             )
+            if masks:
+                self.log(f"Source {src.source_uuid}: {len(masks)} mask(s) active")
 
         if not self._pipelines:
             raise RuntimeError("No usable sources — every source in this profile failed to build a provider")
+
+    @staticmethod
+    def _fetch_source_regions(db_api_client: db_client.ApiClient, source_uuid: str) -> List[Any]:
+        """Zones and masks drawn on one source. Blocking — called via `to_thread`."""
+        response = SourcesApi(db_api_client).get_source_regions(
+            GetSourceRegionsPayload(source_uuid=source_uuid),
+        )
+        if response.status != JsonValues.SUCCESS:
+            # A source whose regions cannot be read must not silently analyse with no
+            # masks: that publishes exactly the events the masks existed to suppress.
+            raise RuntimeError(f"Could not load regions for source {source_uuid}: {response.message}")
+        return list(response.regions or [])
 
     async def _build_actions(self, db_api_client: db_client.ApiClient) -> None:
         """Instantiate the profile's actions, wiring in shared resources.
@@ -676,6 +699,7 @@ class StreamWatcherTask(Task):
             # still extractable while the buffer window holds.
             for pipeline in self._pipelines:
                 for signal in pipeline.close_open_events(time.monotonic()):
+                    self._resolve_slot_names(signal, pipeline)
                     self._note_event(signal)
                     await self._dispatch(signal, pipeline)
 
@@ -832,6 +856,7 @@ class StreamWatcherTask(Task):
         self._frames_analysed += 1
 
         for signal in pipeline.step(detections, now):
+            self._resolve_slot_names(signal, pipeline)
             self._note_event(signal)
             await self._dispatch(signal, pipeline)
 
@@ -864,6 +889,32 @@ class StreamWatcherTask(Task):
             logger.debug("Could not unpack frame for the ring on %s", pipeline.source_uuid, exc_info=True)
             return
         ring.push(now + self._wallclock_offset, jpeg)
+
+    def _resolve_slot_names(self, signal, pipeline: Optional[WatchPipeline]) -> None:
+        """Turn the engine's slot uuids into display names, in place.
+
+        The engine reports *which* label and *which* zone satisfied a multi-ref rule, but
+        it is pure and has no vocabulary to resolve them with. Names are attached here,
+        once per transition, so every downstream consumer — the MQTT topic template, the
+        event log, the status panel — sees the same words the user typed.
+
+        Falls back to the uuid rather than to a placeholder: a template that prints a raw
+        uuid is obviously wrong, whereas one printing "unknown" looks like a real value.
+        """
+        if signal.subject_ref:
+            meta = self._label_meta.get(signal.subject_ref) or {}
+            signal.subject_name = meta.get("text") or signal.subject_ref
+
+        if not signal.target_ref:
+            return
+        # The target is a zone for a zone-kind rule and a label otherwise; try both
+        # rather than re-deriving the rule's arity here.
+        zone = (pipeline.engine.zones.get(signal.target_ref) if pipeline else None) if signal.target_ref else None
+        if zone is not None:
+            signal.target_name = zone.name
+        else:
+            meta = self._label_meta.get(signal.target_ref) or {}
+            signal.target_name = meta.get("text") or signal.target_ref
 
     def _note_event(self, signal) -> None:
         if signal.phase is EventPhase.START:
@@ -1185,6 +1236,18 @@ class StreamWatcherTask(Task):
         if not source_uuid:
             return self._pipelines[0]
         return next((p for p in self._pipelines if p.source_uuid == source_uuid), None)
+
+    def get_source_frame(self, source_uuid: str):
+        """The most recent analysed frame for one source, or None if not watching it.
+
+        Lets the region editor draw against a live still without opening a second
+        connection to a camera this watcher is already reading — which some IP cameras
+        refuse outright, having a hard cap on concurrent RTSP sessions.
+        """
+        for pipeline in self._pipelines:
+            if pipeline.source_uuid == source_uuid:
+                return pipeline.last_frame
+        return None
 
     @staticmethod
     def _encode_preview(frame, quality: int) -> Optional[str]:

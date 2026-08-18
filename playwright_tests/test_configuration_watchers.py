@@ -20,6 +20,7 @@ from playwright.sync_api import Page, Route, expect
 from playwright_tests.waits import wait_until
 
 ZONE_UUID = "11111111-1111-1111-1111-111111111111"
+MASK_UUID = "22222222-2222-2222-2222-222222222222"
 
 FAKE_PROFILE = {
     "uuid": "99999999-cccc-0000-0000-000000000001",
@@ -48,17 +49,7 @@ FAKE_PROFILE = {
             "bufferMode": "auto",
             "ringSeconds": 20.0,
             "ringMaxMb": 32.0,
-            "zones": [
-                {
-                    "uuid": ZONE_UUID,
-                    "profileSourceUuid": "ps-1",
-                    "name": "litter box area",
-                    "kind": "box",
-                    "pointsJson": [[0.4, 0.4], [0.8, 0.8]],
-                    "referenceWidth": 1920,
-                    "referenceHeight": 1080,
-                }
-            ],
+            "disabledMaskUuidsJson": [],
         }
     ],
     "rules": [
@@ -69,10 +60,10 @@ FAKE_PROFILE = {
             "name": "cat using litter box",
             "enabled": True,
             "subjectAKind": "label",
-            "subjectARef": "label-cat",
+            "subjectARefsJson": ["label-cat"],
             "relation": "contains",
             "subjectBKind": "zone",
-            "subjectBRef": ZONE_UUID,
+            "subjectBRefsJson": [ZONE_UUID],
             "threshold": 0.6,
             "minDurationS": 2.0,
             "rearmDelayS": 10.0,
@@ -104,8 +95,36 @@ MODEL_GROUPS = [
 
 LABELS = [
     {"uuid": "label-cat", "name": "Cat"},
-    {"uuid": "label-tabby", "name": "Tabby"},
+    {"uuid": "label-tabby", "name": "Tabby", "parentUuid": "label-cat"},
+    {"uuid": "label-ginger", "name": "Ginger", "parentUuid": "label-cat"},
     {"uuid": "label-litterbox", "name": "Litter Box"},
+]
+
+# Zones and masks belong to the source, not to a watcher's use of it, so they are served
+# from their own endpoint rather than nested in the profile.
+REGIONS = [
+    {
+        "uuid": ZONE_UUID,
+        "sourceUuid": "src-1",
+        "name": "litter box area",
+        "role": "zone",
+        "kind": "box",
+        "pointsJson": [[0.4, 0.4], [0.8, 0.8]],
+        "referenceWidth": 1920,
+        "referenceHeight": 1080,
+        "order": 0,
+    },
+    {
+        "uuid": MASK_UUID,
+        "sourceUuid": "src-1",
+        "name": "doorway",
+        "role": "mask",
+        "kind": "box",
+        "pointsJson": [[0.0, 0.0], [0.2, 0.2]],
+        "referenceWidth": 1920,
+        "referenceHeight": 1080,
+        "order": 1,
+    },
 ]
 
 # As `GET /api/watch-profiles/trackers` returns them. Schema keys stay snake_case —
@@ -142,11 +161,29 @@ LABEL_SUBJECT_PROFILE = {
         {
             **FAKE_PROFILE["rules"][0],
             "name": "Tabby using litter box",
-            "subjectARef": "label-tabby",
+            "subjectARefsJson": ["label-tabby"],
             "subjectBKind": "label",
-            "subjectBRef": "label-litterbox",
+            "subjectBRefsJson": ["label-litterbox"],
         }
     ],
+}
+
+# A rule whose subject slot names several labels at once — one rule for three cats
+# rather than three near-identical rules.
+MULTI_LABEL_PROFILE = {
+    **FAKE_PROFILE,
+    "rules": [
+        {
+            **FAKE_PROFILE["rules"][0],
+            "subjectARefsJson": ["label-tabby", "label-ginger"],
+        }
+    ],
+}
+
+# A watcher that has opted out of the source's mask.
+MASK_DISABLED_PROFILE = {
+    **FAKE_PROFILE,
+    "sources": [{**FAKE_PROFILE["sources"][0], "disabledMaskUuidsJson": [MASK_UUID]}],
 }
 
 
@@ -156,6 +193,7 @@ def _mock_watch_apis(
     on_create=None,
     on_update=None,
     ingest_tiers: dict | None = None,
+    regions: list | None = None,
 ):
     profiles = profiles or []
 
@@ -191,6 +229,54 @@ def _mock_watch_apis(
             status=200,
             content_type="application/json",
             body=json.dumps({"status": "success", "labels": LABELS}),
+        ),
+    )
+
+    # Regions live on the source, so they come from their own endpoint rather than from
+    # the profile. Routed before the bare `/api/sources` matcher, which would otherwise
+    # answer this with a source list and leave every zone picker empty.
+    #
+    # Stateful on purpose: a save has to be visible to the next fetch, or the property
+    # these tests exist to protect — a newly drawn zone reaching the rules without a
+    # reload — cannot be observed at all.
+    region_store = list(REGIONS if regions is None else regions)
+
+    def handle_regions_get(route: Route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "regions": region_store}),
+        )
+
+    def handle_regions_set(route: Route):
+        body = json.loads(route.request.post_data or "{}")
+        source_uuid = body.get("sourceUuid")
+        saved = [{**r, "sourceUuid": source_uuid} for r in body.get("regions", [])]
+        region_store[:] = [r for r in region_store if r.get("sourceUuid") != source_uuid] + saved
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "regions": saved, "orphanedRules": []}),
+        )
+
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/sources/regions/get"),
+        handle_regions_get,
+    )
+    page.route(
+        lambda url: url.split("?")[0].rstrip("/").endswith("/api/sources/regions/set"),
+        handle_regions_set,
+    )
+
+    # The region editor grabs a frame on open. Answered with a failure rather than a
+    # fake JPEG: the drawing surface must work against a blank stage anyway (regions are
+    # normalised), and asserting that keeps the modal usable when a camera is down.
+    page.route(
+        lambda url: "/grab-frame" in url,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "failure", "message": "camera unreachable in tests"}),
         ),
     )
 
@@ -386,14 +472,14 @@ class TestWatcherEditor:
     def test_a_label_subject_b_loads_its_own_label(self, page: Page, base_url: str):
         """A rule whose second subject is a label must reopen showing *that* label.
 
-        The select was built from the zone options, so a label uuid never matched and
+        The picker was built from the zone options, so a label uuid never matched and
         the row silently fell back to the first label — "Litter Box" became "Cat".
         """
         _mock_watch_apis(page, profiles=[LABEL_SUBJECT_PROFILE])
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
         subject_b = page.locator("[data-testid='watch-rule-subject-b']")
-        expect(subject_b).to_have_value("label-litterbox")
+        expect(subject_b).to_contain_text("Litter Box")
 
     def test_saving_keeps_a_label_subject_b(self, page: Page, base_url: str):
         """Round-trip: the payload sent back must still name the chosen label."""
@@ -402,13 +488,44 @@ class TestWatcherEditor:
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
         # Save is disabled until the editor is dirty; an unrelated edit arms it.
-        page.locator("[data-testid='watch-rule-name']").first.fill("Tabby using litter box!")
+        page.locator("[data-testid='watch-rule-name']").first.fill("Cat using litter box!")
         page.locator("#watcher-management-box button:has-text('Save')").first.click()
 
         wait_until(page, lambda: bool(saved.get("rules")))
         rule = saved["rules"][0]
         assert rule["subjectBKind"] == "label", rule
-        assert rule["subjectBRef"] == "label-litterbox", rule
+        assert rule["subjectBRefsJson"] == ["label-litterbox"], rule
+
+    def test_a_rule_can_name_several_labels_at_once(self, page: Page, base_url: str):
+        """One rule for three cats, rather than three near-identical rules."""
+        _mock_watch_apis(page, profiles=[MULTI_LABEL_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        subject_a = page.locator("[data-testid='watch-rule-subject-a']")
+        expect(subject_a).to_contain_text("Tabby")
+        expect(subject_a).to_contain_text("Ginger")
+
+    def test_the_label_picker_shows_the_hierarchy(self, page: Page, base_url: str):
+        """A vocabulary of cats nested under Cat is unnavigable as a flat list."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__trigger").first.click()
+        panel = page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__panel")
+        expect(panel).to_contain_text("Cat")
+        expect(panel).to_contain_text("Tabby")
+
+    def test_selecting_a_second_label_sends_both(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__trigger").first.click()
+        page.locator("[data-testid='watch-rule-subject-a'] .ms-dropdown__panel input[type='checkbox']").nth(1).check()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert len(saved["rules"][0]["subjectARefsJson"]) == 2, saved["rules"][0]
 
     def test_a_source_can_choose_an_individual_model_not_just_a_stack(self, page: Page, base_url: str):
         """Running one model used to require wrapping it in a one-member Model Stack."""
@@ -525,12 +642,22 @@ class TestZonesModal:
         box = page.locator("[data-testid='watch-zones-canvas']").bounding_box()
         assert box and box["width"] > 100 and box["height"] > 100
 
-    def test_existing_zones_are_listed(self, page: Page, base_url: str):
+    def test_existing_regions_are_listed(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
         page.locator("[data-testid='watch-zones-btn']").first.click()
         expect(page.locator("[data-testid='watch-zone-name']").first).to_have_value("litter box area")
+
+    def test_zones_and_masks_are_listed_separately(self, page: Page, base_url: str):
+        """A mask suppresses detections; reading one as a zone is the mistake that
+        silently produces no events at all."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        expect(page.locator("[data-testid='watch-zone-row'][data-role='zone']")).to_have_count(1)
+        expect(page.locator("[data-testid='watch-zone-row'][data-role='mask']")).to_have_count(1)
 
     def test_dragging_on_the_canvas_creates_a_zone(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
@@ -545,7 +672,8 @@ class TestZonesModal:
         page.mouse.move(box["x"] + 200, box["y"] + 160, steps=5)
         page.mouse.up()
 
-        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(2)
+        # Two seeded regions (one zone, one mask) plus the new one.
+        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(3)
 
     def test_a_stray_click_does_not_create_a_degenerate_zone(self, page: Page, base_url: str):
         """A zero-area zone would silently match nothing."""
@@ -560,14 +688,43 @@ class TestZonesModal:
         page.mouse.down()
         page.mouse.up()
 
-        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(1)
+        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(2)
 
-    def test_done_returns_the_zones_and_updates_the_button(self, page: Page, base_url: str):
+    def test_drawing_a_mask_adds_it_to_the_mask_list(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
-        zones_btn = page.locator("[data-testid='watch-zones-btn']").first
-        zones_btn.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        page.locator("[data-testid='watch-zones-role']").select_option("mask")
+
+        canvas = page.locator("[data-testid='watch-zones-canvas']")
+        box = canvas.bounding_box()
+        page.mouse.move(box["x"] + 40, box["y"] + 40)
+        page.mouse.down()
+        page.mouse.move(box["x"] + 200, box["y"] + 160, steps=5)
+        page.mouse.up()
+
+        expect(page.locator("[data-testid='watch-zone-row'][data-role='mask']")).to_have_count(2)
+
+    def test_saving_posts_the_regions(self, page: Page, base_url: str):
+        """Regions save to the source directly — the camera's geometry is not the
+        watcher's to hold hostage until someone saves the watcher."""
+        posted = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        page.route(
+            lambda url: url.split("?")[0].rstrip("/").endswith("/api/sources/regions/set"),
+            lambda route: (
+                posted.update(json.loads(route.request.post_data or "{}")),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "regions": REGIONS, "orphanedRules": []}),
+                ),
+            )[-1],
+        )
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
 
         canvas = page.locator("[data-testid='watch-zones-canvas']")
         box = canvas.bounding_box()
@@ -577,7 +734,134 @@ class TestZonesModal:
         page.mouse.up()
 
         page.locator("[data-testid='watch-zones-save']").click()
-        expect(zones_btn).to_contain_text("Zones (2)")
+        wait_until(page, lambda: bool(posted.get("regions")))
+        assert len(posted["regions"]) == 3, posted
+        assert posted["sourceUuid"] == "src-1", posted
+
+    def test_normalised_coordinates_are_sent_not_pixels(self, page: Page, base_url: str):
+        """Regions are stored normalised so they survive a camera resolution change."""
+        posted = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        page.route(
+            lambda url: url.split("?")[0].rstrip("/").endswith("/api/sources/regions/set"),
+            lambda route: (
+                posted.update(json.loads(route.request.post_data or "{}")),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "regions": REGIONS, "orphanedRules": []}),
+                ),
+            )[-1],
+        )
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+
+        canvas = page.locator("[data-testid='watch-zones-canvas']")
+        box = canvas.bounding_box()
+        page.mouse.move(box["x"] + 40, box["y"] + 40)
+        page.mouse.down()
+        page.mouse.move(box["x"] + 200, box["y"] + 160, steps=5)
+        page.mouse.up()
+
+        page.locator("[data-testid='watch-zones-save']").click()
+        wait_until(page, lambda: bool(posted.get("regions")))
+        drawn = posted["regions"][-1]
+        assert all(0.0 <= c <= 1.0 for point in drawn["pointsJson"] for c in point), drawn
+
+
+class TestMaskOptOut:
+    """Masks belong to the camera but apply per watcher.
+
+    The default is what matters: everything ticked, so a mask drawn on a camera tomorrow
+    protects the watchers written today without anyone revisiting them.
+    """
+
+    def _open_regions(self, page: Page, base_url: str, profile=None):
+        _mock_watch_apis(page, profiles=[profile or FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        expect(page.locator("[data-testid='watch-zones-stage']")).to_be_visible()
+
+    def test_each_mask_offers_an_apply_toggle(self, page: Page, base_url: str):
+        self._open_regions(page, base_url)
+        expect(page.locator("[data-testid='watch-mask-toggle']")).to_have_count(1)
+
+    def test_zones_have_no_apply_toggle(self, page: Page, base_url: str):
+        """A zone is inert until a rule names it, so there is nothing to opt out of."""
+        self._open_regions(page, base_url)
+        zone_row = page.locator("[data-testid='watch-zone-row'][data-role='zone']").first
+        expect(zone_row.locator("[data-testid='watch-mask-toggle']")).to_have_count(0)
+
+    def test_masks_apply_by_default(self, page: Page, base_url: str):
+        self._open_regions(page, base_url)
+        expect(page.locator("[data-testid='watch-mask-toggle'] input").first).to_be_checked()
+
+    def test_a_disabled_mask_loads_unticked(self, page: Page, base_url: str):
+        self._open_regions(page, base_url, profile=MASK_DISABLED_PROFILE)
+        expect(page.locator("[data-testid='watch-mask-toggle'] input").first).not_to_be_checked()
+
+    def test_unticking_a_mask_sends_it_as_disabled(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        page.locator("[data-testid='watch-mask-toggle'] input").first.uncheck()
+        page.locator("[data-testid='watch-zones-save']").click()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        assert saved["sources"][0]["disabledMaskUuidsJson"] == [MASK_UUID], saved["sources"][0]
+
+    def test_an_applied_mask_is_not_sent_as_disabled(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-name']").first.fill("armed")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        assert saved["sources"][0]["disabledMaskUuidsJson"] == [], saved["sources"][0]
+
+    def test_the_source_row_stays_one_control_line(self, page: Page, base_url: str):
+        """Why the opt-out lives in the modal: a permanent control here cost a line."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        box = page.locator("[data-testid='watch-source-row']").first.bounding_box()
+        assert box["height"] < 90, f"the source row is {box['height']}px tall"
+
+
+class TestTopicTemplate:
+    def test_the_default_template_is_shown(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-topic']")).to_have_value("{watcher}/{source}/event/{rule}")
+
+    def test_the_example_updates_as_you_type(self, page: Page, base_url: str):
+        """The placeholders are only useful if you can see what they resolve to."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-action-topic']").fill("cats/{rule}/{subject}")
+        expect(page.locator("[data-testid='watch-action-topic-example']")).to_contain_text(
+            "cats/cat-using-litter-box/tabby"
+        )
+
+    def test_the_template_is_saved(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-action-topic']").fill("cats/{subject}/{target}")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["paramsJson"]["topic_template"] == "cats/{subject}/{target}", saved
 
 
 class TestWatcherEditorDensity:
@@ -598,14 +882,20 @@ class TestWatcherEditorDensity:
         expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
 
     def test_the_rule_sentence_sits_on_one_line(self, page: Page, base_url: str):
-        """ "When [cat] [is inside] [Zone] [litter box]" reads as a sentence only while
-        its selects share a line — the whole point of the sentence layout."""
+        """ "When [cats] [is inside] [Zone] [litter boxes]" reads as a sentence only
+        while its controls share a line — the whole point of the sentence layout.
+
+        The two subject slots are multi-select dropdowns rather than `<select>`s now, so
+        this counts both kinds: they are still controls that must not go full-width.
+        """
         self._open_profile(page, base_url)
-        tops = page.locator(".watch-rule-sentence select").evaluate_all(
+        tops = page.locator(".watch-rule-sentence select, .watch-rule-sentence .ms-dropdown__trigger").evaluate_all(
             "els => els.map(e => Math.round(e.getBoundingClientRect().top))"
         )
-        assert len(tops) >= 3, f"expected the sentence's selects, got {tops}"
-        assert len(set(tops)) == 1, f"the rule sentence wrapped onto several lines: tops={tops}"
+        assert len(tops) >= 4, f"expected the sentence's controls, got {tops}"
+        # Rounded tops: a dropdown trigger and a select of slightly different heights are
+        # still on one line, and demanding identical pixels would fail on that alone.
+        assert max(tops) - min(tops) <= 6, f"the rule sentence wrapped onto several lines: tops={tops}"
 
     def test_a_rule_row_does_not_fill_the_screen(self, page: Page, base_url: str):
         self._open_profile(page, base_url)
@@ -619,11 +909,19 @@ class TestWatcherEditorDensity:
             assert box["height"] < 90, f"{testid} is {box['height']}px tall"
 
     def test_a_small_profile_fits_without_scrolling(self, page: Page, base_url: str):
-        """One source, one rule and one action used to overflow the editor pane."""
+        """One source, one rule and one action used to overflow the editor pane.
+
+        The allowance was 2px and is now 30px. Two deliberate additions spent it: the
+        MQTT topic template is a real new control in the action row, and the subject
+        slots became multi-select dropdowns, whose trigger is a few pixels taller than
+        the `<select>` it replaced. Every row is still one line per control group, which
+        is the regression this test actually exists to catch — a control going
+        full-width and stacking, which costs ~35px each and hundreds in total.
+        """
         self._open_profile(page, base_url)
         body = page.locator("#watcher-management-box .le-editor-body").first
         overflow = body.evaluate("e => e.scrollHeight - e.clientHeight")
-        assert overflow <= 2, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
+        assert overflow <= 30, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
 
     def test_checkboxes_keep_their_box(self, page: Page, base_url: str):
         """Overriding Pico's explicit checkbox width collapses it to a thin bar."""
@@ -653,38 +951,43 @@ class TestZonesReachTheRules:
         page.mouse.up()
         page.locator("[data-testid='watch-zones-save']").click()
 
+    def _zone_choices(self, page: Page):
+        """The zone picker's checkbox rows, opening the panel if it is closed."""
+        subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
+        panel = subject_b.locator(".ms-dropdown__panel")
+        if not panel.is_visible():
+            subject_b.locator(".ms-dropdown__trigger").click()
+        return panel.locator("input[type='checkbox']")
+
     def test_a_new_zone_becomes_selectable_in_an_existing_rule(self, page: Page, base_url: str):
         """Drawing a zone and then being unable to point a rule at it without saving
         and reopening the whole watcher is the wrong order to build a rule in."""
         self._open(page, base_url)
-        subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
-        expect(subject_b.locator("option")).to_have_count(1)
+        expect(self._zone_choices(page)).to_have_count(1)
 
         self._draw_a_zone(page)
 
-        expect(subject_b.locator("option")).to_have_count(2)
+        expect(self._zone_choices(page)).to_have_count(2)
 
     def test_the_rules_existing_zone_choice_survives_the_refresh(self, page: Page, base_url: str):
-        """Re-populating the dropdown must not silently repoint the rule at zone #1."""
+        """Rebuilding the picker must not silently repoint the rule at zone #1."""
         self._open(page, base_url)
         subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
-        expect(subject_b).to_have_value(ZONE_UUID)
+        expect(subject_b).to_contain_text("litter box area")
 
         self._draw_a_zone(page)
 
-        expect(subject_b).to_have_value(ZONE_UUID)
+        expect(subject_b).to_contain_text("litter box area")
 
     def test_removing_a_source_drops_its_zones_from_the_rules(self, page: Page, base_url: str):
         """The same staleness in the other direction: a rule must not keep offering a
         zone belonging to a source that is no longer in the profile."""
         self._open(page, base_url)
-        subject_b = page.locator("[data-testid='watch-rule-subject-b']").first
-        expect(subject_b.locator("option")).to_have_count(1)
+        expect(self._zone_choices(page)).to_have_count(1)
 
         page.locator("[data-testid='watch-source-row'] .watch-row-remove").first.click()
 
-        expect(subject_b.locator("option")).to_have_count(1)
-        expect(subject_b.locator("option").first).to_have_text("(no zones defined)")
+        expect(self._zone_choices(page)).to_have_count(0)
 
 
 class TestTrackingSection:

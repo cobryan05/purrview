@@ -166,7 +166,11 @@ class Zone:
 
 
 def zone_from_row(row) -> Zone:
-    """Build a Zone from a `WatchZoneRead`-shaped object or plain dict."""
+    """Build a Zone from a `SourceRegionRead`-shaped object or plain dict.
+
+    Shared by zones and masks: the geometry is identical, only what the caller does with
+    it differs.
+    """
     if isinstance(row, dict):
         return Zone(
             uuid=row.get("uuid", ""),
@@ -180,3 +184,19 @@ def zone_from_row(row) -> Zone:
         kind=row.kind,
         points=[tuple(p) for p in row.points_json],
     )
+
+
+def is_masked(box: BBox, masks: Sequence[Zone], frame_width: float, frame_height: float) -> bool:
+    """Whether a detection should be suppressed by any of `masks`.
+
+    Centroid-based, deliberately. Asking whether the box *overlaps* a mask would
+    suppress an object merely standing next to a masked region, and for polygons the
+    overlap test falls back to the mask's bounding box (see `Zone.overlap_fraction`),
+    which over-suppresses on exactly the concave shapes hand-drawn masks tend to be.
+    The centre point is exact for both kinds and matches the intuition that an object is
+    "in" the masked area when its middle is.
+    """
+    if not masks:
+        return False
+    point = centroid(box)
+    return any(mask.contains_point(point, frame_width, frame_height) for mask in masks)

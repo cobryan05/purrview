@@ -60,6 +60,8 @@ from apps.helpers.db.types import (
     RecordingRead,
     Source,
     SourceRead,
+    SourceRegionRead,
+    SourceRegionWrite,
     Tag,
     TagBase,
     TagRead,
@@ -390,6 +392,31 @@ class GetSourcesPayload(ApiPayload):
 
 class GetSourcesResponse(StatusResponse):
     sources: dict[str, SourceRead] = Field(default_factory=dict)
+
+
+class GetSourceRegionsPayload(ApiPayload):
+    #: None lists every source's regions in one call, which is what the rule editor needs
+    #: — it offers zones across all of a watcher's sources and would otherwise fan out
+    #: one request per source.
+    source_uuid: Optional[str] = None
+    role: Optional[str] = None
+
+
+class GetSourceRegionsResponse(StatusResponse):
+    regions: List[SourceRegionRead] = Field(default_factory=list)
+
+
+class SetSourceRegionsPayload(ApiPayload):
+    source_uuid: str
+    regions: List[SourceRegionWrite] = Field(default_factory=list)
+
+
+class SetSourceRegionsResponse(StatusResponse):
+    regions: List[SourceRegionRead] = Field(default_factory=list)
+    #: Rules that referenced a region this write removed. Not an error — the user may
+    #: well mean it — but silently breaking a rule is the failure mode zones-by-uuid
+    #: invites, so the caller gets told and can warn.
+    orphaned_rules: List[str] = Field(default_factory=list)
 
 
 class UpdateSourcePayload(ApiPayload):
@@ -1443,6 +1470,46 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return GetSourcesResponse(status=JsonValues.FAILURE, message=str(e), sources={})
+
+        @self._app.post(
+            "/api/sources/regions/get",
+            response_model=GetSourceRegionsResponse,
+            tags=[ApiTags.SOURCES],
+            operation_id="get_source_regions",
+        )
+        async def get_source_regions_api(payload: GetSourceRegionsPayload) -> GetSourceRegionsResponse:
+            """Zones and masks drawn on a source's frame.
+
+            Regions belong to the source rather than to a watcher's use of it: the
+            geometry describes the camera's view, so it is drawn once and every watcher
+            on that camera sees it.
+            """
+            try:
+                regions = await self._manager.list_source_regions(payload.source_uuid, payload.role)
+                return GetSourceRegionsResponse(status=JsonValues.SUCCESS, regions=regions)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return GetSourceRegionsResponse(status=JsonValues.FAILURE, message=str(e), regions=[])
+
+        @self._app.post(
+            "/api/sources/regions/set",
+            response_model=SetSourceRegionsResponse,
+            tags=[ApiTags.SOURCES],
+            operation_id="set_source_regions",
+        )
+        async def set_source_regions_api(payload: SetSourceRegionsPayload) -> SetSourceRegionsResponse:
+            """Whole-list replace of one source's regions.
+
+            Uuids supplied by the caller are preserved, because rules point at zones by
+            uuid from another table entirely — regenerating them here would break every
+            zone rule at once with no error anywhere.
+            """
+            try:
+                regions, orphaned = await self._manager.set_source_regions(payload.source_uuid, payload.regions)
+                return SetSourceRegionsResponse(status=JsonValues.SUCCESS, regions=regions, orphaned_rules=orphaned)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return SetSourceRegionsResponse(status=JsonValues.FAILURE, message=str(e), regions=[])
 
         ################################################################################
         # Tags API

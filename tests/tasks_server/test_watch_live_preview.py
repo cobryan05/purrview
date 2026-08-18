@@ -227,10 +227,10 @@ class TestLivePreviewLabelling:
             uuid="r1",
             name="Cat in litter box",
             subject_a_kind="label",
-            subject_a_ref=CAT,
+            subject_a_refs=[CAT],
             relation="present",
             subject_b_kind="none",
-            subject_b_ref=None,
+            subject_b_refs=[],
             min_duration_s=0.0,
         )
         pipeline = _pipeline(tracks=[_track()])

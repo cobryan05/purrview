@@ -19,17 +19,38 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ZONE_A_UUID = "11111111-1111-1111-1111-111111111111"
+_MASK_A_UUID = "33333333-3333-3333-3333-333333333333"
 
 
-def _zone(uuid: str = _ZONE_A_UUID, name: str = "litter box area") -> dict:
+def _zone(uuid: str = _ZONE_A_UUID, name: str = "litter box area", role: str = "zone") -> dict:
     return {
         "uuid": uuid,
         "name": name,
+        "role": role,
         "kind": "box",
         "pointsJson": [[0.1, 0.1], [0.6, 0.7]],
         "referenceWidth": 1920,
         "referenceHeight": 1080,
     }
+
+
+def _mask(uuid: str = _MASK_A_UUID, name: str = "neighbour's driveway") -> dict:
+    return _zone(uuid=uuid, name=name, role="mask")
+
+
+async def _set_regions(http_client, source_uuid: str, regions: list[dict]) -> dict:
+    """Draw regions on a source.
+
+    Regions live on the source rather than inside a watcher, so a test that wants a rule
+    pointing at a zone has to create the zone here first — the profile payload no longer
+    carries one.
+    """
+    r = await http_client.post(
+        "/api/sources/regions/set",
+        json={"sourceUuid": source_uuid, "regions": regions},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 def _rule(uuid: str = "22222222-2222-2222-2222-222222222222", **overrides) -> dict:
@@ -39,16 +60,22 @@ def _rule(uuid: str = "22222222-2222-2222-2222-222222222222", **overrides) -> di
         "name": "cat using litter box",
         "enabled": True,
         "subjectAKind": "label",
-        "subjectARef": "label-cat",
+        "subjectARefsJson": ["label-cat"],
         "relation": "contains",
         "subjectBKind": "zone",
-        "subjectBRef": _ZONE_A_UUID,
+        "subjectBRefsJson": [_ZONE_A_UUID],
         "threshold": 0.6,
         "minDurationS": 2.0,
         "rearmDelayS": 10.0,
         "maxDurationS": 300.0,
         "eventLabel": "litterbox",
     }
+    # Most tests care about one ref per slot and read better naming it directly.
+    for side in ("A", "B"):
+        key = f"subject{side}Ref"
+        if key in overrides:
+            ref = overrides.pop(key)
+            overrides[f"subject{side}RefsJson"] = [] if ref is None else [ref]
     rule.update(overrides)
     return rule
 
@@ -141,14 +168,15 @@ class TestWatchProfileCrud:
 
 
 class TestNestedWrites:
-    async def test_create_with_sources_zones_rules_and_actions(self, http_client):
+    async def test_create_with_sources_rules_and_actions(self, http_client):
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         # A real label: label_lifetimes has a real FK, so a made-up uuid is rejected.
         label_uuid = await _make_label(http_client)
         body = await _create_profile(
             http_client,
             "House cams",
-            sources=[{"sourceUuid": source_uuid, "order": 0, "zones": [_zone()]}],
+            sources=[{"sourceUuid": source_uuid, "order": 0}],
             rules=[_rule()],
             actions=[{"kind": "publish_mqtt", "trigger": "event_started", "paramsJson": {"retain": False}}],
             labelLifetimes=[{"labelUuid": label_uuid, "ttlS": 2.0, "isAnchor": False}],
@@ -156,20 +184,19 @@ class TestNestedWrites:
         assert body["status"] == "success", body
         profile = body["profile"]
         assert len(profile["sources"]) == 1
-        assert len(profile["sources"][0]["zones"]) == 1
-        assert profile["sources"][0]["zones"][0]["name"] == "litter box area"
         assert len(profile["rules"]) == 1
         assert len(profile["actions"]) == 1
         assert len(profile["labelLifetimes"]) == 1
 
-    async def test_update_preserves_zone_and_rule_uuids(self, http_client):
+    async def test_update_preserves_rule_uuids_and_zone_references(self, http_client):
         """Regenerating uuids on save would silently break every zone-based rule."""
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         profile = (
             await _create_profile(
                 http_client,
                 "House cams",
-                sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+                sources=[{"sourceUuid": source_uuid}],
                 rules=[_rule()],
             )
         )["profile"]
@@ -178,22 +205,41 @@ class TestNestedWrites:
             f"/api/watch-profiles/{profile['uuid']}",
             json={
                 "description": "now with a description",
-                "sources": [{"sourceUuid": source_uuid, "zones": [_zone()]}],
+                "sources": [{"sourceUuid": source_uuid}],
                 "rules": [_rule()],
             },
         )
         updated = r.json()["profile"]
-        assert updated["sources"][0]["zones"][0]["uuid"] == _ZONE_A_UUID
-        assert updated["rules"][0]["subjectBRef"] == _ZONE_A_UUID
+        assert updated["rules"][0]["uuid"] == "22222222-2222-2222-2222-222222222222"
+        assert updated["rules"][0]["subjectBRefsJson"] == [_ZONE_A_UUID]
         assert updated["description"] == "now with a description"
+
+    async def test_regions_survive_a_profile_rewrite(self, http_client):
+        """A watcher save must not touch the camera's geometry.
+
+        The point of moving regions onto the source: they outlive any one watcher's
+        configuration, so rewriting a profile's whole source list leaves them alone.
+        """
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone(), _mask()])
+        profile = (await _create_profile(http_client, "House cams", sources=[{"sourceUuid": source_uuid}]))["profile"]
+
+        await http_client.patch(
+            f"/api/watch-profiles/{profile['uuid']}",
+            json={"sources": [{"sourceUuid": source_uuid}]},
+        )
+
+        r = await http_client.post("/api/sources/regions/get", json={"sourceUuid": source_uuid})
+        assert sorted(x["uuid"] for x in r.json()["regions"]) == sorted([_ZONE_A_UUID, _MASK_A_UUID])
 
     async def test_omitting_a_list_leaves_it_unchanged(self, http_client):
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         profile = (
             await _create_profile(
                 http_client,
                 "House cams",
-                sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+                sources=[{"sourceUuid": source_uuid}],
                 rules=[_rule()],
             )
         )["profile"]
@@ -207,11 +253,12 @@ class TestNestedWrites:
 
     async def test_empty_list_removes_all(self, http_client):
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         profile = (
             await _create_profile(
                 http_client,
                 "House cams",
-                sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+                sources=[{"sourceUuid": source_uuid}],
                 rules=[_rule()],
             )
         )["profile"]
@@ -220,17 +267,18 @@ class TestNestedWrites:
         assert r.json()["profile"]["rules"] == []
         assert len(r.json()["profile"]["sources"]) == 1
 
-    async def test_deleting_a_profile_cascades_to_its_children(self, http_client, db_client):
+    async def test_deleting_a_profile_cascades_to_its_children_but_not_to_regions(self, http_client, db_client):
         from sqlmodel import select
 
-        from apps.helpers.db.types import InteractionRule, WatchZone
+        from apps.helpers.db.types import InteractionRule, SourceRegion
 
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         profile = (
             await _create_profile(
                 http_client,
                 "House cams",
-                sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+                sources=[{"sourceUuid": source_uuid}],
                 rules=[_rule()],
             )
         )["profile"]
@@ -238,7 +286,9 @@ class TestNestedWrites:
 
         async with db_client._async_session_maker() as session:
             assert (await session.exec(select(InteractionRule))).all() == []
-            assert (await session.exec(select(WatchZone))).all() == []
+            # The camera's geometry belongs to the camera. Deleting a watcher that used
+            # it must not erase it for every other watcher.
+            assert len((await session.exec(select(SourceRegion))).all()) == 1
 
     async def test_a_source_listed_twice_is_rejected(self, http_client):
         source_uuid = await _make_source(http_client)
@@ -379,10 +429,11 @@ class TestRuleValidation:
 
     async def test_present_rejects_a_second_subject(self, http_client):
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         body = await _create_profile(
             http_client,
             "House cams",
-            sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+            sources=[{"sourceUuid": source_uuid}],
             rules=[_rule(relation="present")],
         )
         assert body["status"] == "failure"
@@ -397,10 +448,11 @@ class TestRuleValidation:
 
     async def test_max_duration_must_be_positive(self, http_client):
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         body = await _create_profile(
             http_client,
             "House cams",
-            sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+            sources=[{"sourceUuid": source_uuid}],
             rules=[_rule(maxDurationS=0)],
         )
         # It is the runaway-event cap; zero would let one stuck detection record forever.
@@ -409,18 +461,19 @@ class TestRuleValidation:
     async def test_defaults_include_hysteresis(self, http_client):
         """A bare threshold flaps; the defaults must already guard against it."""
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         profile = (
             await _create_profile(
                 http_client,
                 "House cams",
-                sources=[{"sourceUuid": source_uuid, "zones": [_zone()]}],
+                sources=[{"sourceUuid": source_uuid}],
                 rules=[
                     {
                         "name": "minimal",
                         "subjectAKind": "label",
-                        "subjectARef": "label-cat",
+                        "subjectARefsJson": ["label-cat"],
                         "subjectBKind": "zone",
-                        "subjectBRef": _ZONE_A_UUID,
+                        "subjectBRefsJson": [_ZONE_A_UUID],
                     }
                 ],
             )
@@ -434,40 +487,192 @@ class TestRuleValidation:
         assert rule["relation"] == "contains"
 
 
-class TestZoneValidation:
-    async def test_box_needs_exactly_two_points(self, http_client):
+class TestRegionValidation:
+    """Regions are written through their own endpoint now, so geometry is validated there."""
+
+    async def _post_regions(self, http_client, regions: list[dict]) -> dict:
         source_uuid = await _make_source(http_client)
-        body = await _create_profile(
-            http_client,
-            "House cams",
-            sources=[{"sourceUuid": source_uuid, "zones": [{**_zone(), "pointsJson": [[0.1, 0.1]]}]}],
+        r = await http_client.post(
+            "/api/sources/regions/set",
+            json={"sourceUuid": source_uuid, "regions": regions},
         )
+        if r.status_code == 422:
+            return {"status": "failure", "message": r.text}
+        return r.json()
+
+    async def test_box_needs_exactly_two_points(self, http_client):
+        body = await self._post_regions(http_client, [{**_zone(), "pointsJson": [[0.1, 0.1]]}])
         assert body["status"] == "failure"
 
     async def test_polygon_needs_three_points(self, http_client):
-        source_uuid = await _make_source(http_client)
-        body = await _create_profile(
-            http_client,
-            "House cams",
-            sources=[
-                {
-                    "sourceUuid": source_uuid,
-                    "zones": [{**_zone(), "kind": "polygon", "pointsJson": [[0.1, 0.1], [0.2, 0.2]]}],
-                }
-            ],
+        body = await self._post_regions(
+            http_client, [{**_zone(), "kind": "polygon", "pointsJson": [[0.1, 0.1], [0.2, 0.2]]}]
         )
         assert body["status"] == "failure"
 
     async def test_pixel_coordinates_are_rejected(self, http_client):
-        """Zones are stored normalised so they survive a camera resolution change."""
+        """Regions are stored normalised so they survive a camera resolution change."""
+        body = await self._post_regions(http_client, [{**_zone(), "pointsJson": [[100, 100], [500, 500]]}])
+        assert body["status"] == "failure"
+        assert "normalised" in body["message"]
+
+    async def test_two_zones_may_not_share_a_name(self, http_client):
+        body = await self._post_regions(http_client, [_zone(), _zone(uuid="44444444-4444-4444-4444-444444444444")])
+        assert body["status"] == "failure"
+
+    async def test_a_zone_and_a_mask_may_share_a_name(self, http_client):
+        """They are different things in different lists; only a collision within one is confusing."""
+        body = await self._post_regions(http_client, [_zone(name="driveway"), _mask(name="driveway")])
+        assert body["status"] == "success", body
+
+    async def test_unknown_source_is_rejected(self, http_client):
+        r = await http_client.post(
+            "/api/sources/regions/set", json={"sourceUuid": "no-such-source", "regions": [_zone()]}
+        )
+        assert r.json()["status"] == "failure"
+
+
+class TestSourceRegionCrud:
+    async def test_regions_round_trip_and_keep_their_uuids(self, http_client):
         source_uuid = await _make_source(http_client)
+        body = await _set_regions(http_client, source_uuid, [_zone(), _mask()])
+        assert body["status"] == "success", body
+
+        r = await http_client.post("/api/sources/regions/get", json={"sourceUuid": source_uuid})
+        regions = r.json()["regions"]
+        assert {x["uuid"] for x in regions} == {_ZONE_A_UUID, _MASK_A_UUID}
+        assert {x["role"] for x in regions} == {"zone", "mask"}
+
+    async def test_role_filter(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone(), _mask()])
+        r = await http_client.post("/api/sources/regions/get", json={"sourceUuid": source_uuid, "role": "mask"})
+        assert [x["uuid"] for x in r.json()["regions"]] == [_MASK_A_UUID]
+
+    async def test_listing_every_source_at_once(self, http_client):
+        """The rule editor offers zones across all of a watcher's sources in one call."""
+        first = await _make_source(http_client)
+        second = await _make_source(http_client)
+        await _set_regions(http_client, first, [_zone()])
+        await _set_regions(http_client, second, [_zone(uuid="55555555-5555-5555-5555-555555555555")])
+
+        r = await http_client.post("/api/sources/regions/get", json={})
+        assert len(r.json()["regions"]) == 2
+
+    async def test_removing_a_zone_reports_the_rules_it_orphans(self, http_client):
+        """Silently breaking a rule is the failure mode zones-by-uuid invites."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        await _create_profile(http_client, "House cams", sources=[{"sourceUuid": source_uuid}], rules=[_rule()])
+
+        body = await _set_regions(http_client, source_uuid, [])
+        assert body["status"] == "success"
+        assert body["orphanedRules"] == ["cat using litter box"]
+
+    async def test_deleting_a_source_takes_its_regions_with_it(self, http_client, db_client):
+        from sqlmodel import select
+
+        from apps.helpers.db.types import SourceRegion
+
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        r = await http_client.post("/api/sources/delete", json={"sourceUuids": [source_uuid]})
+        assert r.json()["status"] == "success", r.text
+
+        async with db_client._async_session_maker() as session:
+            assert (await session.exec(select(SourceRegion))).all() == []
+
+
+class TestMultiRefRules:
+    """A rule slot holds a list, so one rule covers several cats and several litter boxes."""
+
+    async def test_a_rule_may_name_several_labels(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         body = await _create_profile(
             http_client,
             "House cams",
-            sources=[{"sourceUuid": source_uuid, "zones": [{**_zone(), "pointsJson": [[100, 100], [500, 500]]}]}],
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectARefsJson=["label-a", "label-b", "label-c"])],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["subjectARefsJson"] == ["label-a", "label-b", "label-c"]
+
+    async def test_a_rule_may_name_several_zones(self, http_client):
+        source_uuid = await _make_source(http_client)
+        second_zone = _zone(uuid="66666666-6666-6666-6666-666666666666", name="upstairs box")
+        await _set_regions(http_client, source_uuid, [_zone(), second_zone])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectBRefsJson=[_ZONE_A_UUID, second_zone["uuid"]])],
+        )
+        assert body["status"] == "success", body
+
+    async def test_an_empty_slot_is_rejected(self, http_client):
+        """A slot naming nothing can never fire, and reads as merely unconfigured."""
+        body = await _create_profile(http_client, "House cams", rules=[_rule(subjectARefsJson=[])])
+        assert body["status"] == "failure"
+
+    async def test_duplicate_refs_are_rejected(self, http_client):
+        body = await _create_profile(http_client, "House cams", rules=[_rule(subjectARefsJson=["label-a", "label-a"])])
+        assert body["status"] == "failure"
+
+    async def test_a_zone_ref_not_on_any_of_the_sources_is_rejected(self, http_client):
+        """A rule naming a zone no source defines never fires — invisible at runtime."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectBRefsJson=["77777777-7777-7777-7777-777777777777"])],
         )
         assert body["status"] == "failure"
-        assert "normalised" in body["message"]
+        assert "not drawn" in body["message"]
+
+    async def test_a_mask_uuid_is_not_a_valid_zone_ref(self, http_client):
+        """Masks aren't addressable by rules — they act on everything or not at all."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone(), _mask()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(subjectBRefsJson=[_MASK_A_UUID])],
+        )
+        assert body["status"] == "failure"
+
+
+class TestMaskOptOut:
+    async def test_a_watcher_may_disable_a_mask(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_mask()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid, "disabledMaskUuidsJson": [_MASK_A_UUID]}],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["sources"][0]["disabledMaskUuidsJson"] == [_MASK_A_UUID]
+
+    async def test_masks_apply_by_default(self, http_client):
+        """Zero configuration for the common case: a mask added later protects old watchers."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_mask()])
+        body = await _create_profile(http_client, "House cams", sources=[{"sourceUuid": source_uuid}])
+        assert body["profile"]["sources"][0]["disabledMaskUuidsJson"] == []
+
+    async def test_disabling_a_mask_that_is_not_on_the_source_is_rejected(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_mask()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid, "disabledMaskUuidsJson": ["88888888-8888-8888-8888-888888888888"]}],
+        )
+        assert body["status"] == "failure"
 
     async def test_polygon_with_three_points_is_accepted(self, http_client):
         source_uuid = await _make_source(http_client)
@@ -542,11 +747,12 @@ class TestValidateEndpoint:
     async def test_preroll_longer_than_the_buffer_warns(self, http_client):
         """A 30 s pre-roll against a 20 s buffer is a misconfiguration, not a surprise."""
         source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
         profile = (
             await _create_profile(
                 http_client,
                 "House cams",
-                sources=[{"sourceUuid": source_uuid, "recordRetentionS": 20.0, "zones": [_zone()]}],
+                sources=[{"sourceUuid": source_uuid, "recordRetentionS": 20.0}],
                 rules=[_rule()],
                 actions=[{"kind": "record_clip", "paramsJson": {"preroll_s": 30}}],
             )

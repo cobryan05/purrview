@@ -160,6 +160,18 @@ class TaskLivePreviewResponse(StatusResponse):
     preview: Optional[dict] = None
 
 
+class GrabSourceFrameResponse(StatusResponse):
+    #: Bare base64 JPEG — the bytes an <img> src wants, not the inference API's envelope.
+    frame: Optional[str] = None
+    width: int = 0
+    height: int = 0
+    #: "watcher" when reused from a running watcher's latest analysed frame, "provider"
+    #: when the camera was opened for this request. Surfaced because the two differ in a
+    #: way that matters: a watcher's frame is downscaled to its analysis width, so the
+    #: still is lower resolution than the camera's own.
+    source: Optional[str] = None
+
+
 class TaskCommandPayload(Payload):
     task_uuid: str
     command: str
@@ -524,6 +536,32 @@ class WebApp:
             if preview is None:
                 return TaskLivePreviewResponse(status=WebApp.FAILURE_KEY, message="This task type has no live view")
             return TaskLivePreviewResponse(status=WebApp.SUCCESS_KEY, preview=preview)
+
+        @self._app.get(
+            "/api/tasks/sources/{source_uuid}/grab-frame",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="grab_source_frame",
+            response_model=GrabSourceFrameResponse,
+        )
+        async def grab_source_frame_api(source_uuid: str, quality: int = 85) -> GrabSourceFrameResponse:
+            """One still from a source, for drawing zones and masks against.
+
+            Lives on tasks_server rather than db_server because opening an image provider
+            is this service's job — db_server owns the source *rows*, not the cameras.
+
+            Served from a running watcher's latest frame when there is one. That avoids a
+            second RTSP session against a camera that may cap concurrent connections,
+            which is a real failure mode rather than a micro-optimisation.
+            """
+            try:
+                result = await self._manager.grab_source_frame(source_uuid, quality=quality)
+            except ValueError as e:
+                # An unreachable camera is an ordinary outcome here, not a server fault.
+                return GrabSourceFrameResponse(status=WebApp.FAILURE_KEY, message=str(e))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return GrabSourceFrameResponse(status=WebApp.FAILURE_KEY, message=str(e))
+            return GrabSourceFrameResponse(status=WebApp.SUCCESS_KEY, **result)
 
         @self._app.post(
             "/api/tasks/instances/command",

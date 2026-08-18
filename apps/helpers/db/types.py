@@ -1575,6 +1575,20 @@ class ZoneKind(str, Enum):
     POLYGON = "polygon"
 
 
+class RegionRole(str, Enum):
+    """What a drawn region *does*, which is the whole reason zones and masks differ.
+
+    A `ZONE` is inert until a rule names it by uuid: it is a noun the rule sentence can
+    point at, and an unreferenced one costs nothing. A `MASK` is the opposite — it acts
+    on every detection whether or not anything references it, suppressing anything whose
+    centre falls inside. That asymmetry is why they can share one table and one editor
+    but not one mental model.
+    """
+
+    ZONE = "zone"
+    MASK = "mask"
+
+
 class WatchActionTrigger(str, Enum):
     OBJECT_DETECTED = "object_detected"
     TRACK_STARTED = "track_started"
@@ -1597,18 +1611,26 @@ class RecordingStatus(str, Enum):
     EXPIRED = "expired"
 
 
-class WatchZone(SQLModel, table=True):
-    """A user-drawn region on one source's frame.
+class SourceRegion(SQLModel, table=True):
+    """A user-drawn region on one source's frame — a zone or a mask.
 
     Zones are the highest value-per-effort part of the whole feature: a box named
     "litter box area" is more reliable than a litter-box detector, needs no training
     data, and makes `cat ∩ zone` work today.
+
+    Regions hang off the **source**, not off a watcher's use of it, because the geometry
+    describes the camera's view rather than anyone's opinion of it. Drawing the litter
+    box once per watcher meant redrawing it in every watcher when the camera got bumped,
+    and it is what forced the rule editor to hot-patch its own zone dropdowns from an
+    unsaved modal. A watcher that wants a mask *not* to apply says so in
+    `WatchProfileSource.disabled_mask_uuids_json`.
     """
 
-    __tablename__ = "watch_zones"
+    __tablename__ = "source_regions"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
-    profile_source_uuid: str = Field(foreign_key="watch_profile_sources.uuid", index=True, ondelete="CASCADE")
+    source_uuid: str = Field(foreign_key="sources.uuid", index=True, ondelete="CASCADE")
     name: str
+    role: str = Field(default=RegionRole.ZONE.value)  # validated against RegionRole in write models
     kind: str = Field(default=ZoneKind.BOX.value)  # validated against ZoneKind in write models
     points_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     # Coordinates are stored normalised (0..1), but the resolution they were drawn
@@ -1616,7 +1638,7 @@ class WatchZone(SQLModel, table=True):
     # shifting every zone.
     reference_width: int = Field(default=0)
     reference_height: int = Field(default=0)
-    profile_source: "WatchProfileSource" = Relationship(back_populates="zones")
+    order: int = Field(default=0)
 
 
 class WatchProfileSource(SQLModel, table=True):
@@ -1646,11 +1668,13 @@ class WatchProfileSource(SQLModel, table=True):
     # Tier C (snapshot/MQTT sources) only: the in-RAM JPEG frame ring's bounds.
     ring_seconds: float = Field(default=20.0)
     ring_max_mb: float = Field(default=32.0)
+    # Masks act on every detection, so the source owning them is right for the common
+    # case ("ignore the neighbour's driveway, always") and wrong for the rare one (a
+    # people-watcher masking the street a car-watcher needs). Opting out per watcher
+    # keeps the common case zero-configuration — an empty list means every mask applies,
+    # so a mask added to a camera protects watchers written before it existed.
+    disabled_mask_uuids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     profile: "WatchProfile" = Relationship(back_populates="sources")
-    zones: List[WatchZone] = Relationship(
-        back_populates="profile_source",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    )
 
 
 class InteractionRule(SQLModel, table=True):
@@ -1668,10 +1692,13 @@ class InteractionRule(SQLModel, table=True):
     name: str
     enabled: bool = Field(default=True)
     subject_a_kind: str = Field(default=RuleSubjectKind.LABEL.value)
-    subject_a_ref: Optional[str] = Field(default=None)  # label uuid or zone uuid
+    # A *list* of label (or zone) uuids: "when any of these three cats is inside the
+    # litter box" is one rule, not three. Which member actually matched is reported on
+    # the event so an action's template can name it.
+    subject_a_refs_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     relation: str = Field(default=RuleRelation.CONTAINS.value)
     subject_b_kind: str = Field(default=RuleSubjectKind.NONE.value)
-    subject_b_ref: Optional[str] = Field(default=None)
+    subject_b_refs_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     threshold: float = Field(default=0.5)
     # The predicate must hold continuously this long before the event STARTS.
     min_duration_s: float = Field(default=2.0)
@@ -1807,37 +1834,41 @@ class WatchEvent(SQLModel, table=True):
 # names rather than values, so the columns stay plain `str` and validation lives here.
 
 
-class WatchZoneRead(OrmModel):
+class SourceRegionRead(OrmModel):
     uuid: str
-    profile_source_uuid: str
+    source_uuid: str
     name: str
+    role: str
     kind: str
     points_json: List[Any] = Field(default_factory=list)
     reference_width: int = 0
     reference_height: int = 0
+    order: int = 0
 
 
-class WatchZoneWrite(ApiModel):
+class SourceRegionWrite(ApiModel):
     uuid: Optional[str] = None  # preserved on update so rules keep referring to it
     name: str
+    role: RegionRole = RegionRole.ZONE
     kind: ZoneKind = ZoneKind.BOX
     points_json: List[Any] = Field(default_factory=list)
     reference_width: int = 0
     reference_height: int = 0
+    order: int = 0
 
     @model_validator(mode="after")
-    def _validate_points(self) -> "WatchZoneWrite":
+    def _validate_points(self) -> "SourceRegionWrite":
         if self.kind == ZoneKind.BOX and len(self.points_json) != 2:
-            raise ValueError("a box zone needs exactly 2 points ([x1,y1],[x2,y2])")
+            raise ValueError("a box region needs exactly 2 points ([x1,y1],[x2,y2])")
         if self.kind == ZoneKind.POLYGON and len(self.points_json) < 3:
-            raise ValueError("a polygon zone needs at least 3 points")
+            raise ValueError("a polygon region needs at least 3 points")
         for point in self.points_json:
             if not (isinstance(point, (list, tuple)) and len(point) == 2):
-                raise ValueError(f"zone points must be [x, y] pairs, got {point!r}")
+                raise ValueError(f"region points must be [x, y] pairs, got {point!r}")
             # Normalised coordinates survive a camera resolution change; pixel values
             # would silently point somewhere else after one.
             if not all(0.0 <= float(c) <= 1.0 for c in point):
-                raise ValueError(f"zone points must be normalised to 0..1, got {point!r}")
+                raise ValueError(f"region points must be normalised to 0..1, got {point!r}")
         return self
 
 
@@ -1856,7 +1887,7 @@ class WatchProfileSourceRead(OrmModel):
     buffer_mode: str = BufferMode.AUTO.value
     ring_seconds: float = 20.0
     ring_max_mb: float = 32.0
-    zones: List[WatchZoneRead] = Field(default_factory=list)
+    disabled_mask_uuids_json: List[Any] = Field(default_factory=list)
 
 
 class WatchProfileSourceWrite(ApiModel):
@@ -1872,7 +1903,7 @@ class WatchProfileSourceWrite(ApiModel):
     buffer_mode: BufferMode = BufferMode.AUTO
     ring_seconds: float = 20.0
     ring_max_mb: float = 32.0
-    zones: List[WatchZoneWrite] = Field(default_factory=list)
+    disabled_mask_uuids_json: List[Any] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_rates(self) -> "WatchProfileSourceWrite":
@@ -1894,10 +1925,10 @@ class InteractionRuleRead(OrmModel):
     name: str
     enabled: bool = True
     subject_a_kind: str
-    subject_a_ref: Optional[str] = None
+    subject_a_refs_json: List[Any] = Field(default_factory=list)
     relation: str
     subject_b_kind: str
-    subject_b_ref: Optional[str] = None
+    subject_b_refs_json: List[Any] = Field(default_factory=list)
     threshold: float = 0.5
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
@@ -1911,10 +1942,10 @@ class InteractionRuleWrite(ApiModel):
     name: str
     enabled: bool = True
     subject_a_kind: RuleSubjectKind = RuleSubjectKind.LABEL
-    subject_a_ref: Optional[str] = None
+    subject_a_refs_json: List[Any] = Field(default_factory=list)
     relation: RuleRelation = RuleRelation.CONTAINS
     subject_b_kind: RuleSubjectKind = RuleSubjectKind.NONE
-    subject_b_ref: Optional[str] = None
+    subject_b_refs_json: List[Any] = Field(default_factory=list)
     threshold: float = 0.5
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
@@ -1931,12 +1962,20 @@ class InteractionRuleWrite(ApiModel):
         elif self.subject_b_kind == RuleSubjectKind.NONE:
             raise ValueError(f"relation {self.relation.value!r} needs a second subject")
 
-        for kind, ref, side in (
-            (self.subject_a_kind, self.subject_a_ref, "a"),
-            (self.subject_b_kind, self.subject_b_ref, "b"),
+        for kind, refs, side in (
+            (self.subject_a_kind, self.subject_a_refs_json, "a"),
+            (self.subject_b_kind, self.subject_b_refs_json, "b"),
         ):
-            if kind in (RuleSubjectKind.LABEL, RuleSubjectKind.ZONE) and not ref:
-                raise ValueError(f"subject_{side}_kind {kind.value!r} requires subject_{side}_ref")
+            if kind in (RuleSubjectKind.LABEL, RuleSubjectKind.ZONE):
+                if not refs:
+                    raise ValueError(f"subject_{side}_kind {kind.value!r} requires at least one subject_{side} ref")
+                if len(set(refs)) != len(refs):
+                    # A duplicate would evaluate the same target twice and could report
+                    # a matched slot value that looks arbitrary.
+                    raise ValueError(f"subject_{side} refs contain duplicates")
+            # A zone slot naming several zones is "inside any of these", which is a
+            # coherent thing to want; a *subject* slot of zones is not, since zones
+            # aren't tracked. That is already prevented by kind, not by count.
 
         if self.min_duration_s < 0 or self.rearm_delay_s < 0:
             raise ValueError("min_duration_s and rearm_delay_s must not be negative")

@@ -11,39 +11,54 @@ automations on it::
     <prefix>/<profile>/<source>/event/<rule>     JSON: {eventUuid, phase, startedAt, ...}
     <prefix>/state                               retain: online|offline (LWT)
 
+That scheme is the *default* topic template, not a hard-coded path. A rule matching
+several labels and several zones knows which ones actually fired, and the whole point of
+exposing those slot values is to be able to route on them — `cats/{rule}/{source}/{subject}`
+puts one cat per topic. See `apps.helpers.watch.templating` for the vocabulary.
+
 Retain is used for *state-shaped* topics (what is true right now) and not for event
 edges (what just happened) — a retained "event started" would replay to every new
 subscriber as though it were live.
 """
 
-import re
 from typing import Any, Dict
 
 from ..watch.events import WatchEventSignal
+from ..watch.templating import build_template_params, describe_params, render_topic, slugify
 from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
 
-_TOPIC_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
+#: Reproduces the historical hard-coded scheme exactly, so an action saved before topic
+#: templates existed publishes to the same place it always did.
+DEFAULT_TOPIC_TEMPLATE = "{watcher}/{source}/event/{rule}"
 
 
 def slugify_topic(value: str) -> str:
     """Make a name safe for one MQTT topic level.
 
-    `/` and `+`/`#` in a name would silently reshape the topic tree, so they are
-    collapsed rather than escaped.
+    Kept as a re-export: the implementation moved to `watch.templating` when the topic
+    became a template, and callers elsewhere still import it from here.
     """
-    slug = _TOPIC_SAFE.sub("-", (value or "").strip().lower()).strip("-")
-    return slug or "unnamed"
+    return slugify(value)
 
 
 @register_action("publish_mqtt")
 class MqttPublishAction(Action):
     """Publishes a JSON payload for each event transition."""
 
-    def __init__(self, retain: bool = False, qos: int = 0, publisher: Any = None, **params: Any) -> None:
+    def __init__(
+        self,
+        retain: bool = False,
+        qos: int = 0,
+        topic_template: str = DEFAULT_TOPIC_TEMPLATE,
+        publisher: Any = None,
+        **params: Any,
+    ) -> None:
         super().__init__(**params)
         self._retain = bool(retain)
         self._qos = int(qos)
+        # A blank template means "unset", not "publish to the empty topic".
+        self._topic_template = (topic_template or "").strip() or DEFAULT_TOPIC_TEMPLATE
         # Injected by the task, which owns the connection: one broker connection per
         # watcher, not one per action.
         self._publisher = publisher
@@ -65,13 +80,20 @@ class MqttPublishAction(Action):
                 ),
             },
             "qos": {"type": "int", "required": False, "default": 0, "options": [0, 1, 2], "help": "MQTT QoS level."},
+            "topic_template": {
+                "type": "str",
+                "required": False,
+                "default": DEFAULT_TOPIC_TEMPLATE,
+                "help": (
+                    "Topic to publish to. Placeholders are substituted and slugified per level. "
+                    f"Available: {describe_params()}. An unknown placeholder is left as-is so a "
+                    "typo is visible on the broker rather than silently collapsing a level."
+                ),
+            },
         }
 
     def topic_for(self, signal: WatchEventSignal, context: ActionContext) -> str:
-        profile = slugify_topic(context.profile_name or context.profile_uuid)
-        source = slugify_topic(context.source_name or context.source_uuid or "unknown")
-        rule = slugify_topic(signal.metadata.get("eventLabel") or signal.rule_name)
-        return f"{profile}/{source}/event/{rule}"
+        return render_topic(self._topic_template, build_template_params(signal, context))
 
     def payload_for(self, signal: WatchEventSignal, context: ActionContext) -> Dict[str, Any]:
         payload = signal.to_dict()
@@ -79,6 +101,10 @@ class MqttPublishAction(Action):
         payload["sourceName"] = context.source_name
         payload["eventUuid"] = context.extra.get("event_uuid")
         payload["recordingUuid"] = context.extra.get("recording_uuid")
+        # The same slot values the topic was built from, so a subscriber that wants to
+        # route on payload rather than topic shape doesn't have to parse the topic back
+        # apart.
+        payload["templateParams"] = build_template_params(signal, context)
         return payload
 
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:

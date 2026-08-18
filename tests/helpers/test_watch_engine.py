@@ -40,19 +40,28 @@ def _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT, conf=0.9) -> Track:
 
 
 def _rule(**overrides) -> RuleSpec:
+    """Build a RuleSpec, accepting either a single ref or a list for each subject slot.
+
+    Slots are lists now ("any of these cats"), but most tests only care about one ref and
+    read far better naming it directly, so a bare string is wrapped here.
+    """
     spec = dict(
         uuid="rule-1",
         name="cat using litter box",
         subject_a_kind="label",
-        subject_a_ref=CAT,
+        subject_a_refs=[CAT],
         relation="contains",
         subject_b_kind="zone",
-        subject_b_ref=ZONE_UUID,
+        subject_b_refs=[ZONE_UUID],
         threshold=0.6,
         min_duration_s=2.0,
         rearm_delay_s=10.0,
         max_duration_s=300.0,
     )
+    for side in ("a", "b"):
+        if f"subject_{side}_ref" in overrides:
+            ref = overrides.pop(f"subject_{side}_ref")
+            overrides[f"subject_{side}_refs"] = [] if ref is None else [ref]
     spec.update(overrides)
     return RuleSpec(**spec)
 
@@ -523,3 +532,147 @@ class TestWatchEngine:
         for i in range(10):
             engine.step(inside, now=i * 0.5)
         assert engine.tuning_hints() == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-ref slots and the slot values they report
+# ─────────────────────────────────────────────────────────────────────────────
+
+CAT_A = "label-cat-a"
+CAT_B = "label-cat-b"
+ZONE_B_UUID = "zone-upstairs"
+UPSTAIRS_ZONE = Zone(uuid=ZONE_B_UUID, name="upstairs box", kind="box", points=[(0.0, 0.0), (0.2, 0.2)])
+ALL_ZONES = {ZONE_UUID: LITTER_ZONE, ZONE_B_UUID: UPSTAIRS_ZONE}
+
+
+class TestMultiRefSubjects:
+    """One rule covering several cats and several litter boxes, rather than N*M rules."""
+
+    def test_any_listed_label_satisfies_the_subject(self):
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B])
+        for label in (CAT_A, CAT_B):
+            track = _track(bbox=(450, 450, 550, 550), label=label)
+            assert evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H).holds
+
+    def test_an_unlisted_label_does_not(self):
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B])
+        track = _track(bbox=(450, 450, 550, 550), label="label-dog")
+        assert not evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H).holds
+
+    def test_any_listed_zone_satisfies_the_target(self):
+        spec = _rule(subject_b_refs=[ZONE_UUID, ZONE_B_UUID])
+        # Inside the *second* zone only.
+        track = _track(bbox=(10, 10, 100, 100))
+        assert evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H).holds
+
+    def test_a_dangling_zone_ref_cannot_fire(self):
+        spec = _rule(subject_b_refs=["zone-that-was-deleted"])
+        track = _track(bbox=(450, 450, 550, 550))
+        assert not evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H).holds
+
+    def test_an_empty_subject_slot_cannot_fire(self):
+        spec = _rule(subject_a_refs=[])
+        track = _track(bbox=(450, 450, 550, 550))
+        assert not evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H).holds
+
+
+class TestReportedSlotValues:
+    """Which cat and which litter box — the values a topic template interpolates."""
+
+    def test_the_matching_label_and_zone_are_reported(self):
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B], subject_b_refs=[ZONE_UUID, ZONE_B_UUID])
+        track = _track(bbox=(450, 450, 550, 550), label=CAT_B)
+        result = evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H)
+        assert result.subject_ref == CAT_B
+        assert result.target_ref == ZONE_UUID
+
+    def test_a_present_rule_reports_its_subject(self):
+        spec = _rule(relation="present", subject_b_kind="none", subject_b_refs=[], subject_a_refs=[CAT_A])
+        track = _track(label=CAT_A, conf=0.9)
+        assert evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H).subject_ref == CAT_A
+
+    def test_nothing_is_reported_when_the_predicate_fails(self):
+        spec = _rule(subject_a_refs=[CAT_A])
+        track = _track(bbox=(0, 0, 10, 10), label=CAT_A)  # far outside the zone
+        result = evaluate_predicate(spec, [track], ALL_ZONES, FRAME_W, FRAME_H)
+        assert not result.holds
+        assert result.subject_ref is None
+
+    def test_a_failing_pair_does_not_name_the_subject(self):
+        """`best_score` moves for pairs that never fired; the reported slot must not."""
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B], threshold=0.9)
+        fully_inside = _track(track_id=1, bbox=(450, 450, 550, 550), label=CAT_B)
+        barely_touching = _track(track_id=2, bbox=(395, 395, 405, 405), label=CAT_A)
+        result = evaluate_predicate(spec, [fully_inside, barely_touching], ALL_ZONES, FRAME_W, FRAME_H)
+        assert result.holds
+        assert result.subject_ref == CAT_B
+
+    def test_the_signal_carries_the_slot_values(self):
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B], min_duration_s=1.0)
+        machine = RuleMachine(spec, source_uuid="src-1")
+        inside = _track(bbox=(450, 450, 550, 550), label=CAT_B)
+        machine.step(evaluate_predicate(spec, [inside], ALL_ZONES, FRAME_W, FRAME_H), now=0.0)
+        signals = machine.step(evaluate_predicate(spec, [inside], ALL_ZONES, FRAME_W, FRAME_H), now=1.5)
+        assert signals[0].phase is EventPhase.START
+        assert signals[0].subject_ref == CAT_B
+        assert signals[0].target_ref == ZONE_UUID
+
+    def test_slot_values_are_cleared_between_events(self):
+        """A stale subject would name last visit's cat on this visit's event."""
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B], min_duration_s=0.0, rearm_delay_s=0.0)
+        machine = RuleMachine(spec, source_uuid="src-1")
+        inside_b = _track(bbox=(450, 450, 550, 550), label=CAT_B)
+        machine.step(evaluate_predicate(spec, [inside_b], ALL_ZONES, FRAME_W, FRAME_H), now=0.0)
+        machine.step(evaluate_predicate(spec, [inside_b], ALL_ZONES, FRAME_W, FRAME_H), now=0.1)
+        machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=1.0)
+        machine.step(evaluate_predicate(spec, [], ALL_ZONES, FRAME_W, FRAME_H), now=2.0)
+        assert machine.state is RuleState.IDLE
+
+        inside_a = _track(bbox=(450, 450, 550, 550), label=CAT_A)
+        machine.step(evaluate_predicate(spec, [inside_a], ALL_ZONES, FRAME_W, FRAME_H), now=3.0)
+        signals = machine.step(evaluate_predicate(spec, [inside_a], ALL_ZONES, FRAME_W, FRAME_H), now=3.1)
+        assert [s.subject_ref for s in signals if s.phase is EventPhase.START] == [CAT_A]
+
+
+class TestMasking:
+    """Masks suppress by centroid — see `is_masked` for why not by overlap."""
+
+    def test_a_detection_centred_in_a_mask_is_suppressed(self):
+        from apps.helpers.watch.geometry import is_masked
+
+        assert is_masked((450, 450, 550, 550), [LITTER_ZONE], FRAME_W, FRAME_H)
+
+    def test_a_detection_centred_outside_is_kept(self):
+        from apps.helpers.watch.geometry import is_masked
+
+        assert not is_masked((0, 0, 100, 100), [LITTER_ZONE], FRAME_W, FRAME_H)
+
+    def test_merely_overlapping_a_mask_is_not_enough(self):
+        """A cat half in a masked doorway still tracks; only its centre decides."""
+        from apps.helpers.watch.geometry import is_masked
+
+        # Spans 300..450 so it genuinely overlaps the zone's 400..800, but its centre
+        # (375) sits outside. Note 400 exactly would count as inside — containment is
+        # boundary-inclusive.
+        assert intersection_area((300, 300, 450, 450), LITTER_ZONE.bounds(FRAME_W, FRAME_H)) > 0
+        assert not is_masked((300, 300, 450, 450), [LITTER_ZONE], FRAME_W, FRAME_H)
+
+    def test_no_masks_suppresses_nothing(self):
+        from apps.helpers.watch.geometry import is_masked
+
+        assert not is_masked((450, 450, 550, 550), [], FRAME_W, FRAME_H)
+
+    def test_a_concave_polygon_mask_uses_exact_containment(self):
+        """The reason centroid beats overlap: overlap falls back to the bounding box."""
+        from apps.helpers.watch.geometry import is_masked
+
+        # An L-shape; the notch at (0.8, 0.8) is inside the bounding box but outside
+        # the polygon itself.
+        l_shape = Zone(
+            uuid="m1",
+            name="L",
+            kind="polygon",
+            points=[(0.0, 0.0), (0.6, 0.0), (0.6, 0.6), (0.0, 0.6)],
+        )
+        assert is_masked((250, 250, 350, 350), [l_shape], FRAME_W, FRAME_H)
+        assert not is_masked((750, 750, 850, 850), [l_shape], FRAME_W, FRAME_H)

@@ -6307,13 +6307,98 @@ progress.progress-indeterminate:indeterminate {
   gap: var(--space-1, 0.25rem);
 }
 
-/* ── Zones modal ── */
-.watch-zones-dialog { max-width: 1000px; }
+/* ── Region (zones and masks) modal ── */
+.watch-zones-dialog { max-width: 1100px; }
 
 .watch-zones-body {
   display: flex;
   gap: var(--space-4, 1rem);
   align-items: flex-start;
+}
+
+.watch-zones-stage-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
+.watch-zones-toolbar {
+  display: flex;
+  gap: var(--space-2, 0.5rem);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Compact controls: the toolbar sits under a fixed-width stage and Pico's default
+   select is wide enough that three of them wrap onto a second line. */
+.watch-zones-toolbar select {
+  width: auto;
+  margin-bottom: 0;
+  padding-block: var(--space-1, 0.25rem);
+}
+
+.watch-zones-list-heading {
+  font-weight: 600;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin-top: var(--space-2, 0.5rem);
+}
+
+.watch-zone-row--selected {
+  outline: 2px solid var(--pico-primary, #4ade80);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 4px);
+}
+
+/* The per-watcher "apply this mask" toggle, shown beside each mask in the region
+   editor. It lives there rather than in the source row because the source row is
+   already a full line of controls, and because this is a rare setting — the default
+   (every mask applies) is what makes it need no configuration at all. */
+.watch-mask-toggle {
+  display: inline-flex;
+  gap: var(--space-1, 0.25rem);
+  align-items: center;
+  margin-bottom: 0;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.watch-mask-toggle input {
+  margin-bottom: 0;
+  margin-inline-end: 0;
+}
+
+/* A resolved MQTT topic is long. Truncating keeps the action row on one line while the
+   full value stays in the element's title (and in its textContent, so tests still read
+   the whole thing). */
+.watch-hint--truncate {
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The multi-select trigger inside a rule sentence must sit on the text baseline with
+   the selects either side of it, not break the line.
+
+   `display: flex` on the wrapper matters: an inline-block dropdown sits on the text
+   baseline and reserves descender space under it, which made the sentence line ~5px
+   taller than its siblings for no visible reason. */
+.watch-rule-slot {
+  display: inline-flex;
+  align-items: center;
+}
+
+.watch-rule-slot .ms-dropdown { display: flex; }
+
+/* A rule may name several labels, and the trigger lists them all. Capped so a
+   four-cat rule cannot widen the sentence past the row and force a wrap. */
+.watch-rule-slot .ms-dropdown__trigger {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The stage carries explicit dimensions inline as well; a zero-sized container

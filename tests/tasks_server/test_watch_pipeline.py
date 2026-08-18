@@ -46,10 +46,10 @@ def _pipeline(**overrides) -> WatchPipeline:
         uuid="rule-1",
         name="cat in box",
         subject_a_kind="label",
-        subject_a_ref=CAT,
+        subject_a_refs=[CAT],
         relation="contains",
         subject_b_kind="zone",
-        subject_b_ref=ZONE_UUID,
+        subject_b_refs=[ZONE_UUID],
         threshold=0.6,
         min_duration_s=1.0,
         rearm_delay_s=5.0,
@@ -305,3 +305,65 @@ class TestResolveModelNames:
         """The API rejects the pair, but a pre-existing row must still start the watcher."""
         groups = {"g1": {"members": [{"order": 0, "model_name": "from_stack"}]}}
         assert resolve_model_names("g1", "bare", groups) == ["from_stack"]
+
+
+class TestMasks:
+    """Masks suppress detections before the tracker sees them.
+
+    Filtering tracks instead would let a masked object build up history, satisfy a
+    rule's `min_duration_s`, and then vanish — a track flickering in and out of
+    existence is worse for hysteresis than one that never existed.
+    """
+
+    MASK = Zone(uuid="mask-1", name="driveway", kind="box", points=[(0.0, 0.0), (0.3, 0.3)])
+
+    def _detection(self, bbox):
+        return Detection(bbox=bbox, label_uuid=CAT, label_name="cat", confidence=0.9)
+
+    def test_a_detection_inside_a_mask_never_reaches_the_tracker(self):
+        pipeline = _pipeline(masks=[self.MASK])
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        w, h = pipeline.engine.frame_width, pipeline.engine.frame_height
+        inside = self._detection((0.05 * w, 0.05 * h, 0.15 * w, 0.15 * h))
+        pipeline.step([inside], now=0.0)
+        assert pipeline.detections == []
+        assert pipeline.tracks == []
+
+    def test_a_detection_outside_a_mask_is_untouched(self):
+        pipeline = _pipeline(masks=[self.MASK])
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        w, h = pipeline.engine.frame_width, pipeline.engine.frame_height
+        outside = self._detection((0.5 * w, 0.5 * h, 0.6 * w, 0.6 * h))
+        pipeline.step([outside], now=0.0)
+        assert len(pipeline.detections) == 1
+
+    def test_with_no_masks_everything_passes(self):
+        pipeline = _pipeline(masks=[])
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        pipeline.step([self._detection((10, 10, 30, 30))], now=0.0)
+        assert len(pipeline.detections) == 1
+
+    def test_the_suppressed_count_is_reported(self):
+        """A mask eating every detection and a dead model look identical otherwise."""
+        pipeline = _pipeline(masks=[self.MASK])
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        w, h = pipeline.engine.frame_width, pipeline.engine.frame_height
+        pipeline.step(
+            [
+                self._detection((0.05 * w, 0.05 * h, 0.15 * w, 0.15 * h)),
+                self._detection((0.5 * w, 0.5 * h, 0.6 * w, 0.6 * h)),
+            ],
+            now=0.0,
+        )
+        row = pipeline.status_row(now=1.0)
+        assert row["masks"] == 1
+        assert row["maskedLastFrame"] == 1
+
+    def test_a_masked_cat_never_opens_an_event(self):
+        pipeline = _pipeline(masks=[LITTER_ZONE])
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        w, h = pipeline.engine.frame_width, pipeline.engine.frame_height
+        in_the_zone = self._detection((0.5 * w, 0.5 * h, 0.7 * w, 0.7 * h))
+        assert pipeline.step([in_the_zone], now=0.0) == []
+        assert pipeline.step([in_the_zone], now=2.0) == []
+        assert pipeline.step([in_the_zone], now=4.0) == []

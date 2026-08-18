@@ -748,6 +748,84 @@ class Manager:
             raise ValueError(f"Task {task_uuid} is not currently running")
         return await task_info.task.get_live_preview(source_uuid=source_uuid, **options)
 
+    #: How long to wait for a cold camera to hand over one frame. An RTSP handshake plus
+    #: a keyframe wait is a couple of seconds on a healthy camera; past this the user is
+    #: better served by an error than by a spinner.
+    GRAB_FRAME_TIMEOUT_S = 12.0
+
+    async def grab_source_frame(self, source_uuid: str, quality: int = 85) -> dict[str, Any]:
+        """One still from a source, for drawing zones and masks against.
+
+        Prefers a frame from a watcher already running on this source. That is not just
+        an optimisation: many IP cameras cap concurrent RTSP sessions, so opening a
+        second connection to a camera that a 24/7 watcher is already reading can fail —
+        or, worse, evict the watcher's own stream.
+
+        Only falls back to a short-lived provider when nothing is watching. The provider
+        is always stopped, including on timeout, or an abandoned ffmpeg process would
+        outlive every failed grab.
+        """
+        from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
+
+        for task_info in self._running_tasks.values():
+            task = task_info.task
+            if not isinstance(task, StreamWatcherTask):
+                continue
+            frame = task.get_source_frame(source_uuid)
+            if frame is not None:
+                encoded = StreamWatcherTask._encode_preview(frame, quality)
+                if encoded is not None:
+                    height, width = frame.shape[:2]
+                    return {"frame": encoded, "width": width, "height": height, "source": "watcher"}
+
+        return await self._grab_frame_from_provider(source_uuid, quality)
+
+    async def _grab_frame_from_provider(self, source_uuid: str, quality: int) -> dict[str, Any]:
+        """Open the source just long enough for one frame, then close it."""
+        from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
+        from apps.tasks_server.tasks.utils.sourceHelper import SourceHelper
+
+        helper = SourceHelper(self._db_api_client)
+        # `_db_call`, not `to_thread`: resolving a source is a manager DB call, and the
+        # shared executor is exactly what a busy watcher saturates — the same starvation
+        # that once made a wedged watcher look alive.
+        provider = await self._db_call(helper.get_image_provider, source_uuid)
+
+        try:
+            await asyncio.wait_for(provider.start(), timeout=self.GRAB_FRAME_TIMEOUT_S)
+            image = await asyncio.wait_for(self._await_first_frame(provider), timeout=self.GRAB_FRAME_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise ValueError(f"Timed out after {self.GRAB_FRAME_TIMEOUT_S:g}s waiting for a frame from this source")
+        finally:
+            try:
+                await provider.stop()
+            except Exception:
+                logger.debug("Ignoring error stopping the grab-frame provider", exc_info=True)
+
+        if image is None:
+            raise ValueError("The source did not return a frame")
+
+        frame = getattr(image, "image", image)
+        encoded = StreamWatcherTask._encode_preview(frame, quality)
+        if encoded is None:
+            raise ValueError("Could not encode the captured frame")
+        height, width = frame.shape[:2]
+        return {"frame": encoded, "width": width, "height": height, "source": "provider"}
+
+    @staticmethod
+    async def _await_first_frame(provider) -> Any:
+        """Poll a provider until it yields a frame.
+
+        `getNextImage` returns None while a stream is still connecting rather than
+        blocking, so a bare single call would report "no frame" on every cold camera.
+        The caller bounds this with `wait_for`; there is deliberately no retry cap here.
+        """
+        while True:
+            image = await provider.getNextImage()
+            if image is not None:
+                return image
+            await asyncio.sleep(0.2)
+
     async def send_task_command(self, task_uuid: str, command: str, params: dict[str, Any]) -> None:
         """Forward a UI-issued command to the running task instance's handle_command().
 
