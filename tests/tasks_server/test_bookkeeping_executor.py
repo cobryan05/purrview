@@ -29,7 +29,7 @@ class TestIsolation:
         def _who_am_i():
             names.append(threading.current_thread().name)
 
-        await manager._db_call(_who_am_i)
+        await manager.db_call(_who_am_i)
 
         assert names and names[0].startswith("tasks-bookkeeping"), names
 
@@ -58,7 +58,7 @@ class TestIsolation:
                 break
 
             done = []
-            await asyncio.wait_for(manager._db_call(lambda: done.append(True)), timeout=5.0)
+            await asyncio.wait_for(manager.db_call(lambda: done.append(True)), timeout=5.0)
 
             assert done == [True], "bookkeeping must not queue behind saturated task threads"
         finally:
@@ -84,7 +84,7 @@ class TestIsolation:
         from apps.tasks_server.tasks import StreamWatcherTask
 
         source = inspect.getsource(StreamWatcherTask)
-        assert "_db_call" not in source, "task work must not borrow the bookkeeping threads"
+        assert "db_call" not in source, "task work must not borrow the bookkeeping threads"
 
 
 class TestLifecycle:
@@ -106,7 +106,7 @@ class TestLifecycle:
             raise ValueError("db said no")
 
         with pytest.raises(ValueError, match="db said no"):
-            await manager._db_call(_boom)
+            await manager.db_call(_boom)
 
     async def test_arguments_are_passed_through(self, manager):
         seen = {}
@@ -115,31 +115,60 @@ class TestLifecycle:
             seen.update({"a": a, "b": b, "key": key})
             return "result"
 
-        assert await manager._db_call(_record, 1, 2, key="value") == "result"
+        assert await manager.db_call(_record, 1, 2, key="value") == "result"
         assert seen == {"a": 1, "b": 2, "key": "value"}
 
 
 class TestEveryManagerDbCallIsIsolated:
     """A guard on the pattern. The natural thing to type is `asyncio.to_thread(...)`,
     it looks identical to the legitimate uses elsewhere, and nothing fails until the
-    pool is saturated in production — which is the one moment this has to work."""
+    pool is saturated in production — which is the one moment this has to work.
 
-    def test_manager_does_not_use_the_shared_pool(self):
+    Scoped to every module in `apps/tasks_server/` *except* `tasks/`, rather than to
+    `manager.py` alone. The rule is about service-level bookkeeping, not about one
+    filename, and a file-scoped guard silently stops applying the moment someone factors
+    manager logic into a helper module beside it. Task implementations under `tasks/` are
+    excluded deliberately: bulk work belongs on the shared pool, and moving it into the
+    reserved one would rebuild the same starvation inside it.
+    """
+
+    #: Files under `apps/tasks_server/` that own service bookkeeping. Anything added here
+    #: later is covered automatically — the sweep is by directory, not by name.
+    @staticmethod
+    def _bookkeeping_modules():
+        import pathlib
+
+        import apps.tasks_server
+
+        # `__path__`, not `__file__`: these are namespace packages (no `__init__.py`), so
+        # `__file__` is None and `Path(None)` raises a TypeError that reads like a
+        # pathlib bug rather than a missing file.
+        root = pathlib.Path(list(apps.tasks_server.__path__)[0])
+        # Top level only: `tasks/` is the excluded subtree.
+        return sorted(p for p in root.glob("*.py") if p.name != "__init__.py")
+
+    def test_no_bookkeeping_module_uses_the_shared_pool(self):
         import ast
-        import inspect
 
-        from apps.tasks_server import manager as manager_module
+        modules = self._bookkeeping_modules()
+        # A sweep that silently matches nothing passes forever; assert it found the work.
+        assert any(p.name == "manager.py" for p in modules), modules
 
-        tree = ast.parse(inspect.getsource(manager_module))
         offenders = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
-                continue
-            fn = node.func
-            if isinstance(fn, ast.Attribute) and fn.attr == "to_thread":
-                offenders.append(f"manager.py:{node.lineno}  {ast.unparse(node.args[0])[:60]}")
+        for path in modules:
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                fn = node.func
+                if isinstance(fn, ast.Attribute) and fn.attr == "to_thread":
+                    offenders.append(f"{path.name}:{node.lineno}  {ast.unparse(node.args[0])[:60]}")
 
         assert not offenders, (
-            "The manager's own calls must go through self._db_call so they cannot be "
-            "starved by task work on the shared executor:\n  " + "\n  ".join(offenders)
+            "Service bookkeeping must go through `self.db_call(...)` so it cannot be "
+            "starved by task work on the shared executor.\n\n"
+            "Replace:  await asyncio.to_thread(fn, *args)\n"
+            "With:     await self.db_call(fn, *args)\n\n"
+            "(Task implementations under tasks/ are exempt and are not scanned.)\n\n"
+            "Offending calls:\n  " + "\n  ".join(offenders)
         )

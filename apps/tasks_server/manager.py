@@ -116,7 +116,7 @@ class Manager:
         # driving that have stopped progressing. See _check_wedged_tasks: reported,
         # never acted on.
         self._wedged_tasks: Dict[str, float] = {}
-        # Threads for this manager's own bookkeeping — see _db_call for why it does
+        # Threads for this manager's own bookkeeping — see db_call for why it does
         # not share the default one.
         self._bookkeeping_executor = ThreadPoolExecutor(
             max_workers=self._BOOKKEEPING_THREADS,
@@ -223,8 +223,20 @@ class Manager:
         except Exception as e:
             logger.warning(f"Could not release the previous API client's connection pool: {e}")
 
-    async def _db_call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def db_call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run one of this manager's own DB calls, on threads nothing else can exhaust.
+
+        **Use this, not `asyncio.to_thread`, anywhere in this class.** That is the whole
+        point of the method existing, and it is the one thing about it worth knowing:
+        `to_thread` is the stdlib idiom, it is muscle memory, it is *correct* in the task
+        implementations next door, and nothing about a call site shows which context you
+        are in. `tests/tasks_server/test_bookkeeping_executor.py` fails the build if a
+        `to_thread` appears in this module, because nothing else would catch it until the
+        pool saturates in production — the one moment this has to work.
+
+        Public, despite being infrastructure: a leading underscore said "implementation
+        detail, don't touch" about the sanctioned way to make a DB call from here, which
+        is exactly backwards and is how a `to_thread` got written in the first place.
 
         A drop-in for `asyncio.to_thread(fn, ...)` that uses a private executor instead
         of the default one.
@@ -313,7 +325,7 @@ class Manager:
                 not_running.append(tid)
 
         if not_running:
-            resp = await self._db_call(
+            resp = await self.db_call(
                 TasksApi(self._db_api_client).get_task_results,
                 db_models.GetTaskResultsPayload(task_uuids=not_running),
             )
@@ -341,13 +353,13 @@ class Manager:
                     uuids_left.remove(uuid)
 
         if uuids_left is None or len(uuids_left) > 0:
-            instances_resp = await self._db_call(
+            instances_resp = await self.db_call(
                 TasksApi(self._db_api_client).list_task_instances,
                 uuids=uuids_left,
             )
             db_instances = instances_resp.instances or []
             config_uuids = list(set(inst.config_uuid for inst in db_instances))
-            configs_resp = await self._db_call(
+            configs_resp = await self.db_call(
                 TasksApi(self._db_api_client).list_task_configs,
                 uuids=config_uuids,
             )
@@ -387,7 +399,7 @@ class Manager:
         if persistent is None:
             persistent = task_registry[typename].DEFAULT_PERSISTENT
         params[Task.InternalKeys.PERSISTENT] = persistent
-        resp = await self._db_call(
+        resp = await self.db_call(
             TasksApi(self._db_api_client).create_task_config,
             db_models.CreateTaskConfigPayload(name=name, typename=typename, params=params, is_temporary=is_temporary),
         )
@@ -396,7 +408,7 @@ class Manager:
     async def delete_task_configs(self, config_uuids: Union[List[str], str]) -> None:
         if isinstance(config_uuids, str):
             config_uuids = [config_uuids]
-        await self._db_call(
+        await self.db_call(
             TasksApi(self._db_api_client).delete_task_configs,
             db_models.DeleteTaskConfigsPayload(config_uuids=config_uuids),
         )
@@ -411,7 +423,7 @@ class Manager:
                 await self._running_tasks[task_id].task.stop()
                 del self._running_tasks[task_id]
                 deleted_uuids.append(task_id)
-        await self._db_call(
+        await self.db_call(
             TasksApi(self._db_api_client).delete_task_instances,
             db_models.DeleteTaskInstancesPayload(task_uuids=task_uuids),
         )
@@ -429,7 +441,7 @@ class Manager:
         if typename is not None and typename not in task_registry:
             raise ValueError(f"Unknown task type: {typename}")
 
-        await self._db_call(
+        await self.db_call(
             TasksApi(self._db_api_client).update_task_config,
             config_uuid,
             db_models.UpdateTaskConfigPayload(
@@ -447,7 +459,7 @@ class Manager:
         if isinstance(task_config_uuids, str):
             task_config_uuids = [task_config_uuids]
 
-        resp = await self._db_call(
+        resp = await self.db_call(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=task_config_uuids,
             is_temporary=is_temporary,
@@ -509,7 +521,7 @@ class Manager:
 
         # One of the two paths that actually restarts a task, so it needs the
         # checkpoint — the listing omits resume_data unless asked (see below).
-        instances_resp = await self._db_call(
+        instances_resp = await self.db_call(
             TasksApi(self._db_api_client).list_task_instances,
             uuids=uuids_to_check,
             include_resume_data=True,
@@ -530,7 +542,7 @@ class Manager:
             return []
 
         config_uuids = list(set(inst.config_uuid for inst in paused))
-        configs_resp = await self._db_call(
+        configs_resp = await self.db_call(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=config_uuids,
         )
@@ -660,7 +672,7 @@ class Manager:
         Used by Task.save_checkpoint_now() for state that must not wait for the
         periodic pass.
         """
-        await self._db_call(
+        await self.db_call(
             TasksApi(self._db_api_client).set_task_instance_resume_data,
             task_uuid,
             db_models.SetTaskResumeDataPayload(resume_data=resume_data),
@@ -668,7 +680,7 @@ class Manager:
 
     async def update_task_heartbeat(self, task_uuid: str) -> None:
         """Forward a heartbeat ping to the DB server for the given task instance."""
-        await self._db_call(
+        await self.db_call(
             TasksApi(self._db_api_client).set_task_instance_heartbeat,
             task_uuid,
         )
@@ -719,7 +731,7 @@ class Manager:
 
         if not_running:
             try:
-                resp = await self._db_call(
+                resp = await self.db_call(
                     TasksApi(self._db_api_client).list_task_instances,
                     uuids=not_running,
                 )
@@ -786,10 +798,10 @@ class Manager:
         from apps.tasks_server.tasks.utils.sourceHelper import SourceHelper
 
         helper = SourceHelper(self._db_api_client)
-        # `_db_call`, not `to_thread`: resolving a source is a manager DB call, and the
+        # `db_call`, not `to_thread`: resolving a source is a manager DB call, and the
         # shared executor is exactly what a busy watcher saturates — the same starvation
         # that once made a wedged watcher look alive.
-        provider = await self._db_call(helper.get_image_provider, source_uuid)
+        provider = await self.db_call(helper.get_image_provider, source_uuid)
 
         try:
             await asyncio.wait_for(provider.start(), timeout=self.GRAB_FRAME_TIMEOUT_S)
@@ -864,7 +876,7 @@ class Manager:
 
     async def _save_task_data(self, task_info: TaskInfo, ended_at: Optional[datetime] = None) -> None:
         if task_info.task.is_data_ready():
-            await self._db_call(
+            await self.db_call(
                 TasksApi(self._db_api_client).set_task_instance_resume_data,
                 task_info.instance.uuid,
                 db_models.SetTaskResumeDataPayload(resume_data=task_info.task.get_resume_data()),
@@ -877,12 +889,12 @@ class Manager:
         # Status and result are critical — a failure here must propagate so the
         # caller's retry logic can attempt recovery.
         await asyncio.gather(
-            self._db_call(
+            self.db_call(
                 TasksApi(self._db_api_client).set_task_instance_result,
                 task_info.instance.uuid,
                 db_models.SetTaskResultPayload(result=task_info.task.get_results() or {}),
             ),
-            self._db_call(
+            self.db_call(
                 TasksApi(self._db_api_client).set_task_instance_status,
                 task_info.instance.uuid,
                 db_models.SetTaskStatusPayload(
@@ -905,7 +917,7 @@ class Manager:
         except Exception:
             logger.exception(f"get_status_data() failed for task {task_info.instance.uuid} (non-fatal)")
         try:
-            await self._db_call(
+            await self.db_call(
                 TasksApi(self._db_api_client).set_task_instance_timestamps,
                 task_info.instance.uuid,
                 db_models.SetTaskTimestampsPayload(
@@ -944,7 +956,7 @@ class Manager:
             # answered from _running_tasks don't keep serving it.
             instance.result = None
         else:
-            resp = await self._db_call(
+            resp = await self.db_call(
                 TasksApi(self._db_api_client).create_task_instance,
                 db_models.CreateTaskInstancePayload(config_uuid=config.uuid),
             )
@@ -964,7 +976,7 @@ class Manager:
         # the terminal status, leaving the task stuck as "running" forever
         # with no in-memory entry left for Stop/Suspend/Cancel to act on.
         start_writes = [
-            self._db_call(
+            self.db_call(
                 TasksApi(self._db_api_client).set_task_instance_status,
                 instance.uuid,
                 db_models.SetTaskStatusPayload(status=TaskStatus.RUNNING),
@@ -972,7 +984,7 @@ class Manager:
             # This write also retires the previous run's ended_at (see
             # set_task_timestamps_and_logs) so a resumed row can't read as
             # having ended before it started.
-            self._db_call(
+            self.db_call(
                 TasksApi(self._db_api_client).set_task_instance_timestamps,
                 instance.uuid,
                 db_models.SetTaskTimestampsPayload(started_at=started_at),
@@ -980,7 +992,7 @@ class Manager:
         ]
         if resume_instance:
             start_writes.append(
-                self._db_call(
+                self.db_call(
                     TasksApi(self._db_api_client).set_task_instance_result,
                     instance.uuid,
                     db_models.SetTaskResultPayload(result={}),
@@ -1002,7 +1014,7 @@ class Manager:
         # Startup recovery inspects each interrupted instance's checkpoint to decide
         # paused-and-resumable vs. error, and hands it to the auto-restart path, so
         # this is the other listing that must opt into resume_data.
-        resp = await self._db_call(
+        resp = await self.db_call(
             TasksApi(self._db_api_client).list_task_instances,
             include_resume_data=True,
         )
@@ -1020,7 +1032,7 @@ class Manager:
         ]
         if new_tasks:
             logger.info(f"Removing {len(new_tasks)} never-started task instance(s)")
-            await self._db_call(
+            await self.db_call(
                 TasksApi(self._db_api_client).delete_task_instances,
                 db_models.DeleteTaskInstancesPayload(task_uuids=[inst.uuid for inst in new_tasks]),
             )
@@ -1075,7 +1087,7 @@ class Manager:
                 recovery_message = no_checkpoint_message
                 logger.info(f"Task {inst.uuid} interrupted without checkpoint — marking error")
             coros.append(
-                self._db_call(
+                self.db_call(
                     TasksApi(self._db_api_client).set_task_instance_status,
                     inst.uuid,
                     db_models.SetTaskStatusPayload(status=recovered_status, error_message=recovery_message),
@@ -1091,7 +1103,7 @@ class Manager:
         if not resumable_instances:
             return
         config_uuids = list({inst.config_uuid for inst in resumable_instances})
-        configs_resp = await self._db_call(
+        configs_resp = await self.db_call(
             TasksApi(self._db_api_client).list_task_configs,
             uuids=config_uuids,
         )
@@ -1152,7 +1164,7 @@ class Manager:
             # resume_data is what decides resumable-vs-error below, and the
             # default listing omits it — without it every orphan looks
             # uncheckpointed.
-            resp = await self._db_call(
+            resp = await self.db_call(
                 TasksApi(self._db_api_client).list_task_instances,
                 include_resume_data=True,
             )
@@ -1288,7 +1300,7 @@ class Manager:
         "0 running" in the other, with nothing to say which is right.
         """
         try:
-            resp = await self._db_call(TasksApi(self._db_api_client).list_task_instances)
+            resp = await self.db_call(TasksApi(self._db_api_client).list_task_instances)
         except Exception:
             logger.exception("Error refreshing unattached task count")
             return
@@ -1337,7 +1349,7 @@ class Manager:
 
             if task.is_data_ready():
                 try:
-                    await self._db_call(
+                    await self.db_call(
                         TasksApi(self._db_api_client).set_task_instance_resume_data,
                         uuid,
                         db_models.SetTaskResumeDataPayload(resume_data=task.get_resume_data()),
@@ -1400,7 +1412,7 @@ class Manager:
                 inst.uuid,
             )
             await asyncio.gather(
-                self._db_call(
+                self.db_call(
                     TasksApi(self._db_api_client).set_task_instance_status,
                     inst.uuid,
                     db_models.SetTaskStatusPayload(
@@ -1411,7 +1423,7 @@ class Manager:
                         ),
                     ),
                 ),
-                self._db_call(
+                self.db_call(
                     TasksApi(self._db_api_client).update_task_config,
                     config.uuid,
                     db_models.UpdateTaskConfigPayload(params=new_params),
@@ -1419,7 +1431,7 @@ class Manager:
             )
             return
 
-        await self._db_call(
+        await self.db_call(
             TasksApi(self._db_api_client).update_task_config,
             config.uuid,
             db_models.UpdateTaskConfigPayload(params=new_params),
@@ -1450,7 +1462,7 @@ class Manager:
         if self._RETENTION_DAYS <= 0 and self._RETENTION_MAX_COMPLETED <= 0:
             return []
         try:
-            resp = await self._db_call(TasksApi(self._db_api_client).list_task_instances)
+            resp = await self.db_call(TasksApi(self._db_api_client).list_task_instances)
         except Exception:
             logger.exception("Failed to list task instances for retention pruning")
             return []
@@ -1481,7 +1493,7 @@ class Manager:
             return []
         uuids = sorted(victims)
         try:
-            await self._db_call(
+            await self.db_call(
                 TasksApi(self._db_api_client).delete_task_instances,
                 db_models.DeleteTaskInstancesPayload(task_uuids=uuids),
             )
