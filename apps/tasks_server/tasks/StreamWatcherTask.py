@@ -56,6 +56,7 @@ from apps.helpers.watch.rules import RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
+from ._watch_event_recorder import NullWatchEventRecorder, WatchEventRecorder
 from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifetimes, resolve_model_names
 from .Registry import register_task
 from .Task import Task
@@ -68,6 +69,11 @@ logger = logging.getLogger(__name__)
 #: not an equality check, because there are two of them now and a third would otherwise
 #: silently build with `publisher=None` and report "no broker configured" forever.
 MQTT_ACTION_KINDS = frozenset({"publish_mqtt", "publish_mqtt_image"})
+#: The one action kind whose output is a playable clip, and so the only one whose result
+#: may become a `recordings` row. `save_snapshot` reports a `path` too.
+CLIP_ACTION_KIND = "record_clip"
+#: Shared, stateless, and never used for a real run — see the class docstring.
+_NULL_RECORDER = NullWatchEventRecorder()
 
 
 @register_task()
@@ -127,7 +133,10 @@ class StreamWatcherTask(Task):
         self._frames_analysed: int = 0
         self._inference_ms: List[float] = []
         self._recent_events: List[dict] = []
-        self._open_event_uuids: Dict[str, str] = {}
+        # Writes the durable event history. Built in `_run` rather than here because it
+        # needs the resolved profile uuid. `_open_event_uuids` used to live here as
+        # unused scaffolding for exactly this job; the recorder owns that map now.
+        self._recorder: WatchEventRecorder = _NULL_RECORDER
         self._run_started_at: float = time.monotonic()
         self._label_ancestry: Dict[str, set] = {}
         # label_uuid → {"text": name, "color": color}. Inference returns a bare
@@ -685,6 +694,15 @@ class StreamWatcherTask(Task):
         self._run_started_at = time.monotonic()
         db_api_client = self._manager.get_db_api_client()
 
+        # A factory, not the client itself, for the same reason `inference_api` is built
+        # per pass: a watcher runs for weeks, and a client captured at start-up keeps
+        # addressing whatever host Settings pointed at when the run began.
+        self._recorder = WatchEventRecorder(
+            profile_uuid=self._profile.uuid,
+            api_client_factory=self._manager.get_db_api_client,
+            log=self.log,
+        )
+
         self._status_msg = "Building pipelines"
         await self._build_pipelines(db_api_client)
 
@@ -983,7 +1001,14 @@ class StreamWatcherTask(Task):
         ]
 
     async def _dispatch(self, signal, pipeline: Optional[WatchPipeline] = None) -> None:
-        """Hand an event transition to the action layer."""
+        """Hand an event transition to the action layer, and record it.
+
+        Persistence brackets the actions rather than following them, because the two
+        edges need opposite orderings. On START the row must exist before anything runs
+        so an artifact produced by an action has an event to hang off. On END the clip
+        does not exist until `record_clip` has run, so the row is closed *after* — with
+        the event uuid captured beforehand, since closing it forgets the mapping.
+        """
         verb = {EventPhase.START: "started", EventPhase.UPDATE: "updated", EventPhase.END: "ended"}[signal.phase]
         detail = f" ({signal.duration_s:.1f}s)" if signal.phase is EventPhase.END else ""
         capped = " [capped by max duration]" if signal.truncated else ""
@@ -997,7 +1022,17 @@ class StreamWatcherTask(Task):
             EventPhase.END: "event_ended",
         }[signal.phase]
         context = self._action_context(signal, pipeline)
-        await self._run_actions(self._actions_for(signal, trigger), signal, context)
+
+        if signal.phase is EventPhase.START:
+            await self._recorder.record(signal, context)
+        event_uuid = self._recorder.event_uuid_for(signal)
+
+        clip = await self._run_actions(self._actions_for(signal, trigger), signal, context)
+
+        if signal.phase is EventPhase.END:
+            if clip:
+                await self._recorder.attach_recording(signal, event_uuid, clip)
+            await self._recorder.record(signal, context)
 
     async def _dispatch_frame(self, pipeline: WatchPipeline) -> None:
         """Fire `frame_analysed` actions for one just-analysed frame.
@@ -1031,8 +1066,15 @@ class StreamWatcherTask(Task):
         context = self._action_context(signal, pipeline)
         await self._run_actions(self._actions_for(signal, FRAME_ANALYSED), signal, context)
 
-    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> None:
-        """Run a resolved action list, counting outcomes. Never raises."""
+    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> Optional[Dict[str, Any]]:
+        """Run a resolved action list, counting outcomes. Never raises.
+
+        Returns the result data of a clip-producing action, so the caller can register
+        the file it wrote. `record_clip` is the only action that writes a `path`, and a
+        profile with two of them scoped to the same rule and source is a
+        misconfiguration — the last one wins, exactly as it does for `_last_clip_path`.
+        """
+        clip: Optional[Dict[str, Any]] = None
         for row, action in rows:
             try:
                 result = await action.run(signal, context)
@@ -1046,11 +1088,17 @@ class StreamWatcherTask(Task):
             if result.ok:
                 self._action_successes += 1
                 self._last_action_failure.pop(row.uuid, None)
-                if result.data.get("path"):
+                # Gated on kind, not merely on a `path` key: `save_snapshot` also
+                # reports one, and treating a jpg as the event's clip put a still image
+                # behind the status panel's "last clip" and would now write a
+                # `recordings` row pointing at something no <video> can play.
+                if row.kind == CLIP_ACTION_KIND and result.data.get("path"):
                     self._last_clip_path = result.data["path"]
+                    clip = dict(result.data)
             else:
                 self._action_failures += 1
                 self._log_action_failure(row, f"Action {row.kind} failed: {result.detail}")
+        return clip
 
     def _log_action_failure(self, row: Any, message: str) -> None:
         """Log an action failure once per distinct message, not once per occurrence.
@@ -1139,6 +1187,11 @@ class StreamWatcherTask(Task):
         }
 
     async def _deinit(self) -> None:
+        # After the run loop's `finally`, which has already emitted a closing signal for
+        # everything still open. Anything left in the map failed to persist and has no
+        # row to patch, so this forgets rather than closes.
+        await self._recorder.close_all()
+
         for _row, action in self._actions:
             try:
                 await action.close()

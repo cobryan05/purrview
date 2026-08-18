@@ -66,6 +66,7 @@ from apps.helpers.db.types import (
     PreviewRunCreate,
     PreviewRunRead,
     PreviewRunUpdate,
+    Recording,
     RecordingRead,
     RegionRole,
     Source,
@@ -81,6 +82,7 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
+    WatchEvent,
     WatchEventRead,
     WatchProfileCreate,
     WatchProfileRead,
@@ -3694,14 +3696,65 @@ class Manager:
 
     # ── Watch events and recordings ────────────────────────────────────────────
 
-    async def list_watch_events(self, **kwargs) -> List[WatchEventRead]:
+    async def list_watch_events(self, **kwargs) -> Tuple[List[WatchEventRead], int]:
         return await self._db_client.list_watch_events(**kwargs)
+
+    async def get_watch_event(self, uuid: str) -> Optional[WatchEventRead]:
+        return await self._db_client.get_watch_event(uuid)
+
+    async def watch_event_facets(self, profile_uuid: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
+        return await self._db_client.watch_event_facets(profile_uuid=profile_uuid)
+
+    async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
+        return await self._db_client.create_watch_event(event)
+
+    async def update_watch_event(self, uuid: str, **fields) -> Optional[WatchEventRead]:
+        return await self._db_client.update_watch_event(uuid, **fields)
+
+    async def watch_event_snapshot_file(self, uuid: str) -> Optional[Path]:
+        """Resolve an event's card art to a file that actually exists.
+
+        Returns None both when the event has no snapshot and when the path is stale —
+        the caller cannot usefully tell those apart, and neither can be served.
+        """
+        path_str = await self._db_client.get_watch_event_snapshot_path(uuid)
+        if not path_str:
+            return None
+        path = Path(path_str)
+        return path if path.is_file() else None
+
+    async def delete_watch_event(self, uuid: str) -> bool:
+        """Delete an event, its card art, and any clip it owns.
+
+        The snapshot is the event's own file (not a curated training image), so it goes
+        with the row. A `save_snapshot` action's output lives under `image_datasets` and
+        is deliberately left alone — the user curates that.
+        """
+        event = await self._db_client.get_watch_event(uuid)
+        if event is None:
+            return False
+        snapshot = await self._db_client.get_watch_event_snapshot_path(uuid)
+        if event.recording_uuid:
+            await self.delete_recording(event.recording_uuid)
+        deleted = await self._db_client.delete_watch_event(uuid)
+        if deleted and snapshot:
+            try:
+                Path(snapshot).unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Could not remove snapshot %s: %s", snapshot, e)
+        return deleted
 
     async def list_recordings(self, **kwargs) -> List[RecordingRead]:
         return await self._db_client.list_recordings(**kwargs)
 
     async def get_recording(self, uuid: str) -> Optional[RecordingRead]:
         return await self._db_client.get_recording(uuid)
+
+    async def create_recording(self, recording: Recording) -> RecordingRead:
+        return await self._db_client.create_recording(recording)
+
+    async def update_recording(self, uuid: str, **fields) -> Optional[RecordingRead]:
+        return await self._db_client.update_recording(uuid, **fields)
 
     async def delete_recording(self, uuid: str) -> bool:
         """Delete a recording row and the clip file it points at.

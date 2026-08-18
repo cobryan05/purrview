@@ -6713,34 +6713,146 @@ class DbClient:
 
     # ─── Watch events and recordings ──────────────────────────────────────────
 
+    @staticmethod
+    def _watch_event_to_read(event: WatchEvent) -> WatchEventRead:
+        """`has_snapshot` is derived, not stored.
+
+        The column holds a server filesystem path, which the browser can do nothing
+        with and should not see; what the card needs to know is only whether there is
+        an image to fetch from the snapshot endpoint.
+        """
+        read = WatchEventRead.model_validate(event)
+        read.has_snapshot = bool(event.snapshot_path)
+        return read
+
     async def list_watch_events(
         self,
         profile_uuid: Optional[str] = None,
         source_uuid: Optional[str] = None,
+        rule_uuid: Optional[str] = None,
+        subject_ref: Optional[str] = None,
+        target_ref: Optional[str] = None,
         start_from: Optional[datetime] = None,
         start_to: Optional[datetime] = None,
+        has_recording: Optional[bool] = None,
         limit: int = 200,
-    ) -> List[WatchEventRead]:
+        offset: int = 0,
+    ) -> Tuple[List[WatchEventRead], int]:
+        """Newest first, offset paginated, with the unpaginated total.
+
+        Offset rather than the keyset cursor the review queue uses: events are a
+        bounded, append-only log ordered by a single scalar the user also filters on,
+        and the page shows "N events" — which needs the count anyway.
+        """
         async with self._async_session_maker() as session:
             stmt = select(WatchEvent)
             if profile_uuid:
                 stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
             if source_uuid:
                 stmt = stmt.where(WatchEvent.source_uuid == source_uuid)
+            if rule_uuid:
+                stmt = stmt.where(WatchEvent.rule_uuid == rule_uuid)
+            if subject_ref:
+                stmt = stmt.where(WatchEvent.subject_ref == subject_ref)
+            if target_ref:
+                stmt = stmt.where(WatchEvent.target_ref == target_ref)
             if start_from:
                 stmt = stmt.where(WatchEvent.started_at >= start_from)
             if start_to:
                 stmt = stmt.where(WatchEvent.started_at <= start_to)
-            stmt = stmt.order_by(WatchEvent.started_at.desc()).limit(limit)
+            if has_recording is True:
+                stmt = stmt.where(WatchEvent.recording_uuid != None)  # noqa: E711
+            elif has_recording is False:
+                stmt = stmt.where(WatchEvent.recording_uuid == None)  # noqa: E711
+
+            count_stmt = select(func.count()).select_from(stmt.subquery())
+            total = (await session.exec(count_stmt)).one()
+
+            stmt = stmt.order_by(WatchEvent.started_at.desc()).offset(offset).limit(limit)
             result = await session.exec(stmt)
-            return [WatchEventRead.model_validate(e) for e in result.all()]
+            return [self._watch_event_to_read(e) for e in result.all()], int(total)
+
+    async def watch_event_facets(self, profile_uuid: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
+        """The distinct values each filter dropdown can offer, with display names.
+
+        Derived from the events themselves rather than from the watcher config, because
+        the two diverge: a rule deleted last month still has a month of history behind
+        it, and a rule added this morning has none. Offering config values would show
+        filters that match nothing and hide the ones that match everything.
+        """
+
+        async def _distinct(ref_col, name_col) -> List[Dict[str, str]]:
+            stmt = select(ref_col, func.max(name_col)).where(ref_col != None)  # noqa: E711
+            if profile_uuid:
+                stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
+            # max() over the name, not group-by both: a slot renamed mid-history would
+            # otherwise appear as two entries for one thing.
+            stmt = stmt.group_by(ref_col)
+            rows = (await session.exec(stmt)).all()
+            return [{"ref": ref, "name": name or ref} for ref, name in rows if ref]
+
+        async def _sources() -> List[Dict[str, str]]:
+            # Joined, not denormalised like the other three: a camera is a live entity
+            # the user renames in Sources and expects to see renamed here, whereas a
+            # rule name is a historical fact about an event that already happened.
+            stmt = (
+                select(WatchEvent.source_uuid, func.max(Source.name))
+                .join(Source, Source.uuid == WatchEvent.source_uuid)
+                .where(WatchEvent.source_uuid != None)  # noqa: E711
+            )
+            if profile_uuid:
+                stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
+            rows = (await session.exec(stmt.group_by(WatchEvent.source_uuid))).all()
+            return [{"ref": ref, "name": name or ref} for ref, name in rows if ref]
+
+        async with self._async_session_maker() as session:
+            return {
+                "rules": await _distinct(WatchEvent.rule_uuid, WatchEvent.rule_name),
+                "subjects": await _distinct(WatchEvent.subject_ref, WatchEvent.subject_name),
+                "targets": await _distinct(WatchEvent.target_ref, WatchEvent.target_name),
+                "sources": await _sources(),
+            }
+
+    async def get_watch_event(self, uuid: str) -> Optional[WatchEventRead]:
+        async with self._async_session_maker() as session:
+            event = await session.get(WatchEvent, uuid)
+            return None if event is None else self._watch_event_to_read(event)
+
+    async def get_watch_event_snapshot_path(self, uuid: str) -> Optional[str]:
+        """The raw path, for the endpoint that streams the file. Deliberately its own
+        method so the path never rides out on the read model by accident."""
+        async with self._async_session_maker() as session:
+            event = await session.get(WatchEvent, uuid)
+            return None if event is None else event.snapshot_path
 
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
         async with self._async_session_maker() as session:
             session.add(event)
             await session.commit()
             await session.refresh(event)
-            return WatchEventRead.model_validate(event)
+            return self._watch_event_to_read(event)
+
+    async def update_watch_event(self, uuid: str, **fields) -> Optional[WatchEventRead]:
+        async with self._async_session_maker() as session:
+            event = await session.get(WatchEvent, uuid)
+            if event is None:
+                return None
+            for key, value in fields.items():
+                if hasattr(event, key):
+                    setattr(event, key, value)
+            session.add(event)
+            await session.commit()
+            await session.refresh(event)
+            return self._watch_event_to_read(event)
+
+    async def delete_watch_event(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            event = await session.get(WatchEvent, uuid)
+            if event is None:
+                return False
+            await session.delete(event)
+            await session.commit()
+        return True
 
     async def close_watch_event(
         self,
@@ -6761,7 +6873,7 @@ class DbClient:
             session.add(event)
             await session.commit()
             await session.refresh(event)
-            return WatchEventRead.model_validate(event)
+            return self._watch_event_to_read(event)
 
     async def list_open_watch_events(self, profile_uuid: Optional[str] = None) -> List[WatchEventRead]:
         """Events with no `ended_at` — what resume has to close out after a restart."""
@@ -6770,7 +6882,7 @@ class DbClient:
             if profile_uuid:
                 stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
             result = await session.exec(stmt)
-            return [WatchEventRead.model_validate(e) for e in result.all()]
+            return [self._watch_event_to_read(e) for e in result.all()]
 
     async def list_recordings(
         self,

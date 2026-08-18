@@ -57,7 +57,9 @@ from apps.helpers.db.types import (
     PreviewRunCreate,
     PreviewRunRead,
     PreviewRunUpdate,
+    Recording,
     RecordingRead,
+    RecordingStatus,
     Source,
     SourceRead,
     SourceRegionRead,
@@ -74,6 +76,7 @@ from apps.helpers.db.types import (
     TrainingConfigCreate,
     TrainingConfigRead,
     TrainingConfigUpdate,
+    WatchEvent,
     WatchEventRead,
     WatchProfileCreate,
     WatchProfileRead,
@@ -894,6 +897,60 @@ class WatchProfileValidationResponse(StatusResponse):
 
 class ListWatchEventsResponse(StatusResponse):
     events: List[WatchEventRead] = Field(default_factory=list)
+    #: Matches before paging, so the page can say "N events" rather than "N so far".
+    total: int = 0
+
+
+class WatchEventResponse(StatusResponse):
+    event: Optional[WatchEventRead] = None
+
+
+class WatchEventFacet(ApiModel):
+    ref: str
+    name: str
+
+
+class WatchEventFacetsResponse(StatusResponse):
+    """What each filter dropdown can offer — the values actually present in history."""
+
+    rules: List[WatchEventFacet] = Field(default_factory=list)
+    subjects: List[WatchEventFacet] = Field(default_factory=list)
+    targets: List[WatchEventFacet] = Field(default_factory=list)
+    sources: List[WatchEventFacet] = Field(default_factory=list)
+
+
+class WatchEventCreate(Payload):
+    profile_uuid: str
+    source_uuid: Optional[str] = None
+    rule_uuid: Optional[str] = None
+    rule_name: Optional[str] = None
+    event_label: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    peak_confidence: float = 0.0
+    track_ids_json: List[Any] = Field(default_factory=list)
+    subject_ref: Optional[str] = None
+    subject_name: Optional[str] = None
+    target_ref: Optional[str] = None
+    target_name: Optional[str] = None
+    truncated: bool = False
+    snapshot_path: Optional[str] = None
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WatchEventUpdate(Payload):
+    """Only the fields an event's *closing* edge changes.
+
+    A closed event is history: the rule, source and start moment are not editable, so
+    they are absent here rather than optional-and-ignored.
+    """
+
+    ended_at: Optional[datetime] = None
+    peak_confidence: Optional[float] = None
+    truncated: Optional[bool] = None
+    snapshot_path: Optional[str] = None
+    recording_uuid: Optional[str] = None
+    metadata_json: Optional[Dict[str, Any]] = None
 
 
 class ListRecordingsResponse(StatusResponse):
@@ -902,6 +959,29 @@ class ListRecordingsResponse(StatusResponse):
 
 class RecordingResponse(StatusResponse):
     recording: Optional[RecordingRead] = None
+
+
+class RecordingCreate(Payload):
+    """A clip that has already been written to disk.
+
+    `started_at` is the clip's *actual* first frame, not the event's start: pre-roll is
+    cut retroactively out of the buffer and may be clamped by eviction, so the two
+    differ by design. The review page subtracts them to mark where in the clip the rule
+    fired, which only works if this really is the clip's own start.
+    """
+
+    source_uuid: Optional[str] = None
+    profile_uuid: Optional[str] = None
+    event_uuid: Optional[str] = None
+    file_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    duration_s: float = 0.0
+    size_bytes: int = 0
+    status: str = RecordingStatus.COMPLETE.value
+    error: Optional[str] = None
+    partial_preroll: bool = False
 
 
 class ListModelGroupsResponse(StatusResponse):
@@ -4105,22 +4185,130 @@ class WebApp:
         async def list_watch_events(
             profile_uuid: Optional[str] = None,
             source_uuid: Optional[str] = None,
+            rule_uuid: Optional[str] = None,
+            subject_ref: Optional[str] = None,
+            target_ref: Optional[str] = None,
             start_from: Optional[datetime] = None,
             start_to: Optional[datetime] = None,
+            has_recording: Optional[bool] = None,
             limit: int = 200,
+            offset: int = 0,
         ) -> ListWatchEventsResponse:
             try:
-                events = await self._manager.list_watch_events(
+                events, total = await self._manager.list_watch_events(
                     profile_uuid=profile_uuid,
                     source_uuid=source_uuid,
+                    rule_uuid=rule_uuid,
+                    subject_ref=subject_ref,
+                    target_ref=target_ref,
                     start_from=start_from,
                     start_to=start_to,
+                    has_recording=has_recording,
                     limit=limit,
+                    offset=offset,
                 )
-                return ListWatchEventsResponse(status=JsonValues.SUCCESS, events=events)
+                return ListWatchEventsResponse(status=JsonValues.SUCCESS, events=events, total=total)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListWatchEventsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/watch-events",
+            response_model=WatchEventResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="create_watch_event",
+        )
+        async def create_watch_event(payload: WatchEventCreate) -> WatchEventResponse:
+            try:
+                fields = payload.model_dump(exclude_none=True)
+                event = await self._manager.create_watch_event(WatchEvent(**fields))
+                return WatchEventResponse(status=JsonValues.SUCCESS, event=event)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Registered before `/{uuid}`. FastAPI matches in declaration order, so a
+        # literal path that comes after a path parameter of the same shape is
+        # unreachable — "facets" would be read as an event uuid and 404.
+        @self._app.get(
+            "/api/watch-events/facets",
+            response_model=WatchEventFacetsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event_facets",
+        )
+        async def get_watch_event_facets(profile_uuid: Optional[str] = None) -> WatchEventFacetsResponse:
+            try:
+                facets = await self._manager.watch_event_facets(profile_uuid=profile_uuid)
+                return WatchEventFacetsResponse(status=JsonValues.SUCCESS, **facets)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventFacetsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/watch-events/{uuid}",
+            response_model=WatchEventResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event",
+        )
+        async def get_watch_event(uuid: str) -> WatchEventResponse:
+            try:
+                event = await self._manager.get_watch_event(uuid)
+                if event is None:
+                    return WatchEventResponse(status=JsonValues.FAILURE, message="Event not found")
+                return WatchEventResponse(status=JsonValues.SUCCESS, event=event)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/watch-events/{uuid}",
+            response_model=WatchEventResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="update_watch_event",
+        )
+        async def update_watch_event(uuid: str, payload: WatchEventUpdate) -> WatchEventResponse:
+            try:
+                # exclude_unset, not exclude_none: an explicit null is how a caller
+                # clears a link, and an omitted field must not be confused with one.
+                event = await self._manager.update_watch_event(uuid, **payload.model_dump(exclude_unset=True))
+                if event is None:
+                    return WatchEventResponse(status=JsonValues.FAILURE, message="Event not found")
+                return WatchEventResponse(status=JsonValues.SUCCESS, event=event)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/watch-events/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="delete_watch_event",
+        )
+        async def delete_watch_event(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_watch_event(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Event not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/watch-events/{uuid}/snapshot",
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event_snapshot",
+        )
+        async def get_watch_event_snapshot(uuid: str):
+            """Serve the event's card art.
+
+            The stored path is never exposed to the browser; this endpoint is the only
+            way to reach the file, so a snapshot cannot be used to probe the filesystem.
+            """
+            path = await self._manager.watch_event_snapshot_file(uuid)
+            if path is None:
+                raise HTTPException(status_code=404, detail="No snapshot for this event")
+            return FileResponse(path, media_type="image/jpeg")
 
     def _register_recording_routes(self) -> None:
         @self._app.get(
@@ -4142,6 +4330,20 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListRecordingsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/recordings",
+            response_model=RecordingResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="create_recording",
+        )
+        async def create_recording(payload: RecordingCreate) -> RecordingResponse:
+            try:
+                recording = await self._manager.create_recording(Recording(**payload.model_dump(exclude_none=True)))
+                return RecordingResponse(status=JsonValues.SUCCESS, recording=recording)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RecordingResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/recordings/{uuid}",

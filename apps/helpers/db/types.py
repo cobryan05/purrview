@@ -1856,11 +1856,33 @@ class WatchEvent(SQLModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
     source_uuid: Optional[str] = Field(default=None, foreign_key="sources.uuid", index=True, ondelete="SET NULL")
-    rule_uuid: Optional[str] = Field(default=None, foreign_key="interaction_rules.uuid", ondelete="SET NULL")
+    rule_uuid: Optional[str] = Field(
+        default=None, foreign_key="interaction_rules.uuid", index=True, ondelete="SET NULL"
+    )
+    # Denormalised from the rule at event time, on purpose. A rule can be renamed or
+    # deleted (`ondelete="SET NULL"`) long after the events it fired, and an event
+    # review page whose rows go blank when someone tidies up a profile is worthless.
+    # This is the history of what happened, not a live view of the config.
+    rule_name: Optional[str] = Field(default=None)
+    event_label: Optional[str] = Field(default=None)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_type=DateTime(timezone=True))
     ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     peak_confidence: float = Field(default=0.0)
     track_ids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    # Which member of each multi-ref slot actually matched — the "acting" thing and the
+    # thing it acted on. Columns rather than `metadata_json` keys because these are the
+    # two filters the review page is built around, and a JSON extract cannot use an index.
+    subject_ref: Optional[str] = Field(default=None, index=True)
+    subject_name: Optional[str] = Field(default=None)
+    target_ref: Optional[str] = Field(default=None, index=True)
+    target_name: Optional[str] = Field(default=None)
+    # Closed by `max_duration_s` rather than by the predicate going false. A stuck
+    # detection looks exactly like a very long event otherwise.
+    truncated: bool = Field(default=False)
+    # Absolute path to the event's own thumbnail, written by the task at START. Distinct
+    # from whatever a `save_snapshot` action wrote: that one is a training image the user
+    # curates, this one is the review page's card art and is deleted with the event.
+    snapshot_path: Optional[str] = Field(default=None)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     recording_uuid: Optional[str] = Field(default=None, foreign_key="recordings.uuid", ondelete="SET NULL")
 
@@ -2171,10 +2193,21 @@ class WatchEventRead(OrmModel):
     profile_uuid: str
     source_uuid: Optional[str] = None
     rule_uuid: Optional[str] = None
+    rule_name: Optional[str] = None
+    event_label: Optional[str] = None
     started_at: datetime
     ended_at: Optional[datetime] = None
     peak_confidence: float = 0.0
     track_ids_json: List[Any] = Field(default_factory=list)
+    subject_ref: Optional[str] = None
+    subject_name: Optional[str] = None
+    target_ref: Optional[str] = None
+    target_name: Optional[str] = None
+    truncated: bool = False
+    # Whether the event has card art on disk. The path itself is deliberately not
+    # exposed: it is a server filesystem path, and the browser fetches the image from
+    # `/api/watch-events/{uuid}/snapshot` instead.
+    has_snapshot: bool = False
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
     recording_uuid: Optional[str] = None
 
