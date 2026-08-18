@@ -30,16 +30,17 @@ export async function init() {
   const wrap = document.createElement('div');
   wrap.className = 'settings-wrap';
 
-  // The three settings panels load their values concurrently — each awaits its
+  // The settings panels load their values concurrently — each awaits its
   // own settings reads, so building them in sequence would serialise round-trips
   // that have nothing to do with each other.
-  const [serverPanel, dedupPanel, uiPanel] = await Promise.all([
+  const [serverPanel, mqttPanel, dedupPanel, uiPanel] = await Promise.all([
     _buildServerSection(),
+    _buildMqttSection(),
     _buildDedupSection(),
     _buildUiSettingsSection(),
   ]);
 
-  wrap.append(serverPanel, dedupPanel, uiPanel, _buildHotkeySection());
+  wrap.append(serverPanel, mqttPanel, dedupPanel, uiPanel, _buildHotkeySection());
   container.appendChild(wrap);
 }
 
@@ -268,6 +269,228 @@ function _buildServerRow({ label, serverType, settingKey, description, defaultUr
   });
 
   return row;
+}
+
+/* ── MQTT broker ───────────────────────────────────────────────────────────── */
+
+/**
+ * The settings key the watcher reads its broker connection from.
+ * Mirrors `_load_mqtt_settings` in `apps/tasks_server/tasks/StreamWatcherTask.py`.
+ */
+export const MQTT_SETTING_KEY = 'mqtt_broker';
+
+/** Defaults mirror `MqttSettings` in `apps/helpers/actions/mqttPublisher.py`. */
+const MQTT_DEFAULTS = {
+  host: '',
+  port: 1883,
+  prefix: 'whiskerwatcher',
+  username: '',
+  password: '',
+  tls: false,
+  client_id: 'whiskerwatcher',
+};
+
+/**
+ * Read the stored broker config. The settings table holds strings, so this key is
+ * JSON — a value that fails to parse is treated as unset rather than thrown, so a
+ * hand-edited row can't make the whole Settings tab fail to render.
+ * @returns {Promise<Record<string, any>>}
+ */
+async function _loadMqttConfig() {
+  let stored = null;
+  try {
+    stored = await getSetting(MQTT_SETTING_KEY);
+  } catch (_) {}
+  if (!stored) return { ...MQTT_DEFAULTS };
+  try {
+    const parsed = JSON.parse(stored);
+    if (parsed && typeof parsed === 'object') return { ...MQTT_DEFAULTS, ...parsed };
+  } catch (_) {}
+  return { ...MQTT_DEFAULTS };
+}
+
+/** One labelled input inside the MQTT panel. */
+function _mqttField({ label, description, testid, type = 'text', value, placeholder, narrow = false }) {
+  const input = document.createElement('input');
+  input.type = type;
+  input.className = narrow
+    ? 'settings-server-input settings-server-input--narrow'
+    : 'settings-server-input';
+  input.dataset.testid = testid;
+  if (placeholder) input.placeholder = placeholder;
+  if (type === 'checkbox') {
+    input.className = '';
+    input.checked = Boolean(value);
+  } else {
+    input.value = value == null ? '' : String(value);
+  }
+  const { row } = _buildRow({ label, description, controls: [input] });
+  return { row, input };
+}
+
+async function _buildMqttSection() {
+  const { section, body } = _panel('MQTT Broker', { id: 'settings-section-mqtt' });
+
+  const config = await _loadMqttConfig();
+
+  const note = document.createElement('p');
+  note.className = 'settings-dedup-warning';
+  note.textContent =
+    'One broker per deployment, shared by every watcher: the "Publish MQTT" and "Publish MQTT image" actions ' +
+    '(Configuration → Watchers) connect here rather than carrying their own connection details. A watcher reads ' +
+    'these settings when it starts, so restart any running watcher after changing them. The password is stored ' +
+    'unencrypted in the settings database.';
+  body.appendChild(note);
+
+  const host = _mqttField({
+    label: 'Broker host',
+    description: 'Hostname or IP of the MQTT broker. Leave blank to disable MQTT publishing entirely.',
+    testid: 'settings-mqtt-host',
+    value: config.host,
+    placeholder: 'e.g. 192.168.1.10 or mqtt.local',
+  });
+  const port = _mqttField({
+    label: 'Port',
+    description: 'Default: 1883 (8883 is the usual TLS port).',
+    testid: 'settings-mqtt-port',
+    type: 'number',
+    value: config.port,
+    narrow: true,
+  });
+  const prefix = _mqttField({
+    label: 'Topic prefix',
+    description:
+      'Prepended to every topic, including the online/offline state topic (<prefix>/state). Each action\'s ' +
+      'topic template is appended to this.',
+    testid: 'settings-mqtt-prefix',
+    value: config.prefix,
+    placeholder: MQTT_DEFAULTS.prefix,
+  });
+  const username = _mqttField({
+    label: 'Username',
+    description: 'Leave blank for an anonymous broker.',
+    testid: 'settings-mqtt-username',
+    value: config.username,
+  });
+  const password = _mqttField({
+    label: 'Password',
+    testid: 'settings-mqtt-password',
+    type: 'password',
+    value: config.password,
+  });
+  const tls = _mqttField({
+    label: 'Use TLS',
+    description: 'Connect with TLS using the system CA bundle.',
+    testid: 'settings-mqtt-tls',
+    type: 'checkbox',
+    value: config.tls,
+  });
+  const clientId = _mqttField({
+    label: 'Client ID',
+    description:
+      'Identifies this deployment to the broker. Brokers disconnect an existing session when a second client ' +
+      'connects with the same id, so make it unique per deployment.',
+    testid: 'settings-mqtt-client-id',
+    value: config.client_id,
+    placeholder: MQTT_DEFAULTS.client_id,
+  });
+
+  const testBtn = _rowButton('Test', { secondary: true });
+  testBtn.dataset.testid = 'settings-mqtt-test';
+  const saveBtn = _rowButton('Save');
+  saveBtn.dataset.testid = 'settings-mqtt-save';
+
+  const { row: actionRow, setStatus } = _buildRow({
+    label: 'Connection',
+    controls: [testBtn, saveBtn],
+  });
+  actionRow.dataset.testid = 'settings-mqtt-actions';
+
+  setStatus(
+    config.host ? `Configured: ${config.host}:${config.port || MQTT_DEFAULTS.port}` : 'No broker configured.',
+    config.host ? 'info' : 'muted'
+  );
+
+  /** Current form values, normalised the same way for Test and for Save. */
+  const _values = () => ({
+    host: host.input.value.trim(),
+    port: parseInt(port.input.value, 10) || MQTT_DEFAULTS.port,
+    prefix: prefix.input.value.trim() || MQTT_DEFAULTS.prefix,
+    username: username.input.value.trim(),
+    password: password.input.value,
+    tls: tls.input.checked,
+    client_id: clientId.input.value.trim() || MQTT_DEFAULTS.client_id,
+  });
+
+  testBtn.addEventListener('click', async () => {
+    const values = _values();
+    if (!values.host) {
+      setStatus('Enter a broker host first.', 'error');
+      return;
+    }
+    testBtn.disabled = true;
+    testBtn.textContent = 'Testing…';
+    setStatus(`Testing ${values.host}:${values.port}…`, 'muted');
+    try {
+      // Tests what is in the form, not what is saved — otherwise the button can only
+      // confirm settings you have already committed, which is the wrong order.
+      const res = await apiFetch('/api/test-mqtt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: values.host,
+          port: values.port,
+          username: values.username || null,
+          password: values.password || null,
+          tls: values.tls,
+        }),
+      });
+      const data = await res.json();
+      setStatus(data.success ? `✓ ${data.message}` : `✗ ${data.message}`, data.success ? 'ok' : 'error');
+    } catch (e) {
+      setStatus(`✗ ${e.message}`, 'error');
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test';
+    }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const values = _values();
+    const portVal = parseInt(port.input.value, 10);
+    if (port.input.value.trim() !== '' && (!Number.isFinite(portVal) || portVal < 1 || portVal > 65535)) {
+      setStatus('Port must be between 1 and 65535.', 'error');
+      return;
+    }
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        // A blank host means "no broker": store an empty string so the watcher's
+        // `if not value` check disables MQTT, rather than a JSON object that would
+        // parse into a connection attempt against localhost.
+        await setSetting(MQTT_SETTING_KEY, values.host ? JSON.stringify(values) : '');
+        setStatus(
+          values.host
+            ? `Saved: ${values.host}:${values.port} — restart running watchers to apply.`
+            : 'Saved: MQTT publishing disabled.',
+          values.host ? 'info' : 'muted'
+        );
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
+  });
+
+  body.append(
+    host.row,
+    port.row,
+    prefix.row,
+    username.row,
+    password.row,
+    tls.row,
+    clientId.row,
+    actionRow
+  );
+  return section;
 }
 
 /* ── Deduplication ─────────────────────────────────────────────────────────── */

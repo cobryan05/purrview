@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -104,6 +105,18 @@ SETTINGS_PROXY = ReverseProxy(
 class TestServerPayload(BaseModel):
     url: str
     server_type: str  # "inference_server" or "training_server"
+
+
+class TestMqttPayload(BaseModel):
+    """Broker settings to probe. Snake_case like TestServerPayload above — these two
+    Settings-only payloads predate nothing and are hand-written, not `Payload`
+    subclasses, so they don't carry the camelCase alias generator."""
+
+    host: str
+    port: int = 1883
+    username: Optional[str] = None
+    password: Optional[str] = None
+    tls: bool = False
 
 
 # Task SSE polling cadence. The stream is a poll loop behind a push-shaped API, so
@@ -438,6 +451,18 @@ class WebApp:
         async def test_server(payload: TestServerPayload) -> JSONResponse:
             """Test connectivity to an inference or training server URL."""
             result = await self._manager.test_server(payload.url, payload.server_type)
+            return JSONResponse(content=result)
+
+        @self._app.post("/api/test-mqtt", response_class=JSONResponse)
+        async def test_mqtt(payload: TestMqttPayload) -> JSONResponse:
+            """Test connectivity to an MQTT broker with the given credentials."""
+            result = await self._manager.test_mqtt_broker(
+                host=payload.host,
+                port=payload.port,
+                username=payload.username,
+                password=payload.password,
+                tls=payload.tls,
+            )
             return JSONResponse(content=result)
 
         @self._app.post("/api/reload-server-config", response_class=JSONResponse)

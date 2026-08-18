@@ -274,8 +274,8 @@ class TestSettingsLayout:
 
         wrap = page.locator("#tab-settings .settings-wrap")
         expect(wrap).to_have_css("display", "grid")
-        # Servers, Deduplication, Interface, Keyboard Shortcuts
-        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(4)
+        # Servers, MQTT Broker, Deduplication, Interface, Keyboard Shortcuts
+        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(5)
 
         # At a desktop width the grid resolves to more than one column.
         columns = page.evaluate(
@@ -308,6 +308,191 @@ class TestSettingsLayout:
             # A control that lost the width fight fills the row; a sized one is a
             # small fraction of the panel.
             assert m["width"] < m["panelWidth"] * 0.5, f"{m['cls']} is not sized narrow: {m['width']:.0f}px"
+
+
+# ---------------------------------------------------------------------------
+# 3c. MQTT broker panel
+# ---------------------------------------------------------------------------
+
+
+def _mock_test_mqtt(page: Page, success=True, message="Connected to broker.local:1883"):
+    calls = []
+
+    def handle(route: Route):
+        calls.append(json.loads(route.request.post_data))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"success": success, "message": message}),
+        )
+
+    page.route("**/api/test-mqtt", handle)
+    return calls
+
+
+def _mqtt_field(page: Page, testid: str):
+    return page.locator(f"#settings-section-mqtt [data-testid='{testid}']")
+
+
+def _mqtt_status(page: Page):
+    return page.locator("#settings-section-mqtt [data-testid='settings-mqtt-actions'] .settings-server-status")
+
+
+class TestMqttSettings:
+    def test_empty_config_renders_blank_fields_with_defaults(self, page: Page, base_url: str):
+        """With no stored broker, the panel shows the MqttSettings defaults and says so."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
+        expect(_mqtt_field(page, "settings-mqtt-port")).to_have_value("1883")
+        expect(_mqtt_field(page, "settings-mqtt-prefix")).to_have_value("whiskerwatcher")
+        expect(_mqtt_field(page, "settings-mqtt-client-id")).to_have_value("whiskerwatcher")
+        expect(_mqtt_field(page, "settings-mqtt-tls")).not_to_be_checked()
+        expect(_mqtt_status(page)).to_have_text("No broker configured.")
+
+    def test_stored_json_config_populates_the_form(self, page: Page, base_url: str):
+        """The key is stored as a JSON string, since the settings table holds strings."""
+        _mock_server_config(page)
+        _mock_settings_get(
+            page,
+            {
+                "mqtt_broker": json.dumps(
+                    {
+                        "host": "broker.local",
+                        "port": 8883,
+                        "prefix": "home/cams",
+                        "username": "user1",
+                        "password": "secret",
+                        "tls": True,
+                        "client_id": "ww-garage",
+                    }
+                )
+            },
+        )
+        _navigate_to_settings(page, base_url)
+
+        expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("broker.local")
+        expect(_mqtt_field(page, "settings-mqtt-port")).to_have_value("8883")
+        expect(_mqtt_field(page, "settings-mqtt-prefix")).to_have_value("home/cams")
+        expect(_mqtt_field(page, "settings-mqtt-username")).to_have_value("user1")
+        expect(_mqtt_field(page, "settings-mqtt-password")).to_have_value("secret")
+        expect(_mqtt_field(page, "settings-mqtt-tls")).to_be_checked()
+        expect(_mqtt_field(page, "settings-mqtt-client-id")).to_have_value("ww-garage")
+        expect(_mqtt_status(page)).to_have_text("Configured: broker.local:8883")
+
+    def test_unparseable_stored_value_falls_back_to_defaults(self, page: Page, base_url: str):
+        """A hand-edited row must not break the whole Settings tab render."""
+        _mock_server_config(page)
+        _mock_settings_get(page, {"mqtt_broker": "not json"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
+        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(5)
+
+    def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+
+        def handle_put(route: Route):
+            if route.request.method == "PUT":
+                put_calls.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route(lambda url: "/api/settings/" in url, handle_put)
+
+        _mqtt_field(page, "settings-mqtt-host").fill("broker.local")
+        _mqtt_field(page, "settings-mqtt-port").fill("8883")
+        _mqtt_field(page, "settings-mqtt-username").fill("user1")
+        _mqtt_field(page, "settings-mqtt-password").fill("secret")
+        _mqtt_field(page, "settings-mqtt-tls").check()
+        page.locator("[data-testid='settings-mqtt-save']").click()
+
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/mqtt_broker")
+        url, body = put_calls[0]
+        assert url.rstrip("/").endswith("/mqtt_broker")
+        saved = json.loads(body["value"])
+        assert saved["host"] == "broker.local"
+        assert saved["port"] == 8883
+        assert saved["username"] == "user1"
+        assert saved["password"] == "secret"
+        assert saved["tls"] is True
+        assert saved["prefix"] == "whiskerwatcher"
+        assert saved["client_id"] == "whiskerwatcher"
+        expect(_mqtt_status(page)).to_contain_text("Saved: broker.local:8883")
+
+    def test_save_with_blank_host_disables_mqtt(self, page: Page, base_url: str):
+        """A blank host stores an empty string — the watcher's "no broker" signal —
+        rather than JSON that would parse into a localhost connection attempt."""
+        _mock_server_config(page)
+        _mock_settings_get(page, {"mqtt_broker": json.dumps({"host": "broker.local"})})
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+
+        def handle_put(route: Route):
+            if route.request.method == "PUT":
+                put_calls.append(json.loads(route.request.post_data))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route(lambda url: "/api/settings/" in url, handle_put)
+
+        _mqtt_field(page, "settings-mqtt-host").fill("")
+        page.locator("[data-testid='settings-mqtt-save']").click()
+
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/mqtt_broker")
+        assert put_calls[0] == {"value": ""}
+        expect(_mqtt_status(page)).to_have_text("Saved: MQTT publishing disabled.")
+
+    def test_test_button_probes_the_form_values(self, page: Page, base_url: str):
+        """Test probes what is typed, not what is saved — otherwise it could only ever
+        confirm settings already committed."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+        calls = _mock_test_mqtt(page, success=True, message="Connected to broker.local:1883")
+
+        _mqtt_field(page, "settings-mqtt-host").fill("broker.local")
+        page.locator("[data-testid='settings-mqtt-test']").click()
+
+        wait_until(page, lambda: calls, "Expected POST to /api/test-mqtt")
+        assert calls[0] == {
+            "host": "broker.local",
+            "port": 1883,
+            "username": None,
+            "password": None,
+            "tls": False,
+        }
+        expect(_mqtt_status(page)).to_have_text("✓ Connected to broker.local:1883")
+        expect(_mqtt_status(page)).to_have_attribute("data-state", "ok")
+
+    def test_test_button_reports_failure(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+        _mock_test_mqtt(page, success=False, message="bad username or password")
+
+        _mqtt_field(page, "settings-mqtt-host").fill("broker.local")
+        page.locator("[data-testid='settings-mqtt-test']").click()
+
+        expect(_mqtt_status(page)).to_have_text("✗ bad username or password")
+        expect(_mqtt_status(page)).to_have_attribute("data-state", "error")
+
+    def test_test_without_host_does_not_call_the_api(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+        calls = _mock_test_mqtt(page)
+
+        page.locator("[data-testid='settings-mqtt-test']").click()
+        page.wait_for_timeout(300)
+
+        assert calls == []
+        expect(_mqtt_status(page)).to_have_text("Enter a broker host first.")
 
 
 # ---------------------------------------------------------------------------

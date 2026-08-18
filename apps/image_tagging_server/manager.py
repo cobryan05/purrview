@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,12 @@ PROBE_HARD_TIMEOUT = 30.0
 # to "checking"/"still waiting" — lets the common fast-success case resolve
 # within the same poll instead of always waiting for the next one.
 PROBE_INLINE_WAIT = 0.25
+
+# How long the Settings "Test" button waits for a CONNACK. A broker that is firewalled
+# never answers at all, so this is the wait a user sees before being told so; long
+# enough for a slow LAN broker, short enough not to look hung.
+MQTT_TEST_TIMEOUT = 5.0
+MQTT_TEST_KEEPALIVE = 10
 
 
 class Manager:
@@ -189,6 +196,73 @@ class Manager:
             "message": f"Connected — {' · '.join(info_parts)}",
             "config": config,
         }
+
+    async def test_mqtt_broker(
+        self,
+        host: str,
+        port: int = 1883,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        tls: bool = False,
+        timeout: float = MQTT_TEST_TIMEOUT,
+    ) -> Dict[str, Any]:
+        """Connect to an MQTT broker, then disconnect, to validate settings.
+
+        Runs in a worker thread: paho's connect is blocking, and a broker that is
+        firewalled rather than refusing takes the full timeout to fail — which on the
+        event loop would stall every other request in the app.
+        """
+        host = (host or "").strip()
+        if not host:
+            return {"success": False, "message": "Broker host is required"}
+
+        def _probe() -> Dict[str, Any]:
+            import paho.mqtt.client as mqtt
+
+            connected = threading.Event()
+            result_code: Dict[str, Any] = {}
+
+            client = mqtt.Client(client_id=f"whiskerwatcher-test-{int(time.time())}")
+            if username:
+                client.username_pw_set(username, password or None)
+            if tls:
+                client.tls_set()
+
+            def _on_connect(_client, _userdata, _flags, rc):
+                result_code["rc"] = rc
+                connected.set()
+
+            client.on_connect = _on_connect
+            try:
+                client.connect(host, port, keepalive=MQTT_TEST_KEEPALIVE)
+                client.loop_start()
+                if not connected.wait(timeout):
+                    return {"success": False, "message": f"No CONNACK from broker within {timeout:g}s"}
+                rc = result_code.get("rc", 0)
+                if rc != 0:
+                    # rc 4/5 are the ones a user actually hits, and "code 5" alone
+                    # sends them to the paho source rather than to their credentials.
+                    detail = {
+                        1: "broker refused the protocol version",
+                        2: "broker rejected the client id",
+                        3: "broker unavailable",
+                        4: "bad username or password",
+                        5: "not authorised",
+                    }.get(rc, f"connection refused (code {rc})")
+                    # No ✗ prefix here: the caller decorates the message, and the
+                    # server-test flow above sets that precedent.
+                    return {"success": False, "message": detail}
+                return {"success": True, "message": f"Connected to {host}:{port}"}
+            except Exception as e:
+                return {"success": False, "message": str(e)}
+            finally:
+                try:
+                    client.loop_stop()
+                    client.disconnect()
+                except Exception:
+                    logger.debug("Error closing MQTT test client", exc_info=True)
+
+        return await asyncio.to_thread(_probe)
 
     async def get_server_config(self) -> Dict[str, Any]:
         return {

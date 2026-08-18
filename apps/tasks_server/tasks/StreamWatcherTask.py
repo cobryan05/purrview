@@ -502,9 +502,16 @@ class StreamWatcherTask(Task):
             value = getattr(resp, "value", None)
             if not value:
                 return None
-            return MqttSettings.from_dict(value if isinstance(value, dict) else {})
+            # The settings table stores strings, so the Settings UI writes this key as
+            # JSON. Accepting a dict too keeps a caller that hands us an already-decoded
+            # value working, rather than silently falling back to localhost defaults.
+            if isinstance(value, str):
+                value = json.loads(value)
+            if not isinstance(value, dict) or not value.get("host"):
+                return None
+            return MqttSettings.from_dict(value)
         except Exception:
-            logger.debug("No MQTT broker configured in Settings", exc_info=True)
+            logger.warning("Could not read MQTT broker settings; MQTT actions will not publish", exc_info=True)
             return None
 
     async def _pin_models(self) -> None:
