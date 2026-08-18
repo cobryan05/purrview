@@ -371,9 +371,12 @@ class WebApp:
             methods=["GET", "DELETE"],
         )
         async def proxy_recordings(request: Request, path: str):
-            # NOTE: clip *files* must not be fetched through here — ReverseProxy buffers
-            # whole responses, so a video would be loaded into memory and lose range
-            # support. The <video> element hits db_server's /file route directly.
+            # Clip *files* go through here too, and must: the SPA talks only to this
+            # port. That was once untrue — ReverseProxy buffered whole responses, so a
+            # video was read into memory and lost range support — but it streams now and
+            # forwards Range up and 206/Content-Range back, which is what makes the
+            # event modal's scrubber work. See TestRangeRequests in
+            # tests/helpers/test_reverse_proxy.py, which pins that.
             return await RECORDINGS_PROXY.handle_request(path, request)
 
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])

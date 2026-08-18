@@ -858,6 +858,287 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: var(--text-sm);
 }
 
+/* ===== NVR event search ===== */
+.event-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.event-filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle, var(--border-strong));
+  border-radius: var(--radius-md);
+}
+
+.event-filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  /* Grow but never past readable: seven controls on one row would otherwise stretch
+     each to a quarter of a wide monitor. */
+  flex: 1 1 10rem;
+  max-width: 16rem;
+}
+
+.event-filters__label {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-filters__select,
+.event-filters__date {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.event-filters__clear {
+  margin: 0;
+}
+
+.event-search__summary {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+/* Same auto-fill approach as .nvr-live-list, at a smaller track: an event card is a
+   picture with three short lines under it, so four or five fit across a desktop. */
+.event-search__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.event-search__pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.event-search__page-count {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+/* ----- card ----- */
+.event-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--surface-raised, transparent);
+}
+
+.event-card:hover,
+.event-card:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.event-card__media {
+  position: relative;
+  /* Fixed ratio so a grid of cards does not reflow as lazy images arrive one by one. */
+  aspect-ratio: 16 / 9;
+  background: var(--surface-sunken, #0003);
+}
+
+.event-card__media--empty::after {
+  content: 'No snapshot';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.event-card__badge {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background: #000a;
+  color: #fff;
+}
+
+.event-card__badge--live {
+  top: auto;
+  bottom: var(--space-1);
+  right: auto;
+  left: var(--space-1);
+  background: var(--color-accent);
+}
+
+.event-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: var(--space-2);
+}
+
+/* The time leads, because "when" is the first question asked of an NVR. */
+.event-card__time {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-card__headline {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.25;
+}
+
+.event-card__rule {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.event-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: 0.15rem;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-card__meta-item--warn {
+  color: var(--color-warning, #fbbf24);
+}
+
+/* ----- detail modal ----- */
+.event-detail {
+  width: min(72rem, 94vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.event-detail__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.event-detail__title {
+  margin: 0;
+}
+
+.event-detail__subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+.event-detail__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  overflow: auto;
+}
+
+.event-detail__media {
+  flex: 3 1 28rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.event-detail__side {
+  flex: 1 1 14rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.event-detail__video,
+.event-detail__image {
+  width: 100%;
+  max-height: 60vh;
+  /* contain, not cover: this is evidence, and cropping it to fit would hide whatever
+     was happening at the edge of frame. */
+  object-fit: contain;
+  background: #000;
+  border-radius: var(--radius-sm);
+}
+
+.event-detail__marker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.event-detail__marker-note,
+.event-detail__hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-detail__warn {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-warning, #fbbf24);
+}
+
+.event-detail__no-video {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+.event-detail__tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.event-detail__side-title {
+  margin: 0 0 var(--space-1);
+}
+
+.event-detail__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0.15rem 0;
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--border-subtle, #ffffff14);
+}
+
+.event-detail__row-label {
+  color: var(--text-faint);
+}
+
+.event-detail__row-value {
+  text-align: right;
+}
+
+.event-detail__side-actions {
+  margin-top: var(--space-3);
+}
+
 /* ===== Toolbar / Canvas ===== */
 .canvas-toolbar button {
   flex: 1 1 0;

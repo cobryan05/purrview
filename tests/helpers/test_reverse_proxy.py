@@ -82,6 +82,71 @@ class TestBodyPassThrough:
         assert seen["query"] == "a=1&b=2"
 
 
+class TestRangeRequests:
+    """What makes an event clip scrubbable through the SPA's single port.
+
+    The NVR event review modal plays `/api/recordings/{uuid}/file` via a `<video>`
+    element, which seeks by issuing Range requests. That only works if the proxy
+    forwards the `Range` header up and returns the upstream's 206 and `Content-Range`
+    back down — otherwise the video plays from the start and the scrubber does nothing
+    but look functional. The alternative would be pointing the browser at db_server's
+    port directly, which breaks the "the SPA talks only to 7999" rule.
+    """
+
+    @staticmethod
+    def _range_upstream(payload: bytes):
+        async def handler(path: str, request: Request):
+            from fastapi.responses import Response
+
+            header = request.headers.get("range")
+            if not header:
+                return Response(content=payload, media_type="video/mp4")
+            first, _, last = header.removeprefix("bytes=").partition("-")
+            start = int(first)
+            end = int(last) if last else len(payload) - 1
+            return Response(
+                content=payload[start : end + 1],
+                status_code=206,
+                media_type="video/mp4",
+                headers={
+                    "content-range": f"bytes {start}-{end}/{len(payload)}",
+                    "accept-ranges": "bytes",
+                },
+            )
+
+        return handler
+
+    async def test_range_header_reaches_upstream_and_206_comes_back(self):
+        payload = bytes(range(256)) * 40
+        proxy = _proxy_to(_upstream_app(self._range_upstream(payload)))
+
+        async with _client_for(proxy) as client:
+            res = await client.get("/clip.mp4", headers={"Range": "bytes=100-199"})
+
+        assert res.status_code == 206
+        assert res.content == payload[100:200]
+        assert res.headers["content-range"] == f"bytes 100-199/{len(payload)}"
+
+    async def test_accept_ranges_survives_so_the_browser_knows_it_can_seek(self):
+        payload = b"\x00" * 1000
+        proxy = _proxy_to(_upstream_app(self._range_upstream(payload)))
+
+        async with _client_for(proxy) as client:
+            res = await client.get("/clip.mp4", headers={"Range": "bytes=0-9"})
+
+        assert res.headers["accept-ranges"] == "bytes"
+
+    async def test_a_rangeless_request_still_gets_the_whole_file(self):
+        payload = b"\x00\x01" * 500
+        proxy = _proxy_to(_upstream_app(self._range_upstream(payload)))
+
+        async with _client_for(proxy) as client:
+            res = await client.get("/clip.mp4")
+
+        assert res.status_code == 200
+        assert res.content == payload
+
+
 class TestHopByHopHeaders:
     async def test_upstream_content_length_is_not_forwarded(self):
         """A re-chunked StreamingResponse must not carry upstream's framing headers."""

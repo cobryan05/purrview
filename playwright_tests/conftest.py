@@ -131,6 +131,31 @@ def _make_preview_runs_mock():
     return handle
 
 
+def _make_watch_events_mock():
+    """The NVR Events page fetches both the event list and its filter facets on mount.
+
+    One handler for both, keyed on the path, because they share a proxy. Unmocked, this
+    proxy makes a REAL connection to db_server — the same trap FILTER_CHAINS_PROXY fell
+    into, where tests passed only while a live stack happened to be running.
+    """
+
+    async def handle(path: str, request):
+        if "facets" in path:
+            return JSONResponse(
+                content={"status": "success", "rules": [], "subjects": [], "targets": [], "sources": []}
+            )
+        return JSONResponse(content={"status": "success", "events": [], "total": 0})
+
+    return handle
+
+
+def _make_recordings_mock():
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success", "recordings": [], "recording": None})
+
+    return handle
+
+
 def _make_settings_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "settings": {}})
@@ -227,6 +252,8 @@ def live_server() -> Generator[str, None, None]:
         # httpx.ConnectError otherwise.
         ("FILTER_CHAINS_PROXY", _make_filter_chains_mock()),
         ("PREVIEW_RUNS_PROXY", _make_preview_runs_mock()),
+        ("WATCH_EVENTS_PROXY", _make_watch_events_mock()),
+        ("RECORDINGS_PROXY", _make_recordings_mock()),
     ]
     originals = []
     for attr, mock_fn in proxies_and_mocks:

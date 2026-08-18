@@ -483,17 +483,15 @@ function _profileCard(profile, task, sources = []) {
 }
 
 /**
- * Events — the recorded-event browser. Not built; says so rather than showing
- * an empty grid that looks broken.
+ * Events — the recorded-event review page.
+ *
+ * Lazily imported rather than pulled in at module load: the Live tab is what opens
+ * first, and the search page drags in a filter bar, a card grid and a video modal that
+ * a user who never leaves Live pays nothing for.
  */
 async function renderEvents({ target = 'nvr-events-box' } = {}) {
-  const container = document.getElementById(target);
-  if (!container) return;
-  container.innerHTML = '';
-  container.appendChild(_emptyState(
-    'Event browser not built yet',
-    'Recorded events and their clips will live here. The watch_events and recordings tables already exist; the browser itself is Phase 8 of STREAM_WATCHER_PLAN.',
-  ));
+  const { renderEvents: render } = await import('/app-static/js/app/nvr/events/main.js');
+  await render({ target });
 }
 
 /**
