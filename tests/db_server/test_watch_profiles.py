@@ -188,6 +188,32 @@ class TestNestedWrites:
         assert len(profile["actions"]) == 1
         assert len(profile["labelLifetimes"]) == 1
 
+    async def test_a_sources_mqtt_name_round_trips(self, http_client):
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid, "mqttName": "litterbox"}],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["sources"][0]["mqttName"] == "litterbox"
+
+    async def test_a_blank_mqtt_name_is_stored_as_no_override(self, http_client):
+        """Otherwise "" and None behave alike but compare differently everywhere."""
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid, "mqttName": "   "}],
+        )
+        assert body["profile"]["sources"][0]["mqttName"] is None
+
+    async def test_a_source_without_an_mqtt_name_keeps_none(self, http_client):
+        """Every watcher predating the field must publish exactly where it did."""
+        source_uuid = await _make_source(http_client)
+        body = await _create_profile(http_client, "House cams", sources=[{"sourceUuid": source_uuid}])
+        assert body["profile"]["sources"][0]["mqttName"] is None
+
     async def test_update_preserves_rule_uuids_and_zone_references(self, http_client):
         """Regenerating uuids on save would silently break every zone-based rule."""
         source_uuid = await _make_source(http_client)

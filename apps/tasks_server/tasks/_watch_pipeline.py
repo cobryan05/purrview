@@ -185,6 +185,11 @@ class WatchPipeline:
     provider: ImageProvider
     tracker: Tracker
     engine: WatchEngine
+    #: This watcher's override for the name MQTT topics publish this source under.
+    #: None means "use `source_name`". Kept separate from `source_name` rather than
+    #: replacing it, because logs, the status table and snapshot filenames should keep
+    #: naming the camera the way the Sources pane does — only the topic changes.
+    mqtt_name: Optional[str] = None
     model_names: List[str] = field(default_factory=list)
     analysis_fps: float = 5.0
     analysis_width: int = 640

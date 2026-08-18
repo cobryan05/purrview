@@ -61,7 +61,13 @@ def build_template_params(signal, context) -> Dict[str, str]:
         # Where it happened.
         "watcher": context.profile_name or context.profile_uuid or "",
         "watcher_uuid": context.profile_uuid or "",
-        "source": context.source_name or context.source_uuid or "",
+        # The watcher's MQTT name for this source wins, because that is the name someone
+        # wrote a Home Assistant automation against. The Sources pane's name is picked to
+        # be recognisable in a dropdown and is expected to change; a topic level is not.
+        "source": context.source_mqtt_name or context.source_name or context.source_uuid or "",
+        # Always the real name, so a template can still reach the camera as the rest of
+        # the app knows it — and so overriding the topic is not a lossy operation.
+        "source_config_name": context.source_name or context.source_uuid or "",
         "source_uuid": context.source_uuid or "",
         # The slots — the reason this module exists.
         "subject": signal.subject_name or signal.subject_ref or "",
@@ -129,6 +135,7 @@ _EXAMPLE_PARAMS: Dict[str, str] = {
     "watcher": "",
     "watcher_uuid": "",
     "source": "",
+    "source_config_name": "",
     "source_uuid": "",
     "subject": "",
     "subject_uuid": "",

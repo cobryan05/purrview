@@ -376,6 +376,7 @@ class StreamWatcherTask(Task):
                 WatchPipeline(
                     source_uuid=src.source_uuid,
                     source_name=getattr(provider, "source_name", None) or src.source_uuid,
+                    mqtt_name=getattr(src, "mqtt_name", None) or None,
                     provider=provider,
                     tracker=tracker,
                     engine=engine,
@@ -1064,6 +1065,7 @@ class StreamWatcherTask(Task):
             profile_name=self._profile.name,
             source_uuid=signal.source_uuid,
             source_name=pipeline.source_name if pipeline else None,
+            source_mqtt_name=pipeline.mqtt_name if pipeline else None,
             relay_path=getattr(pipeline.provider, "_relayed_name", None) if pipeline else None,
             buffered=bool(pipeline and pipeline.buffered),
             retention_s=pipeline.retention_s if pipeline else 0.0,

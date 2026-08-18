@@ -6202,6 +6202,89 @@ progress.progress-indeterminate:indeterminate {
    scope stayed on screen after the trigger was switched. */
 .watch-action-scope[hidden] { display: none; }
 
+/* The `(?)` that opens the topic placeholder list. A hover tooltip on the input was
+   not discoverable — this is a visible affordance sitting beside the field it explains. */
+.watch-template-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.watch-template-help__btn {
+  /* Sized in em so it tracks the row's compact font rather than Pico's button metrics,
+     and margin-zeroed for the same reason the scope triggers are — see below. */
+  width: 1.35em;
+  height: 1.35em;
+  padding: 0;
+  margin: 0;
+  font-size: 0.82em;
+  line-height: 1;
+  border-radius: 50%;
+  border: 1px solid var(--pico-muted-border-color, var(--border-strong));
+  background: transparent;
+  color: var(--text-faint);
+  cursor: help;
+}
+
+.watch-template-help__btn:hover,
+.watch-template-help__btn[aria-expanded='true'] {
+  border-color: var(--pico-primary, var(--color-info));
+  color: var(--pico-primary, var(--color-info));
+}
+
+.watch-template-help__panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  /* Right-aligned: the topic field sits well into the row, and a left-aligned panel
+     this wide would hang off the editor's right edge. */
+  right: 0;
+  z-index: var(--layer-dropdown);
+  width: 24rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0.5rem;
+  background: var(--pico-card-background-color, var(--bg));
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 45%);
+}
+
+.watch-template-help__panel[hidden] { display: none; }
+
+.watch-template-help__intro {
+  margin: 0 0 0.4rem;
+  font-size: var(--text-2xs, 0.7rem);
+  color: var(--text-faint);
+}
+
+.watch-template-help__item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  width: 100%;
+  margin: 0;
+  padding: 0.2rem 0.3rem;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: var(--text-2xs, 0.7rem);
+  cursor: pointer;
+}
+
+.watch-template-help__item:hover {
+  background: var(--pico-secondary-background, rgb(255 255 255 / 7%));
+}
+
+.watch-template-help__token {
+  flex: 0 0 auto;
+  color: var(--pico-primary, var(--color-info));
+  white-space: nowrap;
+}
+
+.watch-template-help__desc { color: var(--text-muted); }
+
 .watch-action-scope { align-items: center; }
 .watch-action-scope .ms-dropdown { display: flex; }
 

@@ -67,14 +67,32 @@ const DEFAULT_TOPIC_TEMPLATE = '{watcher}/{source}/event/{rule}';
 
 /**
  * The placeholder vocabulary, mirroring `apps/helpers/watch/templating.py`.
- * Kept in sync by hand — the backend is the authority; this list is for help text only.
+ * Kept in sync by hand — the backend is the authority; this list is for help only.
+ *
+ * Each entry carries its own one-line meaning. A bare list of names told you a token
+ * existed but not what it resolved to, which for pairs like `{rule}` / `{rule_name}` or
+ * `{source}` / `{source_config_name}` is the only thing worth knowing.
  */
-const TEMPLATE_PLACEHOLDERS = [
-  '{rule}', '{rule_name}', '{event_label}', '{rule_uuid}',
-  '{watcher}', '{watcher_uuid}', '{source}', '{source_uuid}',
-  '{subject}', '{subject_uuid}', '{target}', '{target_uuid}',
-  '{phase}', '{event_uuid}',
+const TEMPLATE_PLACEHOLDER_HELP = [
+  { token: '{rule}', help: 'The rule\'s event label, or its name when it has none.' },
+  { token: '{rule_name}', help: 'The rule\'s name, always — never the event label.' },
+  { token: '{event_label}', help: 'The rule\'s event label. Empty when it has none.' },
+  { token: '{rule_uuid}', help: 'Stable id of the rule. Survives a rename.' },
+  { token: '{watcher}', help: 'This watcher\'s name.' },
+  { token: '{watcher_uuid}', help: 'Stable id of the watcher.' },
+  { token: '{source}', help: 'The source\'s MQTT name for this watcher, falling back to its own name.' },
+  { token: '{source_config_name}', help: 'The source\'s name as the Sources pane shows it, ignoring any MQTT name.' },
+  { token: '{source_uuid}', help: 'Stable id of the source. Survives a rename.' },
+  { token: '{subject}', help: 'Which label actually matched — the cat, not the whole list.' },
+  { token: '{subject_uuid}', help: 'Stable id of the matched subject.' },
+  { token: '{target}', help: 'Which zone or label it matched against — the litter box that fired.' },
+  { token: '{target_uuid}', help: 'Stable id of the matched target.' },
+  { token: '{phase}', help: 'start, update or end.' },
+  { token: '{event_uuid}', help: 'Stable id of this one event, for correlating topics.' },
 ];
+
+/** Names only, for the places that just need to list them. */
+const TEMPLATE_PLACEHOLDERS = TEMPLATE_PLACEHOLDER_HELP.map(p => p.token);
 
 /** Stand-in values for the topic preview, so the shape of the result is visible. */
 const TEMPLATE_EXAMPLE = {
@@ -84,7 +102,11 @@ const TEMPLATE_EXAMPLE = {
   rule_uuid: 'rule-uuid',
   watcher: 'house-cams',
   watcher_uuid: 'watcher-uuid',
+  // The watcher's MQTT name for the source when one is set, which is the whole reason
+  // the override exists — a short, stable topic level rather than the descriptive name
+  // the Sources list shows.
   source: 'back-room',
+  source_config_name: 'back-room-reolink-upstairs',
   source_uuid: 'source-uuid',
   subject: 'tabby',
   subject_uuid: 'label-uuid',
@@ -251,6 +273,87 @@ function wfield(labelText, control, { width = null } = {}) {
   wrap.appendChild(el('span', 'watch-field__label', labelText));
   if (width) control.style.width = width;
   wrap.appendChild(control);
+  return wrap;
+}
+
+/**
+ * A `(?)` beside a topic field, opening the placeholder vocabulary.
+ *
+ * The tokens used to be reachable only as the topic input's `title`, which is not
+ * discoverable at all: a hover tooltip is invisible until you already suspect it is
+ * there, so the templating feature read as a free-text box you had to guess at.
+ *
+ * Clicking a row inserts that token at the cursor rather than only describing it —
+ * the list is then the fastest way to *write* a template, not merely documentation
+ * about one, and it removes any chance of a typo in a token name.
+ *
+ * @param {HTMLInputElement} input the topic field tokens are inserted into
+ */
+function templateHelp(input) {
+  const wrap = el('span', 'watch-template-help');
+
+  const btn = el('button', 'watch-template-help__btn', '?');
+  btn.type = 'button';
+  btn.dataset.testid = 'watch-template-help-btn';
+  btn.title = 'Placeholders you can use in this topic';
+  btn.setAttribute('aria-label', 'Show topic placeholders');
+  btn.setAttribute('aria-expanded', 'false');
+
+  const panel = el('div', 'watch-template-help__panel');
+  panel.dataset.testid = 'watch-template-help-panel';
+  panel.hidden = true;
+
+  panel.appendChild(el(
+    'p',
+    'watch-template-help__intro',
+    'Substituted per topic level and slugified. Click one to insert it. An unknown '
+    + 'placeholder is left as-is, so a typo shows up on the broker rather than '
+    + 'silently collapsing a level.',
+  ));
+
+  for (const { token, help } of TEMPLATE_PLACEHOLDER_HELP) {
+    const item = el('button', 'watch-template-help__item');
+    item.type = 'button';
+    item.appendChild(el('code', 'watch-template-help__token', token));
+    item.appendChild(el('span', 'watch-template-help__desc', help));
+    item.addEventListener('click', () => {
+      // At the cursor, not appended: a template is usually edited in the middle, and
+      // an insert that always lands at the end would have to be cut and re-pasted.
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + token + input.value.slice(end);
+      const caret = start + token.length;
+      input.setSelectionRange(caret, caret);
+      input.focus();
+      // The field's own listeners drive the live example and the dirty flag, and a
+      // programmatic value change fires neither on its own.
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    panel.appendChild(item);
+  }
+
+  function close() {
+    panel.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDocClick, true);
+  }
+  function onDocClick(e) {
+    // Anywhere outside closes, so the panel cannot be left covering the row below it.
+    if (!wrap.contains(e.target)) close();
+  }
+  btn.addEventListener('click', () => {
+    if (panel.hidden) {
+      panel.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('click', onDocClick, true);
+    } else {
+      close();
+    }
+  });
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  wrap.appendChild(btn);
+  wrap.appendChild(panel);
   return wrap;
 }
 
@@ -424,6 +527,25 @@ function buildSourceRow(src, ctx) {
   sourceSel.dataset.testid = 'watch-source-select';
   row.appendChild(wfield('Source', sourceSel));
 
+  // What `{source}` publishes as, for this watcher only. The placeholder tracks the
+  // selected camera so "blank means the source's own name" needs no help text — and so
+  // it keeps reading correctly after the row is repointed at a different camera.
+  const mqttName = document.createElement('input');
+  mqttName.type = 'text';
+  mqttName.value = src.mqttName || '';
+  mqttName.dataset.testid = 'watch-source-mqtt-name';
+  mqttName.title =
+    'Name this source publishes under in MQTT topics — what {source} renders as. '
+    + 'Leave blank to use the source\'s own name. Set it when the name that reads well '
+    + 'in the Sources list is not the short, stable topic level you want to subscribe to.';
+  function syncMqttPlaceholder() {
+    mqttName.placeholder = ctx.sourceNameFor(sourceSel.value) || 'source name';
+  }
+  syncMqttPlaceholder();
+  sourceSel.addEventListener('change', syncMqttPlaceholder);
+  mqttName.addEventListener('input', ctx.onAnyChange);
+  row.appendChild(wfield('MQTT as', mqttName, { width: '8rem' }));
+
   const modelSel = modelChoiceSelect(
     ctx,
     '(profile default)',
@@ -550,6 +672,9 @@ function buildSourceRow(src, ctx) {
       sourceUuid: sourceSel.value,
       order: 0,
       enabled: true,
+      // null, not '', so "cleared" and "never set" are one state. The backend
+      // normalises blanks too; doing it here as well keeps the payload honest.
+      mqttName: mqttName.value.trim() || null,
       ...readModelChoice(modelSel.value),
       analysisFps: fps.value === '' ? null : num(fps, null),
       analysisWidth: width.value === '' ? null : num(width, null),
@@ -922,13 +1047,12 @@ function buildActionRow(action, ctx) {
       topic.value = stored.topic_template || DEFAULT_TOPIC_TEMPLATE;
       topic.placeholder = DEFAULT_TOPIC_TEMPLATE;
       topic.dataset.testid = 'watch-action-topic';
-      topic.title =
-        'Placeholders are substituted per topic level and slugified. Available: '
-        + TEMPLATE_PLACEHOLDERS.join(', ')
-        + '. An unknown placeholder is left as-is, so a typo shows up on the broker '
-        + 'rather than silently collapsing a level. Broker is configured in Settings.';
+      topic.title = 'Topic to publish to. Broker is configured in Settings.';
       topic.addEventListener('input', ctx.onAnyChange);
       params.appendChild(wfield('Topic', topic, { width: '13rem' }));
+      // The placeholder vocabulary lives behind this, not in the input's tooltip —
+      // see `templateHelp`.
+      params.appendChild(templateHelp(topic));
 
       // Ellipsised rather than wrapped: a resolved topic is long, and letting it push
       // the action row onto a second line is what made a small watcher scroll. The full
@@ -957,12 +1081,10 @@ function buildActionRow(action, ctx) {
       topic.value = stored.topic_template || DEFAULT_IMAGE_TOPIC_TEMPLATE;
       topic.placeholder = DEFAULT_IMAGE_TOPIC_TEMPLATE;
       topic.dataset.testid = 'watch-action-image-topic';
-      topic.title =
-        'Topic for the JPEG. Placeholders are substituted per level and slugified. '
-        + 'Available: ' + TEMPLATE_PLACEHOLDERS.join(', ')
-        + '. Broker is configured in Settings.';
+      topic.title = 'Topic for the JPEG. Broker is configured in Settings.';
       topic.addEventListener('input', ctx.onAnyChange);
       params.appendChild(wfield('Topic', topic, { width: '13rem' }));
+      params.appendChild(templateHelp(topic));
 
       const example = el('span', 'watch-hint watch-hint--truncate', '');
       example.dataset.testid = 'watch-action-image-topic-example';

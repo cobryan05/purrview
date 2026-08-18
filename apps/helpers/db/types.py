@@ -1658,6 +1658,16 @@ class WatchProfileSource(SQLModel, table=True):
     source_uuid: str = Field(foreign_key="sources.uuid", index=True, ondelete="RESTRICT")
     order: int = Field(default=0)
     enabled: bool = Field(default=True)
+    # What `{source}` renders as in this watcher's MQTT topics. NULL or blank falls back
+    # to the source's own name.
+    #
+    # It lives on the junction, not on the Source, because the two names answer to
+    # different audiences: the source's name is for the person picking a camera out of a
+    # list ("Back room — Reolink, upstairs"), while this one is a topic level that
+    # someone's Home Assistant automation is written against and must stay short and
+    # stable. Renaming the camera in the Sources pane would otherwise silently re-route
+    # every topic it publishes to.
+    mqtt_name: Optional[str] = Field(default=None)
     # NULL means "use the profile default" for each of these.
     model_group_uuid: Optional[str] = Field(default=None, foreign_key="model_groups.uuid", ondelete="SET NULL")
     # A single model, for the common case where a stack of one is pure ceremony. Mutually
@@ -1905,6 +1915,7 @@ class WatchProfileSourceRead(OrmModel):
     source_uuid: str
     order: int = 0
     enabled: bool = True
+    mqtt_name: Optional[str] = None
     model_group_uuid: Optional[str] = None
     model_name: Optional[str] = None
     analysis_fps: Optional[float] = None
@@ -1921,6 +1932,9 @@ class WatchProfileSourceWrite(ApiModel):
     source_uuid: str
     order: int = 0
     enabled: bool = True
+    # Blank is stored as NULL by `_normalise_mqtt_name`, so "cleared" and "never set"
+    # are the same state rather than two that behave alike but compare differently.
+    mqtt_name: Optional[str] = None
     model_group_uuid: Optional[str] = None
     model_name: Optional[str] = None
     analysis_fps: Optional[float] = None
@@ -1931,6 +1945,19 @@ class WatchProfileSourceWrite(ApiModel):
     ring_seconds: float = 20.0
     ring_max_mb: float = 32.0
     disabled_mask_uuids_json: List[Any] = Field(default_factory=list)
+
+    @field_validator("mqtt_name")
+    @classmethod
+    def _normalise_mqtt_name(cls, v: Optional[str]) -> Optional[str]:
+        """Empty and whitespace-only both mean "no override".
+
+        A stored `""` would be indistinguishable from a real override at every call
+        site that tests it with `or`, and a stored `"  "` would slugify to the topic
+        level "unnamed" — a name nobody typed, published to a topic nobody expects.
+        """
+        if v is None:
+            return None
+        return v.strip() or None
 
     @model_validator(mode="after")
     def _validate_rates(self) -> "WatchProfileSourceWrite":

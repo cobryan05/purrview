@@ -154,3 +154,44 @@ class TestMqttTopicIntegration:
         second = action.topic_for(_signal(subject_name="Ginger"), _context())
         assert first == "cats/tabby"
         assert second == "cats/ginger"
+
+
+class TestSourceMqttNameOverride:
+    """A watcher's per-source MQTT name.
+
+    The Sources pane's name is chosen to be recognisable when picking a camera out of a
+    dropdown; a topic level is something a Home Assistant automation is written against
+    and has to stay short and stable. The override lets them differ.
+    """
+
+    def test_the_override_wins_for_the_source_token(self):
+        params = build_template_params(_signal(), _context(source_mqtt_name="litterbox"))
+        assert params["source"] == "litterbox"
+
+    def test_without_an_override_the_sources_own_name_is_used(self):
+        """Every watcher predating the override must publish exactly where it did."""
+        params = build_template_params(_signal(), _context())
+        assert params["source"] == "Back Room"
+
+    def test_the_real_name_stays_reachable(self):
+        """Overriding the topic must not be lossy."""
+        params = build_template_params(_signal(), _context(source_mqtt_name="litterbox"))
+        assert params["source_config_name"] == "Back Room"
+
+    def test_the_override_is_slugified_like_any_other_level(self):
+        topic = render_topic(
+            "{watcher}/{source}", build_template_params(_signal(), _context(source_mqtt_name="Litter Box"))
+        )
+        assert topic == "house-cams/litter-box"
+
+    def test_the_uuid_is_unaffected(self):
+        params = build_template_params(_signal(), _context(source_mqtt_name="litterbox"))
+        assert params["source_uuid"] == "src-1"
+
+    async def test_an_image_topic_uses_the_override(self):
+        """The live feed is the main reason to want a short, stable source level."""
+        from apps.helpers.actions.mqttPublishImageAction import MqttPublishImageAction
+
+        action = MqttPublishImageAction()
+        topic = action.topic_for(_signal(), _context(source_mqtt_name="litterbox"))
+        assert topic == "house-cams/litterbox/image"

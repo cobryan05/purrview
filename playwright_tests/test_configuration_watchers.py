@@ -1386,3 +1386,120 @@ class TestLiveImageFeed:
         assert action["paramsJson"]["annotate"] is True
         # Not sent even though the trigger changed after a scope could have been picked.
         assert action["ruleUuidsJson"] == []
+
+
+class TestSourceMqttName:
+    """A watcher's per-source MQTT name.
+
+    The name that reads well in the Sources list is not necessarily the short, stable
+    topic level a Home Assistant automation should be written against.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-source-row']").first).to_be_visible()
+
+    def test_the_field_is_shown(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-source-mqtt-name']").first).to_be_visible()
+
+    def test_it_is_blank_by_default_and_hints_the_sources_own_name(self, page: Page, base_url: str):
+        """The placeholder is what makes "blank means the source's name" self-evident."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        field = page.locator("[data-testid='watch-source-mqtt-name']").first
+        expect(field).to_have_value("")
+        expect(field).to_have_attribute("placeholder", "Litter cam")
+
+    def test_a_saved_name_loads_back(self, page: Page, base_url: str):
+        named = {
+            **FAKE_PROFILE,
+            "sources": [{**FAKE_PROFILE["sources"][0], "mqttName": "litterbox"}],
+        }
+        _mock_watch_apis(page, profiles=[named])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-source-mqtt-name']").first).to_have_value("litterbox")
+
+    def test_it_is_saved(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-source-mqtt-name']").first.fill("litterbox")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        assert saved["sources"][0]["mqttName"] == "litterbox"
+
+    def test_a_blank_name_is_sent_as_no_override(self, page: Page, base_url: str):
+        """ "" and null must not be two states that behave alike but compare differently."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-source-mqtt-name']").first.fill("   ")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        assert saved["sources"][0]["mqttName"] is None
+
+
+class TestTemplateHelp:
+    """The placeholder vocabulary used to be reachable only as the topic input's
+    `title`, which is invisible until you already suspect it is there — so the whole
+    templating feature read as a free-text box you had to guess at."""
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-topic']")).to_be_visible()
+
+    def test_a_visible_affordance_sits_beside_the_topic_field(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
+
+    def test_the_panel_is_closed_until_asked_for(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-template-help-panel']").first).to_be_hidden()
+
+    def test_opening_it_lists_the_placeholders_with_meanings(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-template-help-panel']").first
+        expect(panel).to_be_visible()
+        expect(panel).to_contain_text("{subject}")
+        # The meaning, not just the name — which for {source} vs {source_config_name} is
+        # the only thing worth knowing.
+        expect(panel).to_contain_text("MQTT name")
+
+    def test_clicking_a_placeholder_inserts_it(self, page: Page, base_url: str):
+        """The list is the fastest way to write a template, not documentation about one."""
+        self._open(page, base_url)
+        topic = page.locator("[data-testid='watch-action-topic']")
+        topic.fill("")
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        page.locator("[data-testid='watch-template-help-panel'] .watch-template-help__item").first.click()
+        expect(topic).not_to_have_value("")
+
+    def test_inserting_updates_the_live_example(self, page: Page, base_url: str):
+        """A programmatic value change fires no input event on its own."""
+        self._open(page, base_url)
+        topic = page.locator("[data-testid='watch-action-topic']")
+        topic.fill("")
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        panel = page.locator("[data-testid='watch-template-help-panel']").first
+        panel.locator(".watch-template-help__item", has_text="{subject}").first.click()
+        expect(page.locator("[data-testid='watch-action-topic-example']")).to_contain_text("tabby")
+
+    def test_clicking_outside_closes_it(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-template-help-btn']").first.click()
+        expect(page.locator("[data-testid='watch-template-help-panel']").first).to_be_visible()
+        page.locator("[data-testid='watcher-name']").click()
+        expect(page.locator("[data-testid='watch-template-help-panel']").first).to_be_hidden()
+
+    def test_the_image_action_gets_one_too(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-action-kind']").first.select_option("publish_mqtt_image")
+        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()

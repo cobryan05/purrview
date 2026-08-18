@@ -6563,6 +6563,7 @@ class DbClient:
                 source_uuid=src.source_uuid,
                 order=src.order,
                 enabled=src.enabled,
+                mqtt_name=src.mqtt_name,
                 model_group_uuid=src.model_group_uuid,
                 model_name=src.model_name,
                 analysis_fps=src.analysis_fps,

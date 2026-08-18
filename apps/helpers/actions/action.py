@@ -26,6 +26,12 @@ class ActionContext:
     profile_name: str
     source_uuid: Optional[str] = None
     source_name: Optional[str] = None
+    #: This watcher's override for the name templates render `{source}` as. None means
+    #: "use `source_name`". Deliberately does not replace `source_name`: logs, the
+    #: status table, snapshot filenames and clip filenames should keep naming the camera
+    #: the way the Sources pane does, so that a topic renamed for Home Assistant's
+    #: benefit does not also rename the files on disk.
+    source_mqtt_name: Optional[str] = None
     #: Relay master path for this source, when it has one. None for ring/none tiers.
     relay_path: Optional[str] = None
     #: Whether this source actually has a MediaMTX-backed rewind buffer.
