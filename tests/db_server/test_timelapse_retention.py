@@ -220,3 +220,123 @@ class TestTimelapseSizeBound:
         assert result["files"] == 1
         assert not expired.exists()
         assert keeper.exists()
+
+
+class TestTemplatedTimelapseRoots:
+    """A templated `output_dir` is what lets one action file four cameras separately, so
+    the sweep has to find day folders that are no longer immediate children of the root.
+
+    The root it bounds itself to is the template's *literal prefix*, not the expansion.
+    Expanding against the current source list would look more precise and be worse: a
+    camera renamed last month leaves a folder no expansion names, and its frames would
+    then never be swept again.
+    """
+
+    @pytest.fixture
+    async def templated_action(self, db_client):
+        async with db_client._async_session_maker() as session:
+            profile = WatchProfile(name="Templated")
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            session.add(
+                WatchAction(
+                    profile_uuid=profile.uuid,
+                    kind="save_timelapse",
+                    trigger="frame_analysed",
+                    params_json={"output_dir": "timelapse/{source}"},
+                )
+            )
+            await session.commit()
+            return profile.uuid
+
+    def _nested(self, root, camera, days_ago, name="cam_12-00-00.jpg", size=1024):
+        day = (datetime.now().astimezone() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        path = root / camera / day / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        return path
+
+    async def test_the_root_is_the_literal_prefix(self, manager, timelapse_root, templated_action):
+        assert await manager.timelapse_roots() == [timelapse_root]
+
+    async def test_frames_one_level_down_are_swept(self, manager, timelapse_root, templated_action):
+        old = self._nested(timelapse_root, "back-room", days_ago=40)
+        recent = self._nested(timelapse_root, "back-room", days_ago=1)
+        result = await manager.prune_timelapse_by_age()
+        assert result["files"] == 1
+        assert not old.exists()
+        assert recent.exists()
+
+    async def test_a_renamed_cameras_old_folder_is_still_swept(self, manager, timelapse_root, templated_action):
+        """The reason the prefix is used rather than the expansion."""
+        orphaned = self._nested(timelapse_root, "the-old-name", days_ago=40)
+        await manager.prune_timelapse_by_age()
+        assert not orphaned.exists()
+
+    async def test_a_camera_folder_left_empty_is_removed(self, manager, timelapse_root, templated_action):
+        """Otherwise a retired camera keeps an empty shell forever."""
+        old = self._nested(timelapse_root, "retired-cam", days_ago=40)
+        await manager.prune_timelapse_by_age()
+        assert not (timelapse_root / "retired-cam").exists()
+        # Never the root itself: the action needs somewhere to write when it comes back.
+        assert timelapse_root.exists()
+
+    async def test_a_camera_folder_still_holding_frames_survives(self, manager, timelapse_root, templated_action):
+        old = self._nested(timelapse_root, "busy-cam", days_ago=40)
+        keep = self._nested(timelapse_root, "busy-cam", days_ago=1)
+        await manager.prune_timelapse_by_age()
+        assert not old.exists()
+        assert keep.exists()
+        assert (timelapse_root / "busy-cam").exists()
+
+    async def test_a_date_first_layout_is_swept_too(self, manager, db_client, timelapse_root):
+        """`timelapse/{date}/{source}` puts the day folder *above* the camera folder."""
+        async with db_client._async_session_maker() as session:
+            profile = WatchProfile(name="Date first")
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            session.add(
+                WatchAction(
+                    profile_uuid=profile.uuid,
+                    kind="save_timelapse",
+                    trigger="frame_analysed",
+                    params_json={"output_dir": "timelapse/{date}/{source}"},
+                )
+            )
+            await session.commit()
+
+        day = (datetime.now().astimezone() - timedelta(days=40)).strftime("%Y-%m-%d")
+        old = timelapse_root / day / "back-room" / "cam_12-00-00.jpg"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"x" * 512)
+
+        assert (await manager.prune_timelapse_by_age())["files"] == 1
+        assert not old.exists()
+
+    async def test_a_file_with_no_day_folder_above_it_is_never_touched(self, manager, timelapse_root, templated_action):
+        """The wider walk must not make the shape rails weaker."""
+        stray = timelapse_root / "back-room" / "cam_12-00-00.jpg"
+        stray.parent.mkdir(parents=True)
+        stray.write_bytes(b"x" * 32)
+        await manager.prune_expired_timelapse()
+        assert stray.exists()
+
+    async def test_a_template_with_no_fixed_folder_is_skipped(self, manager, db_client, timelapse_root):
+        """Its only bound would be the dataset root, which is not a thing to sweep."""
+        async with db_client._async_session_maker() as session:
+            profile = WatchProfile(name="Rootless")
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            session.add(
+                WatchAction(
+                    profile_uuid=profile.uuid,
+                    kind="save_timelapse",
+                    trigger="frame_analysed",
+                    params_json={"output_dir": "{source}/frames"},
+                )
+            )
+            await session.commit()
+        assert await manager.timelapse_roots() == []

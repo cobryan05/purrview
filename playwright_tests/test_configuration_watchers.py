@@ -13,6 +13,7 @@ Run with:
 """
 
 import json
+import re
 
 import pytest
 from playwright.sync_api import Page, Route, expect
@@ -1853,3 +1854,48 @@ class TestActionName:
 
         wait_until(page, lambda: bool(saved.get("actions")))
         assert saved["actions"][0]["name"] is None
+
+
+class TestTimelapseFolderTokens:
+    """One timelapse action covers every camera in the watcher, so the folder field has
+    to be able to split them — and has to say so when it isn't."""
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        page.locator("[data-testid='watch-action-kind']").first.select_option("save_timelapse")
+
+    def test_the_token_help_is_offered(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
+
+    def test_the_preview_shows_a_folder_per_camera(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-dir']").first.fill("timelapse/{source}")
+        hint = page.locator("[data-testid='watch-action-timelapse-layout']").first
+        expect(hint).to_contain_text("timelapse/back-room/2026-08-18/")
+
+    def test_it_says_when_every_camera_shares_one_folder(self, page: Page, base_url: str):
+        """The whole trap: without {source} four cameras interleave, and nothing on
+        screen said so."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-dir']").first.fill("timelapse")
+        hint = page.locator("[data-testid='watch-action-timelapse-layout']").first
+        expect(hint).to_have_attribute("title", re.compile("add \\{source\\}"))
+
+    def test_it_saves_the_template(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-dir']").first.fill("timelapse/{source}")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["paramsJson"]["output_dir"] == "timelapse/{source}"

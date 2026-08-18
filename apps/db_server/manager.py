@@ -29,7 +29,7 @@ from apps import (
     THUMB_CACHE_MAX_MB,
 )
 from apps.db_server.hash_index import HashIndex
-from apps.helpers.actions.outputDir import resolve_output_dir
+from apps.helpers.actions.outputDir import has_placeholder, resolve_output_dir, static_prefix
 from apps.helpers.actions.saveTimelapseAction import DEFAULT_TIMELAPSE_DIR
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
@@ -176,6 +176,13 @@ TIMELAPSE_ACTION_KIND = "save_timelapse"
 #: directory is one they chose. A sweep that deleted whatever it found in there would
 #: eventually be pointed at a dataset folder and take the annotations with it.
 TIMELAPSE_FRAME_RE = re.compile(r"^.+_\d{2}-\d{2}-\d{2}\.jpe?g$", re.IGNORECASE)
+
+#: How far below a timelapse root the scan will walk. A templated directory puts the day
+#: folder one or two levels down (`timelapse/{source}/{date}`), so the walk cannot stop at
+#: the first level any more — but it must still not turn into a full recursive stat of
+#: whatever tree the root happens to sit above. Four covers every layout the templates can
+#: produce with room to spare.
+TIMELAPSE_SCAN_MAX_DEPTH = 4
 
 #: How often the sweep runs. The window it enforces is measured in days, so anything
 #: tighter than hourly is filesystem work for no benefit.
@@ -3801,6 +3808,16 @@ class Manager:
         for action in profile.actions:
             if action.kind != "save_timelapse":
                 continue
+            configured = action.params_json.get("output_dir") or ""
+            if has_placeholder(configured) and not static_prefix(configured):
+                # Refused at run time too, but a watcher that will not start is worth
+                # catching at the moment someone types it.
+                errors.append(
+                    f"A save_timelapse action writes to {configured!r}, which starts with a "
+                    "placeholder. Put a real folder name first, so its frames can be found "
+                    "again and cleaned up — e.g. timelapse/{source}."
+                )
+
             interval = float(action.params_json.get("interval_s", 30) or 30)
             scope = {str(u) for u in (action.source_uuids_json or [])}
             for source_uuid, fps in fps_by_source.items():
@@ -4312,6 +4329,13 @@ class Manager:
         silently stops being managed. Deleting the action entirely does orphan its
         frames — the same trade the recording sweep makes for a custom `output_dir`, and
         for the same reason: nothing left in the database names the directory.
+
+        A templated directory (`timelapse/{source}`) contributes its **literal prefix**,
+        and the sweep then looks for day folders at any depth beneath it. Expanding the
+        template against the current sources would look more precise and be worse: a
+        camera renamed last month leaves a folder the expansion no longer names, whose
+        frames would then never be swept. The prefix survives renames; the per-file shape
+        rails in `_scan_timelapse_frames` are what keep the wider net safe.
         """
         roots: List[Path] = []
         seen: Set[str] = set()
@@ -4319,8 +4343,16 @@ class Manager:
             for action in profile.actions:
                 if action.kind != TIMELAPSE_ACTION_KIND:
                     continue
+                configured = (action.params_json or {}).get("output_dir") or ""
                 try:
-                    root = resolve_output_dir((action.params_json or {}).get("output_dir") or "", DEFAULT_TIMELAPSE_DIR)
+                    prefix = static_prefix(configured) if has_placeholder(configured) else configured
+                    if not prefix:
+                        # Every segment is a placeholder, so the only directory that would
+                        # bound this sweep is FILES_ROOT itself. The action refuses to be
+                        # built at all in that state; this is the matching refusal for a
+                        # row saved before that check existed.
+                        raise ValueError(f"output_dir {configured!r} names no fixed folder to sweep")
+                    root = resolve_output_dir(prefix, DEFAULT_TIMELAPSE_DIR)
                 except (ValueError, OSError) as e:
                     # A path that no longer resolves is a misconfiguration to report, not
                     # a reason to abandon the sweep for every other watcher.
@@ -4338,60 +4370,79 @@ class Manager:
         Blocking. Three rails decide what is deletable, and all three exist because these
         roots live under FILES_ROOT alongside a user's annotated images:
 
-        * only immediate subdirectories that parse as `YYYY-MM-DD`,
-        * only files inside them matching the frame naming, and
+        * only files with a `YYYY-MM-DD` directory *somewhere* on the path below the root,
+        * only files whose name matches what the action writes, and
         * never a file with a JSON sidecar beside it — that is the app's marker for an
           image someone has curated, and a timelapse frame deliberately has none.
 
-        The day comes from the *directory name*, not from mtime. The name records when
-        the frame was filmed, which is the thing retention is about; mtime would make a
+        The first rail used to say "an immediate subdirectory", which stopped being true
+        the moment the directory could be templated: `timelapse/{source}` files the day
+        folder one level down, and `timelapse/{date}/{source}` puts it one level *up*
+        from the frames. Both are the same question — "which day was this filmed?" — so
+        the walk carries the nearest day folder it has passed through.
+
+        The day comes from the directory name, not from mtime. The name records when the
+        frame was filmed, which is the thing retention is about; mtime would make a
         restored backup or a `cp -r` look like today's footage.
+
+        Depth is bounded. The net is wider than it was, and an `output_dir` pointed at a
+        big tree should cost a bounded walk rather than a full recursive stat of it.
         """
         entries: List[Tuple[Path, int, date]] = []
-        for root in roots:
-            if not root.is_dir():
-                continue
+
+        def walk(directory: Path, day: Optional[date], depth: int) -> None:
+            if depth > TIMELAPSE_SCAN_MAX_DEPTH:
+                return
             try:
-                day_dirs = sorted(root.iterdir())
+                children = sorted(directory.iterdir())
             except OSError:
-                continue
-            for day_dir in day_dirs:
-                if not day_dir.is_dir():
-                    continue
+                return
+            for child in children:
                 try:
-                    day = datetime.strptime(day_dir.name, "%Y-%m-%d").date()
-                except ValueError:
-                    continue
-                try:
-                    candidates = sorted(day_dir.iterdir())
+                    if child.is_dir():
+                        parsed = day
+                        try:
+                            parsed = datetime.strptime(child.name, "%Y-%m-%d").date()
+                        except ValueError:
+                            pass
+                        walk(child, parsed, depth + 1)
+                        continue
+                    # A frame outside any day folder is not one this sweep wrote, whatever
+                    # its name looks like.
+                    if day is None or not TIMELAPSE_FRAME_RE.match(child.name):
+                        continue
+                    if child.with_suffix(child.suffix + ".json").exists():
+                        continue
+                    size = child.stat().st_size
                 except OSError:
+                    # Raced with another deleter, or unreadable. Not this sweep's
+                    # business either way.
                     continue
-                for path in candidates:
-                    if not TIMELAPSE_FRAME_RE.match(path.name):
-                        continue
-                    if path.with_suffix(path.suffix + ".json").exists():
-                        continue
-                    try:
-                        if not path.is_file():
-                            continue
-                        size = path.stat().st_size
-                    except OSError:
-                        # Raced with another deleter, or unreadable. Not this sweep's
-                        # business either way.
-                        continue
-                    entries.append((path, size, day))
+                entries.append((child, size, day))
+
+        for root in roots:
+            if root.is_dir():
+                walk(root, None, 0)
         return entries
 
-    def _delete_timelapse_frames(self, paths: Sequence[Path]) -> Tuple[int, int]:
-        """Unlink frames and tidy up any day directory left empty. Blocking.
+    def _delete_timelapse_frames(self, paths: Sequence[Path], roots: Sequence[Path]) -> Tuple[int, int]:
+        """Unlink frames and tidy up the directories left empty. Blocking.
 
         Returns `(files, bytes)`. The empty-directory pass is what stops a year-old
-        timelapse leaving 365 empty folders behind — `rmdir` only, so a directory holding
-        anything the sweep chose not to delete survives untouched.
+        timelapse leaving 365 empty folders behind. It walks *upward* rather than
+        removing only the frame's own folder, because a templated directory nests: with
+        `timelapse/{source}`, emptying every day folder under a camera leaves the camera's
+        folder behind too, and a camera that has been retired would keep its empty shell
+        forever.
+
+        `rmdir` only, and never above a root: a directory holding anything the sweep chose
+        not to delete stops the climb by failing, which is exactly the behaviour wanted —
+        and the root itself always survives, so the action has somewhere to write when the
+        camera comes back.
         """
         files = 0
         freed = 0
-        day_dirs: Set[Path] = set()
+        touched: Set[Path] = set()
         for path in paths:
             try:
                 size = path.stat().st_size
@@ -4400,13 +4451,20 @@ class Manager:
                 continue
             files += 1
             freed += size
-            day_dirs.add(path.parent)
-        for day_dir in day_dirs:
-            try:
-                day_dir.rmdir()
-            except OSError:
-                # Not empty, or gone already. Both are fine.
-                pass
+            touched.add(path.parent)
+
+        stop = {root.resolve() for root in roots}
+        # Deepest first, so a parent is only considered after its children have had their
+        # chance to go — otherwise the parent is still non-empty when it is tried.
+        for directory in sorted(touched, key=lambda d: len(d.parts), reverse=True):
+            current = directory
+            while current.resolve() not in stop and any(root in current.parents for root in stop):
+                try:
+                    current.rmdir()
+                except OSError:
+                    # Not empty, or gone already. Both end the climb.
+                    break
+                current = current.parent
         return files, freed
 
     async def prune_timelapse_by_age(self, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -4426,7 +4484,7 @@ class Manager:
         if not expired:
             return {"files": 0, "bytes": 0}
 
-        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, expired)
+        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, expired, roots)
         logger.info(
             "Timelapse retention (%s day window): removed %s frame(s), freeing %.1f MB",
             days,
@@ -4463,7 +4521,7 @@ class Manager:
             doomed.append(path)
             total -= size
 
-        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, doomed)
+        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, doomed, roots)
         logger.info("Timelapse size cap (%s MB): evicted %s frame(s), freeing %.1f MB", max_mb, files, freed / 1048576)
         return {"files": files, "bytes": freed}
 

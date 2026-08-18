@@ -10,8 +10,40 @@ trap, so this module holds the single rule both follow.
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from apps import FILES_ROOT
+
+
+def static_prefix(template: str) -> str:
+    """The leading path segments of a template that contain no placeholder.
+
+    `timelapse/{source}/{date}` → `timelapse`. `timelapse/cams` → `timelapse/cams`.
+    `{source}/frames` → `""`.
+
+    This exists for the retention sweep, which has to know which directories an action
+    may have written into *without* knowing what the tokens resolved to. Expanding the
+    template against the current source list would look more precise and be worse: a
+    camera renamed last month leaves a folder the expansion no longer names, so its
+    frames would never be swept again. The prefix is stable under renames, and the
+    sweep's own shape rails — a `YYYY-MM-DD` ancestor, a frame-shaped filename, no JSON
+    sidecar — are what decide whether any particular file may be deleted.
+
+    An empty result means the template starts with a placeholder, and therefore names no
+    directory the sweep can bound itself to. Callers refuse that rather than falling back
+    to the dataset root: sweeping all of `FILES_ROOT` is not a thing to do by accident.
+    """
+    kept = []
+    for segment in (template or "").strip().strip("/").split("/"):
+        if "{" in segment or "}" in segment:
+            break
+        if segment:
+            kept.append(segment)
+    return "/".join(kept)
+
+
+def has_placeholder(template: Optional[str]) -> bool:
+    return "{" in (template or "")
 
 
 def resolve_output_dir(output_dir: str, default: str) -> Path:

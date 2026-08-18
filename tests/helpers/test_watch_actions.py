@@ -602,11 +602,19 @@ class TestSaveTimelapseAction:
     wrong does not fail loudly — it silently fills a disk.
     """
 
-    def _action(self, tmp_path, **params):
-        # Constructed against a FILES_ROOT the test owns, since the action resolves its
-        # directory relative to it at construction time.
+    @pytest.fixture(autouse=True)
+    def _dataset_root(self, tmp_path):
+        """A FILES_ROOT the test owns, for the whole test.
+
+        Not merely for construction: the directory is a template now, so it is resolved
+        again on every frame — a patch that ended at construction let the writes land in
+        the container's real image_datasets.
+        """
         with patch.object(outputDir, "FILES_ROOT", Path(tmp_path)):
-            return SaveTimelapseAction(**params)
+            yield
+
+    def _action(self, tmp_path, **params):
+        return SaveTimelapseAction(**params)
 
     async def test_writes_one_frame_into_a_per_day_directory(self, tmp_path):
         frame = np.zeros((32, 32, 3), dtype=np.uint8)
@@ -677,9 +685,11 @@ class TestSaveTimelapseAction:
         """A misconfiguration must not become a hot loop of encode attempts."""
         frame = np.zeros((8, 8, 3), dtype=np.uint8)
         action = self._action(tmp_path, output_dir="timelapse", interval_s=3600)
-        action.output_dir = Path("/proc/definitely-not-writable")
-        first = await action.run(_signal(), _context(frame=frame))
-        second = await action.run(_signal(), _context(frame=frame))
+        # The dataset root is what has to be unwritable: an output_dir outside it is
+        # re-rooted rather than honoured, so it would land somewhere perfectly writable.
+        with patch.object(outputDir, "FILES_ROOT", Path("/proc")):
+            first = await action.run(_signal(), _context(frame=frame))
+            second = await action.run(_signal(), _context(frame=frame))
         assert first.ok is False
         assert second.detail == "not due"
 
@@ -767,3 +777,59 @@ class TestSnapshotDirectoryTemplates:
         written = Path(result.data["path"])
         assert written.exists()
         assert written.parent.parent == tmp_path / "snaps" / "litter-cam"
+
+
+class TestTimelapseDirectoryTemplates:
+    """One action covers every camera in the watcher, so the folder has to be able to
+    split them. Without `{source}` four cameras interleave in one directory — the
+    filenames still say which camera, but nothing sorts them."""
+
+    @pytest.fixture(autouse=True)
+    def _dataset_root(self, tmp_path):
+        with patch.object(outputDir, "FILES_ROOT", Path(tmp_path)):
+            yield
+
+    def _path(self, output_dir, **ctx):
+        action = SaveTimelapseAction(output_dir=output_dir)
+        when = datetime(2026, 8, 18, 14, 30, 0).astimezone()
+        return action.frame_path(_signal(), _context(**ctx), when)
+
+    def test_source_gives_each_camera_its_own_folder(self, tmp_path):
+        one = self._path("timelapse/{source}", source_name="Back room")
+        two = self._path("timelapse/{source}", source_name="Front door")
+        assert one.parent == tmp_path / "timelapse/back-room/2026-08-18"
+        assert two.parent == tmp_path / "timelapse/front-door/2026-08-18"
+
+    def test_without_a_token_every_camera_shares_one_folder(self, tmp_path):
+        one = self._path("timelapse", source_name="Back room")
+        two = self._path("timelapse", source_name="Front door")
+        assert one.parent == two.parent
+        # The filename still identifies the camera, which is what makes the shared
+        # folder survivable rather than actively wrong.
+        assert one.name != two.name
+
+    def test_placing_the_date_suppresses_the_automatic_day_level(self, tmp_path):
+        path = self._path("timelapse/{date}/{source}", source_name="Back room")
+        assert path.parent == tmp_path / "timelapse/2026-08-18/back-room"
+
+    def test_the_camera_stays_in_the_filename_even_when_it_names_a_folder(self, tmp_path):
+        path = self._path("timelapse/{source}", source_name="Back room")
+        assert path.name.startswith("back-room_")
+
+    def test_a_slash_in_a_camera_name_cannot_add_a_level(self, tmp_path):
+        path = self._path("timelapse/{source}", source_name="Kitchen / Upstairs")
+        assert path.parent == tmp_path / "timelapse/kitchen-upstairs/2026-08-18"
+
+    def test_a_template_with_no_fixed_folder_is_refused(self, tmp_path):
+        """The retention sweep bounds itself to the literal part of the path. With none,
+        the only directory that would bound it is the dataset root itself."""
+        with pytest.raises(ValueError):
+            SaveTimelapseAction(output_dir="{source}/frames")
+
+    async def test_two_sources_actually_write_to_two_folders(self, tmp_path):
+        frame = np.zeros((16, 16, 3), dtype=np.uint8)
+        action = SaveTimelapseAction(output_dir="timelapse/{source}", interval_s=3600)
+        a = await action.run(_signal(), _context(frame=frame, source_uuid="s1", source_name="Back room"))
+        b = await action.run(_signal(), _context(frame=frame, source_uuid="s2", source_name="Front door"))
+        assert Path(a.data["path"]).exists() and Path(b.data["path"]).exists()
+        assert Path(a.data["path"]).parent != Path(b.data["path"]).parent

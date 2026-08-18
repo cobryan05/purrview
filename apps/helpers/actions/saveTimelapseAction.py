@@ -41,8 +41,9 @@ from typing import Any, Dict, Optional
 
 from ..imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
 from ..watch.events import WatchEventSignal
+from ..watch.templating import build_template_params, describe_params, render_path
 from .action import Action, ActionContext, ActionResult
-from .outputDir import resolve_output_dir
+from .outputDir import resolve_output_dir, static_prefix
 from .Registry import register_action
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,22 @@ class SaveTimelapseAction(Action):
         **params: Any,
     ) -> None:
         super().__init__(**params)
-        # Resolved once, at construction, so a path that climbs out of FILES_ROOT fails
-        # when the watcher starts rather than silently every frame for a week.
-        self.output_dir = resolve_output_dir(output_dir, DEFAULT_TIMELAPSE_DIR)
+        # Kept as written — it is a template, and a watcher over four cameras wants four
+        # folders out of one action. Resolution happens per frame.
+        self.output_dir = str(output_dir).strip() or DEFAULT_TIMELAPSE_DIR
+        # The literal part is still resolved once, so a path that climbs out of
+        # FILES_ROOT fails when the watcher starts rather than silently every frame for
+        # a week. A template whose first segment is a placeholder has no literal part,
+        # and is refused here rather than at retention time: the sweep cannot bound
+        # itself to a directory it cannot name, so those frames would never be cleaned
+        # up and nothing would say so.
+        prefix = static_prefix(self.output_dir)
+        if not prefix:
+            raise ValueError(
+                f"output_dir {output_dir!r} must start with a real folder name before any "
+                "placeholder, so its frames can be found again and swept"
+            )
+        resolve_output_dir(prefix, DEFAULT_TIMELAPSE_DIR)
         # A zero or negative interval would write every analysed frame — several a
         # second, forever. That is never what "timelapse" means, and the disk cost is
         # not recoverable, so it is clamped rather than honoured.
@@ -101,9 +115,12 @@ class SaveTimelapseAction(Action):
                 "required": False,
                 "default": DEFAULT_TIMELAPSE_DIR,
                 "help": (
-                    "Directory to write frames into, relative to the image dataset root. A per-day "
-                    "subdirectory (YYYY-MM-DD, local time) is created under it. How much accumulates "
-                    "is bounded by Settings → Timelapse Retention."
+                    "Directory to write frames into, relative to the image dataset root. Placeholders "
+                    "are substituted and slugified per path segment — use {source} to give each camera "
+                    f"its own folder. Available: {describe_params()}. Must start with a real folder "
+                    "name before any placeholder. A YYYY-MM-DD subdirectory (local time) is added "
+                    "unless the template uses {date}. How much accumulates is bounded by "
+                    "Settings → Timelapse Retention."
                 ),
             },
             "interval_s": {
@@ -143,17 +160,31 @@ class SaveTimelapseAction(Action):
             },
         }
 
-    def frame_path(self, context: ActionContext, when: datetime) -> Path:
-        """`output_dir/YYYY-MM-DD/<source>_HH-MM-SS.jpg`, in local time.
+    def frame_path(self, signal: WatchEventSignal, context: ActionContext, when: datetime) -> Path:
+        """`<rendered output_dir>/YYYY-MM-DD/<source>_HH-MM-SS.jpg`, in local time.
 
         Local rather than UTC — the day boundary is the one the user's day has, and a
         UTC one cuts an evening in half for most of the world. The containers mount the
         host's `/etc/localtime`, so this is the same day the rest of the machine sees.
+
+        The `YYYY-MM-DD` level is added unless the template places `{date}` itself, so a
+        user who says where the date goes does not also get a second one. Either way a
+        day folder exists somewhere on the path, which is what the retention sweep reads
+        a frame's age from.
+
+        The source stays in the *filename* even when the template already sorts by
+        camera. It costs nothing, and it is what keeps a frame identifiable after it has
+        been copied out of the tree it was filed in.
         """
         from .mqttPublishAction import slugify_topic
 
+        params = build_template_params(signal, context, when=when)
+        root = resolve_output_dir(render_path(self.output_dir, params), DEFAULT_TIMELAPSE_DIR)
+        if "{date}" not in self.output_dir:
+            root = root / when.strftime("%Y-%m-%d")
+
         source = slugify_topic(context.source_name or context.source_uuid or "source")
-        return self.output_dir / when.strftime("%Y-%m-%d") / f"{source}_{when.strftime('%H-%M-%S')}.jpg"
+        return root / f"{source}_{when.strftime('%H-%M-%S')}.jpg"
 
     def _due(self, source_key: str, now: float) -> Optional[int]:
         """The bucket to write for `now`, or None when this one is already written."""
@@ -183,7 +214,7 @@ class SaveTimelapseAction(Action):
         # several times a second.
         self._written_bucket[source_key] = bucket
 
-        dest = self.frame_path(context, when)
+        dest = self.frame_path(signal, context, when)
         try:
             size = await asyncio.to_thread(self._write, frame, dest, context)
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data={"path": str(dest), "sizeBytes": size})

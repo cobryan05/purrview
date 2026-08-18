@@ -929,6 +929,47 @@ class TestValidateEndpoint:
         report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
         assert any("written at the slower rate" in w for w in report["warnings"])
 
+    async def test_a_timelapse_folder_starting_with_a_placeholder_is_an_error(self, http_client):
+        """The retention sweep bounds itself to the literal part of the path. With none,
+        the only folder that would bound it is the dataset root itself."""
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid}],
+                actions=[
+                    {
+                        "kind": "save_timelapse",
+                        "trigger": "frame_analysed",
+                        "paramsJson": {"output_dir": "{source}/frames"},
+                    }
+                ],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert any("starts with a placeholder" in e for e in report["errors"])
+        assert report["valid"] is False
+
+    async def test_a_folder_with_a_real_prefix_is_accepted(self, http_client):
+        source_uuid = await _make_source(http_client)
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid}],
+                actions=[
+                    {
+                        "kind": "save_timelapse",
+                        "trigger": "frame_analysed",
+                        "paramsJson": {"output_dir": "timelapse/{source}"},
+                    }
+                ],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert not any("placeholder" in e for e in report["errors"])
+
     async def test_a_timelapse_slower_than_the_analysis_rate_is_silent(self, http_client):
         source_uuid = await _make_source(http_client)
         profile = (

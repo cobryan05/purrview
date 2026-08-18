@@ -1365,15 +1365,26 @@ function buildActionRow(action, ctx) {
       // `resolve_output_dir` in the action accepts that spelling.
       const dir = dirPickerField(stored.output_dir ?? DEFAULT_TIMELAPSE_DIR, ctx.onAnyChange);
       params.appendChild(wfield('Output dir', dir.element, { width: '15rem' }));
+      params.appendChild(templateHelp(dir.input, {
+        label: 'Placeholders you can use in this folder',
+        intro: 'Substituted per path segment and slugified. One action covers every camera in '
+          + 'the watcher, so use {source} to give each its own folder — without it they all '
+          + 'share one. Must start with a real folder name before any placeholder. A YYYY-MM-DD '
+          + 'folder is added automatically unless you place {date} yourself.',
+      }));
 
       // The per-day subdirectory is created by the action, not picked here, so the
       // hint is the only place the user learns the frames are not written flat.
-      const layout = el('span', 'watch-hint', '');
+      const layout = el('span', 'watch-hint watch-hint--truncate', '');
       layout.dataset.testid = 'watch-action-timelapse-layout';
       function syncLayout() {
         const root = (dir.getValue() || DEFAULT_TIMELAPSE_DIR).replace(/^\/+|\/+$/g, '') || DEFAULT_TIMELAPSE_DIR;
-        layout.textContent = `→ ${root}/2026-08-18/back-room_14-30-00.jpg`;
-        layout.title = 'One directory per day, named for the camera and the local time.';
+        const rendered = renderTopicExample(root);
+        const day = root.includes('{date}') ? '' : `${TEMPLATE_EXAMPLE.date}/`;
+        layout.textContent = `→ ${rendered}/${day}back-room_14-30-00.jpg`;
+        layout.title = root.includes('{source}')
+          ? 'A folder per camera, then one per day.'
+          : 'Every camera in this watcher writes into this one folder — add {source} to split them.';
       }
       dir.onChange(syncLayout);
       syncLayout();
