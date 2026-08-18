@@ -10,7 +10,7 @@ import random
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 from uuid import uuid4
@@ -107,6 +107,19 @@ from apps.helpers.types import FileEntryRead
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
+
+#: Settings key holding how many days of event clips and card art to keep.
+#: Mirrored in `app/settings/main.js` — keep the two in sync.
+RECORDING_RETENTION_SETTING_KEY = "recording_retention_days"
+
+#: Kept for a month by default. Long enough that "what happened while I was away" is
+#: still answerable after a holiday, short enough that a busy watcher does not fill a
+#: disk before anyone notices. 0 or less disables the sweep entirely.
+DEFAULT_RECORDING_RETENTION_DAYS = 30
+
+#: How often the sweep runs. The window it enforces is measured in days, so anything
+#: tighter than hourly is filesystem work for no benefit.
+RETENTION_SWEEP_INTERVAL_S = 3600.0
 logger.setLevel(LOG_LEVEL)
 
 # Only bboxes explicitly carrying this tag produce PRESENT image-label rows.
@@ -196,6 +209,11 @@ class Manager:
         # references to tasks, so a bare create_task() can be garbage-collected
         # mid-run. Doubles as a coalescing flag — one trim at a time is plenty.
         self._thumb_trim_task: Optional[asyncio.Task] = None
+        # When the retention sweep last ran, so it happens on a clock of its own rather
+        # than on every worker tick. None means "not yet", which makes the first sweep
+        # run shortly after startup — the point at which a long-stopped deployment has
+        # the most expired material to shed.
+        self._last_retention_sweep: Optional[float] = None
         # Maximum seconds to wait for the count query before returning -1.
         # count_images_search does a full table scan with no LIMIT; on large
         # datasets (100k+ images) with complex multi-EXISTS filters it can take
@@ -262,6 +280,23 @@ class Manager:
         self._build_bbox_loaded = 0
         self._hash_index_ready = True
 
+    async def _maybe_prune_expired_recordings(self) -> None:
+        """Run the retention sweep at most once an hour, and never let it kill the loop.
+
+        Hourly rather than per tick because the sweep touches the filesystem and the
+        window it enforces is measured in days — running it every poll would be pure
+        cost. Failures are logged and swallowed: the worker also rebuilds the hash
+        index, and a retention error must not take that down with it.
+        """
+        now = time.monotonic()
+        if self._last_retention_sweep is not None and now - self._last_retention_sweep < RETENTION_SWEEP_INTERVAL_S:
+            return
+        self._last_retention_sweep = now
+        try:
+            await self.prune_expired_recordings()
+        except Exception:
+            logger.exception("Retention sweep failed")
+
     async def _worker_task(self):
         """Periodic worker task that runs at regular intervals"""
         try:
@@ -273,6 +308,7 @@ class Manager:
                 # requests rather than inside a request handler) avoids opening
                 # a concurrent DB session while another transaction is active.
                 await self._hash_index.rebuild_if_needed()
+                await self._maybe_prune_expired_recordings()
         except asyncio.CancelledError:
             print("Periodic task was cancelled.")
         except Exception as e:
@@ -3771,6 +3807,75 @@ class Manager:
             except OSError as e:
                 logger.warning("Could not delete recording file %s: %s", path_str, e)
         return await self._db_client.delete_recording(uuid)
+
+    # ── Retention ──────────────────────────────────────────────────────────────
+
+    async def get_recording_retention_days(self) -> int:
+        """How long event clips and card art are kept, in days.
+
+        Stored as a plain string in `settings` (the table holds no other type). Anything
+        unparseable falls back to the default rather than raising: this runs from the
+        worker loop, and a hand-edited row must not be able to stop the sweep — a stuck
+        sweep is a disk that fills up silently, which is the failure this exists to
+        prevent. Zero or negative means "keep everything", so there is a way to opt out
+        that does not involve deleting the setting and guessing at the default.
+        """
+        raw = await self._db_client.get_setting(RECORDING_RETENTION_SETTING_KEY)
+        if raw is None or str(raw).strip() == "":
+            return DEFAULT_RECORDING_RETENTION_DAYS
+        try:
+            return int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Unreadable %s setting %r; falling back to %s days",
+                RECORDING_RETENTION_SETTING_KEY,
+                raw,
+                DEFAULT_RECORDING_RETENTION_DAYS,
+            )
+            return DEFAULT_RECORDING_RETENTION_DAYS
+
+    async def prune_expired_recordings(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Delete events and clips past the retention window. Returns what it removed.
+
+        Events are swept first because `delete_watch_event` already cascades to the clip
+        the event owns, so sweeping recordings first would delete the file and leave the
+        event pointing at nothing for the rest of the pass. The second sweep then catches
+        recordings with no event — a clip whose event was deleted by hand, or one written
+        before the row that should have referenced it.
+
+        Retention is measured from when the event *started*, not from when the row was
+        written: a clip is interesting because of when it was filmed.
+        """
+        days = await self.get_recording_retention_days()
+        if days <= 0:
+            return {"events": 0, "recordings": 0}
+
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+        events = 0
+        for uuid in await self._db_client.watch_event_uuids_before(cutoff):
+            try:
+                if await self.delete_watch_event(uuid):
+                    events += 1
+            except Exception:
+                # One unreadable row must not stop the sweep; the disk is the point.
+                logger.exception("Retention sweep could not delete watch event %s", uuid)
+
+        recordings = 0
+        for uuid in await self._db_client.recording_uuids_before(cutoff):
+            try:
+                if await self.delete_recording(uuid):
+                    recordings += 1
+            except Exception:
+                logger.exception("Retention sweep could not delete recording %s", uuid)
+
+        if events or recordings:
+            logger.info(
+                "Retention sweep (%s day window): removed %s event(s) and %s orphan recording(s)",
+                days,
+                events,
+                recordings,
+            )
+        return {"events": events, "recordings": recordings}
 
     # ── Model groups ───────────────────────────────────────────────────────────
 

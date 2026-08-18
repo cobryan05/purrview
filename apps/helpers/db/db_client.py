@@ -6882,6 +6882,35 @@ class DbClient:
             await session.commit()
         return True
 
+    async def watch_event_uuids_before(self, cutoff: datetime, limit: int = 500) -> List[str]:
+        """Uuids of events that started before *cutoff*, oldest first.
+
+        Uuids rather than rows: the caller deletes them one at a time so it can unlink
+        each event's files, and hydrating full read models to throw them away is waste.
+        Batched because a watcher left running over a long holiday can accumulate more
+        expired events than anyone wants to delete inside one worker tick.
+        """
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                select(WatchEvent.uuid)
+                .where(WatchEvent.started_at < cutoff)
+                .order_by(WatchEvent.started_at)
+                .limit(limit)
+            )
+            return list(result.all())
+
+    async def recording_uuids_before(self, cutoff: datetime, limit: int = 500) -> List[str]:
+        """Uuids of recordings that started before *cutoff*, oldest first.
+
+        Falls back to `created_at` when `started_at` is NULL: a clip whose extraction
+        failed before the relay reported a start time still occupies disk, and a NULL
+        compares false against any cutoff, so it would otherwise never expire.
+        """
+        started = func.coalesce(Recording.started_at, Recording.created_at)
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Recording.uuid).where(started < cutoff).order_by(started).limit(limit))
+            return list(result.all())
+
     async def close_watch_event(
         self,
         uuid: str,

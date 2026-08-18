@@ -274,8 +274,9 @@ class TestSettingsLayout:
 
         wrap = page.locator("#tab-settings .settings-wrap")
         expect(wrap).to_have_css("display", "grid")
-        # Servers, MQTT Broker, Deduplication, Interface, Keyboard Shortcuts
-        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(5)
+        # Servers, MQTT Broker, Recording Retention, Deduplication, Interface,
+        # Keyboard Shortcuts
+        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(6)
 
         # At a desktop width the grid resolves to more than one column.
         columns = page.evaluate(
@@ -389,7 +390,7 @@ class TestMqttSettings:
         _navigate_to_settings(page, base_url)
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
-        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(5)
+        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(6)
 
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
         _mock_server_config(page)
@@ -834,3 +835,96 @@ class TestFileBrowserViewToggle:
                 delete window.__fb;
                 delete window.__fb2;
             }""")
+
+
+# ---------------------------------------------------------------------------
+# 3d. Recording retention panel
+# ---------------------------------------------------------------------------
+
+
+def _retention_field(page: Page):
+    return page.locator("#settings-section-retention [data-testid='settings-retention-days']")
+
+
+def _retention_status(page: Page):
+    return page.locator("#settings-section-retention .settings-server-status")
+
+
+class TestRecordingRetention:
+    """Event clips and card art are the only unbounded writer in the app, so the window
+    that bounds them has to be visible and changeable rather than a constant in a file."""
+
+    def test_defaults_to_thirty_days_when_unset(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_field(page)).to_have_value("30")
+        expect(_retention_status(page)).to_contain_text("30 days")
+
+    def test_a_stored_value_populates_the_field(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page, {"recording_retention_days": "7"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_field(page)).to_have_value("7")
+        expect(_retention_status(page)).to_contain_text("7 days")
+
+    def test_zero_is_shown_as_keeping_everything(self, page: Page, base_url: str):
+        """`Number('')` is a finite 0, so "unset" and "keep forever" must not collapse."""
+        _mock_server_config(page)
+        _mock_settings_get(page, {"recording_retention_days": "0"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_field(page)).to_have_value("0")
+        expect(_retention_status(page)).to_contain_text("Keeping every event")
+
+    def test_an_unreadable_stored_value_falls_back_to_the_default(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page, {"recording_retention_days": "forever"})
+        _navigate_to_settings(page, base_url)
+
+        expect(_retention_field(page)).to_have_value("30")
+
+    def test_save_writes_the_day_count(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+
+        def handle_put(route: Route):
+            if route.request.method == "PUT":
+                put_calls.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route(lambda url: "/api/settings/" in url, handle_put)
+
+        _retention_field(page).fill("14")
+        page.locator("[data-testid='settings-retention-save']").click()
+
+        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/recording_retention_days")
+        url, body = put_calls[0]
+        assert url.rstrip("/").endswith("/recording_retention_days")
+        assert body["value"] == "14"
+
+    def test_a_negative_value_is_refused_rather_than_saved(self, page: Page, base_url: str):
+        """Negative days would silently read as "keep everything" in the backend."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+        page.route(
+            lambda url: "/api/settings/" in url,
+            lambda route: (
+                put_calls.append(route.request.url) if route.request.method == "PUT" else None,
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+            )[-1],
+        )
+
+        _retention_field(page).fill("-5")
+        page.locator("[data-testid='settings-retention-save']").click()
+
+        expect(_retention_status(page)).to_contain_text("whole number of days")
+        assert not put_calls

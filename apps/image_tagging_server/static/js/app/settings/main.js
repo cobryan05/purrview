@@ -33,14 +33,15 @@ export async function init() {
   // The settings panels load their values concurrently — each awaits its
   // own settings reads, so building them in sequence would serialise round-trips
   // that have nothing to do with each other.
-  const [serverPanel, mqttPanel, dedupPanel, uiPanel] = await Promise.all([
+  const [serverPanel, mqttPanel, retentionPanel, dedupPanel, uiPanel] = await Promise.all([
     _buildServerSection(),
     _buildMqttSection(),
+    _buildRetentionSection(),
     _buildDedupSection(),
     _buildUiSettingsSection(),
   ]);
 
-  wrap.append(serverPanel, mqttPanel, dedupPanel, uiPanel, _buildHotkeySection());
+  wrap.append(serverPanel, mqttPanel, retentionPanel, dedupPanel, uiPanel, _buildHotkeySection());
   container.appendChild(wrap);
 }
 
@@ -269,6 +270,82 @@ function _buildServerRow({ label, serverType, settingKey, description, defaultUr
   });
 
   return row;
+}
+
+/* ── Recording retention ───────────────────────────────────────────────────── */
+
+/**
+ * How many days of event clips and card art to keep.
+ * Mirrors `RECORDING_RETENTION_SETTING_KEY` in `apps/db_server/manager.py`.
+ */
+export const RETENTION_SETTING_KEY = 'recording_retention_days';
+
+/** Mirrors `DEFAULT_RECORDING_RETENTION_DAYS` in `apps/db_server/manager.py`. */
+const RETENTION_DEFAULT_DAYS = 30;
+
+async function _buildRetentionSection() {
+  const { section, body } = _panel('Recording Retention', { id: 'settings-section-retention' });
+
+  let stored = null;
+  try {
+    stored = await getSetting(RETENTION_SETTING_KEY);
+  } catch (_) {}
+  // `Number('')` is a finite 0, which would read as "keep nothing" — check for a
+  // non-empty string before trusting the parse.
+  const parsed = stored != null && String(stored).trim() !== '' ? Number(stored) : NaN;
+  const current = Number.isFinite(parsed) ? Math.trunc(parsed) : RETENTION_DEFAULT_DAYS;
+
+  const note = document.createElement('p');
+  note.className = 'settings-dedup-warning';
+  note.textContent =
+    'Event clips and the snapshots shown on event cards are deleted once they are older than this. ' +
+    'Frames you saved for annotation are never touched — those live under the image datasets and are yours ' +
+    'to curate. The sweep runs about once an hour, and measures age from when the event started, not from ' +
+    'when the clip was written.';
+  body.appendChild(note);
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '0';
+  input.className = 'settings-server-input settings-server-input--narrow';
+  input.dataset.testid = 'settings-retention-days';
+  input.value = String(current);
+
+  const saveBtn = _rowButton('Save');
+  saveBtn.dataset.testid = 'settings-retention-save';
+
+  const { row, setStatus } = _buildRow({
+    label: 'Keep recordings for',
+    description: 'Days. Set to 0 to keep everything forever — nothing is deleted automatically.',
+    controls: [input, saveBtn],
+  });
+
+  const describe = (days) =>
+    days > 0
+      ? setStatus(`Deleting events older than ${days} day${days === 1 ? '' : 's'}.`, 'info')
+      : setStatus('Keeping every event — disk use is unbounded.', 'muted');
+  describe(current);
+
+  saveBtn.addEventListener('click', async () => {
+    const value = Number(input.value);
+    if (input.value.trim() === '' || !Number.isFinite(value) || value < 0) {
+      setStatus('Enter a whole number of days, or 0 to keep everything.', 'error');
+      return;
+    }
+    const days = Math.trunc(value);
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        await setSetting(RETENTION_SETTING_KEY, String(days));
+        input.value = String(days);
+        describe(days);
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
+  });
+
+  body.appendChild(row);
+  return section;
 }
 
 /* ── MQTT broker ───────────────────────────────────────────────────────────── */
