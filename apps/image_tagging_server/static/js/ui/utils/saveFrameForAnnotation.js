@@ -15,6 +15,9 @@
 import { uploadImages } from '/app-static/js/shared/api/uploads.js';
 import { updateImage } from '/app-static/js/shared/api/images.js';
 import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+// Not crypto.randomUUID directly: it is absent outside a secure context, and the NVR
+// live view is routinely opened over plain http on a LAN address.
+import { generateUUID } from '/app-static/js/ui/utils/utils.js';
 
 /**
  * Where captured frames land by default, under FILES_ROOT.
@@ -115,7 +118,7 @@ export async function saveFrameForAnnotation({
     if (!box?.labelUuid) continue;
     const rect = normaliseBox(box.bbox, frameWidth, frameHeight);
     if (!rect) continue;
-    const uuid = crypto.randomUUID();
+    const uuid = generateUUID();
     bboxes.set(uuid, {
       uuid,
       ...rect,
