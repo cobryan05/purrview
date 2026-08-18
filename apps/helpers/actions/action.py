@@ -62,6 +62,12 @@ class ActionContext:
     #: is addressed by wallclock, but rule timing uses a monotonic clock, so the task
     #: supplies the offset rather than every action re-deriving it.
     wallclock_offset: float = 0.0
+    #: `DrainedChunk`s already copied out of the rolling buffer for this event, oldest
+    #: first. Non-empty only when the event outlived the buffer, which is what lets a
+    #: rule's `max_duration_s` exceed the rewind window without silently losing the front
+    #: of the clip. Supplied by the task, which owns the drain — see
+    #: `apps.helpers.recordings.clipDrain`.
+    clip_chunks: List[Any] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 
 

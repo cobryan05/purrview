@@ -267,6 +267,48 @@ class RecordClipAction(Action):
         rule = slugify_topic(signal.rule_name)
         return self.output_dir / day / f"{stamp}_{source}_{rule}.mp4"
 
+    async def _assemble_from_chunks(
+        self, signal: WatchEventSignal, context: ActionContext, dest: Path
+    ) -> Dict[str, Any]:
+        """Build the clip from drained chunks plus whatever is still in the buffer.
+
+        Taken only when the event outlived the rewind window. The chunks cover from the
+        pre-roll up to the last drain; everything after that is still buffered, so the
+        tail is cut the ordinary way and concatenated on. Without the tail the clip would
+        end at the last drain rather than at the event, losing up to one drain interval
+        of the ending — which is the part the user is most likely to be watching for.
+        """
+        from ..recordings.clipDrain import assemble
+
+        chunks = list(context.clip_chunks)
+        tail_start = chunks[-1].end
+        end_wall = signal.at + context.wallclock_offset
+        tail_duration = (datetime.fromtimestamp(end_wall, tz=timezone.utc) - tail_start).total_seconds()
+        tail_duration += self.postroll_s
+
+        tail: Optional[Path] = None
+        if tail_duration > 0:
+            backend = self._resolve_backend(context)
+            candidate = dest.with_suffix(".tail.mp4")
+            try:
+                await backend.extract(context, tail_start, tail_duration, candidate)
+                tail = candidate
+            except Exception as e:
+                # The chunks are the bulk of the clip and are already on disk; losing the
+                # last few seconds is far better than losing the whole event.
+                logger.warning("Tail extraction failed for %s, writing chunks only: %s", signal.rule_name, e)
+
+        try:
+            result = await assemble(chunks, tail, dest, max_length_s=self.max_length_s)
+        finally:
+            if tail is not None:
+                tail.unlink(missing_ok=True)
+        result["requestedStart"] = chunks[0].start.isoformat()
+        # A clip built this way always reached back past the buffer, so its pre-roll is
+        # whole unless a drain was actually missed — which `hasGap` reports.
+        result["partialPreroll"] = bool(result.get("hasGap"))
+        return result
+
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         # Only the closing edge can be cut: the window isn't known until the event ends,
         # which is precisely what a retroactive buffer buys us.
@@ -279,6 +321,11 @@ class RecordClipAction(Action):
         start, duration = self.plan_window(signal, context)
         dest = self.clip_path(signal, context, start)
         try:
+            if context.clip_chunks:
+                result = await self._assemble_from_chunks(signal, context, dest)
+                return ActionResult(
+                    ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
+                )
             result = await backend.extract(context, start, duration, dest)
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:

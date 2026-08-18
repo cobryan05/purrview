@@ -27,6 +27,7 @@ import base64
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import db_client
@@ -47,13 +48,14 @@ from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend
 from apps.helpers.actions.Registry import create_action
 from apps.helpers.consts import JsonValues, TaskStatus
 from apps.helpers.imageUtils import base64_encode_jpg
+from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.tracking.Registry import create_tracker
 from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
 from apps.helpers.watch.rules import RuleSpec, expand_descendants
-from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies
+from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
 
 from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._watch_event_recorder import NullWatchEventRecorder, WatchEventRecorder
@@ -165,6 +167,11 @@ class StreamWatcherTask(Task):
         # source_uuid → FrameRing, for sources with no rewind buffer. Created on first
         # frame, so a profile of RTSP cameras allocates none of them.
         self._frame_rings: Dict[str, FrameRing] = {}
+        # source_uuid → ClipDrain, for buffered sources with an event open. Created on
+        # the first open event and discarded when the last one closes, so a watcher
+        # whose events all fit inside the buffer never allocates one — which is most of
+        # them. See `apps.helpers.recordings.clipDrain` for why this exists at all.
+        self._clip_drains: Dict[str, ClipDrain] = {}
         self._progress = None  # a watcher has no meaningful completion percentage
 
     # ------------------------------------------------------------------ schema
@@ -487,6 +494,89 @@ class StreamWatcherTask(Task):
         ring = self._frame_rings.get(pipeline.source_uuid)
         return RingClipBackend(ring) if ring is not None else None
 
+    #: Where drained chunks live while an event is open. Under the clips root so the
+    #: retention sweep's disk accounting sees them, dot-prefixed so the media browser's
+    #: day folders do not.
+    CHUNK_DIRNAME = ".drain"
+
+    def _chunk_root(self):
+        from apps import RECORDINGS_CLIP_DIR
+
+        return RECORDINGS_CLIP_DIR / self.CHUNK_DIRNAME
+
+    def _drain_for(self, pipeline: WatchPipeline) -> Optional[ClipDrain]:
+        """The clip drain for a buffered source, created on first need.
+
+        Only buffered sources get one. A ring-backed source has no timeline to drain —
+        its whole history is the RAM ring, which is bounded by its own settings.
+        """
+        if not pipeline.buffered or not pipeline.retention_s:
+            return None
+        drain = self._clip_drains.get(pipeline.source_uuid)
+        if drain is None:
+            relay_path = getattr(pipeline.provider, "_relayed_name", None)
+            if not relay_path:
+                return None
+            relay = self._manager.get_relay_api_client()
+
+            async def extract(start, duration_s, dest):
+                return await relay.extract_clip(path=relay_path, start=start, duration_s=duration_s, dest=dest)
+
+            drain = ClipDrain(
+                source_uuid=pipeline.source_uuid,
+                retention_s=pipeline.retention_s,
+                extract=extract,
+                chunk_root=self._chunk_root(),
+                lead_s=self._max_preroll_for(pipeline.source_uuid),
+                log=self.log,
+            )
+            self._clip_drains[pipeline.source_uuid] = drain
+        return drain
+
+    def _max_preroll_for(self, source_uuid: Optional[str]) -> float:
+        """The largest pre-roll any clip action on this source asks for.
+
+        The drain has to start that far ahead of the event, because pre-roll sits in
+        front of the event and is the one part of a clip that cannot be re-derived once
+        it has aged out. Taken across actions rather than per action so one drain serves
+        all of them.
+        """
+        prerolls = [
+            float(getattr(action, "preroll_s", 0.0))
+            for row, action in self._actions
+            if row.kind == "record_clip" and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
+        ]
+        return max(prerolls) if prerolls else 0.0
+
+    async def _service_drain(self, pipeline: WatchPipeline) -> None:
+        """Keep a long event's video alive, one chunk at a time.
+
+        Called every pass for every source. The common case — no event open — costs one
+        dict lookup and returns.
+        """
+        open_events = pipeline.engine.open_events()
+        drain = self._clip_drains.get(pipeline.source_uuid)
+
+        if not open_events:
+            if drain is not None:
+                drain.note_idle()
+            return
+
+        drain = drain or self._drain_for(pipeline)
+        if drain is None:
+            return
+
+        starts = [e["startedAt"] for e in open_events if e.get("startedAt") is not None]
+        if not starts:
+            return
+        # Event timing is monotonic; the buffer is addressed by wallclock.
+        earliest = datetime.fromtimestamp(min(starts) + self._wallclock_offset, tz=timezone.utc)
+        drain.note_open(earliest)
+
+        now_wall = datetime.fromtimestamp(time.monotonic() + self._wallclock_offset, tz=timezone.utc)
+        if drain.due(now_wall):
+            await drain.drain(now_wall)
+
     def _ring_for(self, pipeline: WatchPipeline) -> Optional[FrameRing]:
         """The frame ring for an unbuffered source, created on first use.
 
@@ -710,6 +800,13 @@ class StreamWatcherTask(Task):
             log=self.log,
         )
 
+        # Chunks from a previous process are worthless — their events were force-closed
+        # and their clips already cut or lost — but they are full-rate video, so leaving
+        # them is a disk leak nothing else would ever clean up.
+        swept = await asyncio.to_thread(sweep_chunk_root, self._chunk_root())
+        if swept:
+            self.log(f"Swept {swept} clip chunk(s) left behind by a previous run")
+
         self._status_msg = "Building pipelines"
         await self._build_pipelines(db_api_client)
 
@@ -759,6 +856,8 @@ class StreamWatcherTask(Task):
         finally:
             renewal.cancel()
             self._status_msg = "Closing open events"
+            # Order matters: the events below are force-closed and still cut their
+            # clips, so the chunks must outlive them. Discarding happens after.
             # An event open at shutdown must be closed, not stranded — its clip is
             # still extractable while the buffer window holds.
             for pipeline in self._pipelines:
@@ -766,6 +865,11 @@ class StreamWatcherTask(Task):
                     self._resolve_slot_names(signal, pipeline)
                     self._note_event(signal)
                     await self._dispatch(signal, pipeline)
+            # Now that every clip has been cut, the chunks are dead weight — full-rate
+            # video that nothing will ever read again.
+            for drain in self._clip_drains.values():
+                drain.discard()
+            self._clip_drains.clear()
 
         return {
             "eventsStarted": self._events_started,
@@ -923,6 +1027,11 @@ class StreamWatcherTask(Task):
             self._resolve_slot_names(signal, pipeline)
             self._note_event(signal)
             await self._dispatch(signal, pipeline)
+
+        # After dispatch, so an event that just closed has already had its clip cut from
+        # the chunks before they are discarded — and an event that just opened arms the
+        # drain on this same pass rather than one frame late.
+        await self._service_drain(pipeline)
 
         # After `step`, not before: the pipeline's `detections` are the mask-filtered
         # ones the tracker actually saw, so a live feed draws the same boxes the rules
@@ -1138,7 +1247,20 @@ class StreamWatcherTask(Task):
             # Rule timing is monotonic; the buffer is addressed by wallclock. Carry the
             # offset once rather than making every action re-derive it.
             wallclock_offset=self._wallclock_offset,
+            # Video already rescued from the buffer for this source, for an event that
+            # outlived it. Empty for every event that closed inside the window, which is
+            # what keeps the ordinary case on the ordinary single-cut path.
+            clip_chunks=self._chunks_for_signal(signal),
         )
+
+    def _chunks_for_signal(self, signal) -> List[Any]:
+        """Drained chunks covering this event's window, oldest first."""
+        drain = self._clip_drains.get(signal.source_uuid) if signal.source_uuid else None
+        if drain is None or not drain.chunks:
+            return []
+        start = datetime.fromtimestamp(signal.started_at + self._wallclock_offset, tz=timezone.utc)
+        end = datetime.fromtimestamp(signal.at + self._wallclock_offset, tz=timezone.utc)
+        return drain.chunks_for(start, end)
 
     def _label_colours(self) -> dict:
         """label uuid → colour, for actions that draw boxes.

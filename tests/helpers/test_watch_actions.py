@@ -6,7 +6,7 @@ on a 24/7 run, and every one of them has to degrade to a reported failure rather
 an exception on the frame loop.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -531,6 +531,118 @@ class TestRecordClipAction:
         action = RecordClipAction(backend=PlaybackClipBackend(_FakeRelay()))
         result = await action.run(_signal(), _context(relay_path=None))
         assert result.ok is False
+
+
+def _fake_concat(parts, dest, max_length_s=None):
+    """Stand-in for `concat_parts`, matching the one behaviour callers depend on.
+
+    The real function creates its own parent directory. A double that does not looks
+    identical until the *only* other thing that would have created it — the tail
+    extraction — is the thing under test for failing.
+    """
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    Path(dest).write_bytes(b"joined")
+    return 6
+
+
+class TestRecordClipFromDrainedChunks:
+    """An event that outlived the buffer is assembled from chunks plus the live tail.
+
+    Without this, cutting only at the closing edge kept whatever survived: a ten-minute
+    event against a 45 s buffer produced a 45 s clip, silently, with the front evicted
+    long before anything asked for it.
+    """
+
+    def _chunks(self, tmp_path, count=2, gap_before=False):
+        from apps.helpers.recordings.clipDrain import DrainedChunk
+
+        base = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+        chunks = []
+        for i in range(count):
+            path = tmp_path / f"chunk-{i}.mp4"
+            path.write_bytes(b"mp4")
+            chunks.append(
+                DrainedChunk(
+                    path=path,
+                    start=base + timedelta(seconds=60 * i),
+                    end=base + timedelta(seconds=60 * (i + 1)),
+                    gap_before=gap_before and i == 1,
+                )
+            )
+        return chunks
+
+    async def test_chunks_are_concatenated_with_the_tail(self, tmp_path, monkeypatch):
+        joined = {}
+
+        def fake_concat(parts, dest, max_length_s=None):
+            joined["parts"] = list(parts)
+            joined["maxLength"] = max_length_s
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(b"joined")
+            return 6
+
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", fake_concat)
+        relay = _FakeRelay()
+        action = RecordClipAction(backend=PlaybackClipBackend(relay), output_dir=str(tmp_path / "clips"))
+        chunks = self._chunks(tmp_path)
+
+        result = await action.run(_signal(), _context(clip_chunks=chunks))
+
+        assert result.ok is True
+        # Two chunks plus the tail cut from what is still buffered.
+        assert len(joined["parts"]) == 3
+        assert joined["parts"][:2] == [c.path for c in chunks]
+
+    async def test_the_tail_covers_from_the_last_chunk_to_the_event_end(self, tmp_path, monkeypatch):
+        """Without the tail the clip would stop at the last drain, losing the ending —
+        the part the user is most likely watching for."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        relay = _FakeRelay()
+        action = RecordClipAction(backend=PlaybackClipBackend(relay), postroll_s=5, output_dir=str(tmp_path / "clips"))
+        chunks = self._chunks(tmp_path)
+
+        await action.run(_signal(), _context(clip_chunks=chunks))
+
+        _path, tail_start, tail_duration, _dest = relay.calls[0]
+        assert tail_start == chunks[-1].end
+
+    async def test_a_failed_tail_still_writes_the_chunks(self, tmp_path, monkeypatch):
+        """The chunks are the bulk of the clip and already on disk — losing the last few
+        seconds beats losing the whole event."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(
+            backend=PlaybackClipBackend(_FakeRelay(fail="buffer gone")), output_dir=str(tmp_path / "clips")
+        )
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path)))
+        assert result.ok is True
+
+    async def test_a_missed_drain_is_reported_as_a_partial_clip(self, tmp_path, monkeypatch):
+        """A clip with a hole is a different artifact from a complete one."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(backend=PlaybackClipBackend(_FakeRelay()), output_dir=str(tmp_path / "clips"))
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path, gap_before=True)))
+        assert result.data["hasGap"] is True
+        assert result.data["partialPreroll"] is True
+
+    async def test_a_clean_assembly_is_not_flagged_partial(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(backend=PlaybackClipBackend(_FakeRelay()), output_dir=str(tmp_path / "clips"))
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path)))
+        assert result.data["hasGap"] is False
+        assert result.data["partialPreroll"] is False
+
+    async def test_no_chunks_takes_the_ordinary_single_cut_path(self, tmp_path):
+        """Most events close inside the buffer and must not touch any of this."""
+        relay = _FakeRelay()
+        action = RecordClipAction(backend=PlaybackClipBackend(relay), output_dir=str(tmp_path / "clips"))
+
+        result = await action.run(_signal(), _context())
+        assert result.ok is True
+        assert len(relay.calls) == 1, "a single cut, not a tail plus an assembly"
+        assert "partCount" not in (result.data or {})
 
 
 class TestFrameRing:

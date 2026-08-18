@@ -245,3 +245,130 @@ class TestRingPrefersTheCamerasOwnFrame:
         task._push_to_ring(pipeline, _packet(b"\xff\xd8downscaled"), now=100.0, full_res=None)
 
         assert task._frame_rings["src-1"]._frames[0][1] == b"\xff\xd8downscaled"
+
+
+class _RecordingRelay:
+    """Relay double that writes a file, so a drained chunk looks real on disk."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def extract_clip(self, path, start, duration_s, dest):
+        self.calls.append((path, start, duration_s, dest))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"mp4")
+        return {"path": str(dest), "sizeBytes": 3}
+
+
+def _drain_task(pipelines, tmp_path, relay=None, actions=()):
+    task = _task(pipelines, relay_client=relay or _RecordingRelay())
+    task._clip_drains = {}
+    task._actions = list(actions)
+    task.CHUNK_DIRNAME = ".drain"
+    task._chunk_root = lambda: tmp_path
+    return task
+
+
+def _open_event_pipeline(source_uuid="src-1", started_at=100.0, **kwargs):
+    """A pipeline whose engine reports one open event, without driving a real rule."""
+    pipeline = _pipeline(source_uuid, **kwargs)
+    pipeline.provider = SimpleNamespace(_relayed_name="relay_master_abc")
+    pipeline.engine.open_events = lambda: [{"ruleUuid": "r1", "startedAt": started_at, "sourceUuid": source_uuid}]
+    return pipeline
+
+
+class TestClipDrainIsDriven:
+    """The drain is what lets `max_duration_s` exceed the rewind window.
+
+    Wiring it wrong fails silently in the worst way: long events keep producing short
+    clips exactly as they did before, with no error anywhere.
+    """
+
+    async def test_an_idle_source_never_allocates_a_drain(self, tmp_path):
+        """Most events close inside the buffer; they must not touch this path at all."""
+        pipeline = _pipeline("src-1", buffered=True)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path)
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains == {}
+
+    async def test_an_open_event_arms_a_drain_on_a_buffered_source(self, tmp_path):
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path)
+
+        await task._service_drain(pipeline)
+
+        assert "src-1" in task._clip_drains
+        assert task._clip_drains["src-1"].active is True
+
+    async def test_an_unbuffered_source_gets_no_drain(self, tmp_path):
+        """A ring-backed source has no timeline to drain — its history is the RAM ring."""
+        pipeline = _open_event_pipeline(buffered=False)
+        task = _drain_task([pipeline], tmp_path)
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains == {}
+
+    async def test_the_drain_starts_ahead_of_the_event_by_the_largest_preroll(self, tmp_path):
+        """Pre-roll sits in front of the event and cannot be re-derived once evicted."""
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        rows = [
+            (SimpleNamespace(kind="record_clip", source_uuids_json=[]), RecordClipAction(preroll_s=10)),
+            (SimpleNamespace(kind="record_clip", source_uuids_json=[]), RecordClipAction(preroll_s=30)),
+        ]
+        task = _drain_task([pipeline], tmp_path, actions=rows)
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains["src-1"].lead_s == 30.0
+
+    async def test_a_clip_action_scoped_to_another_source_does_not_set_the_lead(self, tmp_path):
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        rows = [(SimpleNamespace(kind="record_clip", source_uuids_json=["other"]), RecordClipAction(preroll_s=30))]
+        task = _drain_task([pipeline], tmp_path, actions=rows)
+
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains["src-1"].lead_s == 0.0
+
+    async def test_the_event_closing_discards_the_chunks(self, tmp_path):
+        """Chunks are full-rate video; a drain that outlived its event is a disk leak."""
+        pipeline = _open_event_pipeline(buffered=True)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path)
+        await task._service_drain(pipeline)
+
+        pipeline.engine.open_events = lambda: []
+        await task._service_drain(pipeline)
+
+        assert task._clip_drains["src-1"].active is False
+
+    async def test_chunks_are_offered_to_the_action_for_the_events_window(self, tmp_path):
+        pipeline = _open_event_pipeline(buffered=True, started_at=0.0)
+        pipeline.retention_s = 45.0
+        task = _drain_task([pipeline], tmp_path)
+        drain = task._drain_for(pipeline)
+        drain.note_open(_dt(task, 0.0))
+        await drain.drain(_dt(task, 40.0))
+
+        signal = SimpleNamespace(source_uuid="src-1", started_at=0.0, at=60.0)
+        assert len(task._chunks_for_signal(signal)) == 1
+
+    async def test_no_drain_means_no_chunks(self, tmp_path):
+        """The ordinary single-cut path must stay reachable."""
+        pipeline = _pipeline("src-1", buffered=True)
+        task = _drain_task([pipeline], tmp_path)
+        signal = SimpleNamespace(source_uuid="src-1", started_at=0.0, at=60.0)
+        assert task._chunks_for_signal(signal) == []
+
+
+def _dt(task, monotonic_s):
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(monotonic_s + task._wallclock_offset, tz=timezone.utc)
