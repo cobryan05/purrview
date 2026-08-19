@@ -4059,10 +4059,16 @@ class Manager:
     def _scan_recording_files(self) -> List[Tuple[Path, int, float]]:
         """Every file under the recordings roots, with size and mtime. Blocking.
 
-        Only the managed roots are walked. A clip written to a hand-set `output_dir` is
-        outside the managed area: not swept, and not counted toward the size cap. Walking
-        wherever a param happens to point would mean deleting files in a directory the
-        user chose for their own reasons.
+        Only the managed roots are walked, and that limit is about *deletion*: this is
+        what the orphan sweep deletes from, and it deletes by discovery — anything here
+        with no row pointing at it goes. Walking wherever a param happens to point would
+        turn that into deleting files in a directory the user chose for their own
+        reasons, which is the failure mode that makes directory sweeps dangerous.
+
+        A clip written to a hand-set absolute `output_dir` is therefore not swept. It is
+        still *counted* toward the size cap, and still deleted when its row goes — see
+        `_recording_disk_entries` for why following a row is a different act from
+        walking a directory.
         """
         entries: List[Tuple[Path, int, float]] = []
         for root in self._recording_roots:
@@ -4078,6 +4084,61 @@ class Manager:
                     # this sweep's business.
                     continue
                 entries.append((path, stat.st_size, stat.st_mtime))
+        return entries
+
+    @staticmethod
+    def _stat_external_recordings(referenced: Set[str], roots: Tuple[str, ...]) -> List[Tuple[Path, int, float]]:
+        """Stat the row-referenced files that lie outside the roots. Blocking.
+
+        Reached by following rows, never by walking. That is the whole distinction: a
+        path in `referenced` names a file this application wrote and still has an index
+        entry for, so its provenance is known. A file found by walking a directory the
+        user chose has no provenance at all.
+        """
+        entries: List[Tuple[Path, int, float]] = []
+        for raw in referenced:
+            real = os.path.realpath(raw)
+            # Already counted by the walk. Compared with a separator appended so that a
+            # sibling root like `/data/recordings/clips-old` is not read as being inside
+            # `/data/recordings/clips`.
+            if any(real == root or real.startswith(root + os.sep) for root in roots):
+                continue
+            try:
+                stat = os.stat(real)
+            except OSError:
+                # A row naming a file that is gone, unreadable, or on an unmounted share.
+                # It contributes no bytes, which is exactly what the caller needs.
+                continue
+            entries.append((Path(real), stat.st_size, stat.st_mtime))
+        return entries
+
+    async def _recording_disk_entries(self) -> List[Tuple[Path, int, float]]:
+        """Every file the size cap is accountable for, with size and mtime.
+
+        The union of two sets that are gathered in deliberately different ways:
+
+        * everything under the managed roots, found by walking — this is what the orphan
+          sweep may also delete, so it has to include files no row names; and
+        * everything a surviving row points at from *outside* those roots, found by
+          following the rows.
+
+        The second half exists because accounting scope has to match deletion scope. An
+        action with an absolute `output_dir` writes outside the roots, and age pruning
+        already deletes those files — it works through the row, which unlinks whatever
+        `file_path` names, wherever that is. Measuring by walking alone left the size cap
+        blind to a file it was perfectly willing to delete: it could never push the total
+        over the cap, so a camera writing to a hand-set directory filled the disk while
+        the sweep logged that it was under its bound.
+
+        What does *not* change is that nothing walks a directory the user chose. Their
+        own files, sitting beside ours in that directory, are neither counted nor
+        touched — following a row to a file we wrote is a different act from discovering
+        files by scanning, and only the second one can eat data that was never ours.
+        """
+        entries = await asyncio.to_thread(self._scan_recording_files)
+        referenced = await self._db_client.referenced_recording_paths()
+        roots = tuple(os.path.realpath(root) for root in self._recording_roots)
+        entries += await asyncio.to_thread(self._stat_external_recordings, referenced, roots)
         return entries
 
     async def sweep_orphan_recording_files(self, now_ts: Optional[float] = None) -> Dict[str, int]:
@@ -4128,9 +4189,11 @@ class Manager:
     def _path_size(path: Optional[str], size_by_path: Dict[str, int]) -> int:
         """Bytes *path* occupies, per the walk. 0 when it lies outside the managed roots.
 
-        Zero is the safe answer rather than a stat: a file the sweep does not manage
-        contributes nothing to the total it is trying to reduce, so counting it would
-        make eviction stop before the cap was actually met.
+        Zero is the safe answer rather than a stat: the map is the same measurement the
+        running total was built from, so a path missing from it contributed nothing to
+        that total and crediting eviction with its bytes would make the loop stop before
+        the cap was actually met. A miss now means a genuinely unmeasured file — the map
+        covers row-referenced files outside the roots too.
         """
         if not path:
             return 0
@@ -4173,7 +4236,7 @@ class Manager:
             return {"events": 0, "recordings": 0, "bytes": 0}
         max_bytes = max_mb * 1024 * 1024
 
-        entries = await asyncio.to_thread(self._scan_recording_files)
+        entries = await self._recording_disk_entries()
         initial_total = sum(size for _p, size, _m in entries)
         if initial_total <= max_bytes:
             return {"events": 0, "recordings": 0, "bytes": 0}
@@ -4217,19 +4280,19 @@ class Manager:
                         logger.exception("Size eviction could not delete recording %s", uuid)
 
             if not deleted_this_pass:
-                # Over the cap with nothing left that this sweep owns — files outside the
-                # managed roots, or inside the orphan grace period. Saying so is the
-                # useful outcome; looping is not.
+                # Over the cap with nothing left that this sweep owns: files under the
+                # roots that no row names and that are still inside the orphan grace
+                # period. Saying so is the useful outcome; looping is not.
                 logger.warning(
                     "Recordings occupy %.1f MB, over the %s MB cap, but no deletable rows "
-                    "remain — the excess is files outside the managed roots or younger "
-                    "than the orphan grace period.",
+                    "remain — the excess is files no row points at and younger than the "
+                    "orphan grace period.",
                     total / 1048576,
                     max_mb,
                 )
                 break
 
-        final = sum(size for _p, size, _m in await asyncio.to_thread(self._scan_recording_files))
+        final = sum(size for _p, size, _m in await self._recording_disk_entries())
         freed = max(0, initial_total - final)
         if events or recordings:
             logger.info(

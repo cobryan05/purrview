@@ -391,6 +391,59 @@ class TestTheSizeCap:
         assert result["recordings"] > 0
         assert await db_client.get_recording(rec_uuids[0]) is None
 
+    async def test_a_recording_outside_the_roots_counts_toward_the_cap(
+        self, manager, db_client, tmp_path, profile_uuid
+    ):
+        """Deletion scope and accounting scope have to agree.
+
+        An action pointed at an absolute `output_dir` writes outside the managed roots.
+        Age pruning already deletes those files — it goes through the row, which unlinks
+        whatever `file_path` names. The size cap measured by walking the roots only, so
+        the same file was invisible to it: it could never push the total over the cap,
+        and a camera writing there filled the disk while the sweep reported it was
+        comfortably under. Counting a file the sweep is already willing to delete costs
+        no new authority.
+        """
+        external = tmp_path / "nas" / "timelapses"
+        external.mkdir(parents=True)
+        clip = external / "visit.mp4"
+        clip.write_bytes(b"x" * (2 * 1024 * 1024))
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+        event = await db_client.create_watch_event(
+            WatchEvent(profile_uuid=profile_uuid, started_at=_ago(5), rule_name="outside")
+        )
+        await db_client.create_recording(
+            Recording(file_path=str(clip), started_at=_ago(5), event_uuid=event.uuid, status="complete")
+        )
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result["events"] == 1
+        assert await db_client.get_watch_event(event.uuid) is None
+        assert not clip.exists()
+
+    async def test_an_unreferenced_file_beside_it_is_neither_counted_nor_deleted(
+        self, manager, db_client, tmp_path
+    ):
+        """The rail that makes counting external files safe: rows, never directories.
+
+        The reason the sweep refuses to walk a hand-set `output_dir` is that the user
+        chose it for their own reasons and it holds their own files. Reaching those by
+        walking would be the failure that makes directory sweeps dangerous. Reaching our
+        own by following a row is not the same act, and this is the test that keeps the
+        two apart.
+        """
+        external = tmp_path / "nas" / "timelapses"
+        external.mkdir(parents=True)
+        theirs = external / "holiday-video.mp4"
+        theirs.write_bytes(b"x" * (4 * 1024 * 1024))
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result == {"events": 0, "recordings": 0, "bytes": 0}
+        assert theirs.exists()
+
 
 class TestTheWholePass:
     async def test_all_three_phases_report_together(self, manager, db_client, tmp_path, recording_roots, profile_uuid):
