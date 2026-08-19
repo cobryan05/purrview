@@ -65,8 +65,10 @@ const THRESHOLD_HELP = {
   },
   overlaps: {
     label: 'match',
-    title: 'How much the two must overlap, as a fraction of the *smaller* box’s area — so '
-      + 'a cat lapping at a bowl scores on the cat, not on the pair.',
+    // No markdown emphasis in a tooltip: a `title` renders as plain text, so asterisks
+    // reach the user as asterisks. The wording carries the emphasis instead.
+    title: 'How much the two must overlap, as a fraction of the smaller box’s area rather '
+      + 'than of the pair — so a cat lapping at a bowl scores on the cat, not on the bowl.',
   },
   iou: {
     label: 'match',
