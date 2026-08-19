@@ -133,7 +133,7 @@ class TestAskThenRemember:
         _open_files_tab(page, base_url)
 
         _choose_file(page)
-        page.wait_for_timeout(1200)
+        wait_until(page, lambda: bool(calls), "Expected the upload to go straight out with no prompt")
 
         assert calls, "Expected the upload to go straight out with no prompt"
         assert 'name="path"' in (calls[0]["body"] or "")

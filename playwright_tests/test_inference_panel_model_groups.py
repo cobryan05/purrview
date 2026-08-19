@@ -19,6 +19,8 @@ import json
 import pytest
 from playwright.sync_api import Page
 
+from playwright_tests.waits import wait_until
+
 
 def _mock_models(page: Page, models: list, kinds: dict = None):
     kinds = kinds or {}
@@ -170,7 +172,20 @@ class TestSaveAndRunModelGroup:
 
         page.once("dialog", lambda dialog: dialog.accept("MyGroup"))
         page.click("#test-inference-panel button:has-text('Save as stack')")
-        page.wait_for_timeout(300)  # let the async create + re-fetch settle
+        # Two async steps hide behind this click: the POST that creates the
+        # group, and the re-fetch that re-renders the Groups section. Waiting
+        # only for the POST races the render, so wait for the rendered name —
+        # it implies both. (A fixed sleep used to cover the pair; it was long
+        # enough on an idle box and nothing here would have said otherwise.)
+        wait_until(
+            page,
+            lambda: "MyGroup"
+            in page.eval_on_selector_all(
+                "#test-inference-panel .inference-model-item .inference-model-name",
+                "els => els.map(el => el.textContent)",
+            ),
+            "saved group never appeared in the panel's Groups section",
+        )
 
         assert len(groups_state["groups"]) == 1
         created = groups_state["groups"][0]
