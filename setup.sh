@@ -65,13 +65,43 @@ menu() {  # menu "Title" "opt1" "opt2" ... -> echoes chosen index (1-based) on s
   echo "${reply:-1}"
 }
 
-# Ask whether to use the GPU for inference. Echoes "y" or "n". Only prompts when
-# a GPU exists; on a CPU-only host it silently answers "n". Training, when part
-# of the deployment, always uses the GPU regardless of this answer.
+# Ask whether to use the GPU for inference. Echoes "y" or "n". Training, when
+# part of the deployment, always uses the GPU regardless of this answer.
+#
+# Always asked, and the question says whether a GPU was actually detected. It
+# used to skip the prompt entirely on an undetected host and force "n", which
+# made this the only role-affecting choice in the script with no override —
+# every other "no GPU found" branch offers a "continue anyway". Detection is
+# `nvidia-smi` on the *host*, and a machine whose containers can reach the GPU
+# perfectly well may not have it on PATH, so a failed probe is not proof of
+# anything. The detection result becomes the *default* instead of the verdict.
 choose_gpu_inference() {
+  local prompt def
   if [ "$GPU_DEFAULT" = "y" ]; then
-    if ask "Use the GPU for inference (onnxruntime-gpu)?" y; then echo "y"; else echo "n"; fi
+    prompt="  NVIDIA GPU detected. Use it for inference (onnxruntime-gpu)?"
+    def="y"
   else
+    prompt="  No NVIDIA GPU detected. Build for GPU inference anyway (onnxruntime-gpu)?"
+    def="n"
+  fi
+  if ask "$prompt" "$def"; then
+    if [ "$GPU_DEFAULT" != "y" ]; then
+      # The GPU build reserves an NVIDIA device, and reserving one that is not
+      # there stops the container from starting at all — a failure that looks
+      # nothing like "wrong build flavour" when you meet it later.
+      echo "  !! Building for GPU inference on a host where none was detected." >&2
+      echo "     The container will reserve an NVIDIA device and will fail to start" >&2
+      echo "     unless Docker can actually provide one (NVIDIA Container Toolkit)." >&2
+    fi
+    echo "y"
+  else
+    # Said out loud rather than assumed silently: CPU-only is a supported
+    # configuration, not a degraded fallback. The inference path is pure ONNX at
+    # runtime, so plain onnxruntime gives working inference and the slim base
+    # skips the CUDA layers entirely — a much smaller image on a box that could
+    # not use them anyway.
+    echo "  CPU-only inference (plain onnxruntime, slim base). Fully supported —" >&2
+    echo "  inference runs on CPU and the image is far smaller." >&2
     echo "n"
   fi
 }
@@ -113,7 +143,9 @@ echo "=========================================================="
 if [ "$GPU_DEFAULT" = "y" ]; then
   echo "Detected an NVIDIA GPU on this host."
 else
-  echo "No NVIDIA GPU detected on this host (CPU-only assumed)."
+  echo "No NVIDIA GPU detected on this host."
+  echo "(Detection probes 'nvidia-smi' on the host — you will still be asked, and"
+  echo " can override it, wherever the choice matters.)"
 fi
 echo
 
