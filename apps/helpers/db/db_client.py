@@ -2080,6 +2080,67 @@ class DbClient:
 
         return deleted_count
 
+    #: Checkpoint the WAL once it exceeds this. SQLite's own wal_autocheckpoint
+    #: fires at 1000 pages (~4 MB) but only ever runs a PASSIVE checkpoint, which
+    #: copies pages into the main DB without resetting the file — so a WAL that
+    #: never finds a reader-free moment keeps its high-water mark forever. 16 MB
+    #: leaves plenty of room above the 4 MB passive threshold, so this only fires
+    #: when the passive path has genuinely failed to keep up rather than racing it.
+    _WAL_CHECKPOINT_THRESHOLD_BYTES = 16 * 1024 * 1024
+
+    async def checkpoint_wal(self) -> Optional[int]:
+        """Truncate the WAL back to empty if it has grown past the threshold.
+
+        Observed in production on 2026-08-19: a 57 MB WAL against a 38 MB
+        database, 14x past SQLite's own 4 MB autocheckpoint threshold and not
+        shrinking. That is the expected outcome of a busy server, not a bug in
+        SQLite: a PASSIVE checkpoint (the only kind autocheckpoint runs) needs a
+        moment with no active readers to reset the file, and db_server rarely has
+        one. Readers then pay to search an ever-larger WAL, and crash recovery has
+        that much more to replay.
+
+        TRUNCATE is the mode that actually returns the space. It is also the one
+        that can block, so this is deliberately called from the periodic worker
+        rather than from a request path, and a busy result is left for the next
+        pass instead of retried — the WAL being large is a slow-burn cost, never
+        an emergency.
+
+        Returns:
+            Optional[int]: Bytes the WAL shrank by, 0 if it was under the
+            threshold or the checkpoint was blocked, or None for an in-memory DB
+            (which has no WAL at all).
+        """
+        if self._memory:
+            return None
+
+        wal_path = self._db_path.with_name(self._db_path.name + "-wal")
+        try:
+            before = wal_path.stat().st_size
+        except OSError:
+            # No WAL file yet, or it vanished under us — nothing to reclaim.
+            return 0
+        if before < self._WAL_CHECKPOINT_THRESHOLD_BYTES:
+            return 0
+
+        async with self._engine.connect() as conn:
+            result = await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            row = result.first()
+
+        # Row is (busy, log_pages, checkpointed_pages); busy=1 means a reader or
+        # writer held it off. Nothing to do but come back next pass.
+        if row is not None and row[0]:
+            logger.info("WAL checkpoint blocked by an active reader/writer; will retry (wal=%d bytes)", before)
+            return 0
+
+        try:
+            after = wal_path.stat().st_size
+        except OSError:
+            after = 0
+        reclaimed = max(before - after, 0)
+        if reclaimed:
+            logger.info("WAL checkpoint reclaimed %.1f MB (%d -> %d bytes)", reclaimed / 1048576, before, after)
+        return reclaimed
+
     async def get_image_stubs_needing_phash(self, image_hex_len: int, bbox_hex_len: int) -> List[Dict[str, str]]:
         """Return [{uuid, filename}] for images that are missing a phash or have one at the wrong size.
 

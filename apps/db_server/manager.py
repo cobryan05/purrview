@@ -172,6 +172,15 @@ DEFAULT_TIMELAPSE_MAX_TOTAL_MB = 20480
 #: module reads action rows out of the database and never instantiates one.
 TIMELAPSE_ACTION_KIND = "save_timelapse"
 
+#: Action kinds that put an event in the Events view — the mirror of `Action.logs_event()`
+#: in `apps/helpers/actions/action.py`, which is what the watcher itself reads. Spelled
+#: out for the same reason as above: this module never instantiates an action, and
+#: importing the action package here would drag cv2 and an MQTT client into db_server for
+#: the sake of one predicate. `tests/db_server/test_watch_validation.py` asserts the two
+#: sides name the same kinds, so adding a logging action and forgetting this warning is a
+#: test failure rather than a silently absent hint.
+EVENT_LOGGING_ACTION_KINDS = frozenset({"record_clip", "record_event_timelapse", "save_event"})
+
 #: What `SaveTimelapseAction` writes: `<camera>_HH-MM-SS.jpg`, inside a `YYYY-MM-DD`
 #: directory. Both halves are matched before anything is deleted, and that pattern is the
 #: whole safety story for this sweep. Unlike recordings, a timelapse lives under
@@ -190,6 +199,10 @@ TIMELAPSE_SCAN_MAX_DEPTH = 4
 #: How often the sweep runs. The window it enforces is measured in days, so anything
 #: tighter than hourly is filesystem work for no benefit.
 RETENTION_SWEEP_INTERVAL_S = 3600.0
+# The WAL only needs reclaiming on a slow burn, and a checkpoint that finds the
+# file under threshold still costs a stat — so this is deliberately far coarser
+# than the 5s poll, and far finer than the hourly retention sweep it rides beside.
+WAL_CHECKPOINT_INTERVAL_S = 300.0
 
 #: Events deleted per size-eviction pass before the total is re-measured. Re-walking is
 #: how the total stays truthful (it counts snapshots, which carry no size column), and
@@ -306,6 +319,7 @@ class Manager:
         # run shortly after startup — the point at which a long-stopped deployment has
         # the most expired material to shed.
         self._last_retention_sweep: Optional[float] = None
+        self._last_wal_checkpoint: Optional[float] = None
         # Maximum seconds to wait for the count query before returning -1.
         # count_images_search does a full table scan with no LIMIT; on large
         # datasets (100k+ images) with complex multi-EXISTS filters it can take
@@ -372,6 +386,27 @@ class Manager:
         self._build_bbox_loaded = 0
         self._hash_index_ready = True
 
+    async def _maybe_checkpoint_wal(self) -> None:
+        """Keep the write-ahead log from growing without bound.
+
+        Runs here rather than in a request handler for the same reason the hash
+        rebuild does: a TRUNCATE checkpoint wants a quiet moment, and asking for
+        one from inside a live transaction is how you get a busy result every
+        time. DbClient.checkpoint_wal() decides whether there is anything to do,
+        so this only owns the schedule.
+
+        Failures are logged and swallowed — the worker also rebuilds the hash
+        index and runs retention, and an oversized WAL must not take those down.
+        """
+        now = time.monotonic()
+        if self._last_wal_checkpoint is not None and now - self._last_wal_checkpoint < WAL_CHECKPOINT_INTERVAL_S:
+            return
+        self._last_wal_checkpoint = now
+        try:
+            await self._db_client.checkpoint_wal()
+        except Exception:
+            logger.exception("WAL checkpoint failed")
+
     async def _maybe_prune_expired_recordings(self) -> None:
         """Run the retention sweep at most once an hour, and never let it kill the loop.
 
@@ -415,6 +450,7 @@ class Manager:
                 # a concurrent DB session while another transaction is active.
                 await self._hash_index.rebuild_if_needed()
                 await self._maybe_prune_expired_recordings()
+                await self._maybe_checkpoint_wal()
         except asyncio.CancelledError:
             print("Periodic task was cancelled.")
         except Exception as e:
@@ -3959,6 +3995,33 @@ class Manager:
                         f"video. Raise the rule's max (0 removes the cap entirely), shorten the "
                         f"interval, or lower the action's minimum."
                     )
+
+        # An event is written to the Events view only where an in-scope action writes
+        # something to it — see `Action.logs_event`. A rule with no such action still
+        # runs, still publishes and still shows in the task log; it just leaves no row.
+        # That is usually deliberate ("a cat is present" would otherwise file hundreds of
+        # empty events a day), which is why this is a warning and names the fix rather
+        # than an error. Without it, a rule someone *did* want filed is indistinguishable
+        # from one that never matched.
+        logging_actions = [a for a in profile.actions if a.enabled and a.kind in EVENT_LOGGING_ACTION_KINDS]
+        unfiled = [
+            rule.name
+            for rule in profile.rules
+            if rule.enabled
+            and not any(
+                # Empty scope means every rule, as everywhere else.
+                not a.rule_uuids_json or rule.uuid in {str(u) for u in a.rule_uuids_json}
+                for a in logging_actions
+            )
+        ]
+        if unfiled:
+            named = ", ".join(f"{name!r}" for name in unfiled[:4])
+            more = f" (and {len(unfiled) - 4} more)" if len(unfiled) > 4 else ""
+            warnings.append(
+                f"Nothing files events for {named}{more}: no clip, event timelapse or Save event "
+                "action covers these rules, so their matches will publish and log but will not "
+                "appear in Events. Add a Save event action if you want them listed."
+            )
 
         return {
             "valid": not errors,
