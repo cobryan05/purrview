@@ -20,6 +20,23 @@
 #                         (defaults to the `training` compose service)
 #   COMPOSE_FILE        add :docker-compose.gpu.yaml to give `app` a GPU
 #                       (needed for onnxruntime-gpu inference)
+#
+# ---------------------------------------------------------------------
+# !! RECORDING STORAGE — read before changing where recordings are kept !!
+#
+# NVR clips, event snapshots and event timelapses live under /data/recordings/,
+# i.e. inside the `./data/:/data` bind mount below. To move recordings to
+# another disk, move that WHOLE mount (e.g. `- /mnt/nas/ww:/data`). Everything
+# beneath it belongs to the app, so that is always safe.
+#
+# Do NOT bind-mount a directory that holds anything else at an individual
+# recordings root. The retention sweep deletes a recording's own file via its
+# database row (safe — only ever files we created), but the ORPHAN sweep walks
+# those roots and deletes every unreferenced file older than
+# RECORDINGS_ORPHAN_GRACE_S (default 900 s), with no extension filter and no way
+# to tell your files from ours. Point it at a shared media folder and it empties
+# it. See .env.example for the full explanation.
+# ---------------------------------------------------------------------
 # =====================================================================
 
 x-gpu: &gpu
@@ -73,6 +90,8 @@ services:
       # Set TZ in .env only to deliberately override the host.
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
+      # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
@@ -148,6 +167,8 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
+      # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
@@ -192,6 +213,8 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
+      # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs
@@ -277,6 +300,8 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      # Recordings live at /data/recordings/. Relocate by moving THIS mount, not
+      # by mounting something at a recordings root — see the note in the header.
       - ./data/:/data
       - ./conf:/conf
       - ./logs:/logs

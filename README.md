@@ -109,6 +109,27 @@ Common cases:
 | `TRAINING_SERVER_HOST` | hostname | where the frontend reaches training (defaults to the `training` service) |
 | `APPUSER_UID` / `APPUSER_GID` | ints | match host user for clean bind-mount ownership |
 
+### Recording storage
+
+NVR clips, event snapshots and event timelapses are written under
+`/data/recordings/`, inside the `./data:/data` bind mount. To keep recordings on
+another disk, move **that whole mount** (`- /mnt/nas/whiskerwatcher:/data` in
+`docker-compose.override.yml`). Everything beneath it belongs to the app, so this
+is always safe.
+
+> ⚠️ **Never mount a directory containing anything else at an individual
+> recordings root.** Space is reclaimed two ways. Deleting a recording's own file
+> follows its database row, so it only ever removes files the app created — safe
+> anywhere. But the **orphan sweep** walks the recordings roots and deletes every
+> file no database row points at, once older than `RECORDINGS_ORPHAN_GRACE_S`
+> (default 900 s). It has no extension filter and cannot distinguish your files
+> from its own; its only safety argument is that those directories belong to the
+> app alone. Point one at a shared media folder and it will be emptied.
+
+`RECORDINGS_CLIP_DIR` / `RECORDINGS_SNAPSHOT_DIR` / `RECORDINGS_TIMELAPSE_DIR`
+are deliberately not wired through `.env` for this reason — the safe knob is
+exposed, the dangerous one isn't.
+
 ---
 
 ## Common commands
