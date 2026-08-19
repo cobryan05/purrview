@@ -1,0 +1,76 @@
+#!/bin/sh
+# Block commits containing unformatted Python.
+#
+# Checks the *staged* content of each staged .py file, not the working tree, so
+# concurrent in-flight edits by another process cannot fail your commit and a
+# partially-staged file is judged on what you are actually committing.
+#
+# black/isort are pinned in requirements-dev.txt and only exist inside the app
+# container, so the check runs there. If the container is not up, the hook warns
+# and passes rather than blocking work.
+#
+# Install with ./scripts/install-git-hooks.sh
+
+CONTAINER="${WHISKERWATCHER_CONTAINER:-whiskerwatcher_mono_dev}"
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+[ -z "$files" ] && exit 0
+
+# Word-splitting below can't survive spaces in paths; none exist in this repo,
+# but skip rather than mangle the list if that ever changes.
+case "$files" in
+*" "*)
+    printf '%s\n' "pre-commit: path with a space in the staged set — skipping format check" >&2
+    exit 0
+    ;;
+esac
+
+if ! docker exec "$CONTAINER" true >/dev/null 2>&1; then
+    printf '%s\n' "pre-commit: container '$CONTAINER' is not running — skipping format check" >&2
+    exit 0
+fi
+
+# shellcheck disable=SC2086  # deliberate word-split of the newline-separated list
+unformatted=$(docker exec -i -w /project "$CONTAINER" sh -s -- $files <<'CHECK'
+# Note the flags differ: black names its stdin file with --stdin-filename, isort
+# with --filename. Getting one wrong is a usage error, not a format failure, and
+# exits 2 — hence the exit-code split below, so a broken invocation announces
+# itself instead of silently condemning every file.
+for f in "$@"; do
+    git show ":$f" | black --check --quiet --stdin-filename "$f" - >/dev/null 2>&1
+    case $? in
+    0) ;;
+    1) printf 'black  %s\n' "$f" ;;
+    *) printf 'ERROR  black could not check %s\n' "$f" ;;
+    esac
+
+    git show ":$f" | isort --check-only --quiet --filename "$f" - >/dev/null 2>&1
+    case $? in
+    0) ;;
+    1) printf 'isort  %s\n' "$f" ;;
+    *) printf 'ERROR  isort could not check %s\n' "$f" ;;
+    esac
+done
+CHECK
+)
+
+[ -z "$unformatted" ] && exit 0
+
+# Only the offending files go in the suggested command, space-joined so it stays
+# a single runnable line.
+bad=$(printf '%s\n' "$unformatted" | awk '{print $NF}' | sort -u | tr '\n' ' ')
+
+printf '%s\n' "" \
+    "Commit blocked: staged Python is not formatted." \
+    "" \
+    "$unformatted" \
+    "" \
+    "Fix and re-stage:" \
+    "" \
+    "  docker exec -w /project $CONTAINER sh -c 'black $bad && isort $bad'" \
+    "  git add $bad" \
+    "" \
+    "Bypass with --no-verify only if you are deliberately committing unformatted code." \
+    "" >&2
+
+exit 1
