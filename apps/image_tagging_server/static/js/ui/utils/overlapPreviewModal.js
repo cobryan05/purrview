@@ -14,7 +14,7 @@
  */
 
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
-import { fetchReviewQueue, getBboxThumbnailUrl } from '/app-static/js/shared/api/review.js';
+import { fetchReviewQueue, getRegionThumbnailUrl } from '/app-static/js/shared/api/review.js';
 
 /**
  * The virtual frame the preview measures in. Pixel units, like the engine's, so the
@@ -155,7 +155,17 @@ async function fetchLabelSample(labelUuid) {
       if (!bbox || !img.filename) continue;
       // Guard the ratio: a zero-height box would collapse the preview box to a line.
       const aspect = bbox.height > 0 && bbox.width > 0 ? bbox.width / bbox.height : 1;
-      return { url: getBboxThumbnailUrl(img.filename, bbox.uuid, 300), aspect };
+      // The region crop with no padding and no stroke, rather than the bbox thumbnail
+      // the review grid uses. That one adds 20% context and draws the box's outline
+      // inside the picture, so the preview showed a *second* smaller box within the
+      // rectangle being dragged — and which edge the overlap was measured from stopped
+      // being obvious, which is the entire job of this modal.
+      const url = getRegionThumbnailUrl(
+        img.filename,
+        { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height },
+        { width: 300, pad: 0, outline: false },
+      );
+      return { url, aspect };
     }
   } catch {
     // Swallowed on purpose — see above.

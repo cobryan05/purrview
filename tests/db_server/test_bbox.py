@@ -256,6 +256,41 @@ async def test_region_thumbnail_is_cached_per_outline_color(http_client, image_f
     assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
 
 
+async def test_region_thumbnail_can_return_the_bare_region(http_client, image_file, monkeypatch, tmp_path):
+    """`pad=0&outline=false` for a caller whose own frame already *is* the box.
+
+    The watcher's match preview draws the crop inside a rectangle the user drags, so
+    the default 20% context plus the stroked outline put a second, smaller box inside
+    the first and made it unclear which edge the overlap was measured from.
+    """
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+
+    padded = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}")
+    bare = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&pad=0&outline=false")
+    assert bare.status_code == 200, bare.text
+    assert bare.headers["content-type"] == "image/png"
+    assert bare.content[:4] == b"\x89PNG"
+    assert bare.content != padded.content
+
+
+async def test_region_thumbnail_is_cached_per_crop_variant(http_client, image_file, monkeypatch, tmp_path):
+    """Padding and the outline flag are baked into the PNG, so both must be keyed —
+    otherwise a tight crop is served whatever the padded request left behind."""
+    monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+
+    await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}")
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 1
+
+    bare = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&pad=0&outline=false")
+    assert bare.status_code == 200
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+
+    # And the tight crop is itself cached rather than regenerated per request.
+    again = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&pad=0&outline=false")
+    assert again.content == bare.content
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+
+
 async def test_region_thumbnail_missing_image_returns_404(http_client, monkeypatch, tmp_path):
     monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
     r = await http_client.get(f"/api/images/no_such_image.png/region/thumbnail?{REGION_QS}")

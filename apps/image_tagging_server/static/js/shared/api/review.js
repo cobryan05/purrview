@@ -369,11 +369,20 @@ export function getBboxThumbnailUrl(imagePath, bboxUuid, width = 200) {
  *
  * @param {string} imagePath
  * @param {{x: number, y: number, width: number, height: number}} geometry - normalized 0-1.
- * @param {{width?: number, color?: ?string}} [opts] - `width` is the output px
- *   width; `color` is the outline colour (hex, with or without '#').
+ * @param {{width?: number, color?: ?string, pad?: number, outline?: boolean}} [opts] -
+ *   `width` is the output px width; `color` is the outline colour (hex, with or
+ *   without '#'). `pad` is the context around the region as a fraction of its own
+ *   size, and `outline` strokes the region itself — both default to what a review
+ *   card wants. Pass `{ pad: 0, outline: false }` for the bare contents of the
+ *   region, which is what a caller whose own frame *is* the box needs: the default
+ *   padding plus stroke draw a second, smaller box inside the caller's.
  * @returns {string}
  */
-export function getRegionThumbnailUrl(imagePath, geometry, { width = 200, color = null } = {}) {
+export function getRegionThumbnailUrl(
+  imagePath,
+  geometry,
+  { width = 200, color = null, pad = null, outline = null } = {},
+) {
   const encodedPath = imagePath.split('/').map(encodeURIComponent).join('/');
   const params = new URLSearchParams({
     x: String(geometry.x ?? 0),
@@ -383,6 +392,10 @@ export function getRegionThumbnailUrl(imagePath, geometry, { width = 200, color 
     width: String(width),
   });
   if (color) params.set('color', color.replace('#', ''));
+  // Sent only when asked for, so an existing caller's URL — and the cache entry it
+  // already has — is unchanged.
+  if (pad != null) params.set('pad', String(pad));
+  if (outline != null) params.set('outline', String(outline));
   return `/api/images/${encodedPath}/region/thumbnail?${params.toString()}`;
 }
 

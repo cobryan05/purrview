@@ -3148,14 +3148,16 @@ class Manager:
         img,
         box: Tuple[float, float, float, float],
         out_width: int,
-        color: Tuple[int, int, int],
+        color: Optional[Tuple[int, int, int]],
         pad_frac: float = 0.2,
     ) -> bytes:
         """Crop `img` around `box`, resize to `out_width`, then stroke the box.
 
         `box` is (left, top, right, bottom) in source pixels; `pad_frac` is the
         context padding as a fraction of the box's own size, so the box occupies
-        the same share of the thumbnail whatever its source size.
+        the same share of the thumbnail whatever its source size. `pad_frac=0`
+        with `color=None` gives the bare contents of the box and nothing else,
+        which is what a caller wants when its own frame *is* the box.
 
         The stroke is drawn AFTER the resize, at a width proportional to the
         output. Drawn before (at a fixed 3 source px) it was a third of the crop
@@ -3187,21 +3189,22 @@ class Manager:
         out_height = max(1, round(out_width / aspect))
         cropped = cropped.resize((out_width, out_height), PILImage.LANCZOS)
 
-        sx = out_width / crop_w if crop_w else 1
-        sy = out_height / crop_h if crop_h else 1
-        stroke = max(_OUTLINE_MIN_PX, round(out_width * _OUTLINE_WIDTH_RATIO))
-        draw = ImageDraw.Draw(cropped)
-        draw.rectangle(
-            [
-                (bl - left) * sx,
-                (bt - top) * sy,
-                (br - left) * sx,
-                (bb - top) * sy,
-            ],
-            outline=color,
-            width=stroke,
-        )
-        del draw
+        if color is not None:
+            sx = out_width / crop_w if crop_w else 1
+            sy = out_height / crop_h if crop_h else 1
+            stroke = max(_OUTLINE_MIN_PX, round(out_width * _OUTLINE_WIDTH_RATIO))
+            draw = ImageDraw.Draw(cropped)
+            draw.rectangle(
+                [
+                    (bl - left) * sx,
+                    (bt - top) * sy,
+                    (br - left) * sx,
+                    (bb - top) * sy,
+                ],
+                outline=color,
+                width=stroke,
+            )
+            del draw
 
         buf = io.BytesIO()
         cropped.save(buf, format="PNG")
@@ -3325,14 +3328,20 @@ class Manager:
         width: int,
         color: Optional[str] = None,
         source: Optional[Path] = None,
+        pad_frac: float = 0.2,
+        outline: bool = True,
     ) -> Path:
         # The region is part of the key, so moving a proposed box simply misses
         # the cache rather than needing an invalidation hook. So is the outline
         # colour: it is drawn into the PNG, and relabelling a proposed box asks
         # for the same region in a new colour -- keyed without it, the card ends
         # up showing a chip of one class beside a crop outlined in another.
+        # Padding and the outline flag are keyed for the same reason as the colour:
+        # both are baked into the PNG, and a tight crop asked for after a padded one of
+        # the same region would otherwise be served the padded file.
         region_key = f"{region[0]:.6f},{region[1]:.6f},{region[2]:.6f},{region[3]:.6f}"
-        key = hashlib.sha1(f"{image_path}|{region_key}|{color or ''}|{self._source_version(source)}".encode())
+        variant = f"{pad_frac:.4f}|{'o' if outline else 'n'}"
+        key = hashlib.sha1(f"{image_path}|{region_key}|{color or ''}|{variant}|{self._source_version(source)}".encode())
         return self._thumb_cache_dir() / f"rgn_{key.hexdigest()}_{width}.png"
 
     async def get_region_thumbnail(
@@ -3344,6 +3353,8 @@ class Manager:
         height_frac: float,
         width: int = 200,
         color: Optional[str] = None,
+        pad_frac: float = 0.2,
+        outline: bool = True,
     ) -> Optional[bytes]:
         """PNG bytes for a cropped+resized thumbnail of an arbitrary normalized
         region of an image, with the region outlined.
@@ -3351,7 +3362,15 @@ class Manager:
         This is `get_bbox_thumbnail` for a box that has no bbox row: a preview
         run's proposed *new* boxes exist only as candidate geometry, so a card
         for one had to fall back to the whole frame — in which a small proposed
-        box is invisible. Same 20% context padding as the bbox crop.
+        box is invisible. Defaults to the same 20% context padding and stroked
+        outline as the bbox crop.
+
+        `pad_frac=0, outline=False` asks for the bare contents of the region
+        instead. That is what a caller wants when its own frame already *is* the
+        box: the watcher's match preview draws the crop inside a rectangle the
+        user drags, and the default's padding plus stroke put a second, smaller
+        box inside the first, so it was unclear which edge the overlap was
+        measured from.
         """
         from PIL import Image as PILImage
 
@@ -3368,7 +3387,9 @@ class Manager:
         if safe_path is None:
             return None
 
-        cache_path = self._region_thumb_cache_path(image_path, (bx, by, bw, bh), width, color, source=safe_path)
+        cache_path = self._region_thumb_cache_path(
+            image_path, (bx, by, bw, bh), width, color, source=safe_path, pad_frac=pad_frac, outline=outline
+        )
         if cache_path.exists():
             try:
                 cache_path.touch()  # update mtime for LRU tracking
@@ -3377,11 +3398,11 @@ class Manager:
             except OSError:
                 pass
 
-        outline: Tuple[int, int, int] = (92, 196, 92)  # the "new box" green
+        stroke_colour: Tuple[int, int, int] = (92, 196, 92)  # the "new box" green
         if color:
             try:
                 h = color.lstrip("#")
-                outline = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+                stroke_colour = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
             except (ValueError, IndexError):
                 pass
 
@@ -3394,7 +3415,8 @@ class Manager:
                         img,
                         (bx * img_w, by * img_h, (bx + bw) * img_w, (by + bh) * img_h),
                         width,
-                        outline,
+                        stroke_colour if outline else None,
+                        pad_frac=max(0.0, pad_frac),
                     )
             except Exception as e:
                 logger.warning(f"Failed to generate region thumbnail for {image_path}: {e}")

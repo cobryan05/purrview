@@ -2324,10 +2324,15 @@ class WebApp:
             height_frac: float,
             width: int = 200,
             color: Optional[str] = None,
+            pad: float = 0.2,
+            outline: bool = True,
         ) -> Response:
             """Cropped thumbnail of an arbitrary normalized region — the bbox
             thumbnail's sibling for boxes that have no bbox row yet (a preview
-            run's proposed *new* boxes)."""
+            run's proposed *new* boxes).
+
+            `pad=0&outline=false` returns the bare contents of the region, for a
+            caller whose own frame is already the box."""
             png_bytes = await self._manager.get_region_thumbnail(
                 image_path,
                 x=x,
@@ -2336,6 +2341,8 @@ class WebApp:
                 height_frac=height_frac,
                 width=width,
                 color=color,
+                pad_frac=pad,
+                outline=outline,
             )
             if png_bytes is None:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
