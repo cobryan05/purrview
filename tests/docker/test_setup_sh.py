@@ -63,7 +63,7 @@ CASES = [
     (
         "frontend_cpu",
         False,
-        "2\n\n\n",
+        "2\nn\nn\n",
         {"COMPOSE_PROFILES": "app", "APP_BASE": "slim-runtime", "ORT_REQUIREMENTS": "requirements-cpu.txt"},
         {"COMPOSE_FILE", "TRAINING_SERVER_HOST"},
     ),
@@ -89,7 +89,7 @@ CASES = [
     (
         "frontend_cpu_remote_trainer",
         False,
-        "2\ny\ngpu-box.lan\n\n",
+        "2\nn\ny\ngpu-box.lan\n\n",
         {"COMPOSE_PROFILES": "app", "APP_BASE": "slim-runtime", "TRAINING_SERVER_HOST": "gpu-box.lan"},
         {"COMPOSE_FILE"},
     ),
@@ -131,7 +131,7 @@ CASES = [
         # no GPU but "everything" confirmed -> CUDA base for torch, CPU inference.
         "everything_mono_no_gpu_confirmed",
         False,
-        "1\ny\n1\n\n",
+        "1\ny\n1\nn\n",
         {"COMPOSE_PROFILES": "mono", "APP_BASE": "cuda-runtime", "ORT_REQUIREMENTS": "requirements-cpu.txt"},
         set(),
     ),
@@ -192,15 +192,39 @@ def test_setup_permutations(tmp_path, label, gpu, stdin, expected, forbidden):
 
 def test_setup_respects_declined_overwrite(tmp_path):
     sentinel = "COMPOSE_PROFILES=SENTINEL\n"
-    # role 2, CPU, no remote trainer, decline size tuning, then decline the overwrite prompt.
-    result = run_setup(tmp_path, gpu=False, stdin="2\n\nn\nn\n", preexisting_env=sentinel)
+    # role 2, decline GPU inference, no remote trainer, decline size tuning, then decline
+    # the overwrite prompt.
+    result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\nn\nn\n", preexisting_env=sentinel)
     assert result == {"COMPOSE_PROFILES": "SENTINEL"}, "declining overwrite must leave .env untouched"
 
 
 def test_setup_cpu_never_selects_cuda_or_overlay(tmp_path):
     """A CPU-only frontend must never end up on the CUDA base or with the GPU overlay."""
-    result = run_setup(tmp_path, gpu=False, stdin="2\n\n\n")
+    result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\n")
     assert result["APP_BASE"] == "slim-runtime"
+    assert "COMPOSE_FILE" not in result
+
+
+def test_gpu_inference_can_be_chosen_when_detection_finds_nothing(tmp_path):
+    """The probe is advisory, not a verdict.
+
+    Detection runs `nvidia-smi` on the *host*, which can be absent on a machine whose
+    containers reach the GPU perfectly well. This question used to be skipped entirely
+    on an undetected host and forced to "n", making it the only role-affecting choice in
+    the script with no override — every other "no GPU found" branch offers a "continue
+    anyway". The answer now defaults to no and is still asked.
+    """
+    result = run_setup(tmp_path, gpu=False, stdin="2\ny\nn\nn\n")
+    assert result["APP_BASE"] == "cuda-runtime"
+    assert result["ORT_REQUIREMENTS"] == "requirements-gpu.txt"
+    assert result["COMPOSE_FILE"] == "docker-compose.yaml:docker-compose.gpu.yaml"
+
+
+def test_declining_gpu_on_a_gpu_host_still_builds_cpu_only(tmp_path):
+    """The override runs both ways: a detected GPU is a default, not a commitment."""
+    result = run_setup(tmp_path, gpu=True, stdin="2\nn\nn\nn\n")
+    assert result["APP_BASE"] == "slim-runtime"
+    assert result["ORT_REQUIREMENTS"] == "requirements-cpu.txt"
     assert "COMPOSE_FILE" not in result
 
 
@@ -216,8 +240,8 @@ class TestSizingPrompts:
     """
 
     def test_declining_writes_no_sizing_keys(self, tmp_path):
-        # role 2 (frontend), no remote trainer, decline tuning.
-        result = run_setup(tmp_path, gpu=False, stdin="2\n\nn\n")
+        # role 2 (frontend), decline GPU inference, no remote trainer, decline tuning.
+        result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\nn\n")
         for key in (
             "STREAM_BUFFER_SIZE",
             "THUMB_CACHE_MAX_MB",
@@ -228,8 +252,8 @@ class TestSizingPrompts:
 
     def test_frontend_role_is_asked_only_about_app_group_sizes(self, tmp_path):
         # role 2 has mediamtx but no training container: buffer + thumb cache only.
-        # y(tune) 4(cams) 60(secs) ''(buffer default) 250(thumb)
-        result = run_setup(tmp_path, gpu=False, stdin="2\n\ny\n4\n60\n\n250\n")
+        # n(gpu) n(remote) y(tune) 4(cams) 60(secs) ''(buffer default) 250(thumb)
+        result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\ny\n4\n60\n\n250\n")
         assert result["STREAM_BUFFER_SIZE"] == "240m"
         assert result["THUMB_CACHE_MAX_MB"] == "250"
         assert "TRAINING_SHM_SIZE" not in result
@@ -247,22 +271,22 @@ class TestSizingPrompts:
 
     def test_buffer_default_is_computed_from_cameras_and_rewind(self, tmp_path):
         # 8 cameras x 30 s at 4 Mbps -> 8*30/2*2 = 240 MB suggested.
-        result = run_setup(tmp_path, gpu=False, stdin="2\n\ny\n8\n30\n\n100\n")
+        result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\ny\n8\n30\n\n100\n")
         assert result["STREAM_BUFFER_SIZE"] == "240m"
 
     def test_tiny_deployments_get_a_floor_not_a_useless_buffer(self, tmp_path):
         # 1 camera x 5 s would compute 2 MB, which cannot hold a single segment.
-        result = run_setup(tmp_path, gpu=False, stdin="2\n\ny\n1\n5\n\n100\n")
+        result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\ny\n1\n5\n\n100\n")
         assert result["STREAM_BUFFER_SIZE"] == "128m"
 
     def test_size_fields_reject_a_bare_number_then_accept_a_valid_size(self, tmp_path):
         # A typo must be caught at the prompt, not passed through to compose where it
         # becomes an opaque runtime error far from its cause.
-        result = run_setup(tmp_path, gpu=False, stdin="2\n\ny\n4\n60\nnonsense\n1g\n100\n")
+        result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\ny\n4\n60\nnonsense\n1g\n100\n")
         assert result["STREAM_BUFFER_SIZE"] == "1g"
 
     def test_cache_fields_reject_a_unit_suffix(self, tmp_path):
         # THUMB_CACHE_MAX_MB is a plain MB count; '100mb' must not be accepted, or the
         # value reaches the app as a string it cannot int().
-        result = run_setup(tmp_path, gpu=False, stdin="2\n\ny\n4\n60\n\n100mb\n100\n")
+        result = run_setup(tmp_path, gpu=False, stdin="2\nn\nn\ny\n4\n60\n\n100mb\n100\n")
         assert result["THUMB_CACHE_MAX_MB"] == "100"
