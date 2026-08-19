@@ -7,7 +7,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import onnx
 
@@ -47,17 +47,63 @@ def validate_onnx_bytes(onnx_bytes: bytes) -> None:
         raise ValueError(f"Not a valid ONNX model: {e}") from e
 
 
+#: What this build's onnxruntime can actually do. Cached because it is asked once per
+#: model load and cannot change within a process: the answer follows from which
+#: onnxruntime wheel the image was built with (`requirements-cpu.txt` installs plain
+#: `onnxruntime`, which has no CUDA provider at all).
+_available_providers: Optional[Tuple[str, ...]] = None
+#: So the "asked for the GPU, haven't got one" note is made once rather than per model.
+_warned_missing_cuda = False
+
+
+def available_providers() -> Tuple[str, ...]:
+    """The execution providers this onnxruntime offers, or CPU if it cannot be asked."""
+    global _available_providers
+    if _available_providers is None:
+        try:
+            import onnxruntime as ort
+
+            _available_providers = tuple(ort.get_available_providers())
+        except Exception as e:
+            # A broken or missing onnxruntime is the inference server's problem to
+            # report, not this helper's. CPU is the answer that keeps a caller running.
+            logger.warning(f"Could not read the available ONNX execution providers ({e}); assuming CPU only")
+            _available_providers = ("CPUExecutionProvider",)
+    return _available_providers
+
+
 def providers_for_device(device: str) -> List[str]:
     """Map a model's device preference to an ordered list of ONNX execution providers.
 
     `auto` and `gpu` both prefer CUDA with a CPU fallback (so a GPU-less box still
     runs); `cpu` forces CPU-only. Unknown values fall back to `auto`'s behavior.
+
+    Filtered against what this build actually has. A CPU-only image is a supported
+    configuration (`APP_BASE=slim-runtime` + `requirements-cpu.txt`), and naming a
+    provider that was never compiled in makes onnxruntime log an error-level complaint
+    on *every* model load — which reads like a broken GPU on a machine that was never
+    meant to have one, and buries the real errors around it.
     """
     if device == "cpu":
         return ["CPUExecutionProvider"]
     if device not in VALID_MODEL_DEVICES:
         logger.warning(f"Unknown model device {device!r}; falling back to 'auto'")
-    return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    have = available_providers()
+    usable = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in have]
+    if "CUDAExecutionProvider" not in usable and device == "gpu":
+        # Said once, and only when the model *asked* for the GPU: under `auto` running
+        # on CPU is the documented fallback and not worth a line per load.
+        global _warned_missing_cuda
+        if not _warned_missing_cuda:
+            _warned_missing_cuda = True
+            logger.warning(
+                "A model requests the GPU, but this onnxruntime has no CUDA execution provider "
+                "(a CPU-only build). Running on CPU."
+            )
+    # Never empty: an onnxruntime reporting neither provider is not something this
+    # function can act on, and returning [] makes the session fail with a far less
+    # obvious error than simply asking for CPU.
+    return usable or ["CPUExecutionProvider"]
 
 
 def get_model_metadata(model_path: str, create_json_if_missing: bool = True) -> Dict[str, Any]:

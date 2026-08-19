@@ -23,6 +23,7 @@ from onnx import TensorProto, helper
 import apps.helpers.inferenceProviders.libreYolo9InferenceProvider  # noqa: F401
 import apps.helpers.inferenceProviders.ultralyticsE2eInferenceProvider  # noqa: F401
 import apps.helpers.inferenceProviders.ultralyticsYoloV8InferenceProvider  # noqa: F401
+from apps.helpers import metadataUtils
 from apps.helpers.inferenceProviders.libreYolo9InferenceProvider import (
     LibreYolo9InferenceProvider,
 )
@@ -159,14 +160,46 @@ class TestGetModelMetadataYoloVersionSniffing:
 
 
 class TestProvidersForDevice:
-    def test_auto_prefers_cuda_with_cpu_fallback(self):
+    """The provider list is filtered against what this build actually has.
+
+    Both builds are pinned explicitly rather than read off the host. These assertions
+    used to depend on whichever onnxruntime the test container happened to carry, so the
+    CPU-only case — the one with a bug in it — was never exercised anywhere.
+    """
+
+    @pytest.fixture
+    def gpu_build(self, monkeypatch):
+        monkeypatch.setattr(
+            metadataUtils,
+            "available_providers",
+            lambda: ("CUDAExecutionProvider", "CPUExecutionProvider"),
+        )
+
+    @pytest.fixture
+    def cpu_build(self, monkeypatch):
+        """What `requirements-cpu.txt` gives you: plain onnxruntime, no CUDA at all."""
+        monkeypatch.setattr(metadataUtils, "available_providers", lambda: ("CPUExecutionProvider",))
+
+    def test_auto_prefers_cuda_with_cpu_fallback(self, gpu_build):
         assert providers_for_device("auto") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
-    def test_gpu_prefers_cuda_with_cpu_fallback(self):
+    def test_gpu_prefers_cuda_with_cpu_fallback(self, gpu_build):
         assert providers_for_device("gpu") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
-    def test_cpu_is_cpu_only(self):
+    def test_cpu_is_cpu_only(self, gpu_build):
         assert providers_for_device("cpu") == ["CPUExecutionProvider"]
 
-    def test_unknown_device_falls_back_to_auto_behavior(self):
+    def test_unknown_device_falls_back_to_auto_behavior(self, gpu_build):
         assert providers_for_device("tpu") == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    @pytest.mark.parametrize("device", ["auto", "gpu", "cpu", "tpu"])
+    def test_a_cpu_only_build_never_names_cuda(self, cpu_build, device):
+        """Naming a provider that was never compiled in makes onnxruntime log an
+        error-level complaint on every single model load, which reads like a broken GPU
+        on a machine that was never meant to have one."""
+        assert providers_for_device(device) == ["CPUExecutionProvider"]
+
+    def test_an_unreadable_onnxruntime_still_yields_a_usable_list(self, monkeypatch):
+        """Returning [] would fail the session with a far less obvious error."""
+        monkeypatch.setattr(metadataUtils, "available_providers", tuple)
+        assert providers_for_device("auto") == ["CPUExecutionProvider"]
