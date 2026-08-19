@@ -1576,3 +1576,74 @@ class TestIncludeDescendants:
         )
         assert body["status"] == "failure"
         assert "no hierarchy" in body["message"]
+
+
+class TestUnfiledRulesWarning:
+    """A rule nothing files leaves no trace in Events, deliberately.
+
+    An event is written to the Events view only where an in-scope action writes
+    something to it, so a watcher whose only action is an MQTT publish now records
+    nothing — which is what stops a rule that holds for hours a day from filling the
+    list with rows that have nothing to look at. The failure mode is a rule the user
+    *did* want filed: it looks identical to one that never matched. Hence the warning.
+    """
+
+    async def _report(self, http_client, actions, rules=None):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid}],
+                rules=rules or [_rule()],
+                actions=actions,
+            )
+        )["profile"]
+        return (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+
+    @staticmethod
+    def _unfiled(report):
+        return [w for w in report["warnings"] if "Nothing files events" in w]
+
+    async def test_a_publish_only_watcher_warns(self, http_client):
+        report = await self._report(http_client, [{"kind": "publish_mqtt", "trigger": "event_started"}])
+        assert self._unfiled(report), report["warnings"]
+        assert "cat using litter box" in self._unfiled(report)[0]
+
+    async def test_a_clip_action_files_it(self, http_client):
+        report = await self._report(http_client, [{"kind": "record_clip", "trigger": "event_ended"}])
+        assert not self._unfiled(report), report["warnings"]
+
+    async def test_save_event_files_it(self, http_client):
+        report = await self._report(http_client, [{"kind": "save_event", "trigger": "event_started"}])
+        assert not self._unfiled(report), report["warnings"]
+
+    async def test_a_clip_scoped_to_another_rule_leaves_this_one_unfiled(self, http_client):
+        """Action scope now scopes the event history with it — the case most likely to
+        surprise, and the one a warning has to name rather than summarise."""
+        other = _rule(uuid="44444444-4444-4444-4444-444444444444", name="parcel on the step")
+        report = await self._report(
+            http_client,
+            [{"kind": "record_clip", "trigger": "event_ended", "ruleUuidsJson": [other["uuid"]]}],
+            rules=[_rule(), other],
+        )
+        warnings = self._unfiled(report)
+        assert warnings, report["warnings"]
+        assert "cat using litter box" in warnings[0]
+        assert "parcel on the step" not in warnings[0]
+
+    async def test_a_disabled_filing_action_does_not_count(self, http_client):
+        report = await self._report(
+            http_client,
+            [{"kind": "record_clip", "trigger": "event_ended", "enabled": False}],
+        )
+        assert self._unfiled(report), report["warnings"]
+
+    async def test_a_disabled_rule_is_not_judged(self, http_client):
+        report = await self._report(
+            http_client,
+            [{"kind": "publish_mqtt", "trigger": "event_started"}],
+            rules=[_rule(enabled=False)],
+        )
+        assert not self._unfiled(report), report["warnings"]

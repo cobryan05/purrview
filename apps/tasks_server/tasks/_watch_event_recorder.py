@@ -2,10 +2,15 @@
 
 Why this is a task concern and not an action's: `ActionContext` states outright that
 the task keeps sole ownership of its API clients and DB writes, so actions are pure
-side effects on the outside world. Persistence has to live above them — and it must be
-unconditional, because the review page is a record of *what the watcher saw*, not a
-record of which actions someone happened to enable. A profile with no actions at all
-still produces a reviewable history.
+side effects on the outside world. Persistence has to live above them.
+
+It is not unconditional. This class writes whatever it is handed; *whether* an event is
+handed to it is decided one layer up, by `StreamWatcherTask._event_is_logged`, from
+whether any in-scope action writes to the Events view. It used to be unconditional, on
+the reasoning that the review page is a record of what the watcher saw rather than of
+which actions someone enabled — which is true and is also how the list filled with
+hundreds of rows holding nothing to look at. A rule that matches all day is normal and
+wanted (it still drives MQTT); a row per match is not.
 
 Two artifacts per event:
 

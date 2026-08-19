@@ -98,6 +98,7 @@ const ACTION_KINDS = [
   { key: 'record_event_timelapse', text: 'Event timelapse' },
   { key: 'save_snapshot', text: 'Save snapshot' },
   { key: 'save_timelapse', text: 'Save timelapse' },
+  { key: 'save_event', text: 'Save event' },
 ];
 
 const TRIGGERS = [
@@ -127,6 +128,7 @@ const ACTION_TRIGGERS = {
   record_clip: ['event_ended'],
   record_event_timelapse: ['event_ended'],
   save_timelapse: ['frame_analysed'],
+  save_event: ['event_started'],
 };
 
 /** Why an action kind's trigger list is shorter than the full set. */
@@ -148,7 +150,22 @@ const TRIGGER_LIMIT_HELP = {
     + 'an event. Its own interval decides how often a frame is kept — everything in '
     + 'between is discarded without being written. For a picture of one event, use '
     + 'Save snapshot instead.',
+  save_event:
+    'The event is filed when it opens, so it is visible in Events while it is still '
+    + 'happening rather than only once it is over. There is nothing left to do at the '
+    + 'end — the row is closed out with its duration either way.',
 };
+
+/**
+ * Action kinds that put the event in the Events view. Mirrors `Action.logs_event()` in
+ * `apps/helpers/actions/action.py`, which is what the watcher actually reads — this
+ * copy only drives the hint below the action list.
+ *
+ * An event with none of these in scope still fires its actions and still publishes; it
+ * simply leaves no row. That is the point: a rule like "a cat is present" matches for
+ * hours a day, and filing every match buried the events that had a clip to watch.
+ */
+const EVENT_LOGGING_KINDS = new Set(['record_clip', 'record_event_timelapse', 'save_event']);
 
 /** The triggers offered for one action kind. */
 function triggersFor(kind) {
@@ -2149,7 +2166,11 @@ export async function renderWatchProfileManager({ target }) {
         onSave: () => save(),
         onDelete: profile ? () => remove() : null,
       });
-      const onAnyChange = () => bar.setDirty(true);
+      // Assigned once the Actions section exists. Declared here because every edit goes
+      // through `onAnyChange`, including edits made before that point — the hint is a
+      // no-op until there is something to sync.
+      let syncEventHint = () => {};
+      const onAnyChange = () => { bar.setDirty(true); syncEventHint(); };
 
       // ── Identity ──
       // Four stacked full-width fields became one wrapping strip: the whole identity
@@ -2424,7 +2445,32 @@ export async function renderWatchProfileManager({ target }) {
         + 'frame — publish MQTT, record a clip, save a snapshot or a timelapse frame.';
       const actionsBox = el('div', 'watch-rows');
       actionsBox.dataset.testid = 'watch-actions-box';
-      screen.editorBody.appendChild(sectionPanel(sectionHeader('Actions', addActionBtn), actionsBox));
+      // The immediate counterpart of the backend's "Nothing files events" warning, which
+      // only appears once the watcher has been saved and validated. Worth saying at the
+      // moment the actions are being chosen: a watcher that publishes but files nothing
+      // is a legitimate setup, and an empty Events list is otherwise indistinguishable
+      // from a camera that saw nothing all day.
+      //
+      // In the section *header*, not above the rows, and terse with the explanation on
+      // the tooltip. The editor's "a 1/1/1 profile does not scroll" budget is 30px and
+      // spent; a full sentence on its own line costs ~20 of them for a watcher that is
+      // configured perfectly correctly, which is the wrong thing to charge for a hint.
+      const eventHint = el('span', 'watch-hint', '⚠ files no events');
+      eventHint.dataset.testid = 'watch-actions-event-hint';
+      eventHint.title =
+        'None of these actions records the event, so these rules will not appear in Events. '
+        + 'They still publish, and still show in the watcher’s log — only the Events list is '
+        + 'empty. Add a Save event action to list them there.';
+      const actionsHead = sectionHeader('Actions', addActionBtn);
+      actionsHead.appendChild(eventHint);
+      screen.editorBody.appendChild(sectionPanel(actionsHead, actionsBox));
+
+      syncEventHint = () => {
+        eventHint.hidden = actionRows.some((entry) => {
+          const a = entry.getAction();
+          return a.enabled && EVENT_LOGGING_KINDS.has(a.kind) && a.trigger !== FRAME_ANALYSED_TRIGGER;
+        });
+      };
 
       function addAction(action) {
         const entry = buildActionRow(action, {
@@ -2453,6 +2499,7 @@ export async function renderWatchProfileManager({ target }) {
       for (const src of profile?.sources || []) addSource(src);
       for (const rule of profile?.rules || []) addRule(rule);
       for (const action of profile?.actions || []) addAction(action);
+      syncEventHint();
 
       async function showValidation(uuid) {
         try {

@@ -114,6 +114,32 @@ class Action(ABC):
         """
         return {getattr(row, "trigger", None)}
 
+    @classmethod
+    def logs_event(cls) -> bool:
+        """Whether this action's presence should put the event in the Events view.
+
+        A matched rule is not by itself a reason to write a `watch_events` row. Most
+        rules match constantly — "a cat is present" is true for hours a day — and a
+        watcher whose only action is an MQTT publish wants those matches *broadcast*,
+        not filed. Filing them anyway is what filled the Events list with rows that had
+        no clip, no timelapse and nothing to look at, burying the handful that did.
+
+        So the row follows the artifact: an event is recorded when some action in scope
+        for it puts something *in* it. Today that means a recording — see
+        `WatchEventRecorder.attach_recording` — or the explicit `save_event`, which
+        exists precisely so a user can say "note this one" for an event that produces no
+        media of its own.
+
+        Default False. Overriding it to True is a promise that the action is worth a row
+        even when it fails: a clip action whose extraction failed still leaves the event
+        recorded, because "the watcher tried to record this and could not" is exactly the
+        thing a silent skip hid.
+
+        Classmethod, not a row-dependent one like `triggers`: nothing an action row can
+        configure changes whether its kind writes to the event log.
+        """
+        return False
+
     @abstractmethod
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         """Perform the side effect for one event transition.

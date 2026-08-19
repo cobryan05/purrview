@@ -1201,6 +1201,34 @@ class StreamWatcherTask(Task):
             )
         ]
 
+    def _event_is_logged(self, signal) -> bool:
+        """Whether this event should get a `watch_events` row at all.
+
+        A rule matching is not a reason to file an event — see `Action.logs_event`. The
+        row exists when some enabled action *in scope for this rule and this source*
+        writes to the Events view: a recording action, or the explicit `save_event`.
+        Everything else about the match still happens; an MQTT publish on a rule with no
+        logging action broadcasts exactly as before, it just leaves no row behind.
+
+        Read off the configuration rather than from what the actions returned, because
+        the row has to exist at the opening edge, before any of them have run — and
+        because an event whose clip *failed* is still worth seeing.
+
+        Per-frame actions are excluded: a `frame_analysed` row is not scoped to any rule
+        (`RULELESS_TRIGGERS`), so treating it as in scope would file every event on the
+        source, which is the behaviour this replaces.
+
+        Costs one pass over the action list per event edge — not per frame.
+        """
+        return any(
+            action.logs_event()
+            and getattr(row, "enabled", True)
+            and getattr(row, "trigger", None) != FRAME_ANALYSED
+            and in_scope(getattr(row, "rule_uuids_json", None), signal.rule_uuid or None)
+            and in_scope(getattr(row, "source_uuids_json", None), signal.source_uuid or None)
+            for row, action in self._actions
+        )
+
     async def _dispatch(self, signal, pipeline: Optional[WatchPipeline] = None) -> None:
         """Hand an event transition to the action layer, and record it.
 
@@ -1209,6 +1237,10 @@ class StreamWatcherTask(Task):
         so an artifact produced by an action has an event to hang off. On END the clip
         does not exist until `record_clip` has run, so the row is closed *after* — with
         the event uuid captured beforehand, since closing it forgets the mapping.
+
+        It is also *conditional*: an event nothing writes to is dispatched to its actions
+        and logged to the task's own log, but leaves no row and no card art. See
+        `_event_is_logged`.
         """
         verb = {EventPhase.START: "started", EventPhase.UPDATE: "updated", EventPhase.END: "ended"}[signal.phase]
         detail = f" ({signal.duration_s:.1f}s)" if signal.phase is EventPhase.END else ""
@@ -1223,8 +1255,9 @@ class StreamWatcherTask(Task):
             EventPhase.END: "event_ended",
         }[signal.phase]
         context = self._action_context(signal, pipeline)
+        logged = self._event_is_logged(signal)
 
-        if signal.phase is EventPhase.START:
+        if logged and signal.phase is EventPhase.START:
             await self._recorder.record(signal, context)
         event_uuid = self._recorder.event_uuid_for(signal)
 
@@ -1246,7 +1279,8 @@ class StreamWatcherTask(Task):
                         else None
                     ),
                 )
-            await self._recorder.record(signal, context)
+            if logged:
+                await self._recorder.record(signal, context)
 
     async def _dispatch_frame(self, pipeline: WatchPipeline) -> None:
         """Fire `frame_analysed` actions for one just-analysed frame.

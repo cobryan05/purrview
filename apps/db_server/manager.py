@@ -176,9 +176,9 @@ TIMELAPSE_ACTION_KIND = "save_timelapse"
 #: in `apps/helpers/actions/action.py`, which is what the watcher itself reads. Spelled
 #: out for the same reason as above: this module never instantiates an action, and
 #: importing the action package here would drag cv2 and an MQTT client into db_server for
-#: the sake of one predicate. `tests/db_server/test_watch_validation.py` asserts the two
-#: sides name the same kinds, so adding a logging action and forgetting this warning is a
-#: test failure rather than a silently absent hint.
+#: the sake of one predicate. `tests/tasks_server/test_watch_event_logging.py` asserts the
+#: two sides name the same kinds, so adding a logging action and forgetting this warning
+#: is a test failure rather than a silently absent hint.
 EVENT_LOGGING_ACTION_KINDS = frozenset({"record_clip", "record_event_timelapse", "save_event"})
 
 #: What `SaveTimelapseAction` writes: `<camera>_HH-MM-SS.jpg`, inside a `YYYY-MM-DD`

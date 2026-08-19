@@ -225,6 +225,11 @@ class RecordClipAction(Action):
         return "Record clip"
 
     @classmethod
+    def logs_event(cls) -> bool:
+        # The clip is attached to the event row, so the event has to exist to hold it.
+        return True
+
+    @classmethod
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {
             "preroll_s": {

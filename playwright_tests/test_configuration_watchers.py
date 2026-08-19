@@ -2384,3 +2384,31 @@ class TestEverySettableThingExplainsItself:
         ):
             title = page.locator(f"[data-testid='{testid}']").get_attribute("title")
             assert title and title.strip(), f"{testid} has no tooltip"
+
+
+class TestEventFilingHint:
+    """Whether the watcher will put anything in Events at all.
+
+    An event is only recorded where an in-scope action writes to it, so a watcher whose
+    actions all publish and none record leaves the Events list empty — which looks
+    exactly like a camera that saw nothing. The hint is the only place that distinction
+    is visible while the actions are being chosen, and it has to track the kind and the
+    enabled box live, before anything is saved.
+    """
+
+    def test_the_hint_tracks_whether_any_action_files_events(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        hint = page.locator("[data-testid='watch-actions-event-hint']")
+        kind = page.locator("[data-testid='watch-action-kind']").first
+
+        # The fixture's only action is an MQTT publish, which files nothing.
+        expect(hint).to_be_visible()
+
+        kind.select_option("save_event")
+        expect(hint).to_be_hidden()
+
+        # A disabled action is not constructed at run time, so it files nothing either.
+        page.locator("[data-testid='watch-action-enabled']").first.uncheck()
+        expect(hint).to_be_visible()

@@ -176,6 +176,11 @@ class RecordEventTimelapseAction(Action):
         return "Event timelapse"
 
     @classmethod
+    def logs_event(cls) -> bool:
+        # Compiled per event and attached to its row, exactly as a clip is.
+        return True
+
+    @classmethod
     def triggers(cls, row: Any) -> Set[str]:
         """All three, whatever the row says.
 

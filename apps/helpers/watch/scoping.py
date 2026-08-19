@@ -22,11 +22,16 @@ watcher later, rather than silently not covering it.
 
 A rule carries a source scope too, on the same empty-means-all terms, and the two are
 deliberately different instruments. Narrowing the **action** leaves the rule evaluating
-everywhere, so the event is still raised, still logged and still visible on every camera
-— only the side effect is narrowed. Narrowing the **rule** suppresses the event itself.
-"A cat is present" is the case that needs the second one: it is true in every room all
-day, so scoping only the action would keep the event browser full of events the user
-said they did not care about.
+everywhere, so the event is still raised and still dispatched on every camera — only
+the side effect is narrowed. Narrowing the **rule** stops it being evaluated there at
+all.
+
+Note what narrowing an action now *also* does. An event is written to the Events view
+only where an in-scope action writes something to it (`Action.logs_event`), so scoping
+a clip action to one camera scopes the event history with it — the other cameras keep
+evaluating the rule and keep publishing, and file nothing. That is the intended
+reading: the event list is a list of artifacts, not of matches. Adding a `save_event`
+action is how a rule that produces no media gets filed anyway.
 """
 
 from typing import Any, Collection, Optional, Sequence
