@@ -34,6 +34,57 @@ const RELATIONS = [
   { key: 'present', text: 'is present' },
 ];
 
+/**
+ * What a rule's `threshold` actually means, per relation — the caption and the tooltip
+ * for the same number.
+ *
+ * One field, six meanings. It was captioned `match` for all of them, which is a
+ * geometric word for a number that under `present` is nothing of the kind: there is no
+ * second box, and `evaluate_predicate` compares it against the *detection confidence*
+ * of the best track. Captioning that `conf` is the difference between a number you can
+ * reason about and one you can only fiddle with.
+ *
+ * `distance` gets its own caption for the opposite reason: its threshold is an upper
+ * bound (a distance you must be *within*), so raising it loosens the rule while raising
+ * every other relation's tightens it. `centroid_in` says out loud that it ignores the
+ * number entirely — a centre is inside or it is not.
+ *
+ * Mirrors the branches in `evaluate_predicate` (`apps/helpers/watch/rules.py`).
+ */
+const THRESHOLD_HELP = {
+  present: {
+    label: 'conf',
+    title: 'Minimum detection confidence, 0–1. The label must be detected at least this '
+      + 'strongly to count as present — no geometry is measured for this relation. Raise it '
+      + 'to ignore shaky detections, lower it to catch a half-hidden subject.',
+  },
+  contains: {
+    label: 'match',
+    title: 'How much of the subject must lie inside the target, as a fraction of the '
+      + 'subject’s own area. 1 demands the whole box; 0.5 fires when half of it is in.',
+  },
+  overlaps: {
+    label: 'match',
+    title: 'How much the two must overlap, as a fraction of the *smaller* box’s area — so '
+      + 'a cat lapping at a bowl scores on the cat, not on the pair.',
+  },
+  iou: {
+    label: 'match',
+    title: 'Intersection over union the pair must reach. Only reads as “overlap” for boxes '
+      + 'of similar size; a small box inside a large one scores near zero.',
+  },
+  distance: {
+    label: 'within',
+    title: 'Greatest centre-to-centre distance that still counts, as a fraction of the '
+      + 'frame diagonal. Higher is looser here — the opposite of every other relation.',
+  },
+  centroid_in: {
+    label: 'match',
+    title: 'Not used by this relation: the subject’s centre is either inside the target or '
+      + 'it is not. Use the nearby margin to widen the target instead.',
+  },
+};
+
 const ACTION_KINDS = [
   { key: 'publish_mqtt', text: 'Publish MQTT' },
   { key: 'publish_mqtt_image', text: 'Publish MQTT image' },
@@ -357,6 +408,8 @@ function dirPickerField(value, onAnyChange, { placeholder = 'dataset root' } = {
   browse.className = 'outline secondary watch-dir-picker__browse';
   browse.textContent = 'Browse…';
   browse.dataset.testid = 'watch-action-dir-browse';
+  browse.title = 'Pick a folder under the image dataset root, or create one. You can also type '
+    + 'the path directly, placeholders included.';
   browse.addEventListener('click', async () => {
     const picked = await openFileBrowserModal({
       initialPath: input.value.trim() ? `/${input.value.trim().replace(/^\/+/, '')}` : '/',
@@ -386,11 +439,17 @@ function dirPickerField(value, onAnyChange, { placeholder = 'dataset root' } = {
  * and gives the control `flex: 1`, which is right for a stacked settings panel and
  * wrong here — it turned a four-field row into four full-width lines. These pairs size
  * to their content and flow along the row instead.
+ *
+ * `help` goes on the wrapping `<label>`, not the control: a `title` is inherited by
+ * descendants, so one assignment covers hovering the caption *and* the input. Putting
+ * it here rather than at each call site is what makes "every settable thing explains
+ * itself" a property of the form instead of a list of places to remember.
  */
-function wfield(labelText, control, { width = null } = {}) {
+function wfield(labelText, control, { width = null, help = null } = {}) {
   const wrap = el('label', 'watch-field');
   wrap.appendChild(el('span', 'watch-field__label', labelText));
   if (width) control.style.width = width;
+  if (help) wrap.title = help;
   wrap.appendChild(control);
   return wrap;
 }
@@ -607,7 +666,13 @@ function buildTrackerParams(schema, stored, onAnyChange) {
 
     control.dataset.testid = `watch-tracker-param-${key}`;
     if (field.help) control.title = field.help;
-    box.appendChild(wfield(key.replace(/_/g, ' '), control, { width: type === 'bool' ? null : '6rem' }));
+    box.appendChild(wfield(key.replace(/_/g, ' '), control, {
+      width: type === 'bool' ? null : '6rem',
+      // The schema's own help, so the caption explains itself too. A tracker that
+      // declares none says so rather than hovering blank — the fields are named for the
+      // paper they come from, and a bare `track_buffer` explains nothing on its own.
+      help: field.help || `${key} — this tracker declares no description for it.`,
+    }));
   }
 
   if (!box.children.length) {
@@ -635,13 +700,16 @@ function buildLifetimeRow(lifetime, ctx) {
 
   const label = select(ctx.labelOptions, lifetime.labelUuid || ctx.labelOptions[0]?.key, ctx.onAnyChange);
   label.dataset.testid = 'watch-lifetime-label';
-  row.appendChild(wfield('Label', label));
+  row.appendChild(wfield('Label', label, {
+    help: 'The label this lifetime applies to. Labels with no row here use the tracker’s own '
+      + 'defaults.',
+  }));
 
   const ttl = numberInput(lifetime.ttlS ?? 2.0, { step: '0.5', min: 0 });
   ttl.dataset.testid = 'watch-lifetime-ttl';
   ttl.title = 'Seconds the track survives with no detection before it is assumed gone.';
   ttl.addEventListener('input', ctx.onAnyChange);
-  row.appendChild(wfield('TTL s', ttl, { width: '5rem' }));
+  row.appendChild(wfield('TTL s', ttl, { width: '5rem', help: ttl.title }));
 
   const anchor = document.createElement('input');
   anchor.type = 'checkbox';
@@ -651,7 +719,7 @@ function buildLifetimeRow(lifetime, ctx) {
     'Latch this label’s box once seen confidently, instead of trusting a detector that '
     + 'intermittently misses a stationary object. Appropriate for furniture, not for animals.';
   anchor.addEventListener('change', ctx.onAnyChange);
-  row.appendChild(wfield('Anchor', anchor));
+  row.appendChild(wfield('Anchor', anchor, { help: anchor.title }));
 
   row.appendChild(removeButton(ctx.onDelete, 'Remove lifetime'));
 
@@ -692,6 +760,16 @@ function bufferBadgeFor(plan) {
   }
 }
 
+/**
+ * The `buffer s` field's help. A constant because `refreshBadge` rewrites the input's
+ * own title to explain an unbuffered source, and has to be able to put this back.
+ */
+const BUFFER_SECONDS_HELP =
+  'How many seconds of video are kept behind the live edge, so a clip can start before the '
+  + 'rule fired. Blank uses the default. It has to be at least as long as the longest '
+  + 'pre-roll any action asks for — the badge beside it says whether this camera can keep a '
+  + 'rewindable buffer at all.';
+
 // ── Source row ──────────────────────────────────────────────────────────────
 function buildSourceRow(src, ctx) {
   const row = el('div', 'watch-source-row watch-row');
@@ -704,7 +782,11 @@ function buildSourceRow(src, ctx) {
     ctx.onAnyChange();
   });
   sourceSel.dataset.testid = 'watch-source-select';
-  row.appendChild(wfield('Source', sourceSel));
+  row.appendChild(wfield('Source', sourceSel, {
+    help: 'The camera this row configures. Repointing it moves the row’s settings to the new '
+      + 'camera and drops anything that belonged to the old one — its mask opt-outs, and any '
+      + 'action or rule scoped to it.',
+  }));
 
   // What `{source}` publishes as, for this watcher only. The placeholder tracks the
   // selected camera so "blank means the source's own name" needs no help text — and so
@@ -723,7 +805,7 @@ function buildSourceRow(src, ctx) {
   syncMqttPlaceholder();
   sourceSel.addEventListener('change', syncMqttPlaceholder);
   mqttName.addEventListener('input', ctx.onAnyChange);
-  row.appendChild(wfield('MQTT as', mqttName, { width: '8rem' }));
+  row.appendChild(wfield('MQTT as', mqttName, { width: '8rem', help: mqttName.title }));
 
   const modelSel = modelChoiceSelect(
     ctx,
@@ -731,7 +813,11 @@ function buildSourceRow(src, ctx) {
     modelChoiceValue(src.modelGroupUuid, src.modelName),
     ctx.onAnyChange,
   );
-  row.appendChild(wfield('Models', modelSel));
+  row.appendChild(wfield('Models', modelSel, {
+    help: 'Which model or model stack runs on this camera. Leave at “(profile default)” to '
+      + 'use the watcher’s Default models — set it here only when one camera needs something '
+      + 'the others do not.',
+  }));
 
   // The three rate fields are numeric and short; the units live in the label so the
   // inputs can stay narrow enough to sit on the same line as the selects.
@@ -743,9 +829,22 @@ function buildSourceRow(src, ctx) {
   fps.addEventListener('input', ctx.onAnyChange);
   width.addEventListener('input', ctx.onAnyChange);
   retention.addEventListener('input', ctx.onAnyChange);
-  rates.appendChild(wfield('fps', fps, { width: '4.5rem' }));
-  rates.appendChild(wfield('width px', width, { width: '5rem' }));
-  rates.appendChild(wfield('buffer s', retention, { width: '4.5rem' }));
+  rates.appendChild(wfield('fps', fps, {
+    width: '4.5rem',
+    help: 'Frames per second pulled from this camera for analysis. Blank uses the watcher’s '
+      + 'own default. This is the main cost knob: every frame is a full inference pass, and '
+      + 'the tracker only needs enough of them to follow an object between detections.',
+  }));
+  rates.appendChild(wfield('width px', width, {
+    width: '5rem',
+    help: 'Downscale each frame to this width before inference. Blank uses the default. '
+      + 'Smaller is faster and loses small or distant objects first; it does not affect what a '
+      + 'recorded clip looks like.',
+  }));
+  rates.appendChild(wfield('buffer s', retention, {
+    width: '4.5rem',
+    help: BUFFER_SECONDS_HELP,
+  }));
 
   // The honesty affordance: "buffer s" above is a request for pre-roll, and a snapshot
   // camera cannot honour it at any value. Without this the mistake is invisible until
@@ -764,8 +863,17 @@ function buildSourceRow(src, ctx) {
   ringMaxMb.dataset.testid = 'watch-ring-max-mb';
   ringSeconds.addEventListener('input', ctx.onAnyChange);
   ringMaxMb.addEventListener('input', ctx.onAnyChange);
-  ringFields.appendChild(wfield('ring s', ringSeconds, { width: '4.5rem' }));
-  ringFields.appendChild(wfield('ring MB', ringMaxMb, { width: '4.5rem' }));
+  ringFields.appendChild(wfield('ring s', ringSeconds, {
+    width: '4.5rem',
+    help: 'Seconds of analysed frames kept in memory for a camera that cannot rewind. It is '
+      + 'what gives such a source any pre-roll at all — a clip cut from it is built from these '
+      + 'frames, not from video.',
+  }));
+  ringFields.appendChild(wfield('ring MB', ringMaxMb, {
+    width: '4.5rem',
+    help: 'Memory ceiling for that ring, per camera. Whichever limit is hit first wins, so a '
+      + 'high-resolution camera keeps fewer seconds than the number beside this asks for.',
+  }));
   rates.appendChild(ringFields);
 
   function refreshBadge() {
@@ -776,7 +884,11 @@ function buildSourceRow(src, ctx) {
     // Not disabled — the value is still stored and still meaningful if the source is
     // later repointed at a stream. Marked instead, so the field explains itself.
     retention.classList.toggle('watch-input--inert', !info.buffered);
-    retention.title = info.buffered ? '' : `Pre-roll cannot be honoured: ${info.title}`;
+    // The base help when it works, the reason it cannot when it does not — never `''`,
+    // which means "no tooltip" and blocks the wrapper's from showing through.
+    retention.title = info.buffered
+      ? BUFFER_SECONDS_HELP
+      : `Pre-roll cannot be honoured: ${info.title}`;
     // The ring is what gives an unbuffered source any pre-roll at all, so its bounds
     // are only worth showing there; on a rewindable source they would be dead controls.
     ringFields.hidden = info.buffered;
@@ -794,6 +906,10 @@ function buildSourceRow(src, ctx) {
   const regionsBtn = el('button', 'panel-btn', 'Regions…');
   regionsBtn.type = 'button';
   regionsBtn.dataset.testid = 'watch-zones-btn';
+  regionsBtn.title =
+    'Draw zones and masks on this camera’s picture. Zones are what a rule matches against; '
+    + 'masks hide part of the frame from every detection. They belong to the camera, so '
+    + 'editing them saves at once rather than waiting for this watcher to be saved.';
   regionsBtn.addEventListener('click', async () => {
     const result = await openSourceRegionsModal({
       sourceUuid: sourceSel.value,
@@ -892,7 +1008,11 @@ function buildRuleRow(rule, ctx) {
   nameInput.addEventListener('change', () => ctx.onNameCommitted?.());
   // Explicitly narrow so the name and the sentence share a line. At its natural width
   // the pair overflowed the row by a handful of pixels and cost a whole extra line.
-  row.appendChild(wfield('Rule', nameInput, { width: '10rem' }));
+  row.appendChild(wfield('Rule', nameInput, {
+    width: '10rem',
+    help: 'What this rule is called. Actions are scoped to rules by this name, and it is '
+      + 'what {rule_name} renders as in a topic or folder template.',
+  }));
 
   // The sentence: [subject A] [relation] [subject B]. Each subject is a *list* — "any of
   // these three cats is inside any of these two litter boxes" is one rule, not six, and
@@ -909,6 +1029,9 @@ function buildRuleRow(rule, ctx) {
 
   const subjectAHost = el('span', 'watch-rule-slot');
   subjectAHost.dataset.testid = 'watch-rule-subject-a';
+  subjectAHost.title =
+    'The labels this rule watches for. Picking several means “any one of these”, not all '
+    + 'of them together — one rule for three cats rather than three rules.';
   let subjectADropdown = null;
 
   function buildSubjectA() {
@@ -951,6 +1074,12 @@ function buildRuleRow(rule, ctx) {
     ctx.onAnyChange();
   });
   relation.dataset.testid = 'watch-rule-relation';
+  relation.title =
+    'How the subject has to relate to the target for the rule to hold. “is inside” asks how '
+    + 'much of the subject is within it; “overlaps” measures against the smaller of the two; '
+    + '“closely matches” is IoU and only suits boxes of similar size; “has its centre in” is '
+    + 'the cheapest robust test; “is near” compares centre points; “is present” needs no '
+    + 'target at all. Use Preview… to see any of them on boxes you can drag.';
 
   const subjectBKind = select(
     [{ key: 'zone', text: 'Zone' }, { key: 'label', text: 'Label' }],
@@ -969,9 +1098,17 @@ function buildRuleRow(rule, ctx) {
     },
   );
   subjectBKind.dataset.testid = 'watch-rule-subject-b-kind';
+  subjectBKind.title =
+    'Whether the subject is compared against a zone you have drawn on a camera, or against '
+    + 'another detected label. Switching this clears the picker beside it — the two kinds '
+    + 'do not share ids.';
 
   const subjectBHost = el('span', 'watch-rule-slot');
   subjectBHost.dataset.testid = 'watch-rule-subject-b';
+  subjectBHost.title =
+    'What the subject is compared against. Several entries mean “any one of these” — one '
+    + 'rule can span two litter boxes. Zones come from the sources this watcher uses; draw '
+    + 'them with Regions… on a source row.';
   let subjectBDropdown = null;
 
   function buildSubjectB() {
@@ -1025,6 +1162,10 @@ function buildRuleRow(rule, ctx) {
   let sourceScopeDropdown = null;
   const sourceScopeHost = el('span', 'watch-rule-slot');
   sourceScopeHost.dataset.testid = 'watch-rule-source-scope';
+  sourceScopeHost.title =
+    'Which cameras this rule is evaluated on. Empty means all of them. Sharper than scoping '
+    + 'an action: an unscoped rule still raises its event everywhere and only the side effect '
+    + 'is silenced, while scoping the rule stops the event existing.';
 
   function buildSourceScope() {
     const items = ctx.sourceScopeItems();
@@ -1069,6 +1210,11 @@ function buildRuleRow(rule, ctx) {
     for (const field of marginField) field.hidden = !usesMargin;
     // Nothing to drag for `present`: there is no second box.
     previewBtn.hidden = isUnary;
+    // The threshold field is renamed, not just re-explained: under `present` it is a
+    // detection confidence and calling it `match` was simply wrong. See THRESHOLD_HELP.
+    const help = THRESHOLD_HELP[relation.value] || THRESHOLD_HELP.contains;
+    thresholdLabel.textContent = help.label;
+    thresholdField.title = help.title;
   }
 
   // Tuning keeps its four inputs in threshold / start / clear / max order — the
@@ -1077,6 +1223,7 @@ function buildRuleRow(rule, ctx) {
   // tooltip: spelled out, the four of them alone filled a line.
   const tuning = el('div', 'watch-rule-tuning');
   const threshold = numberInput(rule.threshold ?? 0.6, { step: '0.05', min: 0 });
+  threshold.dataset.testid = 'watch-rule-threshold';
   // Bounds mirror `InteractionRuleWrite.margin`: past -1 a box erodes to nothing and
   // the rule can never fire, and +2 already reaches two subject-widths away.
   const margin = numberInput(rule.margin ?? 0, { step: '0.1', min: -1 });
@@ -1088,7 +1235,9 @@ function buildRuleRow(rule, ctx) {
     input.addEventListener('input', ctx.onAnyChange);
   }
   const tuningFields = [
-    ['match', threshold, 'Match threshold — how strongly the relation must hold'],
+    // Caption and tooltip are placeholders: `syncArity` rewrites both from
+    // THRESHOLD_HELP for the relation in force, and runs before this row is shown.
+    ['match', threshold, THRESHOLD_HELP.contains.title],
     [
       'nearby',
       margin,
@@ -1105,6 +1254,8 @@ function buildRuleRow(rule, ctx) {
     ['max', maxDuration, 'Hard cap on event length, in seconds'],
   ];
   const marginField = [];
+  let thresholdField = null;
+  let thresholdLabel = null;
   for (const [label, input, title] of tuningFields) {
     // 3.8rem, not the 4.5 these fields used to get: there are five of them plus the
     // preview button now, and at the old width the button wrapped onto a second line —
@@ -1115,6 +1266,11 @@ function buildRuleRow(rule, ctx) {
       field.dataset.testid = 'watch-rule-margin-field';
       marginField.push(field);
     }
+    if (input === threshold) {
+      field.dataset.testid = 'watch-rule-threshold-field';
+      thresholdField = field;
+      thresholdLabel = field.querySelector('.watch-field__label');
+    }
     tuning.appendChild(field);
   }
 
@@ -1123,7 +1279,8 @@ function buildRuleRow(rule, ctx) {
   const previewBtn = el('button', 'panel-btn watch-rule-preview', 'Preview…');
   previewBtn.type = 'button';
   previewBtn.dataset.testid = 'watch-rule-preview';
-  previewBtn.title = 'Try this match on sample boxes';
+  previewBtn.title = 'Try this relation on two boxes you can drag, and see the score it '
+    + 'produces. Apply sends the relation, match and nearby values back into this row.';
   previewBtn.addEventListener('click', () => {
     const labelName = uuid => ctx.labelItems.find(i => i.uuid === uuid)?.name || null;
     const subjectAUuid = subjectARefs[0] || null;
@@ -1219,8 +1376,15 @@ function buildActionRow(action, ctx) {
     ctx.onAnyChange();
   });
   kind.dataset.testid = 'watch-action-kind';
+  kind.title =
+    'What this action does. Changing it replaces the settings to its right, and may narrow '
+    + 'the trigger beside it — a clip can only be cut when an event ends.';
   const trigger = select(TRIGGERS, action.trigger || 'event_ended', () => { syncScopeVisibility(); ctx.onAnyChange(); });
   trigger.dataset.testid = 'watch-action-trigger';
+  trigger.title =
+    'When this action runs. “event start” and “event end” fire once each per event; “every '
+    + 'analysed frame” fires per frame regardless of whether any rule is holding, which is why '
+    + 'it has no rule scope.';
 
   // Sits beside the trigger, and only when that kind's list is short — a `(?)` next to
   // an unconstrained dropdown is a promise of information that isn't there.
@@ -1272,8 +1436,15 @@ function buildActionRow(action, ctx) {
 
   const ruleScopeField = el('div', 'watch-action-scope');
   ruleScopeField.dataset.testid = 'watch-action-rule-scope';
+  ruleScopeField.title =
+    'Which rules’ events this action responds to. Empty means all of them. Only rules that '
+    + 'have been saved can be picked — a new rule has no id until then.';
   const sourceScopeField = el('div', 'watch-action-scope');
   sourceScopeField.dataset.testid = 'watch-action-source-scope';
+  sourceScopeField.title =
+    'Which cameras this action runs for. Empty means all of them. The event is still raised '
+    + 'on the others — only this side effect is skipped. To stop the event itself, scope the '
+    + 'rule instead.';
 
   /**
    * Rebuild both scope pickers from the current rules and sources.
@@ -1348,8 +1519,8 @@ function buildActionRow(action, ctx) {
   name.addEventListener('input', ctx.onAnyChange);
   row.appendChild(name);
 
-  row.appendChild(wfield('Action', kind));
-  row.appendChild(wfield('on', trigger));
+  row.appendChild(wfield('Action', kind, { help: kind.title }));
+  row.appendChild(wfield('on', trigger, { help: trigger.title }));
   row.appendChild(triggerHelp);
   // Appended bare, not through `wfield`: the dropdown's trigger already reads "Rules" /
   // "Sources", so a field label repeats the word and spends the horizontal budget that
@@ -1376,9 +1547,20 @@ function buildActionRow(action, ctx) {
       const postroll = numberInput(stored.postroll_s ?? 5, { step: '1', min: 0 });
       const maxLength = numberInput(stored.max_length_s ?? 180, { step: '10', min: 1 });
       for (const i of [preroll, postroll, maxLength]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Pre-roll s', preroll, { width: '4.5rem' }));
-      params.appendChild(wfield('post-roll s', postroll, { width: '4.5rem' }));
-      params.appendChild(wfield('max s', maxLength, { width: '4.5rem' }));
+      params.appendChild(wfield('Pre-roll s', preroll, {
+        width: '4.5rem',
+        help: 'Seconds of video kept from before the event started. Taken retroactively out of '
+          + 'the source’s rolling buffer, so it cannot exceed that camera’s “buffer s”.',
+      }));
+      params.appendChild(wfield('post-roll s', postroll, {
+        width: '4.5rem',
+        help: 'Seconds kept after the event ended — long enough to see the subject leave.',
+      }));
+      params.appendChild(wfield('max s', maxLength, {
+        width: '4.5rem',
+        help: 'Hard ceiling on the finished clip, pre-roll and post-roll included. A longer '
+          + 'event is cut short at this length — the event itself is unaffected.',
+      }));
       readParams = () => ({
         preroll_s: num(preroll, 10),
         postroll_s: num(postroll, 5),
@@ -1389,7 +1571,11 @@ function buildActionRow(action, ctx) {
       retain.type = 'checkbox';
       retain.checked = Boolean(stored.retain);
       retain.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Retain', retain));
+      params.appendChild(wfield('Retain', retain, {
+        help: 'Ask the broker to keep the last message on this topic and hand it to new '
+          + 'subscribers. Off by default here: an event edge is a moment, and a retained one '
+          + 'replays to every subscriber that connects as though it were happening now.',
+      }));
 
       // The topic is a template now, not a fixed path: a rule matching several cats and
       // several litter boxes knows which ones fired, and routing on them is the whole
@@ -1399,9 +1585,10 @@ function buildActionRow(action, ctx) {
       topic.value = stored.topic_template || DEFAULT_TOPIC_TEMPLATE;
       topic.placeholder = DEFAULT_TOPIC_TEMPLATE;
       topic.dataset.testid = 'watch-action-topic';
-      topic.title = 'Topic to publish to. Broker is configured in Settings.';
+      topic.title = 'Topic to publish to. Broker is configured in Settings. Placeholders like '
+        + '{source} and {rule} are substituted — see the ? beside this field.';
       topic.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Topic', topic, { width: '13rem' }));
+      params.appendChild(wfield('Topic', topic, { width: '13rem', help: topic.title }));
       // The placeholder vocabulary lives behind this, not in the input's tooltip —
       // see `templateHelp`.
       params.appendChild(templateHelp(topic));
@@ -1433,9 +1620,10 @@ function buildActionRow(action, ctx) {
       topic.value = stored.topic_template || DEFAULT_IMAGE_TOPIC_TEMPLATE;
       topic.placeholder = DEFAULT_IMAGE_TOPIC_TEMPLATE;
       topic.dataset.testid = 'watch-action-image-topic';
-      topic.title = 'Topic for the JPEG. Broker is configured in Settings.';
+      topic.title = 'Topic the JPEG is published on. Broker is configured in Settings. Defaults '
+        + 'to a source-keyed topic: the frame belongs to the camera, not to whichever rule fired.';
       topic.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Topic', topic, { width: '13rem' }));
+      params.appendChild(wfield('Topic', topic, { width: '13rem', help: topic.title }));
       params.appendChild(templateHelp(topic));
 
       const example = el('span', 'watch-hint watch-hint--truncate', '');
@@ -1453,7 +1641,10 @@ function buildActionRow(action, ctx) {
       annotate.checked = stored.annotate !== false;
       annotate.dataset.testid = 'watch-action-image-annotate';
       annotate.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Draw boxes', annotate));
+      params.appendChild(wfield('Draw boxes', annotate, {
+        help: 'Burn the tracked boxes and labels into the published JPEG. On by default — this '
+          + 'image is for a dashboard to show a human, not for training data.',
+      }));
 
       // On by default, unlike the event action's: an image is state, and retaining it
       // is what makes a subscriber show a picture at once instead of waiting for the
@@ -1462,7 +1653,11 @@ function buildActionRow(action, ctx) {
       retain.type = 'checkbox';
       retain.checked = stored.retain !== false;
       retain.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Retain', retain));
+      params.appendChild(wfield('Retain', retain, {
+        help: 'Ask the broker to keep the last image on this topic. On by default, unlike the '
+          + 'event action’s: a picture is state, and retaining it is what makes a dashboard show '
+          + 'something the moment it connects instead of waiting for the next frame.',
+      }));
 
       const quality = numberInput(stored.quality ?? 80, { step: '5', min: 1, max: 100 });
       const maxWidth = numberInput(stored.max_width ?? 0, { step: '80', min: 0 });
@@ -1472,9 +1667,13 @@ function buildActionRow(action, ctx) {
         'Ceiling on publishes per second per source. 0 publishes every analysed frame.';
       maxWidth.title = 'Shrink to at most this width before encoding. 0 keeps the analysis size.';
       for (const i of [quality, maxWidth, maxFps]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Quality', quality, { width: '4.5rem' }));
-      params.appendChild(wfield('max width', maxWidth, { width: '5rem' }));
-      params.appendChild(wfield('max fps', maxFps, { width: '4.5rem' }));
+      params.appendChild(wfield('Quality', quality, {
+        width: '4.5rem',
+        help: 'JPEG quality, 1–100. 80 is a good balance; above 90 the file grows fast for '
+          + 'little visible gain, and every frame goes over the broker.',
+      }));
+      params.appendChild(wfield('max width', maxWidth, { width: '5rem', help: maxWidth.title }));
+      params.appendChild(wfield('max fps', maxFps, { width: '4.5rem', help: maxFps.title }));
 
       readParams = () => ({
         topic_template: topic.value.trim() || DEFAULT_IMAGE_TOPIC_TEMPLATE,
@@ -1492,7 +1691,12 @@ function buildActionRow(action, ctx) {
       // relative — the only space the browser and /api/images/mkdir speak — and
       // `resolve_output_dir` in the action accepts that spelling.
       const dir = dirPickerField(stored.output_dir ?? DEFAULT_TIMELAPSE_DIR, ctx.onAnyChange);
-      params.appendChild(wfield('Output dir', dir.element, { width: '15rem' }));
+      params.appendChild(wfield('Output dir', dir.element, {
+        width: '15rem',
+        help: 'Where the frames are written, relative to the image dataset root. Placeholders '
+          + 'are allowed — see the ? beside it — and a per-day folder is added for you. Browse… '
+          + 'can create the folder if it does not exist yet.',
+      }));
       params.appendChild(templateHelp(dir.input, {
         label: 'Placeholders you can use in this folder',
         intro: 'Substituted per path segment and slugified. One action covers every camera in '
@@ -1527,9 +1731,13 @@ function buildActionRow(action, ctx) {
       const maxWidth = numberInput(stored.max_width ?? 0, { step: '80', min: 0 });
       maxWidth.title = 'Shrink to at most this width before encoding. 0 keeps the frame\'s own size.';
       for (const i of [every, quality, maxWidth]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Every s', every, { width: '4.5rem' }));
-      params.appendChild(wfield('quality', quality, { width: '4.5rem' }));
-      params.appendChild(wfield('max width', maxWidth, { width: '5rem' }));
+      params.appendChild(wfield('Every s', every, { width: '4.5rem', help: every.title }));
+      params.appendChild(wfield('quality', quality, {
+        width: '4.5rem',
+        help: 'JPEG quality, 1–100. Higher than the MQTT image default because these frames are '
+          + 'kept on disk and watched back as a sequence, where compression artefacts crawl.',
+      }));
+      params.appendChild(wfield('max width', maxWidth, { width: '5rem', help: maxWidth.title }));
 
       // On by default, like the MQTT image action: the analysis downscale exists to
       // make inference cheap, and a timelapse is watched by a human.
@@ -1538,7 +1746,11 @@ function buildActionRow(action, ctx) {
       fullRes.checked = stored.full_resolution !== false;
       fullRes.dataset.testid = 'watch-action-timelapse-full-res';
       fullRes.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Full res', fullRes));
+      params.appendChild(wfield('Full res', fullRes, {
+        help: 'Save the camera’s own frame rather than the downscaled one inference ran on. On '
+          + 'by default: the analysis downscale exists to make inference cheap, and a timelapse '
+          + 'is watched by a human.',
+      }));
 
       // Off by default: burnt-in boxes make the frames useless as training data and
       // flicker distractingly at playback speed.
@@ -1547,7 +1759,10 @@ function buildActionRow(action, ctx) {
       annotate.checked = Boolean(stored.annotate);
       annotate.dataset.testid = 'watch-action-timelapse-annotate';
       annotate.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Draw boxes', annotate));
+      params.appendChild(wfield('Draw boxes', annotate, {
+        help: 'Burn the tracked boxes into each saved frame. Off by default: burnt-in boxes make '
+          + 'the frames useless as training data and flicker distractingly at playback speed.',
+      }));
 
       readParams = () => ({
         output_dir: dir.getValue().trim() || DEFAULT_TIMELAPSE_DIR,
@@ -1565,7 +1780,12 @@ function buildActionRow(action, ctx) {
       const dir = dirPickerField(stored.output_dir ?? DEFAULT_SNAPSHOT_DIR, ctx.onAnyChange, {
         placeholder: DEFAULT_SNAPSHOT_DIR,
       });
-      params.appendChild(wfield('Output dir', dir.element, { width: '15rem' }));
+      params.appendChild(wfield('Output dir', dir.element, {
+        width: '15rem',
+        help: 'Where snapshots are written, relative to the image dataset root. Placeholders are '
+          + 'allowed — see the ? beside it — so “a folder per camera” or “per rule” is something '
+          + 'you can write. A per-day folder is added for you.',
+      }));
       params.appendChild(templateHelp(dir.input, {
         label: 'Placeholders you can use in this folder',
         intro: 'Substituted per path segment and slugified, so a camera named "Kitchen / Cam" '
@@ -1760,20 +1980,32 @@ export async function renderWatchProfileManager({ target }) {
       nameInput.placeholder = 'e.g. House cams';
       nameInput.dataset.testid = 'watcher-name';
       nameInput.addEventListener('input', onAnyChange);
-      identity.appendChild(wfield('Name', nameInput));
+      identity.appendChild(wfield('Name', nameInput, {
+        help: 'What this watcher is called, in the list on the left and in the Runs tab. It is '
+          + 'also what {watcher} renders as in a topic or folder template, so a rename changes '
+          + 'where things are published — use {watcher_uuid} where that would matter.',
+      }));
 
       const enabled = document.createElement('input');
       enabled.type = 'checkbox';
       enabled.checked = profile ? profile.enabled !== false : true;
       enabled.addEventListener('change', onAnyChange);
-      identity.appendChild(wfield('Enabled', enabled));
+      // Deliberately modest wording: nothing reads this flag at run time today — the task
+      // filters on each *row's* enabled flag, not the profile's — so promising that
+      // unticking it stops the watcher would be a lie the user would find out the hard way.
+      identity.appendChild(wfield('Enabled', enabled, {
+        help: 'Your own on/off marker for this watcher. It does not stop a run that is already '
+          + 'going — stop that from the Runs tab.',
+      }));
 
       const description = document.createElement('input');
       description.type = 'text';
       description.value = profile?.description || '';
       description.placeholder = 'optional';
       description.addEventListener('input', onAnyChange);
-      identity.appendChild(wfield('Description', description));
+      identity.appendChild(wfield('Description', description, {
+        help: 'A note for you. Never read by the watcher and never used in a template.',
+      }));
 
       const defaultModels = modelChoiceSelect(
         { groupOptions: modelGroupOptions, modelNames },
@@ -1782,13 +2014,19 @@ export async function renderWatchProfileManager({ target }) {
         onAnyChange,
         { testid: 'watch-default-model-choice' },
       );
-      identity.appendChild(wfield('Default models', defaultModels));
+      identity.appendChild(wfield('Default models', defaultModels, {
+        help: 'The model or model stack every source in this watcher uses unless its own row '
+          + 'overrides it. A stack and a single model are exclusive — picking one clears the '
+          + 'other.',
+      }));
       screen.editorBody.appendChild(identity);
 
       // ── Sources ──
       const addSourceBtn = el('button', 'panel-btn', '+ Add source');
       addSourceBtn.type = 'button';
       addSourceBtn.dataset.testid = 'watch-add-source';
+      addSourceBtn.title = 'Add a camera for this watcher to analyse. Every rule and action below '
+        + 'applies to all of them unless you scope it to some.';
       const sourcesBox = el('div', 'watch-rows');
       sourcesBox.dataset.testid = 'watch-sources-box';
       screen.editorBody.appendChild(sectionPanel(sectionHeader('Sources', addSourceBtn), sourcesBox));
@@ -1833,6 +2071,8 @@ export async function renderWatchProfileManager({ target }) {
       const addLifetimeBtn = el('button', 'panel-btn', '+ Add label lifetime');
       addLifetimeBtn.type = 'button';
       addLifetimeBtn.dataset.testid = 'watch-add-lifetime';
+      addLifetimeBtn.title = 'Override how long one label’s track survives without a detection — '
+        + 'a litter box can outlast 30s of misses where a cat should not.';
 
       const trackerOptions = trackers.map(t => ({ key: t.typename, text: t.displayName || t.typename }));
       const trackerSel = select(
@@ -1841,13 +2081,17 @@ export async function renderWatchProfileManager({ target }) {
         () => { renderTrackerParams(); onAnyChange(); },
       );
       trackerSel.dataset.testid = 'watch-tracker';
+      trackerSel.title =
+        'How per-frame detections are joined into objects with an identity over time. Every '
+        + 'rule below is written against those objects, not against raw detections — which is '
+        + 'what lets a rule say "for 2 seconds". Its options are under Tuning.';
 
       // The picker rides the section's own heading line and the params collapse behind a
       // closed twisty, so the whole section costs no height beyond the heading it needed
       // anyway. A profile with one source, rule and action must still fit without the
       // editor scrolling — there is a Playwright test that says so.
       const trackingHead = sectionHeader('Tracking', addLifetimeBtn);
-      trackingHead.insertBefore(wfield('Tracker', trackerSel), addLifetimeBtn);
+      trackingHead.insertBefore(wfield('Tracker', trackerSel, { help: trackerSel.title }), addLifetimeBtn);
 
       const trackerParamsHost = el('div', 'watch-tracker-params-host');
       const tuning = document.createElement('details');
@@ -1855,6 +2099,8 @@ export async function renderWatchProfileManager({ target }) {
       tuning.dataset.testid = 'watch-tracker-tuning';
       const tuningSummary = document.createElement('summary');
       tuningSummary.textContent = 'Tuning';
+      tuningSummary.title = 'The selected tracker’s own options. Collapsed by default — the '
+        + 'defaults are sane, and each field explains itself on hover.';
       tuning.append(tuningSummary, trackerParamsHost);
       trackingHead.insertBefore(tuning, addLifetimeBtn);
 
@@ -1898,6 +2144,8 @@ export async function renderWatchProfileManager({ target }) {
       const addRuleBtn = el('button', 'panel-btn', '+ Add rule');
       addRuleBtn.type = 'button';
       addRuleBtn.dataset.testid = 'watch-add-rule';
+      addRuleBtn.title = 'Add a condition that raises an event while it holds. Rules decide when '
+        + 'something happened; the actions below decide what is done about it.';
       const rulesBox = el('div', 'watch-rows');
       rulesBox.dataset.testid = 'watch-rules-box';
       screen.editorBody.appendChild(sectionPanel(sectionHeader('Rules', addRuleBtn), rulesBox));
@@ -1991,6 +2239,8 @@ export async function renderWatchProfileManager({ target }) {
       const addActionBtn = el('button', 'panel-btn', '+ Add action');
       addActionBtn.type = 'button';
       addActionBtn.dataset.testid = 'watch-add-action';
+      addActionBtn.title = 'Add something to do when an event starts or ends, or on every analysed '
+        + 'frame — publish MQTT, record a clip, save a snapshot or a timelapse frame.';
       const actionsBox = el('div', 'watch-rows');
       actionsBox.dataset.testid = 'watch-actions-box';
       screen.editorBody.appendChild(sectionPanel(sectionHeader('Actions', addActionBtn), actionsBox));

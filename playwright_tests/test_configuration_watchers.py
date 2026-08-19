@@ -2107,3 +2107,117 @@ class TestWatcherSections:
         expect(page.locator("[data-testid='watch-section']")).to_have_count(4)
         for box in ("watch-sources-box", "watch-rules-box", "watch-actions-box", "watch-lifetimes-box"):
             expect(page.locator(f"[data-testid='watch-section'] [data-testid='{box}']")).to_have_count(1)
+
+
+class TestThresholdCaption:
+    """The threshold field is one number with six meanings, so its caption is not fixed.
+
+    Under `present` there is no second box at all — `evaluate_predicate` compares the
+    number against the best track's *detection confidence* — and captioning that `match`
+    described geometry that is never measured.
+    """
+
+    def _rule_row(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        return page.locator("[data-testid='watch-rule-row']").first
+
+    def test_present_captions_the_threshold_as_confidence(self, page: Page, base_url: str):
+        row = self._rule_row(page, base_url)
+        row.locator("[data-testid='watch-rule-relation']").select_option("present")
+        field = row.locator("[data-testid='watch-rule-threshold-field']")
+        expect(field.locator(".watch-field__label")).to_have_text("conf")
+        assert "confidence" in (field.get_attribute("title") or "")
+
+    def test_a_geometric_relation_still_reads_as_match(self, page: Page, base_url: str):
+        row = self._rule_row(page, base_url)
+        row.locator("[data-testid='watch-rule-relation']").select_option("overlaps")
+        field = row.locator("[data-testid='watch-rule-threshold-field']")
+        expect(field.locator(".watch-field__label")).to_have_text("match")
+        assert "smaller box" in (field.get_attribute("title") or "")
+
+    def test_distance_says_within_because_higher_is_looser(self, page: Page, base_url: str):
+        """Its threshold is an upper bound, so raising it loosens the rule — the
+        opposite of every other relation, which is worth saying in the caption."""
+        row = self._rule_row(page, base_url)
+        row.locator("[data-testid='watch-rule-relation']").select_option("distance")
+        field = row.locator("[data-testid='watch-rule-threshold-field']")
+        expect(field.locator(".watch-field__label")).to_have_text("within")
+
+    def test_the_caption_follows_the_relation_back(self, page: Page, base_url: str):
+        """Switching away from `present` must not leave the confidence caption behind."""
+        row = self._rule_row(page, base_url)
+        relation = row.locator("[data-testid='watch-rule-relation']")
+        relation.select_option("present")
+        relation.select_option("contains")
+        expect(row.locator("[data-testid='watch-rule-threshold-field'] .watch-field__label")).to_have_text("match")
+
+    def test_renaming_the_caption_does_not_move_the_value(self, page: Page, base_url: str):
+        """Caption only: the field still saves as `threshold`, whatever it is called."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        row = page.locator("[data-testid='watch-rule-row']").first
+        row.locator("[data-testid='watch-rule-relation']").select_option("present")
+        row.locator("[data-testid='watch-rule-threshold']").fill("0.85")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["threshold"] == 0.85, saved["rules"][0]
+
+
+class TestEverySettableThingExplainsItself:
+    """A watcher is configured almost entirely through unlabelled short captions —
+    `fps`, `ring MB`, `ends` — so a hover explanation is not a nicety here.
+
+    Asserted structurally rather than field by field: the point is that *nothing* is
+    left bare, and a per-field list would be a test that passes while the next control
+    added ships with no help at all.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+    def test_no_field_in_the_editor_hovers_blank(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        bare = page.evaluate(
+            """() => [...document.querySelectorAll('#watcher-management-box .watch-field')]
+                .filter(f => !(f.title || '').trim() && !f.hidden)
+                .map(f => f.querySelector('.watch-field__label')?.textContent || '?')"""
+        )
+        assert bare == [], f"watch fields with no tooltip: {bare}"
+
+    def test_the_rule_sentence_slots_explain_themselves(self, page: Page, base_url: str):
+        """The three multi-selects carry no caption at all — the sentence around them is
+        the label — so the tooltip is the only place they can be explained."""
+        self._open(page, base_url)
+        for testid in (
+            "watch-rule-subject-a",
+            "watch-rule-subject-b",
+            "watch-rule-source-scope",
+        ):
+            title = page.locator(f"[data-testid='{testid}']").first.get_attribute("title")
+            assert title and title.strip(), f"{testid} has no tooltip"
+
+    def test_the_action_scope_pickers_explain_empty_means_all(self, page: Page, base_url: str):
+        """"All" is a summary a user reads as "nothing chosen"; the tooltip is where the
+        difference between scoping a rule and scoping an action lives."""
+        self._open(page, base_url)
+        for testid in ("watch-action-rule-scope", "watch-action-source-scope"):
+            title = page.locator(f"[data-testid='{testid}']").first.get_attribute("title")
+            assert title and "all" in title.lower(), f"{testid}: {title!r}"
+
+    def test_the_add_buttons_say_what_they_add(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        for testid in (
+            "watch-add-source",
+            "watch-add-rule",
+            "watch-add-action",
+            "watch-add-lifetime",
+        ):
+            title = page.locator(f"[data-testid='{testid}']").get_attribute("title")
+            assert title and title.strip(), f"{testid} has no tooltip"
