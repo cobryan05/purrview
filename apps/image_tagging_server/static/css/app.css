@@ -6749,12 +6749,42 @@ progress.progress-indeterminate:indeterminate {
 /* The optional note on an action row. Sized small and allowed to shrink: it is the one
    control on the row carrying no configuration, so it is the one that should give up
    width first when the row gets tight. */
+/* `flex-grow: 1` on a *small* basis, which is what lets this get wider without costing
+   the row a line. Wrapping is decided from the basis, so a large one is what pushed the
+   action row onto a second line (and the editor into a scrollbar) when the enable toggle
+   arrived; growth is distributed only from space already left over on the line, and can
+   never cause a wrap. The note is the only free-text field here, so it is the right
+   control to hand the slack to. */
 .watch-action-name {
-  flex: 0 1 8rem;
-  min-width: 4rem;
+  flex: 1 1 6rem;
+  min-width: 3.5rem;
   font-style: italic;
 }
 .watch-action-name::placeholder { font-style: italic; }
+/* Smaller than the row's other controls, and it has to out-specify the `font-size:
+   inherit` above (`.watch-row input:not([type='checkbox'])` is the more specific
+   selector, so a bare `.watch-action-name` rule loses to it and the note silently keeps
+   the full size). This is free-text prose in the narrowest field on the row — at the
+   inherited size roughly ten characters were visible, which is not enough of "timelapse
+   of the back garden every 30s" to tell two rows apart. */
+.watch-row input.watch-action-name {
+  font-size: 0.8rem;
+}
+
+/* The on/off box leading a rule or action row. */
+.watch-row-enabled {
+  cursor: pointer;
+}
+/* A disabled row is dimmed, never hidden or collapsed: keeping how it was configured is
+   the entire point, so it has to stay readable and editable. The toggle itself keeps full
+   contrast — it is the one control you need to find in order to switch the row back on,
+   and dimming it along with everything else is how a "disabled" row becomes a lost one. */
+.watch-row--disabled > *:not(.watch-row-enabled) {
+  opacity: 0.5;
+}
+.watch-row--disabled:hover > *:not(.watch-row-enabled) {
+  opacity: 0.8;
+}
 
 /* Directory field: a path input with its Browse button flush against it, so the pair
    reads as one control on a row that already holds four others. The input takes the
