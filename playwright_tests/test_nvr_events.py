@@ -22,11 +22,13 @@ Run with:
 import base64
 import json
 import re
+from contextlib import contextmanager
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Page, expect
 
 from playwright_tests.test_nvr_live_view import FRAME_B64
+from playwright_tests.waits import wait_until
 
 PROFILE_UUID = "99999999-eeee-0000-0000-000000000002"
 EVENT_UUID = "event-uuid-0001"
@@ -120,6 +122,32 @@ def _overlay(**overrides) -> dict:
     }
     doc.update(overrides)
     return doc
+
+
+@contextmanager
+def _issues_a_search(page: Page, queries: list):
+    """Barrier: the block must cause exactly one more search request to arrive.
+
+    Asserting on `queries[-1]` right after changing a filter is a race. The
+    obvious-looking synchronisation point — waiting for the result cards — is not
+    one here, because `_mock` answers every query with the same single event, so
+    the card count is already satisfied by the load that happened on open. The
+    wait returns instantly and the assertion reads the *initial* query, passing
+    only because the fetch usually wins the race against the next statement.
+
+    Worse, it makes some of these tests unfalsifiable: `assert "rule_uuid" not in
+    queries[-1]` is trivially true of the on-open query, so it would report
+    success even if clearing the filters did nothing at all.
+
+    So key the barrier on the request list itself, which is the thing under test.
+    """
+    before = len(queries)
+    yield
+    wait_until(
+        page,
+        lambda: len(queries) > before,
+        lambda: f"the interaction issued no new search (still {len(queries)} queries)",
+    )
 
 
 def _mock(page: Page, events=None, facets=None, recording=True, overlay=None):
@@ -349,33 +377,32 @@ class TestFiltersReachTheServer:
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
-        page.locator("[data-testid='event-filter-rule']").select_option("rule-1")
-        page.wait_for_function("() => true")
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-rule']").select_option("rule-1")
         assert queries[-1].get("rule_uuid") == "rule-1"
 
     def test_filtering_by_camera(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
-        page.locator("[data-testid='event-filter-source']").select_option("src-1")
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-source']").select_option("src-1")
         assert queries[-1].get("source_uuid") == "src-1"
 
     def test_filtering_by_the_acting_thing(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
-        page.locator("[data-testid='event-filter-subject']").select_option("label-cat")
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-subject']").select_option("label-cat")
         assert queries[-1].get("subject_ref") == "label-cat"
 
     def test_filtering_by_the_thing_acted_on(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
-        page.locator("[data-testid='event-filter-target']").select_option("zone-box")
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-target']").select_option("zone-box")
         assert queries[-1].get("target_ref") == "zone-box"
 
     def test_filtering_by_date_range(self, page: Page, base_url: str):
@@ -386,7 +413,15 @@ class TestFiltersReachTheServer:
 
         page.locator("[data-testid='event-filter-from']").fill("2026-08-18")
         page.locator("[data-testid='event-filter-to']").fill("2026-08-18")
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        # Each bound issues its own search, so waiting for "a new query" could
+        # settle on the one carrying only `from`. Wait for the pair to be
+        # present; the assertions below are about the *values*, which is the
+        # actual claim — that `to` covers the whole day rather than midnight.
+        wait_until(
+            page,
+            lambda: queries and {"start_from", "start_to"} <= queries[-1].keys(),
+            lambda: f"no search carried both date bounds: {queries[-1] if queries else None}",
+        )
         assert queries[-1].get("start_from") == "2026-08-18T00:00:00"
         assert queries[-1].get("start_to") == "2026-08-18T23:59:59"
 
@@ -395,17 +430,24 @@ class TestFiltersReachTheServer:
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
-        page.locator("[data-testid='event-filter-clip']").select_option("false")
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-clip']").select_option("false")
         assert queries[-1].get("has_recording") == "false"
 
     def test_clearing_removes_every_filter(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
-        page.locator("[data-testid='event-filter-rule']").select_option("rule-1")
-        page.locator("[data-testid='event-filter-clear']").click()
-        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        # Both halves need their own barrier. Waiting once would let the assertion
+        # read the *filtered* query and fail, or — as before this fix — the
+        # on-open query, where "rule_uuid" is trivially absent and the test would
+        # pass even if Clear did nothing whatsoever.
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-rule']").select_option("rule-1")
+        assert queries[-1].get("rule_uuid") == "rule-1", "precondition: the filter must be applied before clearing it"
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-clear']").click()
         assert "rule_uuid" not in queries[-1]
 
     def test_an_empty_result_explains_itself(self, page: Page, base_url: str):
