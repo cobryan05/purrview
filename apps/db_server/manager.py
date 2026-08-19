@@ -3929,6 +3929,37 @@ class Manager:
                         "at the slower rate."
                     )
 
+        # A rule's `max_duration_s` does not merely cap an event: reaching it closes the
+        # event and, with the subject still present, opens another. So it also bounds how
+        # many frames any one event can ever hold, and once that is below the action's
+        # `min_frames` the timelapse compiles nothing — for every event, forever. The
+        # run-time signal is the *legitimate* "below the minimum frame count" outcome, so
+        # nothing looks wrong anywhere. The two numbers sit on different rows in the
+        # editor and nothing else in the app relates them.
+        for action in profile.actions:
+            if action.kind != "record_event_timelapse" or not action.enabled:
+                continue
+            interval = max(1.0, float(action.params_json.get("interval_s", 10) or 10))
+            min_frames = max(1, int(action.params_json.get("min_frames", 10) or 10))
+            scope = {str(u) for u in (action.rule_uuids_json or [])}
+            for rule in profile.rules:
+                if scope and rule.uuid not in scope:
+                    continue
+                # An uncapped rule (0) is bounded only by how long the subject stays, and
+                # a disabled one raises no events at all — neither can be judged here.
+                if not rule.enabled or rule.max_duration_s <= 0:
+                    continue
+                # Buckets run 0..floor(span/interval), so a 300s event at 10s is 31.
+                frames = int(rule.max_duration_s // interval) + 1
+                if frames < min_frames:
+                    warnings.append(
+                        f"Rule {rule.name!r} caps its events at {rule.max_duration_s:g}s, which at one "
+                        f"frame every {interval:g}s is only {frames} frame(s) — below this Event "
+                        f"timelapse action's {min_frames}-frame minimum, so it will never produce a "
+                        f"video. Raise the rule's max (0 removes the cap entirely), shorten the "
+                        f"interval, or lower the action's minimum."
+                    )
+
         return {
             "valid": not errors,
             "errors": errors,

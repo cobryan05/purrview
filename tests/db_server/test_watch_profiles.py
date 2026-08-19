@@ -489,7 +489,14 @@ class TestRuleValidation:
         )
         assert body["status"] == "failure"
 
-    async def test_max_duration_must_be_positive(self, http_client):
+    async def test_max_duration_zero_is_accepted_as_no_cap(self, http_client):
+        """0 is the only way to say "this event lasts as long as its subject is there".
+
+        Any positive cap closes the event and immediately opens another while the subject
+        is still present, so a two-hour visit becomes a chain of events — and a chain of
+        separate timelapses. This used to be refused as "the runaway-event cap", which
+        left no spelling for the case at all.
+        """
         source_uuid = await _make_source(http_client)
         await _set_regions(http_client, source_uuid, [_zone()])
         body = await _create_profile(
@@ -498,7 +505,19 @@ class TestRuleValidation:
             sources=[{"sourceUuid": source_uuid}],
             rules=[_rule(maxDurationS=0)],
         )
-        # It is the runaway-event cap; zero would let one stuck detection record forever.
+        assert body["status"] != "failure", body
+        assert body["profile"]["rules"][0]["maxDurationS"] == 0
+
+    async def test_max_duration_must_not_be_negative(self, http_client):
+        """Still refused: it spells nothing, and would leave two values meaning "off"."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(maxDurationS=-1)],
+        )
         assert body["status"] == "failure"
 
     async def test_defaults_include_hysteresis(self, http_client):
@@ -1032,6 +1051,100 @@ class TestValidateEndpoint:
         )["profile"]
         report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
         assert any("never raise an event" in w for w in report["warnings"])
+
+    #: A second rule, so "scoped to some other rule" can name one that really exists —
+    #: the nested write rejects an action pointing at a rule the profile does not have.
+    _OTHER_RULE_UUID = "33333333-3333-3333-3333-333333333333"
+
+    async def _timelapse_report(
+        self, http_client, *, rule_overrides=None, params=None, action_overrides=None, second_rule=False
+    ):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        action = {"kind": "record_event_timelapse", "paramsJson": params or {}}
+        action.update(action_overrides or {})
+        rules = [_rule(**(rule_overrides or {}))]
+        if second_rule:
+            rules.append(_rule(uuid=self._OTHER_RULE_UUID, name="something else", maxDurationS=3600.0))
+        profile = (
+            await _create_profile(
+                http_client,
+                "House cams",
+                sources=[{"sourceUuid": source_uuid}],
+                rules=rules,
+                actions=[action],
+            )
+        )["profile"]
+        return (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+
+    async def test_a_rule_cap_too_short_for_the_timelapse_minimum_warns(self, http_client):
+        """The combination produces no video at all, for every event, forever.
+
+        A rule's max closes an event and immediately opens another while the subject is
+        still there, so it also bounds how many frames one event can hold. Below the
+        action's `min_frames` nothing is ever compiled, and the run-time signal is the
+        *legitimate* "below the minimum frame count" outcome — so nothing looks broken
+        anywhere. The two numbers live on different rows in the editor.
+        """
+        report = await self._timelapse_report(
+            http_client,
+            rule_overrides={"maxDurationS": 300.0},
+            params={"interval_s": 60, "min_frames": 10},
+        )
+        # 300s at one frame per 60s is 6 frames, against a minimum of 10.
+        assert any("never produce a video" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_a_workable_pairing_does_not_warn(self, http_client):
+        report = await self._timelapse_report(
+            http_client,
+            rule_overrides={"maxDurationS": 300.0},
+            params={"interval_s": 10, "min_frames": 10},
+        )
+        assert not any("never produce a video" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_an_uncapped_rule_never_warns(self, http_client):
+        """0 removes the cap, so the event is bounded only by how long the subject stays
+        — there is no frame count to judge here at all."""
+        report = await self._timelapse_report(
+            http_client,
+            rule_overrides={"maxDurationS": 0.0},
+            params={"interval_s": 600, "min_frames": 50},
+        )
+        assert not any("never produce a video" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_a_disabled_rule_is_not_judged(self, http_client):
+        report = await self._timelapse_report(
+            http_client,
+            rule_overrides={"maxDurationS": 30.0, "enabled": False},
+            params={"interval_s": 60, "min_frames": 10},
+        )
+        assert not any("never produce a video" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_a_disabled_action_is_not_judged(self, http_client):
+        report = await self._timelapse_report(
+            http_client,
+            rule_overrides={"maxDurationS": 30.0},
+            params={"interval_s": 60, "min_frames": 10},
+            action_overrides={"enabled": False},
+        )
+        assert not any("never produce a video" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_a_rule_outside_the_actions_scope_is_not_judged(self, http_client):
+        """An action scoped to other rules will never see this one's events."""
+        report = await self._timelapse_report(
+            http_client,
+            rule_overrides={"maxDurationS": 30.0},
+            params={"interval_s": 60, "min_frames": 10},
+            action_overrides={"ruleUuidsJson": [self._OTHER_RULE_UUID]},
+            second_rule=True,
+        )
+        assert not any("never produce a video" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_the_defaults_are_a_workable_pairing(self, http_client):
+        """300s cap, 10s interval, 10-frame minimum: 31 frames. If the shipped defaults
+        ever warn, the defaults are wrong, not the watcher."""
+        report = await self._timelapse_report(http_client, params={})
+        assert not any("never produce a video" in w for w in report["warnings"]), report["warnings"]
 
     async def test_preroll_longer_than_the_buffer_warns(self, http_client):
         """A 30 s pre-roll against a 20 s buffer is a misconfiguration, not a surprise."""

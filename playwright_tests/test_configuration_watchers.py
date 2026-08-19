@@ -1853,6 +1853,29 @@ class TestEnablingAndDisablingRows:
         assert float(opacity) == 1.0, f"the enable toggle is dimmed at {opacity}"
 
 
+class TestAnUncappedRule:
+    """`max` = 0 means "this event lasts as long as its subject is there".
+
+    The field is a plain number input, so the risk is that 0 reads as "empty" somewhere
+    on the way out and is quietly replaced by the 300 default — which would look like the
+    setting simply not working.
+    """
+
+    def test_zero_is_sent_rather_than_coerced_to_the_default(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+        # The tuning group is indexed positionally: threshold, margin, starts, ends, max.
+        page.locator(".watch-rule-tuning input").last.fill("0")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["maxDurationS"] == 0, saved["rules"][0]
+
+
 class TestTheActionNoteIsLegible:
     """The note is free-text prose in the narrowest field on the row.
 
