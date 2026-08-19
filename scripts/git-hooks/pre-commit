@@ -14,7 +14,9 @@
 CONTAINER="${WHISKERWATCHER_CONTAINER:-whiskerwatcher_mono_dev}"
 
 files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
-[ -z "$files" ] && exit 0
+config=$(git diff --cached --name-only --diff-filter=ACMR -- pyproject.toml requirements-dev.txt)
+
+[ -z "$files" ] && [ -z "$config" ] && exit 0
 
 # Word-splitting below can't survive spaces in paths; none exist in this repo,
 # but skip rather than mangle the list if that ever changes.
@@ -29,6 +31,57 @@ if ! docker exec "$CONTAINER" true >/dev/null 2>&1; then
     printf '%s\n' "pre-commit: container '$CONTAINER' is not running — skipping format check" >&2
     exit 0
 fi
+
+# When the formatter config itself changes, re-check the two invariants that
+# caused the original drift: black and isort must wrap at the same width, and the
+# container must actually have the versions requirements-dev.txt pins. A tree that
+# is clean today silently rots if either of these slips.
+if [ -n "$config" ]; then
+    if ! docker exec -i -w /project "$CONTAINER" python - <<'CONFIGCHECK'
+import sys, tomllib
+from importlib.metadata import version
+from pathlib import Path
+
+problems = []
+cfg = tomllib.loads(Path("pyproject.toml").read_text())
+black_len = cfg["tool"]["black"]["line-length"]
+isort_cfg = cfg["tool"]["isort"]
+
+# profile="black" does NOT inherit black's line-length; it defaults to 88.
+if "line_length" not in isort_cfg:
+    problems.append("isort has no explicit line_length; the black profile defaults it to 88, not to black's setting")
+elif isort_cfg["line_length"] != black_len:
+    problems.append(f"black wraps at {black_len} but isort wraps at {isort_cfg['line_length']}")
+
+pins = {}
+for line in Path("requirements-dev.txt").read_text().splitlines():
+    line = line.split("#", 1)[0].strip()
+    if "==" in line:
+        name, _, ver = line.partition("==")
+        pins[name.strip().lower()] = ver.strip()
+
+for tool in ("black", "isort"):
+    if tool not in pins:
+        problems.append(f"{tool} is not pinned with == in requirements-dev.txt")
+    elif version(tool) != pins[tool]:
+        problems.append(f"{tool} {version(tool)} installed but pinned {pins[tool]} — rebuild the image")
+
+for p in problems:
+    print(f"CONFIG {p}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+CONFIGCHECK
+    then
+        printf '%s\n' "" \
+            "Commit blocked: the formatter config is inconsistent." \
+            "" \
+            "This is the exact condition that made every format pass churn unrelated" \
+            "files. Fix it before committing, and reformat the tree in its own commit." \
+            "" >&2
+        exit 1
+    fi
+fi
+
+[ -z "$files" ] && exit 0
 
 # shellcheck disable=SC2086  # deliberate word-split of the newline-separated list
 unformatted=$(docker exec -i -w /project "$CONTAINER" sh -s -- $files <<'CHECK'
