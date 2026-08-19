@@ -6630,6 +6630,7 @@ class DbClient:
                     subject_b_refs_json=[str(r) for r in (rule.subject_b_refs_json or [])],
                     subject_b_include_descendants=rule.subject_b_include_descendants,
                     threshold=rule.threshold,
+                    margin=rule.margin,
                     min_duration_s=rule.min_duration_s,
                     rearm_delay_s=rule.rearm_delay_s,
                     max_duration_s=rule.max_duration_s,

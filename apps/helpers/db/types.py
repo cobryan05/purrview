@@ -1738,6 +1738,13 @@ class InteractionRule(SQLModel, table=True):
     subject_b_refs_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     subject_b_include_descendants: bool = Field(default=False)
     threshold: float = Field(default=0.5)
+    # Widens the match before the relation is measured, so "the cat got *near* the water
+    # bowl" is the same rule as "in it" with wider boxes, rather than a relation of its
+    # own. Measured in units of the smaller box's size — 1.0 closes a gap of about one
+    # subject-width — so it means the same thing at any distance from the camera, which
+    # a fraction of the frame would not. Negative shrinks, demanding a deeper overlap
+    # than the raw boxes show. See `apps.helpers.watch.geometry.margin_pad`.
+    margin: float = Field(default=0.0)
     # The predicate must hold continuously this long before the event STARTS.
     min_duration_s: float = Field(default=2.0)
     # ...and be continuously false this long before it ENDS, which is what stops one
@@ -2030,6 +2037,7 @@ class InteractionRuleRead(OrmModel):
     subject_b_refs_json: List[Any] = Field(default_factory=list)
     subject_b_include_descendants: bool = False
     threshold: float = 0.5
+    margin: float = 0.0
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -2051,6 +2059,10 @@ class InteractionRuleWrite(ApiModel):
     subject_b_refs_json: List[Any] = Field(default_factory=list)
     subject_b_include_descendants: bool = False
     threshold: float = 0.5
+    # Bounded because the control is a slider and the ends have to mean something: 2.0
+    # already fires on objects two subject-widths apart, which is most of a small room,
+    # and -1.0 erodes a box to nothing — a rule that can never fire.
+    margin: float = Field(default=0.0, ge=-1.0, le=2.0)
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -2096,6 +2108,16 @@ class InteractionRuleWrite(ApiModel):
 
         if len(set(map(str, self.source_uuids_json))) != len(self.source_uuids_json):
             raise ValueError("source_uuids_json contains duplicates")
+
+        # A margin only means something to a relation that measures boxes. `present`
+        # has no second box at all and `distance` compares centre points, which grow
+        # with nothing — so a margin there is a control that silently does nothing, and
+        # is rejected for the same reason as the descendants flag above.
+        if self.margin and self.relation in (RuleRelation.PRESENT, RuleRelation.DISTANCE):
+            raise ValueError(
+                f"relation {self.relation.value!r} ignores margin; "
+                "it compares no boxes, so send margin 0 (or use 'overlaps' to widen a match)"
+            )
 
         if self.min_duration_s < 0 or self.rearm_delay_s < 0:
             raise ValueError("min_duration_s and rearm_delay_s must not be negative")

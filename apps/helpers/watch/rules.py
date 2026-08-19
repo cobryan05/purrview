@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..tracking.tracker import Track
 from .events import EventPhase, WatchEventSignal
-from .geometry import Zone, centroid, containment, iou, normalised_distance, overlap_ratio
+from .geometry import Zone, centroid, containment, inflate, iou, margin_pad, normalised_distance, overlap_ratio
 
 
 class RuleState(str, Enum):
@@ -63,6 +63,13 @@ class RuleSpec:
     subject_a_include_descendants: bool = False
     subject_b_include_descendants: bool = False
     threshold: float = 0.5
+    #: Widen the match by this much *of the smaller box's size* before the relation is
+    #: measured, so a rule can fire on "nearly touching" without a relation of its own.
+    #: 1.0 closes a gap of about one subject-width; negative shrinks instead, demanding
+    #: a deeper overlap than the raw boxes show. Sized against the object rather than
+    #: the frame so it survives perspective — see `geometry.margin_pad`.
+    #: Ignored by `present` (no geometry) and `distance` (already a proximity measure).
+    margin: float = 0.0
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -89,6 +96,7 @@ class RuleSpec:
             subject_a_include_descendants=bool(get("subject_a_include_descendants", False)),
             subject_b_include_descendants=bool(get("subject_b_include_descendants", False)),
             threshold=get("threshold", 0.5),
+            margin=get("margin", 0.0) or 0.0,
             min_duration_s=get("min_duration_s", 2.0),
             rearm_delay_s=get("rearm_delay_s", 10.0),
             max_duration_s=get("max_duration_s", 300.0),
@@ -208,6 +216,10 @@ def evaluate_predicate(
         if not targets:
             return PredicateResult(holds=False)
 
+    # `distance` is excluded from the margin: its threshold *is* a proximity measure,
+    # and it compares centre points, which do not grow.
+    margin = 0.0 if spec.relation == "distance" else spec.margin
+
     best_score = 0.0
     best_conf = 0.0
     matched: List[int] = []
@@ -220,39 +232,56 @@ def evaluate_predicate(
 
     for track_a in subjects_a:
         for target in targets:
+            # The margin is measured against the smaller of the pair, so it has to be
+            # computed per pair rather than once for the rule — see `margin_pad` for
+            # why the object, and not the frame, is the ruler.
+            target_box = target.bounds(frame_width, frame_height) if isinstance(target, Zone) else target.bbox
+            pad = margin_pad(margin, track_a.bbox, target_box) if margin else 0.0
+            box_a = inflate(track_a.bbox, pad) if pad else track_a.bbox
+            box_b = inflate(target_box, pad) if pad else target_box
+
             if isinstance(target, Zone):
                 if spec.relation == "centroid_in":
-                    score = 1.0 if target.contains_point(centroid(track_a.bbox), frame_width, frame_height) else 0.0
+                    # The subject contributes a point, which cannot be inflated, so the
+                    # whole margin widens the zone — the same total slack as inflating
+                    # both, and it keeps "the cat's centre is within N of the zone".
+                    score = (
+                        1.0
+                        if target.contains_point_within(centroid(track_a.bbox), 2 * pad, frame_width, frame_height)
+                        else 0.0
+                    )
                 elif spec.relation == "distance":
                     # Distance is an inverted predicate: closer is "more true", so the
                     # threshold is an upper bound and the score is inverted to keep
                     # "higher score = closer to firing" true everywhere.
-                    dist = normalised_distance(
-                        track_a.bbox, target.bounds(frame_width, frame_height), frame_width, frame_height
-                    )
+                    dist = normalised_distance(track_a.bbox, target_box, frame_width, frame_height)
                     score = 1.0 - dist if dist <= spec.threshold else 0.0
                 elif spec.relation == "iou":
-                    score = iou(track_a.bbox, target.bounds(frame_width, frame_height))
+                    # Bounding-box approximate for polygon zones, exactly as
+                    # `Zone.bounds` documents — the margin does not change
+                    # that, it only moves the bounds.
+                    score = iou(box_a, box_b)
                 elif spec.relation == "overlaps":
-                    score = target.overlap_ratio(track_a.bbox, frame_width, frame_height)
+                    score = overlap_ratio(box_a, box_b)
                 else:  # contains
-                    score = target.overlap_fraction(track_a.bbox, frame_width, frame_height)
+                    score = containment(box_a, box_b)
             else:
                 if track_a.track_id == target.track_id:
                     continue  # an object never interacts with itself
                 if spec.relation == "centroid_in":
                     cx, cy = centroid(track_a.bbox)
-                    bx1, by1, bx2, by2 = target.bbox
+                    # Whole margin on the target, as in the zone branch above.
+                    bx1, by1, bx2, by2 = inflate(target_box, 2 * pad)
                     score = 1.0 if (bx1 <= cx <= bx2 and by1 <= cy <= by2) else 0.0
                 elif spec.relation == "distance":
-                    dist = normalised_distance(track_a.bbox, target.bbox, frame_width, frame_height)
+                    dist = normalised_distance(track_a.bbox, target_box, frame_width, frame_height)
                     score = 1.0 - dist if dist <= spec.threshold else 0.0
                 elif spec.relation == "iou":
-                    score = iou(track_a.bbox, target.bbox)
+                    score = iou(box_a, box_b)
                 elif spec.relation == "overlaps":
-                    score = overlap_ratio(track_a.bbox, target.bbox)
+                    score = overlap_ratio(box_a, box_b)
                 else:  # contains
-                    score = containment(track_a.bbox, target.bbox)
+                    score = containment(box_a, box_b)
 
             # centroid_in and distance already encode their own thresholding, so a
             # positive score means the predicate held for that pair.

@@ -608,10 +608,11 @@ class TestWatcherEditor:
         page.locator("[data-testid='watch-add-rule']").click()
         row = page.locator("[data-testid='watch-rule-row']").nth(1)
         inputs = row.locator(".watch-rule-tuning input")
-        # threshold, starts-after, ends-after-clear, max-duration
-        expect(inputs.nth(1)).to_have_value("2")
-        expect(inputs.nth(2)).to_have_value("10")
-        expect(inputs.nth(3)).to_have_value("300")
+        # threshold, nearby-margin, starts-after, ends-after-clear, max-duration
+        expect(inputs.nth(1)).to_have_value("0")
+        expect(inputs.nth(2)).to_have_value("2")
+        expect(inputs.nth(3)).to_have_value("10")
+        expect(inputs.nth(4)).to_have_value("300")
 
     def test_creating_a_watcher_posts_the_payload(self, page: Page, base_url: str):
         created = {}
@@ -1976,3 +1977,133 @@ class TestTimelapseFolderTokens:
 
         wait_until(page, lambda: bool(saved.get("actions")))
         assert saved["actions"][0]["paramsJson"]["output_dir"] == "timelapse/{source}"
+
+
+class TestMatchPreview:
+    """The match-threshold sandbox.
+
+    The threshold is the one number in this editor with no intuition behind it — a
+    fraction of an area the user never sees — so what these tests protect is that the
+    readout actually responds to the boxes and that "use these settings" writes back the
+    values the user just dragged into place.
+    """
+
+    def _open_preview(self, page: Page, base_url: str, profile=None):
+        _mock_watch_apis(page, profiles=[profile or FAKE_PROFILE])
+        # The modal samples the DB for a crop of each label. Answered empty so the boxes
+        # stay plain rectangles and their geometry is exactly what the test set up.
+        page.route(
+            lambda url: url.split("?")[0].rstrip("/").endswith("/api/images/review"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "images": [], "hasMore": False, "totalCount": 0}),
+            ),
+        )
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-preview']").first.click()
+        expect(page.locator("[data-testid='overlap-preview']")).to_be_visible()
+
+    def _drag_a_onto_b(self, page: Page):
+        """Drag subject A's box to the centre of B's, which contains it completely."""
+        box_a = page.locator("[data-testid='overlap-preview-box-a']").bounding_box()
+        box_b = page.locator("[data-testid='overlap-preview-box-b']").bounding_box()
+        page.mouse.move(box_a["x"] + box_a["width"] / 2, box_a["y"] + box_a["height"] / 2)
+        page.mouse.down()
+        # Two moves: a single one from press to target can be swallowed as a click.
+        page.mouse.move(box_b["x"] + box_b["width"] / 2, box_b["y"] + box_b["height"] / 2, steps=10)
+        page.mouse.up()
+
+    def test_the_button_opens_the_preview(self, page: Page, base_url: str):
+        self._open_preview(page, base_url)
+        expect(page.locator("[data-testid='overlap-preview-stage']")).to_be_visible()
+        expect(page.locator("[data-testid='overlap-preview-box-a']")).to_be_visible()
+        expect(page.locator("[data-testid='overlap-preview-box-b']")).to_be_visible()
+
+    def test_the_verdict_follows_the_boxes(self, page: Page, base_url: str):
+        """Boxes barely touching do not match at 0.6; fully inside does."""
+        self._open_preview(page, base_url)
+        badge = page.locator("[data-testid='overlap-preview-badge']")
+        expect(badge).to_have_text("no match")
+        self._drag_a_onto_b(page)
+        expect(badge).to_have_text("FIRES")
+        expect(page.locator("[data-testid='overlap-preview-score']")).to_contain_text("100%")
+
+    def test_a_nearby_margin_can_make_disjoint_boxes_match(self, page: Page, base_url: str):
+        """The whole point of the margin: "close" becomes a match without moving a box."""
+        self._open_preview(page, base_url)
+        page.locator("[data-testid='overlap-preview-relation']").select_option("overlaps")
+        # The boxes start barely lapping — about 27% of the smaller one.
+        page.locator("[data-testid='overlap-preview-threshold']").fill("0.5")
+        expect(page.locator("[data-testid='overlap-preview-badge']")).to_have_text("no match")
+
+        # One subject-width of slack takes the same boxes past 60%.
+        page.locator("[data-testid='overlap-preview-margin']").fill("1")
+        expect(page.locator("[data-testid='overlap-preview-badge']")).to_have_text("FIRES")
+
+    def test_the_margin_note_explains_the_units(self, page: Page, base_url: str):
+        """A bare "0.75" says nothing; the note is where subject-widths are named."""
+        self._open_preview(page, base_url)
+        page.locator("[data-testid='overlap-preview-margin']").fill("0.75")
+        expect(page.locator("[data-testid='overlap-preview-margin-note']")).to_contain_text("smaller box")
+
+    def test_is_near_takes_no_margin(self, page: Page, base_url: str):
+        """It compares centre points, which do not grow — and the backend rejects one."""
+        self._open_preview(page, base_url)
+        page.locator("[data-testid='overlap-preview-relation']").select_option("distance")
+        expect(page.locator("[data-testid='overlap-preview-margin']")).to_be_hidden()
+
+    def test_applying_writes_the_values_back_to_the_rule(self, page: Page, base_url: str):
+        self._open_preview(page, base_url)
+        page.locator("[data-testid='overlap-preview-relation']").select_option("overlaps")
+        page.locator("[data-testid='overlap-preview-threshold']").fill("0.35")
+        page.locator("[data-testid='overlap-preview-margin']").fill("0.5")
+        page.locator("[data-testid='overlap-preview-apply']").click()
+
+        expect(page.locator("[data-testid='overlap-preview']")).to_have_count(0)
+        row = page.locator("[data-testid='watch-rule-row']").first
+        expect(row.locator("[data-testid='watch-rule-relation']")).to_have_value("overlaps")
+        inputs = row.locator(".watch-rule-tuning input")
+        expect(inputs.nth(0)).to_have_value("0.35")
+        expect(inputs.nth(1)).to_have_value("0.5")
+
+    def test_the_margin_is_saved(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        row = page.locator("[data-testid='watch-rule-row']").first
+        row.locator(".watch-rule-tuning input").nth(1).fill("0.8")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["margin"] == 0.8, saved["rules"][0]
+
+    def test_a_relation_that_ignores_the_margin_saves_zero(self, page: Page, base_url: str):
+        """`present` compares no boxes, and the backend rejects a margin there — so a
+        value typed under another relation must not survive into the payload."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        row = page.locator("[data-testid='watch-rule-row']").first
+        row.locator(".watch-rule-tuning input").nth(1).fill("0.8")
+        row.locator("[data-testid='watch-rule-relation']").select_option("present")
+        expect(row.locator("[data-testid='watch-rule-margin-field']")).to_be_hidden()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["margin"] == 0, saved["rules"][0]
+
+
+class TestWatcherSections:
+    def test_each_group_is_its_own_panel(self, page: Page, base_url: str):
+        """Sources, Tracking, Rules and Actions all render as near-identical rows, so
+        without a panel apiece the editor reads as one long undifferentiated list."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-section']")).to_have_count(4)
+        for box in ("watch-sources-box", "watch-rules-box", "watch-actions-box", "watch-lifetimes-box"):
+            expect(page.locator(f"[data-testid='watch-section'] [data-testid='{box}']")).to_have_count(1)

@@ -15,14 +15,19 @@ from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventPhase
 from apps.helpers.watch.geometry import (
     Zone,
+    area,
+    box_scale,
     centroid,
     centroid_in_box,
     containment,
+    inflate,
     intersection_area,
     iou,
+    margin_pad,
     normalised_distance,
     overlap_ratio,
     point_in_polygon,
+    point_to_polygon_distance,
 )
 from apps.helpers.watch.rules import RuleMachine, RuleSpec, RuleState, evaluate_predicate
 
@@ -891,3 +896,148 @@ class TestRuleSourceScope:
 
         spec = _rule(subject_a_refs=["cat"], subject_a_include_descendants=True, source_uuids=["src-1"])
         assert expand_descendants(spec, {"cat": set(), "tabby": {"cat"}}).source_uuids == ["src-1"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Margin — "fire when they are merely *near* each other"
+# ─────────────────────────────────────────────────────────────────────────────
+class TestMarginGeometry:
+    def test_inflate_grows_every_edge(self):
+        assert inflate((100, 100, 200, 200), 10) == (90, 90, 210, 210)
+
+    def test_a_negative_pad_shrinks(self):
+        assert inflate((100, 100, 200, 200), -10) == (110, 110, 190, 190)
+
+    def test_over_shrinking_collapses_to_the_centre_rather_than_inverting(self):
+        """A box with negative width would score nonsense; a point scores zero."""
+        assert inflate((100, 100, 200, 200), -80) == (150, 150, 150, 150)
+        assert area(inflate((100, 100, 200, 200), -80)) == 0.0
+
+    def test_box_scale_is_the_mean_of_the_two_sides(self):
+        assert box_scale((0, 0, 100, 50)) == 75.0
+
+    def test_the_pad_is_measured_against_the_smaller_box(self):
+        """A cat paired with a whole litter box is measured in cats, not litter boxes."""
+        cat, litterbox = (0, 0, 100, 100), (0, 0, 500, 500)
+        assert margin_pad(1.0, cat, litterbox) == pytest.approx(50.0)
+        assert margin_pad(1.0, litterbox, cat) == pytest.approx(50.0)
+
+    def test_each_box_grows_by_half_the_margin(self):
+        """So the number reads as the whole gap it closes — one subject-width at 1.0."""
+        box = (0, 0, 100, 100)
+        assert 2 * margin_pad(1.0, box, box) == pytest.approx(box_scale(box))
+
+    def test_point_inside_a_polygon_is_zero_distance(self):
+        square = [(0, 0), (100, 0), (100, 100), (0, 100)]
+        assert point_to_polygon_distance((50, 50), square) == 0.0
+
+    def test_point_outside_measures_to_the_nearest_edge(self):
+        square = [(0, 0), (100, 0), (100, 100), (0, 100)]
+        assert point_to_polygon_distance((130, 50), square) == pytest.approx(30.0)
+
+    def test_a_widened_zone_admits_a_point_just_outside_it(self):
+        point = (0.85 * FRAME_W, 0.6 * FRAME_H)  # 50px right of the zone's 0.8 edge
+        assert LITTER_ZONE.contains_point(point, FRAME_W, FRAME_H) is False
+        assert LITTER_ZONE.contains_point_within(point, 60, FRAME_W, FRAME_H) is True
+        assert LITTER_ZONE.contains_point_within(point, 40, FRAME_W, FRAME_H) is False
+
+    def test_an_eroded_zone_rejects_a_point_near_its_edge(self):
+        point = (0.78 * FRAME_W, 0.6 * FRAME_H)  # 20px inside the zone
+        assert LITTER_ZONE.contains_point(point, FRAME_W, FRAME_H) is True
+        assert LITTER_ZONE.contains_point_within(point, -50, FRAME_W, FRAME_H) is False
+
+    def test_a_polygon_zone_widens_by_distance_to_its_edge(self):
+        triangle = Zone(uuid="z", name="wedge", kind="polygon", points=[(0.0, 0.0), (0.4, 0.0), (0.0, 0.4)])
+        point = (0.0, 0.45 * FRAME_H)  # 50px below the triangle's lowest vertex
+        assert triangle.contains_point(point, FRAME_W, FRAME_H) is False
+        assert triangle.contains_point_within(point, 60, FRAME_W, FRAME_H) is True
+        assert triangle.contains_point_within(point, 40, FRAME_W, FRAME_H) is False
+
+
+class TestMarginPredicates:
+    """The "cat is *near* the water bowl" case: no new relation, just wider boxes."""
+
+    def _pair(self, scale=1.0):
+        """A cat and a bowl 40px apart — or the same scene at another distance."""
+
+        def box(x1, y1, x2, y2):
+            return (x1 * scale, y1 * scale, x2 * scale, y2 * scale)
+
+        return [
+            _track(track_id=1, bbox=box(100, 100, 300, 300), label=CAT),
+            _track(track_id=2, bbox=box(340, 100, 440, 200), label=BOX),
+        ]
+
+    def _spec(self, margin):
+        return _rule(relation="overlaps", subject_b_kind="label", subject_b_ref=BOX, threshold=0.1, margin=margin)
+
+    def test_disjoint_boxes_do_not_fire_without_a_margin(self):
+        assert evaluate_predicate(self._spec(0.0), self._pair(), {}, FRAME_W, FRAME_H).holds is False
+
+    def test_a_margin_makes_nearby_boxes_fire(self):
+        result = evaluate_predicate(self._spec(1.0), self._pair(), {}, FRAME_W, FRAME_H)
+        assert result.holds is True
+        assert result.track_ids == [1]
+
+    def test_a_margin_too_small_to_close_the_gap_does_not_fire(self):
+        """The gap is 40px and the smaller box is 100 across, so 0.2 buys 20px total."""
+        assert evaluate_predicate(self._spec(0.2), self._pair(), {}, FRAME_W, FRAME_H).holds is False
+
+    def test_the_same_scene_at_half_the_size_scores_identically(self):
+        """The whole point of sizing the margin to the object: a cat at the far wall is
+        half as wide, but so is its bowl and so is the gap, and the rule must not
+        quietly become stricter."""
+        near = evaluate_predicate(self._spec(1.0), self._pair(), {}, FRAME_W, FRAME_H)
+        far = evaluate_predicate(self._spec(1.0), self._pair(scale=0.5), {}, FRAME_W, FRAME_H)
+        assert far.holds == near.holds is True
+        assert far.score == pytest.approx(near.score)
+
+    def test_a_negative_margin_demands_a_deeper_overlap(self):
+        """Boxes that plainly overlap stop matching once both are eroded past it."""
+        cat = _track(track_id=1, bbox=(100, 100, 300, 300), label=CAT)
+        bowl = _track(track_id=2, bbox=(280, 100, 480, 300), label=BOX)  # 20px of overlap
+        fires = _rule(relation="overlaps", subject_b_kind="label", subject_b_ref=BOX, threshold=0.05)
+        assert evaluate_predicate(fires, [cat, bowl], {}, FRAME_W, FRAME_H).holds is True
+        eroded = _rule(
+            relation="overlaps", subject_b_kind="label", subject_b_ref=BOX, threshold=0.05, margin=-0.2
+        )  # 20px off each box closes a 20px overlap
+        assert evaluate_predicate(eroded, [cat, bowl], {}, FRAME_W, FRAME_H).holds is False
+
+    def test_a_margin_widens_a_zone_rule_too(self):
+        """The zone branch: a cat 10px shy of the litter box area."""
+        cat = _track(bbox=(300, 500, 390, 600))  # zone starts at x=400
+        zones = {ZONE_UUID: LITTER_ZONE}
+        assert evaluate_predicate(_rule(relation="overlaps", threshold=0.1), [cat], zones, FRAME_W, FRAME_H).holds is (
+            False
+        )
+        near = _rule(relation="overlaps", threshold=0.1, margin=0.5)
+        assert evaluate_predicate(near, [cat], zones, FRAME_W, FRAME_H).holds is True
+
+    def test_a_margin_widens_centroid_in(self):
+        """The centroid cannot grow, so the whole margin goes on the target."""
+        cat = _track(bbox=(820, 500, 900, 600))  # centre at x=860, zone ends at 800
+        zones = {ZONE_UUID: LITTER_ZONE}
+        assert evaluate_predicate(_rule(relation="centroid_in"), [cat], zones, FRAME_W, FRAME_H).holds is False
+        # The cat's mean side is 90, so 1.0 puts 90px on the zone and 0.5 puts 45.
+        assert evaluate_predicate(_rule(relation="centroid_in", margin=0.5), [cat], zones, FRAME_W, FRAME_H).holds is (
+            False
+        )
+        assert evaluate_predicate(_rule(relation="centroid_in", margin=1.0), [cat], zones, FRAME_W, FRAME_H).holds is (
+            True
+        )
+
+    def test_distance_ignores_a_margin(self):
+        """Its threshold is already a proximity measure, and centres do not inflate."""
+        far = _track(bbox=(0, 0, 20, 20))
+        zones = {ZONE_UUID: LITTER_ZONE}
+        spec = _rule(relation="distance", threshold=0.2, margin=2.0)
+        assert evaluate_predicate(spec, [far], zones, FRAME_W, FRAME_H).holds is False
+
+    def test_a_rule_row_without_the_column_has_no_margin(self):
+        row = {"uuid": "r", "name": "n", "subject_a_kind": "label", "subject_a_refs_json": [CAT]}
+        assert RuleSpec.from_row(row).margin == 0.0
+
+    def test_a_null_margin_column_reads_as_zero(self):
+        """SQLite hands back None for a column added before its default was applied."""
+        row = {"uuid": "r", "name": "n", "subject_a_kind": "label", "subject_a_refs_json": [CAT], "margin": None}
+        assert RuleSpec.from_row(row).margin == 0.0

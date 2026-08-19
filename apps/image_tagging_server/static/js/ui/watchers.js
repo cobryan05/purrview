@@ -14,6 +14,7 @@ import { fetchSourceRegions, REGION_ROLE_MASK, REGION_ROLE_ZONE } from '/app-sta
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
 import { openFileBrowserModal } from '/app-static/js/ui/utils/openFileBrowserModal.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
+import { openOverlapPreviewModal } from '/app-static/js/ui/utils/overlapPreviewModal.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
@@ -539,6 +540,25 @@ function sectionHeader(text, addButton) {
   return head;
 }
 
+/**
+ * Wrap a section's heading and its list in one bordered panel.
+ *
+ * The editor was a flat run of headings and bordered rows in a single column, and
+ * Sources, Rules and Actions all render as near-identical rows — so the only thing
+ * marking the boundary between two sections was a half-rem of margin, and the three
+ * read as one long list. The panel gives each section an edge and a surface of its own.
+ *
+ * @param {HTMLElement} head A `sectionHeader`, already built (Tracking inserts controls
+ *   into its own before wrapping).
+ * @param {...HTMLElement} bodies
+ */
+function sectionPanel(head, ...bodies) {
+  const section = el('div', 'watch-section');
+  section.dataset.testid = 'watch-section';
+  section.append(head, ...bodies);
+  return section;
+}
+
 // ── Tracker params ──────────────────────────────────────────────────────────
 /**
  * Renders one tracker's `params_schema()` into a form, and reads it back.
@@ -1040,6 +1060,15 @@ function buildRuleRow(rule, ctx) {
     const isUnary = relation.value === 'present';
     subjectBKind.hidden = isUnary;
     subjectBHost.hidden = isUnary;
+    // The margin widens boxes before they are compared, so it means nothing to a
+    // relation that compares no boxes (`present`) or only their centres (`distance`) —
+    // and the backend rejects a nonzero one there rather than ignoring it. Hidden
+    // rather than disabled: `getRule` sends 0 for both, so a value typed under an
+    // earlier relation cannot survive as a payload the save would bounce.
+    const usesMargin = !isUnary && relation.value !== 'distance';
+    for (const field of marginField) field.hidden = !usesMargin;
+    // Nothing to drag for `present`: there is no second box.
+    previewBtn.hidden = isUnary;
   }
 
   // Tuning keeps its four inputs in threshold / start / clear / max order — the
@@ -1048,23 +1077,79 @@ function buildRuleRow(rule, ctx) {
   // tooltip: spelled out, the four of them alone filled a line.
   const tuning = el('div', 'watch-rule-tuning');
   const threshold = numberInput(rule.threshold ?? 0.6, { step: '0.05', min: 0 });
+  // Bounds mirror `InteractionRuleWrite.margin`: past -1 a box erodes to nothing and
+  // the rule can never fire, and +2 already reaches two subject-widths away.
+  const margin = numberInput(rule.margin ?? 0, { step: '0.1', min: -1 });
+  margin.max = '2';
   const minDuration = numberInput(rule.minDurationS ?? 2, { step: '0.5', min: 0 });
   const rearm = numberInput(rule.rearmDelayS ?? 10, { step: '1', min: 0 });
   const maxDuration = numberInput(rule.maxDurationS ?? 300, { step: '10', min: 1 });
-  for (const input of [threshold, minDuration, rearm, maxDuration]) {
+  for (const input of [threshold, margin, minDuration, rearm, maxDuration]) {
     input.addEventListener('input', ctx.onAnyChange);
   }
   const tuningFields = [
     ['match', threshold, 'Match threshold — how strongly the relation must hold'],
-    ['starts after', minDuration, 'Seconds the relation must hold before the event starts'],
-    ['ends after', rearm, 'Seconds the relation must stay clear before the event ends'],
+    [
+      'nearby',
+      margin,
+      'Widens both boxes before matching, in units of the smaller box’s width: 1 fires '
+      + 'when they are within about one subject-width. Sized to the object, not the frame, '
+      + 'so it means the same thing near the camera and far from it. Negative demands a '
+      + 'deeper overlap. 0 matches the boxes exactly as detected.',
+    ],
+    // 'starts'/'ends' rather than 'starts after'/'ends after': the row gained a fifth
+    // field and the preview button, and the two long labels alone were what pushed the
+    // button onto a line of its own. Both keep the sentence-length tooltip.
+    ['starts', minDuration, 'Seconds the relation must hold before the event starts'],
+    ['ends', rearm, 'Seconds the relation must stay clear before the event ends'],
     ['max', maxDuration, 'Hard cap on event length, in seconds'],
   ];
+  const marginField = [];
   for (const [label, input, title] of tuningFields) {
-    const field = wfield(label, input, { width: '4.5rem' });
+    // 3.8rem, not the 4.5 these fields used to get: there are five of them plus the
+    // preview button now, and at the old width the button wrapped onto a second line —
+    // which costs the whole row 33px and pushes a 1/1/1 profile into a scrollbar.
+    const field = wfield(label, input, { width: '3.8rem' });
     field.title = title;
+    if (input === margin) {
+      field.dataset.testid = 'watch-rule-margin-field';
+      marginField.push(field);
+    }
     tuning.appendChild(field);
   }
+
+  // The threshold is the one number in this editor with no intuition behind it — a
+  // fraction of an area nobody sees. The preview is where it becomes a thing you drag.
+  const previewBtn = el('button', 'panel-btn watch-rule-preview', 'Preview…');
+  previewBtn.type = 'button';
+  previewBtn.dataset.testid = 'watch-rule-preview';
+  previewBtn.title = 'Try this match on sample boxes';
+  previewBtn.addEventListener('click', () => {
+    const labelName = uuid => ctx.labelItems.find(i => i.uuid === uuid)?.name || null;
+    const subjectAUuid = subjectARefs[0] || null;
+    const subjectBUuid = subjectBRefs[0] || null;
+    const isZoneTarget = subjectBKind.value === 'zone';
+    openOverlapPreviewModal({
+      relation: relation.value,
+      threshold: num(threshold, 0.6),
+      margin: num(margin, 0),
+      // Only the first ref of each slot: a rule spanning three cats still has one
+      // geometry, and picking a sample per member would say nothing extra.
+      subjectA: subjectAUuid ? { uuid: subjectAUuid, name: labelName(subjectAUuid) || 'Subject' } : null,
+      subjectB: !isZoneTarget && subjectBUuid ? { uuid: subjectBUuid, name: labelName(subjectBUuid) || 'Target' } : null,
+      subjectBName: isZoneTarget
+        ? (ctx.zoneItems().find(z => z.uuid === subjectBUuid)?.name || 'Zone')
+        : 'Target',
+      onApply: ({ relation: appliedRelation, threshold: appliedThreshold, margin: appliedMargin }) => {
+        relation.value = appliedRelation;
+        threshold.value = String(Number(appliedThreshold.toFixed(2)));
+        margin.value = String(Number(appliedMargin.toFixed(2)));
+        syncArity();
+        ctx.onAnyChange();
+      },
+    });
+  });
+  tuning.appendChild(previewBtn);
   row.appendChild(tuning);
 
   row.appendChild(removeButton(() => ctx.onDelete(), 'Remove rule'));
@@ -1111,6 +1196,8 @@ function buildRuleRow(rule, ctx) {
         subjectBIncludeDescendants:
           !isUnary && subjectBKind.value === 'label' && subjectBDescendants,
         threshold: num(threshold, 0.6),
+        // Zero unless the relation actually measures boxes — see `syncArity`.
+        margin: isUnary || relation.value === 'distance' ? 0 : num(margin, 0),
         // These three defaults are not arbitrary: without them a raw threshold flaps
         // into an MQTT storm and a dozen clips for one visit.
         minDurationS: num(minDuration, 2),
@@ -1702,10 +1789,9 @@ export async function renderWatchProfileManager({ target }) {
       const addSourceBtn = el('button', 'panel-btn', '+ Add source');
       addSourceBtn.type = 'button';
       addSourceBtn.dataset.testid = 'watch-add-source';
-      screen.editorBody.appendChild(sectionHeader('Sources', addSourceBtn));
       const sourcesBox = el('div', 'watch-rows');
       sourcesBox.dataset.testid = 'watch-sources-box';
-      screen.editorBody.appendChild(sourcesBox);
+      screen.editorBody.appendChild(sectionPanel(sectionHeader('Sources', addSourceBtn), sourcesBox));
 
       function addSource(src) {
         const entry = buildSourceRow(src, {
@@ -1772,7 +1858,9 @@ export async function renderWatchProfileManager({ target }) {
       tuning.append(tuningSummary, trackerParamsHost);
       trackingHead.insertBefore(tuning, addLifetimeBtn);
 
-      screen.editorBody.appendChild(trackingHead);
+      const lifetimesBox = el('div', 'watch-rows');
+      lifetimesBox.dataset.testid = 'watch-lifetimes-box';
+      screen.editorBody.appendChild(sectionPanel(trackingHead, lifetimesBox));
 
       let trackerParams = null;
       function renderTrackerParams() {
@@ -1789,9 +1877,6 @@ export async function renderWatchProfileManager({ target }) {
       }
       renderTrackerParams();
 
-      const lifetimesBox = el('div', 'watch-rows');
-      lifetimesBox.dataset.testid = 'watch-lifetimes-box';
-      screen.editorBody.appendChild(lifetimesBox);
 
       function addLifetime(lifetime) {
         const entry = buildLifetimeRow(lifetime, {
@@ -1813,10 +1898,9 @@ export async function renderWatchProfileManager({ target }) {
       const addRuleBtn = el('button', 'panel-btn', '+ Add rule');
       addRuleBtn.type = 'button';
       addRuleBtn.dataset.testid = 'watch-add-rule';
-      screen.editorBody.appendChild(sectionHeader('Rules', addRuleBtn));
       const rulesBox = el('div', 'watch-rows');
       rulesBox.dataset.testid = 'watch-rules-box';
-      screen.editorBody.appendChild(rulesBox);
+      screen.editorBody.appendChild(sectionPanel(sectionHeader('Rules', addRuleBtn), rulesBox));
 
       // Zones on offer come from the sources this watcher actually uses, so a rule can
       // only ever reference a zone the watcher will have loaded at runtime. Prefixed
@@ -1907,10 +1991,9 @@ export async function renderWatchProfileManager({ target }) {
       const addActionBtn = el('button', 'panel-btn', '+ Add action');
       addActionBtn.type = 'button';
       addActionBtn.dataset.testid = 'watch-add-action';
-      screen.editorBody.appendChild(sectionHeader('Actions', addActionBtn));
       const actionsBox = el('div', 'watch-rows');
       actionsBox.dataset.testid = 'watch-actions-box';
-      screen.editorBody.appendChild(actionsBox);
+      screen.editorBody.appendChild(sectionPanel(sectionHeader('Actions', addActionBtn), actionsBox));
 
       function addAction(action) {
         const entry = buildActionRow(action, {

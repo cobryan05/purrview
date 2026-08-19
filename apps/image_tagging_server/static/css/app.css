@@ -6483,6 +6483,18 @@ progress.progress-indeterminate:indeterminate {
    scope stayed on screen after the trigger was switched. */
 .watch-action-scope[hidden] { display: none; }
 
+/* Compact enough to share the tuning line with five number fields — a wrapped button
+   costs the rule row an extra 33px. */
+.watch-rule-preview {
+  font-size: 0.8em;
+  padding: 0.15rem 0.4rem;
+  white-space: nowrap;
+}
+.watch-rule-preview[hidden] { display: none; }
+/* Same reason as `.watch-action-scope`: `hidden` loses to a `display` rule, and the
+   margin field must actually disappear for a relation that ignores it. */
+.watch-rule-tuning .watch-field[hidden] { display: none; }
+
 /* The `(?)` beside a trigger whose list is constrained by the action kind. */
 .watch-action-trigger-help {
   display: inline-flex;
@@ -6736,6 +6748,257 @@ progress.progress-indeterminate:indeterminate {
   flex-direction: column;
   gap: var(--space-1, 0.25rem);
 }
+
+/* ── Watcher editor sections ──────────────────────────────────────────────
+   Sources, Rules and Actions used to be a flat run of headings and rows in one
+   column, so the only thing separating "the last action" from "the Rules heading"
+   was 0.5rem of margin — three lists of near-identical bordered rows read as one
+   long list. Each section now carries a filled heading strip and a spine down the left
+   of its rows, so the eye finds the boundaries before it reads the labels.
+
+   Deliberately cheap in both directions. A padded card around each section was the
+   first attempt and cost ~24px of row width and ~30px of height apiece, which wrapped
+   the action rows onto a second line and pushed a one-source/one-rule/one-action
+   profile into a scrollbar — the exact density the tests in TestWatcherEditorDensity
+   exist to hold. A filled heading strip plus a spine down the left of the list reads as
+   a container for about 10px of width and none of height. */
+.watch-section {
+  margin-bottom: var(--space-2, 0.5rem);
+}
+
+.watch-section > .watch-section-head {
+  /* Replaces the old free-standing margin, so the strip costs no extra height — and
+     the padding is horizontal only, for the same reason: four sections' worth of
+     vertical padding is a scrollbar on a small profile. */
+  margin-top: 0;
+  padding: 0 var(--space-2, 0.5rem);
+  background: var(--pico-card-sectioning-background-color, rgba(255, 255, 255, 0.05));
+  border-left: 3px solid var(--pico-primary, #4b9fff);
+  border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
+}
+
+.watch-section > .watch-section-head .panel-section-label {
+  font-size: 0.85em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pico-muted-color, #999);
+}
+
+/* The spine: it ties the rows to the heading above them, which is what a run of
+   near-identical bordered rows was missing. */
+.watch-section > .watch-rows {
+  border-left: 3px solid var(--pico-muted-border-color, #444);
+  padding-left: var(--space-1, 0.25rem);
+  margin-bottom: 0;
+}
+
+/* ── Match preview modal ── */
+.overlap-preview {
+  max-width: 720px;
+  width: 90vw;
+  /* Bounded, and the body scrolls rather than the dialog growing: a 16:9 stage plus
+     three control rows is taller than a short viewport, and the first casualty was the
+     footer — "Use these settings" slid under the app's bottom bar, unclickable. */
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
+.overlap-preview__title { margin: 0; }
+
+.overlap-preview__hint {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--pico-muted-color, #999);
+}
+
+/* Fixed 16:9, matching the virtual frame the preview measures in — the boxes are
+   positioned in percentages, so the stage may be any size but must keep that ratio or
+   the drawn overlap stops agreeing with the score beside it. */
+.overlap-preview__stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  /* Width-bounded rather than height-bounded, so the ratio holds: `max-height` on an
+     `aspect-ratio` box clips it instead of shrinking it, and a clipped stage would put
+     part of a draggable box outside the frame the score is measured in. */
+  width: min(100%, calc(46vh * 16 / 9));
+  margin: 0 auto;
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--pico-background-color, #11151c);
+  overflow: hidden;
+  touch-action: none; /* or a drag scrolls the page on touch instead of moving a box */
+  user-select: none;
+}
+
+.overlap-preview__box {
+  position: absolute;
+  border: 2px solid var(--pico-primary, #4b9fff);
+  border-radius: 2px;
+  background: rgba(75, 159, 255, 0.12);
+  background-size: 100% 100%;   /* stretch, so the picture matches the rectangle */
+  background-repeat: no-repeat;
+  cursor: grab;
+}
+.overlap-preview__box:active { cursor: grabbing; }
+.overlap-preview__box--b {
+  border-color: var(--color-warning, #ffb454);
+  background-color: rgba(255, 180, 84, 0.12);
+}
+.overlap-preview__box.has-sample { background-color: transparent; }
+
+.overlap-preview__box-name {
+  position: absolute;
+  top: -1.35em;
+  left: 0;
+  font-size: 0.75em;
+  white-space: nowrap;
+  color: var(--pico-muted-color, #bbb);
+  pointer-events: none;
+}
+
+.overlap-preview__handle {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: currentColor;
+  color: inherit;
+  border: 1px solid var(--pico-background-color, #11151c);
+  cursor: nwse-resize;
+}
+
+/* The measured overlap, drawn from the *padded* boxes so it agrees with the score. */
+.overlap-preview__intersection {
+  position: absolute;
+  background: rgba(80, 220, 140, 0.35);
+  border: 1px solid rgba(80, 220, 140, 0.8);
+  pointer-events: none;
+}
+
+/* What the margin did: the box the score was actually measured on. */
+.overlap-preview__halo {
+  position: absolute;
+  border: 1px dashed var(--pico-primary, #4b9fff);
+  border-radius: 3px;
+  pointer-events: none;
+  opacity: 0.7;
+}
+.overlap-preview__halo--b { border-color: var(--color-warning, #ffb454); }
+.overlap-preview__halo--eroded { border-style: dotted; }
+
+.overlap-preview__centre {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: var(--pico-primary, #4b9fff);
+  box-shadow: 0 0 0 2px var(--pico-background-color, #11151c);
+  pointer-events: none;
+}
+
+.overlap-preview__verdict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 0.25rem);
+}
+
+.overlap-preview__score-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2, 0.5rem);
+}
+
+.overlap-preview__score { font-size: 1.15em; }
+
+.overlap-preview__badge {
+  font-size: 0.75em;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--pico-muted-border-color, #555);
+  color: var(--pico-muted-color, #999);
+}
+.overlap-preview__badge.is-firing {
+  border-color: rgba(80, 220, 140, 0.8);
+  background: rgba(80, 220, 140, 0.18);
+  color: #7ff0b0;
+}
+
+/* Score bar with the threshold marked on it: "how far off am I" is the question the
+   raw number never answered. */
+.overlap-preview__meter {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--pico-muted-border-color, #333);
+  overflow: hidden;
+}
+.overlap-preview__meter-fill {
+  height: 100%;
+  background: var(--pico-primary, #4b9fff);
+}
+.overlap-preview__meter-mark {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 12px;
+  background: var(--pico-contrast, #fff);
+}
+
+.overlap-preview__others {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1, 0.25rem) var(--space-3, 0.75rem);
+  font-size: 0.8em;
+  color: var(--pico-muted-color, #999);
+}
+.overlap-preview__chip { display: inline-flex; gap: 0.3rem; }
+.overlap-preview__chip-label::after { content: ':'; }
+
+.overlap-preview__controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 0.25rem);
+}
+
+.overlap-preview__control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  margin: 0;
+}
+.overlap-preview__control[hidden] { display: none; }
+.overlap-preview__control-label {
+  flex: 0 0 5rem;
+  font-size: 0.85em;
+  color: var(--pico-muted-color, #999);
+}
+/* Pico gives form controls a bottom margin and full width; inside a one-line control
+   row that stacks them into a column. */
+.overlap-preview__control input,
+.overlap-preview__control select { margin: 0; }
+.overlap-preview__control input[type='range'] { flex: 1; }
+.overlap-preview__value {
+  flex: 0 0 4rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+}
+
+.overlap-preview__margin-note { min-height: 2.4em; }
+
+.overlap-preview__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2, 0.5rem);
+}
+.overlap-preview__footer button { margin: 0; width: auto; }
 
 /* ── Region (zones and masks) modal ── */
 .watch-zones-dialog { max-width: 1100px; }

@@ -528,6 +528,60 @@ class TestRuleValidation:
         # Containment, not IoU: a cat's box is far smaller than a litter box's, so IoU
         # stays low even at perfect containment.
         assert rule["relation"] == "contains"
+        # No margin unless asked for: a rule written before the column existed must keep
+        # matching on the raw boxes, not on silently widened ones.
+        assert rule["margin"] == 0.0
+
+
+class TestRuleMargin:
+    """The "near" knob: boxes are widened before the relation is measured."""
+
+    async def _profile_with(self, http_client, rule: dict) -> dict:
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        return await _create_profile(
+            http_client,
+            f"cams-{_uuid.uuid4().hex[:6]}",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[rule],
+        )
+
+    async def test_a_margin_round_trips(self, http_client):
+        body = await self._profile_with(http_client, _rule(margin=0.75))
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["margin"] == pytest.approx(0.75)
+
+    async def test_a_negative_margin_round_trips(self, http_client):
+        """The other half of the control: demand a deeper overlap than the boxes show."""
+        body = await self._profile_with(http_client, _rule(margin=-0.3))
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["margin"] == pytest.approx(-0.3)
+
+    async def test_an_out_of_range_margin_is_rejected(self, http_client):
+        """-1.0 erodes a box to nothing, so anything past it can never fire."""
+        assert (await self._profile_with(http_client, _rule(margin=-2.0)))["status"] == "failure"
+        assert (await self._profile_with(http_client, _rule(margin=5.0)))["status"] == "failure"
+
+    async def test_present_rejects_a_margin(self, http_client):
+        """It compares no boxes, so a margin there is a control that does nothing."""
+        body = await self._profile_with(
+            http_client,
+            _rule(relation="present", subjectBKind="none", subjectBRef=None, margin=0.5),
+        )
+        assert body["status"] == "failure"
+
+    async def test_distance_rejects_a_margin(self, http_client):
+        """Its threshold is already a proximity measure and its inputs are centres."""
+        body = await self._profile_with(http_client, _rule(relation="distance", margin=0.5))
+        assert body["status"] == "failure"
+
+    async def test_present_accepts_a_zero_margin(self, http_client):
+        """The editor always sends the field, so zero must not be read as "set"."""
+        body = await self._profile_with(
+            http_client,
+            _rule(relation="present", subjectBKind="none", subjectBRef=None, margin=0.0),
+        )
+        assert body["status"] == "success", body
 
 
 class TestRegionValidation:
