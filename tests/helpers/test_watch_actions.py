@@ -704,6 +704,37 @@ class TestFrameRing:
     def test_an_empty_ring_reports_no_coverage(self):
         assert FrameRing().coverage_s() == 0.0
 
+    def test_the_ring_really_encodes_an_mp4(self, tmp_path):
+        """Against the real ffmpeg, writing to the `.part` name the backend uses.
+
+        This is the whole of Tier C's clip support — a snapshot poller or MQTT feed has
+        no continuous stream to cut from, so a failure here means those sources never
+        produce a clip at all. It failed for exactly that reason: the output is written
+        to `<name>.mp4.part` and ffmpeg picks its muxer from the extension, so `.part`
+        left it with "Unable to find a suitable output format" on every attempt. Nothing
+        caught it because the only coverage was of the ring's eviction arithmetic.
+        """
+        from apps.helpers.actions.recordClipAction import RingClipBackend
+
+        frames = []
+        for i in range(4):
+            ok, buffer = cv2.imencode(".jpg", np.full((240, 320, 3), 40 + i * 30, dtype=np.uint8))
+            assert ok
+            frames.append((float(i), buffer.tobytes()))
+
+        dest = tmp_path / "ring.mp4"
+        size = RingClipBackend._write_mp4(frames, dest)
+
+        assert dest.is_file() and size > 0
+        # No `.part` left behind, and the file is one a browser's <video> can open.
+        assert not dest.with_suffix(".mp4.part").exists()
+        capture = cv2.VideoCapture(str(dest))
+        try:
+            assert capture.isOpened()
+            assert capture.read()[0]
+        finally:
+            capture.release()
+
 
 class TestSaveSnapshotAction:
     async def test_writes_a_jpg_and_a_sidecar(self, tmp_path):

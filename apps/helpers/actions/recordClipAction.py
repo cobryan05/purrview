@@ -107,6 +107,12 @@ class RingClipBackend(ClipBackend):
             "-y",
             "-f",
             "image2pipe",
+            # The ring holds JPEGs, and image2pipe will not probe a codec out of a raw
+            # pipe — it reported "Video: none, none / unknown codec" and muxed an output
+            # file with no streams in it. Naming the decoder is what makes the pipe
+            # readable at all.
+            "-c:v",
+            "mjpeg",
             "-framerate",
             f"{fps:.3f}",
             "-i",
@@ -119,6 +125,11 @@ class RingClipBackend(ClipBackend):
             # browser <video> element, which is the whole point of writing a clip.
             "-pix_fmt",
             "yuv420p",
+            # Named explicitly because the output goes to `<name>.mp4.part` and ffmpeg
+            # picks its muxer from the extension: `.part` matches nothing, so without
+            # this every ring clip failed with "Unable to find a suitable output format".
+            "-f",
+            "mp4",
             str(partial),
         ]
         try:
