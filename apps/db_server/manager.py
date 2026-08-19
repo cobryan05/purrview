@@ -41,6 +41,7 @@ from apps.helpers.db.types import (
     BBox,
     BBoxConfidenceRange,
     BBoxUpdate,
+    BufferMode,
     DatasetCreate,
     DatasetRead,
     DatasetUpdate,
@@ -113,6 +114,7 @@ from apps.helpers.hashUtils import (
 )
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.recordings.clipDrain import DRAIN_FRACTION, MIN_DRAIN_INTERVAL_S, SEGMENT_LAG_S
 from apps.helpers.serviceStatus import row, section
 from apps.helpers.tracking.Registry import tracker_registry
 from apps.helpers.types import FileEntryRead
@@ -3846,6 +3848,41 @@ class Manager:
                 warnings.append(
                     f"Source {src.source_uuid} analyses at {fps} fps. Per-frame inference over "
                     "base64 HTTP is the throughput ceiling; 2–5 fps is usually plenty for tracking."
+                )
+
+        # The buffer is not only the pre-roll ceiling — it is also the window the clip
+        # drain works inside, which is what makes an event *longer* than the buffer
+        # possible at all. That second job was invisible: the field is labelled for
+        # pre-roll, so shortening it to a preferred lead-in looks harmless and silently
+        # starves the drain. See `apps.helpers.recordings.clipDrain`.
+        #
+        # The drain reads no closer than SEGMENT_LAG_S to now and fires once the cursor
+        # is `SEGMENT_LAG_S + interval` old, while the buffer drops anything older than
+        # the retention. The difference is all the slack there is for a slow inference
+        # pass or a paused task; at or below zero the drain can never copy out a whole
+        # chunk and every long event loses its opening.
+        for src in profile.sources:
+            if src.buffer_mode == BufferMode.OFF.value:
+                # No rewind buffer to starve — an unbuffered source uses the frame ring.
+                continue
+            retention = src.record_retention_s or STREAM_BUFFER_RETENTION_S
+            interval = max(MIN_DRAIN_INTERVAL_S, retention * DRAIN_FRACTION)
+            margin = retention - SEGMENT_LAG_S - interval
+            if margin <= 0:
+                warnings.append(
+                    f"Source {src.source_uuid} buffers only {retention:g}s, which the clip drain "
+                    f"cannot rescue video from: it reads no closer than {SEGMENT_LAG_S:g}s to live and "
+                    f"runs every {interval:g}s, so material is deleted before it is copied out. Any "
+                    f"event longer than {retention:g}s will lose its opening. Leave this blank unless "
+                    "you have a reason not to — to change how much lead-in a clip has, set the "
+                    "pre-roll on the Record clip action instead."
+                )
+            elif margin < interval:
+                warnings.append(
+                    f"Source {src.source_uuid} buffers {retention:g}s, leaving the clip drain only "
+                    f"{margin:g}s of margin before video is deleted. A slow inference pass or a paused "
+                    "watcher will punch holes in clips of long events. Pre-roll is set on the Record "
+                    "clip action; this setting does not need to match it."
                 )
 
         # Pre-roll longer than the retention can never be satisfied — the buffer simply

@@ -1049,6 +1049,65 @@ class TestValidateEndpoint:
         report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
         assert any("pre-roll" in w for w in report["warnings"])
 
+    async def _validate_with_retention(self, http_client, retention):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        profile = (
+            await _create_profile(
+                http_client,
+                f"House cams {retention}",
+                sources=[{"sourceUuid": source_uuid, "recordRetentionS": retention}],
+                rules=[_rule()],
+                actions=[{"kind": "record_clip", "paramsJson": {"preroll_s": 5}}],
+            )
+        )["profile"]
+        return (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+
+    async def test_a_buffer_too_short_for_the_drain_warns(self, http_client):
+        """The buffer is also the drain's working window, which nothing said out loud.
+
+        A user who read "buffer s" as "how much lead-in do I want" and set it to their
+        preferred pre-roll got a drain with almost no margin, and the front of every
+        event longer than the buffer was evicted before it could be copied out — with
+        the only symptom being clips that quietly started late.
+        """
+        report = await self._validate_with_retention(http_client, 8.0)
+        assert any("cannot rescue" in w for w in report["warnings"]), report["warnings"]
+        # A warning, never an error: a short buffer still records every event that
+        # closes inside it, which is most of them. It costs the opening of long ones.
+        assert not any("rescue" in e or "buffer" in e for e in report["errors"]), report["errors"]
+
+    async def test_a_thin_but_workable_margin_warns_more_gently(self, http_client):
+        report = await self._validate_with_retention(http_client, 15.0)
+        warnings = " ".join(report["warnings"])
+        assert "margin before video is deleted" in warnings, report["warnings"]
+        # 15 - SEGMENT_LAG_S(6) - interval(max(5, 15/3) = 5) = 4. Spelled out because the
+        # number is the whole point: "some margin" would not tell anyone it was this thin.
+        assert "only 4s of margin" in warnings, report["warnings"]
+        assert "cannot rescue" not in warnings
+
+    async def test_the_default_buffer_says_nothing(self, http_client):
+        """The out-of-the-box setting must not nag — a warning everyone sees is noise."""
+        report = await self._validate_with_retention(http_client, None)
+        assert not any("margin" in w or "cannot rescue" in w for w in report["warnings"]), report["warnings"]
+
+    async def test_a_source_with_no_buffer_is_not_warned_about_its_buffer(self, http_client):
+        """`buffer_mode: off` means no rewind at all, so drain margin is meaningless —
+        the frame ring covers that source instead."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        profile = (
+            await _create_profile(
+                http_client,
+                "Snapshot cams",
+                sources=[{"sourceUuid": source_uuid, "recordRetentionS": 5.0, "bufferMode": "off"}],
+                rules=[_rule()],
+                actions=[{"kind": "record_clip", "paramsJson": {"preroll_s": 5}}],
+            )
+        )["profile"]
+        report = (await http_client.get(f"/api/watch-profiles/{profile['uuid']}/validate")).json()
+        assert not any("cannot rescue" in w or "little margin" in w for w in report["warnings"]), report["warnings"]
+
     async def test_a_rule_scoped_away_from_its_zone_is_an_error(self, http_client):
         """A zone belongs to one camera, so a rule narrowed to another can never fire.
 

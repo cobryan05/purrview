@@ -1072,11 +1072,15 @@ class TestTrackingSection:
 
 
 class TestBufferTierBadge:
-    """The pre-roll field's honesty affordance.
+    """The rewind field's honesty affordance.
 
-    "buffer s" is a request for pre-roll, and a snapshot camera cannot honour it at any
+    "rewind s" asks for a rewindable buffer, and a snapshot camera cannot keep one at any
     value. Before this badge the mistake was invisible until an event fired and the clip
     that was supposed to appear simply never did.
+
+    (The field was captioned "buffer s" and described as a pre-roll request, which is
+    what led a user to shorten it to their preferred lead-in — pre-roll is set on the
+    Record clip action. The badge's job is unchanged either way.)
     """
 
     RING_TIERS = {
@@ -2184,11 +2188,9 @@ class TestEverySettableThingExplainsItself:
 
     def test_no_field_in_the_editor_hovers_blank(self, page: Page, base_url: str):
         self._open(page, base_url)
-        bare = page.evaluate(
-            """() => [...document.querySelectorAll('#watcher-management-box .watch-field')]
+        bare = page.evaluate("""() => [...document.querySelectorAll('#watcher-management-box .watch-field')]
                 .filter(f => !(f.title || '').trim() && !f.hidden)
-                .map(f => f.querySelector('.watch-field__label')?.textContent || '?')"""
-        )
+                .map(f => f.querySelector('.watch-field__label')?.textContent || '?')""")
         assert bare == [], f"watch fields with no tooltip: {bare}"
 
     def test_the_rule_sentence_slots_explain_themselves(self, page: Page, base_url: str):
@@ -2204,7 +2206,7 @@ class TestEverySettableThingExplainsItself:
             assert title and title.strip(), f"{testid} has no tooltip"
 
     def test_the_action_scope_pickers_explain_empty_means_all(self, page: Page, base_url: str):
-        """"All" is a summary a user reads as "nothing chosen"; the tooltip is where the
+        """ "All" is a summary a user reads as "nothing chosen"; the tooltip is where the
         difference between scoping a rule and scoping an action lives."""
         self._open(page, base_url)
         for testid in ("watch-action-rule-scope", "watch-action-source-scope"):

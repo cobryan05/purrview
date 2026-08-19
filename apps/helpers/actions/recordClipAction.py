@@ -232,9 +232,11 @@ class RecordClipAction(Action):
                 "required": False,
                 "default": 10.0,
                 "help": (
-                    "Seconds of context before the event. Clamped to what the source's "
-                    "buffer actually holds — asking for more than the retention is a "
-                    "misconfiguration, not a runtime surprise."
+                    "Seconds of video before the event starts. This is the setting for how much "
+                    "lead-in a clip has — the source's own rewind seconds is the ceiling on it, "
+                    "not the place to choose it. Clamped to what that buffer actually holds, so "
+                    "asking for more than the rewind is a misconfiguration rather than a runtime "
+                    "surprise."
                 ),
             },
             "postroll_s": {"type": "float", "required": False, "default": 5.0, "help": "Seconds after the event ends."},

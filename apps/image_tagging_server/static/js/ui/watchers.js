@@ -778,11 +778,19 @@ function bufferBadgeFor(plan) {
  * The `buffer s` field's help. A constant because `refreshBadge` rewrites the input's
  * own title to explain an unbuffered source, and has to be able to put this back.
  */
+// Deliberately opens by saying what this is *not*. The previous wording — "so a clip can
+// start before the rule fired" — described this field by naming the pre-roll setting's
+// job, and the reasonable conclusion was that this is where you choose your lead-in.
+// Shortening it to a preferred pre-roll then quietly starves the clip drain, and the only
+// symptom is that long events lose their opening.
 const BUFFER_SECONDS_HELP =
-  'How many seconds of video are kept behind the live edge, so a clip can start before the '
-  + 'rule fired. Blank uses the default. It has to be at least as long as the longest '
-  + 'pre-roll any action asks for — the badge beside it says whether this camera can keep a '
-  + 'rewindable buffer at all.';
+  'How much video this camera keeps rewindable, in seconds. Blank uses the default, which is '
+  + 'almost always right. This is NOT the pre-roll setting: how much lead-in a clip gets is set '
+  + 'on the Record clip action, and it can be shorter than this. Two things need the room — '
+  + 'pre-roll is cut from it, and an event that outlasts it is copied out to disk from it as it '
+  + 'runs, which needs several seconds of headroom to keep up. Making it smaller buys nothing '
+  + 'and risks both. The badge beside it says whether this camera can keep a rewindable buffer '
+  + 'at all.';
 
 // ── Source row ──────────────────────────────────────────────────────────────
 function buildSourceRow(src, ctx) {
@@ -855,7 +863,10 @@ function buildSourceRow(src, ctx) {
       + 'Smaller is faster and loses small or distant objects first; it does not affect what a '
       + 'recorded clip looks like.',
   }));
-  rates.appendChild(wfield('buffer s', retention, {
+  // "rewind s", not "buffer s": the old caption named the mechanism, which left the
+  // field looking like the generic place to configure anything clip-shaped. "Rewind" is
+  // what it actually gives you, and it does not read as a synonym for pre-roll.
+  rates.appendChild(wfield('rewind s', retention, {
     width: '4.5rem',
     help: BUFFER_SECONDS_HELP,
   }));
