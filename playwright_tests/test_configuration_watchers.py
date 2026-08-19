@@ -1765,6 +1765,80 @@ class TestTimelapseAction:
         expect(page.get_by_role("button", name="+ New Folder").last).to_be_visible()
 
 
+class TestEventTimelapseActionParams:
+    """ "Event timelapse" had a kind in the dropdown and no form behind it.
+
+    Every branch in `syncParams` is keyed on the action kind, and this one had none — so
+    picking it fell through to the trailing `else`, which is the *snapshot* form. The
+    user was asked for an output directory (this action's video is a recording attached
+    to its event, not a file they go and find), the capture interval and playback rate
+    were unreachable at any value but their defaults, and the row saved
+    `output_dir: "snapshots"` — a dataset-relative path that put the mp4 outside the
+    recordings root, where the retention sweep does not walk and the file endpoint does
+    not serve.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        page.locator("[data-testid='watch-action-kind']").first.select_option("record_event_timelapse")
+
+    def test_it_offers_a_capture_interval_and_a_playback_rate(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-action-event-timelapse-interval']").first).to_have_value("10")
+        expect(page.locator("[data-testid='watch-action-event-timelapse-fps']").first).to_have_value("12")
+
+    def test_it_does_not_ask_for_an_output_directory(self, page: Page, base_url: str):
+        """The video is a recording hung off the event, bounded by the recording
+        retention settings. A directory field both implies otherwise and, when saved,
+        made it true."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-action-dir']")).to_have_count(0)
+
+    def test_the_speed_up_is_shown_before_saving(self, page: Page, base_url: str):
+        """Neither field means much alone — the product is the number the user has in
+        mind, and working it out by hand is what makes people leave the defaults."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        hint = page.locator("[data-testid='watch-action-event-timelapse-speed']").first
+        expect(hint).to_contain_text("120×")
+
+        page.locator("[data-testid='watch-action-event-timelapse-interval']").first.fill("30")
+        expect(hint).to_contain_text("360×")
+        expect(hint).to_contain_text("5 s")
+
+    def test_it_saves_its_params(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-event-timelapse-interval']").first.fill("20")
+        page.locator("[data-testid='watch-action-event-timelapse-fps']").first.fill("24")
+        page.locator("[data-testid='watch-action-event-timelapse-annotate']").first.check()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        action = saved["actions"][0]
+        assert action["kind"] == "record_event_timelapse"
+        assert action["trigger"] == "event_ended"
+        assert action["paramsJson"]["interval_s"] == 20
+        assert action["paramsJson"]["output_fps"] == 24
+        assert action["paramsJson"]["annotate"] is True
+        # Defaults the row never touched still reach the backend, so the action does not
+        # silently fall back to a different set of them.
+        assert action["paramsJson"]["min_frames"] == 10
+        assert action["paramsJson"]["max_frames"] == 3600
+        # The snapshot form's field, which this row used to inherit. Sending it at all
+        # is what took the video out of the recordings root.
+        assert "output_dir" not in action["paramsJson"], action["paramsJson"]
+
+
 class TestSnapshotDirectoryField:
     """ "Save snapshot" gets the same directory affordances as the timelapse action.
 

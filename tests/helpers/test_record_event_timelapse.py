@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from apps.helpers.actions.action import ActionContext
-from apps.helpers.actions.recordEventTimelapseAction import RecordEventTimelapseAction
+from apps.helpers.actions.recordEventTimelapseAction import DEFAULT_TIMELAPSE_ROOT, RecordEventTimelapseAction
 from apps.helpers.actions.Registry import action_registry, create_action
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 from apps.helpers.watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED, action_applies
@@ -300,3 +300,25 @@ class TestParams:
         user cannot set and will never discover."""
         schema = RecordEventTimelapseAction.params_schema()
         assert {"interval_s", "output_fps", "min_frames", "max_frames", "annotate"} <= set(schema)
+
+    def test_an_unset_output_dir_lands_under_the_recordings_root(self):
+        assert RecordEventTimelapseAction().output_dir == DEFAULT_TIMELAPSE_ROOT
+
+    def test_a_relative_output_dir_is_resolved_under_the_recordings_root(self):
+        """The Watchers pane had no form for this action, so every row saved through it
+        fell through to the snapshot branch and stored `output_dir: "snapshots"` — a
+        dataset-relative spelling. Taken literally it is relative to the process's
+        working directory, which puts the mp4 outside the tree the retention sweep walks
+        and outside the tree the file endpoint serves: the recording row points at a
+        file the UI cannot play and nothing will ever delete."""
+        action = RecordEventTimelapseAction(output_dir="snapshots")
+        assert action.output_dir == DEFAULT_TIMELAPSE_ROOT / "snapshots"
+
+    def test_an_absolute_output_dir_is_left_alone(self):
+        """Someone bind-mounting a NAS path meant it."""
+        action = RecordEventTimelapseAction(output_dir="/mnt/nas/timelapses")
+        assert action.output_dir == Path("/mnt/nas/timelapses")
+
+    def test_a_blank_output_dir_falls_back_to_the_default(self):
+        assert RecordEventTimelapseAction(output_dir="").output_dir == DEFAULT_TIMELAPSE_ROOT
+        assert RecordEventTimelapseAction(output_dir=None).output_dir == DEFAULT_TIMELAPSE_ROOT

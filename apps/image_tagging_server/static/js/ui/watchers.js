@@ -1709,6 +1709,102 @@ function buildActionRow(action, ctx) {
         max_width: num(maxWidth, 0),
         max_fps: num(maxFps, 0),
       });
+    } else if (kind.value === 'record_event_timelapse') {
+      // No output directory field, unlike `save_timelapse`. The action defaults to the
+      // recordings root, which is where the retention sweep looks — a typed path puts the
+      // mp4 somewhere nothing will ever delete it, and the row it hangs off the event
+      // would point outside the tree the file endpoint serves. Not sent at all rather
+      // than sent as the default, so the action keeps owning the value.
+      const every = numberInput(stored.interval_s ?? 10, { step: '5', min: 1 });
+      every.dataset.testid = 'watch-action-event-timelapse-interval';
+      every.title = 'Seconds of real time between captured frames. Frames in between are discarded '
+        + 'without being written. Measured from the moment the event opened, so the first frame is '
+        + 'always the start of the visit.';
+      const fps = numberInput(stored.output_fps ?? 12, { step: '1', min: 1 });
+      fps.dataset.testid = 'watch-action-event-timelapse-fps';
+      fps.title = 'Frames per second of the finished video. Raising it shortens the result rather '
+        + 'than smoothing it — the frames are seconds apart either way. Capped at 60.';
+      for (const i of [every, fps]) i.addEventListener('input', ctx.onAnyChange);
+      params.appendChild(wfield('Every s', every, { width: '4.5rem', help: every.title }));
+      params.appendChild(wfield('play fps', fps, { width: '4.5rem', help: fps.title }));
+
+      // The speed-up is the product of the two fields above, and it is the number the
+      // user actually has in mind ("I want the two hours in ten seconds"). Neither field
+      // means much alone, and working it out by hand is exactly the arithmetic that makes
+      // people leave a timelapse at its defaults and never find out what it does.
+      const speed = el('span', 'watch-hint watch-hint--truncate', '');
+      speed.dataset.testid = 'watch-action-event-timelapse-speed';
+      function syncSpeed() {
+        const interval = Math.max(1, num(every, 10));
+        const rate = Math.max(1, Math.min(60, num(fps, 12)));
+        const factor = interval * rate;
+        // A half-hour visit: long enough to be the case worth previewing, short enough
+        // that the answer stays in seconds at every sane setting.
+        const plays = (30 * 60) / factor;
+        const shown = plays >= 10 ? Math.round(plays) : Math.round(plays * 10) / 10;
+        speed.textContent = `→ ${Math.round(factor)}× — a 30 min visit plays in ${shown} s`;
+        speed.title = speed.textContent;
+      }
+      for (const i of [every, fps]) i.addEventListener('input', syncSpeed);
+      syncSpeed();
+      params.appendChild(speed);
+
+      const minFrames = numberInput(stored.min_frames ?? 10, { step: '1', min: 1 });
+      minFrames.dataset.testid = 'watch-action-event-timelapse-min-frames';
+      minFrames.title = 'Events with fewer captured frames than this produce no video at all. The '
+        + 'event, its snapshot and any clip are unaffected. Stops a brief visit from filling the '
+        + 'events list with half-second videos.';
+      const maxFrames = numberInput(stored.max_frames ?? 3600, { step: '100', min: 1 });
+      maxFrames.dataset.testid = 'watch-action-event-timelapse-max-frames';
+      maxFrames.title = 'Hard ceiling per event, so a stuck detection cannot fill the disk. Frames '
+        + 'past it are dropped and the video ends early; the event is unaffected.';
+      const maxWidth = numberInput(stored.max_width ?? 1280, { step: '80', min: 0 });
+      maxWidth.title = 'Shrink frames to at most this width before encoding. 0 keeps their own size.';
+      const quality = numberInput(stored.quality ?? 85, { step: '5', min: 1 });
+      for (const i of [minFrames, maxFrames, maxWidth, quality]) i.addEventListener('input', ctx.onAnyChange);
+      params.appendChild(wfield('min frames', minFrames, { width: '5rem', help: minFrames.title }));
+      params.appendChild(wfield('max frames', maxFrames, { width: '5rem', help: maxFrames.title }));
+      params.appendChild(wfield('max width', maxWidth, { width: '5rem', help: maxWidth.title }));
+      params.appendChild(wfield('quality', quality, {
+        width: '4.5rem',
+        help: 'JPEG quality of each captured frame, 1–100, before it is encoded into the video.',
+      }));
+
+      // Off by default here, unlike `save_timelapse`'s: that one writes keepable frames,
+      // this one writes a summary watched at 120×, where the extra pixels cost encode
+      // time and disk for very little.
+      const fullRes = document.createElement('input');
+      fullRes.type = 'checkbox';
+      fullRes.checked = Boolean(stored.full_resolution);
+      fullRes.dataset.testid = 'watch-action-event-timelapse-full-res';
+      fullRes.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Full res', fullRes, {
+        help: 'Capture the camera’s own frame rather than the downscaled one inference ran on. Off '
+          + 'by default: this is a summary watched at speed, so the extra pixels cost encode time '
+          + 'and disk for very little.',
+      }));
+
+      const annotate = document.createElement('input');
+      annotate.type = 'checkbox';
+      annotate.checked = Boolean(stored.annotate);
+      annotate.dataset.testid = 'watch-action-event-timelapse-annotate';
+      annotate.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Draw boxes', annotate, {
+        help: 'Burn the detection boxes into each frame. Unlike a clip, whose boxes are drawn over '
+          + 'the video at play time, these are permanent — a timelapse’s frames are seconds apart, '
+          + 'so there is no continuous track to draw from.',
+      }));
+
+      readParams = () => ({
+        interval_s: num(every, 10),
+        output_fps: num(fps, 12),
+        min_frames: num(minFrames, 10),
+        max_frames: num(maxFrames, 3600),
+        max_width: num(maxWidth, 1280),
+        quality: num(quality, 85),
+        full_resolution: fullRes.checked,
+        annotate: annotate.checked,
+      });
     } else if (kind.value === 'save_timelapse') {
       // Browsed rather than typed, unlike `save_snapshot`'s: a timelapse directory is
       // one the user makes for the purpose (and the picker can make it), where a

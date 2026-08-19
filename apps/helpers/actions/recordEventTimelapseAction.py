@@ -142,8 +142,34 @@ class RecordEventTimelapseAction(Action):
         self.quality = max(1, min(100, int(quality)))
         self.full_resolution = bool(full_resolution)
         self.annotate = bool(annotate)
-        self.output_dir = Path(output_dir)
+        self.output_dir = self._resolve_output_dir(output_dir)
         self._sessions: Dict[SessionKey, _Session] = {}
+
+    @staticmethod
+    def _resolve_output_dir(output_dir: Any) -> Path:
+        """Keep the video inside the recordings root unless told an absolute path.
+
+        This action's output is not a loose file the user goes and finds: it is a
+        `recordings` row hung off the event, played by the file endpoint and deleted by
+        the retention sweep. All three know only the roots in `Manager._recording_roots`,
+        so a path outside them produces a row pointing at a file the UI cannot play and
+        nothing will ever remove.
+
+        A relative path used to be reachable by accident — the Watchers pane had no form
+        for this action, so it fell through to the snapshot branch and stored a
+        dataset-relative `output_dir`, which `Path()` would then resolve against whatever
+        the process's working directory happened to be. Rehomed rather than rejected:
+        those rows are already saved, and refusing them would mean an action that raises
+        at every event close instead of quietly doing the right thing.
+
+        An absolute path is left alone — someone bind-mounting a NAS path meant it, and
+        setting `RECORDINGS_TIMELAPSE_DIR` to the same place is how they keep the sweep.
+        """
+        text = str(output_dir or "").strip()
+        if not text:
+            return DEFAULT_TIMELAPSE_ROOT
+        path = Path(text)
+        return path if path.is_absolute() else DEFAULT_TIMELAPSE_ROOT / path
 
     @classmethod
     def display_name(cls) -> str:
@@ -236,9 +262,12 @@ class RecordEventTimelapseAction(Action):
                 "required": False,
                 "default": str(DEFAULT_TIMELAPSE_ROOT),
                 "help": (
-                    "Directory the finished videos are written to. Must be on a bind-mounted "
-                    "path to survive a restart. Left at the default, they are bounded by the "
-                    "same Settings → Recording retention as clips."
+                    "Directory the finished videos are written to. Not offered in the Watchers "
+                    "pane, and normally left alone: at the default the videos are recordings "
+                    "attached to their event, played from the event list and bounded by the same "
+                    "Settings → Recording retention as clips. A relative path is taken as being "
+                    "inside that root, so it keeps all three. An absolute path leaves it, and "
+                    "only stays swept if RECORDINGS_TIMELAPSE_DIR points at the same place."
                 ),
             },
         }
