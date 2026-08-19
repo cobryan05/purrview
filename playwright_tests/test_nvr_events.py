@@ -73,7 +73,37 @@ def _facets(**overrides) -> dict:
     return facets
 
 
-def _mock(page: Page, events=None, facets=None, recording=True):
+def _overlay(**overrides) -> dict:
+    """A detection sidecar covering the mocked clip.
+
+    The clip starts ten seconds before the event, so a box at `t=0` is in the pre-roll
+    and the event window opens at 10 — which is what makes "is the red frame on right
+    now" a question with a different answer at different scrub positions.
+    """
+    doc = {
+        "version": 1,
+        "startedAt": "2026-08-18T09:14:50+00:00",
+        "durationS": 39.0,
+        "maxStalenessS": 1.5,
+        "event": {"startS": 10.0, "endS": 34.0, "ruleName": "cat using litter box", "eventUuid": EVENT_UUID},
+        "frames": [
+            {
+                "t": 0.0,
+                "boxes": [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "label": "cat", "labelUuid": "lbl-1", "conf": 0.8}],
+                "tracks": [],
+            },
+            {
+                "t": 12.0,
+                "boxes": [{"x": 0.4, "y": 0.4, "w": 0.2, "h": 0.2, "label": "cat", "labelUuid": "lbl-1", "conf": 0.9}],
+                "tracks": [],
+            },
+        ],
+    }
+    doc.update(overrides)
+    return doc
+
+
+def _mock(page: Page, events=None, facets=None, recording=True, overlay=None):
     """Route every call the Events page makes, and record the search queries.
 
     Returns the list of parsed query dicts, so a test can assert that a filter actually
@@ -102,6 +132,14 @@ def _mock(page: Page, events=None, facets=None, recording=True):
         )
 
     def _fulfil_recordings(route):
+        if "/overlay" in route.request.url:
+            # 404 is the ordinary "this clip has no boxes" answer, not an error: clips
+            # written before overlays existed have none.
+            if overlay is None:
+                route.fulfill(status=404, content_type="application/json", body="{}")
+                return
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(overlay))
+            return
         if "/file" in route.request.url:
             # Not a real mp4; the tests assert the element and its src, never playback,
             # which would be a test of the browser's decoder rather than of this page.
@@ -356,6 +394,73 @@ class TestTheDetailModal:
 
         expect(page.locator("[data-testid='event-detail-video']")).to_have_count(0)
         expect(page.locator("[data-testid='event-detail-snapshot']")).to_be_visible()
+
+
+class TestTheDetectionOverlay:
+    """The boxes the watcher saw, drawn over the clip rather than burnt into it.
+
+    The point of the separation is not aesthetic: the video element must stay the
+    untouched clip so that "save frame for annotation" cannot put a training image with
+    rectangles drawn on it into the dataset. So the load-bearing assertions here are that
+    the canvas is a *sibling* of the video and that the video's src is still the plain
+    clip.
+    """
+
+    def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
+        _mock(page, **mock_kwargs)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+
+    def test_a_clip_with_a_sidecar_gets_an_overlay_canvas(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        expect(page.locator("[data-testid='clip-overlay-canvas']")).to_have_count(1)
+
+    def test_a_clip_without_a_sidecar_offers_no_overlay(self, page: Page, base_url: str):
+        """Every clip written before this existed has no boxes, and they cannot be
+        recovered — advertising a toggle that can never do anything is worse than
+        silence."""
+        self._open_modal(page, base_url, overlay=None)
+
+        expect(page.locator("[data-testid='clip-overlay-canvas']")).to_have_count(0)
+        expect(page.locator("[data-testid='event-detail-overlay-toggle']")).to_have_count(0)
+
+    def test_the_overlay_can_be_switched_off(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        toggle = page.locator("[data-testid='event-detail-overlay-toggle']")
+        expect(toggle).to_be_checked()
+        toggle.uncheck()
+        expect(toggle).not_to_be_checked()
+        # The canvas stays — it is simply drawn empty. Removing it would rebuild the
+        # wrapper on every toggle and lose the video's playback position.
+        expect(page.locator("[data-testid='clip-overlay-canvas']")).to_have_count(1)
+
+    def test_the_video_itself_is_never_annotated(self, page: Page, base_url: str):
+        """The whole design in one assertion: boxes live on a canvas above the video, and
+        the video's source is still the raw clip file."""
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        video = page.locator("[data-testid='event-detail-video']")
+        assert video.get_attribute("src").endswith(f"/api/recordings/{RECORDING_UUID}/file")
+        # Siblings inside the overlay wrapper, not nested — a <video> cannot host
+        # children, and compositing into it would mean re-encoding.
+        assert page.locator(".clip-overlay > [data-testid='event-detail-video']").count() == 1
+        assert page.locator(".clip-overlay > [data-testid='clip-overlay-canvas']").count() == 1
+
+    def test_the_overlay_never_swallows_clicks_on_the_controls(self, page: Page, base_url: str):
+        """The canvas covers the video, scrubber included. Without pointer-events: none
+        it would break the seeking this modal is built around."""
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        canvas = page.locator("[data-testid='clip-overlay-canvas']")
+        assert canvas.evaluate("el => getComputedStyle(el).pointerEvents") == "none"
+
+    def test_saving_a_frame_still_works_with_an_overlay_up(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_overlay())
+
+        expect(page.locator("[data-testid='event-detail-save-frame']")).to_be_visible()
 
 
 class TestThePagerSurvivesAShrinkingResultSet:

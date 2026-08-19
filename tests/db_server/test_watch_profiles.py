@@ -1223,6 +1223,38 @@ class TestWatchEventsAndRecordings:
         assert r.status_code == 206
         assert r.content == b"2345"
 
+    async def test_overlay_is_served_when_the_clip_has_one(self, http_client, db_client, tmp_path):
+        from apps.helpers.db.types import Recording
+
+        sidecar = tmp_path / "clip.mp4.boxes.json"
+        sidecar.write_text('{"version": 1, "frames": []}')
+        rec = await db_client.create_recording(
+            Recording(file_path=str(tmp_path / "clip.mp4"), overlay_path=str(sidecar), status="complete")
+        )
+
+        r = await http_client.get(f"/api/recordings/{rec.uuid}/overlay")
+
+        assert r.status_code == 200
+        assert r.json()["version"] == 1
+
+    async def test_a_clip_without_an_overlay_404s(self, http_client, db_client):
+        """The common case, not an error: every clip written before overlays existed has
+        none, and the player treats "no overlay" and "no such clip" identically."""
+        from apps.helpers.db.types import Recording
+
+        rec = await db_client.create_recording(Recording(file_path="/x/clip.mp4", status="complete"))
+
+        assert (await http_client.get(f"/api/recordings/{rec.uuid}/overlay")).status_code == 404
+
+    async def test_an_overlay_missing_on_disk_404s(self, http_client, db_client):
+        from apps.helpers.db.types import Recording
+
+        rec = await db_client.create_recording(
+            Recording(file_path="/x/clip.mp4", overlay_path="/x/clip.mp4.boxes.json", status="complete")
+        )
+
+        assert (await http_client.get(f"/api/recordings/{rec.uuid}/overlay")).status_code == 404
+
     async def test_deleting_a_recording_removes_its_file(self, http_client, db_client, tmp_path):
         from apps.helpers.db.types import Recording
 

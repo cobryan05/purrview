@@ -185,6 +185,7 @@ class RecordClipAction(Action):
         postroll_s: float = 5.0,
         max_length_s: float = 180.0,
         output_dir: str = str(DEFAULT_CLIP_ROOT),
+        save_overlay: bool = True,
         backend: Optional[ClipBackend] = None,
         backend_for: Optional[Callable[[ActionContext], Optional[ClipBackend]]] = None,
         **params: Any,
@@ -194,6 +195,7 @@ class RecordClipAction(Action):
         self.postroll_s = float(postroll_s)
         self.max_length_s = float(max_length_s)
         self.output_dir = Path(output_dir)
+        self.save_overlay = bool(save_overlay)
         self._backend = backend
         # Resolved per event rather than per action, because the right backend is a
         # property of the *source*: one profile can watch an RTSP camera (playback out
@@ -236,6 +238,17 @@ class RecordClipAction(Action):
                 "required": False,
                 "default": str(DEFAULT_CLIP_ROOT),
                 "help": "Directory clips are written to. Must be on a bind-mounted path to survive a restart.",
+            },
+            "save_overlay": {
+                "type": "bool",
+                "required": False,
+                "default": True,
+                "help": (
+                    "Save the detection boxes alongside the clip, so the player can draw "
+                    "what the watcher saw and mark when the rule was firing. Costs a few "
+                    "tens of KB and no re-encoding; the clip itself stays unannotated, so "
+                    "frames saved for annotation never have boxes burnt into them."
+                ),
             },
         }
 
@@ -323,10 +336,18 @@ class RecordClipAction(Action):
         try:
             if context.clip_chunks:
                 result = await self._assemble_from_chunks(signal, context, dest)
+                # No overlay for a chunk-assembled clip. Its playing time is the sum of
+                # parts whose individual lengths this layer never measures, and the
+                # sidecar's whole contract is that a box's `t` is where it lands in the
+                # video. Guessing the duration would drift the boxes further from the
+                # picture the longer the event ran — worse than no overlay, because a
+                # misplaced box reads as a detector fault.
+                result["overlay"] = False
                 return ActionResult(
                     ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
                 )
             result = await backend.extract(context, start, duration, dest)
+            result["overlay"] = self.save_overlay
             return ActionResult(ok=True, detail=f"wrote {dest.name}", data=result)
         except Exception as e:
             # Past the buffer window this is permanent, not transient — the caller marks

@@ -422,3 +422,106 @@ class TestTheWholePass:
 
         assert result["orphanFiles"] == 1
         assert not stray.exists()
+
+
+class TestTheOverlaySidecar:
+    """A clip's detection sidecar must live and die with the clip.
+
+    It is a file under the recordings roots, which makes it the orphan sweep's business
+    by default: without `overlay_path` on the row it would be deleted about an hour after
+    it was written, and the failure would look like an overlay feature that works right
+    after an event and mysteriously stops later. And in the other direction, a sidecar
+    left behind by a deleted clip is dead weight nothing will ever read.
+    """
+
+    async def test_a_sidecar_the_row_names_survives_the_orphan_sweep(self, manager, db_client, recording_roots):
+        clips, _snapshots = recording_roots
+        clip = clips / "live.mp4"
+        clip.write_bytes(b"\x00" * 64)
+        sidecar = clips / "live.mp4.boxes.json"
+        sidecar.write_text('{"version": 1, "frames": []}')
+        os.utime(sidecar, (0, 0))
+        await db_client.create_recording(
+            Recording(
+                file_path=str(clip),
+                overlay_path=str(sidecar),
+                started_at=_ago(0.1),
+                status="complete",
+            )
+        )
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 0
+        assert sidecar.exists()
+
+    async def test_an_unreferenced_sidecar_is_swept(self, manager, recording_roots):
+        clips, _snapshots = recording_roots
+        stray = clips / "gone.mp4.boxes.json"
+        stray.write_text('{"version": 1, "frames": []}')
+        os.utime(stray, (0, 0))
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 1
+        assert not stray.exists()
+
+    async def test_deleting_a_recording_deletes_its_sidecar(self, manager, db_client, tmp_path):
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"\x00" * 16)
+        sidecar = tmp_path / "clip.mp4.boxes.json"
+        sidecar.write_text("{}")
+        recording = await db_client.create_recording(
+            Recording(file_path=str(clip), overlay_path=str(sidecar), started_at=_ago(0.1), status="complete")
+        )
+
+        assert await manager.delete_recording(recording.uuid)
+
+        assert not clip.exists()
+        assert not sidecar.exists()
+
+    async def test_expiry_takes_the_sidecar_with_the_clip(self, manager, db_client, tmp_path, profile_uuid):
+        """The end-to-end shape: retention deletes the event, which deletes the
+        recording, which must delete all three files."""
+        event_uuid, snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=40, name="old")
+        clip = tmp_path / "old.mp4"
+        clip.write_bytes(b"\x00" * 16)
+        sidecar = tmp_path / "old.mp4.boxes.json"
+        sidecar.write_text("{}")
+        recording = await db_client.create_recording(
+            Recording(
+                file_path=str(clip),
+                overlay_path=str(sidecar),
+                started_at=_ago(40),
+                event_uuid=event_uuid,
+                status="complete",
+            )
+        )
+        await db_client.update_watch_event(event_uuid, recording_uuid=recording.uuid)
+
+        await manager.prune_expired_recordings()
+
+        assert not snapshot.exists()
+        assert not clip.exists()
+        assert not sidecar.exists()
+
+    async def test_a_surviving_sidecar_does_not_keep_a_fileless_row_alive(self, manager, db_client, recording_roots):
+        """The reverse reconcile deliberately ignores `overlay_path`. A sidecar outliving
+        a hand-deleted mp4 must not hold the row open — that leaves a card whose video
+        404s, which is worse than losing the row."""
+        clips, _snapshots = recording_roots
+        sidecar = clips / "vanished.mp4.boxes.json"
+        sidecar.write_text("{}")
+        recording = await db_client.create_recording(
+            Recording(
+                file_path=str(clips / "vanished.mp4"),
+                overlay_path=str(sidecar),
+                started_at=_ago(0.5),
+                created_at=_ago(0.5),
+                status="complete",
+            )
+        )
+
+        await manager.reconcile_missing_recording_files()
+
+        assert await db_client.get_recording(recording.uuid) is None

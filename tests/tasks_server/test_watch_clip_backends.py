@@ -187,6 +187,100 @@ class TestFrameRingWiring:
         assert ring._frames[0][1] == b"\xff\xd8new"
 
 
+class TestDetectionTrackAllocation:
+    """Who gets a detection ring, and who pays nothing for not wanting one.
+
+    Same discipline as the frame ring above: this is on the per-frame path of a process
+    that runs 24/7, so a watcher with no clip actions must not walk the action list once
+    per analysed frame to be told "no" every time.
+    """
+
+    def _task(self, pipelines, actions):
+        task = _task(pipelines)
+        task._detection_tracks = {}
+        task._actions = actions
+        return task
+
+    def _clip_action(self, *, save_overlay=True, sources=None):
+        row = SimpleNamespace(kind="record_clip", uuid="a1", source_uuids_json=sources)
+        return (row, SimpleNamespace(save_overlay=save_overlay, preroll_s=10.0))
+
+    def test_a_clip_action_asking_for_an_overlay_gets_a_ring(self):
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [self._clip_action()])
+
+        assert task._detection_track_for(pipeline) is not None
+
+    def test_the_checkbox_being_off_allocates_nothing(self):
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [self._clip_action(save_overlay=False)])
+
+        assert task._detection_track_for(pipeline) is None
+
+    def test_a_profile_with_no_clip_action_allocates_nothing(self):
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [])
+
+        assert task._detection_track_for(pipeline) is None
+
+    def test_an_out_of_scope_clip_action_does_not_arm_another_camera(self):
+        """Actions scope by source list; a ring on every camera would cost memory for
+        cameras whose clips can never carry an overlay."""
+        pipeline = _pipeline("src-2", buffered=True)
+        task = self._task([pipeline], [self._clip_action(sources=["src-1"])])
+
+        assert task._detection_track_for(pipeline) is None
+
+    def test_the_same_ring_is_reused_across_frames(self):
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [self._clip_action()])
+
+        assert task._detection_track_for(pipeline) is task._detection_track_for(pipeline)
+
+    def test_a_negative_answer_is_cached_too(self):
+        """Otherwise every frame of a watcher that wants no overlay re-scans the action
+        list to reach the same conclusion."""
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [])
+
+        task._detection_track_for(pipeline)
+
+        assert "src-1" in task._detection_tracks
+        assert task._detection_tracks["src-1"] is None
+
+    def test_the_ring_outreaches_the_sources_rewind_window(self):
+        """Pre-roll is cut from the buffer, so a ring shorter than the retention would
+        leave the lead-in — the approach — unannotated."""
+        pipeline = _pipeline("src-1", buffered=True)
+        pipeline.retention_s = 900.0
+        task = self._task([pipeline], [self._clip_action()])
+
+        track = task._detection_track_for(pipeline)
+
+        assert track._max_seconds >= 900.0
+
+    def test_pushing_a_frame_is_a_no_op_without_a_ring(self):
+        """The push happens on every analysed frame of every source, wanted or not."""
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [])
+
+        task._push_detection_track(pipeline, 100.0, (640, 360))
+
+        assert task._detection_tracks["src-1"] is None
+
+    def test_a_pushed_frame_is_timestamped_in_wallclock(self):
+        """The ring is sliced by a clip window, which is addressed in wallclock; the
+        frame loop's clock is monotonic. Storing the monotonic reading would put every
+        sample decades away from its clip."""
+        pipeline = _pipeline("src-1", buffered=True)
+        task = self._task([pipeline], [self._clip_action()])
+
+        task._push_detection_track(pipeline, 100.0, (640, 360))
+
+        track = task._detection_tracks["src-1"]
+        assert track.samples_between(0, 1e12)[0].at == pytest.approx(task._wallclock_offset + 100.0)
+
+
 class TestRecordClipActionResolver:
     async def test_the_resolver_wins_over_a_statically_injected_backend(self):
         """Both are accepted so existing callers keep working; the resolver is preferred."""

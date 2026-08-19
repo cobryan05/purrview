@@ -975,6 +975,7 @@ class RecordingCreate(Payload):
     event_uuid: Optional[str] = None
     file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
+    overlay_path: Optional[str] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     duration_s: float = 0.0
@@ -4401,6 +4402,27 @@ class WebApp:
             # work; note this must NOT be fetched through ReverseProxy, which buffers
             # whole responses.
             return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+        @self._app.get(
+            "/api/recordings/{uuid}/overlay",
+            tags=[ApiTags.RECORDINGS],
+            operation_id="get_recording_overlay",
+        )
+        async def get_recording_overlay(uuid: str):
+            """Serve a clip's detection-overlay sidecar.
+
+            404 for "this clip has no overlay" as well as for "no such clip": the player
+            asks for one on every clip it opens and treats either answer the same way —
+            draw the video, offer no overlay toggle. Distinguishing them would give the
+            caller a difference it has no use for.
+            """
+            recording = await self._manager.get_recording(uuid)
+            if recording is None or not recording.overlay_path:
+                raise HTTPException(status_code=404, detail="Recording has no overlay")
+            path = Path(recording.overlay_path)
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail="Overlay file is missing on disk")
+            return FileResponse(path, media_type="application/json", filename=path.name)
 
     def _register_model_group_routes(self) -> None:
         @self._app.get(

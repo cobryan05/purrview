@@ -49,6 +49,7 @@ from apps.helpers.actions.Registry import create_action
 from apps.helpers.consts import JsonValues, TaskStatus
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
+from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
 from apps.helpers.tracking.Registry import create_tracker
 from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.engine import WatchEngine
@@ -172,6 +173,12 @@ class StreamWatcherTask(Task):
         # whose events all fit inside the buffer never allocates one — which is most of
         # them. See `apps.helpers.recordings.clipDrain` for why this exists at all.
         self._clip_drains: Dict[str, ClipDrain] = {}
+        # source_uuid → DetectionTrack, for sources whose clips carry a detection
+        # overlay. Created on first frame and only where some in-scope `record_clip`
+        # asked for one, so a watcher with no clip actions — or one with the checkbox
+        # off — allocates nothing and pays one dict lookup per frame. A None value means
+        # "asked, and this source wants none"; see `_detection_track_for`.
+        self._detection_tracks: Dict[str, Optional[DetectionTrack]] = {}
         self._progress = None  # a watcher has no meaningful completion percentage
 
     # ------------------------------------------------------------------ schema
@@ -577,6 +584,37 @@ class StreamWatcherTask(Task):
         if drain.due(now_wall):
             await drain.drain(now_wall)
 
+    def _wants_overlay(self, source_uuid: Optional[str]) -> bool:
+        """Whether any in-scope clip action on this source asked for a detection overlay."""
+        return any(
+            getattr(action, "save_overlay", False)
+            for row, action in self._actions
+            if row.kind == CLIP_ACTION_KIND and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
+        )
+
+    def _detection_track_for(self, pipeline: WatchPipeline) -> Optional[DetectionTrack]:
+        """The detection ring for a source whose clips want an overlay, or None.
+
+        Sized to comfortably outreach the source's own rewind retention: pre-roll is cut
+        from the buffer, so a ring that only reached back as far as the *default* would
+        leave the lead-in of a long-retention camera's clips unannotated — and the
+        lead-in is where you look to see what the detector made of an approach.
+
+        The *negative* answer is cached as well as the positive one. This is called for
+        every analysed frame of every source, and `_wants_overlay` walks the whole action
+        list — a scan a watcher with no clip actions would otherwise pay for, forever, to
+        be told "no" every time. Presence in the dict is the cache; the value may be None.
+        """
+        source_uuid = pipeline.source_uuid
+        if source_uuid in self._detection_tracks:
+            return self._detection_tracks[source_uuid]
+        track = None
+        if self._wants_overlay(source_uuid):
+            window = max(DEFAULT_TRACK_SECONDS, (pipeline.retention_s or 0.0) + self._max_preroll_for(source_uuid))
+            track = DetectionTrack(max_seconds=window)
+        self._detection_tracks[source_uuid] = track
+        return track
+
     def _ring_for(self, pipeline: WatchPipeline) -> Optional[FrameRing]:
         """The frame ring for an unbuffered source, created on first use.
 
@@ -870,6 +908,9 @@ class StreamWatcherTask(Task):
             for drain in self._clip_drains.values():
                 drain.discard()
             self._clip_drains.clear()
+            # Same reasoning, and same ordering: the closing edges above wrote their
+            # sidecars out of these rings, so they are only dead weight afterwards.
+            self._detection_tracks.clear()
 
         return {
             "eventsStarted": self._events_started,
@@ -1023,7 +1064,18 @@ class StreamWatcherTask(Task):
             self._failed_sources.discard(pipeline.source_uuid)
         self._frames_analysed += 1
 
-        for signal in pipeline.step(detections, now):
+        signals = pipeline.step(detections, now)
+
+        # Between `step` and dispatch, and both halves of that matter. After `step`,
+        # because `pipeline.detections`/`.tracks` hold the *previous* frame until it has
+        # run — pushing earlier would file this frame's timestamp against last frame's
+        # boxes and offset the whole overlay by one analysis interval. Before dispatch,
+        # because dispatch is where a closing event cuts its clip and writes the sidecar
+        # out of this ring, and the frame that closed the event is one of the frames you
+        # most want to see boxes on.
+        self._push_detection_track(pipeline, now, (analysed_w, analysed_h))
+
+        for signal in signals:
             self._resolve_slot_names(signal, pipeline)
             self._note_event(signal)
             await self._dispatch(signal, pipeline)
@@ -1037,6 +1089,18 @@ class StreamWatcherTask(Task):
         # ones the tracker actually saw, so a live feed draws the same boxes the rules
         # were evaluated against rather than raw model output the watcher then ignored.
         await self._dispatch_frame(pipeline)
+
+    def _push_detection_track(self, pipeline: WatchPipeline, now: float, frame_size: Tuple[int, int]) -> None:
+        """Record one frame's boxes for the clip overlay, if this source keeps one.
+
+        Timestamped in wallclock because that is how a clip's window is addressed, while
+        the loop's clock is monotonic — the same reason `_push_to_ring` carries the
+        offset.
+        """
+        track = self._detection_track_for(pipeline)
+        if track is None:
+            return
+        track.push(now + self._wallclock_offset, pipeline.detections, pipeline.tracks, frame_size)
 
     def _push_to_ring(
         self, pipeline: WatchPipeline, base64_img: str, now: float, full_res: Optional[str] = None
@@ -1147,7 +1211,13 @@ class StreamWatcherTask(Task):
 
         if signal.phase is EventPhase.END:
             if clip:
-                await self._recorder.attach_recording(signal, event_uuid, clip)
+                await self._recorder.attach_recording(
+                    signal,
+                    event_uuid,
+                    clip,
+                    context=context,
+                    detection_track=self._detection_tracks.get(signal.source_uuid or ""),
+                )
             await self._recorder.record(signal, context)
 
     async def _dispatch_frame(self, pipeline: WatchPipeline) -> None:

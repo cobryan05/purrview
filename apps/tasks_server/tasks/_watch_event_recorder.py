@@ -199,6 +199,8 @@ class WatchEventRecorder:
         signal: WatchEventSignal,
         event_uuid: Optional[str],
         clip: Dict[str, Any],
+        context: Optional[ActionContext] = None,
+        detection_track: Optional[Any] = None,
     ) -> Optional[str]:
         """Register a written clip and link it to its event.
 
@@ -209,6 +211,10 @@ class WatchEventRecorder:
         start rather than the event's is what lets the review page mark where in the
         clip the rule fired, and what keeps a truncated clip from being presented as
         though its lead-in were intact.
+
+        `detection_track` is the source's ring of what the detector saw. When the action
+        asked for one, its slice over this clip's window is written beside the mp4 and
+        named on the row — see `_write_overlay`.
         """
         if not clip.get("path"):
             return None
@@ -216,12 +222,14 @@ class WatchEventRecorder:
             _, WatchEventUpdate, RecordingCreate = _payload_models()
             started_at = _parse_iso(clip.get("startedAt"))
             duration_s = float(clip.get("durationS") or 0.0)
+            overlay_path = self._write_overlay(signal, event_uuid, clip, context, detection_track)
             api = RecordingsApi(self._api_client_factory())
             payload = RecordingCreate(
                 source_uuid=signal.source_uuid or None,
                 profile_uuid=self._profile_uuid,
                 event_uuid=event_uuid,
                 file_path=str(clip["path"]),
+                overlay_path=str(overlay_path) if overlay_path else None,
                 started_at=started_at,
                 ended_at=(started_at + timedelta(seconds=duration_s)) if started_at else None,
                 duration_s=duration_s,
@@ -248,6 +256,69 @@ class WatchEventRecorder:
             self._failures += 1
             logger.exception("Could not register clip for rule %s", signal.rule_name)
             self._log(f"Clip written but not recorded ({signal.rule_name}): {e}")
+            return None
+
+    def _write_overlay(
+        self,
+        signal: WatchEventSignal,
+        event_uuid: Optional[str],
+        clip: Dict[str, Any],
+        context: Optional[ActionContext],
+        detection_track: Optional[Any],
+    ) -> Optional[Path]:
+        """Write the clip's detection sidecar. Returns its path, or None.
+
+        Never raises and never fails the clip: the mp4 is the artifact, the boxes are a
+        commentary on it, and losing the commentary must not lose the recording — the
+        same contract the card art has.
+
+        Written *before* the row is created, not after, so `overlay_path` is set in the
+        same insert. Setting it in a follow-up update would leave a window in which the
+        file exists and no row names it, which is precisely what the orphan sweep is
+        built to delete.
+
+        Deliberately synchronous. It is a few tens of KB of JSON serialised from data
+        already in memory — a thread hop would cost more than the write.
+        """
+        if not clip.get("overlay") or detection_track is None or context is None:
+            return None
+        started_at = _parse_iso(clip.get("startedAt"))
+        duration_s = float(clip.get("durationS") or 0.0)
+        if started_at is None or duration_s <= 0:
+            return None
+        try:
+            from apps.helpers.recordings.detectionTrack import (
+                build_overlay,
+                event_window,
+                overlay_path_for,
+                write_overlay,
+            )
+
+            samples = detection_track.samples_between(started_at.timestamp(), started_at.timestamp() + duration_s)
+            if not samples:
+                # Nothing was analysed inside the clip's window — a source whose watcher
+                # started mid-buffer, say. An empty sidecar would tell the player the
+                # detector saw nothing, which is a stronger claim than "no record".
+                return None
+            document = build_overlay(
+                samples,
+                started_at,
+                duration_s,
+                event=event_window(
+                    started_at,
+                    duration_s,
+                    self._wallclock(signal.started_at, context),
+                    self._wallclock(signal.at, context),
+                    rule_name=signal.rule_name,
+                    event_uuid=event_uuid,
+                ),
+            )
+            dest = overlay_path_for(Path(clip["path"]))
+            write_overlay(document, dest)
+            return dest
+        except Exception as e:
+            logger.warning("Could not write detection overlay for %s: %s", signal.rule_name, e)
+            self._log(f"Clip overlay not written ({signal.rule_name}): {e}")
             return None
 
     # ── card art ─────────────────────────────────────────────────────────────

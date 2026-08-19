@@ -3976,7 +3976,7 @@ class Manager:
         recording = await self._db_client.get_recording(uuid)
         if recording is None:
             return False
-        for path_str in (recording.file_path, recording.thumbnail_path):
+        for path_str in (recording.file_path, recording.thumbnail_path, recording.overlay_path):
             if not path_str:
                 continue
             try:
@@ -4093,6 +4093,7 @@ class Manager:
             recording = await self._db_client.get_recording(recording_uuid)
             total += self._path_size(getattr(recording, "file_path", None), size_by_path)
             total += self._path_size(getattr(recording, "thumbnail_path", None), size_by_path)
+            total += self._path_size(getattr(recording, "overlay_path", None), size_by_path)
         return total
 
     async def enforce_recording_size_cap(self) -> Dict[str, int]:

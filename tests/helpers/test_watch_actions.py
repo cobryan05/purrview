@@ -479,6 +479,24 @@ class TestRecordClipAction:
         assert result.ok is True
         assert relay.calls[0][0] == "relay_master_abc"
 
+    async def test_the_overlay_checkbox_reaches_the_result(self, tmp_path):
+        """The action does not write the sidecar — the task does, because only it holds
+        the detection ring. This flag is how the choice gets there."""
+        relay = _FakeRelay()
+        action = RecordClipAction(backend=PlaybackClipBackend(relay), output_dir=str(tmp_path), save_overlay=False)
+
+        result = await action.run(_signal(), _context())
+
+        assert result.data["overlay"] is False
+
+    async def test_the_overlay_is_on_by_default(self, tmp_path):
+        relay = _FakeRelay()
+        action = RecordClipAction(backend=PlaybackClipBackend(relay), output_dir=str(tmp_path))
+
+        result = await action.run(_signal(), _context())
+
+        assert result.data["overlay"] is True
+
     def test_window_includes_preroll_and_postroll(self):
         action = RecordClipAction(preroll_s=10, postroll_s=5)
         start, duration = action.plan_window(_signal(started_at=100, at=130), _context())
@@ -592,6 +610,20 @@ class TestRecordClipFromDrainedChunks:
         # Two chunks plus the tail cut from what is still buffered.
         assert len(joined["parts"]) == 3
         assert joined["parts"][:2] == [c.path for c in chunks]
+
+    async def test_an_assembled_clip_gets_no_overlay(self, tmp_path, monkeypatch):
+        """A concatenated clip's playing time is the sum of parts nothing here measures,
+        and the sidecar's whole contract is that a box's `t` is where it lands in the
+        video. Boxes that drift further the longer the event ran would read as a detector
+        fault rather than a timing one."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(
+            backend=PlaybackClipBackend(_FakeRelay()), output_dir=str(tmp_path / "clips"), save_overlay=True
+        )
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path)))
+
+        assert result.data["overlay"] is False
 
     async def test_the_tail_covers_from_the_last_chunk_to_the_event_end(self, tmp_path, monkeypatch):
         """Without the tail the clip would stop at the last drain, losing the ending —

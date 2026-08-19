@@ -11,6 +11,7 @@ The behaviours under test are the ones that are invisible when wrong:
 * nothing here may raise into the frame loop, whatever the DB does.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -18,8 +19,20 @@ import numpy as np
 import pytest
 
 from apps.helpers.actions.action import ActionContext
+from apps.helpers.recordings.detectionTrack import DetectionTrack
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 from apps.tasks_server.tasks._watch_event_recorder import WatchEventRecorder
+
+
+class _Det:
+    """A stand-in for `apps.helpers.tracking.Detection`, which is read by attribute."""
+
+    def __init__(self, bbox, label_name="cat", label_uuid="lbl-1", confidence=0.9):
+        self.bbox = bbox
+        self.label_name = label_name
+        self.label_uuid = label_uuid
+        self.confidence = confidence
+
 
 PROFILE = "profile-1"
 #: The recorder converts monotonic event timestamps to wallclock with this. A round
@@ -228,6 +241,109 @@ class TestClipLinking:
         event_uuid = await recorder.record(_signal(EventPhase.START), _context())
         assert await recorder.attach_recording(_signal(EventPhase.END), event_uuid, {"expired": True}) is None
         assert store.recordings == []
+
+
+class TestTheDetectionSidecar:
+    """The clip's overlay: what the detector saw, written beside the mp4 and named on the
+    row.
+
+    Naming it on the row is not bookkeeping. The orphan sweep deletes any file under the
+    recordings roots that no row points at, so a sidecar written and not recorded is a
+    file with about an hour to live — and the bug would present as an overlay that works
+    right after an event and mysteriously stops later.
+    """
+
+    def _track(self, *, first_at=90.0, count=40):
+        """A ring covering the clip's whole window, one sample a second."""
+        track = DetectionTrack()
+        for i in range(count):
+            track.push(WALLCLOCK_OFFSET + first_at + i, [_Det((160, 90, 320, 180))], [], (640, 360))
+        return track
+
+    def _clip(self, tmp_path, *, overlay=True, start_offset=90.0, duration=45.0):
+        clip = tmp_path / "a.mp4"
+        clip.write_bytes(b"\x00")
+        return {
+            "path": str(clip),
+            "startedAt": datetime.fromtimestamp(WALLCLOCK_OFFSET + start_offset, tz=timezone.utc).isoformat(),
+            "durationS": duration,
+            "sizeBytes": 1,
+            "overlay": overlay,
+        }
+
+    async def _attach(self, recorder, tmp_path, *, track=..., **clip_kw):
+        event_uuid = await recorder.record(_signal(EventPhase.START), _context())
+        await recorder.attach_recording(
+            _signal(EventPhase.END, at=130.0),
+            event_uuid,
+            self._clip(tmp_path, **clip_kw),
+            context=_context(),
+            detection_track=self._track() if track is ... else track,
+        )
+
+    async def test_the_sidecar_lands_beside_the_clip_and_is_named_on_the_row(self, recorder, store, tmp_path):
+        await self._attach(recorder, tmp_path)
+
+        sidecar = tmp_path / "a.mp4.boxes.json"
+        assert sidecar.exists()
+        assert store.recordings[0].overlay_path == str(sidecar)
+
+    async def test_the_boxes_are_timed_from_the_clips_start_not_the_events(self, recorder, tmp_path):
+        """The clip begins 10 s before the event. A sidecar timed off the event would put
+        every box 10 s late — late enough to read as the detector lagging."""
+        await self._attach(recorder, tmp_path)
+
+        doc = json.loads((tmp_path / "a.mp4.boxes.json").read_text())
+
+        assert doc["frames"][0]["t"] == 0.0
+        assert doc["frames"][0]["boxes"][0]["label"] == "cat"
+
+    async def test_the_rules_own_span_is_marked(self, recorder, tmp_path):
+        """Pre-roll and post-roll are indistinguishable from the event in the video
+        itself, so the window is the only thing that says when the rule was firing."""
+        await self._attach(recorder, tmp_path)
+
+        event = json.loads((tmp_path / "a.mp4.boxes.json").read_text())["event"]
+
+        assert event["startS"] == pytest.approx(10.0)
+        assert event["endS"] == pytest.approx(40.0)
+        assert event["ruleName"] == "cat using litter box"
+
+    async def test_the_action_can_turn_it_off(self, recorder, store, tmp_path):
+        """The checkbox on the clip action, all the way through to the disk."""
+        await self._attach(recorder, tmp_path, overlay=False)
+
+        assert not (tmp_path / "a.mp4.boxes.json").exists()
+        assert store.recordings[0].overlay_path is None
+
+    async def test_no_track_means_no_sidecar(self, recorder, store, tmp_path):
+        await self._attach(recorder, tmp_path, track=None)
+
+        assert not (tmp_path / "a.mp4.boxes.json").exists()
+        assert store.recordings[0].overlay_path is None
+
+    async def test_a_window_the_watcher_never_analysed_writes_nothing(self, recorder, store, tmp_path):
+        """An empty sidecar would claim the detector saw nothing, which is a stronger
+        statement than "there is no record" and would read as a broken model."""
+        await self._attach(recorder, tmp_path, track=DetectionTrack())
+
+        assert not (tmp_path / "a.mp4.boxes.json").exists()
+        assert store.recordings[0].overlay_path is None
+
+    async def test_a_failed_sidecar_still_registers_the_clip(self, recorder, store, tmp_path, monkeypatch):
+        """The mp4 is the artifact; the boxes are a commentary on it. Losing the
+        commentary must never lose the recording."""
+        import apps.helpers.recordings.detectionTrack as dt
+
+        def _boom(*_a, **_kw):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(dt, "write_overlay", _boom)
+
+        await self._attach(recorder, tmp_path)
+
+        assert store.recordings[0].overlay_path is None
+        assert store.recordings[0].file_path == str(tmp_path / "a.mp4")
 
 
 class TestCardArt:

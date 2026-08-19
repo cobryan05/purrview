@@ -1861,6 +1861,12 @@ class Recording(TimestampModel, table=True):
     event_uuid: Optional[str] = Field(default=None, index=True)
     file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
+    #: Absolute path to the clip's detection-overlay sidecar, when one was written. The
+    #: boxes the watcher saw, in clip-relative time — see
+    #: `apps.helpers.recordings.detectionTrack`. Its own column rather than a derived
+    #: name because the orphan sweep deletes any file under the recordings roots that no
+    #: row names, so an unrecorded sidecar would be swept away an hour after it landed.
+    overlay_path: Optional[str] = None
     started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     duration_s: float = Field(default=0.0)
@@ -2270,6 +2276,7 @@ class RecordingRead(OrmModel):
     event_uuid: Optional[str] = None
     file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
+    overlay_path: Optional[str] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     duration_s: float = 0.0

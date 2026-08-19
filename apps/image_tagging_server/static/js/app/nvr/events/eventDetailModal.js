@@ -17,6 +17,12 @@
  * training on are the ones where something happened, and this is where you are already
  * looking at them. It shares `saveFrameForAnnotation` with the Live view, so a frame
  * captured here is indistinguishable from one captured there.
+ *
+ * When the clip has a detection sidecar, `clipOverlay.js` draws the watcher's boxes over
+ * the video and marks the stretch where the rule was firing. The video underneath stays
+ * the untouched clip — nothing is ever composited into it — which is what lets the
+ * capture above stay a clean training image while still being able to seed it with the
+ * boxes that were on screen.
  */
 import { createModalShell, Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -27,6 +33,7 @@ import {
   watchEventSnapshotUrl,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
+import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
 import { eventHeadline, formatDuration, formatEventTime, parseEventDate } from './eventCard.js';
 
 function el(tag, className, text) {
@@ -110,7 +117,10 @@ export async function captureVideoFrame(video) {
  * @returns {{close: () => void}}
  */
 export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted } = {}) {
-  const shell = createModalShell();
+  // The overlay owns a ResizeObserver and a requestVideoFrameCallback loop, neither of
+  // which stops when the DOM node goes away. Opening a dozen events in a row would
+  // otherwise leave a dozen redraw loops running against detached videos.
+  const shell = createModalShell({ onClose: () => { overlay?.destroy(); overlay = null; } });
   shell.dialog.classList.add('event-detail');
   shell.dialog.dataset.testid = 'event-detail-modal';
 
@@ -138,10 +148,16 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
   body.appendChild(sidebar);
 
   let video = null;
+  let overlay = null;
   let saveBtn = null;
   const savedHint = el('div', 'event-detail__hint');
 
   function renderSnapshotOnly(message) {
+    // Before the wipe: the overlay's loops outlive the nodes they draw on, and
+    // `innerHTML = ''` does not tell it anything.
+    overlay?.destroy();
+    overlay = null;
+    video = null;
     mediaPane.innerHTML = '';
     if (event.hasSnapshot) {
       const img = document.createElement('img');
@@ -194,12 +210,73 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
     tools.appendChild(saveBtn);
     tools.appendChild(savedHint);
     mediaPane.appendChild(tools);
+
+    // Fire and forget: the clip is playable the moment the element exists, and a modal
+    // that waited on a sidecar before showing video would feel slower for a feature that
+    // most clips do not even have.
+    void attachOverlay(recording, tools);
+  }
+
+  /**
+   * Load the clip's detection sidecar and draw it over the video.
+   *
+   * The toggle only appears when there is something to toggle. Rendering a permanently
+   * disabled checkbox on every pre-existing clip would advertise a feature that clip can
+   * never have — the boxes were never recorded and cannot be recovered.
+   */
+  async function attachOverlay(recording, tools) {
+    const doc = await fetchClipOverlay(recording.uuid);
+    // The modal can be closed, or re-rendered, while this is in flight.
+    if (!doc || !video || !video.isConnected) return;
+    overlay = attachClipOverlay(video, doc);
+
+    const label = el('label', 'event-detail__toggle');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = true;
+    box.dataset.testid = 'event-detail-overlay-toggle';
+    box.addEventListener('change', () => overlay.setVisible(box.checked));
+    label.appendChild(box);
+    label.appendChild(el('span', null, 'Show what the watcher saw'));
+    tools.appendChild(label);
   }
 
   // ---------------------------------------------------------------- save
 
+  /**
+   * The overlay's boxes at the captured instant, in the captured frame's pixel space.
+   *
+   * Scaled to `frame`, not to the analysis frame they were recorded against: the capture
+   * is at the video's intrinsic resolution, and normalised coordinates are exactly what
+   * makes that conversion a multiplication rather than a guess about downscale ratios.
+   *
+   * @param {{width: number, height: number}} frame
+   * @returns {Object} spread into the save call — empty when there is no overlay
+   */
+  function overlayBoxes(frame) {
+    if (!overlay || !video) return {};
+    const boxes = overlay.boxesAt(video.currentTime || 0)
+      .filter(b => b.labelUuid)
+      .map(b => ({
+        labelUuid: b.labelUuid,
+        bbox: [
+          b.x * frame.width,
+          b.y * frame.height,
+          (b.x + b.w) * frame.width,
+          (b.y + b.h) * frame.height,
+        ],
+        confidence: b.conf,
+      }));
+    if (!boxes.length) return {};
+    return { boxes, frameWidth: frame.width, frameHeight: frame.height };
+  }
+
   async function saveFrame() {
     if (!video) return;
+    // Captured off the `<video>`, which is the raw clip — the boxes live on a canvas
+    // above it and are never composited in. That is what makes this safe to feed
+    // straight into the dataset: a training image with rectangles burnt into it is
+    // worse than useless.
     const frame = await captureVideoFrame(video);
     if (!frame) {
       toast('The video has not loaded a frame yet', 3000, 'error');
@@ -212,10 +289,12 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
         blob: frame.blob,
         filename: captureFilename(camera),
         path: DEFAULT_CAPTURE_DIR,
-        // No seeded boxes, unlike the Live view: the detections that opened this event
-        // belong to the analysed frame the watcher saw, not to whichever frame of the
-        // clip is on screen now, and drawing them here would put boxes around empty
-        // space more often than around the cat.
+        // Seeded from the overlay, which is per-frame: these are the detections the
+        // watcher had at *this* moment of the clip, not the ones that happened to open
+        // the event. Without a sidecar there is nothing honest to seed with — the
+        // event's own boxes belong to one analysed instant and would land around empty
+        // space on any other frame — so an overlay-less clip still saves bare.
+        ...overlayBoxes(frame),
         extra: {
           source_camera: camera,
           source_event: event.uuid,

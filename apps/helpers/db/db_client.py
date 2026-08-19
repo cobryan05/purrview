@@ -6930,15 +6930,16 @@ class DbClient:
         Fetched as one set rather than asked per file, because the question is asked once
         per file on disk and the answer does not change during a sweep.
 
-        Deliberately covers all three columns that can name a file — a clip, its
-        thumbnail, and an event's snapshot. Missing one would make the sweep delete live
-        files, which is the failure mode that makes directory-walking sweeps dangerous.
+        Deliberately covers every column that can name a file — a clip, its thumbnail,
+        its detection-overlay sidecar, and an event's snapshot. Missing one would make
+        the sweep delete live files, which is the failure mode that makes
+        directory-walking sweeps dangerous.
         """
         paths: Set[str] = set()
         async with self._async_session_maker() as session:
-            result = await session.exec(select(Recording.file_path, Recording.thumbnail_path))
-            for file_path, thumbnail_path in result.all():
-                paths.update(p for p in (file_path, thumbnail_path) if p)
+            result = await session.exec(select(Recording.file_path, Recording.thumbnail_path, Recording.overlay_path))
+            for file_path, thumbnail_path, overlay_path in result.all():
+                paths.update(p for p in (file_path, thumbnail_path, overlay_path) if p)
             result = await session.exec(select(WatchEvent.snapshot_path))
             paths.update(p for p in result.all() if p)
         return paths
@@ -6955,6 +6956,12 @@ class DbClient:
         `status` and `created_at` come along because a row is *expected* to have no file
         while it is still being written — without them the reconciler would race clip
         extraction and delete the row of a clip being cut right now.
+
+        `overlay_path` is deliberately *not* listed, unlike in `referenced_recording_paths`.
+        The caller keeps a row when any of its paths still exists, so a sidecar surviving
+        a hand-deleted mp4 would hold the row open and leave a card whose video 404s. A
+        sidecar is derived from its clip and never worth keeping the clip's row alive for;
+        once the row goes the orphan sweep collects it.
         """
         rows: List[Dict[str, Any]] = []
         async with self._async_session_maker() as session:

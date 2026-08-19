@@ -1114,6 +1114,41 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   gap: var(--space-2);
 }
 
+.event-detail__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  /* Pico gives bare form labels a bottom margin that would drop the checkbox out of
+     line with the buttons it sits beside in the tools row. */
+  margin: 0;
+}
+
+/* The clip and its detection overlay. The canvas covers the video element rather than
+   the picture inside it — the video is `object-fit: contain`, so the drawing code does
+   the letterbox math itself and needs the two boxes to coincide. */
+.clip-overlay {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+/* Not cosmetic: a `<video>` is inline by default, so the wrapper would be a few pixels
+   taller than the video (the inline baseline gap) and the canvas — pinned to the
+   wrapper — would sit that far off. Every box would be consistently low by an amount
+   that changes with the font size, which is the kind of small constant error that reads
+   as a badly calibrated detector. */
+.clip-overlay > video {
+  display: block;
+}
+
+.clip-overlay__canvas {
+  position: absolute;
+  inset: 0;
+  /* Non-negotiable: the native video controls live underneath, and an overlay that ate
+     clicks would break the scrubber this whole modal is built around. */
+  pointer-events: none;
+}
+
 .event-detail__side-title {
   margin: 0 0 var(--space-1);
 }
