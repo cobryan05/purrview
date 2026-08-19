@@ -273,6 +273,13 @@ def concat_parts(parts: Sequence[Path], dest: Path, max_length_s: Optional[float
         # Trims the tail, keeping the head — the same end the single-cut path keeps, so
         # a capped clip means the same thing however it was produced.
         cmd += ["-t", f"{max_length_s:.3f}"]
+    # Named explicitly because the output goes to `<name>.mp4.part` — written under a
+    # temporary name so the orphan sweep and the file endpoint never see a half-written
+    # clip — and ffmpeg picks its muxer from the *extension*. `.part` matches none, so
+    # without this every assembled clip died with "Unable to find a suitable output
+    # format", surfacing as a bare `Invalid argument` on the output path that reads like
+    # a disk or permissions fault.
+    cmd += ["-f", "mp4"]
     cmd.append(str(partial))
 
     try:

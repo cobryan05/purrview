@@ -9,9 +9,11 @@ Everything here is pure — the extract call is a stub — because the real bugs
 arithmetic and eviction bookkeeping, and those are only cheap to find without a relay.
 """
 
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import cv2
 import pytest
 
 from apps.helpers.recordings.clipDrain import (
@@ -19,6 +21,7 @@ from apps.helpers.recordings.clipDrain import (
     SEGMENT_LAG_S,
     ClipDrain,
     DrainedChunk,
+    concat_parts,
     sweep_chunk_root,
 )
 
@@ -242,3 +245,95 @@ class TestDrainedChunk:
     def test_duration_is_derived_from_the_bounds(self):
         chunk = DrainedChunk(path=Path("/x.mp4"), start=_at(0), end=_at(30))
         assert chunk.duration_s == 30.0
+
+
+class TestConcatParts:
+    """The join itself, against the real ffmpeg.
+
+    Everything else in this file stubs the extract, because the bugs worth hunting there
+    are cursor arithmetic. That left `concat_parts` — the function that actually produces
+    the finished mp4 for every event that outlives the buffer — with no coverage at all,
+    and it never worked: the output is written to `<name>.mp4.part` so the orphan sweep
+    never sees a half-written file, but ffmpeg picks its muxer from the extension and
+    `.part` matches none, so every assembled clip died with "Unable to find a suitable
+    output format" reported as `Invalid argument`.
+
+    Asserting on the argv would not have caught it. These tests run ffmpeg and read the
+    result back.
+    """
+
+    @staticmethod
+    def _part(path: Path, seconds: int = 1) -> Path:
+        """A real, playable mp4 — parts must be codec-identical for a stream copy."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc=size=160x120:rate=10:duration={seconds}",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+        return path
+
+    def test_two_parts_join_into_a_playable_clip(self, tmp_path):
+        parts = [self._part(tmp_path / "a.mp4"), self._part(tmp_path / "b.mp4")]
+        dest = tmp_path / "out" / "joined.mp4"
+
+        size = concat_parts(parts, dest)
+
+        assert dest.is_file() and size > 0
+        # The `.part` is renamed away on success, never left beside the finished file.
+        assert not dest.with_suffix(".mp4.part").exists()
+        capture = cv2.VideoCapture(str(dest))
+        try:
+            assert capture.isOpened(), "ffmpeg wrote a file no decoder will open"
+            assert capture.read()[0]
+        finally:
+            capture.release()
+
+    def test_a_single_part_still_produces_a_clip(self, tmp_path):
+        """An event that closed inside one drain interval has exactly one chunk."""
+        dest = tmp_path / "one.mp4"
+        assert concat_parts([self._part(tmp_path / "a.mp4")], dest) > 0
+        assert dest.is_file()
+
+    def test_empty_and_missing_parts_are_skipped(self, tmp_path):
+        """A chunk whose extract failed is a zero-byte file, not a reason to lose the
+        rest of the clip."""
+        empty = tmp_path / "empty.mp4"
+        empty.write_bytes(b"")
+        parts = [empty, tmp_path / "never-written.mp4", self._part(tmp_path / "a.mp4")]
+
+        assert concat_parts(parts, tmp_path / "out.mp4") > 0
+
+    def test_nothing_usable_raises_rather_than_writing_an_empty_file(self, tmp_path):
+        with pytest.raises(ValueError):
+            concat_parts([tmp_path / "missing.mp4"], tmp_path / "out.mp4")
+        assert not (tmp_path / "out.mp4").exists()
+
+    def test_a_length_cap_trims_the_tail(self, tmp_path):
+        """`max_length_s` keeps the head, the same end the single-cut path keeps."""
+        parts = [self._part(tmp_path / "a.mp4", seconds=2), self._part(tmp_path / "b.mp4", seconds=2)]
+        dest = tmp_path / "capped.mp4"
+
+        concat_parts(parts, dest, max_length_s=1.0)
+
+        capture = cv2.VideoCapture(str(dest))
+        try:
+            frames = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+            fps = capture.get(cv2.CAP_PROP_FPS) or 10.0
+        finally:
+            capture.release()
+        assert 0 < frames / fps <= 1.5, f"expected about a second, got {frames / fps:.2f}s"
