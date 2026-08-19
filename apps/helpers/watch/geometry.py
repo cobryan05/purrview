@@ -266,6 +266,7 @@ class Zone:
         edge_distance = min(point_to_segment_distance(point, pts[i], pts[(i + 1) % n]) for i in range(n))
         return edge_distance >= -pad
 
+
 def zone_from_row(row) -> Zone:
     """Build a Zone from a `SourceRegionRead`-shaped object or plain dict.
 

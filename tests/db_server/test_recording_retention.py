@@ -422,9 +422,7 @@ class TestTheSizeCap:
         assert await db_client.get_watch_event(event.uuid) is None
         assert not clip.exists()
 
-    async def test_an_unreferenced_file_beside_it_is_neither_counted_nor_deleted(
-        self, manager, db_client, tmp_path
-    ):
+    async def test_an_unreferenced_file_beside_it_is_neither_counted_nor_deleted(self, manager, db_client, tmp_path):
         """The rail that makes counting external files safe: rows, never directories.
 
         The reason the sweep refuses to walk a hand-set `output_dir` is that the user
