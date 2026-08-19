@@ -8,7 +8,8 @@ visit. Three guards fix that, and every rule carries all three:
 
 * ``min_duration_s`` — the predicate must hold *continuously* before the event starts,
 * ``rearm_delay_s`` — it must be *continuously false* before the event ends,
-* ``max_duration_s`` — a hard cap, so a stuck detection can't record forever.
+* ``max_duration_s`` — a hard cap, so a stuck detection can't record forever. ``0``
+  disables the cap, for an event that should last exactly as long as its subject does.
 
 States::
 
@@ -418,6 +419,14 @@ class RuleMachine:
         if (
             self.state in (RuleState.ACTIVE, RuleState.CLOSING)
             and self._event_started_at is not None
+            # Zero (or negative) means "no cap", the same reading the recording retention
+            # settings give it. Without this the comparison is trivially true the instant
+            # the event opens: `_event_started_at` is `min_duration_s` in the past, so a
+            # zero cap emits END in the *same step* as START, forever. That is the exact
+            # opposite of what anyone typing 0 into a "max" field intends, and it fails
+            # silently — an endless churn of zero-length events, and a timelapse that
+            # compiles nothing because no event ever holds a frame.
+            and self.spec.max_duration_s > 0
             and now - self._event_started_at >= self.spec.max_duration_s
         ):
             signals.append(self._signal(EventPhase.END, now, truncated=True))

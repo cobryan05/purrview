@@ -394,6 +394,34 @@ class TestRuleMachine:
         assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
         assert signals[-1].truncated is True
 
+    def test_a_zero_max_duration_disables_the_cap(self):
+        """0 means "never expire", for a rule whose event should last as long as its
+        subject is there — a timelapse of a cat asleep in the window, say.
+
+        Read literally, 0 was catastrophic rather than merely wrong: `_event_started_at`
+        is `min_duration_s` in the past by the time the cap is checked, so
+        `now - started >= 0` held on the very first step and END was emitted in the same
+        step as START, forever. The event never lasted a frame, so nothing recorded and
+        nothing explained why.
+        """
+        machine = RuleMachine(_rule(min_duration_s=1.0, max_duration_s=0.0))
+        signals = self._run(machine, [(True, 0.0), (True, 2.0), (True, 5000.0), (True, 100000.0)])
+        assert [s.phase for s in signals] == [EventPhase.START]
+
+    def test_a_negative_max_duration_also_disables_the_cap(self):
+        """Same reading the recording retention settings give a non-positive bound, so a
+        hand-edited row cannot produce the instant-close behaviour by another spelling."""
+        machine = RuleMachine(_rule(min_duration_s=1.0, max_duration_s=-1.0))
+        signals = self._run(machine, [(True, 0.0), (True, 2.0), (True, 9000.0)])
+        assert [s.phase for s in signals] == [EventPhase.START]
+
+    def test_a_zero_cap_still_ends_when_the_predicate_clears(self):
+        """ "No cap" must not mean "never closes" — the hysteresis still owns the end."""
+        machine = RuleMachine(_rule(min_duration_s=1.0, rearm_delay_s=2.0, max_duration_s=0.0))
+        signals = self._run(machine, [(True, 0.0), (True, 2.0), (False, 500.0), (False, 503.0)])
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
+        assert signals[-1].truncated is False
+
     def test_a_normal_end_is_not_marked_truncated(self):
         machine = RuleMachine(_rule(min_duration_s=1.0, rearm_delay_s=2.0))
         signals = self._run(machine, [(True, 0.0), (True, 2.0), (False, 3.0), (False, 6.0)])
