@@ -29,12 +29,17 @@ day, so scoping only the action would keep the event browser full of events the 
 said they did not care about.
 """
 
-from typing import Any, Optional, Sequence
+from typing import Any, Collection, Optional, Sequence
 
 #: Mirrors `WatchActionTrigger.FRAME_ANALYSED`. Spelled out here so the watcher task can
 #: name the trigger without importing the ORM's types — it reads its profile through the
 #: generated db client, where every field is already a plain string.
 FRAME_ANALYSED = "frame_analysed"
+
+#: The two event edges, spelled out here for the same reason — an action that declares
+#: `triggers()` needs to name them without reaching into the ORM's enums.
+EVENT_STARTED = "event_started"
+EVENT_ENDED = "event_ended"
 
 #: Triggers that are not tied to any rule. A frame is analysed whether or not a rule is
 #: open, so an action on this trigger has no rule to be scoped against and its rule
@@ -68,6 +73,7 @@ def action_applies(
     trigger: str,
     rule_uuid: Optional[str] = None,
     source_uuid: Optional[str] = None,
+    fires_on: Optional[Collection[str]] = None,
 ) -> bool:
     """Whether one `WatchAction` row should fire for this transition.
 
@@ -76,10 +82,14 @@ def action_applies(
     :param trigger: the trigger being dispatched
     :param rule_uuid: the rule that fired, or None for a ruleless trigger
     :param source_uuid: the source it fired on
+    :param fires_on: every trigger this action wants, from `Action.triggers(row)`.
+        Defaults to the single trigger on the row — which is what every action that
+        does one thing at one moment wants, and what this took for granted before
+        `record_event_timelapse` needed to span an event's whole life.
     """
     if not getattr(row, "enabled", True):
         return False
-    if getattr(row, "trigger", None) != trigger:
+    if trigger not in (fires_on if fires_on is not None else {getattr(row, "trigger", None)}):
         return False
     if not in_scope(getattr(row, "source_uuids_json", None), source_uuid):
         return False

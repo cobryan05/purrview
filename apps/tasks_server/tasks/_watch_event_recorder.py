@@ -54,6 +54,16 @@ DEFAULT_SNAPSHOT_ROOT = RECORDINGS_SNAPSHOT_DIR
 SNAPSHOT_WIDTH = 480
 SNAPSHOT_QUALITY = 80
 
+#: Mirrors `RecordingKind.CLIP`. Spelled out rather than imported for the same reason the
+#: trigger names are in `scoping.py`: this module talks to db_server through the
+#: generated client, where every field is already a plain string.
+RECORDING_KIND_CLIP = "clip"
+
+#: Result keys a media action reports that are worth keeping on the row for the player
+#: to show. Everything else in the result — the path, the sizes, the requested window —
+#: either has its own column or is about the extraction rather than the file.
+MEDIA_METADATA_KEYS = ("frames", "sourceSpanS", "intervalS", "lowFps")
+
 #: A signal carries no event id, so the row a closing edge belongs to has to be found by
 #: what identifies the event. This is the *engine's* current identity — one open event
 #: per rule per source. When per-pair identity lands (WATCH_OUTPUTS_PLAN §2) the refs
@@ -202,9 +212,14 @@ class WatchEventRecorder:
         context: Optional[ActionContext] = None,
         detection_track: Optional[Any] = None,
     ) -> Optional[str]:
-        """Register a written clip and link it to its event.
+        """Register a written media file and link it to its event.
 
-        `clip` is a `record_clip` action's result data. Its `startedAt` is the clip's
+        `clip` is a media action's result data, carrying the `kind` the row takes —
+        `clip` for `record_clip`, `timelapse` for `record_event_timelapse`. An event may
+        have one of each, so this may be called more than once per closing edge; the
+        link is `recordings.event_uuid` and nothing on the event has to be patched.
+
+        For a clip, `startedAt` is the clip's
         own first frame, which is *earlier* than the event's start by the pre-roll that
         was actually available — MediaMTX's playback server clamps the request to what
         the buffer still holds and says so via `partialPreroll`. Storing the clamped
@@ -228,6 +243,7 @@ class WatchEventRecorder:
                 source_uuid=signal.source_uuid or None,
                 profile_uuid=self._profile_uuid,
                 event_uuid=event_uuid,
+                kind=str(clip.get("kind") or RECORDING_KIND_CLIP),
                 file_path=str(clip["path"]),
                 overlay_path=str(overlay_path) if overlay_path else None,
                 started_at=started_at,
@@ -235,27 +251,16 @@ class WatchEventRecorder:
                 duration_s=duration_s,
                 size_bytes=int(clip.get("sizeBytes") or 0),
                 partial_preroll=bool(clip.get("partialPreroll")),
+                metadata_json=_media_metadata(clip),
             )
             response = await asyncio.to_thread(api.create_recording, payload)
             if response.status != JsonValues.SUCCESS or response.recording is None:
                 raise RuntimeError(response.message or "db refused the recording")
-            recording_uuid = response.recording.uuid
-
-            if event_uuid:
-                # Both directions: `recordings.event_uuid` answers "what fired this
-                # clip", `watch_events.recording_uuid` answers "does this card have a
-                # video", and the card asks the second one on every row.
-                watch_api = WatchProfilesApi(self._api_client_factory())
-                await asyncio.to_thread(
-                    watch_api.update_watch_event,
-                    event_uuid,
-                    WatchEventUpdate(recording_uuid=recording_uuid),
-                )
-            return recording_uuid
+            return response.recording.uuid
         except Exception as e:
             self._failures += 1
-            logger.exception("Could not register clip for rule %s", signal.rule_name)
-            self._log(f"Clip written but not recorded ({signal.rule_name}): {e}")
+            logger.exception("Could not register recording for rule %s", signal.rule_name)
+            self._log(f"Recording written but not registered ({signal.rule_name}): {e}")
             return None
 
     def _write_overlay(
@@ -400,8 +405,25 @@ class NullWatchEventRecorder(WatchEventRecorder):
     async def record(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
         return None
 
-    async def attach_recording(self, signal: WatchEventSignal, event_uuid: Optional[str], clip: Dict[str, Any]):
+    async def attach_recording(
+        self,
+        signal: WatchEventSignal,
+        event_uuid: Optional[str],
+        clip: Dict[str, Any],
+        context: Optional[ActionContext] = None,
+        detection_track: Optional[Any] = None,
+    ) -> Optional[str]:
         return None
+
+
+def _media_metadata(media: Dict[str, Any]) -> Dict[str, Any]:
+    """The display-worthy part of a media action's result.
+
+    Filtered to a known list rather than passed through wholesale: the result dict is an
+    action's private return value and gains keys freely, and a row that mirrors all of
+    them turns every internal rename into a schema change nobody noticed.
+    """
+    return {key: media[key] for key in MEDIA_METADATA_KEYS if media.get(key) is not None}
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:

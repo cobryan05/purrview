@@ -72,9 +72,17 @@ logger = logging.getLogger(__name__)
 #: not an equality check, because there are two of them now and a third would otherwise
 #: silently build with `publisher=None` and report "no broker configured" forever.
 MQTT_ACTION_KINDS = frozenset({"publish_mqtt", "publish_mqtt_image"})
-#: The one action kind whose output is a playable clip, and so the only one whose result
-#: may become a `recordings` row. `save_snapshot` reports a `path` too.
+#: The one action kind whose output is a playable clip, and so the only one that needs
+#: the rolling buffer, the drain and a detection overlay.
 CLIP_ACTION_KIND = "record_clip"
+#: Action kind → the `recordings.kind` its result becomes. Membership is what decides
+#: whether a result's `path` may become a `recordings` row at all: `save_snapshot` and
+#: `save_timelapse` both report a `path` too, and treating either as an event's video
+#: would put a jpg behind a `<video>` element.
+MEDIA_ACTION_KINDS = {
+    CLIP_ACTION_KIND: "clip",
+    "record_event_timelapse": "timelapse",
+}
 #: Shared, stateless, and never used for a real run — see the class docstring.
 _NULL_RECORDER = NullWatchEventRecorder()
 
@@ -475,7 +483,11 @@ class StreamWatcherTask(Task):
                 continue
             self._actions.append((row, action))
 
-        self._frame_actions = [entry for entry in self._actions if entry[0].trigger == FRAME_ANALYSED]
+        # Asked of the action rather than of the row, for the same reason `_actions_for`
+        # is: `record_event_timelapse` sits on the `event_ended` trigger and still needs
+        # every frame. Reading `row.trigger` here left it never sampling anything, and
+        # the failure was silent — every event compiled from zero frames.
+        self._frame_actions = [entry for entry in self._actions if FRAME_ANALYSED in entry[1].triggers(entry[0])]
 
         if self._actions:
             self.log(f"Loaded {len(self._actions)} action(s)")
@@ -1177,7 +1189,16 @@ class StreamWatcherTask(Task):
         return [
             (row, action)
             for row, action in self._actions
-            if action_applies(row, trigger, rule_uuid=signal.rule_uuid or None, source_uuid=signal.source_uuid or None)
+            if action_applies(
+                row,
+                trigger,
+                rule_uuid=signal.rule_uuid or None,
+                source_uuid=signal.source_uuid or None,
+                # Asked of the action, not read off the row: an action that spans an
+                # event's life fires on triggers the user never picked. See
+                # `Action.triggers`.
+                fires_on=action.triggers(row),
+            )
         ]
 
     async def _dispatch(self, signal, pipeline: Optional[WatchPipeline] = None) -> None:
@@ -1207,16 +1228,23 @@ class StreamWatcherTask(Task):
             await self._recorder.record(signal, context)
         event_uuid = self._recorder.event_uuid_for(signal)
 
-        clip = await self._run_actions(self._actions_for(signal, trigger), signal, context)
+        media = await self._run_actions(self._actions_for(signal, trigger), signal, context)
 
         if signal.phase is EventPhase.END:
-            if clip:
+            for item in media:
                 await self._recorder.attach_recording(
                     signal,
                     event_uuid,
-                    clip,
+                    item,
                     context=context,
-                    detection_track=self._detection_tracks.get(signal.source_uuid or ""),
+                    # Only a clip has one. A timelapse's frames are seconds apart, so
+                    # there is no continuous detection track to lay over it — anything
+                    # it wants drawn is burnt in at sample time.
+                    detection_track=(
+                        self._detection_tracks.get(signal.source_uuid or "")
+                        if item.get("kind") == MEDIA_ACTION_KINDS[CLIP_ACTION_KIND]
+                        else None
+                    ),
                 )
             await self._recorder.record(signal, context)
 
@@ -1252,15 +1280,19 @@ class StreamWatcherTask(Task):
         context = self._action_context(signal, pipeline)
         await self._run_actions(self._actions_for(signal, FRAME_ANALYSED), signal, context)
 
-    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> Optional[Dict[str, Any]]:
+    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> List[Dict[str, Any]]:
         """Run a resolved action list, counting outcomes. Never raises.
 
-        Returns the result data of a clip-producing action, so the caller can register
-        the file it wrote. `record_clip` is the only action that writes a `path`, and a
-        profile with two of them scoped to the same rule and source is a
-        misconfiguration — the last one wins, exactly as it does for `_last_clip_path`.
+        Returns the result data of every media-producing action, each tagged with the
+        `recordings.kind` it becomes, so the caller can register the files they wrote.
+        A list rather than the single clip this used to return: an event can own both a
+        clip and a timelapse, and they are peers.
+
+        Two actions of the *same* kind scoped to one rule and source is still a
+        misconfiguration, and still resolves as last-wins — but now only against its own
+        kind, so a timelapse can no longer displace a clip.
         """
-        clip: Optional[Dict[str, Any]] = None
+        media: Dict[str, Dict[str, Any]] = {}
         for row, action in rows:
             try:
                 result = await action.run(signal, context)
@@ -1278,13 +1310,18 @@ class StreamWatcherTask(Task):
                 # reports one, and treating a jpg as the event's clip put a still image
                 # behind the status panel's "last clip" and would now write a
                 # `recordings` row pointing at something no <video> can play.
-                if row.kind == CLIP_ACTION_KIND and result.data.get("path"):
-                    self._last_clip_path = result.data["path"]
-                    clip = dict(result.data)
+                kind = MEDIA_ACTION_KINDS.get(row.kind)
+                if kind and result.data.get("path"):
+                    if row.kind == CLIP_ACTION_KIND:
+                        # The status panel's "last clip" means the last *clip*. A
+                        # timelapse is not one, and would make the panel claim a
+                        # 120x-speed summary as the thing the watcher just recorded.
+                        self._last_clip_path = result.data["path"]
+                    media[kind] = dict(result.data, kind=kind)
             else:
                 self._action_failures += 1
                 self._log_action_failure(row, f"Action {row.kind} failed: {result.detail}")
-        return clip
+        return list(media.values())
 
     def _log_action_failure(self, row: Any, message: str) -> None:
         """Log an action failure once per distinct message, not once per occurrence.

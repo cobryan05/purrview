@@ -91,6 +91,11 @@ const ACTION_KINDS = [
   { key: 'publish_mqtt', text: 'Publish MQTT' },
   { key: 'publish_mqtt_image', text: 'Publish MQTT image' },
   { key: 'record_clip', text: 'Record clip' },
+  // "Event timelapse", not "Record event timelapse": the kind dropdown sizes itself to
+  // its widest option, and the longer label pushed the whole action row onto a second
+  // line. It also reads better beside "Save timelapse" — the distinction between them is
+  // per-event versus all-day, which is exactly what the first word says.
+  { key: 'record_event_timelapse', text: 'Event timelapse' },
   { key: 'save_snapshot', text: 'Save snapshot' },
   { key: 'save_timelapse', text: 'Save timelapse' },
 ];
@@ -120,6 +125,7 @@ const FRAME_ANALYSED_TRIGGER = 'frame_analysed';
  */
 const ACTION_TRIGGERS = {
   record_clip: ['event_ended'],
+  record_event_timelapse: ['event_ended'],
   save_timelapse: ['frame_analysed'],
 };
 
@@ -130,6 +136,12 @@ const TRIGGER_LIMIT_HELP = {
     + 'the pre-roll is taken retroactively out of the rolling buffer, which is what lets '
     + 'you record the seconds before the rule fired. Use the pre-roll and post-roll '
     + 'settings to cover what happened either side.',
+  record_event_timelapse:
+    'The video is compiled when the event ends, because that is when its last frame is '
+    + 'known. It does not only run then: while the event is open it quietly keeps a frame '
+    + 'every few seconds, and those are what it compiles. Nothing is kept once the event '
+    + 'is over, so an event that never opens costs nothing. For a timelapse that runs all '
+    + 'day whether or not anything is happening, use Save timelapse instead.',
   save_timelapse:
     'A timelapse has to keep shooting through the hours when nothing happens, so it '
     + 'runs on the frame the watcher is already pulling from the camera rather than on '

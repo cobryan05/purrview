@@ -9,7 +9,7 @@ with both would force every filter-chain consumer to handle actions it cannot ex
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from ..watch.events import WatchEventSignal
 
@@ -93,6 +93,26 @@ class Action(ABC):
         """Rendered directly into the Watchers pane by the existing form machinery, so
         a new action kind needs no UI change."""
         return {}
+
+    @classmethod
+    def triggers(cls, row: Any) -> Set[str]:
+        """Every trigger this action must be dispatched on, given its configured row.
+
+        Almost every action is one side effect at one moment, and the default — the
+        single trigger the user picked — is exactly right for those.
+
+        An action that spans an event's life is not. `record_event_timelapse` has to
+        open a buffer when the event starts, take a frame periodically for as long as it
+        stays open, and compile at the close; three triggers, one action, one row of
+        configuration. Expressing that as three rows would mean three sets of parameters
+        the user has to keep in step, and nothing linking them.
+
+        Takes the row rather than being a bare constant so an action can still *use* the
+        configured trigger — an action might fire on whichever edge the user chose plus
+        `frame_analysed`. `row.trigger` stays meaningful either way: it is the moment the
+        action is understood to do its job, and it is what the Watchers pane shows.
+        """
+        return {getattr(row, "trigger", None)}
 
     @abstractmethod
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:

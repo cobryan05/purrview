@@ -1606,6 +1606,22 @@ class BufferMode(str, Enum):
     OFF = "off"  # never arm a rolling buffer for this source
 
 
+class RecordingKind(str, Enum):
+    """What sort of media a `recordings` row points at.
+
+    One table rather than two, because everything that is *about* the file is identical:
+    the retention bounds, the size cap, the orphan sweep, the file endpoint and the
+    `<video>` that plays it. Only the way it was produced differs, and that is exactly
+    one column's worth of difference.
+    """
+
+    #: Cut out of the rolling buffer at event close — real time, camera frame rate.
+    CLIP = "clip"
+    #: Sampled at an interval while the event was open, compiled at close. Minutes or
+    #: hours of an event compressed into seconds.
+    TIMELAPSE = "timelapse"
+
+
 class RecordingStatus(str, Enum):
     PENDING = "pending"
     WRITING = "writing"
@@ -1848,10 +1864,15 @@ class WatchProfile(TimestampModel, table=True):
 
 
 class Recording(TimestampModel, table=True):
-    """One extracted clip on disk.
+    """One piece of durable media on disk — a clip or an event timelapse.
 
     Independent of the rolling buffer: the buffer is RAM and evaporates, these are the
     only durable media. There is deliberately no 24/7 timeline.
+
+    An event may own several of these, one per `kind`, which is why the link lives here
+    on `event_uuid` and not as a single pointer on the event. A watcher recording both
+    the clip and the timelapse of a cat's visit produces two rows for one event, and the
+    review card shows a badge for each.
     """
 
     __tablename__ = "recordings"
@@ -1859,6 +1880,9 @@ class Recording(TimestampModel, table=True):
     source_uuid: Optional[str] = Field(default=None, foreign_key="sources.uuid", index=True, ondelete="SET NULL")
     profile_uuid: Optional[str] = Field(default=None, foreign_key="watch_profiles.uuid", ondelete="SET NULL")
     event_uuid: Optional[str] = Field(default=None, index=True)
+    # Validated against RecordingKind on the write models, stored as a plain string for
+    # the same reason every other enum-ish column here is — see the WatchProfile note.
+    kind: str = Field(default=RecordingKind.CLIP.value, index=True)
     file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
     #: Absolute path to the clip's detection-overlay sidecar, when one was written. The
@@ -1876,14 +1900,24 @@ class Recording(TimestampModel, table=True):
     # True when the requested pre-roll had already aged out of the RAM buffer. A
     # truncated clip must never be presented as though its pre-roll were intact.
     partial_preroll: bool = Field(default=False)
+    # Whatever the producing action wants said about the file, for the player to show.
+    # A timelapse puts its frame count, sample interval and the real span it compressed
+    # here, because "18 seconds" on its own is a lie about what you are watching. JSON
+    # rather than columns: it is display text on one kind of row, never a filter.
+    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class WatchEvent(SQLModel, table=True):
     """One opening and closing of a rule.
 
-    Rows with `ended_at` set and no `recording_uuid` are a work queue — but a
-    short-deadline one, because the source window ages out of the RAM buffer in under
+    Rows with `ended_at` set and no `recordings` row naming them are a work queue — but
+    a short-deadline one, because the source window ages out of the RAM buffer in under
     a minute.
+
+    The link to media is one-way, from `recordings.event_uuid` back to here. It used to
+    be two-way, with a `recording_uuid` column answering "does this card have a video"
+    without a join — which stopped being answerable by one pointer the moment an event
+    could own both a clip and a timelapse.
     """
 
     __tablename__ = "watch_events"
@@ -1918,7 +1952,6 @@ class WatchEvent(SQLModel, table=True):
     # curates, this one is the review page's card art and is deleted with the event.
     snapshot_path: Optional[str] = Field(default=None)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    recording_uuid: Optional[str] = Field(default=None, foreign_key="recordings.uuid", ondelete="SET NULL")
 
 
 # ─── Watch Profile read/write models ─────────────────────────────────────────
@@ -2245,6 +2278,21 @@ class WatchProfileUpdate(ApiModel):
         return self
 
 
+class EventRecordingRead(OrmModel):
+    """One piece of media hanging off an event, as the review list needs it.
+
+    A summary, not the whole `RecordingRead`: the events list fetches a page of these
+    per request and the card only decides which badges to draw. The modal fetches the
+    full row by uuid once the user opens it, which is the only place `file_path` and the
+    overlay actually matter.
+    """
+
+    uuid: str
+    kind: str
+    duration_s: float = 0.0
+    status: str = RecordingStatus.PENDING.value
+
+
 class WatchEventRead(OrmModel):
     uuid: str
     profile_uuid: str
@@ -2266,7 +2314,11 @@ class WatchEventRead(OrmModel):
     # `/api/watch-events/{uuid}/snapshot` instead.
     has_snapshot: bool = False
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
-    recording_uuid: Optional[str] = None
+    #: Every recording naming this event, clip and timelapse alike. Filled in by the db
+    #: client in one batched query per page — not a relationship, because `Recording`
+    #: has no FK back to `watch_events` (an event can be deleted while its extraction is
+    #: still in flight, and a hard FK would either block that or take the row with it).
+    recordings: List[EventRecordingRead] = Field(default_factory=list)
 
 
 class RecordingRead(OrmModel):
@@ -2274,6 +2326,7 @@ class RecordingRead(OrmModel):
     source_uuid: Optional[str] = None
     profile_uuid: Optional[str] = None
     event_uuid: Optional[str] = None
+    kind: str = RecordingKind.CLIP.value
     file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
     overlay_path: Optional[str] = None
@@ -2284,5 +2337,6 @@ class RecordingRead(OrmModel):
     status: str
     error: Optional[str] = None
     partial_preroll: bool = False
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

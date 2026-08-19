@@ -1294,10 +1294,13 @@ class TestOpenEvents:
         rec = await db_client.create_recording(Recording(status="complete"))
 
         updated = await db_client.close_watch_event(
-            event.uuid, ended_at=datetime.now(timezone.utc), peak_confidence=0.9, recording_uuid=rec.uuid
+            event.uuid, ended_at=datetime.now(timezone.utc), peak_confidence=0.9
         )
-        assert updated.recording_uuid == rec.uuid
         assert updated.peak_confidence == 0.9
+        # The link lives on the recording, so closing the event neither sets nor needs it.
+        assert [r.uuid for r in updated.recordings] == []
+        await db_client.update_recording(rec.uuid, event_uuid=event.uuid)
+        assert [r.uuid for r in (await db_client.get_watch_event(event.uuid)).recordings] == [rec.uuid]
 
 
 class TestTrackerListing:

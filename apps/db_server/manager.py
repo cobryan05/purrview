@@ -25,6 +25,7 @@ from apps import (
     RECORDINGS_CLIP_DIR,
     RECORDINGS_ORPHAN_GRACE_S,
     RECORDINGS_SNAPSHOT_DIR,
+    RECORDINGS_TIMELAPSE_DIR,
     STREAM_BUFFER_RETENTION_S,
     THUMB_CACHE_MAX_MB,
 )
@@ -289,7 +290,15 @@ class Manager:
         # attribute rather than a module constant read directly, so a test can point it
         # at a tmp dir: a sweep that walks a directory and unlinks must never be able to
         # run against the developer's own /data/recordings just because a test called it.
-        self._recording_roots: Tuple[Path, ...] = (RECORDINGS_CLIP_DIR, RECORDINGS_SNAPSHOT_DIR)
+        self._recording_roots: Tuple[Path, ...] = (
+            RECORDINGS_CLIP_DIR,
+            RECORDINGS_SNAPSHOT_DIR,
+            # Event timelapses. Included from the start rather than added once someone
+            # noticed the folder growing: a root the orphan sweep does not know about is
+            # one where a failed compile's leftovers accumulate with nothing to remove
+            # them, and where the size cap silently under-measures the disk it caps.
+            RECORDINGS_TIMELAPSE_DIR,
+        )
         # When the retention sweep last ran, so it happens on a clock of its own rather
         # than on every worker tick. None means "not yet", which makes the first sweep
         # run shortly after startup — the point at which a long-stopped deployment has
@@ -3935,18 +3944,24 @@ class Manager:
         return path if path.is_file() else None
 
     async def delete_watch_event(self, uuid: str) -> bool:
-        """Delete an event, its card art, and any clip it owns.
+        """Delete an event, its card art, and every recording it owns.
+
+        Every recording, not one: an event can own both a clip and a timelapse, and
+        deleting only the first left the other's file on disk with a row pointing at a
+        event that no longer exists — invisible in the UI and swept only by the orphan
+        pass, an hour later at best.
 
         The snapshot is the event's own file (not a curated training image), so it goes
         with the row. A `save_snapshot` action's output lives under `image_datasets` and
-        is deliberately left alone — the user curates that.
+        is deliberately left alone — the user curates that. So does a `save_timelapse`
+        action's, which is not an event's property at all.
         """
         event = await self._db_client.get_watch_event(uuid)
         if event is None:
             return False
         snapshot = await self._db_client.get_watch_event_snapshot_path(uuid)
-        if event.recording_uuid:
-            await self.delete_recording(event.recording_uuid)
+        for recording_uuid in await self._db_client.recording_uuids_for_event(uuid):
+            await self.delete_recording(recording_uuid)
         deleted = await self._db_client.delete_watch_event(uuid)
         if deleted and snapshot:
             try:
@@ -4085,11 +4100,15 @@ class Manager:
         return size_by_path.get(os.path.realpath(path), 0)
 
     async def _event_disk_usage(self, uuid: str, size_by_path: Dict[str, int]) -> int:
-        """Bytes one event will free: its snapshot plus the clip it owns."""
+        """Bytes one event will free: its snapshot plus every recording it owns.
+
+        Undercounting here is not cosmetic — eviction decrements a running total by this
+        figure and stops when it is back under the cap, so missing an event's second
+        recording makes the sweep believe it freed less than it did and evict further
+        than it needed to.
+        """
         total = self._path_size(await self._db_client.get_watch_event_snapshot_path(uuid), size_by_path)
-        event = await self._db_client.get_watch_event(uuid)
-        recording_uuid = getattr(event, "recording_uuid", None)
-        if recording_uuid:
+        for recording_uuid in await self._db_client.recording_uuids_for_event(uuid):
             recording = await self._db_client.get_recording(recording_uuid)
             total += self._path_size(getattr(recording, "file_path", None), size_by_path)
             total += self._path_size(getattr(recording, "thumbnail_path", None), size_by_path)

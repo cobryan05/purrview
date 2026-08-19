@@ -968,10 +968,22 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   display: block;
 }
 
-.event-card__badge {
+/* Holds the media badges in the corner the single one used to pin itself to, and lets
+   a second stack under the first instead of on top of it. */
+.event-card__badges {
   position: absolute;
   top: var(--space-1);
   right: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+/* In normal flow — the corner is the container's job now. Absolute positioning here
+   would put every badge on the same pixels inside it, which is the bug the container
+   was added to fix. */
+.event-card__badge {
   padding: 0.1rem 0.35rem;
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
@@ -979,10 +991,12 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   color: #fff;
 }
 
+/* The one badge that is not about media, and the only one still pinned itself: it sits
+   in the opposite corner from the media stack so an in-progress event with a timelapse
+   already accumulating reads as two separate facts. */
 .event-card__badge--live {
-  top: auto;
+  position: absolute;
   bottom: var(--space-1);
-  right: auto;
   left: var(--space-1);
   background: var(--color-accent);
 }
@@ -1112,6 +1126,24 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+
+.event-detail__media-tabs {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.event-detail__media-tab[aria-selected='true'] {
+  /* The selected tab has to be legible as selected without colour alone — the app is
+     dark-only and a subtle background shift reads as a rendering artifact. */
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.event-detail__timelapse-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
 }
 
 .event-detail__toggle {

@@ -173,18 +173,70 @@ class TestWatchEventFilters:
         assert body["total"] == 1
 
     async def test_filter_by_has_recording(self, http_client):
-        """The card shows a video badge off this, so "has a clip" must not be inferred
-        from anything but the link actually existing."""
+        """The card shows a video badge off this, so "has media" must not be inferred
+        from anything but a recording actually naming the event."""
         profile_uuid = await _make_profile(http_client)
         with_clip = await _make_event(http_client, profile_uuid)
         await _make_event(http_client, profile_uuid)
 
-        r = await http_client.post("/api/recordings", json={"profileUuid": profile_uuid, "filePath": "/tmp/a.mp4"})
-        recording = r.json()["recording"]
-        await http_client.patch(f"/api/watch-events/{with_clip['uuid']}", json={"recordingUuid": recording["uuid"]})
+        await http_client.post(
+            "/api/recordings",
+            json={"profileUuid": profile_uuid, "eventUuid": with_clip["uuid"], "filePath": "/tmp/a.mp4"},
+        )
 
         assert (await _list(http_client, has_recording=True))["total"] == 1
         assert (await _list(http_client, has_recording=False))["total"] == 1
+
+    async def test_an_event_owning_two_recordings_is_counted_once(self, http_client):
+        """The filter is an EXISTS, not a join.
+
+        A join against a one-to-many is the obvious way to write this and would count
+        an event with both a clip and a timelapse twice, making "N events" disagree with
+        the number of cards on the page.
+        """
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+        for kind in ("clip", "timelapse"):
+            await http_client.post(
+                "/api/recordings",
+                json={
+                    "profileUuid": profile_uuid,
+                    "eventUuid": event["uuid"],
+                    "kind": kind,
+                    "filePath": f"/tmp/{kind}.mp4",
+                },
+            )
+
+        listed = await _list(http_client, has_recording=True)
+        assert listed["total"] == 1
+        assert len(listed["events"]) == 1
+
+    async def test_events_carry_every_recording_that_names_them(self, http_client):
+        """Both kinds reach the card, so it can badge each one."""
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+        for kind in ("timelapse", "clip"):
+            await http_client.post(
+                "/api/recordings",
+                json={
+                    "profileUuid": profile_uuid,
+                    "eventUuid": event["uuid"],
+                    "kind": kind,
+                    "durationS": 4.0,
+                    "filePath": f"/tmp/{kind}.mp4",
+                },
+            )
+
+        listed = await _list(http_client, has_recording=True)
+        recordings = listed["events"][0]["recordings"]
+        assert {r["kind"] for r in recordings} == {"clip", "timelapse"}
+        assert all(r["durationS"] == 4.0 for r in recordings)
+
+    async def test_an_event_with_no_recordings_reports_an_empty_list(self, http_client):
+        """Not null. The card does `.find` on it, and a null takes the whole grid down."""
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(http_client, profile_uuid)
+        assert (await _list(http_client))["events"][0]["recordings"] == []
 
     async def test_newest_first(self, http_client):
         profile_uuid = await _make_profile(http_client)

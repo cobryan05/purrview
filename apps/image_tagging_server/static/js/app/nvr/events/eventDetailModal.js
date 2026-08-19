@@ -34,7 +34,28 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
-import { eventHeadline, formatDuration, formatEventTime, parseEventDate } from './eventCard.js';
+import { eventHeadline, findRecording, formatDuration, formatEventTime, parseEventDate } from './eventCard.js';
+
+/**
+ * How a timelapse describes itself, from the metadata its action recorded.
+ *
+ * Worth the words because the duration alone is actively misleading: a scrubber saying
+ * "0:14" over footage of a two-hour visit invites the reader to think the cat left after
+ * fourteen seconds. Returns null when the row predates the metadata or the action did
+ * not report a span — an unexplained video is better than an invented explanation.
+ */
+export function describeTimelapse(recording) {
+  const meta = recording?.metadataJson || {};
+  const span = Number(meta.sourceSpanS);
+  const frames = Number(meta.frames);
+  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(frames) || frames <= 0) return null;
+  const played = Number(recording.durationS) || 0;
+  const spanText = span >= 3600
+    ? `${(span / 3600).toFixed(1)} hours`
+    : span >= 60 ? `${Math.round(span / 60)} minutes` : `${Math.round(span)} seconds`;
+  const speed = played > 0 ? ` (${Math.round(span / played)}x)` : '';
+  return `${frames} frames over ${spanText}, played in ${played.toFixed(1)}s${speed}.`;
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -150,7 +171,64 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
   let video = null;
   let overlay = null;
   let saveBtn = null;
+  let mediaSwitcher = null;
   const savedHint = el('div', 'event-detail__hint');
+
+  const clipRow = findRecording(event, 'clip');
+  const timelapseRow = findRecording(event, 'timelapse');
+  // The clip first when there is one: it is the literal record, and the timelapse is a
+  // summary of it. An event with only a timelapse opens on that.
+  const mediaRows = [clipRow, timelapseRow].filter(Boolean);
+
+  /**
+   * Fetch a recording's full row and show it, degrading to the snapshot.
+   *
+   * The list only carries a summary of each recording — enough to draw a badge and
+   * label a tab. The file path and the overlay live on the full row, which is fetched
+   * lazily so an event with two recordings costs one request, not two, until the user
+   * asks for the second.
+   */
+  async function showMedia(row) {
+    try {
+      const recording = await fetchRecording(row.uuid);
+      // The row can outlive its file, or vice versa; either way the snapshot is still
+      // worth showing, so this degrades rather than emptying the modal.
+      if (!recording?.filePath) {
+        renderSnapshotOnly(row.kind === 'timelapse'
+          ? 'The timelapse for this event is no longer on disk.'
+          : 'The clip for this event is no longer on disk.');
+        return;
+      }
+      renderVideo({ ...recording, kind: recording.kind || row.kind });
+    } catch (err) {
+      Logger.error(err);
+      renderSnapshotOnly('That recording could not be loaded.');
+    }
+  }
+
+  /**
+   * Two buttons, and only when there are two things to switch between.
+   *
+   * Deliberately not tabs-always: an event with one recording is the overwhelmingly
+   * common case, and a single-tab tab strip is chrome that explains nothing.
+   */
+  function buildMediaSwitcher() {
+    if (mediaRows.length < 2) return null;
+    const bar = el('div', 'event-detail__media-tabs');
+    bar.dataset.testid = 'event-detail-media-tabs';
+    bar.setAttribute('role', 'tablist');
+    for (const row of mediaRows) {
+      const isTimelapse = row.kind === 'timelapse';
+      const tab = button(isTimelapse ? 'Timelapse' : 'Clip', () => {
+        for (const other of bar.children) other.setAttribute('aria-selected', String(other === tab));
+        void showMedia(row);
+      }, { testid: `event-detail-media-tab-${row.kind}`, className: 'panel-btn event-detail__media-tab' });
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(row === mediaRows[0]));
+      bar.appendChild(tab);
+    }
+    return bar;
+  }
 
   function renderSnapshotOnly(message) {
     // Before the wipe: the overlay's loops outlive the nodes they draw on, and
@@ -159,6 +237,10 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
     overlay = null;
     video = null;
     mediaPane.innerHTML = '';
+    // Kept above the message even when this recording cannot be shown: one of an
+    // event's two videos being off disk is no reason to strand the user on it with no
+    // way back to the other.
+    if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
     if (event.hasSnapshot) {
       const img = document.createElement('img');
       img.className = 'event-detail__image';
@@ -171,7 +253,16 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
   }
 
   function renderVideo(recording) {
+    // Same wipe as `renderSnapshotOnly`, and for the same reason: switching between an
+    // event's clip and its timelapse replaces the <video> the overlay's animation loop
+    // is drawing onto, and a loop left running against a detached node keeps a whole
+    // clip's worth of boxes alive for as long as the modal is open.
+    overlay?.destroy();
+    overlay = null;
     mediaPane.innerHTML = '';
+    if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
+
+    const isTimelapse = recording.kind === 'timelapse';
 
     video = document.createElement('video');
     video.className = 'event-detail__video';
@@ -182,6 +273,24 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
     video.src = recordingFileUrl(recording.uuid);
     video.dataset.testid = 'event-detail-video';
     mediaPane.appendChild(video);
+
+    if (isTimelapse) {
+      // A timelapse has no pre-roll to mark and no detection sidecar to lay over it —
+      // its frames are seconds apart, so there is no continuous track to draw. What it
+      // does need is to say what it compressed.
+      const note = describeTimelapse(recording);
+      if (note) {
+        const line = el('p', 'event-detail__timelapse-note', note);
+        line.dataset.testid = 'event-detail-timelapse-note';
+        mediaPane.appendChild(line);
+      }
+      const tools = el('div', 'event-detail__tools');
+      saveBtn = button('Save frame for annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
+      tools.appendChild(saveBtn);
+      tools.appendChild(savedHint);
+      mediaPane.appendChild(tools);
+      return;
+    }
 
     const offset = eventOffsetInClip(event, recording);
     if (offset != null) {
@@ -364,7 +473,8 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
       title: 'Delete this event?',
       // Says what is destroyed and what is not: a `save_snapshot` action's training
       // images live under image_datasets and are the user's to curate.
-      message: 'The event, its snapshot and its clip will be removed. Frames you saved for annotation are not affected.',
+      message: 'The event, its snapshot and any clip or timelapse of it will be removed. '
+        + 'Frames you saved for annotation are not affected.',
       confirmText: 'Delete',
       cancelText: 'Keep',
     });
@@ -382,21 +492,11 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
   // ---------------------------------------------------------------- lifecycle
 
   renderSidebar();
-  renderSnapshotOnly(event.recordingUuid ? 'Loading clip…' : 'No clip was recorded for this event.');
+  mediaSwitcher = buildMediaSwitcher();
+  renderSnapshotOnly(mediaRows.length ? 'Loading…' : 'Nothing was recorded for this event.');
   shell.open();
 
-  if (event.recordingUuid) {
-    void (async () => {
-      const recording = await fetchRecording(event.recordingUuid);
-      // The row can outlive its file, or vice versa; either way the snapshot is still
-      // worth showing, so this degrades rather than emptying the modal.
-      if (!recording?.filePath) {
-        renderSnapshotOnly('The clip for this event is no longer on disk.');
-        return;
-      }
-      renderVideo(recording);
-    })();
-  }
+  if (mediaRows.length) void showMedia(mediaRows[0]);
 
   return { close: () => shell.close() };
 }

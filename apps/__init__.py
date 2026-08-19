@@ -115,6 +115,13 @@ TASK_RETENTION_MAX_COMPLETED = int(os.environ.get("TASK_RETENTION_MAX_COMPLETED"
 # not training images and must not turn up in the annotation file browser.
 RECORDINGS_CLIP_DIR = Path(os.environ.get("RECORDINGS_CLIP_DIR", "/data/recordings/clips"))
 RECORDINGS_SNAPSHOT_DIR = Path(os.environ.get("RECORDINGS_SNAPSHOT_DIR", "/data/recordings/event_snapshots"))
+# Event timelapses. Its own root rather than a subdirectory of the clips one so the two
+# can be pointed at different volumes: a timelapse is a handful of KB per event and a
+# clip is tens of MB, and someone who wants a year of the former and a week of the
+# latter needs them separable. Swept by the same bounds as clips — both are `recordings`
+# rows, unlike the `save_timelapse` action's loose frames, which live under FILES_ROOT
+# and have their own retention settings entirely.
+RECORDINGS_TIMELAPSE_DIR = Path(os.environ.get("RECORDINGS_TIMELAPSE_DIR", "/data/recordings/timelapses"))
 
 # A file under those roots younger than this is left alone by the orphan sweep. An
 # in-flight clip exists on disk before the row that references it does, so without a

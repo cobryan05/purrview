@@ -55,6 +55,7 @@ from .types import (
     DatasetRead,
     DatasetUpdate,
     DateTerm,
+    EventRecordingRead,
     FilenameTerm,
     FilterChain,
     FilterChainCreate,
@@ -6759,10 +6760,44 @@ class DbClient:
         The column holds a server filesystem path, which the browser can do nothing
         with and should not see; what the card needs to know is only whether there is
         an image to fetch from the snapshot endpoint.
+
+        `recordings` is left empty here and filled in by the caller — see
+        `_attach_event_recordings`. Doing it per event would be a query per card.
         """
         read = WatchEventRead.model_validate(event)
         read.has_snapshot = bool(event.snapshot_path)
         return read
+
+    async def _attach_event_recordings(self, session: Any, events: List[WatchEventRead]) -> List[WatchEventRead]:
+        """Fill in each event's media list with one query for the whole page.
+
+        The alternative — a relationship with `selectinload` — needs a foreign key from
+        `recordings.event_uuid` back to `watch_events`, and that FK is deliberately
+        absent: extraction runs after the event closes and outlives a user deleting it,
+        so the constraint would either block the delete or take the in-flight row with
+        it. One `IN` per page costs the same as the `selectinload` would have.
+        """
+        if not events:
+            return events
+        uuids = [e.uuid for e in events]
+        rows = (
+            await session.exec(
+                select(
+                    Recording.event_uuid, Recording.uuid, Recording.kind, Recording.duration_s, Recording.status
+                ).where(Recording.event_uuid.in_(uuids))
+                # Stable order, so the card's badges and the modal's players do not
+                # reshuffle between two polls of a list that refreshes on a timer.
+                .order_by(Recording.kind, Recording.created_at)
+            )
+        ).all()
+        by_event: Dict[str, List[EventRecordingRead]] = {}
+        for event_uuid, uuid, kind, duration_s, status in rows:
+            by_event.setdefault(event_uuid, []).append(
+                EventRecordingRead(uuid=uuid, kind=kind, duration_s=duration_s or 0.0, status=status)
+            )
+        for event in events:
+            event.recordings = by_event.get(event.uuid, [])
+        return events
 
     async def list_watch_events(
         self,
@@ -6799,17 +6834,20 @@ class DbClient:
                 stmt = stmt.where(WatchEvent.started_at >= start_from)
             if start_to:
                 stmt = stmt.where(WatchEvent.started_at <= start_to)
-            if has_recording is True:
-                stmt = stmt.where(WatchEvent.recording_uuid != None)  # noqa: E711
-            elif has_recording is False:
-                stmt = stmt.where(WatchEvent.recording_uuid == None)  # noqa: E711
+            if has_recording is not None:
+                # EXISTS rather than the reverse pointer this used to test, because an
+                # event can own several recordings and no single column can answer it.
+                # `recordings.event_uuid` is indexed, so this stays a lookup per row.
+                owns_media = select(Recording.uuid).where(Recording.event_uuid == WatchEvent.uuid).exists()
+                stmt = stmt.where(owns_media if has_recording else ~owns_media)
 
             count_stmt = select(func.count()).select_from(stmt.subquery())
             total = (await session.exec(count_stmt)).one()
 
             stmt = stmt.order_by(WatchEvent.started_at.desc()).offset(offset).limit(limit)
             result = await session.exec(stmt)
-            return [self._watch_event_to_read(e) for e in result.all()], int(total)
+            events = [self._watch_event_to_read(e) for e in result.all()]
+            return await self._attach_event_recordings(session, events), int(total)
 
     async def watch_event_facets(self, profile_uuid: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
         """The distinct values each filter dropdown can offer, with display names.
@@ -6855,7 +6893,10 @@ class DbClient:
     async def get_watch_event(self, uuid: str) -> Optional[WatchEventRead]:
         async with self._async_session_maker() as session:
             event = await session.get(WatchEvent, uuid)
-            return None if event is None else self._watch_event_to_read(event)
+            if event is None:
+                return None
+            read = self._watch_event_to_read(event)
+            return (await self._attach_event_recordings(session, [read]))[0]
 
     async def get_watch_event_snapshot_path(self, uuid: str) -> Optional[str]:
         """The raw path, for the endpoint that streams the file. Deliberately its own
@@ -6882,7 +6923,8 @@ class DbClient:
             session.add(event)
             await session.commit()
             await session.refresh(event)
-            return self._watch_event_to_read(event)
+            read = self._watch_event_to_read(event)
+            return (await self._attach_event_recordings(session, [read]))[0]
 
     async def delete_watch_event(self, uuid: str) -> bool:
         async with self._async_session_maker() as session:
@@ -7010,8 +7052,14 @@ class DbClient:
         uuid: str,
         ended_at: datetime,
         peak_confidence: Optional[float] = None,
-        recording_uuid: Optional[str] = None,
     ) -> Optional[WatchEventRead]:
+        """Close an event. Media is attached separately, via `recordings.event_uuid`.
+
+        This used to take the clip's uuid too, from when an event pointed at one
+        recording. It never had a caller that passed it — the recorder always patched
+        the event in its own request — and an event can now own several, so the
+        parameter had nothing left to mean.
+        """
         async with self._async_session_maker() as session:
             event = await session.get(WatchEvent, uuid)
             if event is None:
@@ -7019,12 +7067,11 @@ class DbClient:
             event.ended_at = ended_at
             if peak_confidence is not None:
                 event.peak_confidence = peak_confidence
-            if recording_uuid is not None:
-                event.recording_uuid = recording_uuid
             session.add(event)
             await session.commit()
             await session.refresh(event)
-            return self._watch_event_to_read(event)
+            read = self._watch_event_to_read(event)
+            return (await self._attach_event_recordings(session, [read]))[0]
 
     async def list_open_watch_events(self, profile_uuid: Optional[str] = None) -> List[WatchEventRead]:
         """Events with no `ended_at` — what resume has to close out after a restart."""
@@ -7039,6 +7086,8 @@ class DbClient:
         self,
         profile_uuid: Optional[str] = None,
         source_uuid: Optional[str] = None,
+        event_uuid: Optional[str] = None,
+        kind: Optional[str] = None,
         limit: int = 200,
     ) -> List[RecordingRead]:
         async with self._async_session_maker() as session:
@@ -7047,9 +7096,24 @@ class DbClient:
                 stmt = stmt.where(Recording.profile_uuid == profile_uuid)
             if source_uuid:
                 stmt = stmt.where(Recording.source_uuid == source_uuid)
+            if event_uuid:
+                stmt = stmt.where(Recording.event_uuid == event_uuid)
+            if kind:
+                stmt = stmt.where(Recording.kind == kind)
             stmt = stmt.order_by(Recording.started_at.desc()).limit(limit)
             result = await session.exec(stmt)
             return [RecordingRead.model_validate(r) for r in result.all()]
+
+    async def recording_uuids_for_event(self, event_uuid: str) -> List[str]:
+        """Every recording naming this event.
+
+        Uuids rather than rows: the two callers both delete or stat them one at a time,
+        and hydrating read models to throw away is the same waste
+        `watch_event_uuids_before` avoids.
+        """
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Recording.uuid).where(Recording.event_uuid == event_uuid))
+            return list(result.all())
 
     async def get_recording(self, uuid: str) -> Optional[RecordingRead]:
         async with self._async_session_maker() as session:

@@ -58,6 +58,7 @@ from apps.helpers.db.types import (
     PreviewRunRead,
     PreviewRunUpdate,
     Recording,
+    RecordingKind,
     RecordingRead,
     RecordingStatus,
     Source,
@@ -949,7 +950,6 @@ class WatchEventUpdate(Payload):
     peak_confidence: Optional[float] = None
     truncated: Optional[bool] = None
     snapshot_path: Optional[str] = None
-    recording_uuid: Optional[str] = None
     metadata_json: Optional[Dict[str, Any]] = None
 
 
@@ -962,17 +962,22 @@ class RecordingResponse(StatusResponse):
 
 
 class RecordingCreate(Payload):
-    """A clip that has already been written to disk.
+    """A media file that has already been written to disk.
 
-    `started_at` is the clip's *actual* first frame, not the event's start: pre-roll is
-    cut retroactively out of the buffer and may be clamped by eviction, so the two
-    differ by design. The review page subtracts them to mark where in the clip the rule
-    fired, which only works if this really is the clip's own start.
+    For a clip, `started_at` is its *actual* first frame, not the event's start:
+    pre-roll is cut retroactively out of the buffer and may be clamped by eviction, so
+    the two differ by design. The review page subtracts them to mark where in the clip
+    the rule fired, which only works if this really is the clip's own start.
+
+    For a timelapse the same field is the first *sampled* frame, and `duration_s` is the
+    length of the finished video rather than of the event it summarises — a two-hour
+    event compiles to seconds, and the player's scrubber measures the file.
     """
 
     source_uuid: Optional[str] = None
     profile_uuid: Optional[str] = None
     event_uuid: Optional[str] = None
+    kind: RecordingKind = RecordingKind.CLIP
     file_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
     overlay_path: Optional[str] = None
@@ -983,6 +988,7 @@ class RecordingCreate(Payload):
     status: str = RecordingStatus.COMPLETE.value
     error: Optional[str] = None
     partial_preroll: bool = False
+    metadata_json: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ListModelGroupsResponse(StatusResponse):
@@ -4328,11 +4334,17 @@ class WebApp:
         async def list_recordings(
             profile_uuid: Optional[str] = None,
             source_uuid: Optional[str] = None,
+            event_uuid: Optional[str] = None,
+            kind: Optional[RecordingKind] = None,
             limit: int = 200,
         ) -> ListRecordingsResponse:
             try:
                 recordings = await self._manager.list_recordings(
-                    profile_uuid=profile_uuid, source_uuid=source_uuid, limit=limit
+                    profile_uuid=profile_uuid,
+                    source_uuid=source_uuid,
+                    event_uuid=event_uuid,
+                    kind=kind.value if kind else None,
+                    limit=limit,
                 )
                 return ListRecordingsResponse(status=JsonValues.SUCCESS, recordings=recordings)
             except Exception as e:

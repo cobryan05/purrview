@@ -229,13 +229,59 @@ class TestClipLinking:
         )
         assert store.recordings[0].partial_preroll is True
 
-    async def test_the_event_is_linked_back_to_its_clip(self, recorder, store):
-        """`watch_events.recording_uuid` is what every card in the list checks for its
-        video badge, so the link has to exist in both directions."""
+    async def test_the_clip_names_the_event_and_the_event_is_not_patched(self, recorder, store):
+        """One direction only: `recordings.event_uuid`.
+
+        This used to write the link both ways, so a card could ask "do I have a video"
+        of a single column. An event can own a clip *and* a timelapse now, so the
+        reverse pointer could not answer it and is gone — patching the event here would
+        be writing to a column that no longer exists.
+        """
         event_uuid = await recorder.record(_signal(EventPhase.START), _context())
         await recorder.attach_recording(_signal(EventPhase.END), event_uuid, {"path": "/x.mp4", "durationS": 5.0})
-        assert store.updated[-1][0] == event_uuid
-        assert store.updated[-1][1].recording_uuid == "recording-1"
+        assert store.recordings[0].event_uuid == event_uuid
+        assert store.updated == []
+
+    async def test_an_events_clip_and_timelapse_are_separate_rows(self, recorder, store):
+        """Both attach to one event, each keeping its own kind."""
+        event_uuid = await recorder.record(_signal(EventPhase.START), _context())
+        await recorder.attach_recording(
+            _signal(EventPhase.END), event_uuid, {"path": "/x.mp4", "durationS": 5.0, "kind": "clip"}
+        )
+        await recorder.attach_recording(
+            _signal(EventPhase.END), event_uuid, {"path": "/x-tl.mp4", "durationS": 2.0, "kind": "timelapse"}
+        )
+        assert [r.kind for r in store.recordings] == ["clip", "timelapse"]
+        assert {r.event_uuid for r in store.recordings} == {event_uuid}
+
+    async def test_a_recording_with_no_kind_is_a_clip(self, recorder, store):
+        """The kind comes from the action's result, and only media actions produce one.
+        Defaulting to `clip` keeps a result that predates the field playable."""
+        event_uuid = await recorder.record(_signal(EventPhase.START), _context())
+        await recorder.attach_recording(_signal(EventPhase.END), event_uuid, {"path": "/x.mp4", "durationS": 5.0})
+        assert store.recordings[0].kind == "clip"
+
+    async def test_a_timelapses_display_metadata_reaches_the_row(self, recorder, store):
+        """The player says "N frames over two hours" off this; without it the duration
+        alone claims the visit lasted as long as the video does."""
+        event_uuid = await recorder.record(_signal(EventPhase.START), _context())
+        await recorder.attach_recording(
+            _signal(EventPhase.END),
+            event_uuid,
+            {
+                "path": "/x-tl.mp4",
+                "durationS": 10.0,
+                "kind": "timelapse",
+                "frames": 120,
+                "sourceSpanS": 1200.0,
+                "intervalS": 10.0,
+                # Not in the kept list — an action's result dict is private and gains
+                # keys freely, so the row must not mirror it wholesale.
+                "requestedStart": "2026-08-18T12:00:00+00:00",
+            },
+        )
+        metadata = store.recordings[0].metadata_json
+        assert metadata == {"frames": 120, "sourceSpanS": 1200.0, "intervalS": 10.0}
 
     async def test_a_clip_with_no_path_registers_nothing(self, recorder, store):
         event_uuid = await recorder.record(_signal(EventPhase.START), _context())

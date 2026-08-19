@@ -156,7 +156,6 @@ class TestTheSweep:
         """`delete_watch_event` already cascades — the sweep must not bypass that."""
         event_uuid, snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=40, name="old")
         rec_uuid, clip = await _recording(db_client, tmp_path, age_days=40, name="old-clip", event_uuid=event_uuid)
-        await db_client.update_watch_event(event_uuid, recording_uuid=rec_uuid)
 
         await manager.prune_expired_recordings()
 
@@ -326,7 +325,6 @@ class TestTheSizeCap:
             recording = await db_client.create_recording(
                 Recording(file_path=str(clip), started_at=_ago(30 - i), event_uuid=event.uuid, status="complete")
             )
-            await db_client.update_watch_event(event.uuid, recording_uuid=recording.uuid)
             uuids.append(event.uuid)
 
         result = await manager.enforce_recording_size_cap()
@@ -497,8 +495,6 @@ class TestTheOverlaySidecar:
                 status="complete",
             )
         )
-        await db_client.update_watch_event(event_uuid, recording_uuid=recording.uuid)
-
         await manager.prune_expired_recordings()
 
         assert not snapshot.exists()

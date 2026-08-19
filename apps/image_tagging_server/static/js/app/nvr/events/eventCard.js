@@ -95,6 +95,18 @@ export function eventHeadline(event) {
  * @param {Map<string, string>} [ctx.sourceNames] - source uuid → camera name
  * @returns {HTMLElement}
  */
+/**
+ * The event's recording of one kind (`'clip'` / `'timelapse'`), or null.
+ *
+ * Shared with the detail modal so the card's badges and the modal's players can never
+ * disagree about what an event has. Defensive about a missing list: the events endpoint
+ * always sends one, but this is also called against the fixtures Playwright mocks with,
+ * and a `.find` on undefined takes the whole grid down rather than one badge.
+ */
+export function findRecording(event, kind) {
+  return (event?.recordings || []).find((r) => r.kind === kind) || null;
+}
+
 export function buildEventCard(event, { onOpen, sourceNames = new Map() } = {}) {
   const card = el('article', 'event-card');
   card.dataset.testid = 'event-card';
@@ -124,11 +136,26 @@ export function buildEventCard(event, { onOpen, sourceNames = new Map() } = {}) 
     media.classList.add('event-card__media--empty');
   }
 
-  if (event.recordingUuid) {
+  // One badge per kind of media, not one for "has video": an event can own both a clip
+  // and a timelapse, and they answer different questions — the clip is what happened,
+  // the timelapse is what a two-hour visit looked like in ten seconds. A card showing
+  // only "Video" made the second one undiscoverable without opening every event.
+  //
+  // Stacked in a flow container rather than each pinned to the corner, which is what
+  // they did when there could only ever be one: two absolutely positioned badges land
+  // on precisely the same pixels.
+  const badges = el('div', 'event-card__badges');
+  if (findRecording(event, 'clip')) {
     const badge = el('span', 'event-card__badge event-card__badge--video', '▶ Video');
     badge.dataset.testid = 'event-card-video-badge';
-    media.appendChild(badge);
+    badges.appendChild(badge);
   }
+  if (findRecording(event, 'timelapse')) {
+    const badge = el('span', 'event-card__badge event-card__badge--timelapse', '⏩ Timelapse');
+    badge.dataset.testid = 'event-card-timelapse-badge';
+    badges.appendChild(badge);
+  }
+  if (badges.childElementCount) media.appendChild(badges);
   if (!event.endedAt) {
     // An open event is genuinely different from a finished one — its clip does not
     // exist yet and its duration is still growing.

@@ -31,6 +31,25 @@ from playwright_tests.test_nvr_live_view import FRAME_B64
 PROFILE_UUID = "99999999-eeee-0000-0000-000000000002"
 EVENT_UUID = "event-uuid-0001"
 RECORDING_UUID = "recording-uuid-0001"
+TIMELAPSE_UUID = "recording-uuid-0002"
+
+
+def _clip_summary(**overrides) -> dict:
+    """One entry of `event.recordings`, as the events list sends it.
+
+    A summary, not the whole row — the card only needs the kind to pick a badge, and
+    the modal fetches the full row when the user opens it.
+    """
+    summary = {"uuid": RECORDING_UUID, "kind": "clip", "durationS": 39.0, "status": "complete"}
+    summary.update(overrides)
+    return summary
+
+
+def _timelapse_summary(**overrides) -> dict:
+    summary = {"uuid": TIMELAPSE_UUID, "kind": "timelapse", "durationS": 10.0, "status": "complete"}
+    summary.update(overrides)
+    return summary
+
 
 #: A real JPEG, so an <img> decodes something rather than taking the error path. Shared
 #: with the live-view tests so both exercise the same decode.
@@ -56,7 +75,7 @@ def _event(**overrides) -> dict:
         "truncated": False,
         "hasSnapshot": True,
         "metadataJson": {},
-        "recordingUuid": RECORDING_UUID,
+        "recordings": [_clip_summary()],
     }
     event.update(overrides)
     return event
@@ -147,21 +166,45 @@ def _mock(page: Page, events=None, facets=None, recording=True, overlay=None):
             return
         body = {"status": "success", "recording": None}
         if recording:
-            body["recording"] = {
-                "uuid": RECORDING_UUID,
-                "sourceUuid": "src-1",
-                "profileUuid": PROFILE_UUID,
-                "eventUuid": EVENT_UUID,
-                "filePath": "/data/recordings/clips/a.mp4",
-                # Ten seconds before the event: the pre-roll the rewind buffer held.
-                "startedAt": "2026-08-18T09:14:50",
-                "endedAt": "2026-08-18T09:15:29",
-                "durationS": 39.0,
-                "sizeBytes": 1024,
-                "status": "complete",
-                "error": None,
-                "partialPreroll": False,
-            }
+            # Keyed off the uuid in the path, because an event can own two recordings
+            # and the modal fetches whichever one the user is looking at. Answering the
+            # clip for both would make the timelapse tab silently show the clip.
+            if TIMELAPSE_UUID in route.request.url:
+                body["recording"] = {
+                    "uuid": TIMELAPSE_UUID,
+                    "sourceUuid": "src-1",
+                    "profileUuid": PROFILE_UUID,
+                    "eventUuid": EVENT_UUID,
+                    "kind": "timelapse",
+                    "filePath": "/data/recordings/timelapses/a.mp4",
+                    "startedAt": "2026-08-18T09:15:00",
+                    "endedAt": "2026-08-18T09:15:10",
+                    # The *video's* length. The event it summarises ran for 20 minutes.
+                    "durationS": 10.0,
+                    "sizeBytes": 2048,
+                    "status": "complete",
+                    "error": None,
+                    "partialPreroll": False,
+                    "metadataJson": {"frames": 120, "sourceSpanS": 1200.0, "intervalS": 10.0},
+                }
+            else:
+                body["recording"] = {
+                    "uuid": RECORDING_UUID,
+                    "sourceUuid": "src-1",
+                    "profileUuid": PROFILE_UUID,
+                    "eventUuid": EVENT_UUID,
+                    "kind": "clip",
+                    "filePath": "/data/recordings/clips/a.mp4",
+                    # Ten seconds before the event: the pre-roll the rewind buffer held.
+                    "startedAt": "2026-08-18T09:14:50",
+                    "endedAt": "2026-08-18T09:15:29",
+                    "durationS": 39.0,
+                    "sizeBytes": 1024,
+                    "status": "complete",
+                    "error": None,
+                    "partialPreroll": False,
+                    "metadataJson": {},
+                }
         route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
 
     def _fulfil_sources(route):
@@ -239,15 +282,42 @@ class TestTheCardAnswersTheObviousQuestions:
         expect(page.locator("[data-testid='event-card-video-badge']")).to_have_count(1)
 
     def test_a_card_without_a_clip_has_no_video_badge(self, page: Page, base_url: str):
-        _mock(page, events=[_event(recordingUuid=None)])
+        _mock(page, events=[_event(recordings=[])])
         _open_events_pane(page, base_url)
 
         expect(page.locator("[data-testid='event-card-video-badge']")).to_have_count(0)
 
+    def test_a_card_with_a_timelapse_is_marked_separately(self, page: Page, base_url: str):
+        """A clip and a timelapse answer different questions, so one "Video" badge for
+        both would leave the timelapse undiscoverable without opening every event."""
+        _mock(page, events=[_event(recordings=[_timelapse_summary()])])
+        _open_events_pane(page, base_url)
+
+        expect(page.locator("[data-testid='event-card-timelapse-badge']")).to_have_count(1)
+        expect(page.locator("[data-testid='event-card-video-badge']")).to_have_count(0)
+
+    def test_a_card_with_both_shows_both_badges(self, page: Page, base_url: str):
+        _mock(page, events=[_event(recordings=[_clip_summary(), _timelapse_summary()])])
+        _open_events_pane(page, base_url)
+
+        expect(page.locator("[data-testid='event-card-video-badge']")).to_have_count(1)
+        expect(page.locator("[data-testid='event-card-timelapse-badge']")).to_have_count(1)
+
+    def test_two_badges_do_not_land_on_top_of_each_other(self, page: Page, base_url: str):
+        """They used to be individually pinned to the corner, which put both on exactly
+        the same pixels the moment an event could own two recordings."""
+        _mock(page, events=[_event(recordings=[_clip_summary(), _timelapse_summary()])])
+        _open_events_pane(page, base_url)
+
+        clip = page.locator("[data-testid='event-card-video-badge']").bounding_box()
+        timelapse = page.locator("[data-testid='event-card-timelapse-badge']").bounding_box()
+        assert clip["y"] != timelapse["y"]
+        assert clip["y"] + clip["height"] <= timelapse["y"] + 1
+
     def test_an_event_still_in_progress_says_so(self, page: Page, base_url: str):
         """An open event has no duration and no clip yet; showing "0s" would be a wrong
         answer rather than a missing one."""
-        _mock(page, events=[_event(endedAt=None, recordingUuid=None)])
+        _mock(page, events=[_event(endedAt=None, recordings=[])])
         _open_events_pane(page, base_url)
 
         expect(page.locator("[data-testid='event-card']").first).to_contain_text("In progress")
@@ -383,10 +453,10 @@ class TestTheDetailModal:
         expect(page.locator("[data-testid='event-detail-save-frame']")).to_be_visible()
 
     def test_an_event_with_no_clip_still_opens(self, page: Page, base_url: str):
-        self._open_modal(page, base_url, events=[_event(recordingUuid=None)])
+        self._open_modal(page, base_url, events=[_event(recordings=[])])
 
         expect(page.locator("[data-testid='event-detail-video']")).to_have_count(0)
-        expect(page.locator("[data-testid='event-detail-modal']")).to_contain_text("No clip")
+        expect(page.locator("[data-testid='event-detail-modal']")).to_contain_text("Nothing was recorded")
 
     def test_a_clip_missing_from_disk_degrades_to_the_snapshot(self, page: Page, base_url: str):
         """The row can outlive its file; the snapshot is still worth showing."""
@@ -394,6 +464,47 @@ class TestTheDetailModal:
 
         expect(page.locator("[data-testid='event-detail-video']")).to_have_count(0)
         expect(page.locator("[data-testid='event-detail-snapshot']")).to_be_visible()
+
+    def test_one_recording_gets_no_tab_strip(self, page: Page, base_url: str):
+        """A single-tab tab strip is chrome that explains nothing, and one recording is
+        the overwhelmingly common case."""
+        self._open_modal(page, base_url)
+
+        expect(page.locator("[data-testid='event-detail-media-tabs']")).to_have_count(0)
+
+    def test_an_event_with_both_offers_a_switch(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, events=[_event(recordings=[_clip_summary(), _timelapse_summary()])])
+
+        expect(page.locator("[data-testid='event-detail-media-tab-clip']")).to_be_visible()
+        expect(page.locator("[data-testid='event-detail-media-tab-timelapse']")).to_be_visible()
+        # The clip opens first: it is the literal record, the timelapse summarises it.
+        expect(page.locator("[data-testid='event-detail-video']")).to_have_attribute("src", re.compile(RECORDING_UUID))
+
+    def test_switching_to_the_timelapse_plays_the_timelapse(self, page: Page, base_url: str):
+        """The tab has to actually change the source. Fetching the clip's row for both
+        would show the clip under a tab labelled Timelapse."""
+        self._open_modal(page, base_url, events=[_event(recordings=[_clip_summary(), _timelapse_summary()])])
+
+        page.locator("[data-testid='event-detail-media-tab-timelapse']").click()
+
+        expect(page.locator("[data-testid='event-detail-video']")).to_have_attribute("src", re.compile(TIMELAPSE_UUID))
+
+    def test_the_timelapse_says_what_it_compressed(self, page: Page, base_url: str):
+        """A scrubber reading 0:10 over a twenty-minute visit invites the reader to
+        think the cat left after ten seconds."""
+        self._open_modal(page, base_url, events=[_event(recordings=[_timelapse_summary()])])
+
+        note = page.locator("[data-testid='event-detail-timelapse-note']")
+        expect(note).to_contain_text("120 frames")
+        expect(note).to_contain_text("20 minutes")
+
+    def test_the_timelapse_offers_no_jump_to_the_moment_it_fired(self, page: Page, base_url: str):
+        """There is no pre-roll to skip: a timelapse begins when the event does, and its
+        seconds are not the event's seconds."""
+        self._open_modal(page, base_url, events=[_event(recordings=[_timelapse_summary()])])
+
+        expect(page.locator("[data-testid='event-detail-video']")).to_be_visible()
+        expect(page.locator("[data-testid='event-detail-jump']")).to_have_count(0)
 
 
 class TestTheDetectionOverlay:
@@ -548,7 +659,7 @@ class TestThePagerSurvivesAShrinkingResultSet:
     def _store(self, count: int) -> dict:
         return {
             "events": [
-                _event(uuid=f"event-{i:04d}", recordingUuid=None, startedAt=f"2026-08-18T09:{i % 60:02d}:00")
+                _event(uuid=f"event-{i:04d}", recordings=[], startedAt=f"2026-08-18T09:{i % 60:02d}:00")
                 for i in range(count)
             ]
         }

@@ -102,3 +102,42 @@ class TestRulelessTriggers:
     def test_a_frame_action_does_not_fire_on_an_event(self):
         row = _Row(trigger=FRAME_ANALYSED)
         assert action_applies(row, "event_ended", rule_uuid="r1", source_uuid="s1") is False
+
+
+class TestMultiTriggerActions:
+    """`fires_on` — how an action that spans an event's whole life is dispatched.
+
+    `record_event_timelapse` sits on one trigger in the editor and needs three at
+    runtime: open a buffer, sample frames, compile. Without this the row's single
+    trigger was the whole answer, and the trigger it actually collects on never
+    reached it.
+    """
+
+    def test_an_action_fires_on_every_trigger_it_declares(self):
+        row = _Row(trigger="event_ended")
+        fires_on = {"event_started", FRAME_ANALYSED, "event_ended"}
+        for trigger in fires_on:
+            assert action_applies(row, trigger, rule_uuid="r1", source_uuid="s1", fires_on=fires_on) is True
+
+    def test_a_declared_trigger_outside_the_set_still_does_not_fire(self):
+        row = _Row(trigger="event_ended")
+        assert action_applies(row, "event_started", fires_on={"event_ended"}) is False
+
+    def test_omitting_it_keeps_the_old_single_trigger_behaviour(self):
+        """Every other action relies on this default, so it has to stay exact."""
+        row = _Row(trigger="event_ended")
+        assert action_applies(row, "event_ended", rule_uuid="r1", source_uuid="s1") is True
+        assert action_applies(row, "event_started", rule_uuid="r1", source_uuid="s1") is False
+
+    def test_scoping_still_applies_to_a_multi_trigger_action(self):
+        """Declaring extra triggers must not smuggle an action past its source scope —
+        a timelapse scoped to the litter cam must not sample the hallway."""
+        row = _Row(trigger="event_ended", source_uuids_json=["s1"])
+        fires_on = {"event_started", FRAME_ANALYSED, "event_ended"}
+        assert action_applies(row, FRAME_ANALYSED, source_uuid="s1", fires_on=fires_on) is True
+        assert action_applies(row, FRAME_ANALYSED, source_uuid="s2", fires_on=fires_on) is False
+
+    def test_a_disabled_multi_trigger_action_fires_on_nothing(self):
+        row = _Row(trigger="event_ended", enabled=False)
+        fires_on = {"event_started", FRAME_ANALYSED, "event_ended"}
+        assert action_applies(row, FRAME_ANALYSED, source_uuid="s1", fires_on=fires_on) is False
