@@ -122,6 +122,16 @@ class Trainer(ABC):
           workers across epochs. Its workers therefore live exactly as long as
           the loader does — and ultralytics parks the loader on the trainer it
           hangs off the model. That is the real leak, and it is why this exists.
+        - A plain torch ``DataLoader`` built with ``persistent_workers=True``
+          (libreyolo's default — see ``libreyolo/training/config.py``) is a third
+          case, and the one that has no public shutdown at all: torch parks the
+          iterator on ``loader._iterator`` and reuses it across epochs, but
+          ``DataLoader`` exposes no ``close()``. Torch's own shutdown path is
+          ``_MultiProcessingDataLoaderIter.__del__`` → ``_shutdown_workers()``,
+          so dropping that last reference *is* the supported mechanism; there is
+          simply no public name for the reference. Clearing it is therefore the
+          documented "drop the last reference" rule applied to the attribute
+          torch itself set, not a reach into torch's shutdown internals.
 
         Uses each loader's own public ``close()`` where it has one — that is
         ultralytics' documented "shut down persistent workers when the
@@ -138,20 +148,113 @@ class Trainer(ABC):
         for loader in loaders:
             if loader is None:
                 continue
+            # Module-local logger: this file imports `logging` but defines no
+            # module-level logger, and each trainer makes its own.
+            log = logging.getLogger(__name__)
+
             close = getattr(loader, "close", None)
-            if not callable(close):
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 — see docstring: never fail the job
+                    log.exception("Failed to close a DataLoader")
                 continue
-            try:
-                close()
-            except Exception:  # noqa: BLE001 — see docstring: never fail the job
-                # Module-local logger: this file imports `logging` but defines no
-                # module-level logger, and each trainer makes its own.
-                logging.getLogger(__name__).exception("Failed to close a DataLoader")
+
+            # No close() — if torch parked a persistent iterator here, dropping it
+            # is the only shutdown path there is (see docstring). Guarded by the
+            # `is not None` check so a persistent_workers=False loader, whose
+            # _iterator is always None, is still left entirely to refcounting.
+            if getattr(loader, "_iterator", None) is not None:
+                try:
+                    loader._iterator = None
+                except Exception:  # noqa: BLE001 — see docstring: never fail the job
+                    log.exception("Failed to release a persistent DataLoader iterator")
 
         # Backstop for loaders with no close(): frees any iterator still held by
         # a reference cycle or an exception traceback, whose __del__ is torch's
         # own supported worker shutdown.
         gc.collect()
+
+    @classmethod
+    def shutdown_dataloaders_in_traceback(cls, exc: BaseException | None) -> None:
+        """Release DataLoader workers stranded by an *in-flight* exception.
+
+        The trainers above can name their loaders because they own them. This
+        exists for the case where they cannot: libreyolo builds its ``Trainer``
+        as a **local** of ``model.train()`` and never hands it back (it is not
+        stored on the model), so there is nothing to read the loaders off once
+        ``train()`` has raised.
+
+        That matters because the loaders are only unreachable *and* still alive
+        in the failure case. On the success path ``model.train()`` returns, its
+        frame dies, refcounting drops the trainer, and the workers go with it —
+        which is why completed jobs cleaned up fine and only cancelled and
+        errored ones leaked. Observed in production on 2026-08-19 as eight
+        orphaned worker processes holding ~1.5 GB, ten minutes after a cancelled
+        job.
+
+        The exception's traceback holds every frame it passed through, including
+        ``train()``'s, which makes it a reliable *route* back to the trainer. Be
+        careful about the stronger claim, though: it is not necessarily the only
+        thing keeping the trainer alive. Measured on 2026-08-19, clearing those
+        frames with ``traceback.clear_frames`` left the libreyolo trainer, and
+        its CUDA tensors, alive and unchanged — so libreyolo retains it
+        somewhere else too. That is precisely why this shuts the loaders down
+        *explicitly* rather than dropping references and trusting refcounting:
+        the shutdown must not depend on being the last referrer.
+
+        So this walks the traceback and shuts down every loader it can reach.
+        Deliberately
+        duck-typed and read-only: it identifies loaders structurally rather than
+        by ``isinstance`` (torch is not imported here) and only ever reads a
+        fixed set of attribute names, so an unrelated object sitting in a frame
+        cannot be provoked into running code.
+
+        Args:
+            exc: The exception being handled, or None on the success path —
+                 typically ``sys.exc_info()[1]`` from inside a ``finally``.
+                 None is a no-op, so the call site needs no branch.
+        """
+        if exc is None:
+            return
+
+        log = logging.getLogger(__name__)
+
+        def _is_loader(obj: Any) -> bool:
+            # A DataLoader, structurally: torch sets both of these in __init__.
+            # `_iterator` alone would also match the iterator itself.
+            return hasattr(obj, "_iterator") and hasattr(obj, "num_workers")
+
+        found: list[Any] = []
+        seen: set[int] = set()
+
+        def _consider(obj: Any) -> None:
+            if obj is None or id(obj) in seen:
+                return
+            seen.add(id(obj))
+            if _is_loader(obj):
+                found.append(obj)
+
+        try:
+            tb = exc.__traceback__
+            while tb is not None:
+                for value in list(tb.tb_frame.f_locals.values()):
+                    _consider(value)
+                    # Loaders usually hang off the trainer rather than sitting
+                    # in a frame directly. These are the names libreyolo and
+                    # ultralytics both use.
+                    for attr in ("train_loader", "val_loader", "test_loader", "dataloader"):
+                        try:
+                            _consider(getattr(value, attr, None))
+                        except Exception:  # noqa: BLE001 — a hostile __getattr__ is not our problem
+                            continue
+                tb = tb.tb_next
+        except Exception:  # noqa: BLE001 — cleanup must never mask the real failure
+            log.exception("Failed to walk the traceback for stranded DataLoaders")
+
+        if found:
+            log.info("Releasing %d DataLoader(s) stranded by a failed training run", len(found))
+        cls.shutdown_dataloaders(*found)
 
     @abstractmethod
     async def train(

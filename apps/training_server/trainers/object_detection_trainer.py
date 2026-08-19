@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import shutil
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,6 +204,17 @@ class ObjectDetectionTrainer(Trainer):
                 if str(exported_path) != onnx_dest:
                     shutil.copy2(exported_path, onnx_dest)
             finally:
+                # libreyolo builds its Trainer as a local of model.train() and
+                # never stores it on the model, so there is nothing here to read
+                # the loaders off — and its loaders default to
+                # persistent_workers=True, whose workers live as long as the
+                # loader does. When train() returns normally that is fine: the
+                # frame dies and refcounting takes the workers with it. When it
+                # *raises* — a cancel from _epoch_cb, or a real training error —
+                # the traceback pins that frame, and in a server that outlives
+                # the job the workers are stranded for good. The traceback is
+                # also the only route back to them.
+                self.shutdown_dataloaders_in_traceback(sys.exc_info()[1])
                 del model
                 self.release_gpu_memory()
 
