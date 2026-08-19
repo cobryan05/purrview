@@ -1765,6 +1765,117 @@ class TestTimelapseAction:
         expect(page.get_by_role("button", name="+ New Folder").last).to_be_visible()
 
 
+class TestEnablingAndDisablingRows:
+    """Per-row on/off, so silencing something does not mean deleting it.
+
+    The flags already existed and the watcher already honoured them — `StreamWatcherTask`
+    builds its rule list from `profile.rules if r.enabled` and skips disabled action rows
+    — but nothing rendered them and both `getRule`/`getAction` hardcoded `enabled: true`.
+    So the only way to turn a rule off was to delete it and rebuild it from memory later,
+    and a profile saved from this editor silently re-enabled anything switched off
+    through the API.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_rows_start_enabled(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-rule-enabled']").first).to_be_checked()
+        expect(page.locator("[data-testid='watch-action-enabled']").first).to_be_checked()
+
+    def test_a_disabled_rule_saves_as_disabled(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-rule-enabled']").first.uncheck()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["enabled"] is False, saved["rules"][0]
+
+    def test_a_disabled_action_saves_as_disabled(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-enabled']").first.uncheck()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["enabled"] is False, saved["actions"][0]
+
+    def test_an_untouched_row_still_saves_as_enabled(self, page: Page, base_url: str):
+        """Guards the inversion: the flag used to be hardcoded true, so a bug that always
+        sent false would disable a user's whole watcher on the next unrelated save."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        self._open(page, base_url)
+
+        # Save stays disabled until the editor is dirty, so an unrelated edit is what
+        # makes this the realistic case: someone renames a rule and every other row must
+        # come back exactly as enabled as it went in.
+        page.locator("[data-testid='watch-rule-name']").first.fill("renamed")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["enabled"] is True
+        assert saved["actions"][0]["enabled"] is True
+
+    def test_a_disabled_row_is_dimmed_but_still_editable(self, page: Page, base_url: str):
+        """Dimmed, never hidden or collapsed — keeping the configuration is the point."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        row = page.locator("[data-testid='watch-rule-row']").first
+        page.locator("[data-testid='watch-rule-enabled']").first.uncheck()
+        expect(row).to_have_class(re.compile(r"watch-row--disabled"))
+        # Still reachable: the name field accepts input while the row is off.
+        name = page.locator("[data-testid='watch-rule-name']").first
+        expect(name).to_be_visible()
+        name.fill("off for now")
+        expect(name).to_have_value("off for now")
+
+    def test_the_toggle_itself_is_not_dimmed(self, page: Page, base_url: str):
+        """It is the one control you need in order to switch the row back on; dimming it
+        with everything else is how a disabled row becomes a lost one."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        box = page.locator("[data-testid='watch-rule-enabled']").first
+        box.uncheck()
+        opacity = box.evaluate("el => getComputedStyle(el).opacity")
+        assert float(opacity) == 1.0, f"the enable toggle is dimmed at {opacity}"
+
+
+class TestTheActionNoteIsLegible:
+    """The note is free-text prose in the narrowest field on the row.
+
+    At the row's inherited font size roughly ten characters were visible, which is not
+    enough of "timelapse of the back garden every 30s" to tell two rows apart.
+    """
+
+    def test_the_note_uses_a_smaller_font_than_the_rows_other_inputs(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+        note = page.locator("[data-testid='watch-action-name']").first
+        note_px = float(note.evaluate("el => parseFloat(getComputedStyle(el).fontSize)"))
+        # The action's own kind <select> sits on the same row and takes the inherited
+        # size, so it is the honest comparison — an absolute pixel assertion would just
+        # pin whatever the root font size happens to be.
+        other = page.locator("[data-testid='watch-action-kind']").first
+        other_px = float(other.evaluate("el => parseFloat(getComputedStyle(el).fontSize)"))
+        assert note_px < other_px, f"note is {note_px}px, siblings are {other_px}px"
+
+
 class TestEventTimelapseActionParams:
     """ "Event timelapse" had a kind in the dropdown and no form behind it.
 

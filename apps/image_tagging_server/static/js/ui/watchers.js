@@ -469,6 +469,37 @@ function wfield(labelText, control, { width = null, help = null } = {}) {
 }
 
 /**
+ * The on/off box that leads a rule or action row.
+ *
+ * A real switch, not a note to yourself: `StreamWatcherTask` builds its rule list from
+ * `profile.rules if r.enabled` and skips any action row whose flag is false, so an
+ * unticked row is never evaluated. That is the opposite of the watcher-level "Enabled"
+ * box in the identity strip, which nothing reads at run time and says so.
+ *
+ * It exists because the alternative was deleting a rule to silence it for an evening and
+ * rebuilding it from memory afterwards — losing the thresholds, the hysteresis and the
+ * scope along with it.
+ *
+ * Dims the row rather than hiding or collapsing anything. A disabled rule still has to be
+ * readable and editable (turning it off without losing how it was configured is the whole
+ * point), and a row that changed size on toggle would reflow the editor under the cursor.
+ */
+function enabledToggle(row, current, onChange, { testid, title }) {
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  // `!== false` rather than truthiness: a row being built from scratch has no flag at
+  // all, and a new rule defaults to enabled.
+  box.checked = current !== false;
+  box.className = 'watch-row-enabled';
+  box.dataset.testid = testid;
+  box.title = title;
+  const sync = () => row.classList.toggle('watch-row--disabled', !box.checked);
+  box.addEventListener('change', () => { sync(); onChange(); });
+  sync();
+  return box;
+}
+
+/**
  * A `(?)` beside a topic field, opening the placeholder vocabulary.
  *
  * The tokens used to be reachable only as the topic input's `title`, which is not
@@ -1022,6 +1053,15 @@ function buildRuleRow(rule, ctx) {
   const row = el('div', 'watch-rule-row watch-row');
   row.dataset.testid = 'watch-rule-row';
 
+  const enabledBox = enabledToggle(row, rule.enabled, ctx.onAnyChange, {
+    testid: 'watch-rule-enabled',
+    title: 'Whether the watcher evaluates this rule at all. Unticked it is skipped entirely — '
+      + 'no events, no actions, nothing recorded — but everything you configured here is kept, '
+      + 'so this is the way to silence a rule for an evening without rebuilding it afterwards. '
+      + 'Takes effect on the watcher’s next start.',
+  });
+  row.appendChild(enabledBox);
+
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.value = rule.name || '';
@@ -1255,7 +1295,9 @@ function buildRuleRow(rule, ctx) {
   margin.max = '2';
   const minDuration = numberInput(rule.minDurationS ?? 2, { step: '0.5', min: 0 });
   const rearm = numberInput(rule.rearmDelayS ?? 10, { step: '1', min: 0 });
-  const maxDuration = numberInput(rule.maxDurationS ?? 300, { step: '10', min: 1 });
+  // min 0, not 1: zero is the "never expire" value, for a rule whose event should last
+  // exactly as long as its subject is there. See the caption's tooltip.
+  const maxDuration = numberInput(rule.maxDurationS ?? 300, { step: '10', min: 0 });
   for (const input of [threshold, margin, minDuration, rearm, maxDuration]) {
     input.addEventListener('input', ctx.onAnyChange);
   }
@@ -1276,7 +1318,15 @@ function buildRuleRow(rule, ctx) {
     // button onto a line of its own. Both keep the sentence-length tooltip.
     ['starts', minDuration, 'Seconds the relation must hold before the event starts'],
     ['ends', rearm, 'Seconds the relation must stay clear before the event ends'],
-    ['max', maxDuration, 'Hard cap on event length, in seconds'],
+    [
+      'max',
+      maxDuration,
+      'Hard cap on event length, in seconds, so a stuck detection cannot hold an event open '
+      + 'forever. Reaching it closes the event and immediately starts a new one while the '
+      + 'subject is still there, which chops a long visit into a chain of events — and a '
+      + 'chain of separate timelapses. 0 disables the cap, for an event that should last '
+      + 'exactly as long as its subject does.',
+    ],
   ];
   const marginField = [];
   let thresholdField = null;
@@ -1363,7 +1413,7 @@ function buildRuleRow(rule, ctx) {
         uuid: rule.uuid || null,
         order: 0,
         name: nameInput.value.trim() || 'Unnamed rule',
-        enabled: true,
+        enabled: enabledBox.checked,
         // Always sent: a watch profile saves as a whole-list replace, so a field the
         // editor omits is a field the save resets to its default.
         sourceUuidsJson: [...sourceScope],
@@ -1384,6 +1434,8 @@ function buildRuleRow(rule, ctx) {
         // into an MQTT storm and a dozen clips for one visit.
         minDurationS: num(minDuration, 2),
         rearmDelayS: num(rearm, 10),
+        // 0 is a real value here ("never expire"), so it must not be coerced to the
+        // default — `num` only falls back on a blank or unparseable field.
         maxDurationS: num(maxDuration, 300),
       };
     },
@@ -1534,6 +1586,14 @@ function buildActionRow(action, ctx) {
   // with a test behind it, and a "Name" caption plus a comfortable input was a third
   // line on its own — the placeholder carries the same information for a field that is
   // empty exactly when it needs explaining.
+  const enabledBox = enabledToggle(row, action.enabled, ctx.onAnyChange, {
+    testid: 'watch-action-enabled',
+    title: 'Whether this action runs. Unticked the watcher never constructs it, so it costs '
+      + 'nothing and publishes nothing, but its parameters and scope are kept — the way to stop '
+      + 'recording for a week without losing the setup. Takes effect on the watcher’s next start.',
+  });
+  row.appendChild(enabledBox);
+
   const name = document.createElement('input');
   name.type = 'text';
   name.value = action.name || '';
@@ -1955,7 +2015,7 @@ function buildActionRow(action, ctx) {
       ruleUuidsJson: trigger.value === FRAME_ANALYSED_TRIGGER ? [] : [...ruleScope],
       sourceUuidsJson: [...sourceScope],
       order: 0,
-      enabled: true,
+      enabled: enabledBox.checked,
       // Blank means unnamed, not an empty label — the backend stores null either way.
       name: name.value.trim() || null,
       kind: kind.value,
