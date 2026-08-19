@@ -2340,3 +2340,20 @@ class RecordingRead(OrmModel):
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @field_validator("metadata_json", mode="before")
+    @classmethod
+    def _null_metadata_is_empty(cls, v: Any) -> Any:
+        """A row that predates the column holds SQL NULL, not `{}`.
+
+        Adding `metadata_json` as a nullable column left every existing recording with
+        NULL, and this model typed it as a plain dict — so validating one raised, the
+        endpoint returned `recording: null`, and the events modal, unable to tell that
+        apart from a missing file, reported an install's entire clip history as "no
+        longer on disk" while every mp4 sat untouched on the volume.
+
+        A backfill migration fixes the rows that exist (see `9c2f3a1b7d40`). This is the
+        rule that stops the next nullable column doing it again: an absent annotation is
+        not a reason to refuse to show someone their video.
+        """
+        return {} if v is None else v
