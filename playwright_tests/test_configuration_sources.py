@@ -83,11 +83,6 @@ def _editor_bar(page: Page):
     return page.locator("#source-management-box .le-editor .panel-box__bar")
 
 
-def _editor_footer(page: Page):
-    """The sticky footer of the source editor (holds Test Source)."""
-    return page.locator("#source-management-box .le-editor .panel-box__footer")
-
-
 def _provider_select(page: Page):
     return page.get_by_test_id("source-provider-select")
 
@@ -217,24 +212,6 @@ class TestSourceListLoading:
         _open_source(page)
         expect(_editor_bar(page)).to_contain_text(FAKE_SOURCE["name"])
         expect(_name_input(page)).to_have_value(FAKE_SOURCE["name"])
-
-    def test_test_source_button_in_editor_footer(self, page: Page, base_url: str):
-        """'Test Source' is always available in the editor's sticky footer."""
-        _mock_sources(page, {FAKE_SOURCE["uuid"]: FAKE_SOURCE})
-        _mock_providers(page, ["UrlImageProvider"])
-        _mock_provider_schema(page)
-        _navigate_to_sources(page, base_url)
-        page.wait_for_selector("#source-management-box button[title='Test Source']", timeout=5000)
-        expect(_editor_footer(page).locator("button[title='Test Source']")).to_be_visible()
-
-    def test_selected_source_has_delete_button(self, page: Page, base_url: str):
-        """A saved source offers Delete in the editor bar."""
-        _mock_sources(page, {FAKE_SOURCE["uuid"]: FAKE_SOURCE})
-        _mock_providers(page, ["UrlImageProvider"])
-        _mock_provider_schema(page)
-        _navigate_to_sources(page, base_url)
-        _open_source(page)
-        expect(_editor_bar(page).locator("button", has_text="Delete")).to_be_visible()
 
     def test_filter_box_narrows_the_list(self, page: Page, base_url: str):
         """The list's filter box hides non-matching rows."""

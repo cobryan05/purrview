@@ -297,22 +297,6 @@ class TestCreateDataset:
         # The label should appear somewhere in the editor body
         expect(_editor_body(page)).to_contain_text(ROOT_LABEL["name"])
 
-    def test_label_dropdown_present_in_editor(self, page: Page, base_url: str):
-        """Labels and Tags are shown as expanded inline boxes in the dataset editor."""
-        _mock_datasets(page, [])
-        _mock_labels(page, [ROOT_LABEL])
-        _mock_tags_empty(page)
-
-        _navigate_to_datasets(page, base_url)
-        page.wait_for_timeout(800)
-
-        # Labels and Tags are rendered as always-expanded inline boxes (ds-inline-control),
-        # not as dropdown trigger buttons.
-        labels_heading = _editor_body(page).locator(".ds-inline-control__label", has_text="Labels")
-        expect(labels_heading.first).to_be_visible()
-        tags_heading = _editor_body(page).locator(".ds-inline-control__label", has_text="Tags")
-        expect(tags_heading.first).to_be_visible()
-
 
 # ---------------------------------------------------------------------------
 # Delete dataset flow

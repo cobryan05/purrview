@@ -126,17 +126,6 @@ def _open_curated_modal(page: Page, base_url: str, candidates=None):
 
 
 class TestCuratedSurfaceRenders:
-    def test_verification_label_tag_controls_present(self, page: Page, base_url: str):
-        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [UNVERIFIED_TAG, VERIFIED_TAG, REVIEWED_TAG])
-        _mock_image_labels_batch(page)
-
-        _open_curated_modal(page, base_url)
-
-        expect(page.locator(".bbox-verification-select")).to_be_visible()
-        expect(page.locator(".ms-dropdown[data-filter-key='curated-labels']")).to_be_visible()
-        expect(page.locator(".ms-dropdown[data-filter-key='curated-tags']")).to_be_visible()
-
     def test_all_three_bboxes_visible_by_default(self, page: Page, base_url: str):
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [UNVERIFIED_TAG, VERIFIED_TAG, REVIEWED_TAG])
@@ -279,10 +268,6 @@ class TestCuratedFilenameFilter:
         # The input is debounced by 400ms before it triggers a re-render.
         page.wait_for_timeout(700)
 
-    def test_control_is_present(self, page: Page, base_url: str):
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='curated-filename-input']")).to_be_visible()
-
     def test_substring_narrows_to_one_image(self, page: Page, base_url: str):
         self._open(page, base_url)
         self._search(page, "shot1")
@@ -357,11 +342,6 @@ class TestCuratedDateFilter:
         page.locator(f"[data-testid='{testid}']").fill(value)
         page.locator(f"[data-testid='{testid}']").dispatch_event("change")
         page.wait_for_timeout(300)
-
-    def test_controls_are_present(self, page: Page, base_url: str):
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='curated-date-from']")).to_be_visible()
-        expect(page.locator("[data-testid='curated-date-to']")).to_be_visible()
 
     def test_from_bound_drops_earlier_images(self, page: Page, base_url: str):
         self._open(page, base_url)

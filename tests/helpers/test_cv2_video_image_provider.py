@@ -65,9 +65,8 @@ async def _collect_all(provider: Cv2VideoImageProvider, timeout: float = 10.0) -
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
 
-def test_parallel_readers_constant_exists_and_is_greater_than_one():
-    """PARALLEL_READERS must be defined and > 1 so parallelism is actually active."""
-    assert hasattr(Cv2VideoImageProvider, "PARALLEL_READERS")
+def test_parallel_readers_constant_is_greater_than_one():
+    """PARALLEL_READERS > 1, or the parallel read path is a no-op."""
     assert Cv2VideoImageProvider.PARALLEL_READERS > 1
 
 

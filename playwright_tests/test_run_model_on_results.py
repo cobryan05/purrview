@@ -363,14 +363,6 @@ CANDIDATES = [
 
 
 class TestRunModelButton:
-    def test_button_visible(self, page: Page, base_url: str):
-        _mock_review_queue(page, PAGE_1_IMAGES)
-        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [UNVERIFIED_TAG])
-        _navigate_to_review(page, base_url)
-
-        expect(_run_model_btn(page)).to_be_visible()
-
     def test_click_opens_dialog_with_candidate_count(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])

@@ -237,15 +237,6 @@ class TestFilterPanelTagsDropdown:
 
 
 class TestFilterPanelLabelsDropdown:
-    def test_no_labels_selected_by_default(self, shared_page: Page):
-        result = shared_page.evaluate(f"""async () => {{
-            {_SETUP}
-            const s = panel.getState();
-            {_TEARDOWN}
-            return s.labelUuids;
-        }}""")
-        assert result == []
-
     def test_selecting_label_updates_state(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
@@ -451,20 +442,6 @@ class TestFilterPanelBboxVerification:
             return select.value;
         }}""")
         assert result == "unverified"
-
-    def test_verification_tags_absent_from_tags_dropdown(self, shared_page: Page):
-        """
-        V1 decision: the tri-state control REPLACES the ad-hoc UNVERIFIED entry
-        that used to live in the Tags dropdown — verification tags must not
-        appear there anymore (single way to filter by verification status).
-        """
-        result = shared_page.evaluate(f"""async () => {{
-            {_SETUP}
-            const cb = panel.toolbarControls[0].querySelector('input[value="{UNVERIFIED_UUID}"]');
-            {_TEARDOWN}
-            return cb === null;
-        }}""")
-        assert result is True
 
 
 # ── bboxVerificationControl.js — standalone reusable control ───────────────

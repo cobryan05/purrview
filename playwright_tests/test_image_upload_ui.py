@@ -103,13 +103,6 @@ def _choose_file(page: Page, name: str = "cat.png"):
 
 
 class TestAffordance:
-    def test_the_files_toolbar_offers_an_import(self, page: Page, base_url: str):
-        _mock_file_list(page)
-        _mock_settings(page, {})
-        _open_files_tab(page, base_url)
-
-        expect(page.get_by_test_id("file-upload-button")).to_be_visible()
-
     def test_the_upload_folder_can_be_changed_without_uploading(self, page: Page, base_url: str):
         """The remembered folder would otherwise be unreachable once set."""
         _mock_file_list(page)

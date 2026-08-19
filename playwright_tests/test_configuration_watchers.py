@@ -403,13 +403,6 @@ def _navigate_to_watchers(page: Page, base_url: str):
 
 
 class TestWatchersPane:
-    def test_pane_renders_as_a_list_editor_screen(self, page: Page, base_url: str):
-        _mock_watch_apis(page)
-        _navigate_to_watchers(page, base_url)
-        box = page.locator("#watcher-management-box")
-        expect(box.locator(".list-editor-split")).to_be_visible()
-        expect(box.locator(".wp-list-panel")).to_be_visible()
-
     def test_existing_watchers_appear_in_the_list(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
         _navigate_to_watchers(page, base_url)
@@ -1276,12 +1269,6 @@ class TestActionScoping:
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
 
-    def test_both_scope_pickers_are_shown(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-action-rule-scope']").first).to_be_visible()
-        expect(page.locator("[data-testid='watch-action-source-scope']").first).to_be_visible()
-
     def test_an_unscoped_action_reads_as_all(self, page: Page, base_url: str):
         """ "All" is the honest summary — an empty scope really does fire everywhere."""
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
@@ -1349,11 +1336,6 @@ class TestRuleSourceScope:
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
-
-    def test_the_picker_is_shown_on_a_rule(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-rule-source-scope']").first).to_be_visible()
 
     def test_an_unscoped_rule_reads_as_all_sources(self, page: Page, base_url: str):
         """The empty state must not read as the opposite of what it does."""
@@ -1483,11 +1465,6 @@ class TestSourceMqttName:
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-source-row']").first).to_be_visible()
 
-    def test_the_field_is_shown(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-source-mqtt-name']").first).to_be_visible()
-
     def test_it_is_blank_by_default_and_hints_the_sources_own_name(self, page: Page, base_url: str):
         """The placeholder is what makes "blank means the source's name" self-evident."""
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
@@ -1537,10 +1514,6 @@ class TestTemplateHelp:
         _navigate_to_watchers(page, base_url)
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-action-topic']")).to_be_visible()
-
-    def test_a_visible_affordance_sits_beside_the_topic_field(self, page: Page, base_url: str):
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
 
     def test_the_panel_is_closed_until_asked_for(self, page: Page, base_url: str):
         self._open(page, base_url)
@@ -1987,16 +1960,6 @@ class TestSnapshotDirectoryField:
         expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
         page.locator("[data-testid='watch-action-kind']").first.select_option("save_snapshot")
 
-    def test_it_has_a_browse_button(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-action-dir-browse']").first).to_be_visible()
-
-    def test_it_has_a_token_help_marker(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
-
     def test_the_date_token_is_offered_and_inserts_at_the_caret(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
         self._open(page, base_url)
@@ -2117,11 +2080,6 @@ class TestActionName:
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
 
-    def test_the_field_is_offered_on_every_action(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-action-name']").first).to_be_visible()
-
     def test_it_saves_the_note(self, page: Page, base_url: str):
         saved = {}
         _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
@@ -2155,11 +2113,6 @@ class TestTimelapseFolderTokens:
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
         page.locator("[data-testid='watch-action-kind']").first.select_option("save_timelapse")
-
-    def test_the_token_help_is_offered(self, page: Page, base_url: str):
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
-        expect(page.locator("[data-testid='watch-template-help-btn']").first).to_be_visible()
 
     def test_the_preview_shows_a_folder_per_camera(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])

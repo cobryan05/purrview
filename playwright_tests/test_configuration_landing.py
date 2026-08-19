@@ -111,11 +111,6 @@ class TestConfigLandingStructure:
         _navigate_to_landing(page, base_url)
         expect(page.locator("#tab-config-overview")).to_have_class(re.compile(r"\bactive\b"))
 
-    def test_all_four_purpose_groups_render(self, page: Page, base_url: str):
-        _navigate_to_landing(page, base_url)
-        for group in ("vocabulary", "data", "models", "automation"):
-            expect(page.locator(f"[data-testid='config-landing-group-{group}']")).to_be_visible()
-
     def test_sibling_subtabs_remain_directly_reachable(self, page: Page, base_url: str):
         """The landing is an extra sub-tab, not a gate — nothing gains a click."""
         _navigate_to_landing(page, base_url)

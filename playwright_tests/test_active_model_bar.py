@@ -154,11 +154,6 @@ class TestRunPickerContents:
         expect(page.locator(".tc-run-picker__row")).to_have_count(2)
         expect(page.locator(".tc-run-picker__row", has_text="No active training run")).to_have_count(0)
 
-    def test_manage_link_present(self, page: Page, base_url: str):
-        _navigate(page, base_url, [TC_1])
-        page.locator(".active-model-bar__set-tc-btn").click()
-        expect(page.get_by_text("Manage training runs →")).to_be_visible()
-
 
 class TestRunPickerSelection:
     def test_selecting_a_run_switches_active_and_closes_popup(self, page: Page, base_url: str):

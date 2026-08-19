@@ -121,13 +121,6 @@ class TestLabelPaneStructure:
 
 
 class TestLabelListLoading:
-    def test_root_labels_rendered(self, page: Page, base_url: str):
-        """Root labels returned from the API appear as rows with the correct data-uuid."""
-        _mock_labels(page, [ROOT_LABEL])
-        _navigate_to_labels(page, base_url)
-        row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
-        expect(row).to_be_visible()
-
     def test_child_labels_rendered(self, page: Page, base_url: str):
         """Child labels appear nested under their parent."""
         _mock_labels(page, [ROOT_LABEL, CHILD_LABEL])

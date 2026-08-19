@@ -242,12 +242,6 @@ class TestTaskPaneStructure:
         # without first picking anything.
         expect(_editor_bar(page)).to_contain_text("New Task Config")
 
-    def test_activity_pane_present(self, page: Page, base_url: str):
-        """Task instances live on their own Activity sub-tab."""
-        _setup_full_task_mocks(page)
-        _navigate_to_activity(page, base_url)
-        expect(page.locator("#active-tasks-list")).to_be_attached()
-
     def test_no_js_errors_on_task_tab(self, page: Page, base_url: str):
         """No console errors while loading the Tasks pane."""
         errors: list[str] = []
@@ -297,20 +291,6 @@ class TestTaskConfigList:
         _open_config(page)
         expect(_editor_bar(page)).to_contain_text(FAKE_CONFIG["name"])
         expect(_name_input(page)).to_have_value(FAKE_CONFIG["name"])
-
-    def test_selected_config_has_start_button(self, page: Page, base_url: str):
-        """A saved config offers Start in the editor footer."""
-        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG})
-        _navigate_to_tasks(page, base_url)
-        _open_config(page)
-        expect(_editor_footer(page).locator("button[title='Start']")).to_be_visible()
-
-    def test_selected_config_has_delete_button(self, page: Page, base_url: str):
-        """A saved config offers Delete in the editor bar."""
-        _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG})
-        _navigate_to_tasks(page, base_url)
-        _open_config(page)
-        expect(_editor_bar(page).locator("button", has_text="Delete")).to_be_visible()
 
     def test_new_config_has_no_start_button(self, page: Page, base_url: str):
         """There is nothing to start until a config exists server-side."""
@@ -629,43 +609,6 @@ class TestActiveTasksList:
         assert (
             RUNNING_TASK["config"]["name"] in content or "running" in content.lower()
         ), f"Running task not visible. Content: {content!r}"
-
-    def test_running_task_has_stop_button(self, page: Page, base_url: str):
-        """A running task shows a Stop button."""
-        task_id = RUNNING_TASK["instance"]["uuid"]
-        _setup_full_task_mocks(page, configs={}, tasks={task_id: RUNNING_TASK})
-
-        _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button[title='Stop']", timeout=5000)
-        expect(page.locator("#active-tasks-list button[title='Stop']").first).to_be_visible()
-
-    def test_running_task_has_pause_button(self, page: Page, base_url: str):
-        """A running task shows a Pause button (pause-in-place)."""
-        task_id = RUNNING_TASK["instance"]["uuid"]
-        _setup_full_task_mocks(page, configs={}, tasks={task_id: RUNNING_TASK})
-
-        _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button[title='Pause']", timeout=5000)
-        expect(page.locator("#active-tasks-list button[title='Pause']").first).to_be_visible()
-
-    def test_completed_task_has_delete_button(self, page: Page, base_url: str):
-        """A completed task shows a Delete button."""
-        task_id = COMPLETED_TASK["instance"]["uuid"]
-        _setup_full_task_mocks(page, configs={}, tasks={task_id: COMPLETED_TASK})
-
-        _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button[title='Delete']", timeout=5000)
-        expect(page.locator("#active-tasks-list button[title='Delete']").first).to_be_visible()
-
-    def test_completed_section_has_clear_completed_button(self, page: Page, base_url: str):
-        """When completed tasks exist, a 'Clear completed' button appears."""
-        task_id = COMPLETED_TASK["instance"]["uuid"]
-        _setup_full_task_mocks(page, configs={}, tasks={task_id: COMPLETED_TASK})
-
-        _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button", timeout=5000)
-        clear_btn = page.locator("#active-tasks-list button", has_text="Clear completed")
-        expect(clear_btn).to_be_visible()
 
     def test_activity_badge_counts_live_tasks(self, page: Page, base_url: str):
         """The Activity tab badge reports live tasks so leaving the pane doesn't

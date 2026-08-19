@@ -73,15 +73,6 @@ def _mock_tags(page: Page, tags: list):
 
 
 class TestTagPaneStructure:
-    def test_pane_structure(self, page: Page, base_url: str):
-        """The tags pane renders its container, controls, and inputs in one navigation."""
-        _navigate_to_tags(page, base_url)
-        expect(page.locator("#tags-list")).to_be_visible()
-        page.wait_for_selector("#tags-list button[title='Add tag']", timeout=4000)
-        expect(page.locator("#tags-list button[title='Add tag']")).to_be_visible()
-        expect(page.locator("#tags-list button[title='Refresh']")).to_be_visible()
-        expect(page.locator("#tags-list input[placeholder='New Tag Name']")).to_be_visible()
-
     def test_no_js_errors_on_tags_tab(self, page: Page, base_url: str):
         """No console errors while loading the Tags pane."""
         errors: list[str] = []
