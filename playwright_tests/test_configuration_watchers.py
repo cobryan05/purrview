@@ -130,51 +130,27 @@ REGIONS = [
     },
 ]
 
-# As `GET /api/watch-profiles/actions` returns them — the action's own params_schema(),
-# which the Watchers pane now renders its fields from instead of holding a hand-written
-# list per kind.
-#
-# Only the kinds whose forms are schema-driven need an entry here; a kind absent from
-# this list renders from `{}`, which is exactly what the real pane does when an action
-# it has never heard of comes back from the registry. Mirror the real declaration when
-# changing it — `tests/db_server/test_watch_profiles.py::TestActionListing` is what
-# pins the real one.
-ACTION_SCHEMAS = [
-    {
-        "kind": "record_clip",
-        "displayName": "Record clip",
-        "paramsSchema": {
-            "preroll_s": {"type": "float", "required": False, "default": 10.0, "help": "Seconds before."},
-            "postroll_s": {"type": "float", "required": False, "default": 5.0, "help": "Seconds after."},
-            "max_length_s": {"type": "float", "required": False, "default": 180.0, "help": "Ceiling."},
-            "save_overlay": {"type": "bool", "required": False, "default": True, "help": "Store the boxes."},
-            "output_dir": {"type": "str", "required": False, "default": "/data/recordings/clips", "help": "Where."},
-        },
-    },
-    {
-        "kind": "record_event_timelapse",
-        "displayName": "Event timelapse",
-        "paramsSchema": {
-            "interval_s": {"type": "float", "required": False, "default": 10.0, "help": "Seconds between frames."},
-            "output_fps": {"type": "float", "required": False, "default": 12.0, "help": "Frames per second."},
-            "min_frames": {"type": "int", "required": False, "default": 10, "help": "Below this, no video."},
-            "max_frames": {"type": "int", "required": False, "default": 3600, "help": "Ceiling per event."},
-            "max_width": {"type": "int", "required": False, "default": 1280, "help": "Shrink frames to this."},
-            "quality": {"type": "int", "required": False, "default": 85, "help": "JPEG quality."},
-            "full_resolution": {"type": "bool", "required": False, "default": False, "help": "Camera resolution."},
-            "preroll_frames": {"type": "int", "required": False, "default": 0, "help": "Frames from before it opened."},
-            "save_overlay": {"type": "bool", "required": False, "default": True, "help": "Store the boxes beside it."},
-            # Declared by the action and deliberately not offered by the form — the
-            # hidden-field case the renderer has to honour.
-            "output_dir": {
-                "type": "str",
-                "required": False,
-                "default": "/data/recordings/timelapses",
-                "help": "Where.",
-            },
-        },
-    },
-]
+
+def _real_action_schemas() -> list:
+    """The registry's own declarations, as `GET /api/watch-profiles/actions` returns them.
+
+    Built by importing the actions rather than hand-copied into this file, and that is
+    the whole point: a hand-written fixture is a third list to keep in step with the
+    action and its form, and it would go stale in exactly the way that made these tests
+    necessary — silently, and in the direction that makes them pass.
+
+    Keys stay snake_case; the API camelises only the envelope around them.
+    """
+    import apps.helpers.actions  # noqa: F401  — populates the registry by autodiscovery
+    from apps.helpers.actions.Registry import action_registry
+
+    return [
+        {"kind": kind, "displayName": cls.display_name(), "paramsSchema": cls.params_schema()}
+        for kind, cls in sorted(action_registry.items())
+    ]
+
+
+ACTION_SCHEMAS = _real_action_schemas()
 
 # As `GET /api/watch-profiles/trackers` returns them. Schema keys stay snake_case —
 # they are data the tracker declared, not model fields, so they are not camelised.

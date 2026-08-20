@@ -61,7 +61,11 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
   } = opts;
 
   const hidden = decorator.hidden instanceof Set ? decorator.hidden : new Set(decorator.hidden || []);
-  const box = el('div', decorator.className || 'schema-params');
+  // Renders *into* the caller's element when given one, rather than into a wrapper of
+  // its own. The action rows are a flex line of fields, and an intervening div makes
+  // every field a child of a block instead — which stacks the row and costs ~80px of
+  // editor scroll per action. There is a density test that catches exactly this.
+  const box = opts.container || el('div', decorator.className || 'schema-params');
   const readers = {};
   const controls = {};
 
@@ -84,7 +88,23 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
     let read;
     let element;
 
-    if (type === 'bool') {
+    if (Array.isArray(field.options) && field.options.length) {
+      // A declared option list is a closed set — MQTT QoS is 0, 1 or 2 and nothing else.
+      // Rendering it as a number box invites a 3 that the broker will reject at publish
+      // time, somewhere far from this form.
+      control = document.createElement('select');
+      for (const option of field.options) {
+        const node = document.createElement('option');
+        node.value = String(option);
+        node.textContent = String(option);
+        control.appendChild(node);
+      }
+      control.value = String(value ?? field.default ?? field.options[0]);
+      control.addEventListener('change', onAnyChange);
+      const cast = type === 'int' || type === 'float' ? Number : String;
+      read = () => cast(control.value);
+      element = control;
+    } else if (type === 'bool') {
       control = document.createElement('input');
       control.type = 'checkbox';
       // `!== false` rather than `=== true`: a schema default of true must survive a
@@ -135,10 +155,15 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
 
     // Previews go directly after the field they are about, so the number and its
     // consequence are read together.
+    // A list is allowed because one field can need more than one thing after it: the
+    // directory fields want their placeholder help *and* a rendered example of the path
+    // those placeholders produce, and the two are separate nodes in the flex row.
     const after = decorator.after?.[key];
     if (after) {
-      const node = after(controls, box);
-      if (node) box.appendChild(node);
+      const produced = after(controls, box);
+      for (const node of Array.isArray(produced) ? produced : [produced]) {
+        if (node) box.appendChild(node);
+      }
     }
   }
 

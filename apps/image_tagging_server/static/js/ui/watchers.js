@@ -1610,6 +1610,7 @@ function buildActionRow(action, ctx) {
         testidPrefix: 'watch-action-param',
         emptyText: 'This action has no options.',
         fieldWrapper: wfield, numberInput, el, num,
+        container: params,
         decorator: {
           // Same reasoning as the timelapse's: the clip is a recording attached to its
           // event, swept by the recording retention settings, and a typed path takes it
@@ -1621,126 +1622,73 @@ function buildActionRow(action, ctx) {
           mins: { max_length_s: 1 },
         },
       });
-      params.appendChild(form.element);
       readParams = () => form.getParams();
-    } else if (kind.value === 'publish_mqtt') {
-      const retain = document.createElement('input');
-      retain.type = 'checkbox';
-      retain.checked = Boolean(stored.retain);
-      retain.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Retain', retain, {
-        help: 'Ask the broker to keep the last message on this topic and hand it to new '
-          + 'subscribers. Off by default here: an event edge is a moment, and a retained one '
-          + 'replays to every subscriber that connects as though it were happening now.',
-      }));
-
-      // The topic is a template now, not a fixed path: a rule matching several cats and
-      // several litter boxes knows which ones fired, and routing on them is the whole
-      // point of exposing those values.
-      const topic = document.createElement('input');
-      topic.type = 'text';
-      topic.value = stored.topic_template || DEFAULT_TOPIC_TEMPLATE;
-      topic.placeholder = DEFAULT_TOPIC_TEMPLATE;
-      topic.dataset.testid = 'watch-action-topic';
-      topic.title = 'Topic to publish to. Broker is configured in Settings. Placeholders like '
-        + '{source} and {rule} are substituted — see the ? beside this field.';
-      topic.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Topic', topic, { width: '13rem', help: topic.title }));
-      // The placeholder vocabulary lives behind this, not in the input's tooltip —
-      // see `templateHelp`.
-      params.appendChild(templateHelp(topic));
-
-      // Ellipsised rather than wrapped: a resolved topic is long, and letting it push
-      // the action row onto a second line is what made a small watcher scroll. The full
-      // value stays available as a tooltip, and textContent is complete either way.
-      const example = el('span', 'watch-hint watch-hint--truncate', '');
-      example.dataset.testid = 'watch-action-topic-example';
-      function syncExample() {
-        example.textContent = `e.g. ${renderTopicExample(topic.value || DEFAULT_TOPIC_TEMPLATE)}`;
-        example.title = example.textContent;
-      }
-      topic.addEventListener('input', syncExample);
-      syncExample();
-      params.appendChild(example);
-
-      readParams = () => ({
-        retain: retain.checked,
-        qos: 0,
-        // Blank means "unset", not "publish to the empty topic".
-        topic_template: topic.value.trim() || DEFAULT_TOPIC_TEMPLATE,
+    } else if (kind.value === 'publish_mqtt' || kind.value === 'publish_mqtt_image') {
+      // One branch for both: they differ in their default topic and in which way round
+      // two checkboxes default, and everything else about them is now declared rather
+      // than written out twice.
+      const isImage = kind.value === 'publish_mqtt_image';
+      const defaultTopic = isImage ? DEFAULT_IMAGE_TOPIC_TEMPLATE : DEFAULT_TOPIC_TEMPLATE;
+      let topicInput = null;
+      const form = buildSchemaParams(ctx.schemaFor?.(kind.value) || {}, stored, ctx.onAnyChange, {
+        testidPrefix: 'watch-action-param',
+        emptyText: 'This action has no options.',
+        fieldWrapper: wfield, numberInput, el, num,
+        container: params,
+        makeWidget: (type, field, value, onChange) => {
+          if (type !== 'str') return null;
+          // The topic is a template, not a fixed path: a rule matching several cats and
+          // several litter boxes knows which ones fired, and routing on them is the whole
+          // point of exposing those values. Blank means "unset", not "publish to the
+          // empty topic", so the read falls back to the default rather than sending ''.
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.value = value || defaultTopic;
+          input.placeholder = defaultTopic;
+          input.addEventListener('input', onChange);
+          topicInput = input;
+          return { element: input, control: input, read: () => input.value.trim() || defaultTopic };
+        },
+        decorator: {
+          // Declared by the action and left at its default, exactly as the hand-written
+          // form did. Not an oversight carried forward: the action row is a single line
+          // by design (there is a density test on it), and a QoS control costs that line
+          // — it wraps the row and adds ~110px of editor scroll for a setting nobody has
+          // needed to change. Offering it is a UX decision with a price, not a freebie.
+          hidden: ['qos'],
+          order: ['topic_template'],
+          labels: { topic_template: 'Topic', max_width: 'max width', max_fps: 'max fps', annotate: 'Draw boxes' },
+          testids: {
+            topic_template: isImage ? 'watch-action-image-topic' : 'watch-action-topic',
+            annotate: 'watch-action-image-annotate',
+            max_fps: 'watch-action-image-max-fps',
+          },
+          widths: { topic_template: '13rem', quality: '4.5rem', max_width: '5rem', max_fps: '4.5rem', qos: '4.5rem' },
+          steps: { quality: '5', max_width: '80', max_fps: '0.5', qos: '1' },
+          mins: { quality: 1 },
+          after: {
+            topic_template: () => {
+              if (!topicInput) return null;
+              // The placeholder vocabulary lives behind this, not in the input's
+              // tooltip — see `templateHelp`.
+              const help = templateHelp(topicInput);
+              // Ellipsised rather than wrapped: a resolved topic is long, and letting it
+              // push the action row onto a second line is what made a small watcher
+              // scroll. The full value stays available as a tooltip.
+              const example = el('span', 'watch-hint watch-hint--truncate', '');
+              example.dataset.testid = isImage ? 'watch-action-image-topic-example' : 'watch-action-topic-example';
+              const sync = () => {
+                example.textContent = `e.g. ${renderTopicExample(topicInput.value || defaultTopic)}`;
+                example.title = example.textContent;
+              };
+              topicInput.addEventListener('input', sync);
+              sync();
+              return [help, example];
+            },
+          },
+        },
       });
-    } else if (kind.value === 'publish_mqtt_image') {
-      // Its own topic, defaulting to a source-keyed one: the frame belongs to the
-      // camera, not to whichever rule happened to fire on it.
-      const topic = document.createElement('input');
-      topic.type = 'text';
-      topic.value = stored.topic_template || DEFAULT_IMAGE_TOPIC_TEMPLATE;
-      topic.placeholder = DEFAULT_IMAGE_TOPIC_TEMPLATE;
-      topic.dataset.testid = 'watch-action-image-topic';
-      topic.title = 'Topic the JPEG is published on. Broker is configured in Settings. Defaults '
-        + 'to a source-keyed topic: the frame belongs to the camera, not to whichever rule fired.';
-      topic.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Topic', topic, { width: '13rem', help: topic.title }));
-      params.appendChild(templateHelp(topic));
-
-      const example = el('span', 'watch-hint watch-hint--truncate', '');
-      example.dataset.testid = 'watch-action-image-topic-example';
-      function syncExample() {
-        example.textContent = `e.g. ${renderTopicExample(topic.value || DEFAULT_IMAGE_TOPIC_TEMPLATE)}`;
-        example.title = example.textContent;
-      }
-      topic.addEventListener('input', syncExample);
-      syncExample();
-      params.appendChild(example);
-
-      const annotate = document.createElement('input');
-      annotate.type = 'checkbox';
-      annotate.checked = stored.annotate !== false;
-      annotate.dataset.testid = 'watch-action-image-annotate';
-      annotate.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Draw boxes', annotate, {
-        help: 'Burn the tracked boxes and labels into the published JPEG. On by default — this '
-          + 'image is for a dashboard to show a human, not for training data.',
-      }));
-
-      // On by default, unlike the event action's: an image is state, and retaining it
-      // is what makes a subscriber show a picture at once instead of waiting for the
-      // next frame. A retained event edge would replay as though it were live.
-      const retain = document.createElement('input');
-      retain.type = 'checkbox';
-      retain.checked = stored.retain !== false;
-      retain.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Retain', retain, {
-        help: 'Ask the broker to keep the last image on this topic. On by default, unlike the '
-          + 'event action’s: a picture is state, and retaining it is what makes a dashboard show '
-          + 'something the moment it connects instead of waiting for the next frame.',
-      }));
-
-      const quality = numberInput(stored.quality ?? 80, { step: '5', min: 1, max: 100 });
-      const maxWidth = numberInput(stored.max_width ?? 0, { step: '80', min: 0 });
-      const maxFps = numberInput(stored.max_fps ?? 0, { step: '0.5', min: 0 });
-      maxFps.dataset.testid = 'watch-action-image-max-fps';
-      maxFps.title =
-        'Ceiling on publishes per second per source. 0 publishes every analysed frame.';
-      maxWidth.title = 'Shrink to at most this width before encoding. 0 keeps the analysis size.';
-      for (const i of [quality, maxWidth, maxFps]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Quality', quality, {
-        width: '4.5rem',
-        help: 'JPEG quality, 1–100. 80 is a good balance; above 90 the file grows fast for '
-          + 'little visible gain, and every frame goes over the broker.',
-      }));
-      params.appendChild(wfield('max width', maxWidth, { width: '5rem', help: maxWidth.title }));
-      params.appendChild(wfield('max fps', maxFps, { width: '4.5rem', help: maxFps.title }));
-
-      readParams = () => ({
-        topic_template: topic.value.trim() || DEFAULT_IMAGE_TOPIC_TEMPLATE,
-        annotate: annotate.checked,
-        retain: retain.checked,
-        qos: 0,
-        quality: num(quality, 80),
-        max_width: num(maxWidth, 0),
-        max_fps: num(maxFps, 0),
-      });
+      readParams = () => form.getParams();
     } else if (kind.value === 'record_event_timelapse') {
       // The first kind rendered from the action's own `params_schema()` rather than
       // from a hand-written list of fields. What is left here is only what the schema
@@ -1750,6 +1698,7 @@ function buildActionRow(action, ctx) {
         testidPrefix: 'watch-action-param',
         emptyText: 'This action has no options.',
         fieldWrapper: wfield, numberInput, el, num,
+        container: params,
         decorator: {
           // Offered by the action, deliberately not by this form: the action defaults to
           // the recordings root, which is where the retention sweep looks. A typed path
@@ -1839,7 +1788,6 @@ function buildActionRow(action, ctx) {
           },
         },
       });
-      params.appendChild(form.element);
       readParams = () => form.getParams();
     } else if (kind.value === 'save_timelapse') {
       // Browsed rather than typed, unlike `save_snapshot`'s: a timelapse directory is
@@ -1847,128 +1795,135 @@ function buildActionRow(action, ctx) {
       // snapshot directory is normally left at its default. The path is dataset-root
       // relative — the only space the browser and /api/images/mkdir speak — and
       // `resolve_output_dir` in the action accepts that spelling.
-      const dir = dirPickerField(stored.output_dir ?? DEFAULT_TIMELAPSE_DIR, ctx.onAnyChange);
-      params.appendChild(wfield('Output dir', dir.element, {
-        width: '15rem',
-        help: 'Where the frames are written, relative to the image dataset root. Placeholders '
-          + 'are allowed — see the ? beside it — and a per-day folder is added for you. Browse… '
-          + 'can create the folder if it does not exist yet.',
-      }));
-      params.appendChild(templateHelp(dir.input, {
-        label: 'Placeholders you can use in this folder',
-        intro: 'Substituted per path segment and slugified. One action covers every camera in '
-          + 'the watcher, so use {source} to give each its own folder — without it they all '
-          + 'share one. Must start with a real folder name before any placeholder. A YYYY-MM-DD '
-          + 'folder is added automatically unless you place {date} yourself.',
-      }));
+      let dirPicker = null;
+      const form = buildSchemaParams(ctx.schemaFor?.('save_timelapse') || {}, stored, ctx.onAnyChange, {
+        testidPrefix: 'watch-action-param',
+        emptyText: 'This action has no options.',
+        fieldWrapper: wfield, numberInput, el, num,
+        container: params,
+        makeWidget: (type, field, value, onChange) => {
+          if (type !== 'directory') return null;
+          dirPicker = dirPickerField(value ?? DEFAULT_TIMELAPSE_DIR, onChange);
+          return {
+            element: dirPicker.element,
+            // The picker's own text input, so the test id and the schema's help land on
+            // the thing the user types into rather than on its wrapper.
+            control: dirPicker.input,
+            read: () => dirPicker.getValue().trim() || DEFAULT_TIMELAPSE_DIR,
+          };
+        },
+        decorator: {
+          // Declared order puts full_resolution before max_width; the numbers read
+          // better together, with the two checkboxes after them.
+          order: ['output_dir', 'interval_s', 'quality', 'max_width', 'full_resolution', 'annotate'],
+          labels: { output_dir: 'Output dir', interval_s: 'Every s', max_width: 'max width', full_resolution: 'Full res', annotate: 'Draw boxes' },
+          testids: {
+            output_dir: 'watch-action-dir',
+            interval_s: 'watch-action-timelapse-interval',
+            full_resolution: 'watch-action-timelapse-full-res',
+            annotate: 'watch-action-timelapse-annotate',
+          },
+          widths: { output_dir: '15rem', interval_s: '4.5rem', quality: '4.5rem', max_width: '5rem' },
+          steps: { interval_s: '5', quality: '5', max_width: '80' },
+          mins: { interval_s: 1, quality: 1 },
+          after: {
+            output_dir: () => {
+              if (!dirPicker) return null;
+              const help = templateHelp(dirPicker.input, {
+                label: 'Placeholders you can use in this folder',
+                intro: 'Substituted per path segment and slugified. One action covers every camera in '
+                  + 'the watcher, so use {source} to give each its own folder — without it they all '
+                  + 'share one. Must start with a real folder name before any placeholder. A YYYY-MM-DD '
+                  + 'folder is added automatically unless you place {date} yourself.',
+              });
 
-      // The per-day subdirectory is created by the action, not picked here, so the
-      // hint is the only place the user learns the frames are not written flat.
-      const layout = el('span', 'watch-hint watch-hint--truncate', '');
-      layout.dataset.testid = 'watch-action-timelapse-layout';
-      function syncLayout() {
-        const root = (dir.getValue() || DEFAULT_TIMELAPSE_DIR).replace(/^\/+|\/+$/g, '') || DEFAULT_TIMELAPSE_DIR;
-        const rendered = renderTopicExample(root);
-        const day = root.includes('{date}') ? '' : `${TEMPLATE_EXAMPLE.date}/`;
-        layout.textContent = `→ ${rendered}/${day}back-room_14-30-00.jpg`;
-        layout.title = root.includes('{source}')
-          ? 'A folder per camera, then one per day.'
-          : 'Every camera in this watcher writes into this one folder — add {source} to split them.';
-      }
-      dir.onChange(syncLayout);
-      syncLayout();
-      params.appendChild(layout);
-
-      const every = numberInput(stored.interval_s ?? 30, { step: '5', min: 1 });
-      every.dataset.testid = 'watch-action-timelapse-interval';
-      every.title =
-        'Seconds between kept frames, per camera. Aligned to the clock, so 30 lands on '
-        + ':00 and :30 and stays aligned across a restart.';
-      const quality = numberInput(stored.quality ?? 90, { step: '5', min: 1, max: 100 });
-      const maxWidth = numberInput(stored.max_width ?? 0, { step: '80', min: 0 });
-      maxWidth.title = 'Shrink to at most this width before encoding. 0 keeps the frame\'s own size.';
-      for (const i of [every, quality, maxWidth]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Every s', every, { width: '4.5rem', help: every.title }));
-      params.appendChild(wfield('quality', quality, {
-        width: '4.5rem',
-        help: 'JPEG quality, 1–100. Higher than the MQTT image default because these frames are '
-          + 'kept on disk and watched back as a sequence, where compression artefacts crawl.',
-      }));
-      params.appendChild(wfield('max width', maxWidth, { width: '5rem', help: maxWidth.title }));
-
-      // On by default, like the MQTT image action: the analysis downscale exists to
-      // make inference cheap, and a timelapse is watched by a human.
-      const fullRes = document.createElement('input');
-      fullRes.type = 'checkbox';
-      fullRes.checked = stored.full_resolution !== false;
-      fullRes.dataset.testid = 'watch-action-timelapse-full-res';
-      fullRes.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Full res', fullRes, {
-        help: 'Save the camera’s own frame rather than the downscaled one inference ran on. On '
-          + 'by default: the analysis downscale exists to make inference cheap, and a timelapse '
-          + 'is watched by a human.',
-      }));
-
-      // Off by default: burnt-in boxes make the frames useless as training data and
-      // flicker distractingly at playback speed.
-      const annotate = document.createElement('input');
-      annotate.type = 'checkbox';
-      annotate.checked = Boolean(stored.annotate);
-      annotate.dataset.testid = 'watch-action-timelapse-annotate';
-      annotate.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Draw boxes', annotate, {
-        help: 'Burn the tracked boxes into each saved frame. Off by default: burnt-in boxes make '
-          + 'the frames useless as training data and flicker distractingly at playback speed.',
-      }));
-
-      readParams = () => ({
-        output_dir: dir.getValue().trim() || DEFAULT_TIMELAPSE_DIR,
-        interval_s: num(every, 30),
-        quality: num(quality, 90),
-        max_width: num(maxWidth, 0),
-        full_resolution: fullRes.checked,
-        annotate: annotate.checked,
+              // The per-day subdirectory is created by the action, not picked here, so
+              // the hint is the only place the user learns the frames are not flat.
+              const layout = el('span', 'watch-hint watch-hint--truncate', '');
+              layout.dataset.testid = 'watch-action-timelapse-layout';
+              const sync = () => {
+                const root = (dirPicker.getValue() || DEFAULT_TIMELAPSE_DIR).replace(/^\/+|\/+$/g, '') || DEFAULT_TIMELAPSE_DIR;
+                const rendered = renderTopicExample(root);
+                const day = root.includes('{date}') ? '' : `${TEMPLATE_EXAMPLE.date}/`;
+                layout.textContent = `→ ${rendered}/${day}back-room_14-30-00.jpg`;
+                layout.title = root.includes('{source}')
+                  ? 'A folder per camera, then one per day.'
+                  : 'Every camera in this watcher writes into this one folder — add {source} to split them.';
+              };
+              dirPicker.onChange(sync);
+              sync();
+              return [help, layout];
+            },
+          },
+        },
       });
+      readParams = () => form.getParams();
     } else {
-      // A template, not a fixed path — the same vocabulary the topics use, so "a folder
-      // per camera" or "a folder per rule" is a thing you can write rather than a
-      // feature request. Browsable for the same reason the timelapse field is: the
-      // folder usually does not exist yet, and the picker can make it.
-      const dir = dirPickerField(stored.output_dir ?? DEFAULT_SNAPSHOT_DIR, ctx.onAnyChange, {
-        placeholder: DEFAULT_SNAPSHOT_DIR,
+      // The generic path: whatever the selected kind declares, rendered from its schema
+      // with no branch of its own. `save_snapshot` is the kind that lands here today and
+      // the decorator below is shaped for it, but an action kind added tomorrow gets a
+      // working form here without touching this file.
+      //
+      // This also fixes `save_event`, which declares no parameters at all and used to
+      // fall through to the snapshot form — it was asked for an output directory it does
+      // not have, and saved one.
+      let dirPicker = null;
+      const form = buildSchemaParams(ctx.schemaFor?.(kind.value) || {}, stored, ctx.onAnyChange, {
+        testidPrefix: 'watch-action-param',
+        emptyText: 'This action has no options.',
+        fieldWrapper: wfield, numberInput, el, num,
+        container: params,
+        makeWidget: (type, field, value, onChange) => {
+          if (type !== 'directory') return null;
+          dirPicker = dirPickerField(value ?? DEFAULT_SNAPSHOT_DIR, onChange, { placeholder: DEFAULT_SNAPSHOT_DIR });
+          return {
+            element: dirPicker.element,
+            control: dirPicker.input,
+            read: () => dirPicker.getValue().trim() || DEFAULT_SNAPSHOT_DIR,
+          };
+        },
+        decorator: {
+          labels: { output_dir: 'Output dir' },
+          testids: { output_dir: 'watch-action-dir' },
+          widths: { output_dir: '15rem', quality: '4.5rem' },
+          steps: { quality: '5' },
+          mins: { quality: 1 },
+          after: {
+            output_dir: () => {
+              if (!dirPicker) return null;
+              // A template, not a fixed path — the same vocabulary the topics use, so "a
+              // folder per camera" or "a folder per rule" is a thing you can write rather
+              // than a feature request.
+              const help = templateHelp(dirPicker.input, {
+                label: 'Placeholders you can use in this folder',
+                intro: 'Substituted per path segment and slugified, so a camera named "Kitchen / Cam" '
+                  + 'cannot turn one folder into two. Click one to insert it. A YYYY-MM-DD folder is '
+                  + 'added automatically unless you place {date} yourself.',
+              });
+
+              const example = el('span', 'watch-hint watch-hint--truncate', '');
+              example.dataset.testid = 'watch-action-snapshot-example';
+              const sync = () => {
+                const root = (dirPicker.getValue().trim() || DEFAULT_SNAPSHOT_DIR).replace(/^\/+|\/+$/g, '');
+                // `renderTopicExample` substitutes and collapses empty segments, which is
+                // exactly what `render_path` does to a folder template — the two differ
+                // only in what the result is fed to, so there is no second renderer to
+                // keep in step.
+                const rendered = renderTopicExample(root);
+                // The automatic day level, shown only when it is actually added —
+                // otherwise the preview claims a folder the action will not create.
+                const day = root.includes('{date}') ? '' : `${TEMPLATE_EXAMPLE.date}/`;
+                example.textContent = `→ ${rendered}/${day}14-30-00_back-room_cat-using-litter-box.jpg`;
+                example.title = example.textContent;
+              };
+              dirPicker.onChange(sync);
+              sync();
+              return [help, example];
+            },
+          },
+        },
       });
-      params.appendChild(wfield('Output dir', dir.element, {
-        width: '15rem',
-        help: 'Where snapshots are written, relative to the image dataset root. Placeholders are '
-          + 'allowed — see the ? beside it — so “a folder per camera” or “per rule” is something '
-          + 'you can write. A per-day folder is added for you.',
-      }));
-      params.appendChild(templateHelp(dir.input, {
-        label: 'Placeholders you can use in this folder',
-        intro: 'Substituted per path segment and slugified, so a camera named "Kitchen / Cam" '
-          + 'cannot turn one folder into two. Click one to insert it. A YYYY-MM-DD folder is '
-          + 'added automatically unless you place {date} yourself.',
-      }));
-
-      const example = el('span', 'watch-hint watch-hint--truncate', '');
-      example.dataset.testid = 'watch-action-snapshot-example';
-      function syncExample() {
-        const root = (dir.getValue().trim() || DEFAULT_SNAPSHOT_DIR).replace(/^\/+|\/+$/g, '');
-        // `renderTopicExample` substitutes and collapses empty segments, which is exactly
-        // what `render_path` does to a folder template — the two differ only in what the
-        // result is fed to, so there is no second renderer to keep in step.
-        const rendered = renderTopicExample(root);
-        // The automatic day level, shown only when it is actually added — otherwise the
-        // preview claims a folder the action will not create.
-        const day = root.includes('{date}') ? '' : `${TEMPLATE_EXAMPLE.date}/`;
-        example.textContent = `→ ${rendered}/${day}14-30-00_back-room_cat-using-litter-box.jpg`;
-        example.title = example.textContent;
-      }
-      dir.onChange(syncExample);
-      syncExample();
-      params.appendChild(example);
-
-      readParams = () => ({ output_dir: dir.getValue().trim() || DEFAULT_SNAPSHOT_DIR });
+      readParams = () => form.getParams();
     }
   }
 
