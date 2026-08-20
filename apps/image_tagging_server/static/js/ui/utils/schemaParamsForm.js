@@ -146,24 +146,34 @@ export function buildSchemaParams(schema, stored, onAnyChange, opts = {}) {
     readers[key] = read;
     controls[key] = { control, element, field, read };
 
-    box.appendChild(fieldWrapper(decorator.labels?.[key] || key.replace(/_/g, ' '), element, {
+    const wrapped = fieldWrapper(decorator.labels?.[key] || key.replace(/_/g, ' '), element, {
       width: type === 'bool' ? null : (decorator.widths?.[key] || '6rem'),
       // The schema's own help, so the caption explains itself. A kind that declares none
       // says so rather than hovering blank — a bare `track_buffer` explains nothing.
       help: field.help || `${key} — this declares no description for it.`,
-    }));
+    });
 
     // Previews go directly after the field they are about, so the number and its
-    // consequence are read together.
-    // A list is allowed because one field can need more than one thing after it: the
-    // directory fields want their placeholder help *and* a rendered example of the path
-    // those placeholders produce, and the two are separate nodes in the flex row.
+    // consequence are read together. A list is allowed because one field can need more
+    // than one: the directory fields want their placeholder help *and* a rendered
+    // example of the path those placeholders produce.
     const after = decorator.after?.[key];
-    if (after) {
-      const produced = after(controls, box);
-      for (const node of Array.isArray(produced) ? produced : [produced]) {
-        if (node) box.appendChild(node);
-      }
+    const extras = after ? [after(controls, box)].flat().filter(Boolean) : [];
+
+    if (extras.length) {
+      // Field and hints in one group, so the row wraps *between* groups and never
+      // between a number and the sentence explaining what it means. As separate flex
+      // items they were free to land on different lines, which put "→ the 30 s before it
+      // opened" underneath some unrelated field.
+      //
+      // Only when there is something to group — an extra element around every plain
+      // field would be DOM for nothing, and the row's own flex layout handles those.
+      const group = el('div', 'schema-field-group');
+      group.appendChild(wrapped);
+      for (const node of extras) group.appendChild(node);
+      box.appendChild(group);
+    } else {
+      box.appendChild(wrapped);
     }
   }
 

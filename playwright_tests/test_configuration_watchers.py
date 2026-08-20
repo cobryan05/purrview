@@ -1982,7 +1982,10 @@ class TestEventTimelapseActionParams:
         self._open(page, base_url)
 
         expect(page.locator("[data-testid='watch-action-event-timelapse-annotate']")).to_have_count(0)
-        expect(page.locator("[data-testid='watch-action-event-timelapse-overlay']").first).to_be_checked()
+        # Nor is there a switch for the sidecar that replaced it: it costs a few tens of
+        # KB, re-encodes nothing, and the player can already hide the boxes, so a control
+        # for it would only offer a way to lose the detections permanently.
+        expect(page.locator("[data-testid='watch-action-event-timelapse-overlay']")).to_have_count(0)
 
     def test_it_saves_its_params(self, page: Page, base_url: str):
         saved = {}
@@ -2001,9 +2004,10 @@ class TestEventTimelapseActionParams:
         assert action["paramsJson"]["interval_s"] == 20
         assert action["paramsJson"]["output_fps"] == 24
         assert action["paramsJson"]["preroll_frames"] == 3
-        # On by default, and sent even when untouched — a timelapse whose boxes were
-        # never stored cannot be given them afterwards.
-        assert action["paramsJson"]["save_overlay"] is True
+        # Not sent at all, which is how it stays on: the action defaults it to True, and
+        # an omitted key lets that default apply — including for a row that had
+        # previously stored it off, back when the form offered a switch.
+        assert "save_overlay" not in action["paramsJson"], action["paramsJson"]
         # Gone, not merely defaulted off: burning boxes into the pixels is permanent and
         # ruins every frame for training, and the player now draws them at play time.
         assert "annotate" not in action["paramsJson"], action["paramsJson"]
@@ -2080,6 +2084,31 @@ class TestSchemaDrivenActionParams:
         wait_until(page, lambda: bool(saved.get("actions")))
         assert saved["actions"][0]["paramsJson"]["wobble_factor"] == 12
 
+    def test_a_hint_stays_on_the_same_line_as_the_field_it_explains(self, page: Page, base_url: str):
+        """ "→ the 30 s before it opened" is meaningless next to some other field.
+
+        The params row is a wrapping flex container, and the field and its hint used to
+        be separate flex items — free to break onto different lines, which is exactly
+        what happened at narrower widths. Asserted geometrically rather than by class
+        name: what matters is that they end up on the same line, not how that is done.
+        """
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-action-event-timelapse-preroll']").first.fill("3")
+
+        field = page.locator("[data-testid='watch-action-event-timelapse-preroll']").first
+        hint = page.locator("[data-testid='watch-action-event-timelapse-preroll-hint']").first
+        expect(hint).to_contain_text("30 s")
+
+        field_box = field.bounding_box()
+        hint_box = hint.bounding_box()
+        # Vertical centres within a few pixels of each other — the same visual line.
+        field_mid = field_box["y"] + field_box["height"] / 2
+        hint_mid = hint_box["y"] + hint_box["height"] / 2
+        assert abs(field_mid - hint_mid) < 10, f"hint is {abs(field_mid - hint_mid)}px off the field's line"
+        # And after it, not before — a preview that precedes its input reads as a label.
+        assert hint_box["x"] > field_box["x"]
+
     def test_a_hidden_parameter_is_declared_but_never_offered(self, page: Page, base_url: str):
         """`output_dir` is real and the action honours it; this form must not ask for it.
         A typed path puts the mp4 outside the tree the retention sweep walks and the file
@@ -2092,15 +2121,38 @@ class TestSchemaDrivenActionParams:
         # action whose form failed to build at all.
         expect(page.locator("[data-testid='watch-action-event-timelapse-interval']").first).to_be_visible()
 
-    def test_a_checkbox_defaulting_to_true_starts_checked(self, page: Page, base_url: str):
-        """`undefined` has to mean "the schema's default", not "off". Read as off, an
-        action would quietly stop doing something it declares on by default — which is
-        how save_overlay would have shipped disabled for every existing watcher."""
-        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
-        self._open(page, base_url)
+    def test_a_checkbox_follows_the_schemas_default_in_both_directions(self, page: Page, base_url: str):
+        """An unset value has to mean "the schema's default", not "off".
 
-        expect(page.locator("[data-testid='watch-action-event-timelapse-overlay']").first).to_be_checked()
-        expect(page.locator("[data-testid='watch-action-event-timelapse-full-res']").first).not_to_be_checked()
+        Read as off, an action would quietly stop doing something it declares on by
+        default, for every watcher that had never touched the field — and the form would
+        then write that off back into the saved config, making it true.
+
+        Asserted on `retain`, which the two MQTT actions declare with *opposite*
+        defaults — off for the event action, where a retained edge would replay to every
+        new subscriber as though it were live, and on for the image one, where a retained
+        frame is what makes a dashboard show a picture the moment it connects. Same field
+        name, same form, two answers: a bug that always checked, always cleared, or
+        ignored the schema fails one half or the other.
+        """
+        # A row with nothing stored, so the schema's default is the only thing that can
+        # decide the box. The shared fixture saves `retain: False` explicitly, and a
+        # saved value rightly wins over a default — which would make this test pass for
+        # the wrong reason on one half and fail on the other.
+        profile = copy.deepcopy(FAKE_PROFILE)
+        profile["actions"][0]["paramsJson"] = {}
+        _mock_watch_apis(page, profiles=[profile])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        kind = page.locator("[data-testid='watch-action-kind']").first
+        retain = page.locator("[data-testid='watch-action-param-retain']").first
+
+        kind.select_option("publish_mqtt")
+        expect(retain).not_to_be_checked()
+
+        kind.select_option("publish_mqtt_image")
+        expect(retain).to_be_checked()
 
 
 class TestSnapshotDirectoryField:

@@ -7258,6 +7258,20 @@ progress.progress-indeterminate:indeterminate {
 /* A resolved MQTT topic is long. Truncating keeps the action row on one line while the
    full value stays in the element's title (and in its textContent, so tests still read
    the whole thing). */
+/* A schema field and the live hints that explain it, kept together.
+   The params row is a wrapping flex container and each field and hint was its own flex
+   item, so a wrap could put "→ the 30 s before it opened" on the line below, under some
+   unrelated field. Grouping them makes the break happen between groups instead.
+   `nowrap` inside, capped at the row width: the hints already ellipsise, so the pair
+   stays on one line rather than the group itself becoming a second place things wrap. */
+.schema-field-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.25rem 0.5rem;
+  max-width: 100%;
+}
+
 .watch-hint--truncate {
   max-width: 11rem;
   overflow: hidden;

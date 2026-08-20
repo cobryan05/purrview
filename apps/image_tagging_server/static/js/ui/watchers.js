@@ -1612,11 +1612,18 @@ function buildActionRow(action, ctx) {
         fieldWrapper: wfield, numberInput, el, num,
         container: params,
         decorator: {
-          // Same reasoning as the timelapse's: the clip is a recording attached to its
-          // event, swept by the recording retention settings, and a typed path takes it
-          // out of the tree that sweep walks.
-          hidden: ['output_dir'],
-          labels: { preroll_s: 'Pre-roll s', postroll_s: 'post-roll s', max_length_s: 'max s', save_overlay: 'Save boxes' },
+          // `output_dir` for the same reason as the timelapse's: the clip is a recording
+          // attached to its event, swept by the recording retention settings, and a
+          // typed path takes it out of the tree that sweep walks.
+          //
+          // `save_overlay` because there is no good reason to turn it off. The sidecar
+          // is a few tens of KB, it re-encodes nothing, and the player can already hide
+          // the boxes — so the checkbox only ever offered a way to permanently lose
+          // information for no saving. Hidden rather than removed: the action still
+          // honours the parameter, and omitting it here means the action's own default
+          // (on) applies, including for rows that had previously stored it off.
+          hidden: ['output_dir', 'save_overlay'],
+          labels: { preroll_s: 'Pre-roll s', postroll_s: 'post-roll s', max_length_s: 'max s' },
           widths: { preroll_s: '4.5rem', postroll_s: '4.5rem', max_length_s: '4.5rem' },
           steps: { preroll_s: '1', postroll_s: '1', max_length_s: '10' },
           mins: { max_length_s: 1 },
@@ -1705,7 +1712,13 @@ function buildActionRow(action, ctx) {
           // puts the mp4 somewhere nothing will ever delete it, and the row it hangs off
           // the event would point outside the tree the file endpoint serves. Hidden
           // rather than sent as the default, so the action keeps owning the value.
-          hidden: ['output_dir'],
+          //
+          // `save_overlay` is hidden for a different reason: it should simply always be
+          // on. The sidecar costs a few tens of KB, re-encodes nothing, and the boxes
+          // can already be switched off in the player — so the checkbox only offered a
+          // way to lose the detections permanently in exchange for nothing. Omitting it
+          // lets the action's default (on) apply, including to rows that stored it off.
+          hidden: ['output_dir', 'save_overlay'],
           labels: {
             interval_s: 'Every s',
             output_fps: 'play fps',
@@ -1714,7 +1727,6 @@ function buildActionRow(action, ctx) {
             max_width: 'max width',
             full_resolution: 'Full res',
             preroll_frames: 'pre-roll',
-            save_overlay: 'Save boxes',
           },
           // Kept exactly as they were before this form was generated, so the browser
           // tests keep asserting behaviour rather than being rewritten to match a
@@ -1726,7 +1738,6 @@ function buildActionRow(action, ctx) {
             max_frames: 'watch-action-event-timelapse-max-frames',
             full_resolution: 'watch-action-event-timelapse-full-res',
             preroll_frames: 'watch-action-event-timelapse-preroll',
-            save_overlay: 'watch-action-event-timelapse-overlay',
           },
           widths: {
             interval_s: '4.5rem', output_fps: '4.5rem', quality: '4.5rem',
