@@ -849,11 +849,26 @@ class TestFilenameDateNegateReachesTheGridQuery:
         page.get_by_test_id("review-filter-toggle").click()
         page.locator("#review-root .review-filter-panel input[type=datetime-local]").first.fill("2026-01-01T00:00")
         page.locator("#review-root .filter-date-negate input[type=checkbox]").check()
-        page.wait_for_timeout(200)
 
-        wait_until(page, lambda: calls, lambda: f"Expected POST to /api/images/review, got {calls}")
-        terms = calls[-1].get("terms", [])
-        date_terms = [t for t in terms if t.get("kind") == "date"]
+        # Two interactions, two searches: filling the date issues one on its own, and
+        # ticking negate issues another. Waiting for "a call to exist" is satisfied by
+        # the first of them, which carries the date but not the flag under test — so the
+        # assertion read the wrong request and passed only because a 200 ms sleep usually
+        # let the second one land first. Wait for the negate-carrying term itself, which
+        # is the thing being claimed; if the flag never reaches the server this now times
+        # out and prints the last body it did send, rather than failing intermittently on
+        # a busy box.
+        wait_until(
+            page,
+            lambda: any(
+                t.get("kind") == "date" and t.get("negate") is True
+                for t in (calls[-1].get("terms", []) if calls else [])
+            ),
+            lambda: f"the date negate flag never reached the search: {calls[-1] if calls else calls}",
+        )
+        # Still asserted separately: the wait proves a negated date term arrived, these
+        # prove it is the *only* date term — two would mean the filter was sent twice.
+        date_terms = [t for t in calls[-1].get("terms", []) if t.get("kind") == "date"]
         assert len(date_terms) == 1, calls[-1]
         assert date_terms[0].get("negate") is True, calls[-1]
 
