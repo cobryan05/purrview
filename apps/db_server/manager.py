@@ -31,6 +31,7 @@ from apps import (
 )
 from apps.db_server.hash_index import HashIndex
 from apps.helpers.actions.outputDir import has_placeholder, resolve_output_dir, static_prefix
+from apps.helpers.actions.Registry import action_registry
 from apps.helpers.actions.saveTimelapseAction import DEFAULT_TIMELAPSE_DIR
 from apps.helpers.consts import TaskStatus
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
@@ -4043,6 +4044,28 @@ class Manager:
                 "params_schema": cls.params_schema(),
             }
             for typename, cls in sorted(tracker_registry.items())
+        ]
+
+    async def list_avail_actions(self) -> List[Dict[str, Any]]:
+        """Registered actions, with the schema the Watchers pane renders their params from.
+
+        The actions registry has always carried `params_schema()` — its docstring even
+        claims it "drives the UI form automatically" — but nothing ever served it, so the
+        pane grew a hand-written form per action kind instead. The two lists then had no
+        way to disagree out loud: a parameter added to an action simply never appeared,
+        and one removed from it kept being written by the form.
+
+        Same shape and same reasoning as `list_avail_trackers`: one call rather than
+        list-then-fetch-each, because there are a handful of actions and their schemas
+        are a few fields each.
+        """
+        return [
+            {
+                "kind": kind,
+                "display_name": cls.display_name(),
+                "params_schema": cls.params_schema(),
+            }
+            for kind, cls in sorted(action_registry.items())
         ]
 
     # ── Watch events and recordings ────────────────────────────────────────────

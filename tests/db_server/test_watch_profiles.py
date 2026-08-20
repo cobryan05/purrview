@@ -1498,6 +1498,50 @@ class TestTrackerListing:
         assert resp.json().get("trackers"), "the parameterised route swallowed the literal one"
 
 
+class TestActionListing:
+    """The Watchers pane renders each action's params from this.
+
+    Before it existed the pane had a hand-written form per action kind, and the two
+    lists had no way to disagree out loud: a parameter added to an action never
+    appeared, and one removed from it carried on being written by the form. Both
+    happened.
+    """
+
+    async def test_lists_registered_actions_with_schemas(self, http_client):
+        resp = await http_client.get("/api/watch-profiles/actions")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        by_kind = {a["kind"]: a for a in body["actions"]}
+        # The kind is the registry key, which is what a watch_actions row stores.
+        assert {"record_clip", "record_event_timelapse", "save_snapshot"} <= set(by_kind)
+        assert by_kind["record_event_timelapse"]["displayName"] == "Event timelapse"
+        # Schema keys stay snake_case for the same reason the tracker ones do: they are
+        # data the Python side looks up by name, not model fields.
+        assert "interval_s" in by_kind["record_event_timelapse"]["paramsSchema"]
+
+    async def test_every_declared_type_is_one_the_form_can_render(self, http_client):
+        """The renderer switches on `type`, and an unknown one falls through to a plain
+        text box — so declaring a type it does not know shows a number field as text, or
+        a directory picker as a bare path, with nothing raising anywhere.
+
+        Keep this set in step with the widget table in
+        `ui/utils/schemaParamsForm.js`. Adding a type to an action means teaching the
+        renderer about it first.
+        """
+        renderable = {"int", "float", "bool", "str", "directory"}
+        body = (await http_client.get("/api/watch-profiles/actions")).json()
+
+        for action in body["actions"]:
+            for key, field in action["paramsSchema"].items():
+                assert field.get("type") in renderable, f"{action['kind']}.{key}"
+
+    async def test_route_is_not_shadowed_by_the_uuid_route(self, http_client):
+        resp = await http_client.get("/api/watch-profiles/actions")
+
+        assert resp.json().get("actions"), "the parameterised route swallowed the literal one"
+
+
 class TestIncludeDescendants:
     """The flag is stored, not expanded at write time.
 

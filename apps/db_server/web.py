@@ -880,6 +880,19 @@ class ListTrackersResponse(StatusResponse):
     trackers: List[TrackerInfo] = Field(default_factory=list)
 
 
+class ActionInfo(Payload):
+    #: The registry key, which is what a `watch_actions` row stores in `kind`.
+    kind: str
+    display_name: str
+    #: `Action.params_schema()` verbatim, for the same reason `TrackerInfo` keeps it
+    #: open: the field shapes are the action's to declare, not this layer's to model.
+    params_schema: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ListActionsResponse(StatusResponse):
+    actions: List[ActionInfo] = Field(default_factory=list)
+
+
 class ListWatchProfilesResponse(StatusResponse):
     profiles: List[WatchProfileRead] = Field(default_factory=list)
 
@@ -4104,6 +4117,26 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListTrackersResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/watch-profiles/actions",
+            response_model=ListActionsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="list_watch_actions",
+        )
+        async def list_watch_actions() -> ListActionsResponse:
+            """Available actions and their parameter schemas, for the Watchers pane.
+
+            Registered before `/{uuid}`-shaped routes for the same reason `facets` is —
+            a literal path declared after a path parameter of the same shape is
+            unreachable.
+            """
+            try:
+                actions = await self._manager.list_avail_actions()
+                return ListActionsResponse(status=JsonValues.SUCCESS, actions=actions)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListActionsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/watch-profiles",

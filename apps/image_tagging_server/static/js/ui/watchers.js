@@ -4,7 +4,7 @@ import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import {
   fetchWatchProfiles, createWatchProfile, updateWatchProfile, deleteWatchProfile,
-  validateWatchProfile, fetchTrackers,
+  validateWatchProfile, fetchTrackers, fetchWatchActionSchemas,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
@@ -17,6 +17,7 @@ import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { openOverlapPreviewModal } from '/app-static/js/ui/utils/overlapPreviewModal.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { buildSchemaParams } from '/app-static/js/ui/utils/schemaParamsForm.js';
 
 let _rendering = false;
 
@@ -694,57 +695,17 @@ function sectionPanel(head, ...bodies) {
  * @param {() => void} onAnyChange
  */
 function buildTrackerParams(schema, stored, onAnyChange) {
-  const box = el('div', 'watch-tracker-params');
-  box.dataset.testid = 'watch-tracker-params';
-  const readers = {};
-
-  for (const [key, field] of Object.entries(schema || {})) {
-    const type = field.type || 'str';
-    const saved = stored?.[key];
-    // A saved value only applies if it came from this tracker; switching trackers
-    // leaves foreign keys in the stored params, and the schema is the authority.
-    const value = saved !== undefined ? saved : field.default;
-    let control;
-
-    if (type === 'bool') {
-      control = document.createElement('input');
-      control.type = 'checkbox';
-      control.checked = value === true;
-      control.addEventListener('change', onAnyChange);
-      readers[key] = () => control.checked;
-    } else if (type === 'int' || type === 'float') {
-      control = numberInput(value ?? '', { step: type === 'int' ? '1' : '0.05', min: 0 });
-      control.addEventListener('input', onAnyChange);
-      // Number('') === 0, which has already caused a silent-stop bug in this codebase —
-      // an empty box must mean "the default", not "zero".
-      readers[key] = () => (type === 'int' ? Math.round(num(control, field.default)) : num(control, field.default));
-    } else {
-      control = document.createElement('input');
-      control.type = 'text';
-      control.value = value ?? '';
-      control.addEventListener('input', onAnyChange);
-      readers[key] = () => control.value.trim();
-    }
-
-    control.dataset.testid = `watch-tracker-param-${key}`;
-    if (field.help) control.title = field.help;
-    box.appendChild(wfield(key.replace(/_/g, ' '), control, {
-      width: type === 'bool' ? null : '6rem',
-      // The schema's own help, so the caption explains itself too. A tracker that
-      // declares none says so rather than hovering blank — the fields are named for the
-      // paper they come from, and a bare `track_buffer` explains nothing on its own.
-      help: field.help || `${key} — this tracker declares no description for it.`,
-    }));
-  }
-
-  if (!box.children.length) {
-    box.appendChild(el('span', 'watch-hint', 'This tracker has no options.'));
-  }
-
-  return {
-    element: box,
-    getParams: () => Object.fromEntries(Object.entries(readers).map(([k, read]) => [k, read()])),
-  };
+  // The shared renderer, which grew out of this function when the action forms were
+  // moved onto it. Trackers need none of its escape hatches — every tracker parameter
+  // is a plain scalar with a help string, which is exactly the case it handles bare.
+  const form = buildSchemaParams(schema, stored, onAnyChange, {
+    testidPrefix: 'watch-tracker-param',
+    emptyText: 'This tracker has no options.',
+    decorator: { className: 'watch-tracker-params' },
+    fieldWrapper: wfield, numberInput, el, num,
+  });
+  form.element.dataset.testid = 'watch-tracker-params';
+  return form;
 }
 
 // ── Label lifetime row ──────────────────────────────────────────────────────
@@ -1645,29 +1606,23 @@ function buildActionRow(action, ctx) {
   function syncParams() {
     params.innerHTML = '';
     if (kind.value === 'record_clip') {
-      const preroll = numberInput(stored.preroll_s ?? 10, { step: '1', min: 0 });
-      const postroll = numberInput(stored.postroll_s ?? 5, { step: '1', min: 0 });
-      const maxLength = numberInput(stored.max_length_s ?? 180, { step: '10', min: 1 });
-      for (const i of [preroll, postroll, maxLength]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Pre-roll s', preroll, {
-        width: '4.5rem',
-        help: 'Seconds of video kept from before the event started. Taken retroactively out of '
-          + 'the source’s rolling buffer, so it cannot exceed that camera’s “buffer s”.',
-      }));
-      params.appendChild(wfield('post-roll s', postroll, {
-        width: '4.5rem',
-        help: 'Seconds kept after the event ended — long enough to see the subject leave.',
-      }));
-      params.appendChild(wfield('max s', maxLength, {
-        width: '4.5rem',
-        help: 'Hard ceiling on the finished clip, pre-roll and post-roll included. A longer '
-          + 'event is cut short at this length — the event itself is unaffected.',
-      }));
-      readParams = () => ({
-        preroll_s: num(preroll, 10),
-        postroll_s: num(postroll, 5),
-        max_length_s: num(maxLength, 180),
+      const form = buildSchemaParams(ctx.schemaFor?.('record_clip') || {}, stored, ctx.onAnyChange, {
+        testidPrefix: 'watch-action-param',
+        emptyText: 'This action has no options.',
+        fieldWrapper: wfield, numberInput, el, num,
+        decorator: {
+          // Same reasoning as the timelapse's: the clip is a recording attached to its
+          // event, swept by the recording retention settings, and a typed path takes it
+          // out of the tree that sweep walks.
+          hidden: ['output_dir'],
+          labels: { preroll_s: 'Pre-roll s', postroll_s: 'post-roll s', max_length_s: 'max s', save_overlay: 'Save boxes' },
+          widths: { preroll_s: '4.5rem', postroll_s: '4.5rem', max_length_s: '4.5rem' },
+          steps: { preroll_s: '1', postroll_s: '1', max_length_s: '10' },
+          mins: { max_length_s: 1 },
+        },
       });
+      params.appendChild(form.element);
+      readParams = () => form.getParams();
     } else if (kind.value === 'publish_mqtt') {
       const retain = document.createElement('input');
       retain.type = 'checkbox';
@@ -1787,133 +1742,105 @@ function buildActionRow(action, ctx) {
         max_fps: num(maxFps, 0),
       });
     } else if (kind.value === 'record_event_timelapse') {
-      // No output directory field, unlike `save_timelapse`. The action defaults to the
-      // recordings root, which is where the retention sweep looks — a typed path puts the
-      // mp4 somewhere nothing will ever delete it, and the row it hangs off the event
-      // would point outside the tree the file endpoint serves. Not sent at all rather
-      // than sent as the default, so the action keeps owning the value.
-      const every = numberInput(stored.interval_s ?? 10, { step: '5', min: 1 });
-      every.dataset.testid = 'watch-action-event-timelapse-interval';
-      every.title = 'Seconds of real time between captured frames. Frames in between are discarded '
-        + 'without being written. Measured from the moment the event opened, so the first frame is '
-        + 'always the start of the visit.';
-      const fps = numberInput(stored.output_fps ?? 12, { step: '1', min: 1 });
-      fps.dataset.testid = 'watch-action-event-timelapse-fps';
-      fps.title = 'Frames per second of the finished video. Raising it shortens the result rather '
-        + 'than smoothing it — the frames are seconds apart either way. Capped at 60.';
-      for (const i of [every, fps]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('Every s', every, { width: '4.5rem', help: every.title }));
-      params.appendChild(wfield('play fps', fps, { width: '4.5rem', help: fps.title }));
-
-      // The speed-up is the product of the two fields above, and it is the number the
-      // user actually has in mind ("I want the two hours in ten seconds"). Neither field
-      // means much alone, and working it out by hand is exactly the arithmetic that makes
-      // people leave a timelapse at its defaults and never find out what it does.
-      const speed = el('span', 'watch-hint watch-hint--truncate', '');
-      speed.dataset.testid = 'watch-action-event-timelapse-speed';
-      function syncSpeed() {
-        const interval = Math.max(1, num(every, 10));
-        const rate = Math.max(1, Math.min(60, num(fps, 12)));
-        const factor = interval * rate;
-        // A half-hour visit: long enough to be the case worth previewing, short enough
-        // that the answer stays in seconds at every sane setting.
-        const plays = (30 * 60) / factor;
-        const shown = plays >= 10 ? Math.round(plays) : Math.round(plays * 10) / 10;
-        speed.textContent = `→ ${Math.round(factor)}× — a 30 min visit plays in ${shown} s`;
-        speed.title = speed.textContent;
-      }
-      for (const i of [every, fps]) i.addEventListener('input', syncSpeed);
-      syncSpeed();
-      params.appendChild(speed);
-
-      const minFrames = numberInput(stored.min_frames ?? 10, { step: '1', min: 1 });
-      minFrames.dataset.testid = 'watch-action-event-timelapse-min-frames';
-      minFrames.title = 'Events with fewer captured frames than this produce no video at all. The '
-        + 'event, its snapshot and any clip are unaffected. Stops a brief visit from filling the '
-        + 'events list with half-second videos.';
-      const maxFrames = numberInput(stored.max_frames ?? 3600, { step: '100', min: 1 });
-      maxFrames.dataset.testid = 'watch-action-event-timelapse-max-frames';
-      maxFrames.title = 'Hard ceiling per event, so a stuck detection cannot fill the disk. Frames '
-        + 'past it are dropped and the video ends early; the event is unaffected.';
-      const maxWidth = numberInput(stored.max_width ?? 1280, { step: '80', min: 0 });
-      maxWidth.title = 'Shrink frames to at most this width before encoding. 0 keeps their own size.';
-      const quality = numberInput(stored.quality ?? 85, { step: '5', min: 1 });
-      for (const i of [minFrames, maxFrames, maxWidth, quality]) i.addEventListener('input', ctx.onAnyChange);
-      params.appendChild(wfield('min frames', minFrames, { width: '5rem', help: minFrames.title }));
-      params.appendChild(wfield('max frames', maxFrames, { width: '5rem', help: maxFrames.title }));
-      params.appendChild(wfield('max width', maxWidth, { width: '5rem', help: maxWidth.title }));
-      params.appendChild(wfield('quality', quality, {
-        width: '4.5rem',
-        help: 'JPEG quality of each captured frame, 1–100, before it is encoded into the video.',
-      }));
-
-      // Off by default here, unlike `save_timelapse`'s: that one writes keepable frames,
-      // this one writes a summary watched at 120×, where the extra pixels cost encode
-      // time and disk for very little.
-      const fullRes = document.createElement('input');
-      fullRes.type = 'checkbox';
-      fullRes.checked = Boolean(stored.full_resolution);
-      fullRes.dataset.testid = 'watch-action-event-timelapse-full-res';
-      fullRes.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Full res', fullRes, {
-        help: 'Capture the camera’s own frame rather than the downscaled one inference ran on. Off '
-          + 'by default: this is a summary watched at speed, so the extra pixels cost encode time '
-          + 'and disk for very little.',
-      }));
-
-      // Counted in frames rather than seconds, because frames are what this action
-      // deals in — the interval already decides how much time each one covers, and the
-      // hint below does that arithmetic so nobody has to.
-      const preroll = numberInput(stored.preroll_frames ?? 0, { step: '1', min: 0 });
-      preroll.dataset.testid = 'watch-action-event-timelapse-preroll';
-      preroll.title = 'Frames from before the event opened to put at the front of the video, so it '
-        + 'shows the approach rather than starting with the subject already there. Costs one frame '
-        + 'capture per interval on an idle camera, so it is 0 by default.';
-      const prerollHint = el('span', 'watch-hint watch-hint--truncate', '');
-      prerollHint.dataset.testid = 'watch-action-event-timelapse-preroll-hint';
-      function syncPreroll() {
-        const frames = Math.max(0, num(preroll, 0));
-        if (!frames) {
-          prerollHint.textContent = '→ starts when the event does';
-        } else {
-          const seconds = frames * Math.max(1, num(every, 10));
-          prerollHint.textContent = `→ the ${seconds} s before it opened`;
-        }
-        prerollHint.title = prerollHint.textContent;
-      }
-      for (const i of [preroll, every]) i.addEventListener('input', syncPreroll);
-      preroll.addEventListener('input', ctx.onAnyChange);
-      syncPreroll();
-      params.appendChild(wfield('pre-roll', preroll, { width: '4.5rem', help: preroll.title }));
-      params.appendChild(prerollHint);
-
-      // Replaces the old "Draw boxes", which burnt the boxes into the pixels. That is
-      // gone rather than defaulted off: the sidecar draws the same boxes over the video
-      // at play time and can be toggled there, while a burnt-in box is permanent and
-      // makes every frame useless as a training image — which is exactly what the event
-      // modal's "save frame for annotation" collects.
-      const saveOverlay = document.createElement('input');
-      saveOverlay.type = 'checkbox';
-      saveOverlay.checked = stored.save_overlay !== false;
-      saveOverlay.dataset.testid = 'watch-action-event-timelapse-overlay';
-      saveOverlay.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Save boxes', saveOverlay, {
-        help: 'Store what the detector saw beside the video, so the event view can draw the boxes '
-          + 'over it and switch them off again. Costs a few tens of KB and leaves the video itself '
-          + 'clean, so any frame of it is still usable as a training image.',
-      }));
-
-      readParams = () => ({
-        interval_s: num(every, 10),
-        output_fps: num(fps, 12),
-        min_frames: num(minFrames, 10),
-        max_frames: num(maxFrames, 3600),
-        max_width: num(maxWidth, 1280),
-        quality: num(quality, 85),
-        full_resolution: fullRes.checked,
-        preroll_frames: num(preroll, 0),
-        save_overlay: saveOverlay.checked,
+      // The first kind rendered from the action's own `params_schema()` rather than
+      // from a hand-written list of fields. What is left here is only what the schema
+      // genuinely cannot say: which parameter this form must refuse to offer, and the
+      // two live previews that are computed from more than one field at once.
+      const form = buildSchemaParams(ctx.schemaFor?.('record_event_timelapse') || {}, stored, ctx.onAnyChange, {
+        testidPrefix: 'watch-action-param',
+        emptyText: 'This action has no options.',
+        fieldWrapper: wfield, numberInput, el, num,
+        decorator: {
+          // Offered by the action, deliberately not by this form: the action defaults to
+          // the recordings root, which is where the retention sweep looks. A typed path
+          // puts the mp4 somewhere nothing will ever delete it, and the row it hangs off
+          // the event would point outside the tree the file endpoint serves. Hidden
+          // rather than sent as the default, so the action keeps owning the value.
+          hidden: ['output_dir'],
+          labels: {
+            interval_s: 'Every s',
+            output_fps: 'play fps',
+            min_frames: 'min frames',
+            max_frames: 'max frames',
+            max_width: 'max width',
+            full_resolution: 'Full res',
+            preroll_frames: 'pre-roll',
+            save_overlay: 'Save boxes',
+          },
+          // Kept exactly as they were before this form was generated, so the browser
+          // tests keep asserting behaviour rather than being rewritten to match a
+          // generated naming scheme.
+          testids: {
+            interval_s: 'watch-action-event-timelapse-interval',
+            output_fps: 'watch-action-event-timelapse-fps',
+            min_frames: 'watch-action-event-timelapse-min-frames',
+            max_frames: 'watch-action-event-timelapse-max-frames',
+            full_resolution: 'watch-action-event-timelapse-full-res',
+            preroll_frames: 'watch-action-event-timelapse-preroll',
+            save_overlay: 'watch-action-event-timelapse-overlay',
+          },
+          widths: {
+            interval_s: '4.5rem', output_fps: '4.5rem', quality: '4.5rem',
+            min_frames: '5rem', max_frames: '5rem', max_width: '5rem', preroll_frames: '4.5rem',
+          },
+          // Steps sized to how each number is actually adjusted — a 0.05 step on a
+          // seconds-between-frames field means forty clicks to get from 10 to 12.
+          steps: {
+            interval_s: '5', output_fps: '1', min_frames: '1', max_frames: '100',
+            max_width: '80', quality: '5', preroll_frames: '1',
+          },
+          mins: { interval_s: 1, output_fps: 1, min_frames: 1, max_frames: 1, quality: 1 },
+          after: {
+            // The speed-up is the product of the two fields above it, and it is the
+            // number the user actually has in mind ("I want the two hours in ten
+            // seconds"). Neither field means much alone, and working it out by hand is
+            // exactly the arithmetic that makes people leave a timelapse at its defaults
+            // and never find out what it does.
+            output_fps: (controls) => {
+              const speed = el('span', 'watch-hint watch-hint--truncate', '');
+              speed.dataset.testid = 'watch-action-event-timelapse-speed';
+              const every = controls.interval_s?.control;
+              const fps = controls.output_fps?.control;
+              if (!every || !fps) return null;
+              const sync = () => {
+                const interval = Math.max(1, num(every, 10));
+                const rate = Math.max(1, Math.min(60, num(fps, 12)));
+                const factor = interval * rate;
+                // A half-hour visit: long enough to be the case worth previewing, short
+                // enough that the answer stays in seconds at every sane setting.
+                const plays = (30 * 60) / factor;
+                const shown = plays >= 10 ? Math.round(plays) : Math.round(plays * 10) / 10;
+                speed.textContent = `→ ${Math.round(factor)}× — a 30 min visit plays in ${shown} s`;
+                speed.title = speed.textContent;
+              };
+              for (const i of [every, fps]) i.addEventListener('input', sync);
+              sync();
+              return speed;
+            },
+            // Frames, but the user is thinking in seconds — and the answer depends on
+            // the interval field further up, so it cannot be a per-field help string.
+            preroll_frames: (controls) => {
+              const hint = el('span', 'watch-hint watch-hint--truncate', '');
+              hint.dataset.testid = 'watch-action-event-timelapse-preroll-hint';
+              const preroll = controls.preroll_frames?.control;
+              const every = controls.interval_s?.control;
+              if (!preroll || !every) return null;
+              const sync = () => {
+                const frames = Math.max(0, num(preroll, 0));
+                hint.textContent = frames
+                  ? `→ the ${frames * Math.max(1, num(every, 10))} s before it opened`
+                  : '→ starts when the event does';
+                hint.title = hint.textContent;
+              };
+              for (const i of [preroll, every]) i.addEventListener('input', sync);
+              sync();
+              return hint;
+            },
+          },
+        },
       });
+      params.appendChild(form.element);
+      readParams = () => form.getParams();
     } else if (kind.value === 'save_timelapse') {
       // Browsed rather than typed, unlike `save_snapshot`'s: a timelapse directory is
       // one the user makes for the purpose (and the picker can make it), where a
@@ -2100,7 +2027,7 @@ export async function renderWatchProfileManager({ target }) {
       onNew: () => openEditor(null),
     });
 
-    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames, trackers, ingestTiers] = await Promise.all([
+    const [profilesMap, sourcesMap, labelsMap, modelGroups, modelNames, trackers, ingestTiers, actionSchemas] = await Promise.all([
       fetchWatchProfiles().catch(() => new Map()),
       fetchSourceList().catch(() => new Map()),
       // fetchLabels() returns a Map, not an array — the fallback must match.
@@ -2112,7 +2039,14 @@ export async function renderWatchProfileManager({ target }) {
       // Its own fetch rather than a field on the source list: the tier is derived, not
       // stored, and the sources list is served from a cache this must not inherit.
       fetchSourceIngestTiers().catch(() => new Map()),
+      // Falls back to an empty list rather than failing the pane: without it the action
+      // rows render their fields from nothing, which is bad, but a Watchers pane that
+      // will not open at all is worse.
+      fetchWatchActionSchemas().catch(() => []),
     ]);
+
+    // kind → paramsSchema, which is what the action rows render from.
+    const actionSchemaByKind = new Map((actionSchemas || []).map(a => [a.kind, a.paramsSchema || {}]));
 
     const sourceOptions = [...sourcesMap.values()].map(s => ({ key: s.uuid, text: s.name || s.uuid }));
     // Indented tree rather than a flat list: a vocabulary of cats under "Cat" under
@@ -2508,6 +2442,7 @@ export async function renderWatchProfileManager({ target }) {
         const entry = buildActionRow(action, {
           ruleScopeItems,
           sourceScopeItems,
+          schemaFor: kind => actionSchemaByKind.get(kind) || {},
           onAnyChange,
           onDelete: () => {
             entry.destroy?.();

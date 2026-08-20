@@ -12,6 +12,7 @@ Run with:
     pytest playwright_tests/test_configuration_watchers.py -p no:xdist -p no:asyncio -v
 """
 
+import copy
 import json
 import re
 
@@ -129,6 +130,52 @@ REGIONS = [
     },
 ]
 
+# As `GET /api/watch-profiles/actions` returns them — the action's own params_schema(),
+# which the Watchers pane now renders its fields from instead of holding a hand-written
+# list per kind.
+#
+# Only the kinds whose forms are schema-driven need an entry here; a kind absent from
+# this list renders from `{}`, which is exactly what the real pane does when an action
+# it has never heard of comes back from the registry. Mirror the real declaration when
+# changing it — `tests/db_server/test_watch_profiles.py::TestActionListing` is what
+# pins the real one.
+ACTION_SCHEMAS = [
+    {
+        "kind": "record_clip",
+        "displayName": "Record clip",
+        "paramsSchema": {
+            "preroll_s": {"type": "float", "required": False, "default": 10.0, "help": "Seconds before."},
+            "postroll_s": {"type": "float", "required": False, "default": 5.0, "help": "Seconds after."},
+            "max_length_s": {"type": "float", "required": False, "default": 180.0, "help": "Ceiling."},
+            "save_overlay": {"type": "bool", "required": False, "default": True, "help": "Store the boxes."},
+            "output_dir": {"type": "str", "required": False, "default": "/data/recordings/clips", "help": "Where."},
+        },
+    },
+    {
+        "kind": "record_event_timelapse",
+        "displayName": "Event timelapse",
+        "paramsSchema": {
+            "interval_s": {"type": "float", "required": False, "default": 10.0, "help": "Seconds between frames."},
+            "output_fps": {"type": "float", "required": False, "default": 12.0, "help": "Frames per second."},
+            "min_frames": {"type": "int", "required": False, "default": 10, "help": "Below this, no video."},
+            "max_frames": {"type": "int", "required": False, "default": 3600, "help": "Ceiling per event."},
+            "max_width": {"type": "int", "required": False, "default": 1280, "help": "Shrink frames to this."},
+            "quality": {"type": "int", "required": False, "default": 85, "help": "JPEG quality."},
+            "full_resolution": {"type": "bool", "required": False, "default": False, "help": "Camera resolution."},
+            "preroll_frames": {"type": "int", "required": False, "default": 0, "help": "Frames from before it opened."},
+            "save_overlay": {"type": "bool", "required": False, "default": True, "help": "Store the boxes beside it."},
+            # Declared by the action and deliberately not offered by the form — the
+            # hidden-field case the renderer has to honour.
+            "output_dir": {
+                "type": "str",
+                "required": False,
+                "default": "/data/recordings/timelapses",
+                "help": "Where.",
+            },
+        },
+    },
+]
+
 # As `GET /api/watch-profiles/trackers` returns them. Schema keys stay snake_case —
 # they are data the tracker declared, not model fields, so they are not camelised.
 TRACKERS = [
@@ -203,6 +250,7 @@ def _mock_watch_apis(
     on_update=None,
     ingest_tiers: dict | None = None,
     regions: list | None = None,
+    action_schemas: list | None = None,
 ):
     profiles = profiles or []
 
@@ -309,11 +357,23 @@ def _mock_watch_apis(
         ),
     )
 
+    # Same exclusion, same reason as `/trackers`: answered with a profile, the pane's
+    # action rows would render from an empty schema and show no fields at all.
+    page.route(
+        lambda url: url.rstrip("/").endswith("/api/watch-profiles/actions"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "actions": action_schemas or ACTION_SCHEMAS}),
+        ),
+    )
+
     page.route(
         lambda url: (
             "/api/watch-profiles/" in url
             and not url.endswith("/validate")
             and not url.rstrip("/").endswith("/trackers")
+            and not url.rstrip("/").endswith("/actions")
         ),
         handle_single,
     )
@@ -1978,6 +2038,93 @@ class TestEventTimelapseActionParams:
         # The snapshot form's field, which this row used to inherit. Sending it at all
         # is what took the video out of the recordings root.
         assert "output_dir" not in action["paramsJson"], action["paramsJson"]
+
+
+class TestSchemaDrivenActionParams:
+    """The form is generated from the action's `params_schema()`.
+
+    This is the property the whole arrangement exists for, and it is the one that was
+    missing: the pane used to hold a hand-written field list per action kind, so the two
+    could not disagree out loud. A parameter added on the Python side simply never
+    appeared, and one removed from it carried on being written into saved config by a
+    form that still offered it. Both happened within a day of each other.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        # The fixture profile's first action is an MQTT publish; the schema-driven form
+        # is the timelapse one, so switch the row's kind to it.
+        page.locator("[data-testid='watch-action-kind']").first.select_option("record_event_timelapse")
+
+    def _schema_with(self, **extra_fields) -> list:
+        """ACTION_SCHEMAS with extra params bolted onto the timelapse action.
+
+        Found by kind rather than by position — indexing into the list silently attaches
+        the fields to whichever action happens to be first, which is how this test last
+        started asserting against a form it was not looking at.
+        """
+        clone = copy.deepcopy(ACTION_SCHEMAS)
+        target = next(a for a in clone if a["kind"] == "record_event_timelapse")
+        target["paramsSchema"].update(extra_fields)
+        return clone
+
+    def test_a_parameter_the_form_has_never_heard_of_still_renders(self, page: Page, base_url: str):
+        """No decorator, no branch, no JS change — the point of the exercise. If this
+        fails, adding a parameter to an action is once again a two-file job with no
+        error when you forget the second one."""
+        schemas = self._schema_with(
+            wobble_factor={"type": "int", "required": False, "default": 7, "help": "How much wobble."},
+        )
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], action_schemas=schemas)
+        self._open(page, base_url)
+
+        field = page.locator("[data-testid='watch-action-param-wobble_factor']").first
+        expect(field).to_be_visible()
+        expect(field).to_have_value("7")
+        # The schema's own help reaches the control, so a new parameter explains itself.
+        assert "How much wobble." in (field.get_attribute("title") or "")
+
+    def test_a_new_parameter_is_saved_under_its_declared_name(self, page: Page, base_url: str):
+        """Rendering it is half the job; it has to round-trip under the snake_case key
+        the Python side looks it up by."""
+        saved = {}
+        schemas = self._schema_with(
+            wobble_factor={"type": "int", "required": False, "default": 7, "help": "How much wobble."},
+        )
+        _mock_watch_apis(
+            page, profiles=[FAKE_PROFILE], action_schemas=schemas, on_update=lambda body: saved.update(body)
+        )
+        self._open(page, base_url)
+
+        page.locator("[data-testid='watch-action-param-wobble_factor']").first.fill("12")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        assert saved["actions"][0]["paramsJson"]["wobble_factor"] == 12
+
+    def test_a_hidden_parameter_is_declared_but_never_offered(self, page: Page, base_url: str):
+        """`output_dir` is real and the action honours it; this form must not ask for it.
+        A typed path puts the mp4 outside the tree the retention sweep walks and the file
+        endpoint serves."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-action-param-output_dir']")).to_have_count(0)
+        # The fields around it still render, so this is an omission rather than an
+        # action whose form failed to build at all.
+        expect(page.locator("[data-testid='watch-action-event-timelapse-interval']").first).to_be_visible()
+
+    def test_a_checkbox_defaulting_to_true_starts_checked(self, page: Page, base_url: str):
+        """`undefined` has to mean "the schema's default", not "off". Read as off, an
+        action would quietly stop doing something it declares on by default — which is
+        how save_overlay would have shipped disabled for every existing watcher."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-action-event-timelapse-overlay']").first).to_be_checked()
+        expect(page.locator("[data-testid='watch-action-event-timelapse-full-res']").first).not_to_be_checked()
 
 
 class TestSnapshotDirectoryField:

@@ -45,6 +45,25 @@ export async function fetchTrackers() {
   return data.trackers || [];
 }
 
+/**
+ * Available actions and their parameter schemas.
+ *
+ * The same registry-driven arrangement the trackers have, and for a reason the actions
+ * learned the hard way: the Watchers pane used to hold a hand-written form per action
+ * kind, so a parameter added on the Python side never appeared, and one removed from it
+ * carried on being written into saved config by a form that still offered it.
+ *
+ * @returns {Promise<Array<{kind: string, displayName: string, paramsSchema: object}>>}
+ */
+export async function fetchWatchActionSchemas() {
+  const res = await apiFetch('/api/watch-profiles/actions');
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch action schemas');
+  }
+  return data.actions || [];
+}
+
 export async function fetchWatchProfile(uuid) {
   const res = await apiFetch(`/api/watch-profiles/${uuid}`);
   const data = await res.json();
