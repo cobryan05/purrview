@@ -94,3 +94,53 @@ class TestStaticAssetRevalidation:
             headers={"if-none-match": r.headers["etag"]},
         )
         assert cached.status_code == 304
+
+
+class TestTheWatchEventsProxyForwardsWrites:
+    """Every method the Events page uses has to be listed on the proxy route.
+
+    The SPA talks only to port 7999, so a method missing from the `api_route`
+    declaration is a feature that cannot work at all: db_server answers the request
+    correctly, and the browser never gets to make it — FastAPI rejects it here with a
+    405 that reads, in the UI, as "failed to delete event".
+
+    Nothing else catches this. The Playwright tests route `/api/watch-events` to a mock
+    inside the browser, which is *above* this layer, and the db_server tests call the
+    endpoint directly, which is below it. This is the only seam where the two lists of
+    methods are compared.
+    """
+
+    @pytest.fixture
+    def proxied(self, monkeypatch):
+        """Record what actually reaches the proxy, so a 405 is distinguishable from a
+        request that was forwarded and happened to fail upstream."""
+        from fastapi.responses import JSONResponse
+
+        import apps.image_tagging_server.web as web_module
+
+        seen = []
+
+        async def capture(path, request):
+            seen.append((request.method, path))
+            return JSONResponse(content={"status": "success"})
+
+        monkeypatch.setattr(web_module.WATCH_EVENTS_PROXY, "handle_request", capture)
+        return seen
+
+    async def test_deleting_one_event_reaches_the_proxy(self, http_client, proxied):
+        r = await http_client.delete("/api/watch-events/some-event-uuid")
+
+        assert r.status_code == 200, r.text
+        assert proxied == [("DELETE", "some-event-uuid")]
+
+    async def test_deleting_a_selection_reaches_the_proxy(self, http_client, proxied):
+        r = await http_client.post("/api/watch-events/delete", json={"uuids": ["a", "b"]})
+
+        assert r.status_code == 200, r.text
+        assert proxied == [("POST", "delete")]
+
+    async def test_reading_events_still_works(self, http_client, proxied):
+        r = await http_client.get("/api/watch-events/facets")
+
+        assert r.status_code == 200, r.text
+        assert proxied == [("GET", "facets")]

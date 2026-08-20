@@ -362,8 +362,16 @@ class WebApp:
         async def proxy_watch_profiles(request: Request, path: str):
             return await WATCH_PROFILES_PROXY.handle_request(path, request)
 
-        @self._app.api_route("/api/watch-events/{path:path}", methods=["GET"])
+        @self._app.api_route(
+            "/api/watch-events/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
         async def proxy_watch_events(request: Request, path: str):
+            # Was GET-only, which made the review page's delete button a 405 in the
+            # browser while db_server's endpoint sat there answering 200 to anything
+            # that reached it directly. This route is the SPA's only way to db_server,
+            # so the method list here is part of the API's surface, not a detail —
+            # keep it in step with what `/api/watch-events*` actually exposes.
             return await WATCH_EVENTS_PROXY.handle_request(path, request)
 
         @self._app.api_route(
