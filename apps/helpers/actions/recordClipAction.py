@@ -323,12 +323,17 @@ class RecordClipAction(Action):
         tail_duration += self.postroll_s
 
         tail: Optional[Path] = None
+        tail_played = 0.0
         if tail_duration > 0:
             backend = self._resolve_backend(context)
             candidate = dest.with_suffix(".tail.mp4")
             try:
-                await backend.extract(context, tail_start, tail_duration, candidate)
+                cut = await backend.extract(context, tail_start, tail_duration, candidate)
                 tail = candidate
+                # What the backend actually cut, not what was asked for: the buffer can
+                # hold less than the request, and this figure is what the clip's playing
+                # time is built from below.
+                tail_played = float(cut.get("durationS") or 0.0)
             except Exception as e:
                 # The chunks are the bulk of the clip and are already on disk; losing the
                 # last few seconds is far better than losing the whole event.
@@ -343,6 +348,16 @@ class RecordClipAction(Action):
         # A clip built this way always reached back past the buffer, so its pre-roll is
         # whole unless a drain was actually missed — which `hasGap` reports.
         result["partialPreroll"] = bool(result.get("hasGap"))
+        # Playing time, summed from the parts rather than measured off the file. It is
+        # the sum of the drained spans plus whatever the tail cut actually held, capped
+        # the same way `concat_parts` caps the muxer. Reporting nothing here is not a
+        # neutral omission: the recording row stores 0, `ended_at` lands empty, and the
+        # overlay writer — which needs a window to slice the detection ring over —
+        # silently declines every assembled clip.
+        played = sum(c.duration_s for c in chunks) + tail_played
+        if self.max_length_s and self.max_length_s > 0:
+            played = min(played, self.max_length_s)
+        result["durationS"] = max(0.0, played)
         return result
 
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
@@ -359,13 +374,15 @@ class RecordClipAction(Action):
         try:
             if context.clip_chunks:
                 result = await self._assemble_from_chunks(signal, context, dest)
-                # No overlay for a chunk-assembled clip. Its playing time is the sum of
-                # parts whose individual lengths this layer never measures, and the
-                # sidecar's whole contract is that a box's `t` is where it lands in the
-                # video. Guessing the duration would drift the boxes further from the
-                # picture the longer the event ran — worse than no overlay, because a
-                # misplaced box reads as a detector fault.
-                result["overlay"] = False
+                # An assembled clip does get an overlay, but only while its parts are
+                # contiguous. The sidecar's contract is that a box's `t` is where it
+                # lands in the video, and `build_overlay` gets there by subtracting
+                # wallclocks — exact for a run of back-to-back drains, but wrong by the
+                # length of any missing stretch for everything after it. `hasGap` is the
+                # only place that is known, so it is the gate: a gapped clip goes without
+                # rather than drawing boxes that slide further off the picture the longer
+                # the event ran, which reads as a detector fault.
+                result["overlay"] = self.save_overlay and not result.get("hasGap")
                 return ActionResult(
                     ok=True, detail=f"wrote {dest.name} from {result['partCount']} part(s)", data=result
                 )

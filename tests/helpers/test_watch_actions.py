@@ -459,7 +459,9 @@ class _FakeRelay:
             raise RuntimeError(self.fail)
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         Path(dest).write_bytes(b"mp4")
-        return {"path": str(dest), "sizeBytes": 3, "partialPreroll": False}
+        # `durationS` because the real playback server reports what it actually cut,
+        # which is what the assembled clip's playing time is summed from.
+        return {"path": str(dest), "sizeBytes": 3, "durationS": duration_s, "partialPreroll": False}
 
 
 class TestRecordClipAction:
@@ -611,17 +613,57 @@ class TestRecordClipFromDrainedChunks:
         assert len(joined["parts"]) == 3
         assert joined["parts"][:2] == [c.path for c in chunks]
 
-    async def test_an_assembled_clip_gets_no_overlay(self, tmp_path, monkeypatch):
-        """A concatenated clip's playing time is the sum of parts nothing here measures,
-        and the sidecar's whole contract is that a box's `t` is where it lands in the
-        video. Boxes that drift further the longer the event ran would read as a detector
-        fault rather than a timing one."""
+    async def test_an_assembled_clip_reports_its_playing_time(self, tmp_path, monkeypatch):
+        """Reporting nothing here is not a harmless omission: the recording row stores a
+        duration of 0, so `ended_at` lands empty and the overlay writer — which needs a
+        window to slice the detection ring over — declines every assembled clip. That is
+        how long events silently lost "show what the watcher saw"."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(
+            backend=PlaybackClipBackend(_FakeRelay()), postroll_s=5, output_dir=str(tmp_path / "clips")
+        )
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path)))
+
+        # Two 60 s chunks, plus a tail of the 10 s from the last drain to the event end
+        # and 5 s of post-roll.
+        assert result.data["durationS"] == pytest.approx(135.0)
+
+    async def test_the_playing_time_is_capped_the_way_the_muxer_caps_it(self, tmp_path, monkeypatch):
+        """`concat_parts` trims the output to `max_length_s`, so a reported duration
+        longer than the cap would place the overlay's last boxes past the end of the
+        video."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(
+            backend=PlaybackClipBackend(_FakeRelay()), max_length_s=90.0, output_dir=str(tmp_path / "clips")
+        )
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path)))
+
+        assert result.data["durationS"] == pytest.approx(90.0)
+
+    async def test_an_assembled_clip_still_gets_an_overlay(self, tmp_path, monkeypatch):
+        """Outliving the buffer is not a reason to lose the boxes — a long event is
+        exactly the one you want to inspect."""
         monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
         action = RecordClipAction(
             backend=PlaybackClipBackend(_FakeRelay()), output_dir=str(tmp_path / "clips"), save_overlay=True
         )
 
         result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path)))
+
+        assert result.data["overlay"] is True
+
+    async def test_a_gapped_assembly_gets_no_overlay(self, tmp_path, monkeypatch):
+        """`build_overlay` places a box by subtracting wallclocks, which is wrong by the
+        length of the missing stretch for everything after a gap. Boxes that slide
+        further off the picture read as a detector fault rather than a timing one."""
+        monkeypatch.setattr("apps.helpers.recordings.clipDrain.concat_parts", _fake_concat)
+        action = RecordClipAction(
+            backend=PlaybackClipBackend(_FakeRelay()), output_dir=str(tmp_path / "clips"), save_overlay=True
+        )
+
+        result = await action.run(_signal(), _context(clip_chunks=self._chunks(tmp_path, gap_before=True)))
 
         assert result.data["overlay"] is False
 

@@ -567,6 +567,20 @@ class StreamWatcherTask(Task):
         ]
         return max(prerolls) if prerolls else 0.0
 
+    def _max_clip_length_for(self, source_uuid: Optional[str]) -> float:
+        """The longest clip any clip action on this source can write.
+
+        The ceiling on how far back a clip's overlay has to reach. Cheap to hold: a
+        sample is a handful of small dicts a few times a second, so even a three-minute
+        cap is a few thousand of them — nothing beside the frame ring it sits next to.
+        """
+        lengths = [
+            float(getattr(action, "max_length_s", 0.0))
+            for row, action in self._actions
+            if row.kind == CLIP_ACTION_KIND and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
+        ]
+        return max(lengths) if lengths else 0.0
+
     async def _service_drain(self, pipeline: WatchPipeline) -> None:
         """Keep a long event's video alive, one chunk at a time.
 
@@ -612,6 +626,12 @@ class StreamWatcherTask(Task):
         leave the lead-in of a long-retention camera's clips unannotated — and the
         lead-in is where you look to see what the detector made of an approach.
 
+        And to outreach the longest clip the source can produce, which is a *larger*
+        number than the buffer as soon as an event outlives the rewind window: those
+        clips are assembled from drained chunks and can run to `max_length_s`, so a ring
+        sized only to the buffer would have evicted everything before the last drain and
+        the overlay would start minutes into the clip.
+
         The *negative* answer is cached as well as the positive one. This is called for
         every analysed frame of every source, and `_wants_overlay` walks the whole action
         list — a scan a watcher with no clip actions would otherwise pay for, forever, to
@@ -622,7 +642,11 @@ class StreamWatcherTask(Task):
             return self._detection_tracks[source_uuid]
         track = None
         if self._wants_overlay(source_uuid):
-            window = max(DEFAULT_TRACK_SECONDS, (pipeline.retention_s or 0.0) + self._max_preroll_for(source_uuid))
+            window = max(
+                DEFAULT_TRACK_SECONDS,
+                (pipeline.retention_s or 0.0) + self._max_preroll_for(source_uuid),
+                self._max_clip_length_for(source_uuid),
+            )
             track = DetectionTrack(max_seconds=window)
         self._detection_tracks[source_uuid] = track
         return track
