@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import Page, expect
 
 from playwright_tests.test_nvr_live_view import FRAME_B64
-from playwright_tests.waits import wait_until
+from playwright_tests.waits import issues_a_request, wait_until
 
 PROFILE_UUID = "99999999-eeee-0000-0000-000000000002"
 EVENT_UUID = "event-uuid-0001"
@@ -154,14 +154,12 @@ def _issues_a_search(page: Page, queries: list):
     success even if clearing the filters did nothing at all.
 
     So key the barrier on the request list itself, which is the thing under test.
+
+    The mechanism now lives in `waits.issues_a_request` — the same trap turned up in
+    the Review filter tests, and two copies would drift.
     """
-    before = len(queries)
-    yield
-    wait_until(
-        page,
-        lambda: len(queries) > before,
-        lambda: f"the interaction issued no new search (still {len(queries)} queries)",
-    )
+    with issues_a_request(page, queries, "search"):
+        yield
 
 
 def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, deletes=None):

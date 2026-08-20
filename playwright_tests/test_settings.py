@@ -813,11 +813,17 @@ class TestFileBrowserViewToggle:
             expect(root.locator(".fb-grid-cell")).to_have_count(0)
 
             root.locator(".fb-view-toggle button[title='Grid view']").click()
-            page.wait_for_timeout(150)
 
+            # The two `expect`s below retry on their own; only the localStorage read does
+            # not, so it gets its own poll rather than riding on a 150ms sleep.
             expect(root.locator(".fb-grid-cell", has_text="a.jpg")).to_be_visible()
             expect(root.locator(".fb-entry")).to_have_count(0)
-            assert page.evaluate("() => localStorage.getItem('fb-view')") == "grid"
+            wait_until(
+                page,
+                lambda: page.evaluate("() => localStorage.getItem('fb-view')") == "grid",
+                lambda: "fb-view was never persisted as 'grid', got "
+                + repr(page.evaluate("() => localStorage.getItem('fb-view')")),
+            )
 
             # A fresh instance (simulating reload) should pick up the persisted choice
             page.evaluate("""async () => {

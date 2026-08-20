@@ -7,7 +7,7 @@ feature tab must initialise exactly once no matter how fast the user switches.
 
 import re
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 from playwright_tests.waits import wait_until
 
@@ -68,6 +68,11 @@ class TestTabInitRace:
             sect('tab-annotate-workspace')?.click();
             sect('tab-review')?.click();
         }""")
+        # Wait for Review to actually be on screen before starting the settle window,
+        # so the 2500ms is spent quiescing rather than partly waiting for a lazy module
+        # to load — the difference between the two sides is what this test measures, and
+        # a slow load on one side alone would read as a leak.
+        expect(page.locator("#tab-review")).to_be_visible()
         page.wait_for_timeout(2500)
         racy = _listener_count(page)
 
@@ -76,6 +81,7 @@ class TestTabInitRace:
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
         page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
+        expect(page.locator("#tab-review")).to_be_visible()
         page.wait_for_timeout(2500)
         clean = _listener_count(page)
 
@@ -110,15 +116,27 @@ class TestRunsTaskStreamLifecycle:
         page.wait_for_load_state("networkidle")
 
         page.locator(".main-tab-button[data-tab='tab-runs']").click()
-        page.wait_for_timeout(500)
-        opened = page.evaluate("() => window.__taskStreams.length")
-        assert opened >= 1, "task SSE stream never opened on the Runs tab"
+        wait_until(
+            page,
+            lambda: page.evaluate("() => window.__taskStreams.length"),
+            "task SSE stream never opened on the Runs tab",
+        )
 
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
-        page.wait_for_timeout(300)
-        states = page.evaluate("() => window.__taskStreams.map(es => es.readyState)")
-        # readyState 2 = CLOSED
-        assert all(s == 2 for s in states), f"task SSE stream left open after leaving Runs tab: {states}"
+
+        # `all()` is vacuously true over an empty list, so "every stream is closed" has
+        # to also require that there *is* one — otherwise a run where the init script
+        # never saw a stream would report success. readyState 2 = CLOSED.
+        def _all_closed():
+            states = page.evaluate("() => window.__taskStreams.map(es => es.readyState)")
+            return states if states and all(s == 2 for s in states) else None
+
+        wait_until(
+            page,
+            _all_closed,
+            lambda: "task SSE stream left open after leaving Runs tab: "
+            + str(page.evaluate("() => window.__taskStreams.map(es => es.readyState)")),
+        )
 
     def test_configuration_tasks_pane_opens_no_stream(self, page: Page, base_url: str):
         """Editing task configs must not open an SSE stream of its own.

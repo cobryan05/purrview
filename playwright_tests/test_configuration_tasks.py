@@ -164,11 +164,24 @@ def _name_input(page: Page):
     return page.get_by_test_id("task-name-input")
 
 
+def _select_type(page: Page, typename: str = TASK_TYPE):
+    """Pick a task type and wait for its schema form to actually render.
+
+    Every caller used to follow `select_option` with `wait_for_timeout(800..1000)` —
+    a bet that one fetch plus a render always fits in under a second. It does on an
+    idle box; the suite runs 16-way parallel on a host that also runs the user's live
+    services, and there the bet is simply lost sometimes. Waiting on the rendered form
+    is both faster on the fast path and load-proof on the slow one.
+    """
+    _type_select(page).select_option(typename)
+    expect(page.locator("#task-config-list .le-editor .schema-form")).to_be_visible()
+
+
 def _open_config(page: Page, name: str = FAKE_CONFIG["name"]):
     """Click a config row in the list to load it into the editor."""
     page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
     page.locator("#task-config-list .le-list-item", has_text=name).first.click()
-    page.wait_for_timeout(700)
+    expect(page.locator("#task-config-list .le-editor")).to_be_visible()
 
 
 def _mock_task_types(page: Page, types: list | None = None):
@@ -367,12 +380,13 @@ class TestTaskTypeDropdown:
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
 
         _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
 
-        content = page.locator("#task-config-list .le-editor").inner_html()
-        assert (
-            "Remove deleted images" in content or "remove_deleted" in content
-        ), f"Expected schema field label in content; got snippet: {content[:500]!r}"
+        # `expect` auto-retries, so it is both the barrier and the assertion; the fixed
+        # 1s sleep it replaces was a bet that the schema fetch plus render always fits
+        # in a second, which under a 16-way parallel run it need not.
+        expect(page.locator("#task-config-list .le-editor")).to_contain_text(
+            re.compile("Remove deleted images|remove_deleted")
+        )
 
     def test_boolean_field_is_not_double_labelled(self, page: Page, base_url: str):
         """A boolean renders its label once, beside the checkbox — not also above it.
@@ -384,8 +398,7 @@ class TestTaskTypeDropdown:
         _setup_full_task_mocks(page, configs={}, tasks={})
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
+        _select_type(page)
 
         editor = page.locator("#task-config-list .le-editor")
         # The schema-level label element must not be emitted for the boolean.
@@ -404,9 +417,11 @@ class TestTaskTypeDropdown:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
         _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
 
         box = page.locator("#task-config-list .le-editor .schema-form input[type='checkbox']").first
+        # Wait on the checkbox itself rather than a sleep: `bounding_box()` does not
+        # retry, so a slow schema render made this read None and fail on the next line.
+        expect(box).to_be_visible()
         rect = box.bounding_box()
         assert rect is not None, "boolean checkbox is not rendered"
         assert rect["width"] >= 10, f"checkbox collapsed to {rect['width']}px wide"
@@ -439,8 +454,7 @@ class TestCreateTaskConfig:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
 
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)  # wait for schema fetch + render
+        _select_type(page)
         _name_input(page).fill("My Refresh Job")
 
         _editor_bar(page).locator("button", has_text="Create").click()
@@ -467,8 +481,7 @@ class TestCreateTaskConfig:
 
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(800)
+        _select_type(page)
 
         create_btn = _editor_bar(page).locator("button", has_text="Create")
         # Selecting a type marks the form dirty, so the button is enabled; the
@@ -496,8 +509,7 @@ class TestCreateTaskConfig:
 
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
+        _select_type(page)
 
         _name_input(page).fill("Refresh Job")
         _editor_bar(page).locator("button", has_text="Create").click()
@@ -519,8 +531,7 @@ class TestPersistentFlag:
         _setup_full_task_mocks(page, configs={}, tasks={})
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(800)
+        _select_type(page)
 
         chk = page.locator("#task-config-list").get_by_label("Restart automatically after a server restart")
         expect(chk).to_be_attached()
@@ -543,8 +554,7 @@ class TestPersistentFlag:
 
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(800)
+        _select_type(page)
         _name_input(page).fill("Persist Test")
         _editor_bar(page).locator("button", has_text="Create").click()
         wait_until(page, lambda: create_calls, "Expected POST to /api/tasks/configs/create")
@@ -569,8 +579,7 @@ class TestPersistentFlag:
 
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(800)
+        _select_type(page)
         _name_input(page).fill("Persist Test")
         page.locator("#task-config-list").get_by_label("Restart automatically after a server restart").check()
         _editor_bar(page).locator("button", has_text="Create").click()
@@ -603,12 +612,10 @@ class TestActiveTasksList:
         _setup_full_task_mocks(page, configs={}, tasks={task_id: RUNNING_TASK})
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_timeout(1200)
 
-        content = page.locator("#active-tasks-list").inner_text()
-        assert (
-            RUNNING_TASK["config"]["name"] in content or "running" in content.lower()
-        ), f"Running task not visible. Content: {content!r}"
+        expect(page.locator("#active-tasks-list")).to_contain_text(
+            re.compile(f"{re.escape(RUNNING_TASK['config']['name'])}|running", re.IGNORECASE)
+        )
 
     def test_activity_badge_counts_live_tasks(self, page: Page, base_url: str):
         """The Activity tab badge reports live tasks so leaving the pane doesn't
@@ -1006,8 +1013,7 @@ class TestSchemaFieldHelpText:
         _mock_active_tasks(page, {})
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
+        _select_type(page)
         return page.locator("#task-config-list .le-editor")
 
     def test_help_starts_collapsed_but_is_advertised(self, page: Page, base_url: str):
@@ -1222,8 +1228,7 @@ class TestTagsSchemaField:
         _mock_active_tasks(page, {})
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
+        _select_type(page)
         return page.locator("#task-config-list .le-editor")
 
     def test_renders_a_dropdown_trigger_not_a_checkbox_column(self, page: Page, base_url: str):
@@ -1306,8 +1311,7 @@ class TestPythonSpelledSchemaTypes:
         _mock_active_tasks(page, {})
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
-        _type_select(page).select_option(TASK_TYPE)
-        page.wait_for_timeout(1000)
+        _select_type(page)
         return page.locator("#task-config-list .le-editor")
 
     def test_bool_renders_a_checkbox_not_a_text_box(self, page: Page, base_url: str):

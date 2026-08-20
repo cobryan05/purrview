@@ -208,10 +208,11 @@ class TestDatasetListLoading:
         ]
         _mock_datasets(page, datasets)
         _navigate_to_datasets(page, base_url)
-        page.wait_for_timeout(1000)
-        content = page.locator("#dataset-management-box .ds-list-panel").inner_text()
+        # `inner_text()` takes one snapshot and does not retry, so the 1s sleep it sat
+        # behind was the only thing making this pass. `expect` retries instead.
+        panel = page.locator("#dataset-management-box .ds-list-panel")
         for ds in datasets:
-            assert ds["name"] in content, f"Dataset '{ds['name']}' not in list content: {content!r}"
+            expect(panel).to_contain_text(ds["name"])
 
 
 # ---------------------------------------------------------------------------
@@ -344,10 +345,11 @@ class TestDeleteDataset:
         _open_detail_panel(page)
 
         _editor_bar(page).locator("button", has_text="Delete").click()
-        page.wait_for_timeout(300)
 
-        # Confirm by clicking "Delete" inside the modal
-        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
+        # Confirm by clicking "Delete" inside the modal, once it is actually there.
+        modal = page.get_by_test_id("modal-shell-dialog")
+        expect(modal).to_be_visible()
+        modal.locator("button", has_text="Delete").click()
         wait_until(page, lambda: delete_calls, "Expected DELETE request to /api/datasets/{uuid}")
         assert FAKE_DATASET["uuid"] in delete_calls[0]
 
@@ -453,9 +455,9 @@ class TestViewsAndPromotion:
         page.route("**/api/datasets/**", handle_patch)
 
         page.get_by_text(FAKE_VIEW["name"], exact=True).first.click()
-        page.wait_for_timeout(600)
+        # `click()` auto-waits for actionability, so the button being there is enough of
+        # a barrier for the first sleep; the modal assertion below covers the second.
         _promote_btn(page).click()
-        page.wait_for_timeout(300)
 
         modal = page.get_by_test_id("modal-shell-dialog")
         expect(modal).to_contain_text(FAKE_VIEW["name"])

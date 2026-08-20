@@ -145,8 +145,11 @@ class TestModelStackList:
         _navigate(page, base_url)
 
         page.locator("#model-stack-management-box .mc-list-item").first.click()
-        page.wait_for_timeout(500)
         options = _editor_body(page).locator(".mstack-member-row select").first.locator("option")
+        # The assertion below is a negative, so it passes trivially against an empty
+        # option list — which is exactly what a 500ms sleep yields on a loaded box.
+        # Waiting for the options to render is what gives the assertion any content.
+        expect(options).not_to_have_count(0)
         values = options.evaluate_all("els => els.map(e => e.value)")
         assert f"stack:{FAKE_STACK['uuid']}" not in values, values
 

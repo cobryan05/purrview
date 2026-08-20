@@ -21,6 +21,7 @@ import json
 from playwright.sync_api import Page, expect
 
 from playwright_tests.test_nvr_live_view import PROFILE_UUID, TASK_UUID, _preview, _profile, _task
+from playwright_tests.waits import wait_until
 
 SECOND_SOURCE = {"sourceUuid": "src-2", "sourceName": "Garden cam"}
 
@@ -302,12 +303,19 @@ class TestTheCardChoosesItsOwnRefreshRate:
 
         page.locator("[data-testid='nvr-refresh-rate']").select_option("500")
         before = len(calls)
-        page.wait_for_timeout(2000)
 
-        # ~4 at 2 fps; the 0.2 fps default would manage at most one in the same window.
-        # The bound is loose because timer scheduling under a loaded browser is not
-        # exact — it is the order of magnitude that separates the two rates.
-        assert len(calls) - before >= 3, f"the fast rate was ignored: {len(calls) - before} polls in 2s"
+        # A rate test needs a *window*, so the wait stays time-bounded — but polling for
+        # the third call rather than sleeping the whole window means the fast path
+        # returns immediately and the slow path still fails honestly. The window is loose
+        # on purpose: timer scheduling under a loaded browser is not exact, and it is the
+        # order of magnitude that separates 2 fps from the 0.2 fps default (which would
+        # need ~15s to manage three).
+        wait_until(
+            page,
+            lambda: len(calls) - before >= 3,
+            lambda: f"the fast rate was ignored: {len(calls) - before} polls in 3s",
+            timeout=3000,
+        )
 
     def test_the_chosen_rate_survives_a_re_render(self, page: Page, base_url: str):
         """The pane rebuilds every card whenever any watcher starts or stops, so a rate
@@ -489,7 +497,12 @@ class TestPollScheduling:
         page.locator(".main-tab-button[data-tab='tab-runs']").click()
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
         page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
-        page.wait_for_function("count => window.__nvrPreviewCalls === undefined || true", arg=before, timeout=1000)
-        page.wait_for_timeout(500)
 
-        assert len(calls) > before, "no frame was fetched after returning to the NVR tab"
+        # The `|| true` wait_for_function this replaces resolved on its first evaluation
+        # by construction — it was never a barrier — leaving the 500ms sleep as the only
+        # thing gating the assertion.
+        wait_until(
+            page,
+            lambda: len(calls) > before,
+            "no frame was fetched after returning to the NVR tab",
+        )

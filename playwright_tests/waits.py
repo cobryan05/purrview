@@ -15,6 +15,7 @@ condition holds, fail with a useful message if it never does. Passing quickly on
 the fast path is a bonus; not failing on the slow path is the point.
 """
 
+from contextlib import contextmanager
 from typing import Callable, TypeVar, Union
 
 from playwright.sync_api import Page
@@ -51,3 +52,33 @@ def wait_until(
             raise AssertionError(text or f"Condition never became true within {timeout}ms")
         page.wait_for_timeout(POLL_INTERVAL_MS)
         waited += POLL_INTERVAL_MS
+
+
+@contextmanager
+def issues_a_request(page: Page, captured: list, what: str = "request"):
+    """Barrier: the block must cause at least one *new* entry in `captured`.
+
+    The trap this exists for is a wait that is already satisfied. `wait_until(page,
+    lambda: calls)` looks like a barrier but returns instantly whenever the page has
+    already made one of these requests on open — so the assertion that follows reads
+    the *initial* payload, not the one the interaction produced. It passes only
+    because the fetch normally beats the next Python statement, and it goes on
+    passing when the interaction is broken outright.
+
+    Keying on growth from a baseline taken *before* the block is what makes the
+    following assertion about the right request, and falsifiable.
+
+    Note this brackets the interaction, so it cannot be bolted onto an assertion
+    after the fact — the baseline has to be taken first:
+
+        with issues_a_request(page, calls, "a review search"):
+            page.locator("...").check()
+        assert calls[-1]["terms"] == ...
+    """
+    before = len(captured)
+    yield
+    wait_until(
+        page,
+        lambda: len(captured) > before,
+        lambda: f"the interaction issued no new {what} (still {len(captured)} captured)",
+    )

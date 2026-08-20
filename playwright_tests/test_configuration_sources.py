@@ -292,10 +292,10 @@ class TestProviderDropdown:
         page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
 
         _provider_select(page).select_option("UrlImageProvider")
-        page.wait_for_timeout(800)
 
-        content = page.locator("#source-management-box .le-editor").inner_html()
-        assert "URL" in content, f"Expected 'URL' schema field label in: {content[:500]!r}"
+        # `inner_html()` is a one-shot snapshot; `expect` retries until the schema
+        # fetch and render have actually happened.
+        expect(page.locator("#source-management-box .le-editor")).to_contain_text("URL")
 
     def test_schema_form_uses_the_compact_grid(self, page: Page, base_url: str):
         """Schema fields render into the shared `.schema-form` grid rather than a

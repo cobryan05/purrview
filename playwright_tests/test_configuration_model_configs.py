@@ -433,12 +433,14 @@ class TestDeleteModelConfig:
 
         _navigate_to_model_configs(page, base_url)
         page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
-        page.wait_for_timeout(500)
 
+        # Both sleeps replaced by the barrier that actually matters: `click()` waits for
+        # the Delete button to be actionable, and the modal is waited on explicitly.
         _editor_bar(page).locator("button", has_text="Delete").click()
-        page.wait_for_timeout(300)
 
-        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
+        modal = page.get_by_test_id("modal-shell-dialog")
+        expect(modal).to_be_visible()
+        modal.locator("button", has_text="Delete").click()
         wait_until(page, lambda: calls, "Expected DELETE to /api/model-configs/cfg-1")
         assert calls[0].rstrip("/").endswith("/cfg-1")
 

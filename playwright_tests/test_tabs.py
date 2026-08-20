@@ -10,6 +10,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from playwright_tests.waits import wait_until
+
 # ---------------------------------------------------------------------------
 # Page load
 # ---------------------------------------------------------------------------
@@ -202,10 +204,15 @@ def test_labels_api_called_when_entering_configuration(page: Page, base_url: str
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
-    page.wait_for_load_state("networkidle")
 
-    label_calls = [u for u in api_requests if "/api/labels" in u]
-    assert label_calls, "Expected at least one /api/labels request when entering Configuration"
+    # `networkidle` is not a barrier on the request under test — it resolves whenever
+    # the network is momentarily quiet, which under load can be before the tab's lazy
+    # module has even been fetched. Poll the capture list instead.
+    wait_until(
+        page,
+        lambda: [u for u in api_requests if "/api/labels" in u],
+        "Expected at least one /api/labels request when entering Configuration",
+    )
 
 
 def test_server_config_endpoint_responds(page: Page, base_url: str):

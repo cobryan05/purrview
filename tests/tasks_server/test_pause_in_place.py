@@ -15,6 +15,7 @@ import pytest
 
 from apps.helpers.consts import TaskStatus
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
+from tests.waits import await_condition
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -110,13 +111,18 @@ async def test_get_tasks_info_reports_is_paused_in_place_false_after_resume(mana
 async def test_check_pause_blocks_loop_until_resumed(manager, tasks_api_mock):
     """A PausableTestTask loop blocks while paused and completes after resume."""
     await _start_pausable_task(manager, tasks_api_mock, iterations=5)
-    await asyncio.sleep(0.01)  # Let it start
+    await await_condition(
+        lambda: TASK_UUID in manager._running_tasks,
+        "the task never reached the running set",
+    )
 
     await manager.pause_tasks_in_place([TASK_UUID])
     task = manager._running_tasks[TASK_UUID].task
     assert task.is_paused_in_place() is True
 
-    # Task should NOT be done yet (blocked)
+    # Task should NOT be done yet (blocked). Still a sleep, and correctly so: this
+    # asserts the loop *stays* blocked, and a non-event cannot be polled for. A slower
+    # box only makes the window more generous to the thing under test.
     await asyncio.sleep(0.15)
     assert not task.is_task_done(), "Task should be blocked in _check_pause"
 

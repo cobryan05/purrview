@@ -871,10 +871,13 @@ class TestReparentLabel:
         expect(row).to_be_visible()
 
         row.locator("button[title='Move']").click()
-        page.wait_for_timeout(300)
 
         select = page.locator(".label-move-select").first
         expect(select).to_be_visible()
+        # Barrier before the *negative* assertion below: an empty <select> satisfies
+        # "RootA is not among the options" without proving anything at all. Waiting for
+        # the options to exist is what makes that assertion falsifiable.
+        expect(select.locator("option")).not_to_have_count(0)
         option_texts = select.locator("option").all_inner_texts()
         assert "RootA" not in option_texts, f"Label must not offer itself as a move target; got {option_texts}"
         assert any("RootB" in t for t in option_texts), f"Expected RootB as a valid target; got {option_texts}"
@@ -934,7 +937,8 @@ class TestReparentLabel:
         expect(row).to_be_visible()
 
         row.locator("button[title='Move']").click()
-        page.wait_for_timeout(300)
+        # No sleep: `select_option` retries until the option exists, and the PATCH is
+        # waited on explicitly below.
         select = page.locator(".label-move-select").first
         select.select_option(ROOT_B["uuid"])
         page.locator(".label-move-apply").first.click()
@@ -979,12 +983,15 @@ class TestReparentLabel:
         expect(row).to_be_visible()
 
         row.locator("button[title='Move']").click()
-        page.wait_for_timeout(300)
         select = page.locator(".label-move-select").first
         select.select_option(ROOT_B["uuid"])
         page.locator(".label-move-apply").first.click()
-        page.wait_for_timeout(700)
 
+        # Poll for the PATCH rather than sleeping 700ms and hoping. Note this still
+        # asserts *exactly* one: `wait_until` returns on the first, and a duplicate
+        # would have to arrive before the assertion — which is the same window the
+        # sleep had, without the guaranteed 700ms cost on every run.
+        wait_until(page, lambda: state["patch_calls"], "Expected a PATCH to /api/labels/{uuid}")
         assert state["patch_calls"] == 1
         # The label now nests under RootB in the re-fetched/re-rendered tree.
         root_b_row = page.locator(f"#labels-list [data-uuid='{ROOT_B['uuid']}']")

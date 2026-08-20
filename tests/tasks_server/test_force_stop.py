@@ -20,6 +20,7 @@ import pytest
 
 from apps.helpers.consts import TaskStatus
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
+from tests.waits import await_condition
 
 
 async def _start_long_task(manager, tasks_api_mock, duration=60):
@@ -225,10 +226,7 @@ class TestItIsNotAGuaranteedKill:
             finished.set()
 
         task = asyncio.ensure_future(asyncio.to_thread(_blocking_work))
-        for _ in range(200):
-            if started.is_set():
-                break
-            await asyncio.sleep(0.01)
+        await await_condition(started.is_set, "the thread never got going")
         assert started.is_set(), "the thread never got going"
 
         assert task.cancel() is True

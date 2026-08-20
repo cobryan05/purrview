@@ -22,6 +22,7 @@ import pytest
 
 from apps.helpers.imageProviders import ffmpegImageProvider as ffmpeg_module
 from apps.helpers.imageProviders.ffmpegImageProvider import FfmpegImageProvider
+from tests.waits import await_condition
 
 SOURCE_URL = "rtsp://camera.invalid:8554/stream"
 
@@ -261,7 +262,12 @@ class TestHeartbeat:
 
         await provider.start()
         await asyncio.wait_for(beats.wait(), timeout=5)
-        await asyncio.sleep(0.05)
+        # The beat having been *scheduled* is not the beat having *landed*, so poll for
+        # the renewal itself rather than sleeping 50ms and hoping it arrived.
+        await await_condition(
+            lambda: state["renewed"],
+            "a live provider must tell the relay it is still there",
+        )
         await provider.stop()
 
         assert state["renewed"], "a live provider must tell the relay it is still there"
@@ -278,10 +284,18 @@ class TestHeartbeat:
         monkeypatch.setattr(FfmpegImageProvider, "_sleep", staticmethod(instant_sleep))
 
         await provider.start()
-        await asyncio.sleep(0.05)
+        # Wait for the heartbeat to actually be beating before stopping it — stopping a
+        # heartbeat that never started proves nothing about stop().
+        await await_condition(
+            lambda: state["renewed"],
+            "the heartbeat never beat, so stop() had nothing to end",
+        )
         await provider.stop()
 
         assert provider._renew_task is None
+        # This one stays a sleep: it asserts that *nothing further* arrives, and there
+        # is no way to poll for a non-event. Its failure mode is also the safe one — a
+        # slow box makes a late beat more likely to be caught, not less.
         settled = len(state["renewed"])
         await asyncio.sleep(0.05)
         assert len(state["renewed"]) == settled, "no beats may land after stop()"
@@ -324,7 +338,12 @@ class TestHeartbeat:
         monkeypatch.setattr(FfmpegImageProvider, "_sleep", staticmethod(instant_sleep))
 
         await provider.start()
-        await asyncio.sleep(0.05)
+        # The retry is the thing under test, so wait for the second call rather than
+        # for 50ms — on a loaded box the first beat alone can take longer than that.
+        await await_condition(
+            lambda: calls["n"] > 1,
+            lambda: f"the heartbeat must retry after a failed beat (saw {calls['n']} calls)",
+        )
         running = provider._renew_task is not None and not provider._renew_task.done()
         await provider.stop()
 

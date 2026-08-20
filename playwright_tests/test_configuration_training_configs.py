@@ -251,12 +251,12 @@ class TestTrainingConfigPaneStructure:
         # Select the model config
         config_sel = _editor_body(page).locator("select").first
         config_sel.select_option("mc-1")
-        page.wait_for_timeout(300)
 
-        # Node selector (second select) should now have "Root" option
+        # Node selector (second select) should now have "Root" option. `expect` retries
+        # until the dependent select has been repopulated; the 300ms sleep it replaces
+        # was a bet on that round trip fitting in 300ms.
         node_sel = _editor_body(page).locator("select").nth(1)
-        node_options = node_sel.locator("option").all_text_contents()
-        assert any("Root" in o for o in node_options), f"Expected a Root node option; got: {node_options}"
+        expect(node_sel.locator("option").filter(has_text="Root").first).to_be_attached()
 
 
 # ---------------------------------------------------------------------------

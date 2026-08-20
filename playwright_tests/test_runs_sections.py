@@ -16,6 +16,8 @@ import json
 
 from playwright.sync_api import Page, expect
 
+from playwright_tests.waits import wait_until
+
 WATCHER = {
     "instance": {"uuid": "t-watch", "status": "running", "startedAt": "2026-01-01T00:00:00", "endedAt": None},
     "config": {"name": "Watcher Test", "uuid": "cfg-watch", "typename": "StreamWatcherTask"},
@@ -196,9 +198,13 @@ class TestStreamLifetimeFollowsTheCount:
         expect(page.locator("#task-activity-badge")).to_have_text("1")
 
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
-        page.wait_for_timeout(700)
 
-        assert page.evaluate("window.__taskStreams.closed") == 1
+        wait_until(
+            page,
+            lambda: page.evaluate("window.__taskStreams.closed") == 1,
+            lambda: "leaving Runs did not close the task stream, closed="
+            + str(page.evaluate("window.__taskStreams.closed")),
+        )
 
     # NOT covered here: the last job *ending* while the user is away, which
     # `updateBadge` handles by dropping the stream at that moment. The fixture

@@ -12,6 +12,7 @@ import pytest
 
 from apps.helpers.consts import TaskStatus
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
+from tests.waits import await_condition
 
 
 async def _start_long_task(manager, tasks_api_mock, duration=60.0):
@@ -61,10 +62,15 @@ async def test_completed_task_records_ended_at_and_logs(manager, tasks_api_mock)
     task_info = await manager.start_new_task(CONFIG_UUID)
     # Wait for completion
     await task_info.task.wait_for_task_done(timeout=5.0)
-    await asyncio.sleep(0.05)  # Give _on_task_complete a tick to run
 
-    timestamp_calls = tasks_api_mock.set_task_instance_timestamps.call_args_list
-    ended_calls = [c for c in timestamp_calls if c.args[1].ended_at is not None]
+    # The task being done and `_on_task_complete` having *persisted* are two different
+    # moments; poll for the write rather than giving it a 50ms tick.
+    ended_calls = await await_condition(
+        lambda: [
+            c for c in tasks_api_mock.set_task_instance_timestamps.call_args_list if c.args[1].ended_at is not None
+        ],
+        "ended_at must be set after task completes",
+    )
     assert ended_calls, "ended_at must be set after task completes"
 
     # log_json should be a list (possibly empty for this trivial task)

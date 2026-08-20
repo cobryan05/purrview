@@ -239,11 +239,13 @@ class TestStatGridWidget:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
-        page.wait_for_timeout(800)
 
-        content = page.locator(f"[data-task-uuid='{task_id}']").inner_text()
-        assert "12" in content and "Saved" in content, f"stat_grid values not found in: {content!r}"
-        assert "34" in content and "Processed" in content, f"stat_grid values not found in: {content!r}"
+        # Retrying assertions instead of an 800ms bet on the widget having mounted.
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("Saved")
+        expect(card).to_contain_text("12")
+        expect(card).to_contain_text("Processed")
+        expect(card).to_contain_text("34")
 
 
 class TestAnnotatedImageWidget:
@@ -355,10 +357,11 @@ class TestSummarySourceWidgetMount:
 
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
-        page.wait_for_timeout(500)
 
+        # `count()` does not retry, so the 500ms sleep was the whole barrier. `expect`
+        # polls until mount() has run.
         canvas = page.locator(f"[data-task-uuid='{task_id}'] canvas")
-        assert canvas.count() > 0, "Expected mount() to create a <canvas> for a summary-source annotated_image widget"
+        expect(canvas.first).to_be_attached()
 
 
 class TestStatusWidgetPollDiffing:
@@ -423,11 +426,10 @@ class TestUnknownWidgetType:
         _navigate_to_tasks(page, base_url)
         page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
-        page.wait_for_timeout(800)
 
-        content = page.locator(f"[data-task-uuid='{task_id}']").inner_text()
-        assert "Watching camera…" in content, f"Sibling summary widget missing: {content!r}"
-        assert "frame 1 saved" in content, f"Sibling log widget missing: {content!r}"
+        card = page.locator(f"[data-task-uuid='{task_id}']")
+        expect(card).to_contain_text("Watching camera…")
+        expect(card).to_contain_text("frame 1 saved")
 
         uncaught = [e for e in errors if "TypeError" in e or "Uncaught" in e]
         assert uncaught == [], f"Uncaught JS errors from unknown widget type: {uncaught}"

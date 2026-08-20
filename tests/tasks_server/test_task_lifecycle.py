@@ -6,6 +6,7 @@ import pytest
 
 from apps.helpers.consts import TaskStatus
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
+from tests.waits import await_condition
 
 
 async def test_start_task_returns_task_uuid(http_client):
@@ -291,13 +292,13 @@ async def test_failed_task_persists_its_error_message(manager, tasks_api_mock):
     tasks_api_mock.list_task_configs.return_value.configs[CONFIG_UUID].params = {}
 
     await manager.start_new_task(CONFIG_UUID)
-    # Let _execute run to completion and the manager's completion path persist.
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if any(c.args[1].status == "error" for c in tasks_api_mock.set_task_instance_status.call_args_list):
-            break
-
-    error_writes = [c for c in tasks_api_mock.set_task_instance_status.call_args_list if c.args[1].status == "error"]
+    # Let _execute run to completion and the manager's completion path persist. The
+    # hand-rolled 50×10ms loop this replaces gave up after half a second, which is
+    # not much of a margin when the suite runs xdist-parallel on a busy host.
+    error_writes = await await_condition(
+        lambda: [c for c in tasks_api_mock.set_task_instance_status.call_args_list if c.args[1].status == "error"],
+        "a raising task must write status='error'",
+    )
     assert error_writes, "a raising task must write status='error'"
     assert error_writes[-1].args[1].error_message == "ValueError: deliberate error"
 
@@ -340,10 +341,10 @@ async def test_start_task_persists_running_before_starting_execution(manager, ta
     monkeypatch.setattr(Task, "start", _tracked_start)
 
     await manager.start_new_task(CONFIG_UUID)
-    for _ in range(50):
-        if "task_start" in order:
-            break
-        await asyncio.sleep(0.01)
+    await await_condition(
+        lambda: "task_start" in order,
+        lambda: f"task.start() was never reached, got: {order}",
+    )
 
     assert order[:2] == [
         "running_write",

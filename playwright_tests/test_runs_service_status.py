@@ -93,9 +93,17 @@ class TestServiceStatusInRuns:
         before = len(calls)
 
         page.locator("[data-testid='service-status-refresh']").click()
-        page.wait_for_load_state("networkidle")
-
-        assert len(calls) > before, "Refresh did not re-request /api/service-status"
+        # Poll the capture list, not `networkidle`: the latter is not a barrier on the
+        # thing under test. It resolves the moment the network happens to be quiet —
+        # which under load is *before* the click's fetch has been issued — so the
+        # assertion read a stale `calls` and the test failed for reasons that had
+        # nothing to do with the refresh button. Observed failing exactly once in a
+        # 16-way parallel run, and passing on every sequential re-run.
+        wait_until(
+            page,
+            lambda: len(calls) > before,
+            "Refresh did not re-request /api/service-status",
+        )
 
     def test_training_server_row_opens_the_job_modal(self, page: Page, base_url: str):
         """The training-server row is the one row that opens something, and its

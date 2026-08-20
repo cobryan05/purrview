@@ -813,12 +813,19 @@ class TestFilenameDateNegateReachesTheGridQuery:
         page.get_by_test_id("review-filter-toggle").click()
         page.locator("#review-root .review-filter-panel input[placeholder='substring…']").fill("closet")
         page.locator("#review-root .filter-filename-negate input[type=checkbox]").check()
-        page.wait_for_timeout(500)  # filenameSearch is debounced 400ms
 
-        wait_until(page, lambda: calls, lambda: f"Expected POST to /api/images/review, got {calls}")
-        terms = calls[-1].get("terms", [])
-        filename_terms = [t for t in terms if t.get("kind") == "filename"]
-        assert filename_terms == [{"kind": "filename", "patterns": ["closet"], "negate": True}], calls[-1]
+        # Neither "some new search arrived" nor a fixed sleep is the right barrier here:
+        # the filename box is debounced 400ms while the negate checkbox searches
+        # immediately, so *two* searches follow and only the later one carries the term.
+        # Waiting on the term itself is what makes this land on the right request — and
+        # it still fails honestly if the filter never reaches the server at all.
+        expected = [{"kind": "filename", "patterns": ["closet"], "negate": True}]
+        wait_until(
+            page,
+            lambda: [t for t in (calls[-1].get("terms", []) if calls else []) if t.get("kind") == "filename"]
+            == expected,
+            lambda: f"the filename filter never reached the search as {expected}: {calls[-1] if calls else calls}",
+        )
 
     def test_date_negate_checkbox_reaches_the_actual_search_request(self, page: Page, base_url: str):
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
@@ -886,13 +893,20 @@ class TestConfidenceBandReachesTheGridQuery:
 
         page.get_by_test_id("review-filter-toggle").click()
         self._fill_band(page, "20", "60")
-        page.wait_for_timeout(200)
 
-        wait_until(page, lambda: calls, lambda: f"Expected POST to /api/images/review, got {calls}")
-        terms = calls[-1].get("terms", [])
-        conf_terms = [t for t in terms if t.get("kind") == "bboxConfidence"]
+        # Keyed on the *complete* term rather than on "a search happened", for the same
+        # reason as the filename case above: the two band inputs can each trigger their
+        # own search, so the first to arrive may carry only the min bound. Polling for
+        # the finished term settles on the right request; if the band never reaches the
+        # server, this times out and prints the last body it did send.
         # Percent in the input, 0–1 on the wire — the unit the metadata stores.
-        assert conf_terms == [{"kind": "bboxConfidence", "min": 0.2, "max": 0.6}], calls[-1]
+        expected = [{"kind": "bboxConfidence", "min": 0.2, "max": 0.6}]
+        wait_until(
+            page,
+            lambda: [t for t in (calls[-1].get("terms", []) if calls else []) if t.get("kind") == "bboxConfidence"]
+            == expected,
+            lambda: f"the confidence band never reached the search as {expected}: {calls[-1] if calls else calls}",
+        )
 
     def test_apply_to_all_carries_the_band_as_a_bbox_level_field(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)
@@ -1441,7 +1455,12 @@ class TestSavedViews:
         labels_trigger.click()
         page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] input[value='lbl-cat']").check()
         page.mouse.click(0, 0)
-        page.wait_for_timeout(300)
+        # The dropdown's panel closing is what the 300ms sleep waited for; wait for the
+        # closed panel itself. The POST is waited on explicitly below, and the
+        # `labelUuids` assertion is what would catch a selection that never registered.
+        expect(
+            page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__panel")
+        ).to_be_hidden()
 
         page.once("dialog", lambda dialog: dialog.accept("My View"))
         page.get_by_test_id("review-save-as-view").click()
@@ -1987,18 +2006,29 @@ class TestConfigReadyViewGating:
         # shares the base .filter-verification-select class name.
         select = page.locator("#review-root .filter-verification-select:not(.bbox-verification-select)")
         select.select_option("all_verified")
-        page.wait_for_timeout(300)
-        assert {
-            "kind": "labelVerification",
-            "check": "all_verified",
-            "labelUuids": ["lbl-cat"],
-        } in captured[
-            "body"
-        ].get("terms", [])
+
+        # `captured` holds only the latest body, so there is no count to poll — but the
+        # term itself is the thing under test, and polling for it is both the barrier
+        # and the assertion. A 300ms sleep here was a bet on the search round trip.
+        expected_term = {"kind": "labelVerification", "check": "all_verified", "labelUuids": ["lbl-cat"]}
+        wait_until(
+            page,
+            lambda: expected_term in (captured.get("body") or {}).get("terms", []),
+            lambda: f"the Config Ready filter never reached the search: {captured.get('body')}",
+        )
 
         _switch_view(page, "bboxes")
-        page.wait_for_timeout(300)
-        assert not any(t.get("kind") == "labelVerification" for t in captured["body"].get("terms", []))
+        # Polling for the term to *go away* is safe here precisely because it is present
+        # right now — the assertion above proved it — so this can only come true when a
+        # new search body arrives without it. If the view switch issues no search at all,
+        # the old body persists and this times out rather than passing vacuously.
+        wait_until(
+            page,
+            lambda: not any(
+                t.get("kind") == "labelVerification" for t in (captured.get("body") or {}).get("terms", [])
+            ),
+            lambda: f"the Config Ready filter survived the switch to bboxes: {captured.get('body')}",
+        )
 
         # Cleanup.
         page.evaluate("""async () => {

@@ -242,9 +242,12 @@ class TestTagCreate:
 
         calls_before = call_count[0]
         page.locator("#tags-list button[title='Refresh']").click()
-        page.wait_for_timeout(600)
 
-        assert call_count[0] > calls_before, "Refresh should trigger a new /api/tags/list request"
+        wait_until(
+            page,
+            lambda: call_count[0] > calls_before,
+            "Refresh should trigger a new /api/tags/list request",
+        )
 
 
 # ---------------------------------------------------------------------------

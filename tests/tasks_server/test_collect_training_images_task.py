@@ -50,6 +50,7 @@ from apps.tasks_server.tasks.utils.labelHelper import (
     build_label_ancestry_map,
     build_label_metadata_map,
 )
+from tests.waits import await_condition
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -1632,7 +1633,14 @@ class TestPinRenewal:
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
-            await asyncio.sleep(0.3)  # several renewal intervals' worth
+            # Wait for renewal to have actually been *attempted* (and raised) rather
+            # than for 300ms of wall clock. The sleep made this vacuous in both
+            # directions: on a slow box no renewal had been tried yet, so "did not
+            # crash" said nothing; on a fast one it was luck that any had.
+            await await_condition(
+                lambda: pin_api.call_count >= 2,
+                lambda: f"no renewal was attempted, so nothing was proved (pin calls: {pin_api.call_count})",
+            )
 
             assert task.get_status() == TaskStatus.RUNNING, "renewal failures must not crash the task"
             assert task._combined_pin_ids[_MODEL_NAME] == "pin-1", "failed renewal must leave the old pin in place"

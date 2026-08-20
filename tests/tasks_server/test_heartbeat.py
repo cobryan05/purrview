@@ -30,6 +30,7 @@ from apps.helpers.consts import TaskStatus
 from apps.tasks_server.tasks.Registry import register_task
 from apps.tasks_server.tasks.Task import Task
 from tests.tasks_server.conftest import CONFIG_UUID, TASK_UUID
+from tests.waits import await_condition
 
 # ---------------------------------------------------------------------------
 # A looping test task that calls _check_pause() every iteration.
@@ -105,7 +106,10 @@ async def test_heartbeat_fires_via_check_pause(manager, tasks_api_mock):
     with patch("apps.tasks_server.tasks.Task.Task.HEARTBEAT_INTERVAL", 0.05):
         tasks_api_mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: _looping_config(duration=0.3)})
         await manager.start_new_task(CONFIG_UUID)
-        await asyncio.sleep(0.2)
+        await await_condition(
+            lambda: tasks_api_mock.set_task_instance_heartbeat.call_count >= 1,
+            "the running task never wrote a heartbeat",
+        )
 
     assert tasks_api_mock.set_task_instance_heartbeat.call_count >= 1
     call_uuid = tasks_api_mock.set_task_instance_heartbeat.call_args.args[0]
@@ -120,7 +124,14 @@ async def test_heartbeat_is_rate_limited(manager, tasks_api_mock):
     with patch("apps.tasks_server.tasks.Task.Task.HEARTBEAT_INTERVAL", 60):
         tasks_api_mock.list_task_configs.return_value = MagicMock(configs={CONFIG_UUID: _looping_config(duration=0.2)})
         await manager.start_new_task(CONFIG_UUID)
-        await asyncio.sleep(0.25)
+        # Wait for the *first* beat rather than for a 250ms window: what stops a second
+        # one is the 60s interval patched above, not the length of the wait. Waiting on
+        # the beat makes the "at least one" half load-proof; the interval makes the "at
+        # most one" half true by construction.
+        await await_condition(
+            lambda: tasks_api_mock.set_task_instance_heartbeat.call_count >= 1,
+            "the running task never wrote its first heartbeat",
+        )
 
     assert tasks_api_mock.set_task_instance_heartbeat.call_count == 1
 
