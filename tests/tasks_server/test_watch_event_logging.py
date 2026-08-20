@@ -71,20 +71,37 @@ def _signal(phase=EventPhase.START, rule_uuid=RULE_A, source_uuid=SOURCE_A):
 
 
 class _SpyRecorder:
-    """Counts what would have been persisted, without a database."""
+    """Records what the task asked for, without a database.
+
+    `held` and `filed` are kept apart because that is the distinction under test: the
+    opening edge always *holds* an event, and only a write turns it into a row.
+    """
 
     def __init__(self):
-        self.recorded = []
+        self.held = []
+        self.filed = []
+        self.closed = []
+        self.attached = []
 
     async def record(self, signal, context):
-        self.recorded.append(signal.phase)
+        if signal.phase is EventPhase.START:
+            self.held.append(signal.rule_uuid)
+            return None
+        if signal.phase is EventPhase.END and self.filed:
+            self.closed.append(signal.rule_uuid)
+            return "event-1"
+        return None
+
+    async def ensure_event(self, signal, context):
+        self.filed.append(signal.rule_uuid)
         return "event-1"
 
     def event_uuid_for(self, signal):
-        return "event-1" if EventPhase.START in self.recorded else None
+        return "event-1" if self.filed else None
 
-    async def attach_recording(self, *args, **kwargs):
-        return None
+    async def attach_recording(self, signal, event_uuid, clip, **kwargs):
+        self.attached.append((event_uuid, clip.get("kind")))
+        return "recording-1"
 
 
 def _task(actions, recorder=None):
@@ -158,7 +175,10 @@ class TestDispatch:
 
         # The whole point: the match is still broadcast, it just leaves no row.
         assert action.calls == 1  # event_started only; this row is not on the end trigger
-        assert recorder.recorded == []
+        assert recorder.filed == []
+        # Not even held: no action in scope could have filed it, so there was nothing to
+        # capture card art for.
+        assert recorder.held == []
 
     async def test_filed_event_is_opened_and_closed(self):
         recorder = _SpyRecorder()
@@ -167,6 +187,66 @@ class TestDispatch:
         await task._dispatch(_signal(EventPhase.START))
         await task._dispatch(_signal(EventPhase.END))
 
-        # One row, opened at the start and patched at the end — not two, and not one
-        # that never closes.
-        assert recorder.recorded == [EventPhase.START, EventPhase.END]
+        # Held at the start, filed the moment the action reported the write, closed at
+        # the end — one row, not two, and not one that never closes.
+        assert recorder.held == [RULE_A]
+        assert recorder.filed == [RULE_A]
+        assert recorder.closed == [RULE_A]
+
+
+class TestOnlyASuccessfulWriteFiles:
+    """A filing action that produced nothing must leave no card behind.
+
+    This is the bug that shipped: `record_event_timelapse` returns **ok** with no file
+    when the visit was shorter than its frame minimum, which is a legitimate outcome and
+    not an error. Gating on the action's *kind* filed a card anyway, and the card pointed
+    at nothing. A clip that could not be cut did the same.
+    """
+
+    def _end(self, kind, result):
+        """A real action of this kind whose `run` returns a fixed result.
+
+        Real and not a stand-in on purpose: the rule under test is that action's own
+        `wrote_to_event`, and a fake would only assert what this test declared.
+        """
+        action = action_registry[kind]()
+
+        async def _run(signal, context, _result=result):
+            return _result
+
+        action.run = _run
+        recorder = _SpyRecorder()
+        task = _task([(_row(kind, trigger="event_ended"), action)], recorder)
+        return recorder, task
+
+    async def test_a_timelapse_below_its_frame_minimum_files_nothing(self):
+        # Exactly what the action returns for a visit too short to compile.
+        recorder, task = self._end(
+            "record_event_timelapse",
+            ActionResult(ok=True, detail="only 3 frame(s), below the 10-frame minimum"),
+        )
+        await task._dispatch(_signal(EventPhase.START))
+        await task._dispatch(_signal(EventPhase.END))
+
+        assert recorder.held == [RULE_A]
+        assert recorder.filed == []
+        assert recorder.attached == []
+
+    async def test_a_clip_that_could_not_be_cut_files_nothing(self):
+        recorder, task = self._end("record_clip", ActionResult(ok=False, detail="no relay path"))
+        await task._dispatch(_signal(EventPhase.START))
+        await task._dispatch(_signal(EventPhase.END))
+
+        assert recorder.filed == []
+
+    async def test_a_timelapse_that_compiled_files_the_event(self):
+        recorder, task = self._end(
+            "record_event_timelapse",
+            ActionResult(ok=True, detail="wrote it", data={"path": "/tmp/a.mp4", "sizeBytes": 10}),
+        )
+        await task._dispatch(_signal(EventPhase.START))
+        await task._dispatch(_signal(EventPhase.END))
+
+        assert recorder.filed == [RULE_A]
+        # And the recording is linked to the row that was just created for it.
+        assert recorder.attached == [("event-1", "timelapse")]

@@ -93,6 +93,8 @@ export function eventHeadline(event) {
  * @param {Object} ctx
  * @param {(event: Object) => void} ctx.onOpen
  * @param {Map<string, string>} [ctx.sourceNames] - source uuid → camera name
+ * @param {(event: Object, opts: {shiftKey: boolean, checked: boolean}) => void} [ctx.onToggleSelect]
+ * @param {boolean} [ctx.selected]
  * @returns {HTMLElement}
  */
 /**
@@ -107,12 +109,13 @@ export function findRecording(event, kind) {
   return (event?.recordings || []).find((r) => r.kind === kind) || null;
 }
 
-export function buildEventCard(event, { onOpen, sourceNames = new Map() } = {}) {
+export function buildEventCard(event, { onOpen, onToggleSelect, selected = false, sourceNames = new Map() } = {}) {
   const card = el('article', 'event-card');
   card.dataset.testid = 'event-card';
   card.dataset.eventUuid = event.uuid;
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
+  card.classList.toggle('event-card--selected', selected);
 
   const started = parseEventDate(event.startedAt);
   const headline = eventHeadline(event);
@@ -156,6 +159,28 @@ export function buildEventCard(event, { onOpen, sourceNames = new Map() } = {}) 
     badges.appendChild(badge);
   }
   if (badges.childElementCount) media.appendChild(badges);
+
+  // The checkbox is the *only* thing on the card that selects on a plain click; the
+  // card itself still opens the event. Review's grid trades the other way (click
+  // selects, double-click opens) because there the common act is bulk-tagging a page of
+  // boxes, whereas an event is nearly always opened to be watched — making a click
+  // select would put a modal behind a double-click for the thing everybody came to do.
+  // Shift/ctrl-click on the card body reaches selection without hunting for the box.
+  if (onToggleSelect) {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'event-card__select';
+    box.checked = selected;
+    box.dataset.testid = 'event-card-select';
+    box.setAttribute('aria-label', `Select ${headline}`);
+    box.addEventListener('click', e => {
+      // Without this the card's own handler fires next and opens the modal over the
+      // selection the user just made.
+      e.stopPropagation();
+      onToggleSelect(event, { shiftKey: e.shiftKey, checked: box.checked });
+    });
+    media.appendChild(box);
+  }
   if (!event.endedAt) {
     // An open event is genuinely different from a finished one — its clip does not
     // exist yet and its duration is still growing.
@@ -184,8 +209,19 @@ export function buildEventCard(event, { onOpen, sourceNames = new Map() } = {}) 
   const meta = el('div', 'event-card__meta');
   const camera = sourceNames.get(event.sourceUuid);
   if (camera) meta.appendChild(el('span', 'event-card__meta-item', camera));
-  const duration = formatDuration(event.startedAt, event.endedAt);
-  if (duration) meta.appendChild(el('span', 'event-card__meta-item', duration));
+  // An event closed by a restart has `ended_at` set to its own start, because the real
+  // end was never recorded — see `close_stranded_watch_events`. Rendering that as "0.0s"
+  // would present a guess as a measurement, which is the same wrong answer
+  // `formatDuration` refuses to give for an open event.
+  if (event.metadataJson?.closedBy === 'restart') {
+    const note = el('span', 'event-card__meta-item event-card__meta-item--warn', 'ended unknown');
+    note.title = 'The watcher stopped before this event closed, so how long it lasted was never recorded.';
+    note.dataset.testid = 'event-card-stranded';
+    meta.appendChild(note);
+  } else {
+    const duration = formatDuration(event.startedAt, event.endedAt);
+    if (duration) meta.appendChild(el('span', 'event-card__meta-item', duration));
+  }
   if (event.truncated) {
     const capped = el('span', 'event-card__meta-item event-card__meta-item--warn', 'capped');
     capped.title = 'Closed by the runaway-event cap, not by the subject leaving.';
@@ -195,7 +231,18 @@ export function buildEventCard(event, { onOpen, sourceNames = new Map() } = {}) 
 
   card.appendChild(body);
 
-  card.addEventListener('click', () => onOpen?.(event));
+  card.addEventListener('click', e => {
+    // Shift extends a range and ctrl/meta toggles one card — the two gestures every
+    // file manager already taught the user — and neither should also open the modal.
+    if (onToggleSelect && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+      // Shift-clicking twice in a grid otherwise leaves the whole range text-selected.
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      onToggleSelect(event, { shiftKey: e.shiftKey, checked: !selected });
+      return;
+    }
+    onOpen?.(event);
+  });
   card.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();

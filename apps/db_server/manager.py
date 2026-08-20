@@ -4062,6 +4062,9 @@ class Manager:
     async def update_watch_event(self, uuid: str, **fields) -> Optional[WatchEventRead]:
         return await self._db_client.update_watch_event(uuid, **fields)
 
+    async def close_stranded_watch_events(self, profile_uuid: str) -> int:
+        return await self._db_client.close_stranded_watch_events(profile_uuid)
+
     async def watch_event_snapshot_file(self, uuid: str) -> Optional[Path]:
         """Resolve an event's card art to a file that actually exists.
 
@@ -4099,6 +4102,24 @@ class Manager:
                 Path(snapshot).unlink(missing_ok=True)
             except OSError as e:
                 logger.warning("Could not remove snapshot %s: %s", snapshot, e)
+        return deleted
+
+    async def delete_watch_events(self, uuids: Sequence[str]) -> int:
+        """Delete a selection of events, and report how many actually went.
+
+        One failure does not abandon the rest: the caller selected N cards and pressed
+        delete once, and leaving an arbitrary suffix of that selection alive because the
+        third event's clip file was locked is worse than deleting what can be deleted
+        and saying so. A uuid that no longer exists is not a failure — it is the normal
+        result of deleting the same selection twice.
+        """
+        deleted = 0
+        for uuid in uuids:
+            try:
+                if await self.delete_watch_event(uuid):
+                    deleted += 1
+            except Exception:
+                logger.exception("Could not delete watch event %s", uuid)
         return deleted
 
     async def list_recordings(self, **kwargs) -> List[RecordingRead]:

@@ -4,25 +4,37 @@ Why this is a task concern and not an action's: `ActionContext` states outright 
 the task keeps sole ownership of its API clients and DB writes, so actions are pure
 side effects on the outside world. Persistence has to live above them.
 
-It is not unconditional. This class writes whatever it is handed; *whether* an event is
-handed to it is decided one layer up, by `StreamWatcherTask._event_is_logged`, from
-whether any in-scope action writes to the Events view. It used to be unconditional, on
-the reasoning that the review page is a record of what the watcher saw rather than of
-which actions someone enabled — which is true and is also how the list filled with
-hundreds of rows holding nothing to look at. A rule that matches all day is normal and
-wanted (it still drives MQTT); a row per match is not.
+It is not unconditional, and it is not written at the opening edge. Both used to be
+true, on the reasoning that the review page is a record of what the watcher saw rather
+than of which actions someone enabled — which is how the list filled with rows holding
+nothing to look at. A rule that matches all day is normal and wanted (it still drives
+MQTT); a row per match is not.
+
+So an event is filed only once something has actually been written *to* it, and that is
+knowable only after the actions have run. Two gates, one layer up in
+`StreamWatcherTask`: `_event_is_logged` (could any in-scope action file this?) and
+`Action.wrote_to_event` (did one?). The second is what stops an event timelapse that
+compiled nothing — a legitimate outcome for a visit below its frame minimum, reported
+as success — from leaving a card that points at no media.
 
 Two artifacts per event:
 
-* **The row.** Written on START so an event is visible while it is still open, and
-  patched on END with the closing time, peak confidence and the runaway-cap flag.
-  Rule and slot names are denormalised onto it — see the model docstring.
-* **The card art.** A small annotated JPEG written on START. Distinct from what a
-  `save_snapshot` action writes: that is a full-quality *training image* under
-  `image_datasets` which the user curates and which must never have boxes burnt into
-  it. This one is thumbnail-sized, has the boxes drawn on deliberately (the whole
-  point of the card is to show what acted on what), lives outside the image datasets,
-  and is deleted with its event.
+* **The row.** Created when the first thing is written to the event, from material held
+  since the opening edge, and patched at the close with the ending time, peak confidence
+  and the runaway-cap flag. For a clip or a timelapse that means the row appears when
+  the event ends; for `save_event` it appears at once and is visible while the event is
+  still open. Rule and slot names are denormalised onto it — see the model docstring.
+* **The card art.** A small annotated JPEG *encoded* at the opening edge, because that
+  is the only moment the right frame exists, and written when the row is created — so
+  an event that files nothing costs no disk. Distinct from what a `save_snapshot` action
+  writes: that is a full-quality *training image* under `image_datasets` which the user
+  curates and which must never have boxes burnt into it. This one is thumbnail-sized,
+  has the boxes drawn on deliberately (the whole point of the card is to show what acted
+  on what), lives outside the image datasets, and is deleted with its event.
+
+Nothing else in the system closes an event, so this module owns that invariant at both
+ends: `close_all` closes what a clean stop leaves open, and `close_stranded` closes what
+a killed process left behind, on the next start.
 
 Nothing here may raise into the frame loop. A watcher that stops recording events
 because the DB hiccuped is a bug; a watcher that stops *watching* for the same reason
@@ -33,6 +45,7 @@ failure is.
 import asyncio
 import hashlib
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -92,6 +105,20 @@ def _payload_models() -> Tuple[Any, Any, Any]:
     return WatchEventCreate, WatchEventUpdate, RecordingCreate
 
 
+@dataclass
+class _PendingEvent:
+    """An event that has begun but written nothing yet.
+
+    Everything a row needs that is only knowable at the opening edge: the wallclock the
+    event began, and its card art already encoded (destination and bytes). Held in RAM
+    until an action writes something, then flushed by `ensure_event` — or dropped at the
+    closing edge, having cost one jpg encode and nothing on disk.
+    """
+
+    started_at: Optional[datetime] = None
+    snapshot: Optional[Tuple[Path, bytes]] = None
+
+
 def _event_key(signal: WatchEventSignal) -> EventKey:
     return (
         signal.source_uuid or "",
@@ -117,6 +144,8 @@ class WatchEventRecorder:
         self._snapshot_root = Path(snapshot_root)
         #: Open events by key, so a closing edge can find the row it opened.
         self._open: Dict[EventKey, str] = {}
+        #: Events that have begun but written nothing yet — see `_PendingEvent`.
+        self._pending: Dict[EventKey, _PendingEvent] = {}
         self._failures = 0
 
     @property
@@ -126,7 +155,14 @@ class WatchEventRecorder:
     # ── the two edges ─────────────────────────────────────────────────────────
 
     async def record(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
-        """Persist one transition. Returns the event uuid, when there is one.
+        """Note one transition. Returns the event uuid, when there is one.
+
+        START writes nothing. It captures what a row *would* need and holds it, because
+        whether the event deserves one is not known yet: a clip action can fail to cut,
+        and an event timelapse legitimately compiles nothing when the visit was too
+        short for its frame minimum. Both used to leave a card with no media behind it —
+        which is the whole complaint this design answers. The row is created by
+        `ensure_event`, once an action reports it actually wrote something.
 
         UPDATE is deliberately ignored: it re-fires the `event_started` trigger for
         actions that want a repeated nudge, but it opens nothing, so persisting it
@@ -134,7 +170,8 @@ class WatchEventRecorder:
         """
         try:
             if signal.phase is EventPhase.START:
-                return await self._open_event(signal, context)
+                await self._hold_event(signal, context)
+                return None
             if signal.phase is EventPhase.END:
                 return await self._close_event(signal)
         except Exception as e:
@@ -148,11 +185,57 @@ class WatchEventRecorder:
         """The row a still-open signal belongs to, for callers linking artifacts to it."""
         return self._open.get(_event_key(signal))
 
-    async def _open_event(self, signal: WatchEventSignal, context: ActionContext) -> str:
+    async def ensure_event(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
+        """The event's row, creating it if this is the first thing written to it.
+
+        Called when an action reports that it put something in the event — a clip, a
+        compiled timelapse, or an explicit `save_event`. Everything the row needs was
+        captured at the opening edge, so the card art is still the frame the rule fired
+        on rather than whatever the camera happens to show now.
+
+        Idempotent: an event that owns both a clip and a timelapse calls this twice and
+        gets one row. Never raises, for the same reason `record` does not.
+        """
+        key = _event_key(signal)
+        existing = self._open.get(key)
+        if existing is not None:
+            return existing
+        try:
+            pending = self._pending.pop(key, None)
+            if pending is None:
+                # No opening edge was held for this event — the watcher started while it
+                # was already open, or the capture failed. Still worth a row: something
+                # was written and a recording with no event to hang off is worse than a
+                # card with no art.
+                pending = _PendingEvent(started_at=self._wallclock(signal.started_at, context))
+            uuid = await self._open_event(signal, pending)
+            self._open[key] = uuid
+            return uuid
+        except Exception as e:
+            self._failures += 1
+            logger.exception("Could not persist watch event for rule %s", signal.rule_name)
+            self._log(f"Event not recorded ({signal.rule_name}): {e}")
+            return None
+
+    async def _hold_event(self, signal: WatchEventSignal, context: ActionContext) -> None:
+        """Capture what the row will need, without writing anything.
+
+        The card art is *encoded* here and written later, rather than keeping the frame
+        and encoding at flush time. An action's frame is a live buffer some providers
+        reuse in place, so a reference held for the length of an event can decode as
+        whatever the camera showed minutes afterwards — a card art bug that would only
+        appear on some sources, long after the event it misrepresents.
+        """
+        self._pending[_event_key(signal)] = _PendingEvent(
+            started_at=self._wallclock(signal.started_at, context),
+            snapshot=await self._encode_snapshot(signal, context),
+        )
+
+    async def _open_event(self, signal: WatchEventSignal, pending: "_PendingEvent") -> str:
         # The snapshot is written first so the row is never briefly snapshot-less: a
         # card that pops into existence without art and gains it a moment later flickers
         # in a list that polls. A failure here costs the art, not the event.
-        snapshot_path = await self._write_snapshot(signal, context)
+        snapshot_path = await self._flush_snapshot(signal, pending)
 
         WatchEventCreate, _, _ = _payload_models()
         api = WatchProfilesApi(self._api_client_factory())
@@ -162,7 +245,7 @@ class WatchEventRecorder:
             rule_uuid=signal.rule_uuid or None,
             rule_name=signal.rule_name or None,
             event_label=(signal.metadata or {}).get("eventLabel"),
-            started_at=self._wallclock(signal.started_at, context),
+            started_at=pending.started_at,
             peak_confidence=signal.peak_confidence,
             track_ids_json=list(signal.track_ids),
             subject_ref=signal.subject_ref,
@@ -175,16 +258,18 @@ class WatchEventRecorder:
         response = await asyncio.to_thread(api.create_watch_event, payload)
         if response.status != JsonValues.SUCCESS or response.event is None:
             raise RuntimeError(response.message or "db refused the event")
-        uuid = response.event.uuid
-        self._open[_event_key(signal)] = uuid
-        return uuid
+        return response.event.uuid
 
     async def _close_event(self, signal: WatchEventSignal) -> Optional[str]:
+        # Whatever was held for an event that wrote nothing is dropped here. This is the
+        # ordinary path for a rule that matches all day with no recording action in
+        # scope — nothing was written, so there is nothing to close and nothing to show.
+        self._pending.pop(_event_key(signal), None)
         uuid = self._open.pop(_event_key(signal), None)
         if uuid is None:
-            # An event whose START was never persisted (DB down at the time, or a
-            # watcher resumed mid-event). Closing nothing is correct; inventing a
-            # zero-length row at the closing edge would be worse than the gap.
+            # Either the event wrote nothing, or its row failed to insert. Closing
+            # nothing is correct; inventing a zero-length row at the closing edge would
+            # be worse than the gap.
             return None
         _, WatchEventUpdate, _ = _payload_models()
         api = WatchProfilesApi(self._api_client_factory())
@@ -199,13 +284,58 @@ class WatchEventRecorder:
         return uuid
 
     async def close_all(self) -> None:
-        """Forget open events without closing them.
+        """Close out anything still open, and drop anything still merely pending.
 
-        Called from `_deinit` *after* the run loop has already emitted a closing signal
-        for everything still open, so anything left here failed to persist and has no
-        row to patch.
+        Called from `_deinit` *after* the run loop has emitted a closing signal for
+        everything open, so a row still here is one whose close did not persist. It used
+        to be forgotten at this point, which is how a stopped watcher could leave an
+        event showing "in progress" forever — nothing else in the system ever closes
+        one, and the row outlives the process that could have.
+
+        `now` is the honest end: the watcher held the event open until it stopped. Each
+        row is closed independently and a failure is logged rather than raised — this
+        runs during shutdown, where giving up on the second row because the first failed
+        would strand exactly what this exists to prevent.
         """
-        self._open.clear()
+        self._pending.clear()
+        if not self._open:
+            return
+        _, WatchEventUpdate, _ = _payload_models()
+        api = WatchProfilesApi(self._api_client_factory())
+        payload = WatchEventUpdate(ended_at=datetime.now(timezone.utc))
+        for key, uuid in list(self._open.items()):
+            try:
+                await asyncio.to_thread(api.update_watch_event, uuid, payload)
+            except Exception as e:
+                self._failures += 1
+                logger.warning("Could not close stranded event %s: %s", uuid, e)
+                self._log(f"Event {uuid} left open: {e}")
+            self._open.pop(key, None)
+
+    async def close_stranded(self) -> int:
+        """Close events a previous run left open, and say how many there were.
+
+        Called once as the watcher starts. Nothing else in the system ever closes one: a
+        clean stop closes its own events, but a killed process cannot, and the row then
+        claims to be in progress for as long as it exists. This is the only moment the
+        claim is provably false — this run has just begun and owns the profile's sources,
+        so no event of this profile can legitimately be open.
+
+        Best effort by design: a watcher must start whether or not the tidy-up worked.
+        """
+        try:
+            from db_client.models.close_stranded_events_request import CloseStrandedEventsRequest
+
+            api = WatchProfilesApi(self._api_client_factory())
+            payload = CloseStrandedEventsRequest(profile_uuid=self._profile_uuid)
+            response = await asyncio.to_thread(api.close_stranded_watch_events, payload)
+            if response.status != JsonValues.SUCCESS:
+                raise RuntimeError(response.message or "db refused the request")
+            return int(response.closed or 0)
+        except Exception as e:
+            logger.warning("Could not close stranded events for profile %s: %s", self._profile_uuid, e)
+            self._log(f"Could not close events left open by a previous run: {e}")
+            return 0
 
     # ── clips ────────────────────────────────────────────────────────────────
 
@@ -333,24 +463,43 @@ class WatchEventRecorder:
 
     # ── card art ─────────────────────────────────────────────────────────────
 
-    async def _write_snapshot(self, signal: WatchEventSignal, context: ActionContext) -> Optional[Path]:
-        """Write the event's thumbnail. Returns None if there was nothing to write."""
+    async def _encode_snapshot(self, signal: WatchEventSignal, context: ActionContext) -> Optional[Tuple[Path, bytes]]:
+        """Render the event's thumbnail and its destination, without touching the disk.
+
+        Encoded at the opening edge because that is the only moment the right frame
+        exists, but not *written* there: most events never earn a row, and writing a jpg
+        for each of them fills a directory the retention sweep then has to walk with
+        files no card will ever point at.
+        """
         frame = context.frame
         if frame is None:
             return None
         when = self._wallclock(signal.started_at, context) or datetime.now(timezone.utc)
         dest = self._snapshot_path(signal, context, when)
         try:
-            await asyncio.to_thread(self._encode_and_write, frame, context, dest)
-            return dest
+            payload = await asyncio.to_thread(self._encode, frame, context)
+            return dest, payload
         except Exception as e:
             # The row is worth more than the picture, so this never propagates.
             logger.warning("Event snapshot failed for %s: %s", signal.rule_name, e)
             self._log(f"Event snapshot failed ({signal.rule_name}): {e}")
             return None
 
+    async def _flush_snapshot(self, signal: WatchEventSignal, pending: "_PendingEvent") -> Optional[Path]:
+        """Write the held card art now that the event has earned a row."""
+        if pending.snapshot is None:
+            return None
+        dest, payload = pending.snapshot
+        try:
+            await asyncio.to_thread(self._write_bytes, dest, payload)
+            return dest
+        except Exception as e:
+            logger.warning("Event snapshot not written for %s: %s", signal.rule_name, e)
+            self._log(f"Event snapshot not written ({signal.rule_name}): {e}")
+            return None
+
     @staticmethod
-    def _encode_and_write(frame: Any, context: ActionContext, dest: Path) -> int:
+    def _encode(frame: Any, context: ActionContext) -> bytes:
         # Annotate the *analysis* frame, not `full_frame`: detections are in the
         # analysis frame's pixel space, so this needs no `scale` and cannot land every
         # box in the top-left quadrant. Card art wants legibility, not resolution — the
@@ -359,7 +508,10 @@ class WatchEventRecorder:
         if context.detections:
             canvas = annotate_detections(canvas, context.detections, colours=context.label_colours)
         canvas = downscale_to_width(canvas, SNAPSHOT_WIDTH)
-        payload = encode_jpg_bytes(canvas, quality=SNAPSHOT_QUALITY)
+        return encode_jpg_bytes(canvas, quality=SNAPSHOT_QUALITY)
+
+    @staticmethod
+    def _write_bytes(dest: Path, payload: bytes) -> int:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(payload)
         return len(payload)
@@ -409,6 +561,15 @@ class NullWatchEventRecorder(WatchEventRecorder):
 
     async def record(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
         return None
+
+    async def ensure_event(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
+        return None
+
+    async def close_all(self) -> None:
+        return None
+
+    async def close_stranded(self) -> int:
+        return 0
 
     async def attach_recording(
         self,

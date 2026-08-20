@@ -7143,6 +7143,39 @@ class DbClient:
             result = await session.exec(stmt)
             return [self._watch_event_to_read(e) for e in result.all()]
 
+    async def close_stranded_watch_events(self, profile_uuid: str) -> int:
+        """Close every still-open event of a profile. Returns how many there were.
+
+        Called by a watcher as it starts, which is the moment the claim "this event is in
+        progress" is provably false: this process owns the profile's sources and has just
+        begun, so nothing else is holding an event open. Only a killed watcher leaves one
+        — a clean stop closes its own — and until this existed nothing ever closed them,
+        so a row could sit in the Events list saying "in progress" indefinitely.
+
+        `ended_at` is set to `started_at`, which reads as a zero-length event. That is
+        deliberate: the true end is somewhere between the start and now, and there is no
+        record of where. Guessing `now` would be worse — it claims a visit that lasted
+        however long the watcher was down, which is exactly the kind of invented history
+        the events list is supposed to be trustworthy against. The metadata flag is what a
+        card can use to say "the watcher stopped before this event closed" rather than
+        presenting the duration as measured.
+        """
+        async with self._async_session_maker() as session:
+            stmt = select(WatchEvent).where(
+                WatchEvent.profile_uuid == profile_uuid,
+                WatchEvent.ended_at == None,  # noqa: E711
+            )
+            rows = (await session.exec(stmt)).all()
+            for event in rows:
+                event.ended_at = event.started_at
+                # Reassigned, not mutated in place: a JSON column tracks changes by
+                # identity, so mutating the dict leaves the row unchanged on commit.
+                event.metadata_json = {**(event.metadata_json or {}), "closedBy": "restart"}
+                session.add(event)
+            if rows:
+                await session.commit()
+            return len(rows)
+
     async def list_recordings(
         self,
         profile_uuid: Optional[str] = None,

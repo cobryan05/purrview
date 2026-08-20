@@ -733,3 +733,37 @@ class TestThePagerSurvivesAShrinkingResultSet:
         page.get_by_role("button", name="Delete", exact=True).click()
 
         expect(page.locator("[data-testid='event-search-empty']")).to_be_visible()
+
+
+class TestARestartClosedEventIsHonest:
+    """An event a killed watcher left open is closed at its own start, because the real
+    end was never recorded. The card must not present that as a measured duration.
+
+    `formatDuration` already refuses to print "0s" for an *open* event on exactly this
+    reasoning — a wrong answer is worse than a missing one — and closing the row would
+    have routed straight around that.
+    """
+
+    def test_the_duration_is_replaced_by_a_note(self, page: Page, base_url: str):
+        _mock(
+            page,
+            events=[
+                _event(
+                    startedAt="2026-08-18T09:15:00",
+                    endedAt="2026-08-18T09:15:00",
+                    metadataJson={"closedBy": "restart"},
+                )
+            ],
+        )
+        _open_events_pane(page, base_url)
+
+        card = page.locator("[data-testid='event-card']").first
+        expect(page.locator("[data-testid='event-card-stranded']").first).to_be_visible()
+        expect(card).not_to_contain_text("0.0s")
+
+    def test_an_ordinary_event_still_shows_its_duration(self, page: Page, base_url: str):
+        _mock(page)
+        _open_events_pane(page, base_url)
+
+        expect(page.locator("[data-testid='event-card-stranded']")).to_have_count(0)
+        expect(page.locator("[data-testid='event-card']").first).to_contain_text("24s")

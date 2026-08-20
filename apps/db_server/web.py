@@ -906,6 +906,26 @@ class WatchEventResponse(StatusResponse):
     event: Optional[WatchEventRead] = None
 
 
+class DeleteWatchEventsRequest(Payload):
+    uuids: List[str] = Field(default_factory=list)
+
+
+class DeleteWatchEventsResponse(StatusResponse):
+    #: How many of the requested events actually went away. Lower than the request when
+    #: a uuid was already gone — which is a normal outcome for a selection deleted from
+    #: two tabs, not an error.
+    deleted: int = 0
+
+
+class CloseStrandedEventsRequest(Payload):
+    profile_uuid: str
+
+
+class CloseStrandedEventsResponse(StatusResponse):
+    #: How many events were still open. Zero is the normal answer.
+    closed: int = 0
+
+
 class WatchEventFacet(ApiModel):
     ref: str
     name: str
@@ -4291,6 +4311,47 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return WatchEventResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/watch-events/close-stranded",
+            response_model=CloseStrandedEventsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="close_stranded_watch_events",
+        )
+        async def close_stranded_watch_events(payload: CloseStrandedEventsRequest) -> CloseStrandedEventsResponse:
+            """Close events a killed watcher left open. Called by that watcher on start.
+
+            One request rather than a list followed by a patch each: the caller has no
+            interest in the rows, only in the invariant, and doing it in one transaction
+            means a watcher that dies mid-cleanup has not half-cleaned its own history.
+            """
+            try:
+                closed = await self._manager.close_stranded_watch_events(payload.profile_uuid)
+                return CloseStrandedEventsResponse(status=JsonValues.SUCCESS, closed=closed)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return CloseStrandedEventsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/watch-events/delete",
+            response_model=DeleteWatchEventsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="delete_watch_events",
+        )
+        async def delete_watch_events(payload: DeleteWatchEventsRequest) -> DeleteWatchEventsResponse:
+            """Delete a selection of events in one request.
+
+            POST rather than DELETE because the uuids are a body, and a DELETE with a
+            body is refused or silently stripped by enough proxies to be a bad bet.
+            Registered before `/{uuid}` for the reason noted above `facets`, even though
+            no `/{uuid}` route takes POST today — the next one would break silently.
+            """
+            try:
+                deleted = await self._manager.delete_watch_events(payload.uuids)
+                return DeleteWatchEventsResponse(status=JsonValues.SUCCESS, deleted=deleted)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DeleteWatchEventsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.delete(
             "/api/watch-events/{uuid}",

@@ -180,6 +180,12 @@ class RecordEventTimelapseAction(Action):
         # Compiled per event and attached to its row, exactly as a clip is.
         return True
 
+    def wrote_to_event(self, result) -> bool:
+        # The case this whole distinction exists for: a visit too short to reach
+        # `min_frames` compiles nothing and reports **ok**, because there is nothing
+        # wrong — it is simply not a timelapse. It must not leave a card behind.
+        return bool(result.ok and result.data.get("path"))
+
     @classmethod
     def triggers(cls, row: Any) -> Set[str]:
         """All three, whatever the row says.

@@ -137,8 +137,27 @@ class Action(ABC):
 
         Classmethod, not a row-dependent one like `triggers`: nothing an action row can
         configure changes whether its kind writes to the event log.
+
+        This is the *configuration-time* answer — "can this kind file an event", which is
+        what the editor's hint and the profile validator need. Whether one particular run
+        actually filed one is `wrote_to_event`.
         """
         return False
+
+    def wrote_to_event(self, result: "ActionResult") -> bool:
+        """Whether this run actually put something in the event.
+
+        `logs_event` says a kind is capable of filing an event; this says a given run did
+        it. The two are not the same, and treating them as the same is what produced
+        event cards with nothing behind them: `record_event_timelapse` returns **ok** with
+        no file when the visit was shorter than its frame minimum — a legitimate, expected
+        outcome — and a clip can fail to cut. Both filed a card that pointed at no media.
+
+        The default is "ran without failing", which is right for an action whose only
+        product *is* the row. Anything that writes a file overrides this to require the
+        file, because "it worked" and "it produced something" diverge for all of them.
+        """
+        return self.logs_event() and result.ok
 
     @abstractmethod
     async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:

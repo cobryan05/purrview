@@ -229,6 +229,11 @@ class RecordClipAction(Action):
         # The clip is attached to the event row, so the event has to exist to hold it.
         return True
 
+    def wrote_to_event(self, result) -> bool:
+        # No mp4, no event. `run` returns ok for several outcomes that produce no file —
+        # a phase that is not END, a source with no backend, a window with nothing in it.
+        return bool(result.ok and result.data.get("path"))
+
     @classmethod
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {

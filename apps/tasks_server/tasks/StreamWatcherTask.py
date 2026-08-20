@@ -850,6 +850,13 @@ class StreamWatcherTask(Task):
             log=self.log,
         )
 
+        # An event this profile left open cannot still be in progress — this run owns its
+        # sources and has only just started. Nothing else ever closes one, so without this
+        # a killed watcher leaves a row saying "in progress" for good.
+        stranded = await self._recorder.close_stranded()
+        if stranded:
+            self.log(f"Closed {stranded} event(s) left open by a previous run")
+
         # Chunks from a previous process are worthless — their events were force-closed
         # and their clips already cut or lost — but they are full-rate video, so leaving
         # them is a disk leak nothing else would ever clean up.
@@ -1232,15 +1239,22 @@ class StreamWatcherTask(Task):
     async def _dispatch(self, signal, pipeline: Optional[WatchPipeline] = None) -> None:
         """Hand an event transition to the action layer, and record it.
 
-        Persistence brackets the actions rather than following them, because the two
-        edges need opposite orderings. On START the row must exist before anything runs
-        so an artifact produced by an action has an event to hang off. On END the clip
-        does not exist until `record_clip` has run, so the row is closed *after* — with
-        the event uuid captured beforehand, since closing it forgets the mapping.
+        Persistence follows the actions, because until they have run there is nothing to
+        say the event is worth keeping. START only *holds* what a row would need — the
+        card art in particular, which has to come from the frame the rule fired on rather
+        than whichever frame is current when the row is finally written. The row itself is
+        created the moment an action reports it wrote something, which for a clip or a
+        timelapse is the closing edge, and for `save_event` is the opening one.
 
-        It is also *conditional*: an event nothing writes to is dispatched to its actions
-        and logged to the task's own log, but leaves no row and no card art. See
-        `_event_is_logged`.
+        Two conditions, not one, and they answer different questions. `_event_is_logged`
+        asks whether any in-scope action *could* file this event — configuration, known
+        before anything runs, and what suppresses the card art encode for a rule that
+        matches all day with nothing recording it. `wrote_to_event` asks whether one
+        actually *did* — runtime, and what stops an event timelapse that compiled nothing
+        from leaving a card behind.
+
+        The closing patch comes last, after the recordings are attached: the clip does not
+        exist until `record_clip` has run, and `_close_event` forgets the mapping.
         """
         verb = {EventPhase.START: "started", EventPhase.UPDATE: "updated", EventPhase.END: "ended"}[signal.phase]
         detail = f" ({signal.duration_s:.1f}s)" if signal.phase is EventPhase.END else ""
@@ -1258,10 +1272,16 @@ class StreamWatcherTask(Task):
         logged = self._event_is_logged(signal)
 
         if logged and signal.phase is EventPhase.START:
+            # Holds the row's raw material, including the card art for this frame. Writes
+            # nothing: whether the event earns a row is not known until an action reports
+            # what it wrote.
             await self._recorder.record(signal, context)
-        event_uuid = self._recorder.event_uuid_for(signal)
 
-        media = await self._run_actions(self._actions_for(signal, trigger), signal, context)
+        media, wrote = await self._run_actions(self._actions_for(signal, trigger), signal, context)
+
+        event_uuid = self._recorder.event_uuid_for(signal)
+        if logged and wrote and event_uuid is None:
+            event_uuid = await self._recorder.ensure_event(signal, context)
 
         if signal.phase is EventPhase.END:
             for item in media:
@@ -1312,21 +1332,30 @@ class StreamWatcherTask(Task):
             source_uuid=pipeline.source_uuid,
         )
         context = self._action_context(signal, pipeline)
+        # A frame opens no event, so there is nothing for an action to have written to.
         await self._run_actions(self._actions_for(signal, FRAME_ANALYSED), signal, context)
 
-    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> List[Dict[str, Any]]:
+    async def _run_actions(self, rows: List[Any], signal, context: ActionContext) -> Tuple[List[Dict[str, Any]], bool]:
         """Run a resolved action list, counting outcomes. Never raises.
 
-        Returns the result data of every media-producing action, each tagged with the
-        `recordings.kind` it becomes, so the caller can register the files they wrote.
-        A list rather than the single clip this used to return: an event can own both a
-        clip and a timelapse, and they are peers.
+        Returns the result data of every media-producing action — each tagged with the
+        `recordings.kind` it becomes, so the caller can register the files they wrote —
+        and whether any of them actually wrote something *to the event*. A list rather
+        than the single clip this used to return: an event can own both a clip and a
+        timelapse, and they are peers.
+
+        The second half of the pair is asked of the action (`wrote_to_event`) rather
+        than inferred from `result.ok` here, because "ok" does not mean "produced
+        something": an event timelapse below its frame minimum is a perfectly successful
+        run that compiled no video, and it used to leave an event card pointing at
+        nothing.
 
         Two actions of the *same* kind scoped to one rule and source is still a
         misconfiguration, and still resolves as last-wins — but now only against its own
         kind, so a timelapse can no longer displace a clip.
         """
         media: Dict[str, Dict[str, Any]] = {}
+        wrote = False
         for row, action in rows:
             try:
                 result = await action.run(signal, context)
@@ -1337,6 +1366,9 @@ class StreamWatcherTask(Task):
                 self._action_failures += 1
                 self._log_action_failure(row, f"Action {row.kind} errored: {e}")
                 continue
+            # Asked whatever the outcome: an action decides for itself what counts as
+            # having written to the event, and the answer is not always `result.ok`.
+            wrote = wrote or action.wrote_to_event(result)
             if result.ok:
                 self._action_successes += 1
                 self._last_action_failure.pop(row.uuid, None)
@@ -1355,7 +1387,7 @@ class StreamWatcherTask(Task):
             else:
                 self._action_failures += 1
                 self._log_action_failure(row, f"Action {row.kind} failed: {result.detail}")
-        return list(media.values())
+        return list(media.values()), wrote
 
     def _log_action_failure(self, row: Any, message: str) -> None:
         """Log an action failure once per distinct message, not once per occurrence.

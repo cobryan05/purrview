@@ -404,3 +404,74 @@ class TestHistorySurvivesConfigEdits:
             "Tabby",
             "litter box",
         )
+
+
+class TestClosingStrandedEvents:
+    """An event a killed watcher left open would otherwise say "in progress" forever.
+
+    Nothing in the system closed one before this: a clean stop closes its own events, a
+    killed process cannot, and no sweep looked for the leftovers. The row is not merely
+    cosmetic — an open event has no duration and sorts as current, so one stuck row sits
+    at the top of the list indefinitely.
+    """
+
+    async def _close(self, http_client, profile_uuid: str) -> dict:
+        r = await http_client.post("/api/watch-events/close-stranded", json={"profileUuid": profile_uuid})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        return body
+
+    async def test_an_open_event_is_closed_at_its_own_start(self, http_client):
+        """Not at `now`: the true end is unknown, and `now` would claim a visit that
+        lasted as long as the watcher was down."""
+        profile = await _make_profile(http_client)
+        started = datetime(2026, 8, 19, 9, 30, tzinfo=timezone.utc)
+        event = await _make_event(http_client, profile, startedAt=started.isoformat())
+        assert event["endedAt"] is None
+
+        assert (await self._close(http_client, profile))["closed"] == 1
+
+        row = (await _list(http_client, profileUuid=profile))["events"][0]
+        assert row["endedAt"] is not None
+        assert datetime.fromisoformat(row["endedAt"]) == datetime.fromisoformat(row["startedAt"])
+        # So a card can say the watcher stopped rather than presenting the duration as
+        # something that was measured.
+        assert row["metadataJson"]["closedBy"] == "restart"
+
+    async def test_a_closed_event_is_left_alone(self, http_client):
+        profile = await _make_profile(http_client)
+        ended = datetime(2026, 8, 19, 9, 45, tzinfo=timezone.utc)
+        await _make_event(
+            http_client,
+            profile,
+            startedAt=datetime(2026, 8, 19, 9, 30, tzinfo=timezone.utc).isoformat(),
+            endedAt=ended.isoformat(),
+        )
+
+        assert (await self._close(http_client, profile))["closed"] == 0
+
+        row = (await _list(http_client, profileUuid=profile))["events"][0]
+        # Compared naive: these rows come back without a tz suffix, and normalising here
+        # would be asserting the serialisation rather than that the row was left alone.
+        assert datetime.fromisoformat(row["endedAt"]).replace(tzinfo=None) == ended.replace(tzinfo=None)
+        assert "closedBy" not in row["metadataJson"]
+
+    async def test_another_watchers_open_event_is_untouched(self, http_client):
+        """A starting watcher can only speak for its own profile. Closing everything
+        open would end the live events of every other watcher that is still running."""
+        mine = await _make_profile(http_client)
+        theirs = await _make_profile(http_client)
+        await _make_event(http_client, mine)
+        await _make_event(http_client, theirs)
+
+        assert (await self._close(http_client, mine))["closed"] == 1
+
+        still_open = (await _list(http_client, profileUuid=theirs))["events"][0]
+        assert still_open["endedAt"] is None
+
+    async def test_running_it_twice_closes_nothing_the_second_time(self, http_client):
+        profile = await _make_profile(http_client)
+        await _make_event(http_client, profile)
+        assert (await self._close(http_client, profile))["closed"] == 1
+        assert (await self._close(http_client, profile))["closed"] == 0
