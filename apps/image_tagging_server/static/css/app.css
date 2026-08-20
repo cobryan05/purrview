@@ -7338,6 +7338,22 @@ progress.progress-indeterminate:indeterminate {
   text-overflow: ellipsis;
 }
 
+/* A lifetime row's label picker is the same widget in a narrower slot — the row also
+   carries TTL and Anchor, so the trigger is capped harder than a rule's to keep all
+   three on one line. */
+.watch-lifetime-labels {
+  display: inline-flex;
+  align-items: center;
+}
+
+.watch-lifetime-labels .ms-dropdown { display: flex; }
+
+.watch-lifetime-labels .ms-dropdown__trigger {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* The stage carries explicit dimensions inline as well; a zero-sized container
    yields a permanent scale of 0 for anything that measures it. */
 .watch-zones-stage {

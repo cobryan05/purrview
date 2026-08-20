@@ -171,7 +171,8 @@ class TestNestedWrites:
     async def test_create_with_sources_rules_and_actions(self, http_client):
         source_uuid = await _make_source(http_client)
         await _set_regions(http_client, source_uuid, [_zone()])
-        # A real label: label_lifetimes has a real FK, so a made-up uuid is rejected.
+        # A real label: a lifetime's labels are checked against the label table on save,
+        # so a made-up uuid is rejected.
         label_uuid = await _make_label(http_client)
         body = await _create_profile(
             http_client,
@@ -179,7 +180,7 @@ class TestNestedWrites:
             sources=[{"sourceUuid": source_uuid, "order": 0}],
             rules=[_rule()],
             actions=[{"kind": "publish_mqtt", "trigger": "event_started", "paramsJson": {"retain": False}}],
-            labelLifetimes=[{"labelUuid": label_uuid, "ttlS": 2.0, "isAnchor": False}],
+            labelLifetimes=[{"labelUuidsJson": [label_uuid], "ttlS": 2.0, "isAnchor": False}],
         )
         assert body["status"] == "success", body
         profile = body["profile"]
@@ -187,6 +188,38 @@ class TestNestedWrites:
         assert len(profile["rules"]) == 1
         assert len(profile["actions"]) == 1
         assert len(profile["labelLifetimes"]) == 1
+
+    async def test_a_lifetime_covers_several_labels_and_their_children(self, http_client):
+        # One row, several labels, "include children" — the shape the rule slots already
+        # have. Losing either the extra labels or the flag on the way through would look
+        # at runtime like a tracker that simply ignored the setting.
+        cat = await _make_label(http_client, "Cat")
+        box = await _make_label(http_client, "Litter box")
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            labelLifetimes=[{"labelUuidsJson": [cat, box], "includeDescendants": True, "ttlS": 30.0}],
+        )
+        assert body["status"] == "success", body
+        lifetime = body["profile"]["labelLifetimes"][0]
+        assert sorted(lifetime["labelUuidsJson"]) == sorted([cat, box])
+        assert lifetime["includeDescendants"] is True
+
+    async def test_a_lifetime_naming_an_unknown_label_is_refused(self, http_client):
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            labelLifetimes=[{"labelUuidsJson": [str(_uuid.uuid4())], "ttlS": 2.0}],
+        )
+        assert body["status"] == "failure", body
+
+    async def test_a_lifetime_naming_no_label_is_refused(self, http_client):
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            labelLifetimes=[{"labelUuidsJson": [], "ttlS": 2.0}],
+        )
+        assert body["status"] == "failure", body
 
     async def test_a_sources_mqtt_name_round_trips(self, http_client):
         source_uuid = await _make_source(http_client)

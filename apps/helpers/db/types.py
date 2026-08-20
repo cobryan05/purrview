@@ -1783,7 +1783,17 @@ class LabelLifetime(SQLModel, table=True):
     __tablename__ = "label_lifetimes"
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
-    label_uuid: str = Field(foreign_key="labels.uuid", index=True, ondelete="CASCADE")
+    # A *list*, exactly as a rule's subject slot is: "these three cats survive 1 s" is one
+    # row, not three, and the picker is the same hierarchy-aware multi-select.
+    #
+    # Not a foreign key any more, for the same reason as `InteractionRule`'s ref lists:
+    # a JSON list cannot carry one. `_validate_watch_profile` checks the labels exist at
+    # the API boundary, where it can name the offending uuid.
+    label_uuids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    # "…and everything under it in the label tree", resolved when the watcher starts
+    # rather than stored expanded — see `InteractionRule.subject_a_include_descendants`
+    # for why the flag is stored and not its closure.
+    include_descendants: bool = Field(default=False)
     ttl_s: float = Field(default=2.0)
     # Anchors latch their box once seen with high confidence and hold it for a long
     # TTL, rather than trusting a detector that intermittently misses a stationary
@@ -2174,13 +2184,15 @@ class InteractionRuleWrite(ApiModel):
 class LabelLifetimeRead(OrmModel):
     uuid: str
     profile_uuid: str
-    label_uuid: str
+    label_uuids_json: List[Any] = Field(default_factory=list)
+    include_descendants: bool = False
     ttl_s: float = 2.0
     is_anchor: bool = False
 
 
 class LabelLifetimeWrite(ApiModel):
-    label_uuid: str
+    label_uuids_json: List[Any] = Field(default_factory=list)
+    include_descendants: bool = False
     ttl_s: float = 2.0
     is_anchor: bool = False
 
@@ -2190,6 +2202,16 @@ class LabelLifetimeWrite(ApiModel):
         if v <= 0:
             raise ValueError("ttl_s is in seconds and must be positive")
         return v
+
+    @model_validator(mode="after")
+    def _validate_labels(self) -> "LabelLifetimeWrite":
+        # A row naming no label configures nothing; the UI drops empty rows on save, so
+        # one arriving here means the payload is wrong rather than merely unfinished.
+        if not self.label_uuids_json:
+            raise ValueError("a label lifetime needs at least one label")
+        if len(set(map(str, self.label_uuids_json))) != len(self.label_uuids_json):
+            raise ValueError("label_uuids_json contains duplicates")
+        return self
 
 
 class WatchActionRead(OrmModel):

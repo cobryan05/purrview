@@ -721,11 +721,43 @@ function buildLifetimeRow(lifetime, ctx) {
   const row = el('div', 'watch-lifetime-row watch-row');
   row.dataset.testid = 'watch-lifetime-row';
 
-  const label = select(ctx.labelOptions, lifetime.labelUuid || ctx.labelOptions[0]?.key, ctx.onAnyChange);
-  label.dataset.testid = 'watch-lifetime-label';
-  row.appendChild(wfield('Label', label, {
-    help: 'The label this lifetime applies to. Labels with no row here use the tracker’s own '
-      + 'defaults.',
+  // The same hierarchy-aware multi-select the rule slots use, for the same two reasons:
+  // a flat alphabetical list of every cat, breed and species is unnavigable, and "every
+  // cat survives 1 s" is one statement, not one row per breed. `Include child labels`
+  // is resolved when the watcher starts, so a breed added later is covered without
+  // editing the watcher.
+  let labelRefs = [...(lifetime.labelUuidsJson || [])];
+  let includeDescendants = Boolean(lifetime.includeDescendants);
+  const labelHost = el('span', 'watch-lifetime-labels');
+  labelHost.dataset.testid = 'watch-lifetime-label';
+  const labelDropdown = createMultiSelectDropdown({
+    label: '',
+    items: ctx.labelItems,
+    defaultSelected: labelRefs,
+    showModeToggle: false,
+    allowExclude: false,
+    searchable: true,
+    emptySummary: 'None selected',
+    emptyText: '(no labels defined)',
+    filterKey: 'watch-lifetime-labels',
+    hierarchyToggle: {
+      label: 'Include child labels',
+      default: includeDescendants,
+      onChange: (value) => {
+        includeDescendants = value;
+        ctx.onAnyChange();
+      },
+    },
+    onChange: (selected) => {
+      labelRefs = selected;
+      ctx.onAnyChange();
+    },
+  });
+  labelHost.appendChild(labelDropdown.element);
+  row.appendChild(wfield('Labels', labelHost, {
+    help: 'The labels this lifetime applies to. Labels with no row here use the tracker’s own '
+      + 'defaults. A label named outright by one row wins over one it only inherits from a '
+      + 'parent via “Include child labels”.',
   }));
 
   const ttl = numberInput(lifetime.ttlS ?? 2.0, { step: '0.5', min: 0 });
@@ -748,8 +780,10 @@ function buildLifetimeRow(lifetime, ctx) {
 
   return {
     element: row,
+    destroy: () => labelDropdown.destroy(),
     getLifetime: () => ({
-      labelUuid: label.value || null,
+      labelUuidsJson: [...labelRefs],
+      includeDescendants,
       // ttl_s is rejected server-side at <= 0, so an emptied box must fall back rather
       // than send 0 and fail the whole save.
       ttlS: num(ttl, 2.0) || 2.0,
@@ -2025,13 +2059,6 @@ export async function renderWatchProfileManager({ target }) {
       depth: l.depth,
       parentUuid: l.parentUuid ?? null,
     }));
-    // Flat `<select>` options for the label-lifetime rows, which pick exactly one label.
-    // Indented so the same hierarchy is legible there too — a plain alphabetical list of
-    // every cat, breed and species is not.
-    const labelOptions = labelItems.map(l => ({
-      key: l.uuid,
-      text: `${'  '.repeat(l.depth || 0)}${l.name}`,
-    }));
 
     // Regions are keyed by source and fetched in one call rather than per source: a
     // watcher with eight cameras would otherwise open the editor with eight requests.
@@ -2260,9 +2287,10 @@ export async function renderWatchProfileManager({ target }) {
 
       function addLifetime(lifetime) {
         const entry = buildLifetimeRow(lifetime, {
-          labelOptions: labelOptions.length ? labelOptions : [{ key: '', text: '(no labels)' }],
+          labelItems,
           onAnyChange,
           onDelete: () => {
+            entry.destroy();
             entry.element.remove();
             lifetimeRows.splice(lifetimeRows.indexOf(entry), 1);
             onAnyChange();
@@ -2463,9 +2491,11 @@ export async function renderWatchProfileManager({ target }) {
           defaultModelName: readModelChoice(defaultModels.value).modelName,
           trackerTypename: trackerSel.value,
           trackerParamsJson: trackerParams?.getParams() || {},
-          // A row with no label selected (no labels exist yet) would fail server-side
-          // validation and take the whole save with it.
-          labelLifetimes: lifetimeRows.map(entry => entry.getLifetime()).filter(l => l.labelUuid),
+          // A row with nothing selected would fail server-side validation and take the
+          // whole save with it — an unfinished row is dropped rather than fatal.
+          labelLifetimes: lifetimeRows
+            .map(entry => entry.getLifetime())
+            .filter(l => l.labelUuidsJson.length),
           sources: sourceRows.map((entry, i) => ({ ...entry.getSource(), order: i })),
           rules: ruleRows.map((entry, i) => ({ ...entry.getRule(), order: i })),
           actions: actionRows.map((entry, i) => ({ ...entry.getAction(), order: i })),

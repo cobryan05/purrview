@@ -346,7 +346,9 @@ class StreamWatcherTask(Task):
         groups_by_uuid = {g.uuid: g for g in (groups_resp.groups or [])}
 
         source_helper = SourceHelper(db_api_client)
-        lifetimes = build_label_lifetimes(self._profile.label_lifetimes)
+        # Same ancestry map as the rules below: a lifetime row may opt into covering the
+        # labels under the ones it names, and it is widened here for the same reason.
+        lifetimes = build_label_lifetimes(self._profile.label_lifetimes, self._label_ancestry)
         # Rules whose label slots opted into "include children" are widened here, once,
         # against the ancestry map fetched just above. Expanding at start rather than
         # storing the closure means a label added to the tree later is picked up on the

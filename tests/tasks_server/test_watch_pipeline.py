@@ -274,15 +274,20 @@ class TestStatusRow:
 class TestLabelLifetimes:
     def test_builds_the_tracker_lookup_from_rows(self):
         rows = [
-            {"label_uuid": CAT, "ttl_s": 2.0, "is_anchor": False},
-            {"label_uuid": "label-box", "ttl_s": 300.0, "is_anchor": True},
+            {"label_uuids_json": [CAT], "ttl_s": 2.0, "is_anchor": False},
+            {"label_uuids_json": ["label-box"], "ttl_s": 300.0, "is_anchor": True},
         ]
         lifetimes = build_label_lifetimes(rows)
         assert lifetimes[CAT] == LabelLifetimeSpec(ttl_s=2.0, is_anchor=False)
         assert lifetimes["label-box"].is_anchor is True
 
+    def test_one_row_covers_every_label_it_names(self):
+        lifetimes = build_label_lifetimes([{"label_uuids_json": [CAT, "label-box"], "ttl_s": 7.0}])
+        assert lifetimes[CAT].ttl_s == 7.0
+        assert lifetimes["label-box"].ttl_s == 7.0
+
     def test_accepts_camel_cased_rows(self):
-        lifetimes = build_label_lifetimes([{"labelUuid": CAT, "ttlS": 5.0, "isAnchor": True}])
+        lifetimes = build_label_lifetimes([{"labelUuidsJson": [CAT], "ttlS": 5.0, "isAnchor": True}])
         assert lifetimes[CAT].ttl_s == 5.0
 
     def test_rows_without_a_label_are_skipped(self):
@@ -290,6 +295,31 @@ class TestLabelLifetimes:
 
     def test_empty_input_is_fine(self):
         assert build_label_lifetimes(None) == {}
+
+    def test_descendants_inherit_the_row_that_opted_in(self):
+        ancestry = {"animal": set(), CAT: {"animal"}, "kitten": {CAT, "animal"}}
+        lifetimes = build_label_lifetimes(
+            [{"label_uuids_json": ["animal"], "ttl_s": 9.0, "include_descendants": True}],
+            ancestry,
+        )
+        assert lifetimes["animal"].ttl_s == 9.0
+        assert lifetimes[CAT].ttl_s == 9.0
+        assert lifetimes["kitten"].ttl_s == 9.0
+
+    def test_descendants_are_left_alone_without_the_flag(self):
+        ancestry = {"animal": set(), CAT: {"animal"}}
+        lifetimes = build_label_lifetimes([{"label_uuids_json": ["animal"], "ttl_s": 9.0}], ancestry)
+        assert CAT not in lifetimes
+
+    def test_a_label_named_outright_beats_one_inherited_from_a_parent(self):
+        # Row order must not decide this: the specific statement about the cat is the one
+        # the user wrote about the cat, whichever row it sits in.
+        ancestry = {"animal": set(), CAT: {"animal"}}
+        wide = {"label_uuids_json": ["animal"], "ttl_s": 30.0, "include_descendants": True}
+        narrow = {"label_uuids_json": [CAT], "ttl_s": 1.0}
+        assert build_label_lifetimes([wide, narrow], ancestry)[CAT].ttl_s == 1.0
+        assert build_label_lifetimes([narrow, wide], ancestry)[CAT].ttl_s == 1.0
+        assert build_label_lifetimes([narrow, wide], ancestry)["animal"].ttl_s == 30.0
 
 
 class TestExpandModelGroup:

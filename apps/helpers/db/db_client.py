@@ -6558,6 +6558,20 @@ class DbClient:
         sources = data.sources if data.sources is not None else []
         rules = data.rules if data.rules is not None else []
         actions = data.actions if data.actions is not None else []
+        lifetimes = data.label_lifetimes if data.label_lifetimes is not None else []
+
+        # Label lifetimes used to hold a single `label_uuid` with a real foreign key, and
+        # the FK is what rejected a made-up uuid. The column is a JSON list now — a list
+        # cannot carry an FK — so the same check happens here, in one query rather than
+        # one per row.
+        lifetime_refs = {str(u) for row in lifetimes for u in (row.label_uuids_json or [])}
+        if lifetime_refs:
+            async with self._async_session_maker() as session:
+                result = await session.exec(select(Label.uuid).where(Label.uuid.in_(lifetime_refs)))
+                known_labels = set(result.all())
+            missing = sorted(lifetime_refs - known_labels)
+            if missing:
+                raise ValueError(f"Label lifetime references label {missing[0]!r}, which does not exist")
 
         seen_sources: set = set()
         for src in sources:
@@ -6720,7 +6734,8 @@ class DbClient:
             session.add(
                 LabelLifetime(
                     profile_uuid=profile_uuid,
-                    label_uuid=lifetime.label_uuid,
+                    label_uuids_json=[str(u) for u in (lifetime.label_uuids_json or [])],
+                    include_descendants=lifetime.include_descendants,
                     ttl_s=lifetime.ttl_s,
                     is_anchor=lifetime.is_anchor,
                 )

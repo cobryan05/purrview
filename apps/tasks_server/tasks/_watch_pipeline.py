@@ -21,6 +21,7 @@ from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, T
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import WatchEventSignal
 from apps.helpers.watch.geometry import Zone, is_masked
+from apps.helpers.watch.rules import descendants_of
 
 logger = logging.getLogger(__name__)
 
@@ -380,19 +381,42 @@ class WatchPipeline:
         return f"● {seconds}s rewind (native)"
 
 
-def build_label_lifetimes(rows: Sequence[Any]) -> Dict[str, LabelLifetimeSpec]:
-    """Turn `label_lifetimes` rows into the tracker's lookup table."""
-    lifetimes: Dict[str, LabelLifetimeSpec] = {}
+def build_label_lifetimes(
+    rows: Sequence[Any],
+    ancestry: Optional[Dict[str, Sequence[str]]] = None,
+) -> Dict[str, LabelLifetimeSpec]:
+    """Turn `label_lifetimes` rows into the tracker's lookup table.
+
+    A row names a *list* of labels and may opt into covering their descendants, which is
+    expanded here — once at watcher start, against the ancestry map the task already
+    fetched — for the same reason rules are: storing the closure would freeze the row at
+    the moment it was written.
+
+    A label can be reached by two rows: named outright by one and inherited from an
+    ancestor by another. **Named beats inherited**, regardless of row order, because the
+    specific statement is the one the user wrote about *that* label. Two rows naming the
+    same label outright is a genuine ambiguity the last one wins, as it always did.
+    """
+    inherited: Dict[str, LabelLifetimeSpec] = {}
+    named: Dict[str, LabelLifetimeSpec] = {}
     for row in rows or []:
         get = row.get if isinstance(row, dict) else lambda k, d=None: getattr(row, k, d)
-        label_uuid = get("label_uuid") or get("labelUuid")
-        if not label_uuid:
+        refs = get("label_uuids_json", get("labelUuidsJson", None)) or []
+        refs = [str(u) for u in refs if u]
+        if not refs:
             continue
-        lifetimes[label_uuid] = LabelLifetimeSpec(
+        spec = LabelLifetimeSpec(
             ttl_s=float(get("ttl_s", get("ttlS", 2.0)) or 2.0),
             is_anchor=bool(get("is_anchor", get("isAnchor", False))),
         )
-    return lifetimes
+        for ref in refs:
+            named[ref] = spec
+        if ancestry and bool(get("include_descendants", get("includeDescendants", False))):
+            for ref in refs:
+                for child in descendants_of(ref, ancestry):
+                    inherited[child] = spec
+
+    return {**inherited, **named}
 
 
 def expand_model_group(group_uuid: Optional[str], groups_by_uuid: Dict[str, Any]) -> List[str]:

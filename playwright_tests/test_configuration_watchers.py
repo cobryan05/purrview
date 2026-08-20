@@ -1082,7 +1082,9 @@ class TestTrackingSection:
 
         page.locator("[data-testid='watch-add-lifetime']").click()
         row = page.locator("[data-testid='watch-lifetime-row']").first
-        row.locator("[data-testid='watch-lifetime-label']").select_option("label-litterbox")
+        host = row.locator("[data-testid='watch-lifetime-label']")
+        host.locator(".ms-dropdown__trigger").click()
+        host.locator(".ms-dropdown__items input[type='checkbox']").first.check()
         ttl = row.locator("[data-testid='watch-lifetime-ttl']")
         ttl.fill("30")
         row.locator("[data-testid='watch-lifetime-anchor']").check()
@@ -1095,9 +1097,40 @@ class TestTrackingSection:
         wait_until(page, lambda: saved.get("trackerTypename"), "the save never reached the API")
         assert saved.get("trackerTypename") == "ByteTracker"
         lifetimes = saved.get("labelLifetimes") or []
-        assert lifetimes and lifetimes[0]["labelUuid"] == "label-litterbox"
+        assert lifetimes and len(lifetimes[0]["labelUuidsJson"]) == 1
         assert lifetimes[0]["ttlS"] == 30
         assert lifetimes[0]["isAnchor"] is True
+
+    def test_a_lifetime_can_cover_several_labels_and_their_children(self, page: Page, base_url: str):
+        """The reason the flat `<select>` had to go: "every cat survives 1 s" is one row.
+
+        Two labels *and* the hierarchy toggle, because losing either on the way to the
+        API looks at runtime like a tracker that ignored the setting rather than an
+        editor that dropped it.
+        """
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=saved.update)
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+        page.locator("[data-testid='watch-add-lifetime']").click()
+        host = page.locator("[data-testid='watch-lifetime-row']").first.locator("[data-testid='watch-lifetime-label']")
+        host.locator(".ms-dropdown__trigger").click()
+        panel = host.locator(".ms-dropdown__panel")
+        # The hierarchy the flat list could not show, and the toggle that goes with it.
+        expect(panel).to_contain_text("Tabby")
+        # Scoped to the item list: the panel also holds the toggle's own checkbox.
+        host.locator(".ms-dropdown__items input[type='checkbox']").nth(0).check()
+        host.locator(".ms-dropdown__items input[type='checkbox']").nth(1).check()
+        panel.locator(".ms-hierarchy-toggle input[type='checkbox']").check()
+
+        page.get_by_role("button", name="Save", exact=True).first.click()
+
+        wait_until(page, lambda: saved.get("labelLifetimes"), "the save never reached the API")
+        lifetime = saved["labelLifetimes"][0]
+        assert len(lifetime["labelUuidsJson"]) == 2, lifetime
+        assert lifetime["includeDescendants"] is True
 
 
 class TestBufferTierBadge:
