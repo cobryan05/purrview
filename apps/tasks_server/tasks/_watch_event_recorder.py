@@ -420,6 +420,13 @@ class WatchEventRecorder:
         Deliberately synchronous. It is a few tens of KB of JSON serialised from data
         already in memory — a thread hop would cost more than the write.
         """
+        # An action that knows its own time base writes its own sidecar and hands over
+        # the path — `record_event_timelapse` does, because a timelapse's video seconds
+        # are not world seconds and the ring slice below would place every box hours
+        # past the end of an eighteen-second video.
+        written = clip.get("overlayPath")
+        if written:
+            return Path(written)
         if not clip.get("overlay") or detection_track is None or context is None:
             return None
         started_at = _parse_iso(clip.get("startedAt"))

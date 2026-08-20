@@ -17,6 +17,7 @@ that we build a command line, not that the command line produces a video a brows
 play, and the pixel format is exactly the sort of thing that only fails for real.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -299,7 +300,11 @@ class TestParams:
         """The Watchers pane renders the schema; a parameter missing from it is one the
         user cannot set and will never discover."""
         schema = RecordEventTimelapseAction.params_schema()
-        assert {"interval_s", "output_fps", "min_frames", "max_frames", "annotate"} <= set(schema)
+        assert {"interval_s", "output_fps", "min_frames", "max_frames", "preroll_frames", "save_overlay"} <= set(schema)
+        # Removed rather than defaulted off: the boxes are a sidecar the player toggles,
+        # so a burn-them-in checkbox can now only spoil a recording permanently. Offering
+        # it would be offering a way to ruin every frame for training.
+        assert "annotate" not in schema
 
     def test_an_unset_output_dir_lands_under_the_recordings_root(self):
         assert RecordEventTimelapseAction().output_dir == DEFAULT_TIMELAPSE_ROOT
@@ -322,3 +327,227 @@ class TestParams:
     def test_a_blank_output_dir_falls_back_to_the_default(self):
         assert RecordEventTimelapseAction(output_dir="").output_dir == DEFAULT_TIMELAPSE_ROOT
         assert RecordEventTimelapseAction(output_dir=None).output_dir == DEFAULT_TIMELAPSE_ROOT
+
+
+class TestTheDetectionOverlay:
+    """Boxes beside the video instead of burnt into it.
+
+    The point is not cosmetic. `annotate` paints rectangles into the JPEGs before they
+    are compiled, which makes every frame of the finished timelapse useless as a
+    training image — and the modal's "save frame for annotation" is aimed straight at a
+    dataset. A sidecar leaves the pixels alone, so the frame that reaches the dataset
+    has never had a box on it, and the player can still show what the watcher saw.
+    """
+
+    def _det(self, x1=32, y1=24, x2=96, y2=120):
+        """Stands in for `apps.helpers.tracking.Detection`, read by attribute."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(bbox=(x1, y1, x2, y2), label_name="cat", label_uuid="lbl-1", confidence=0.8)
+
+    def _sidecar(self, result) -> dict:
+        import json
+
+        path = Path(result.data["overlayPath"])
+        return json.loads(path.read_text())
+
+    async def test_the_sidecar_lands_beside_the_video(self, action):
+        context = _context(detections=[self._det()])
+        await _open(action, context)
+        await _feed(action, context, [100.0 + i * 10 for i in range(4)])
+        result = await _close(action, context)
+
+        sidecar = Path(result.data["overlayPath"])
+        assert sidecar.is_file()
+        # Named after the video, so the two sort together and the sidecar is obviously
+        # derived from that exact file — the retention sweep leans on this too.
+        assert sidecar.name == Path(result.data["path"]).name + ".boxes.json"
+
+    async def test_there_is_one_entry_per_kept_frame_not_per_analysed_frame(self, action):
+        """The alignment that makes the overlay correct. Frames arrive far faster than
+        the interval keeps them; an entry per *analysed* frame would shift every box
+        later in the video by a growing amount."""
+        context = _context(detections=[self._det()])
+        await _open(action, context)
+        # Twelve analysed frames 2.5 s apart span 27.5 s, which is three whole 10 s
+        # buckets — so three kept frames out of twelve offered.
+        await _feed(action, context, [100.0 + i * 2.5 for i in range(12)])
+        result = await _close(action, context)
+
+        doc = self._sidecar(result)
+        assert result.data["frames"] == len(doc["frames"]) == 3
+        assert [f["t"] for f in doc["frames"]] == pytest.approx([i / action.output_fps for i in range(3)], abs=1e-3)
+
+    async def test_the_boxes_are_normalised_against_the_analysis_frame(self, action):
+        """Detections are in analysis pixels and the video is not, so a box stored in
+        pixels would sit wrong by the downscale ratio — and would rot the day someone
+        changed the analysis width."""
+        context = _context(frame=_frame(width=320, height=240), detections=[self._det(32, 24, 96, 120)])
+        await _open(action, context)
+        await _feed(action, context, [100.0 + i * 10 for i in range(4)])
+        result = await _close(action, context)
+
+        box = self._sidecar(result)["frames"][0]["boxes"][0]
+        assert (box["x"], box["y"], box["w"], box["h"]) == pytest.approx((0.1, 0.1, 0.2, 0.4))
+        assert box["labelUuid"] == "lbl-1"
+
+    async def test_a_frame_where_nothing_was_seen_is_recorded_as_empty(self, action):
+        """An empty list is a fact, not a gap: without it the player holds the previous
+        frame's boxes and draws a cat that had already left."""
+        context = _context(detections=[self._det()])
+        blank = _context(detections=[])
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0])
+        await _feed(action, blank, [120.0, 130.0])
+        result = await _close(action, context)
+
+        doc = self._sidecar(result)
+        assert [len(f["boxes"]) for f in doc["frames"]] == [1, 1, 0, 0]
+
+    async def test_the_video_itself_is_never_touched(self, action):
+        """The whole reason for the sidecar: the pixels stay as the camera sent them,
+        whatever the detector saw, so any frame of the video is a usable training image.
+
+        There is no longer an option that could make this false — the burn-in was
+        removed with the sidecar — so this is the assertion that keeps it that way.
+        """
+        context = _context(detections=[self._det()])
+        await _open(action, context)
+        await _feed(action, context, [100.0 + i * 10 for i in range(4)])
+        result = await _close(action, context)
+
+        assert result.data["overlayPath"] is not None
+        # Pixel-level proof that nothing was drawn: the fixture frame is a flat fill, so
+        # any burnt-in rectangle would introduce a second colour.
+        capture = cv2.VideoCapture(result.data["path"])
+        try:
+            ok, decoded = capture.read()
+            assert ok
+        finally:
+            capture.release()
+        assert decoded.std() < 8.0, "the compiled frames are not flat — something was drawn on them"
+
+    async def test_switching_the_sidecar_off_writes_none(self, tmp_path):
+        action = RecordEventTimelapseAction(interval_s=10.0, min_frames=2, output_dir=str(tmp_path), save_overlay=False)
+        context = _context(detections=[self._det()])
+        await _open(action, context)
+        await _feed(action, context, [100.0 + i * 10 for i in range(4)])
+        result = await _close(action, context)
+
+        assert result.data["overlayPath"] is None
+        assert list(Path(tmp_path).rglob("*.boxes.json")) == []
+
+    async def test_an_event_with_no_detections_at_all_gets_no_sidecar(self, action):
+        """An all-empty document claims the detector saw nothing for the whole event,
+        which is a stronger statement than "no record" — and it would put an overlay
+        toggle on a video that can never show one."""
+        context = _context(detections=[])
+        await _open(action, context)
+        await _feed(action, context, [100.0 + i * 10 for i in range(4)])
+        result = await _close(action, context)
+
+        assert result.data["overlayPath"] is None
+
+
+class TestPreRoll:
+    """Frames from before the event opened, so the video shows the approach.
+
+    Without it a timelapse opens on a subject that is already there — `min_duration_s`
+    means the rule only fires once the predicate has held for a couple of seconds, and
+    the interesting part is what happened on the way in.
+    """
+
+    def _action(self, tmp_path, **kw):
+        kw.setdefault("interval_s", 10.0)
+        kw.setdefault("min_frames", 1)
+        return RecordEventTimelapseAction(output_dir=str(tmp_path), **kw)
+
+    async def test_frames_from_before_the_event_are_put_at_the_front(self, tmp_path):
+        action = self._action(tmp_path, preroll_frames=3)
+        context = _context()
+        # Idle camera: nothing is open, so these can only reach the ring.
+        await _feed(action, context, [0.0, 10.0, 20.0, 30.0])
+        await _open(action, context, started_at=40.0)
+        await _feed(action, context, [40.0, 50.0])
+        result = await _close(action, context, started_at=40.0, at=60.0)
+
+        # Three pre-roll frames (the ring's cap, not all four offered) plus the two live.
+        assert result.data["frames"] == 5
+
+    async def test_the_ring_never_grows_past_its_cap(self, tmp_path):
+        """It is held JPEGs, so an unbounded ring is a memory leak on every idle
+        camera — the one place this action would otherwise cost something all day."""
+        action = self._action(tmp_path, preroll_frames=2)
+        context = _context()
+        await _feed(action, context, [i * 10.0 for i in range(50)])
+
+        assert len(action._preroll["src-1"]) == 2
+
+    async def test_an_idle_camera_costs_nothing_when_preroll_is_off(self, tmp_path):
+        """The default. Sampling an idle camera all day to serve a feature nobody asked
+        for is exactly the regression this guards."""
+        action = self._action(tmp_path, preroll_frames=0)
+        context = _context()
+        await _feed(action, context, [0.0, 10.0, 20.0])
+
+        assert action._preroll == {}
+
+    async def test_the_ring_is_only_sampled_once_per_interval(self, tmp_path):
+        """A watcher analysing at 5 fps must not put fifty frames in a ten-second
+        bucket."""
+        action = self._action(tmp_path, preroll_frames=5)
+        context = _context()
+        await _feed(action, context, [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+
+        assert len(action._preroll["src-1"]) == 1
+
+    async def test_the_reported_start_is_the_first_frame_shown_not_the_events(self, tmp_path):
+        """The modal measures the scrubber against this. Reporting the event's start
+        over a video that begins thirty seconds earlier puts every timestamp out."""
+        action = self._action(tmp_path, preroll_frames=2)
+        context = _context()
+        await _feed(action, context, [0.0, 10.0])
+        first_ring_at = action._preroll["src-1"][0][2]
+        await _open(action, context, started_at=20.0)
+        await _feed(action, context, [20.0])
+        result = await _close(action, context, started_at=20.0, at=30.0)
+
+        expected = datetime.fromtimestamp(first_ring_at, tz=timezone.utc)
+        assert result.data["startedAt"].startswith(expected.isoformat()[:19])
+
+    async def test_the_overlay_stays_aligned_across_the_join(self, tmp_path):
+        """Pre-roll frames carry their own boxes. One missing entry there shifts every
+        annotation in the rest of the video by a frame."""
+        from types import SimpleNamespace
+
+        det = SimpleNamespace(bbox=(32, 24, 96, 120), label_name="cat", label_uuid="lbl-1", confidence=0.8)
+        action = self._action(tmp_path, preroll_frames=2)
+        empty, seen = _context(detections=[]), _context(detections=[det])
+        await _feed(action, empty, [0.0, 10.0])
+        await _open(action, seen, started_at=20.0)
+        await _feed(action, seen, [20.0, 30.0])
+        result = await _close(action, seen, started_at=20.0, at=40.0)
+
+        import json
+
+        doc = json.loads(Path(result.data["overlayPath"]).read_text())
+        assert len(doc["frames"]) == result.data["frames"] == 4
+        # Empty through the lead-in, boxed once the event opens — the join is where an
+        # off-by-one would show.
+        assert [len(f["boxes"]) for f in doc["frames"]] == [0, 0, 1, 1]
+
+    async def test_a_second_rule_opening_later_gets_a_current_lead_in(self, tmp_path):
+        """The ring keeps being fed while an event is open, so the second rule's
+        pre-roll is the last 20 seconds — not whatever preceded the first event."""
+        action = self._action(tmp_path, preroll_frames=2)
+        context = _context()
+        await _feed(action, context, [0.0, 10.0])
+        await _open(action, context, started_at=20.0)
+        await _feed(action, context, [20.0, 30.0, 40.0])
+        await _open(action, context, started_at=50.0, rule_uuid="rule-2", rule_name="second rule")
+        await _feed(action, context, [50.0])
+        second = await _close(action, context, started_at=50.0, at=60.0, rule_uuid="rule-2", rule_name="second rule")
+
+        # Two rung frames + the live one. That it is non-empty at all is the point: the
+        # ring did not go stale while the first event held it.
+        assert second.data["frames"] == 3

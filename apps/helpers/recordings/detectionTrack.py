@@ -90,6 +90,27 @@ def _normalise(bbox: Sequence[float], width: int, height: int) -> Optional[Dict[
     return {"x": _round(left), "y": _round(top), "w": _round(right - left), "h": _round(bottom - top)}
 
 
+def detection_box(detection: Any, width: int, height: int) -> Optional[Dict[str, Any]]:
+    """One detection as an overlay box, normalised against the analysis frame.
+
+    Module-level rather than a method because two very different producers need the
+    identical shape: the ring below, which samples every analysed frame for clips, and
+    `record_event_timelapse`, which keeps the boxes only for the frames it actually
+    sampled. A second implementation would drift, and the drift would show up as boxes
+    that are subtly wrong in one player and not the other.
+    """
+    box = _normalise(getattr(detection, "bbox", ()) or (), width, height)
+    if box is None:
+        return None
+    # `label` is the resolved name and `labelUuid` the identity: the name is what a
+    # human reads off the overlay, the uuid is what matches the colour the label has
+    # everywhere else in the app, and a renamed label must not restyle old clips.
+    box["label"] = getattr(detection, "label_name", None) or getattr(detection, "label_uuid", None) or ""
+    box["labelUuid"] = getattr(detection, "label_uuid", None) or ""
+    box["conf"] = round(float(getattr(detection, "confidence", 0.0) or 0.0), 3)
+    return box
+
+
 @dataclass
 class TrackSample:
     """One analysed frame's worth of boxes, in normalised coordinates.
@@ -151,18 +172,7 @@ class DetectionTrack:
         self._samples.append(sample)
         self._evict(sample.at)
 
-    @staticmethod
-    def _detection_dict(detection: Any, width: int, height: int) -> Optional[Dict[str, Any]]:
-        box = _normalise(getattr(detection, "bbox", ()) or (), width, height)
-        if box is None:
-            return None
-        # `label` is the resolved name and `labelUuid` the identity: the name is what a
-        # human reads off the overlay, the uuid is what matches the colour the label has
-        # everywhere else in the app, and a renamed label must not restyle old clips.
-        box["label"] = getattr(detection, "label_name", None) or getattr(detection, "label_uuid", None) or ""
-        box["labelUuid"] = getattr(detection, "label_uuid", None) or ""
-        box["conf"] = round(float(getattr(detection, "confidence", 0.0) or 0.0), 3)
-        return box
+    _detection_dict = staticmethod(detection_box)
 
     @staticmethod
     def _track_dict(track: Any, width: int, height: int) -> Optional[Dict[str, Any]]:
@@ -238,6 +248,48 @@ def build_overlay(
     if event:
         document["event"] = event
     return document
+
+
+def build_timelapse_overlay(
+    boxes_per_frame: Sequence[Sequence[Dict[str, Any]]],
+    started_at: datetime,
+    output_fps: float,
+) -> Dict[str, Any]:
+    """The same document shape, for a video whose time base is not real time.
+
+    A timelapse cannot use `build_overlay`, and the reason is worth stating plainly
+    because it looks like it should: `build_overlay` maps a sample's wallclock onto the
+    clip by subtraction, which is only valid while one second of video is one second of
+    world. A timelapse plays two hours in eighteen seconds, so that subtraction puts
+    every box hours past the end of a video that is seconds long and the whole sidecar
+    is dropped as out-of-window.
+
+    The mapping here is exact instead of approximate, which is the pleasant surprise:
+    the action holds the detections for precisely the frames it kept, and each kept
+    frame is one frame of the output, so frame *i* is at `i / output_fps` with no
+    interpolation and no staleness guessing anywhere in it.
+
+    No `event` window is emitted. Every frame of a timelapse is inside its event by
+    construction, so the red "the rule was firing here" frame would cover the entire
+    video — an annotation that marks everything marks nothing.
+
+    :param boxes_per_frame: one list of `detection_box` dicts per kept frame, in order.
+    """
+    fps = max(1e-6, float(output_fps))
+    frames = [
+        {"t": _round(index / fps), "boxes": list(boxes), "tracks": []} for index, boxes in enumerate(boxes_per_frame)
+    ]
+    return {
+        "version": OVERLAY_VERSION,
+        "startedAt": started_at.isoformat(),
+        "durationS": _round(len(frames) / fps),
+        # Exactly one output frame, and not a hair more. The player holds a sample until
+        # the next one; here "the next one" is the very next frame of video, so a
+        # generous hold would smear one frame's boxes over the following frames whenever
+        # a sample happened to be empty — drawing a cat that had already left.
+        "maxStalenessS": _round(1.0 / fps),
+        "frames": frames,
+    }
 
 
 def event_window(

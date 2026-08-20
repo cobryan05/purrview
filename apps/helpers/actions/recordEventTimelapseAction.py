@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from apps import RECORDINGS_TIMELAPSE_DIR
 
 from ..imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
+from ..recordings.detectionTrack import detection_box
 from ..watch.events import EventPhase, WatchEventSignal
 from ..watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED
 from .action import Action, ActionContext, ActionResult
@@ -100,6 +101,11 @@ class _Session:
         #: Wallclock of the first and last frames actually kept, for the row's span.
         self.first_at: Optional[float] = None
         self.last_at: Optional[float] = None
+        #: One list of normalised boxes per kept frame, parallel to the frames on disk.
+        #: Kept in RAM rather than written beside them: at a few hundred bytes a frame
+        #: even the 3600-frame ceiling is under a megabyte, and the sidecar has to be
+        #: one document anyway.
+        self.boxes: List[List[Dict[str, Any]]] = []
 
     def next_path(self) -> Path:
         # Zero-padded and sequential: ffmpeg's concat demuxer reads the list file in
@@ -124,7 +130,8 @@ class RecordEventTimelapseAction(Action):
         max_width: int = DEFAULT_MAX_WIDTH,
         quality: int = 85,
         full_resolution: bool = False,
-        annotate: bool = False,
+        preroll_frames: int = 0,
+        save_overlay: bool = True,
         output_dir: str = str(DEFAULT_TIMELAPSE_ROOT),
         **params: Any,
     ) -> None:
@@ -141,9 +148,19 @@ class RecordEventTimelapseAction(Action):
         self.max_width = max(0, int(max_width))
         self.quality = max(1, min(100, int(quality)))
         self.full_resolution = bool(full_resolution)
-        self.annotate = bool(annotate)
+        self.preroll_frames = max(0, int(preroll_frames or 0))
+        self.save_overlay = bool(save_overlay)
         self.output_dir = self._resolve_output_dir(output_dir)
         self._sessions: Dict[SessionKey, _Session] = {}
+        #: Per-source ring of the most recent sampled frames while **nothing** is open,
+        #: so an opening event can be given the approach that preceded it. Only fed when
+        #: `preroll_frames` is set: with it at zero an idle camera must keep costing one
+        #: dict scan per analysed frame and no encode, which is the overwhelmingly common
+        #: case and the reason the idle path is written the way it is.
+        self._preroll: Dict[str, List[Tuple[bytes, List[Dict[str, Any]], float]]] = {}
+        #: The interval bucket each source's ring has already taken, so a watcher
+        #: analysing at 5 fps still rings one frame per interval rather than fifty.
+        self._preroll_buckets: Dict[str, int] = {}
 
     @staticmethod
     def _resolve_output_dir(output_dir: Any) -> Path:
@@ -257,15 +274,26 @@ class RecordEventTimelapseAction(Action):
                     "extra pixels cost encode time and disk for very little."
                 ),
             },
-            "annotate": {
+            "preroll_frames": {
+                "type": "int",
+                "required": False,
+                "default": 0,
+                "help": (
+                    "Frames from before the event opened to put at the front of the video, so it "
+                    "shows the approach rather than starting with the subject already there. "
+                    "Counted in sampled frames, not seconds: 3 at a 10 s interval is the previous "
+                    "30 seconds. Costs one frame encode per interval on an idle camera, so it is "
+                    "off by default."
+                ),
+            },
+            "save_overlay": {
                 "type": "bool",
                 "required": False,
-                "default": False,
+                "default": True,
                 "help": (
-                    "Draw detection boxes onto the frames. Unlike a clip, whose boxes are drawn "
-                    "over the video at play time from a sidecar, these are burnt in — a "
-                    "timelapse's frames are seconds apart, so there is no continuous track to "
-                    "draw from."
+                    "Write the detection boxes beside the video as a sidecar, so the player can "
+                    "draw them over it and toggle them off. Costs a few tens of KB, re-encodes "
+                    "nothing, and leaves the video itself clean for saving training frames."
                 ),
             },
             "output_dir": {
@@ -311,8 +339,38 @@ class RecordEventTimelapseAction(Action):
             directory = Path(tempfile.mkdtemp(prefix="wwtl-"))
         except OSError as e:
             return ActionResult(ok=False, detail=f"Could not open a frame buffer: {e}")
-        self._sessions[key] = _Session(directory, signal.started_at)
-        return ActionResult(ok=True, detail="recording")
+        session = _Session(directory, signal.started_at)
+        self._sessions[key] = session
+        prerolled = self._seed_preroll(session, context.source_uuid or "")
+        return ActionResult(ok=True, detail=f"recording (pre-roll {prerolled} frame(s))" if prerolled else "recording")
+
+    def _seed_preroll(self, session: _Session, source_uuid: str) -> int:
+        """Lay the ring's frames down as the first frames of a new session.
+
+        Copied rather than moved: two rules can open on one camera at different moments
+        and both deserve the approach, and the ring keeps being fed while an event is
+        open precisely so the second one gets a current view rather than whatever was
+        happening before the first event began.
+
+        A failed write is skipped rather than fatal — losing the lead-in is a much
+        smaller loss than losing the event's own video, which is what raising here would
+        cost.
+        """
+        ring = self._preroll.get(source_uuid) or []
+        for payload, boxes, at_wall in ring:
+            try:
+                session.next_path().write_bytes(payload)
+            except OSError as e:
+                logger.warning("Timelapse pre-roll frame not buffered: %s", e)
+                continue
+            session.boxes.append(boxes)
+            session.frames += 1
+            # The video now begins before the event does, and the row's span has to say
+            # so — otherwise the modal reports a start later than the first frame shown.
+            if session.first_at is None:
+                session.first_at = at_wall
+            session.last_at = at_wall
+        return session.frames
 
     async def _on_frame(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
         """Offer this frame to every open session on this source.
@@ -323,9 +381,10 @@ class RecordEventTimelapseAction(Action):
         """
         source_uuid = context.source_uuid or ""
         open_here = [s for k, s in self._sessions.items() if k[0] == source_uuid]
-        if not open_here:
+        if not open_here and not self.preroll_frames:
             # The common case by a wide margin: nothing is holding on this camera, so
-            # this costs one dict scan per analysed frame and no encode.
+            # this costs one dict scan per analysed frame and no encode. Only a
+            # configured pre-roll makes an idle camera worth sampling at all.
             return ActionResult(ok=True, detail="no open event")
 
         frame = context.full_frame if self.full_resolution and context.full_frame is not None else context.frame
@@ -335,7 +394,12 @@ class RecordEventTimelapseAction(Action):
             return ActionResult(ok=False, detail="No frame available for the timelapse")
 
         due = [s for s in open_here if self._due(s, signal.at)]
-        if not due:
+        # The ring runs on its own bucket, off the frame clock rather than any event's
+        # start: with nothing open there is no session whose start could anchor it, and
+        # while something *is* open the ring must keep pace so a second rule opening
+        # later on this camera gets a current lead-in rather than a stale one.
+        ring_due = bool(self.preroll_frames) and self._preroll_due(source_uuid, signal.at)
+        if not due and not ring_due:
             return ActionResult(ok=True, detail="not due")
 
         # Encoded once and written to each session that wants it. Two rules holding on
@@ -346,7 +410,23 @@ class RecordEventTimelapseAction(Action):
             logger.warning("Timelapse frame encode failed for %s: %s", context.source_name, e)
             return ActionResult(ok=False, detail=str(e))
 
+        # Computed once per frame like the encode, and from `context.frame` whatever the
+        # frames were written at: detections are in the *analysis* frame's pixel space,
+        # and normalising against the encoded frame would scale every box by the
+        # downscale ratio. Normalised coordinates then survive `max_width` and
+        # `full_resolution` without either of them being consulted here.
+        boxes = self._overlay_boxes(context)
+
         now = datetime.now(timezone.utc).timestamp()
+
+        if ring_due:
+            ring = self._preroll.setdefault(source_uuid, [])
+            ring.append((payload, boxes, now))
+            # Trimmed from the front so the ring is always the *most recent* N frames.
+            # Bounded by count rather than age: the interval already decides how much
+            # time N frames cover, and a second bound would let the two disagree.
+            del ring[: max(0, len(ring) - self.preroll_frames)]
+
         written = 0
         for session in due:
             try:
@@ -356,11 +436,41 @@ class RecordEventTimelapseAction(Action):
                 # frame, and must not stop the event either.
                 logger.warning("Timelapse frame not buffered: %s", e)
                 continue
+            # Appended only where the frame was, so the two stay index-aligned: a box
+            # list one longer than the frames on disk would shift every annotation by a
+            # frame for the rest of the video.
+            session.boxes.append(boxes)
             session.frames += 1
             session.first_at = session.first_at if session.first_at is not None else now
             session.last_at = now
             written += 1
         return ActionResult(ok=True, detail=f"buffered {written} frame(s)")
+
+    def _preroll_due(self, source_uuid: str, now: float) -> bool:
+        """Whether the pre-roll ring wants this frame, claiming the bucket if so.
+
+        Bucketed off the frame clock, which is monotonic and shared with `_due`. The
+        ring has no event to anchor to — that is the whole point of it — so it uses
+        absolute interval boundaries the way `save_timelapse` does.
+        """
+        bucket = int(max(0.0, now) // self.interval_s)
+        if self._preroll_buckets.get(source_uuid) == bucket:
+            return False
+        self._preroll_buckets[source_uuid] = bucket
+        return True
+
+    def _overlay_boxes(self, context: ActionContext) -> List[Dict[str, Any]]:
+        """This frame's detections as normalised overlay boxes.
+
+        Empty when the sidecar is switched off, when nothing was detected, or when there
+        is no analysis frame to normalise against — and an empty list is meaningful, not
+        missing: it is how the player is told the detector looked and saw nothing here,
+        which is what stops it holding the previous frame's boxes over a cat that left.
+        """
+        if not self.save_overlay or context.frame is None:
+            return []
+        height, width = context.frame.shape[:2]
+        return [b for b in (detection_box(d, width, height) for d in (context.detections or [])) if b]
 
     def _due(self, session: _Session, now: float) -> bool:
         """Whether this session wants the current frame, claiming the bucket if so.
@@ -397,12 +507,19 @@ class RecordEventTimelapseAction(Action):
             dest = self.timelapse_path(signal, context, session)
             size = await asyncio.to_thread(self._compile, session, dest)
             started_at = datetime.fromtimestamp(session.first_at, tz=timezone.utc) if session.first_at else None
+            overlay = self._write_overlay(session, dest, started_at)
             return ActionResult(
                 ok=True,
                 detail=f"wrote {dest.name} from {session.frames} frames",
                 data={
                     "path": str(dest),
                     "sizeBytes": size,
+                    # Written here rather than by the recorder, which builds a clip's
+                    # sidecar by slicing the source's detection ring over a wallclock
+                    # window. That is meaningless for a timelapse — see
+                    # `build_timelapse_overlay` — so this action, the only thing that
+                    # knows which frames it kept, hands over a finished path.
+                    "overlayPath": str(overlay) if overlay else None,
                     "startedAt": started_at.isoformat() if started_at else None,
                     # The *video's* length, not the event's. The row's duration is what
                     # the player's scrubber is measured against, and claiming the two
@@ -436,6 +553,11 @@ class RecordEventTimelapseAction(Action):
         for session in self._sessions.values():
             session.discard()
         self._sessions.clear()
+        # Held JPEGs, so this is the one piece of this action's state with a real memory
+        # cost. A stopped watcher has no use for a lead-in to an event that will never
+        # open, and the frames are stale the moment the camera is next read.
+        self._preroll.clear()
+        self._preroll_buckets.clear()
 
     # ── files ────────────────────────────────────────────────────────────────
 
@@ -459,20 +581,48 @@ class RecordEventTimelapseAction(Action):
         )
 
     def _encode(self, frame: Any, context: ActionContext) -> bytes:
-        # Cap first, then draw, so the stroke weight suits the size actually written —
-        # the same order `save_timelapse` and the MQTT image action use.
-        frame = downscale_to_width(frame, self.max_width)
-        if self.annotate and context.detections:
-            # Detections are in the *analysis* frame's pixel space; any other canvas
-            # needs them scaled or every box lands in the top-left quadrant.
-            scale = None
-            if context.frame is not None and frame.shape[:2] != context.frame.shape[:2]:
-                scale = (
-                    frame.shape[1] / float(context.frame.shape[1]),
-                    frame.shape[0] / float(context.frame.shape[0]),
-                )
-            frame = annotate_detections(frame, context.detections, context.label_colours, scale=scale)
-        return encode_jpg_bytes(frame, self.quality)
+        """Encode one sampled frame. Nothing is ever drawn on it.
+
+        There used to be an `annotate` option here that burnt the detection boxes into
+        the pixels. It is gone rather than defaulted off: the boxes are now a sidecar the
+        player draws at run time and can toggle, which is strictly better in every
+        direction — it re-encodes nothing, it can be turned off after the fact, and it
+        keeps every frame of the video usable as a training image, which is what "save
+        frame for annotation" in the event modal exists to collect. A burnt-in box cannot
+        be removed later, so keeping the option would only preserve a way to permanently
+        spoil the recording. A stored `annotate: true` from an older config is inert: it
+        lands in the base class's `**params` and nothing reads it.
+        """
+        return encode_jpg_bytes(downscale_to_width(frame, self.max_width), self.quality)
+
+    def _write_overlay(self, session: _Session, dest: Path, started_at: Optional[datetime]) -> Optional[Path]:
+        """Drop the boxes beside the finished mp4. Never raises.
+
+        The video is the artifact and the boxes are a commentary on it — the same
+        contract the clip sidecar and the event's card art hold to. A sidecar that
+        cannot be written must not cost the user the timelapse.
+
+        Skipped entirely when nothing was detected in any kept frame: an all-empty
+        document tells the player "the detector saw nothing in this event", which is a
+        stronger claim than "there is no record", and it would put an overlay toggle on
+        every timelapse that could never show anything.
+        """
+        if not self.save_overlay or not any(session.boxes):
+            return None
+        try:
+            from ..recordings.detectionTrack import build_timelapse_overlay, overlay_path_for, write_overlay
+
+            document = build_timelapse_overlay(
+                session.boxes,
+                started_at or datetime.now(timezone.utc),
+                self.output_fps,
+            )
+            sidecar = overlay_path_for(dest)
+            write_overlay(document, sidecar)
+            return sidecar
+        except Exception as e:
+            logger.warning("Timelapse overlay not written for %s: %s", dest.name, e)
+            return None
 
     def _compile(self, session: _Session, dest: Path) -> int:
         """Encode the buffered frames to an mp4. Runs in a worker thread.

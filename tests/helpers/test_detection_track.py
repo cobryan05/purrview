@@ -22,6 +22,7 @@ from apps.helpers.recordings.detectionTrack import (
     OVERLAY_VERSION,
     DetectionTrack,
     build_overlay,
+    build_timelapse_overlay,
     event_window,
     overlay_path_for,
     write_overlay,
@@ -230,3 +231,58 @@ class TestWriting:
         write_overlay(build_overlay([], T0, 10.0), dest)
 
         assert list(tmp_path.glob("*.part")) == []
+
+
+class TestTheTimelapseOverlay:
+    """A timelapse's sidecar cannot be built the way a clip's is.
+
+    `build_overlay` maps a sample onto the video by subtracting wallclocks, which is
+    only valid while one second of video is one second of world. A timelapse plays two
+    hours in eighteen seconds, so that subtraction puts every box thousands of seconds
+    past the end of the video and the whole sidecar drops out as out-of-window — a
+    silent failure that looks exactly like "this timelapse has no detections".
+    """
+
+    def test_each_kept_frame_lands_on_its_own_frame_of_video(self):
+        doc = build_timelapse_overlay([[{"x": 0.1}], [{"x": 0.2}], [{"x": 0.3}]], T0, output_fps=12.0)
+
+        assert [f["t"] for f in doc["frames"]] == [
+            0.0,
+            pytest.approx(0.0833, abs=1e-4),
+            pytest.approx(0.1667, abs=1e-4),
+        ]
+        assert doc["durationS"] == pytest.approx(0.25, abs=1e-4)
+
+    def test_the_wallclock_span_of_the_event_does_not_leak_into_the_timings(self):
+        """The regression that motivates the separate builder: frames sampled ten
+        seconds apart in the world are one frame apart in the video."""
+        # Two hours of event at one frame per 10s is 720 frames; at 12 fps that is a
+        # 60-second video, not a 7200-second one.
+        doc = build_timelapse_overlay([[] for _ in range(720)], T0, output_fps=12.0)
+
+        assert doc["durationS"] == pytest.approx(60.0)
+        assert doc["frames"][-1]["t"] == pytest.approx(59.9167, abs=1e-3)
+
+    def test_the_hold_is_exactly_one_frame(self):
+        """The player holds a sample until the next one. Here the next one is the very
+        next frame of video, so a generous hold would smear a departed cat's box across
+        the frames after it left."""
+        doc = build_timelapse_overlay([[], []], T0, output_fps=10.0)
+
+        assert doc["maxStalenessS"] == pytest.approx(0.1)
+
+    def test_no_event_window_is_marked(self):
+        """Every frame of a timelapse is inside its event, so the red frame would cover
+        the whole video — an annotation that marks everything marks nothing."""
+        doc = build_timelapse_overlay([[{"x": 0.1}]], T0, output_fps=12.0)
+
+        assert "event" not in doc
+
+    def test_the_player_recognises_the_version_and_shape(self):
+        """Same document the clip player already reads — a second shape would mean a
+        second renderer."""
+        doc = build_timelapse_overlay([[]], T0, output_fps=12.0)
+
+        assert doc["version"] == OVERLAY_VERSION
+        assert doc["startedAt"] == T0.isoformat()
+        assert all({"t", "boxes", "tracks"} <= set(f) for f in doc["frames"])
