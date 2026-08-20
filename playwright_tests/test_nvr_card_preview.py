@@ -8,8 +8,9 @@ the card carries a *frame*, that its caption reports what the watcher currently 
 and that the strip appears only when there is something to show.
 
 The other property under test is cost. These thumbnails are an overview of every watcher
-at once, so they refresh on a slow timer, and a card that has been re-rendered away must
-not keep polling — a leaked timer is invisible until the pane has been opened ten times.
+at once, so each card polls on its own timer at a rate its dropdown controls, and a card
+that has been re-rendered away must not keep polling — a leaked timer is invisible until
+the pane has been opened ten times.
 
 Run with:
     pytest playwright_tests/test_nvr_card_preview.py -p no:asyncio -v
@@ -282,6 +283,57 @@ class TestTheCardCountsItsCameras:
         expect(page.locator("[data-testid='nvr-source-count']")).to_be_hidden()
 
 
+class TestTheCardChoosesItsOwnRefreshRate:
+    """Per-card, because the right rate is per-camera: the doorway wants a picture
+    every couple of seconds and the shed does not, and one global setting makes the
+    whole pane pay for the fastest camera on it."""
+
+    def test_turning_the_rate_up_speeds_the_polling(self, page: Page, base_url: str):
+        """The dropdown has to reach the running timers. A version that only stored the
+        choice would look completely correct and change nothing.
+
+        Deliberately measured *upwards*: the default is 0.2 fps and the slowest option
+        0.1 fps, so over any window short enough to be worth waiting for, an ignored
+        dropdown and an honoured one are indistinguishable in that direction.
+        """
+        calls = _mock(page, count_previews=True)
+        _open_live_pane(page, base_url)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+
+        page.locator("[data-testid='nvr-refresh-rate']").select_option("500")
+        before = len(calls)
+        page.wait_for_timeout(2000)
+
+        # ~4 at 2 fps; the 0.2 fps default would manage at most one in the same window.
+        # The bound is loose because timer scheduling under a loaded browser is not
+        # exact — it is the order of magnitude that separates the two rates.
+        assert len(calls) - before >= 3, f"the fast rate was ignored: {len(calls) - before} polls in 2s"
+
+    def test_the_chosen_rate_survives_a_re_render(self, page: Page, base_url: str):
+        """The pane rebuilds every card whenever any watcher starts or stops, so a rate
+        held only in the card's closure would silently snap back to the default while
+        the user was looking at something else."""
+        _mock(page)
+        _open_live_pane(page, base_url)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+
+        page.locator("[data-testid='nvr-refresh-rate']").select_option("1000")
+
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
+        page.locator(".main-tab-button[data-tab='tab-nvr']").click()
+        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+
+        expect(page.locator("[data-testid='nvr-refresh-rate']")).to_have_value("1000")
+
+    def test_a_stopped_watcher_offers_no_rate(self, page: Page, base_url: str):
+        """There is no strip to refresh — a dropdown over nothing is a control that
+        cannot do anything."""
+        _mock(page, task_status="completed")
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-refresh-rate']")).to_have_count(0)
+
+
 class TestMultiSourceCards:
     def test_each_source_gets_its_own_tile(self, page: Page, base_url: str):
         _mock(
@@ -311,6 +363,25 @@ class TestMultiSourceCards:
 
         expect(page.locator(".nvr-profile-card")).to_have_count(1)
         expect(page.locator(".nvr-profile-card--multi-source")).to_have_count(0)
+
+    def test_clicking_a_tile_opens_that_camera_in_the_live_view(self, page: Page, base_url: str):
+        """The second tile, not the first — opening on the watcher's first source is
+        exactly what the card-level button already did, and is indistinguishable from
+        a click handler that ignores which picture was pressed."""
+        _mock(
+            page,
+            profiles=[_multi_source_profile()],
+            sources=[{"sourceUuid": "src-1", "sourceName": "Litter cam"}, SECOND_SOURCE],
+            # The modal builds its source list from the preview payload, so both
+            # cameras have to be in it or there is nothing to select.
+            preview=_preview(sources=[{"sourceUuid": "src-1", "sourceName": "Litter cam"}, SECOND_SOURCE]),
+        )
+        _open_live_pane(page, base_url)
+
+        page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-2']").click()
+
+        expect(page.locator("[data-testid='watch-live-dialog']")).to_be_visible()
+        expect(page.locator("[data-testid='watch-live-source']")).to_have_value("src-2")
 
     def test_only_a_subset_of_many_sources_is_shown(self, page: Page, base_url: str):
         """A dozen postage stamps answers nothing; the rest are counted instead."""
@@ -385,7 +456,7 @@ class TestPollScheduling:
             const m = await import('/app-static/js/app/nvr/cardPreview.js');
             const host = document.createElement('div');
             document.body.appendChild(host);
-            const stop = m.attachCardPreviews(host, {
+            const { stop } = m.attachCardPreviews(host, {
               taskUuid,
               sources: [{ sourceUuid: 'src-1', sourceName: 'Litter cam' }],
               refreshMs: 50,

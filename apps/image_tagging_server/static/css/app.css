@@ -712,6 +712,44 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   min-width: 0;
 }
 
+/* The tile is the way into the drill-down, so it has to look like something you can
+   press. Border rather than transform on hover: these sit in a tight grid and a tile
+   that grows shoves its neighbours around. */
+.nvr-preview-tile--clickable {
+  cursor: pointer;
+}
+
+.nvr-preview-tile--clickable:hover {
+  border-color: var(--pico-primary, #8fb8ff);
+}
+
+.nvr-preview-tile--clickable:focus-visible {
+  outline: 2px solid var(--pico-primary, #8fb8ff);
+  outline-offset: 1px;
+}
+
+/* Sits under the strip, aligned right, in the same key/value shape as the other muted
+   card metadata so it reads as a view setting rather than a watcher control. */
+.nvr-refresh-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2, 0.5rem);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--text-faint);
+}
+
+.nvr-refresh-select {
+  width: auto;
+  margin: 0;
+  padding: 0.1rem 1.6rem 0.1rem 0.4rem;
+  font-size: var(--text-xs, 0.75rem);
+  height: auto;
+  background-position: right 0.4rem center;
+  background-size: 0.6rem auto;
+}
+
 /* Matches EVENT_COLOUR in overlay.js — a card with something happening on it should be
    identifiable while scrolling past, before any caption is read. */
 .nvr-preview-tile--event {

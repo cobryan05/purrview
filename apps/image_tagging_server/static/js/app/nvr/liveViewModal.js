@@ -82,15 +82,20 @@ function checkbox(labelText, checked, onChange, testid) {
  * @param {Object} opts
  * @param {string} opts.taskUuid - the running StreamWatcherTask instance
  * @param {string} [opts.profileName]
+ * @param {?string} [opts.sourceUuid] - open on this camera rather than the watcher's
+ *   first. Set when the view is opened by clicking a card thumbnail: the picture the
+ *   user clicked is the one they expect to land on.
  * @returns {{close: () => void}}
  */
-export function openWatcherLiveView({ taskUuid, profileName = '' }) {
+export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = null }) {
   const shell = createModalShell({ onClose: () => stop() });
   shell.dialog.classList.add('watch-live-dialog');
   shell.dialog.dataset.testid = 'watch-live-dialog';
 
   const state = {
-    sourceUuid: null,
+    // Seeded before the first poll, so the requested camera is what gets fetched —
+    // not the watcher's first source followed by a visible switch.
+    sourceUuid: sourceUuid || null,
     hz: DEFAULT_HZ,
     paused: false,
     show: { detections: true, tracks: true, zones: true, labels: true },
@@ -277,7 +282,11 @@ export function openWatcherLiveView({ taskUuid, profileName = '' }) {
       sourceSelect.appendChild(opt);
     }
     if (state.sourceUuid) sourceSelect.value = state.sourceUuid;
-    else state.sourceUuid = sourceSelect.value || null;
+    // Either nothing was requested, or what was requested is not one of this watcher's
+    // sources — a caller passing a stale uuid must fall back to a real camera rather
+    // than leaving the select blank and polling for a source that does not exist.
+    if (!sourceSelect.value) sourceSelect.selectedIndex = sources.length ? 0 : -1;
+    state.sourceUuid = sourceSelect.value || null;
   }
 
   // ---------------------------------------------------------------- drawing

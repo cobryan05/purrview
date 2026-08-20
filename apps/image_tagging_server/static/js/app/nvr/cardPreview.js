@@ -7,12 +7,13 @@
  * the question the text cannot: *this* is what the watcher is looking at, and *these* are
  * the objects it is currently reacting to.
  *
- * Refresh rate is deliberately slow (`REFRESH_MS`). This is an overview of every watcher
- * at once, not a video feed — the drill-down (`liveViewModal.js`) is where you go for
- * real-time, and it polls at 0.5–5 Hz for one source at a time. Three cost controls make
- * a wall of thumbnails affordable:
+ * Refresh rate is per card and chosen by the user (`REFRESH_RATES`,
+ * `DEFAULT_REFRESH_MS`). This is still an overview of every watcher at once rather than
+ * a video feed — the drill-down (`liveViewModal.js`) is where you go for real-time — so
+ * the offered rates top out well below it, and three cost controls make a wall of
+ * thumbnails affordable:
  *
- *  - one poll per source per `REFRESH_MS`, and each source's timer is staggered so eight
+ *  - one poll per source per interval, and each source's timer is staggered so eight
  *    cameras don't all encode a JPEG on the same tick;
  *  - `sinceSeq`, so a poll that outruns a 1 fps camera transfers no image bytes;
  *  - nothing polls while the tab is hidden, and everything stops when the pane
@@ -30,8 +31,28 @@ import {
   trackColour,
 } from '/app-static/js/app/nvr/overlay.js';
 
-/** How often one source's thumbnail is refreshed. An overview, not a video feed. */
-export const REFRESH_MS = 10000;
+/**
+ * Refresh rates offered per card, slowest first.
+ *
+ * Expressed in fps because that is the unit the rest of the pane already talks in (the
+ * card's own meta line reports the watcher's analysis fps), even though these are
+ * thumbnail polls rather than analysed frames.
+ *
+ * The ceiling is deliberate. Every step costs one server-side JPEG encode per source
+ * per interval, and a card can hold four tiles: at 2 fps a four-camera profile asks for
+ * eight encodes a second on its own, and a pane of them multiplies that. Anything
+ * faster belongs in the drill-down, which polls one source at a time.
+ */
+export const REFRESH_RATES = [
+  { label: '0.1 fps', ms: 10000 },
+  { label: '0.2 fps', ms: 5000 },
+  { label: '0.5 fps', ms: 2000 },
+  { label: '1 fps', ms: 1000 },
+  { label: '2 fps', ms: 500 },
+];
+
+/** How often one source's thumbnail is refreshed, until the card's dropdown says otherwise. */
+export const DEFAULT_REFRESH_MS = 5000;
 
 /**
  * Thumbnails shown per card before the rest are collapsed into a "+N more" note.
@@ -154,23 +175,34 @@ export function stopAllCardPreviews() {
  * had no way to know. It is called with one entry per polled source whenever any of
  * them changes level.
  *
+ * `onOpenSource` makes each tile the way in to the drill-down for *that* camera. The
+ * thumbnail is the thing someone is actually looking at when they decide they want a
+ * closer look, and before this the only route was a card-level button that opened the
+ * modal on whichever source happened to be first in the list.
+ *
  * @param {HTMLElement} host - element the strip is appended to
  * @param {{taskUuid: string, sources: Array<{sourceUuid: string, sourceName?: string}>,
  *          refreshMs?: number, maxTiles?: number,
  *          onHealth?: (states: Array<{sourceUuid: string, sourceName: string,
- *                                     level: string, label: string}>) => void}} opts
- * @returns {() => void} stop function (also registered for `stopAllCardPreviews`)
+ *                                     level: string, label: string}>) => void,
+ *          onOpenSource?: (sourceUuid: string) => void}} opts
+ * @returns {{stop: () => void, setRefreshMs: (ms: number) => void}}
+ *          `stop` is also registered for `stopAllCardPreviews`
  */
 export function attachCardPreviews(host, {
   taskUuid,
   sources = [],
-  refreshMs = REFRESH_MS,
+  refreshMs = DEFAULT_REFRESH_MS,
   maxTiles = MAX_TILES,
   onHealth = null,
+  onOpenSource = null,
 }) {
   // A watcher whose sources are not known yet gets no strip at all, rather than an
   // empty bordered box that reads as a broken camera.
-  if (!sources.length) return () => {};
+  if (!sources.length) return { stop: () => {}, setRefreshMs: () => {} };
+
+  /** Mutable: the card's dropdown changes it without tearing the strip down. */
+  let currentRefreshMs = refreshMs;
 
   const strip = document.createElement('div');
   strip.className = 'nvr-preview-strip';
@@ -227,6 +259,24 @@ export function attachCardPreviews(host, {
     tile.className = 'nvr-preview-tile';
     tile.dataset.testid = 'nvr-preview-tile';
     tile.dataset.sourceUuid = source.sourceUuid ?? '';
+
+    // A `figure` is not focusable and does not fire on Enter, so the affordance has to
+    // be spelled out — otherwise the drill-down is reachable with a mouse only, on the
+    // one control that is now the primary way into it.
+    if (onOpenSource && source.sourceUuid) {
+      tile.classList.add('nvr-preview-tile--clickable');
+      tile.setAttribute('role', 'button');
+      tile.tabIndex = 0;
+      tile.setAttribute('aria-label', `Live view — ${source.sourceName || source.sourceUuid}`);
+      tile.addEventListener('click', () => onOpenSource(source.sourceUuid));
+      tile.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        // Space scrolls the pane otherwise, which on a wall of cards throws away the
+        // card the user was on.
+        ev.preventDefault();
+        onOpenSource(source.sourceUuid);
+      });
+    }
 
     const canvas = document.createElement('canvas');
     // Placeholder geometry only — replaced by the frame's own dimensions on the first
@@ -455,7 +505,7 @@ export function attachCardPreviews(host, {
 
     function schedule() {
       if (stopped) return;
-      armTimer(refreshMs, () => void poll());
+      armTimer(currentRefreshMs, () => void poll());
     }
 
     /**
@@ -482,5 +532,21 @@ export function attachCardPreviews(host, {
     strip.appendChild(more);
   }
 
-  return stop;
+  /**
+   * Change the polling interval of every tile on this strip.
+   *
+   * `refreshSoon` rather than only re-arming: someone who picks a faster rate is
+   * asking to see the picture sooner, and waiting out the *old* interval before the
+   * new one takes effect makes the dropdown look broken. The stagger is kept so a
+   * four-camera card still doesn't fire four encodes on one tick.
+   */
+  function setRefreshMs(ms) {
+    const next = Number(ms);
+    if (!Number.isFinite(next) || next <= 0 || next === currentRefreshMs) return;
+    currentRefreshMs = next;
+    if (stopped) return;
+    for (const tile of tiles) tile.refreshSoon();
+  }
+
+  return { stop, setRefreshMs };
 }

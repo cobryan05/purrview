@@ -23,7 +23,47 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
-import { attachCardPreviews, levelFromHealthLabel, stopAllCardPreviews } from '/app-static/js/app/nvr/cardPreview.js';
+import {
+  DEFAULT_REFRESH_MS,
+  REFRESH_RATES,
+  attachCardPreviews,
+  levelFromHealthLabel,
+  stopAllCardPreviews,
+} from '/app-static/js/app/nvr/cardPreview.js';
+
+/** localStorage key prefix for one card's chosen thumbnail refresh rate. */
+const REFRESH_KEY_PREFIX = 'nvr.cardRefreshMs.';
+
+/**
+ * The refresh rate this card should start at.
+ *
+ * Persisted per profile, and it has to be: this pane re-renders whenever a watcher
+ * starts or stops, which rebuilds every card from scratch. Without a store, turning one
+ * camera up would silently snap back to the default the next time any *other* watcher
+ * changed state.
+ *
+ * @param {string} profileUuid
+ * @returns {number} milliseconds
+ */
+function _storedRefreshMs(profileUuid) {
+  try {
+    const raw = Number(localStorage.getItem(REFRESH_KEY_PREFIX + profileUuid));
+    // Only a rate still on the menu: a value left over from an older option list would
+    // pin a card to an interval its dropdown can no longer show or undo.
+    if (REFRESH_RATES.some(r => r.ms === raw)) return raw;
+  } catch {
+    // Private-browsing / disabled storage. The default is a fine answer.
+  }
+  return DEFAULT_REFRESH_MS;
+}
+
+function _storeRefreshMs(profileUuid, ms) {
+  try {
+    localStorage.setItem(REFRESH_KEY_PREFIX + profileUuid, String(ms));
+  } catch {
+    // Not worth telling the user about — the rate still applies for this session.
+  }
+}
 
 /**
  * Small local button helper.
@@ -302,6 +342,47 @@ function _startStopButton(profile, task) {
 }
 
 /**
+ * The card's thumbnail refresh dropdown.
+ *
+ * Deliberately labelled "thumbnails": this changes how often the *browser* asks for a
+ * picture, and nothing about how often the watcher analyses frames. Those two numbers
+ * are both on the card and both in fps, so without the label the dropdown reads as a
+ * control over the watcher's analysis rate — which it is not, and which would be a
+ * dangerous thing to fiddle with from an overview pane.
+ *
+ * @param {string} profileUuid
+ * @param {(ms: number) => void} onChange
+ * @returns {HTMLElement}
+ */
+function _refreshRateControl(profileUuid, onChange) {
+  const wrap = document.createElement('label');
+  wrap.className = 'nvr-refresh-control';
+
+  const text = document.createElement('span');
+  text.textContent = 'Thumbnails';
+  wrap.appendChild(text);
+
+  const select = document.createElement('select');
+  select.className = 'nvr-refresh-select';
+  select.dataset.testid = 'nvr-refresh-rate';
+  const current = _storedRefreshMs(profileUuid);
+  for (const rate of REFRESH_RATES) {
+    const opt = document.createElement('option');
+    opt.value = String(rate.ms);
+    opt.textContent = rate.label;
+    opt.selected = rate.ms === current;
+    select.appendChild(opt);
+  }
+  select.addEventListener('change', () => {
+    const ms = Number(select.value) || DEFAULT_REFRESH_MS;
+    _storeRefreshMs(profileUuid, ms);
+    onChange(ms);
+  });
+  wrap.appendChild(select);
+  return wrap;
+}
+
+/**
  * @param {object} profile
  * @param {?object} task - live task info, or null when not running
  * @param {Array<{sourceUuid: string, sourceName: string}>} [sources] - for the thumbnails
@@ -445,16 +526,30 @@ function _profileCard(profile, task, sources = []) {
   // Only for a running watcher: a stopped one has no frames, and a strip of permanent
   // "no frame yet" placeholders would make every stopped card look broken.
   if (isRunning) {
-    attachCardPreviews(body, {
+    const previews = attachCardPreviews(body, {
       taskUuid: task.taskUuid,
       sources,
+      refreshMs: _storedRefreshMs(profile.uuid),
       onHealth: (states) => {
         for (const state of states) {
           levels.set(state.sourceUuid, { sourceName: state.sourceName, level: state.level });
         }
         renderHealthPills();
       },
+      // Clicking the picture is the obvious way to say "show me that camera", and it
+      // carries the source with it — the bar's Live view button opens on whatever the
+      // watcher lists first, which on a multi-camera profile is rarely the one you
+      // just looked at.
+      onOpenSource: (sourceUuid) => openWatcherLiveView({
+        taskUuid: task.taskUuid,
+        profileName: profile.name,
+        sourceUuid,
+      }),
     });
+    // Appended after the strip exists so it sits under the thumbnails it governs,
+    // rather than in the bar with the controls that act on the watcher itself. This
+    // one changes only what the browser asks for; it does not touch the watcher.
+    body.appendChild(_refreshRateControl(profile.uuid, previews.setRefreshMs));
   }
 
   const rules = profile.rules ?? profile.interactionRules ?? [];
