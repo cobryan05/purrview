@@ -24,7 +24,9 @@
  * capture above stay a clean training image while still being able to seed it with the
  * boxes that were on screen.
  */
-import { createModalShell, Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
+import { createModalShell, isTextEntryElement, Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
+import { openDialogCount } from '/app-static/js/ui/utils/modalZIndex.js';
+import { actionForCombo, comboLabel, combosForAction, eventToCombo } from '/app-static/js/app/image-tagging/hotkeyBindings.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import {
   deleteWatchEvent,
@@ -131,31 +133,125 @@ export async function captureVideoFrame(video) {
 /**
  * Open the detail modal for one event.
  *
- * @param {Object} event - a WatchEventRead
+ * With `siblings`, the modal is a *walker* over that list rather than a view of one
+ * row: reviewing a night's events means opening thirty of them in a row, and closing
+ * the modal between each one costs a re-render of the whole grid and loses the reader's
+ * place. Navigation swaps the modal's contents in place — same shell, same focus trap —
+ * so only the parts that describe the event are rebuilt.
+ *
+ * @param {Object} initialEvent - a WatchEventRead
  * @param {Object} [ctx]
  * @param {Map<string, string>} [ctx.sourceNames]
  * @param {() => void} [ctx.onDeleted] - so the grid can drop the card
+ * @param {Object[]} [ctx.siblings] - the events the modal can walk, in the grid's order
  * @returns {{close: () => void}}
  */
-export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted } = {}) {
+export function openEventDetailModal(initialEvent, { sourceNames = new Map(), onDeleted, siblings = [] } = {}) {
+  // Copied, not aliased: deleting from inside the modal splices this list so the walk
+  // stays coherent, and doing that to the grid's own array would corrupt the selection
+  // indices of the page behind us.
+  const walk = siblings.length ? [...siblings] : [initialEvent];
+  let index = Math.max(0, walk.findIndex(e => e.uuid === initialEvent.uuid));
+  let event = walk[index] ?? initialEvent;
+  // Bumped on every navigation. Everything that awaits — recording fetches, overlay
+  // sidecars — captures it and drops out if it lost the race, so a slow clip cannot
+  // paint itself into the modal three events later.
+  let loadSeq = 0;
+
   // The overlay owns a ResizeObserver and a requestVideoFrameCallback loop, neither of
   // which stops when the DOM node goes away. Opening a dozen events in a row would
   // otherwise leave a dozen redraw loops running against detached videos.
-  const shell = createModalShell({ onClose: () => { overlay?.destroy(); overlay = null; } });
+  const shell = createModalShell({
+    onClose: () => {
+      overlay?.destroy();
+      overlay = null;
+      document.removeEventListener('keydown', onKeydown);
+    },
+  });
   shell.dialog.classList.add('event-detail');
   shell.dialog.dataset.testid = 'event-detail-modal';
 
-  const started = parseEventDate(event.startedAt);
+  let started = parseEventDate(event.startedAt);
 
   // ---------------------------------------------------------------- header
 
   const header = el('div', 'event-detail__header');
   const titles = el('div', 'event-detail__titles');
-  titles.appendChild(el('h3', 'event-detail__title', eventHeadline(event)));
-  titles.appendChild(el('span', 'event-detail__subtitle', formatEventTime(started)));
+  const titleEl = el('h3', 'event-detail__title');
+  titleEl.dataset.testid = 'event-detail-title';
+  const subtitleEl = el('span', 'event-detail__subtitle');
+  titles.appendChild(titleEl);
+  titles.appendChild(subtitleEl);
   header.appendChild(titles);
+
+  const nav = el('div', 'event-detail__nav');
+  nav.dataset.testid = 'event-detail-nav';
+  const prevBtn = button('‹ Previous', () => goTo(index - 1), { testid: 'event-detail-prev' });
+  const position = el('span', 'event-detail__position');
+  position.dataset.testid = 'event-detail-position';
+  const nextBtn = button('Next ›', () => goTo(index + 1), { testid: 'event-detail-next' });
+  // Says which key does this, read from the user's own bindings rather than assuming
+  // the defaults — a rebind that the tooltip still describes as `[` is worse than no
+  // tooltip.
+  const describeKey = (action, text) => {
+    const combo = combosForAction(action)[0];
+    return combo ? `${text} (${comboLabel(combo)})` : text;
+  };
+  prevBtn.title = describeKey('action:prevImage', 'Previous event');
+  nextBtn.title = describeKey('action:nextImage', 'Next event');
+  nav.appendChild(prevBtn);
+  nav.appendChild(position);
+  nav.appendChild(nextBtn);
+  header.appendChild(nav);
+
   header.appendChild(button('Close', () => shell.close(), { testid: 'event-detail-close' }));
   shell.dialog.appendChild(header);
+
+  function renderHeader() {
+    titleEl.textContent = eventHeadline(event);
+    subtitleEl.textContent = formatEventTime(started);
+    // Hidden rather than disabled for a lone event: two dead buttons and "1 / 1" is
+    // chrome that only explains itself once you have already tried to use it.
+    nav.hidden = walk.length < 2;
+    position.textContent = `${index + 1} / ${walk.length}`;
+    prevBtn.disabled = index <= 0;
+    nextBtn.disabled = index >= walk.length - 1;
+  }
+
+  /**
+   * Show the event at `i`, if there is one.
+   *
+   * Deliberately does not wrap: at the end of a page the honest answer is "that is the
+   * last one", and silently jumping back to the top of the grid is how a reviewer ends
+   * up watching the same ten events twice without noticing.
+   */
+  function goTo(i) {
+    if (i < 0 || i >= walk.length || i === index) return;
+    index = i;
+    loadEvent();
+  }
+
+  /**
+   * The user's own prev/next-image hotkeys, driving the walk.
+   *
+   * Read through `actionForCombo` rather than hard-coded to `[` / `]` so a rebind in
+   * Configuration applies here too — and specifically *not* bound to the arrow keys,
+   * which belong to the `<video>` element's own seeking once it has focus.
+   */
+  function onKeydown(e) {
+    if (isTextEntryElement(document.activeElement)) return;
+    // Something is stacked on top — the delete confirmation, or a canvas opened from
+    // "save frame". Its keys are not ours.
+    if (openDialogCount() > dialogBaseline) return;
+    const action = actionForCombo(eventToCombo(e));
+    if (action === 'action:prevImage') {
+      e.preventDefault();
+      goTo(index - 1);
+    } else if (action === 'action:nextImage') {
+      e.preventDefault();
+      goTo(index + 1);
+    }
+  }
 
   const body = el('div', 'event-detail__body');
   shell.dialog.appendChild(body);
@@ -174,11 +270,10 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
   let mediaSwitcher = null;
   const savedHint = el('div', 'event-detail__hint');
 
-  const clipRow = findRecording(event, 'clip');
-  const timelapseRow = findRecording(event, 'timelapse');
   // The clip first when there is one: it is the literal record, and the timelapse is a
-  // summary of it. An event with only a timelapse opens on that.
-  const mediaRows = [clipRow, timelapseRow].filter(Boolean);
+  // summary of it. An event with only a timelapse opens on that. Recomputed per event
+  // rather than captured, because the modal now outlives the event it opened on.
+  let mediaRows = [];
 
   /**
    * Fetch a recording's full row and show it, degrading to the snapshot.
@@ -189,8 +284,13 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
    * asks for the second.
    */
   async function showMedia(row) {
+    const seq = loadSeq;
     try {
       const recording = await fetchRecording(row.uuid);
+      // Navigated away while this was in flight — the modal is showing a different
+      // event now, and rendering this one's clip into it would be a lie about which
+      // event the user is looking at.
+      if (seq !== loadSeq) return;
       // The row can outlive its file, or vice versa; either way the snapshot is still
       // worth showing, so this degrades rather than emptying the modal.
       if (!recording?.filePath) {
@@ -201,6 +301,7 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
       }
       renderVideo({ ...recording, kind: recording.kind || row.kind });
     } catch (err) {
+      if (seq !== loadSeq) return;
       Logger.error(err);
       renderSnapshotOnly('That recording could not be loaded.');
     }
@@ -275,9 +376,10 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
     mediaPane.appendChild(video);
 
     if (isTimelapse) {
-      // A timelapse has no pre-roll to mark and no detection sidecar to lay over it —
-      // its frames are seconds apart, so there is no continuous track to draw. What it
-      // does need is to say what it compressed.
+      // A timelapse has no pre-roll to mark — it begins when its event does. It does
+      // have a sidecar: one entry per kept frame, at that frame's position in the
+      // *video*, which is exact rather than interpolated (see build_timelapse_overlay).
+      // What it also needs is to say what it compressed.
       const note = describeTimelapse(recording);
       if (note) {
         const line = el('p', 'event-detail__timelapse-note', note);
@@ -289,6 +391,7 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
       tools.appendChild(saveBtn);
       tools.appendChild(savedHint);
       mediaPane.appendChild(tools);
+      void attachOverlay(recording, tools);
       return;
     }
 
@@ -334,9 +437,12 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
    * never have — the boxes were never recorded and cannot be recovered.
    */
   async function attachOverlay(recording, tools) {
+    const seq = loadSeq;
     const doc = await fetchClipOverlay(recording.uuid);
-    // The modal can be closed, or re-rendered, while this is in flight.
-    if (!doc || !video || !video.isConnected) return;
+    // The modal can be closed, navigated, or re-rendered while this is in flight. The
+    // `isConnected` check alone does not cover navigation: the next event's <video> is
+    // connected too, and these boxes would be drawn over the wrong clip.
+    if (seq !== loadSeq || !doc || !video || !video.isConnected) return;
     overlay = attachClipOverlay(video, doc);
 
     const label = el('label', 'event-detail__toggle');
@@ -482,7 +588,17 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
     try {
       await deleteWatchEvent(event.uuid);
       toast('Event deleted', 3000);
-      shell.close();
+      // Deleting one of thirty events being reviewed should leave you reviewing the
+      // other twenty-nine, not back at the grid — that is the whole point of walking
+      // the page from in here. The deleted row leaves the walk so "next" cannot land
+      // back on it; only an empty walk closes the modal.
+      walk.splice(index, 1);
+      if (!walk.length) {
+        shell.close();
+      } else {
+        index = Math.min(index, walk.length - 1);
+        loadEvent();
+      }
       onDeleted?.();
     } catch (err) {
       Logger.error(err);
@@ -491,12 +607,27 @@ export function openEventDetailModal(event, { sourceNames = new Map(), onDeleted
 
   // ---------------------------------------------------------------- lifecycle
 
-  renderSidebar();
-  mediaSwitcher = buildMediaSwitcher();
-  renderSnapshotOnly(mediaRows.length ? 'Loading…' : 'Nothing was recorded for this event.');
-  shell.open();
+  /** Point the whole modal at `walk[index]`. */
+  function loadEvent() {
+    loadSeq++;
+    event = walk[index];
+    started = parseEventDate(event.startedAt);
+    mediaRows = [findRecording(event, 'clip'), findRecording(event, 'timelapse')].filter(Boolean);
+    // Belongs to the frame that was saved, not to the modal.
+    savedHint.textContent = '';
+    renderHeader();
+    renderSidebar();
+    mediaSwitcher = buildMediaSwitcher();
+    renderSnapshotOnly(mediaRows.length ? 'Loading…' : 'Nothing was recorded for this event.');
+    if (mediaRows.length) void showMedia(mediaRows[0]);
+  }
 
-  if (mediaRows.length) void showMedia(mediaRows[0]);
+  loadEvent();
+  shell.open();
+  // Captured after open(), so the modal's own layer is part of the baseline and only a
+  // dialog stacked on top of it silences the walk hotkeys (same rule as hotkeys.js).
+  const dialogBaseline = openDialogCount();
+  document.addEventListener('keydown', onKeydown);
 
   return { close: () => shell.close() };
 }

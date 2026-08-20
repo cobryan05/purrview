@@ -83,6 +83,20 @@ def _event(**overrides) -> dict:
     return event
 
 
+def _events(count: int) -> list:
+    """`count` distinct events, each identifiable on screen by its headline."""
+    return [
+        _event(
+            uuid=f"event-uuid-{i:04d}",
+            subjectName=f"Cat {i}",
+            startedAt=f"2026-08-18T09:{15 + i:02d}:00",
+            endedAt=f"2026-08-18T09:{15 + i:02d}:24",
+            recordings=[],
+        )
+        for i in range(count)
+    ]
+
+
 def _facets(**overrides) -> dict:
     facets = {
         "rules": [{"ref": "rule-1", "name": "cat using litter box"}],
@@ -150,16 +164,36 @@ def _issues_a_search(page: Page, queries: list):
     )
 
 
-def _mock(page: Page, events=None, facets=None, recording=True, overlay=None):
+def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, deletes=None):
     """Route every call the Events page makes, and record the search queries.
 
     Returns the list of parsed query dicts, so a test can assert that a filter actually
-    reached the server rather than merely appearing on screen.
+    reached the server rather than merely appearing on screen. Pass `deletes` a list to
+    also capture the uuid batches sent to the bulk-delete endpoint.
     """
     queries = []
+    # The mock's own copy of the result set: a delete removes rows from it, so the page
+    # that follows is genuinely shorter rather than the same one served again.
+    rows = list(events) if events is not None else [_event()]
 
     def _fulfil_events(route):
         url = route.request.url
+        # Same prefix as the search endpoint, so it has to be claimed before the query
+        # recorder — otherwise a delete would be logged as a search and answered with a
+        # page of events.
+        if url.endswith("/delete"):
+            uuids = json.loads(route.request.post_data)["uuids"]
+            if deletes is not None:
+                deletes.append(uuids)
+            # Actually drop them, so the re-search that follows returns a shorter page —
+            # a delete that only 200s would let a grid that never refreshes pass.
+            rows[:] = [r for r in rows if r["uuid"] not in uuids]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "deleted": len(uuids)}),
+            )
+            return
         if "facets" in url:
             route.fulfill(
                 status=200,
@@ -171,7 +205,6 @@ def _mock(page: Page, events=None, facets=None, recording=True, overlay=None):
             route.fulfill(status=200, content_type="image/jpeg", body=PIXEL_JPEG)
             return
         queries.append({k: v[0] for k, v in parse_qs(urlparse(url).query).items()})
-        rows = events if events is not None else [_event()]
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -615,6 +648,31 @@ class TestTheDetectionOverlay:
 
         expect(page.locator("[data-testid='event-detail-save-frame']")).to_be_visible()
 
+    def test_a_timelapse_gets_the_overlay_too(self, page: Page, base_url: str):
+        """Timelapses used to be the one recording that could only have its boxes burnt
+        in, which made every frame of one useless as a training image — and "save frame
+        for annotation" points straight at a dataset. They now carry the same sidecar,
+        so the same renderer has to pick it up.
+        """
+        self._open_modal(
+            page,
+            base_url,
+            events=[_event(recordings=[_timelapse_summary()])],
+            overlay=_overlay(),
+        )
+
+        expect(page.locator("[data-testid='event-detail-video']")).to_have_attribute("src", re.compile(TIMELAPSE_UUID))
+        expect(page.locator("[data-testid='clip-overlay-canvas']")).to_have_count(1)
+        expect(page.locator("[data-testid='event-detail-overlay-toggle']")).to_be_checked()
+
+    def test_a_timelapse_without_a_sidecar_offers_no_toggle(self, page: Page, base_url: str):
+        """Every timelapse compiled before this existed has none, and the ones written
+        with boxes burnt in cannot be given one retroactively."""
+        self._open_modal(page, base_url, events=[_event(recordings=[_timelapse_summary()])], overlay=None)
+
+        expect(page.locator("[data-testid='event-detail-video']")).to_be_visible()
+        expect(page.locator("[data-testid='event-detail-overlay-toggle']")).to_have_count(0)
+
 
 class TestThePagerSurvivesAShrinkingResultSet:
     """Deleting the last event on the last page must not strand the reviewer.
@@ -767,3 +825,187 @@ class TestARestartClosedEventIsHonest:
 
         expect(page.locator("[data-testid='event-card-stranded']")).to_have_count(0)
         expect(page.locator("[data-testid='event-card']").first).to_contain_text("24s")
+
+
+class TestSelectingEvents:
+    """Multi-select over the grid, and the bulk delete it exists to feed.
+
+    The load-bearing property is that selecting and *opening* stay separate gestures: a
+    grid where the click that opens an event also selects it (or worse, where selection
+    swallowed the open) is a different page from the one this is. So each test here
+    asserts both halves — what the gesture did, and what it did not do.
+    """
+
+    def _open(self, page: Page, base_url: str, count: int = 4, deletes=None):
+        _mock(page, events=_events(count), deletes=deletes)
+        _open_events_pane(page, base_url)
+        expect(page.locator("[data-testid='event-card']")).to_have_count(count)
+
+    def test_a_plain_click_opens_the_event_without_selecting_it(self, page: Page, base_url: str):
+        self._open(page, base_url)
+
+        page.locator("[data-testid='event-card']").first.click()
+
+        expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='event-search-selection']")).to_be_hidden()
+
+    def test_a_modifier_click_selects_the_event_without_opening_it(self, page: Page, base_url: str):
+        """The gesture every file manager already taught the user, and the one that must
+        not also put a modal in front of the grid being selected."""
+        self._open(page, base_url)
+
+        page.locator("[data-testid='event-card']").first.click(modifiers=["ControlOrMeta"])
+
+        expect(page.locator("[data-testid='event-search-selection-count']")).to_have_text("1 selected")
+        expect(page.locator("[data-testid='event-detail-modal']")).to_have_count(0)
+
+    def test_the_checkbox_selects_only_its_own_card(self, page: Page, base_url: str):
+        self._open(page, base_url)
+
+        page.locator("[data-testid='event-card-select']").nth(1).check()
+
+        expect(page.locator("[data-testid='event-search-selection-count']")).to_have_text("1 selected")
+        expect(page.locator(".event-card--selected")).to_have_count(1)
+        expect(page.locator("[data-testid='event-detail-modal']")).to_have_count(0)
+
+    def test_shift_extends_the_selection_to_a_range(self, page: Page, base_url: str):
+        """Reviewing a night's events means deleting runs of them, so the range gesture
+        is the difference between one click and forty."""
+        self._open(page, base_url)
+        boxes = page.locator("[data-testid='event-card-select']")
+
+        boxes.nth(0).check()
+        boxes.nth(2).click(modifiers=["Shift"])
+
+        expect(page.locator("[data-testid='event-search-selection-count']")).to_have_text("3 selected")
+        # The card past the end of the range is the whole point of the assertion: a
+        # range that selects everything on the page would satisfy a count alone.
+        expect(page.locator("[data-testid='event-card']").nth(3)).not_to_have_class(re.compile("event-card--selected"))
+
+    def test_shift_can_deselect_a_range_it_selected(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        boxes = page.locator("[data-testid='event-card-select']")
+
+        boxes.nth(0).check()
+        boxes.nth(2).click(modifiers=["Shift"])
+        boxes.nth(2).click(modifiers=["Shift"])
+
+        expect(page.locator("[data-testid='event-search-selection']")).to_be_hidden()
+        expect(page.locator(".event-card--selected")).to_have_count(0)
+
+    def test_select_all_takes_the_page_and_clear_gives_it_back(self, page: Page, base_url: str):
+        self._open(page, base_url)
+
+        page.locator("[data-testid='event-search-select-all']").check()
+        expect(page.locator(".event-card--selected")).to_have_count(4)
+
+        page.locator("[data-testid='event-search-clear-selection']").click()
+        expect(page.locator(".event-card--selected")).to_have_count(0)
+
+    def test_deleting_the_selection_sends_exactly_it_and_the_grid_loses_those_cards(self, page: Page, base_url: str):
+        deletes = []
+        self._open(page, base_url, deletes=deletes)
+        boxes = page.locator("[data-testid='event-card-select']")
+
+        boxes.nth(0).check()
+        boxes.nth(1).check()
+        page.locator("[data-testid='event-search-delete-selected']").click()
+        page.get_by_role("button", name="Delete", exact=True).click()
+
+        expect(page.locator("[data-testid='event-card']")).to_have_count(2)
+        assert deletes == [["event-uuid-0000", "event-uuid-0001"]], deletes
+        # A selection that outlived the cards it was made of would arm the next delete
+        # against rows the user is no longer looking at.
+        expect(page.locator("[data-testid='event-search-selection']")).to_be_hidden()
+
+    def test_cancelling_the_confirmation_deletes_nothing(self, page: Page, base_url: str):
+        deletes = []
+        self._open(page, base_url, deletes=deletes)
+
+        page.locator("[data-testid='event-card-select']").nth(0).check()
+        page.locator("[data-testid='event-search-delete-selected']").click()
+        page.get_by_role("button", name="Keep", exact=True).click()
+
+        expect(page.locator("[data-testid='event-card']")).to_have_count(4)
+        assert deletes == []
+
+
+class TestWalkingTheEventsFromTheModal:
+    """Next/previous inside the detail modal.
+
+    Reviewing thirty events means opening thirty modals, and the walk exists so that
+    costs thirty keystrokes rather than sixty clicks through a grid that re-renders each
+    time. What must hold is that the modal actually *becomes* the next event — title,
+    details and media together — rather than only relabelling its header.
+    """
+
+    def _open_first(self, page: Page, base_url: str, count: int = 3):
+        _mock(page, events=_events(count))
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+
+    def test_next_moves_the_modal_onto_the_following_event(self, page: Page, base_url: str):
+        self._open_first(page, base_url)
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 0")
+
+        page.locator("[data-testid='event-detail-next']").click()
+
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 1")
+        expect(page.locator("[data-testid='event-detail-position']")).to_have_text("2 / 3")
+
+    def test_the_walk_stops_at_both_ends_rather_than_wrapping(self, page: Page, base_url: str):
+        """Wrapping silently is how a reviewer watches the same ten events twice."""
+        self._open_first(page, base_url)
+
+        expect(page.locator("[data-testid='event-detail-prev']")).to_be_disabled()
+        expect(page.locator("[data-testid='event-detail-next']")).to_be_enabled()
+
+        page.locator("[data-testid='event-detail-next']").click()
+        page.locator("[data-testid='event-detail-next']").click()
+
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 2")
+        expect(page.locator("[data-testid='event-detail-next']")).to_be_disabled()
+        expect(page.locator("[data-testid='event-detail-prev']")).to_be_enabled()
+
+    def test_the_prev_next_hotkeys_drive_the_walk(self, page: Page, base_url: str):
+        """The same keys that step through images on the canvas, read from the user's
+        own bindings — a walk you have to reach for the mouse to use is not the feature
+        that was asked for."""
+        self._open_first(page, base_url)
+
+        page.keyboard.press("]")
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 1")
+
+        page.keyboard.press("[")
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 0")
+
+    def test_the_sidebar_follows_the_walk(self, page: Page, base_url: str):
+        """The header is the cheap half. If only it were re-rendered, the modal would
+        show one event's title over another event's details."""
+        self._open_first(page, base_url)
+
+        page.locator("[data-testid='event-detail-next']").click()
+
+        modal = page.locator("[data-testid='event-detail-modal']")
+        expect(modal).to_contain_text("Cat 1")
+        expect(modal).not_to_contain_text("Cat 0")
+
+    def test_a_lone_event_gets_no_walk_controls(self, page: Page, base_url: str):
+        """Two dead buttons and "1 / 1" is chrome that only explains itself once you
+        have already tried to use it."""
+        self._open_first(page, base_url, count=1)
+
+        expect(page.locator("[data-testid='event-detail-nav']")).to_be_hidden()
+
+    def test_deleting_from_the_modal_moves_on_instead_of_closing(self, page: Page, base_url: str):
+        """Deleting one of thirty events being reviewed should leave you reviewing the
+        other twenty-nine."""
+        self._open_first(page, base_url)
+
+        page.locator("[data-testid='event-detail-delete']").click()
+        page.get_by_role("button", name="Delete", exact=True).click()
+
+        expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 1")
+        expect(page.locator("[data-testid='event-detail-position']")).to_have_text("1 / 2")

@@ -10,9 +10,9 @@
  * events are a bounded append-only log ordered by the single scalar the user also
  * filters on, and the page shows a total, which needs the count anyway.
  */
-import { fetchWatchEvents } from '/app-static/js/shared/api/watchProfiles.js';
+import { deleteWatchEvents, fetchWatchEvents } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
-import { Logger } from '/app-static/js/ui/utils/index.js';
+import { Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { buildEventCard } from './eventCard.js';
 import { createEventFilters } from './filters.js';
 import { openEventDetailModal } from './eventDetailModal.js';
@@ -74,6 +74,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
   const sourceNames = await loadSourceNames();
 
+  const toolbar = el('div', 'event-search__toolbar');
   const summary = el('div', 'event-search__summary');
   summary.dataset.testid = 'event-search-summary';
   const grid = el('div', 'event-search__grid');
@@ -82,6 +83,13 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
   let offset = 0;
   let total = 0;
+  // The current page's events, in the order they are drawn: the shift-range anchor and
+  // the detail modal's next/prev both index into this.
+  let pageEvents = [];
+  const selected = new Set();
+  // Index in `pageEvents` of the last card the user checked — the other end of a
+  // shift-range. -1 means there is no anchor yet, so shift behaves as a plain click.
+  let anchorIndex = -1;
   // Guards a re-entrant render: a filter change while a fetch is in flight would
   // otherwise let the slower response paint over the newer one.
   let requestSeq = 0;
@@ -94,8 +102,116 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     void search();
   });
 
+  // ── Selection ───────────────────────────────────────────────────────────────
+  //
+  // Scoped to the page on screen, not to the whole result set. A "select all 4000
+  // matches" that then deletes them is a different and much more dangerous feature than
+  // this one, and the pager is right there for the rest.
+
+  const selectAllBox = document.createElement('input');
+  selectAllBox.type = 'checkbox';
+  selectAllBox.dataset.testid = 'event-search-select-all';
+  const selectAllLabel = el('label', 'event-search__select-all');
+  selectAllLabel.appendChild(selectAllBox);
+  selectAllLabel.appendChild(el('span', null, 'Select all'));
+  selectAllBox.addEventListener('change', () => {
+    selected.clear();
+    if (selectAllBox.checked) for (const e of pageEvents) selected.add(e.uuid);
+    anchorIndex = -1;
+    syncSelectionUi();
+  });
+
+  const selectionActions = el('div', 'event-search__selection');
+  selectionActions.dataset.testid = 'event-search-selection';
+  const selectionCount = el('span', 'event-search__selection-count');
+  selectionCount.dataset.testid = 'event-search-selection-count';
+  const deleteBtn = button('Delete selected', () => void deleteSelected(), {
+    testid: 'event-search-delete-selected',
+    className: 'panel-btn panel-btn--danger',
+  });
+  selectionActions.appendChild(selectionCount);
+  selectionActions.appendChild(deleteBtn);
+  selectionActions.appendChild(button('Clear selection', () => {
+    selected.clear();
+    anchorIndex = -1;
+    syncSelectionUi();
+  }, { testid: 'event-search-clear-selection' }));
+
+  toolbar.appendChild(selectAllLabel);
+  toolbar.appendChild(summary);
+  toolbar.appendChild(selectionActions);
+
+  /** Push the selection into the DOM: card classes, checkboxes, and the action bar. */
+  function syncSelectionUi() {
+    for (const card of grid.querySelectorAll('[data-event-uuid]')) {
+      const isSelected = selected.has(card.dataset.eventUuid);
+      card.classList.toggle('event-card--selected', isSelected);
+      const box = card.querySelector('.event-card__select');
+      if (box) box.checked = isSelected;
+    }
+    selectionActions.hidden = selected.size === 0;
+    selectionCount.textContent = `${selected.size} selected`;
+    deleteBtn.textContent = `Delete ${selected.size} event${selected.size === 1 ? '' : 's'}`;
+    selectAllLabel.hidden = pageEvents.length === 0;
+    selectAllBox.checked = pageEvents.length > 0 && selected.size === pageEvents.length;
+    selectAllBox.indeterminate = selected.size > 0 && selected.size < pageEvents.length;
+  }
+
+  function toggleSelect(event, { shiftKey, checked }) {
+    const index = pageEvents.findIndex(e => e.uuid === event.uuid);
+    if (shiftKey && anchorIndex !== -1 && index !== -1) {
+      // The whole range takes the *clicked* card's new state, so a shift-click can
+      // deselect a run as well as select one.
+      const lo = Math.min(anchorIndex, index);
+      const hi = Math.max(anchorIndex, index);
+      for (let i = lo; i <= hi; i++) {
+        if (checked) selected.add(pageEvents[i].uuid);
+        else selected.delete(pageEvents[i].uuid);
+      }
+    } else if (checked) {
+      selected.add(event.uuid);
+    } else {
+      selected.delete(event.uuid);
+    }
+    // A shift-click extends *from* the anchor and does not become one. Moving it would
+    // make the range unadjustable: shift-clicking one card further, or back over the
+    // same card to undo the range, would each start measuring from where the last shift
+    // landed instead of from the card the user actually anchored on.
+    if (!shiftKey || anchorIndex === -1) anchorIndex = index;
+    syncSelectionUi();
+  }
+
+  async function deleteSelected() {
+    const uuids = [...selected];
+    if (!uuids.length) return;
+    const confirmed = await showConfirmModal({
+      title: `Delete ${uuids.length} event${uuids.length === 1 ? '' : 's'}?`,
+      // Same promise the single-event delete makes, and for the same reason: the one
+      // thing a user needs to know is that curated training frames are not in scope.
+      message: `The events, their snapshots and any clips or timelapses of them will be removed. `
+        + 'Frames you saved for annotation are not affected.',
+      confirmText: 'Delete',
+      cancelText: 'Keep',
+    });
+    if (!confirmed) return;
+    deleteBtn.disabled = true;
+    try {
+      const deleted = await deleteWatchEvents(uuids);
+      toast(`Deleted ${deleted} event${deleted === 1 ? '' : 's'}`, 3000);
+      selected.clear();
+      anchorIndex = -1;
+      void filters.refreshFacets();
+      await search();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not delete the selected events', 5000, 'error');
+    } finally {
+      deleteBtn.disabled = false;
+    }
+  }
+
   page.appendChild(filters.element);
-  page.appendChild(summary);
+  page.appendChild(toolbar);
   page.appendChild(grid);
   page.appendChild(pager);
 
@@ -161,14 +277,26 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       }
 
       grid.innerHTML = '';
+      // A selection is a set of cards on screen, so it cannot survive the cards. Kept
+      // across a re-render it would silently arm "Delete 12 events" against a page the
+      // user is no longer looking at.
+      pageEvents = result.events;
+      selected.clear();
+      anchorIndex = -1;
       if (!result.events.length) {
         renderEmpty();
       } else {
         for (const event of result.events) {
           grid.appendChild(buildEventCard(event, {
             sourceNames,
+            onToggleSelect: toggleSelect,
+            selected: selected.has(event.uuid),
             onOpen: e => openEventDetailModal(e, {
               sourceNames,
+              // The page, so the modal can walk it. The modal copies it and splices its
+              // own deletes out of the copy, so an open modal keeps a coherent walk
+              // even as the grid behind it re-searches onto a different set of rows.
+              siblings: pageEvents,
               // A deleted event changes both the grid and the facet lists — the value
               // it was the last holder of is no longer filterable.
               onDeleted: () => {
@@ -179,6 +307,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
           }));
         }
       }
+      syncSelectionUi();
 
       const shown = result.events.length;
       summary.textContent = total

@@ -238,7 +238,11 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
       // Shift-clicking twice in a grid otherwise leaves the whole range text-selected.
       e.preventDefault();
       window.getSelection()?.removeAllRanges();
-      onToggleSelect(event, { shiftKey: e.shiftKey, checked: !selected });
+      // Read off the card, not the `selected` argument: the grid keeps selection state
+      // in the class rather than rebuilding cards, so the argument is only ever true of
+      // the moment this card was built.
+      const isSelected = card.classList.contains('event-card--selected');
+      onToggleSelect(event, { shiftKey: e.shiftKey, checked: !isSelected });
       return;
     }
     onOpen?.(event);

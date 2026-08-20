@@ -900,9 +900,58 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   margin: 0;
 }
 
+/* Select-all, the result count and the selection actions on one line: the count is what
+   the user reads, and the two controls are what they reach for while reading it. */
+.event-search__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
 .event-search__summary {
   font-size: var(--text-sm);
   color: var(--text-faint);
+}
+
+.event-search__select-all {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.event-search__select-all input {
+  margin: 0;
+}
+
+/* Pushed to the far end so the destructive control is nowhere near the pager or the
+   filters — and hidden entirely without a selection, since it can only lie about what
+   it would act on. */
+.event-search__selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  font-size: var(--text-sm);
+}
+
+.event-search__selection[hidden] {
+  display: none;
+}
+
+.event-search__selection-count {
+  color: var(--text-muted);
+}
+
+/* Pico paints .panel-btn's background, so a destructive button is marked the same way
+   .panel-btn--attention marks an urgent one: on the border, not the fill. */
+.panel-btn--danger:not(:disabled) {
+  border-color: var(--color-danger) !important;
+  color: var(--color-danger) !important;
 }
 
 /* Same auto-fill approach as .nvr-live-list, at a smaller track: an event card is a
@@ -941,6 +990,24 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .event-card:focus-visible {
   border-color: var(--color-accent);
   outline: none;
+}
+
+/* A ring rather than a border swap: the border is already the hover affordance, and a
+   selected card must stay visibly selected while the pointer is over it. */
+.event-card--selected {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+/* Opposite corner from the media badges, and always visible — a checkbox that appears
+   on hover is undiscoverable, and this is the only way in to multi-select. */
+.event-card__select {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--space-1);
+  margin: 0;
+  cursor: pointer;
+  /* Over the snapshot, which is dark at unpredictable places. */
+  box-shadow: 0 0 0 2px #000a;
 }
 
 .event-card__media {
@@ -1055,6 +1122,25 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 
 .event-detail__title {
   margin: 0;
+}
+
+/* Between the title and Close, so walking the page is where the eye already is when it
+   finishes reading which event this is. */
+.event-detail__nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.event-detail__nav[hidden] {
+  display: none;
+}
+
+.event-detail__position {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
 }
 
 .event-detail__subtitle {

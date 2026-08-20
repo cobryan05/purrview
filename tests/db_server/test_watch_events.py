@@ -119,6 +119,56 @@ class TestWatchEventCrud:
         assert (await _list(http_client, profile_uuid=profile_uuid))["total"] == 0
 
 
+class TestBulkDelete:
+    """The selection delete behind the event grid's "Delete N events".
+
+    The properties that matter are the ones a partial failure would quietly break: that
+    the *whole* selection goes, that nothing outside it does, and that the count coming
+    back describes what actually happened rather than what was asked for.
+    """
+
+    async def test_deletes_the_whole_selection_and_only_it(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        doomed = [(await _make_event(http_client, profile_uuid, ruleName=f"e{i}"))["uuid"] for i in range(3)]
+        kept = await _make_event(http_client, profile_uuid, ruleName="keep")
+
+        r = await http_client.post("/api/watch-events/delete", json={"uuids": doomed})
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["deleted"] == 3
+
+        remaining = await _list(http_client, profile_uuid=profile_uuid)
+        assert [e["uuid"] for e in remaining["events"]] == [kept["uuid"]]
+
+    async def test_a_uuid_that_is_already_gone_does_not_abandon_the_rest(self, http_client):
+        """Deleting the same selection from two tabs is the ordinary way to hit this.
+
+        If a missing uuid raised, the events after it in the list would survive — an
+        arbitrary half-deleted selection, reported to the user as a failure.
+        """
+        profile_uuid = await _make_profile(http_client)
+        first = await _make_event(http_client, profile_uuid, ruleName="first")
+        second = await _make_event(http_client, profile_uuid, ruleName="second")
+
+        r = await http_client.post(
+            "/api/watch-events/delete",
+            json={"uuids": [first["uuid"], "no-such-event", second["uuid"]]},
+        )
+        body = r.json()
+        assert body["status"] == "success", body
+        # Two of the three asked for — the count reports reality, not the request.
+        assert body["deleted"] == 2
+        assert (await _list(http_client, profile_uuid=profile_uuid))["total"] == 0
+
+    async def test_an_empty_selection_is_a_no_op(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(http_client, profile_uuid)
+
+        r = await http_client.post("/api/watch-events/delete", json={"uuids": []})
+        assert r.json()["deleted"] == 0
+        assert (await _list(http_client, profile_uuid=profile_uuid))["total"] == 1
+
+
 class TestWatchEventFilters:
     """Every filter the review page exposes, each proved to *exclude* something.
 

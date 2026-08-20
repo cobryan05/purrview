@@ -209,6 +209,30 @@ export async function deleteWatchEvent(uuid) {
 }
 
 /**
+ * Delete a selection of events in one request.
+ *
+ * One round trip rather than a DELETE per card: a full page is 60 events, and 60
+ * sequential requests each unlinking clip files is slow enough that the grid sits
+ * visibly half-deleted. The server deletes what it can and reports the count, so a
+ * uuid that has already gone (deleted in another tab) is not an error here either.
+ *
+ * @param {string[]} uuids
+ * @returns {Promise<number>} how many were actually deleted
+ */
+export async function deleteWatchEvents(uuids) {
+  const res = await apiFetch('/api/watch-events/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uuids }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to delete events');
+  }
+  return data.deleted ?? 0;
+}
+
+/**
  * One clip's metadata — needed for its real start time, which is earlier than its
  * event's by however much pre-roll the rewind buffer actually had.
  *
