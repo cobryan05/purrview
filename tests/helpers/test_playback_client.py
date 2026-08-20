@@ -41,8 +41,16 @@ class TestParseRfc3339:
         assert _parse_rfc3339("2026-08-10T12:00:00Z") == datetime(2026, 8, 10, 12, tzinfo=timezone.utc)
 
     def test_parses_offset(self):
+        # Asserted as an *instant*, not as a preserved "+02:00" tzinfo: parsing
+        # normalises to UTC (`ensure_utc`), and every consumer of this value —
+        # range sorting, `covers`, the `/get` query — is instant-based anyway.
+        #
+        # This is the stronger assertion of the two. The failure it exists to
+        # catch is an explicit offset being *clobbered* rather than converted
+        # (`.replace(tzinfo=utc)` instead of `.astimezone(utc)`), which moves the
+        # instant by two hours and would land at 12:00 here.
         parsed = _parse_rfc3339("2026-08-10T12:00:00+02:00")
-        assert parsed.utcoffset() == timedelta(hours=2)
+        assert parsed == datetime(2026, 8, 10, 10, tzinfo=timezone.utc)
 
     def test_truncates_go_style_nanoseconds(self):
         # Go emits more fractional digits than datetime.fromisoformat accepts.

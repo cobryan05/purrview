@@ -36,7 +36,8 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
-import { eventHeadline, findRecording, formatDuration, formatEventTime, parseEventDate } from './eventCard.js';
+import { eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 
 /**
  * How a timelapse describes itself, from the metadata its action recorded.
@@ -96,8 +97,8 @@ function detailRow(label, value) {
  *   rather than draw one at zero and imply there was no lead-in
  */
 export function eventOffsetInClip(event, recording) {
-  const eventStart = parseEventDate(event?.startedAt);
-  const clipStart = parseEventDate(recording?.startedAt);
+  const eventStart = parseApiDate(event?.startedAt);
+  const clipStart = parseApiDate(recording?.startedAt);
   if (!eventStart || !clipStart) return null;
   const offset = (eventStart - clipStart) / 1000;
   if (!Number.isFinite(offset) || offset < 0) return null;
@@ -171,7 +172,7 @@ export function openEventDetailModal(initialEvent, { sourceNames = new Map(), on
   shell.dialog.classList.add('event-detail');
   shell.dialog.dataset.testid = 'event-detail-modal';
 
-  let started = parseEventDate(event.startedAt);
+  let started = parseApiDate(event.startedAt);
 
   // ---------------------------------------------------------------- header
 
@@ -611,7 +612,7 @@ export function openEventDetailModal(initialEvent, { sourceNames = new Map(), on
   function loadEvent() {
     loadSeq++;
     event = walk[index];
-    started = parseEventDate(event.startedAt);
+    started = parseApiDate(event.startedAt);
     mediaRows = [findRecording(event, 'clip'), findRecording(event, 'timelapse')].filter(Boolean);
     // Belongs to the frame that was saved, not to the modal.
     savedHint.textContent = '';

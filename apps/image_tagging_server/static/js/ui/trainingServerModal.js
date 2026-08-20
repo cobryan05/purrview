@@ -1,6 +1,7 @@
 import { createModalShell } from './utils/modalShell.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import { showPaneError } from '/app-static/js/ui/utils/index.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 
 const STATUS_COLOR = {
   running:       'var(--pico-ins-color,#4b8)',
@@ -23,14 +24,12 @@ const STATUS_ICON = {
 };
 
 function _fmtDate(iso) {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    });
-  } catch (_) {
-    return iso;
-  }
+  const date = parseApiDate(iso);
+  if (!date) return iso;
+  return date.toLocaleString(undefined, {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
 }
 
 const CANCELLABLE_STATUSES = new Set(['running', 'queued', 'awaiting_data', 'interrupted']);

@@ -323,8 +323,9 @@ class TestCuratedFilenameFilter:
 
 class TestCuratedDateFilter:
     """The created-date range, also image-scoped and also client-side. The
-    fixture timestamps are naive (no UTC offset) because that is exactly what
-    the API serialises — `parseRecordDate` pins them to UTC."""
+    fixture timestamps are offset-less: the API no longer serialises them that
+    way (see `UtcDateTime` in apps/helpers/db/types.py), but rows predating that
+    fix still arrive this way, and `parseApiDateMs` pins them to UTC."""
 
     IMAGES = [
         {"uuid": "img-1", "filename": "a.jpg", "createdAt": "2026-01-10T12:00:00", "bboxes": [BBOX_1]},

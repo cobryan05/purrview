@@ -16,6 +16,7 @@
 
 import { fetchModelTrainingImages } from '/app-static/js/shared/api/models.js';
 import { fetchTrainingConfigLabelStatsForImages } from '/app-static/js/shared/api/trainingConfigs.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 
 /**
  * The model name a training config trains into.
@@ -124,8 +125,7 @@ export async function loadPreviousRun(config, { withLabelStats = true } = {}) {
  * @param {string|null} iso
  */
 export function formatTrainedAt(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
+  const d = parseApiDate(iso);
+  if (!d) return null;
   return d.toLocaleString();
 }

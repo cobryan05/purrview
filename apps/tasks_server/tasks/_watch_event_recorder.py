@@ -58,6 +58,7 @@ from apps import RECORDINGS_SNAPSHOT_DIR
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.consts import JsonValues
 from apps.helpers.imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
+from apps.helpers.timeUtils import parse_iso_utc
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
 logger = logging.getLogger(__name__)
@@ -600,12 +601,6 @@ def _media_metadata(media: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
     # The clip backends emit UTC-aware strings, but a naive one must not be silently
     # read as local time by whatever reads the row back.
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parse_iso_utc(value)

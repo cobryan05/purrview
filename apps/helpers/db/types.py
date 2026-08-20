@@ -71,6 +71,8 @@ from pydantic.alias_generators import to_camel
 from sqlmodel import JSON, Column, DateTime, Field, Relationship, SQLModel
 from typing_extensions import Annotated
 
+from apps.helpers.timeUtils import ensure_utc
+
 
 def validate_raw_json_dict(v: Any) -> Dict[str, str]:
     if isinstance(v, str):
@@ -99,6 +101,50 @@ def validate_base64_img(v: Any) -> str:
 
 
 Base64Image = Annotated[Optional[str], BeforeValidator(validate_base64_img)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Timestamp column type
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class UtcDateTime(sa.types.TypeDecorator):
+    """A `DateTime` that is guaranteed to be timezone-aware UTC on the way out.
+
+    SQLite has no offset-bearing storage type. `DateTime(timezone=True)` is
+    accepted but not honoured: the driver writes the naive wall-clock digits and
+    reads them back with `tzinfo=None`, silently converting "3pm UTC" into
+    "3pm, zone unknown".
+
+    That loss is invisible in Python — naive datetimes compare and format fine —
+    and only surfaces at the API boundary, where a naive datetime serialises to
+    `"2026-08-20T15:47:55"`. Per ES2015 a browser parses an offset-less
+    *date-time* string as **local time**, so every timestamp rendered in the UI
+    was shifted by the viewer's UTC offset with nothing raising an error.
+
+    Fixing it here rather than per-field means every timestamp column, and every
+    consumer of one, gets the guarantee for free — including the ORM-level
+    comparisons that were previously re-stamping `tzinfo` by hand at each call
+    site.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: Optional[datetime], dialect) -> Optional[datetime]:
+        """Normalise to UTC before storing, so the stored digits are always UTC."""
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            # Naive input is assumed UTC: every writer in this codebase uses
+            # `datetime.now(timezone.utc)`, so this is a no-op in practice and a
+            # safe reading for anything hand-rolled.
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def process_result_value(self, value: Optional[datetime], dialect) -> Optional[datetime]:
+        """Re-attach the UTC offset the storage layer discarded."""
+        return ensure_utc(value)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,12 +188,12 @@ class TimestampModel(SQLModel):
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_type=DateTime(timezone=True),
+        sa_type=UtcDateTime(),
     )
 
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_type=DateTime(timezone=True),
+        sa_type=UtcDateTime(),
         sa_column_kwargs={
             "onupdate": lambda: datetime.now(timezone.utc),
         },
@@ -251,7 +297,7 @@ class ImageTagLink(SQLModel, table=True):
     status: ImageItemStatus = Field(default=ImageItemStatus.PRESENT)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_type=DateTime(timezone=True),
+        sa_type=UtcDateTime(),
     )
 
 
@@ -783,9 +829,9 @@ class TaskInstanceBase(SQLModel):
     result_json: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     error_message: Optional[str] = None
     expires_at: Optional[datetime] = None
-    started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
-    ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
-    heartbeat_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    started_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
+    ended_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
+    heartbeat_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
     log_json: Optional[List[str]] = Field(default=None, sa_column=Column(JSON))
     # Last snapshot of the task's get_status_data() — the histograms, stat grids and
     # source tables its status_schema() widgets render from. Persisted for the same
@@ -890,7 +936,7 @@ class PreviewRunBase(SQLModel):
     scope_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     stats_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     pinned: bool = Field(default=False)
-    expires_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    expires_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
 
 
 class PreviewRun(PreviewRunBase, TimestampModel, table=True):
@@ -915,7 +961,7 @@ class PreviewCandidateBase(SQLModel):
     decision: PreviewDecision = Field(default=PreviewDecision.PENDING)
     decision_action: Optional[PreviewDecisionAction] = Field(default=None)
     source_model: str = Field(default="")
-    applied_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    applied_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
 
 
 class PreviewCandidate(PreviewCandidateBase, TimestampModel, table=True):
@@ -1054,7 +1100,7 @@ class ImageLabel(SQLModel, table=True):
     status: ImageItemStatus = Field(default=ImageItemStatus.UNCERTAIN)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_type=DateTime(timezone=True),
+        sa_type=UtcDateTime(),
     )
 
 
@@ -1901,8 +1947,8 @@ class Recording(TimestampModel, table=True):
     #: name because the orphan sweep deletes any file under the recordings roots that no
     #: row names, so an unrecorded sidecar would be swept away an hour after it landed.
     overlay_path: Optional[str] = None
-    started_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
-    ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    started_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
+    ended_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
     duration_s: float = Field(default=0.0)
     size_bytes: int = Field(default=0)
     status: str = Field(default=RecordingStatus.PENDING.value)
@@ -1943,8 +1989,8 @@ class WatchEvent(SQLModel, table=True):
     # This is the history of what happened, not a live view of the config.
     rule_name: Optional[str] = Field(default=None)
     event_label: Optional[str] = Field(default=None)
-    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_type=DateTime(timezone=True))
-    ended_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_type=UtcDateTime())
+    ended_at: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
     peak_confidence: float = Field(default=0.0)
     track_ids_json: List[Any] = Field(default_factory=list, sa_column=Column(JSON))
     # Which member of each multi-ref slot actually matched — the "acting" thing and the

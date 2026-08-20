@@ -24,6 +24,7 @@
  */
 import { VERIFICATION_TAG_BY_STATE } from '/app-static/js/shared/api/review.js';
 import { readConfidence } from '/app-static/js/shared/domain/image/confidence.js';
+import { parseApiDateMs } from '/app-static/js/shared/time.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
 
 /**
@@ -69,29 +70,6 @@ export function defaultCuratedFilterState() {
 }
 
 /**
- * Parse a datetime string off an image record into epoch millis.
- *
- * The API hands back **naive** timestamps — `"2026-08-08T15:59:08.408748"`,
- * no offset — even though `created_at`/`updated_at` are declared
- * `DateTime(timezone=True)`: SQLite has no native datetime type and drops the
- * zone, so the value round-trips as a bare string and Pydantic serialises it
- * without one. `new Date()` reads an offset-less ISO *date-time* as **local**
- * time, which would silently shift every comparison by the viewer's UTC
- * offset (and shift it differently for two users looking at the same image).
- * The stored instants are UTC, so an offset-less string is pinned to UTC here.
- *
- * @param {?string} value
- * @returns {?number} epoch millis, or null if absent/unparseable
- */
-export function parseRecordDate(value) {
-  if (!value) return null;
-  const s = String(value);
-  const iso = /(?:Z|[+-]\d{2}:?\d{2})$/.test(s) ? s : `${s}Z`;
-  const t = Date.parse(iso);
-  return Number.isNaN(t) ? null : t;
-}
-
-/**
  * Image-scoped created-date range test — the client-side counterpart of the
  * server's `DateTerm` with `field: 'created'` (the only field the review UI
  * ever sends; see buildReviewFilterBody in shared/api/review.js).
@@ -105,11 +83,11 @@ export function parseRecordDate(value) {
  * @returns {boolean}
  */
 export function imageMatchesDate(img, state) {
-  const from = parseRecordDate(state.dateFrom);
-  const to = parseRecordDate(state.dateTo);
+  const from = parseApiDateMs(state.dateFrom);
+  const to = parseApiDateMs(state.dateTo);
   if (from === null && to === null) return true;
 
-  const created = parseRecordDate(img.createdAt);
+  const created = parseApiDateMs(img.createdAt);
   if (created === null) return false;
   if (from !== null && created < from) return false;
   if (to !== null && created > to) return false;

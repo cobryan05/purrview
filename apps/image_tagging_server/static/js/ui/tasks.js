@@ -11,6 +11,7 @@ import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen
 import { navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 import { configTargetForTask } from '/app-static/js/ui/utils/runKinds.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
+import { parseApiDateMs } from '/app-static/js/shared/time.js';
 
 /** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
@@ -838,7 +839,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       const continuousRows = built.filter(b => !b.isCompleted && b.isContinuous).map(b => b.row);
       const activeRows = built.filter(b => !b.isCompleted && !b.isContinuous).map(b => b.row);
       const completedRows = built.filter(b => b.isCompleted)
-        .sort((a, b) => new Date(b.endedAt ?? 0) - new Date(a.endedAt ?? 0))
+        .sort((a, b) => (parseApiDateMs(b.endedAt) ?? 0) - (parseApiDateMs(a.endedAt) ?? 0))
         .map(b => b.row);
 
       if (!continuousRows.length && !activeRows.length && !completedRows.length) {

@@ -23,6 +23,7 @@ from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.streamClipClient import StreamClipClient
 from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
+from apps.helpers.timeUtils import ensure_utc
 from apps.tasks_server.types import TaskInfo
 
 from .tasks.Registry import task_registry
@@ -1175,9 +1176,7 @@ class Manager:
                     continue  # alive in this process
                 if inst.heartbeat_at is None:
                     continue  # no heartbeat yet — started before heartbeat support
-                hb = inst.heartbeat_at
-                if hb.tzinfo is None:
-                    hb = hb.replace(tzinfo=timezone.utc)
+                hb = ensure_utc(inst.heartbeat_at)
                 if (now - hb) > stale_threshold:
                     logger.warning("Task %s has stale heartbeat — reconciling", inst.uuid)
                     stale.append(inst)
@@ -1473,10 +1472,10 @@ class Manager:
             # ended_at is the real signal; created_at covers rows written before
             # ended_at was persisted. The epoch fallback sorts undated rows oldest,
             # so they are pruned first rather than pinned at the top forever.
-            stamp = inst.ended_at or inst.created_at
+            stamp = ensure_utc(inst.ended_at or inst.created_at)
             if stamp is None:
                 return datetime.min.replace(tzinfo=timezone.utc)
-            return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+            return stamp
 
         finished.sort(key=_finished_at, reverse=True)  # newest first
 

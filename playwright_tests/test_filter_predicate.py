@@ -444,7 +444,10 @@ class TestDateFilter:
     """`dateFrom`/`dateTo` mirror the server's DateTerm on `created`. Like
     filename they are image-scoped and applied by `imageMatchesFilter` alone."""
 
-    # createdAt as the API actually serialises it: naive, no UTC offset.
+    # createdAt in the offset-less form. The API no longer emits this (see
+    # `UtcDateTime` in apps/helpers/db/types.py), but rows written before that
+    # fix still read back through the same client-side path, so pinning an
+    # offset-less value to UTC remains the contract `parseApiDateMs` owes.
     NAIVE = "{uuid:'i1', filename:'a.jpg', createdAt:'2026-06-15T12:00:00.123456', bboxes:[bbox('cat')]}"
 
     def test_no_bounds_is_a_noop(self, shared_page: Page):
@@ -453,13 +456,13 @@ class TestDateFilter:
     def test_offsetless_timestamps_are_read_as_utc(self, shared_page: Page):
         # The regression this guards: `new Date('2026-06-15T12:00:00')` is
         # LOCAL time, so in any non-UTC browser an image stored at 12:00 UTC
-        # would fall on the wrong side of a 12:00 UTC bound. parseRecordDate
+        # would fall on the wrong side of a 12:00 UTC bound. parseApiDateMs
         # pins offset-less values to UTC.
         assert (
             _eval(
                 shared_page,
-                "(await import('/app-static/js/app/review/filterPredicate.js'))"
-                ".parseRecordDate('2026-06-15T12:00:00') === Date.UTC(2026, 5, 15, 12, 0, 0)",
+                "(await import('/app-static/js/shared/time.js'))"
+                ".parseApiDateMs('2026-06-15T12:00:00') === Date.UTC(2026, 5, 15, 12, 0, 0)",
             )
             is True
         )
@@ -468,16 +471,16 @@ class TestDateFilter:
         assert (
             _eval(
                 shared_page,
-                "(await import('/app-static/js/app/review/filterPredicate.js'))"
-                ".parseRecordDate('2026-06-15T12:00:00Z') === Date.UTC(2026, 5, 15, 12, 0, 0)",
+                "(await import('/app-static/js/shared/time.js'))"
+                ".parseApiDateMs('2026-06-15T12:00:00Z') === Date.UTC(2026, 5, 15, 12, 0, 0)",
             )
             is True
         )
         assert (
             _eval(
                 shared_page,
-                "(await import('/app-static/js/app/review/filterPredicate.js'))"
-                ".parseRecordDate('2026-06-15T14:00:00+02:00') === Date.UTC(2026, 5, 15, 12, 0, 0)",
+                "(await import('/app-static/js/shared/time.js'))"
+                ".parseApiDateMs('2026-06-15T14:00:00+02:00') === Date.UTC(2026, 5, 15, 12, 0, 0)",
             )
             is True
         )

@@ -2,6 +2,7 @@ import { Field } from './Field.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTaskStatusSchemas, fetchTaskStatusData, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
 import { statusWidgets } from '/app-static/js/ui/utils/statusWidgets/index.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 
 /** Statuses that mean "this task is no longer doing anything". */
 export const TERMINAL_STATUSES = new Set(['completed', 'error']);
@@ -172,9 +173,9 @@ export class ActiveTaskField extends Field {
     instance._logLines = (liveLogs.length > 0 || isActive)
       ? liveLogs
       : (instance._value.instance?.logLines ?? []);
-    instance._createdAt = createdAt ? new Date(createdAt) : null;
-    instance._startedAt = startedAt ? new Date(startedAt) : null;
-    instance._endedAt = endedAt ? new Date(endedAt) : null;
+    instance._createdAt = parseApiDate(createdAt);
+    instance._startedAt = parseApiDate(startedAt);
+    instance._endedAt = parseApiDate(endedAt);
     instance._durationSec = (instance._startedAt && instance._endedAt)
       ? Math.round((instance._endedAt - instance._startedAt) / 1000)
       : null;

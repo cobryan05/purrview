@@ -12,11 +12,13 @@ substitute any object with the same method.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
 import stream_client
+
+from apps.helpers.timeUtils import ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,7 @@ class StreamClipClient:
         ``dest`` is a path on the *relay's* filesystem — today that is the same
         container, which is why the clip is written there rather than streamed back.
         """
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
+        start = ensure_utc(start)
         api = stream_client.StreamsApi(self._api_client)
         result = await asyncio.to_thread(
             api.extract_clip,

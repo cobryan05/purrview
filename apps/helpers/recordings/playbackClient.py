@@ -24,6 +24,8 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from apps.helpers.timeUtils import ensure_utc
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_PLAYBACK_PORT = 9996
@@ -74,8 +76,7 @@ def _parse_rfc3339(value: str) -> datetime:
         else:
             tail = ""
         text = f"{head}.{digits[:6]:0<6}{tail}"
-    parsed = datetime.fromisoformat(text)
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return ensure_utc(datetime.fromisoformat(text))
 
 
 class PlaybackClient:

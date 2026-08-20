@@ -10,7 +10,6 @@ the Operations status panel, which reads `/status`.
 import logging
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -19,6 +18,7 @@ from fastapi.responses import JSONResponse
 from mediamtx_client.api_client import ApiClient
 
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.timeUtils import parse_iso_utc
 
 from .manager import Manager
 
@@ -208,9 +208,7 @@ class WebApp:
             truncated clip is never presented as a complete one.
             """
             try:
-                started_at = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                if started_at.tzinfo is None:
-                    started_at = started_at.replace(tzinfo=timezone.utc)
+                started_at = parse_iso_utc(start)
                 result = await self._manager.extract_clip(
                     path=path, start=started_at, duration_s=duration_s, dest=Path(dest)
                 )

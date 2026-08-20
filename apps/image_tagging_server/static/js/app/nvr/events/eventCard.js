@@ -8,29 +8,13 @@
  * the answer and the text only qualifies it.
  */
 import { watchEventSnapshotUrl } from '/app-static/js/shared/api/watchProfiles.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text != null) node.textContent = text;
   return node;
-}
-
-/**
- * Parse an API timestamp.
- *
- * The API's timestamps carry no UTC offset, so `new Date(s)` reads them as local time
- * in some browsers and as UTC in others — the same bug `parseRecordDate` exists for on
- * the Review side. Appending `Z` makes the reading explicit and consistent.
- *
- * @param {?string} value
- * @returns {?Date}
- */
-export function parseEventDate(value) {
-  if (!value) return null;
-  const normalised = /[Z+]|-\d{2}:\d{2}$/.test(value) ? value : `${value}Z`;
-  const date = new Date(normalised);
-  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /**
@@ -62,8 +46,8 @@ export function formatEventTime(date) {
  *   and showing "0s" for one would be a wrong answer rather than a missing one
  */
 export function formatDuration(startedAt, endedAt) {
-  const start = parseEventDate(startedAt);
-  const end = parseEventDate(endedAt);
+  const start = parseApiDate(startedAt);
+  const end = parseApiDate(endedAt);
   if (!start || !end) return '';
   const seconds = Math.max(0, (end - start) / 1000);
   if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
@@ -117,7 +101,7 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
   card.setAttribute('role', 'button');
   card.classList.toggle('event-card--selected', selected);
 
-  const started = parseEventDate(event.startedAt);
+  const started = parseApiDate(event.startedAt);
   const headline = eventHeadline(event);
   card.setAttribute('aria-label', `${headline}, ${formatEventTime(started)}`);
 

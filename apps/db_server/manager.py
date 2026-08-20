@@ -117,6 +117,7 @@ from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.clipDrain import DRAIN_FRACTION, MIN_DRAIN_INTERVAL_S, SEGMENT_LAG_S
 from apps.helpers.serviceStatus import row, section
+from apps.helpers.timeUtils import ensure_utc
 from apps.helpers.tracking.Registry import tracker_registry
 from apps.helpers.types import FileEntryRead
 
@@ -2374,9 +2375,7 @@ class Manager:
         elif sync_mode == "keep_newer":
             updated_record = await self._db_client.get_image(sidecar_uuid)
             if updated_record and updated_record.updated_at:
-                db_ts = updated_record.updated_at
-                if db_ts.tzinfo is None:
-                    db_ts = db_ts.replace(tzinfo=timezone.utc)
+                db_ts = ensure_utc(updated_record.updated_at)
                 sidecar_mtime = datetime.fromtimestamp(sidecar_path.stat().st_mtime, tz=timezone.utc)
                 if sidecar_mtime > db_ts:
                     # Sidecar is newer — import from JSON and rebuild image_labels.
