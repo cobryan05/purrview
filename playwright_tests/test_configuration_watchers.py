@@ -1920,6 +1920,34 @@ class TestEventTimelapseActionParams:
         expect(hint).to_contain_text("360×")
         expect(hint).to_contain_text("5 s")
 
+    def test_the_pre_roll_says_how_much_time_it_covers(self, page: Page, base_url: str):
+        """The field counts frames but the user is thinking in seconds, and the answer
+        depends on the interval field next to it — the same reason the speed-up hint
+        exists."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        hint = page.locator("[data-testid='watch-action-event-timelapse-preroll-hint']").first
+        # Zero is the default, and it has to read as a state rather than as "0 s".
+        expect(hint).to_contain_text("starts when the event does")
+
+        page.locator("[data-testid='watch-action-event-timelapse-preroll']").first.fill("3")
+        expect(hint).to_contain_text("30 s")
+
+        # Follows the interval, not just its own value.
+        page.locator("[data-testid='watch-action-event-timelapse-interval']").first.fill("20")
+        expect(hint).to_contain_text("60 s")
+
+    def test_the_burn_in_option_is_gone(self, page: Page, base_url: str):
+        """It was the only way to see the boxes and it ruined the frames for training.
+        The event view draws them at play time now, so offering it would only offer a
+        way to spoil a recording permanently."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        self._open(page, base_url)
+
+        expect(page.locator("[data-testid='watch-action-event-timelapse-annotate']")).to_have_count(0)
+        expect(page.locator("[data-testid='watch-action-event-timelapse-overlay']").first).to_be_checked()
+
     def test_it_saves_its_params(self, page: Page, base_url: str):
         saved = {}
         _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
@@ -1927,7 +1955,7 @@ class TestEventTimelapseActionParams:
 
         page.locator("[data-testid='watch-action-event-timelapse-interval']").first.fill("20")
         page.locator("[data-testid='watch-action-event-timelapse-fps']").first.fill("24")
-        page.locator("[data-testid='watch-action-event-timelapse-annotate']").first.check()
+        page.locator("[data-testid='watch-action-event-timelapse-preroll']").first.fill("3")
         page.locator("#watcher-management-box button:has-text('Save')").first.click()
 
         wait_until(page, lambda: bool(saved.get("actions")))
@@ -1936,7 +1964,13 @@ class TestEventTimelapseActionParams:
         assert action["trigger"] == "event_ended"
         assert action["paramsJson"]["interval_s"] == 20
         assert action["paramsJson"]["output_fps"] == 24
-        assert action["paramsJson"]["annotate"] is True
+        assert action["paramsJson"]["preroll_frames"] == 3
+        # On by default, and sent even when untouched — a timelapse whose boxes were
+        # never stored cannot be given them afterwards.
+        assert action["paramsJson"]["save_overlay"] is True
+        # Gone, not merely defaulted off: burning boxes into the pixels is permanent and
+        # ruins every frame for training, and the player now draws them at play time.
+        assert "annotate" not in action["paramsJson"], action["paramsJson"]
         # Defaults the row never touched still reach the backend, so the action does not
         # silently fall back to a different set of them.
         assert action["paramsJson"]["min_frames"] == 10

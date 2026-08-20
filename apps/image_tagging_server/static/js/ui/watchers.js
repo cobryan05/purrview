@@ -1861,15 +1861,46 @@ function buildActionRow(action, ctx) {
           + 'and disk for very little.',
       }));
 
-      const annotate = document.createElement('input');
-      annotate.type = 'checkbox';
-      annotate.checked = Boolean(stored.annotate);
-      annotate.dataset.testid = 'watch-action-event-timelapse-annotate';
-      annotate.addEventListener('change', ctx.onAnyChange);
-      params.appendChild(wfield('Draw boxes', annotate, {
-        help: 'Burn the detection boxes into each frame. Unlike a clip, whose boxes are drawn over '
-          + 'the video at play time, these are permanent — a timelapse’s frames are seconds apart, '
-          + 'so there is no continuous track to draw from.',
+      // Counted in frames rather than seconds, because frames are what this action
+      // deals in — the interval already decides how much time each one covers, and the
+      // hint below does that arithmetic so nobody has to.
+      const preroll = numberInput(stored.preroll_frames ?? 0, { step: '1', min: 0 });
+      preroll.dataset.testid = 'watch-action-event-timelapse-preroll';
+      preroll.title = 'Frames from before the event opened to put at the front of the video, so it '
+        + 'shows the approach rather than starting with the subject already there. Costs one frame '
+        + 'capture per interval on an idle camera, so it is 0 by default.';
+      const prerollHint = el('span', 'watch-hint watch-hint--truncate', '');
+      prerollHint.dataset.testid = 'watch-action-event-timelapse-preroll-hint';
+      function syncPreroll() {
+        const frames = Math.max(0, num(preroll, 0));
+        if (!frames) {
+          prerollHint.textContent = '→ starts when the event does';
+        } else {
+          const seconds = frames * Math.max(1, num(every, 10));
+          prerollHint.textContent = `→ the ${seconds} s before it opened`;
+        }
+        prerollHint.title = prerollHint.textContent;
+      }
+      for (const i of [preroll, every]) i.addEventListener('input', syncPreroll);
+      preroll.addEventListener('input', ctx.onAnyChange);
+      syncPreroll();
+      params.appendChild(wfield('pre-roll', preroll, { width: '4.5rem', help: preroll.title }));
+      params.appendChild(prerollHint);
+
+      // Replaces the old "Draw boxes", which burnt the boxes into the pixels. That is
+      // gone rather than defaulted off: the sidecar draws the same boxes over the video
+      // at play time and can be toggled there, while a burnt-in box is permanent and
+      // makes every frame useless as a training image — which is exactly what the event
+      // modal's "save frame for annotation" collects.
+      const saveOverlay = document.createElement('input');
+      saveOverlay.type = 'checkbox';
+      saveOverlay.checked = stored.save_overlay !== false;
+      saveOverlay.dataset.testid = 'watch-action-event-timelapse-overlay';
+      saveOverlay.addEventListener('change', ctx.onAnyChange);
+      params.appendChild(wfield('Save boxes', saveOverlay, {
+        help: 'Store what the detector saw beside the video, so the event view can draw the boxes '
+          + 'over it and switch them off again. Costs a few tens of KB and leaves the video itself '
+          + 'clean, so any frame of it is still usable as a training image.',
       }));
 
       readParams = () => ({
@@ -1880,7 +1911,8 @@ function buildActionRow(action, ctx) {
         max_width: num(maxWidth, 1280),
         quality: num(quality, 85),
         full_resolution: fullRes.checked,
-        annotate: annotate.checked,
+        preroll_frames: num(preroll, 0),
+        save_overlay: saveOverlay.checked,
       });
     } else if (kind.value === 'save_timelapse') {
       // Browsed rather than typed, unlike `save_snapshot`'s: a timelapse directory is
