@@ -202,6 +202,27 @@ def _start(page: Page, name: str):
     return _card(page, name).locator(".runs-launch-card__start")
 
 
+def _press_start_when_live(page: Page, name: str):
+    """Press a card's start button, but only once the card knows a run is live.
+
+    The press branches on state that arrives *after* the pane renders: a running
+    watcher opens the live view, an idle one starts a new run. `_open_launcher` ends on
+    `wait_for_load_state("networkidle")`, which resolves whenever the network is
+    momentarily quiet — under load that can be while the task-status fetch is still in
+    flight. Clicking then silently takes the idle branch, and the test fails claiming
+    the live dialog never opened.
+
+    The run badge is the only observable proof the status landed: it is hidden until
+    `registerRunState` fires with a label. Waiting on it is a barrier keyed on the
+    thing under test, rather than on the network happening to go quiet.
+
+    Only usable where a run *is* expected. For an idle card the badge stays hidden,
+    which is also its initial state — waiting for that is the already-satisfied trap.
+    """
+    expect(_card(page, name).get_by_test_id("runs-launch-run-badge")).to_be_visible()
+    _start(page, name).click()
+
+
 def _config(page: Page, name: str):
     return _card(page, name).locator(".runs-launch-card__config")
 
@@ -600,7 +621,7 @@ class TestWatcherAlreadyRunning:
         _mock_task_status(page, {"task-w1": _watcher_instance("running")})
         _open_launcher(page, base_url)
 
-        _start(page, "Test").click()
+        _press_start_when_live(page, "Test")
 
         # It opens the live view instead (see TestWatcherDrillDown) — the point
         # here is only that it does not start a second watcher.
@@ -699,7 +720,7 @@ class TestWatcherDrillDown:
         _mock_task_status(page, {"task-w1": _watcher_instance("running")})
         _open_launcher(page, base_url)
 
-        _start(page, "Test").click()
+        _press_start_when_live(page, "Test")
 
         expect(page.get_by_test_id("watch-live-dialog")).to_be_visible()
 
@@ -721,7 +742,7 @@ class TestWatcherDrillDown:
         _mock_task_status(page, {"task-w1": _watcher_instance("running")})
         _open_launcher(page, base_url)
 
-        _start(page, "Test").click()
+        _press_start_when_live(page, "Test")
         expect(page.get_by_test_id("watch-live-dialog")).to_be_visible()
 
         wait_until(
@@ -756,7 +777,11 @@ class TestWatcherDrillDown:
         _mock_task_status(page, {"task-w1": _watcher_instance("paused")})
         _open_launcher(page, base_url)
 
-        _start(page, "Test").click()
+        # Same branch-on-late-state hazard as the running case: pressed before the
+        # status lands, this card is indistinguishable from an idle one and would
+        # start a second watcher instead of explaining itself. A paused watcher badges
+        # too ("Watcher paused"), so the same barrier applies.
+        _press_start_when_live(page, "Test")
 
         expect(page.get_by_test_id("watch-live-dialog")).not_to_be_visible()
         expect(page.get_by_text(re.compile(r"no live view"))).to_be_visible()
