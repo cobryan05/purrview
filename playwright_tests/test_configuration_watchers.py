@@ -2654,3 +2654,51 @@ class TestEventFilingHint:
         # A disabled action is not constructed at run time, so it files nothing either.
         page.locator("[data-testid='watch-action-enabled']").first.uncheck()
         expect(hint).to_be_visible()
+
+
+class TestTheTrackingMistakesToggle:
+    """Per-watcher switch for analysing clips against their own detection sidecar.
+
+    Only the browser-side wiring is asserted here — that the control reflects the stored
+    flag and that flipping it reaches the save. What the flag *does* is a backend rule
+    and is covered in `tests/`.
+    """
+
+    def _open(self, page: Page, base_url: str, profile=None, saved=None):
+        _mock_watch_apis(
+            page,
+            profiles=[profile or FAKE_PROFILE],
+            on_update=(lambda body: saved.update(body)) if saved is not None else None,
+        )
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        return page.locator("[data-testid='watch-analyse-blips']")
+
+    def test_a_watcher_that_has_never_set_it_shows_it_on(self, page: Page, base_url: str):
+        """Existing watchers adopt the feature switched on, matching the migration."""
+        expect(self._open(page, base_url)).to_be_checked()
+
+    def test_a_stored_off_flag_loads_unticked(self, page: Page, base_url: str):
+        profile = {**FAKE_PROFILE, "blipAnalysisEnabled": False}
+        expect(self._open(page, base_url, profile=profile)).not_to_be_checked()
+
+    def test_switching_it_off_reaches_the_save(self, page: Page, base_url: str):
+        saved: dict = {}
+        toggle = self._open(page, base_url, saved=saved)
+        toggle.uncheck()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: "blipAnalysisEnabled" in saved, "the save never reached the API")
+        assert saved["blipAnalysisEnabled"] is False, saved
+
+    def test_a_save_preserves_thresholds_the_form_cannot_show(self, page: Page, base_url: str):
+        """There is no editor for the tuning bundle yet. Collecting `{}` from the form
+        would silently wipe thresholds set through the API."""
+        saved: dict = {}
+        profile = {**FAKE_PROFILE, "blipThresholdsJson": {"minFlipSamples": 5}}
+        self._open(page, base_url, profile=profile, saved=saved)
+        page.locator("[data-testid='watcher-name']").fill("Renamed")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: "blipThresholdsJson" in saved, "the save never reached the API")
+        assert saved["blipThresholdsJson"] == {"minFlipSamples": 5}, saved

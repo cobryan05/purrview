@@ -2251,8 +2251,27 @@ export async function renderWatchProfileManager({ target }) {
       // closed twisty, so the whole section costs no height beyond the heading it needed
       // anyway. A profile with one source, rule and action must still fit without the
       // editor scrolling — there is a Playwright test that says so.
+      // Reviewing what the tracker got wrong belongs beside the tracker that got it
+      // wrong, not in its own section — it is read as a property of tracking, and it is
+      // one checkbox.
+      const analyseBlips = document.createElement('input');
+      analyseBlips.type = 'checkbox';
+      analyseBlips.dataset.testid = 'watch-analyse-blips';
+      analyseBlips.checked = profile ? profile.blipAnalysisEnabled !== false : true;
+      analyseBlips.addEventListener('change', onAnyChange);
+      analyseBlips.title =
+        'After each clip is recorded, compare the track against itself to find where the '
+        + 'detector contradicted itself — an identity that flipped and flipped back, a subject '
+        + 'lost while the tracker carried on. Costs no inference: it reads the boxes already '
+        + 'saved beside the clip. Findings show on the event, and the frames can be sent to '
+        + 'training.';
+
       const trackingHead = sectionHeader('Tracking', addLifetimeBtn);
       trackingHead.insertBefore(wfield('Tracker', trackerSel, { help: trackerSel.title }), addLifetimeBtn);
+      trackingHead.insertBefore(
+        wfield('Find tracking mistakes', analyseBlips, { help: analyseBlips.title }),
+        addLifetimeBtn,
+      );
 
       const trackerParamsHost = el('div', 'watch-tracker-params-host');
       const tuning = document.createElement('details');
@@ -2491,6 +2510,11 @@ export async function renderWatchProfileManager({ target }) {
           defaultModelName: readModelChoice(defaultModels.value).modelName,
           trackerTypename: trackerSel.value,
           trackerParamsJson: trackerParams?.getParams() || {},
+          blipAnalysisEnabled: analyseBlips.checked,
+          // Preserved rather than collected: the thresholds have no editor yet, and
+          // sending `{}` from a form that cannot show them would silently wipe tuning
+          // set through the API.
+          blipThresholdsJson: profile?.blipThresholdsJson || {},
           // A row with nothing selected would fail server-side validation and take the
           // whole save with it — an unfinished row is dropped rather than fatal.
           labelLifetimes: lifetimeRows

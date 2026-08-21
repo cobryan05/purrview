@@ -1901,6 +1901,16 @@ class WatchProfile(TimestampModel, table=True):
     # full-resolution stream regardless of what we analyse.
     default_analysis_fps: float = Field(default=5.0)
     default_analysis_width: int = Field(default=640)
+    # Whether this watcher's clips get analysed for tracking blips when they land. Per
+    # watcher rather than global because watchers differ in what they are for: a doorbell
+    # profile watching for any motion has nothing to learn from identity flips, while a
+    # litter-box profile distinguishing two similar cats is the whole reason this exists.
+    blip_analysis_enabled: bool = Field(default=True)
+    # Overrides for `apps.helpers.recordings.blips.BlipThresholds`. Only the keys the
+    # user has actually changed; anything absent falls back to the conservative default.
+    # JSON rather than a column each: ten tuning knobs would be ten columns that nothing
+    # ever filters or sorts on, and they are read as one bundle or not at all.
+    blip_thresholds_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     sources: List[WatchProfileSource] = Relationship(
         back_populates="profile",
         sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "WatchProfileSource.order"},
@@ -2376,12 +2386,26 @@ class WatchProfileRead(OrmModel):
     default_model_name: Optional[str] = None
     default_analysis_fps: float = 5.0
     default_analysis_width: int = 640
+    blip_analysis_enabled: bool = True
+    blip_thresholds_json: Dict[str, Any] = Field(default_factory=dict)
     sources: List[WatchProfileSourceRead] = Field(default_factory=list)
     rules: List[InteractionRuleRead] = Field(default_factory=list)
     actions: List[WatchActionRead] = Field(default_factory=list)
     label_lifetimes: List[LabelLifetimeRead] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @field_validator("tracker_params_json", "blip_thresholds_json", mode="before")
+    @classmethod
+    def _null_json_is_empty(cls, v: Any) -> Any:
+        """A row that predates a JSON column holds SQL NULL, not `{}`.
+
+        `RecordingRead._null_metadata_is_empty` documents where this bites: typing a
+        nullable JSON column as a plain dict makes validating an older row raise, and
+        the endpoint returns null for the *whole profile* rather than for the one field.
+        Every watcher in an existing install predates `blip_thresholds_json`.
+        """
+        return {} if v is None else v
 
 
 class WatchProfileCreate(ApiModel):
@@ -2394,6 +2418,8 @@ class WatchProfileCreate(ApiModel):
     default_model_name: Optional[str] = None
     default_analysis_fps: float = 5.0
     default_analysis_width: int = 640
+    blip_analysis_enabled: bool = True
+    blip_thresholds_json: Dict[str, Any] = Field(default_factory=dict)
     sources: List[WatchProfileSourceWrite] = Field(default_factory=list)
     rules: List[InteractionRuleWrite] = Field(default_factory=list)
     actions: List[WatchActionWrite] = Field(default_factory=list)
@@ -2416,6 +2442,8 @@ class WatchProfileUpdate(ApiModel):
     default_model_name: Optional[str] = None
     default_analysis_fps: Optional[float] = None
     default_analysis_width: Optional[int] = None
+    blip_analysis_enabled: Optional[bool] = None
+    blip_thresholds_json: Optional[Dict[str, Any]] = None
     # None = no change; [] = remove all.
     sources: Optional[List[WatchProfileSourceWrite]] = None
     rules: Optional[List[InteractionRuleWrite]] = None

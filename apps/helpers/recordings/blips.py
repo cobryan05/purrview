@@ -30,12 +30,16 @@ Output is an *incident* — a span with a start and an end — not a frame. A fo
 dropout is one blip, not a hundred and twenty.
 """
 
+import logging
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclasses_fields
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from apps.helpers.bboxUtils import iou_xywh
+
+logger = logging.getLogger(__name__)
 
 # ─── blip kinds ──────────────────────────────────────────────────────────────
 # Strings rather than an Enum because these travel to the database and out through
@@ -154,6 +158,44 @@ class BlipThresholds:
 
     def enabled(self, kind: str) -> bool:
         return kind in self.enabled_kinds
+
+    @classmethod
+    def from_overrides(cls, overrides: Optional[Dict[str, Any]]) -> "BlipThresholds":
+        """Build from a watcher's stored tuning bundle, defaulting anything absent.
+
+        Tolerant on purpose. This reads a JSON column a user can edit, and the failure
+        mode to avoid is a watcher that refuses to analyse — or worse, refuses to
+        *record* — because one key was misspelt or typed as a string. Unknown keys are
+        ignored and unusable values fall back to the default for that field, so the
+        analysis degrades toward conservative rather than toward broken.
+
+        `enabled_kinds` is accepted as a list, since JSON has no set.
+        """
+        if not overrides:
+            return cls()
+
+        fields = {f.name for f in dataclasses_fields(cls)}
+        kwargs: Dict[str, Any] = {}
+        for key, value in overrides.items():
+            if key not in fields or value is None:
+                continue
+            default = getattr(cls(), key)
+            try:
+                if key == "enabled_kinds":
+                    kinds = frozenset(str(k) for k in value)
+                    # An empty set would silently disable every detector, which is what
+                    # `blip_analysis_enabled` is for and is almost certainly not what an
+                    # empty list in a tuning bundle meant.
+                    kwargs[key] = kinds if kinds else default
+                elif isinstance(default, bool):
+                    kwargs[key] = bool(value)
+                elif isinstance(default, int):
+                    kwargs[key] = int(value)
+                elif isinstance(default, float):
+                    kwargs[key] = float(value)
+            except (TypeError, ValueError):
+                logger.warning("Ignoring unusable blip threshold %s=%r", key, value)
+        return cls(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -601,6 +643,127 @@ def _confidence_dip_blips(
 
 
 # ─── entry point ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ProposedBox:
+    """A corrected box to offer for one harvested frame, in normalised coordinates."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+    label_uuid: str
+    #: True when no detection existed at this moment and the geometry was interpolated
+    #: between the samples either side. The reviewer has to be told: a box twenty pixels
+    #: out is worse for training than no box at all, so an estimated one needs looking at
+    #: on the canvas rather than accepting from a thumbnail.
+    estimated: bool
+
+    def as_geometry(self) -> Dict[str, float]:
+        return {"x": _round(self.x), "y": _round(self.y), "width": _round(self.w), "height": _round(self.h)}
+
+
+def _round(value: float) -> float:
+    return round(float(value), 4)
+
+
+def harvest_times(start_s: float, end_s: float, count: int = 3) -> List[float]:
+    """Which moments of an incident to pull frames from.
+
+    Onset, middle and recovery by default — the boundaries are where the detector's
+    decision actually flips, so they carry more than the middle does. Not every frame:
+    a four-second dropout at 30 fps is a hundred and twenty near-identical images that
+    add annotation work and no information.
+
+    Collapses to fewer moments for a short incident rather than returning the same
+    instant several times.
+    """
+    if count <= 1 or end_s <= start_s:
+        return [start_s]
+    span = end_s - start_s
+    times = [start_s + span * i / (count - 1) for i in range(count)]
+    # Distinct to 3 dp: two "different" moments inside one frame interval would upload
+    # the same picture twice and rely on dedup to notice.
+    seen: List[float] = []
+    for t in times:
+        if not seen or abs(t - seen[-1]) > 0.001:
+            seen.append(t)
+    return seen
+
+
+def proposed_box_at(
+    document: Dict[str, Any],
+    track_id: int,
+    label_uuid: str,
+    at_s: float,
+    *,
+    max_estimate_gap_s: float = 3.0,
+) -> Optional[ProposedBox]:
+    """Where the corrected box belongs at one moment of the clip.
+
+    One function for every blip kind, because the distinction that matters is not the
+    kind but whether the track was *seen* at that moment:
+
+    * seen — the geometry is the detector's own box and only the label is wrong. That is
+      the identity-flip case, and the proposal is exact.
+    * not seen — the detector had lost it, so the box is interpolated between the
+      samples either side and flagged `estimated`. That is the dropout case.
+
+    Returns None when there is nothing honest to propose: no track either side, or a gap
+    so long that interpolating across it would be invention rather than estimation. A
+    missing proposal costs one frame; a confidently wrong box costs training data.
+    """
+    frames = _frames_of(document)
+    before: Optional[Tuple[float, Dict[str, Any]]] = None
+    after: Optional[Tuple[float, Dict[str, Any]]] = None
+
+    for frame in frames:
+        t = float(frame.get("t", 0.0))
+        match = next((tr for tr in (frame.get("tracks") or []) if int(tr.get("id", 0) or 0) == track_id), None)
+        if match is None:
+            continue
+        if t <= at_s:
+            before = (t, match)
+        elif after is None:
+            after = (t, match)
+            break
+
+    if before is not None and abs(before[0] - at_s) < 1e-6:
+        box = before[1]
+        return ProposedBox(
+            x=float(box.get("x", 0.0)),
+            y=float(box.get("y", 0.0)),
+            w=float(box.get("w", 0.0)),
+            h=float(box.get("h", 0.0)),
+            label_uuid=label_uuid,
+            estimated=False,
+        )
+
+    if before is None or after is None:
+        # Nothing to interpolate between. Extrapolating from one side would put a box
+        # where the subject might not be at all.
+        return None
+    if after[0] - before[0] > max_estimate_gap_s:
+        return None
+
+    span = after[0] - before[0]
+    ratio = 0.0 if span <= 0 else (at_s - before[0]) / span
+    first, second = before[1], after[1]
+
+    def _lerp(key: str) -> float:
+        start = float(first.get(key, 0.0))
+        end = float(second.get(key, 0.0))
+        return start + (end - start) * ratio
+
+    return ProposedBox(
+        x=_lerp("x"),
+        y=_lerp("y"),
+        w=_lerp("w"),
+        h=_lerp("h"),
+        label_uuid=label_uuid,
+        estimated=True,
+    )
 
 
 def analyse_overlay(

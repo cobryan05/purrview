@@ -7067,6 +7067,7 @@ class DbClient:
 
     async def list_event_blips(
         self,
+        uuids: Optional[Sequence[str]] = None,
         event_uuid: Optional[str] = None,
         recording_uuid: Optional[str] = None,
         kinds: Optional[Sequence[str]] = None,
@@ -7083,6 +7084,8 @@ class DbClient:
         """
         async with self._async_session_maker() as session:
             stmt = select(EventBlip)
+            if uuids:
+                stmt = stmt.where(EventBlip.uuid.in_(list(uuids)))
             if event_uuid:
                 stmt = stmt.where(EventBlip.event_uuid == event_uuid)
             if recording_uuid:

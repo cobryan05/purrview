@@ -652,3 +652,58 @@ class TestTheTrackingAnalysis:
         assert store.blips == []
         assert len(store.recordings) == 1
         assert any("Tracking analysis skipped" in line for line in store.logs)
+
+
+class TestTheAnalysisSwitch:
+    """Blip analysis is per watcher, read once at start rather than per clip.
+
+    Both halves are asserted against the *same* clip and the same ring, because "no
+    blips were filed" is only meaningful next to a run that files some — otherwise it
+    would pass against a recorder whose analysis had quietly stopped working.
+    """
+
+    def _recorder(self, store, tmp_path, **kwargs):
+        return WatchEventRecorder(
+            profile_uuid=PROFILE,
+            api_client_factory=lambda: None,
+            log=store.logs.append,
+            snapshot_root=tmp_path / "snapshots",
+            **kwargs,
+        )
+
+    async def _run(self, recorder, tmp_path):
+        analysis = TestTheTrackingAnalysis()
+        await analysis._attach(recorder, tmp_path, analysis._ring(flip_at=10))
+
+    async def test_a_watcher_with_analysis_off_files_nothing(self, store, tmp_path, monkeypatch):
+        import apps.tasks_server.tasks._watch_event_recorder as module
+
+        monkeypatch.setattr(module, "WatchProfilesApi", lambda _client: _FakeApi(store))
+        monkeypatch.setattr(module, "RecordingsApi", lambda _client: _FakeApi(store))
+        monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
+        monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
+
+        await self._run(self._recorder(store, tmp_path, analyse_blips=False), tmp_path)
+
+        assert store.blips == []
+        assert len(store.recordings) == 1, "the clip is still recorded either way"
+
+    async def test_the_same_clip_with_analysis_on_does_file(self, recorder, store, tmp_path):
+        await self._run(recorder, tmp_path)
+
+        assert len(store.blips) == 1
+
+    async def test_a_watchers_thresholds_reach_the_detectors(self, store, tmp_path, monkeypatch):
+        """A flip of three samples is found by default and suppressed by this watcher's
+        own tuning — which is the only thing differing between the two runs."""
+        import apps.tasks_server.tasks._watch_event_recorder as module
+
+        monkeypatch.setattr(module, "WatchProfilesApi", lambda _client: _FakeApi(store))
+        monkeypatch.setattr(module, "RecordingsApi", lambda _client: _FakeApi(store))
+        monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
+        monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
+
+        strict = self._recorder(store, tmp_path, blip_thresholds={"min_flip_samples": 5})
+        await self._run(strict, tmp_path)
+
+        assert store.blips == []

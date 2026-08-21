@@ -4457,6 +4457,7 @@ class WebApp:
             operation_id="list_event_blips",
         )
         async def list_event_blips(
+            uuids: Optional[List[str]] = Query(default=None),
             event_uuid: Optional[str] = None,
             recording_uuid: Optional[str] = None,
             kinds: Optional[List[str]] = Query(default=None),
@@ -4467,6 +4468,7 @@ class WebApp:
         ) -> ListEventBlipsResponse:
             try:
                 blips, total = await self._manager.list_event_blips(
+                    uuids=uuids,
                     event_uuid=event_uuid,
                     recording_uuid=recording_uuid,
                     kinds=kinds,

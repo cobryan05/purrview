@@ -147,11 +147,19 @@ class WatchEventRecorder:
         api_client_factory: Callable[[], db_client.ApiClient],
         log: Callable[[str], None],
         snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT,
+        analyse_blips: bool = True,
+        blip_thresholds: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._profile_uuid = profile_uuid
         self._api_client_factory = api_client_factory
         self._log = log
         self._snapshot_root = Path(snapshot_root)
+        #: Both come from the watch profile and are read once per run, not per clip: a
+        #: watcher runs for weeks and a fetch per closing edge would be a request per
+        #: event to learn something that almost never changes. Editing a profile
+        #: restarts its watcher, which is what picks the change up.
+        self._analyse_blips = bool(analyse_blips)
+        self._blip_threshold_overrides = dict(blip_thresholds or {})
         #: Open events by key, so a closing edge can find the row it opened.
         self._open: Dict[EventKey, str] = {}
         #: Events that have begun but written nothing yet — see `_PendingEvent`.
@@ -402,8 +410,8 @@ class WatchEventRecorder:
             if response.status != JsonValues.SUCCESS or response.recording is None:
                 raise RuntimeError(response.message or "db refused the recording")
             recording_uuid = response.recording.uuid
-            if overlay_path and event_uuid:
-                await self._analyse_blips(event_uuid, recording_uuid, overlay_path)
+            if self._analyse_blips and overlay_path and event_uuid:
+                await self._file_blips(event_uuid, recording_uuid, overlay_path)
             return recording_uuid
         except Exception as e:
             self._failures += 1
@@ -481,7 +489,7 @@ class WatchEventRecorder:
             self._log(f"Clip overlay not written ({signal.rule_name}): {e}")
             return None
 
-    async def _analyse_blips(self, event_uuid: str, recording_uuid: str, overlay_path: Path) -> None:
+    async def _file_blips(self, event_uuid: str, recording_uuid: str, overlay_path: Path) -> None:
         """Find where tracking went wrong in the clip just registered, and file it.
 
         Runs here, inline, rather than in a task of its own. The analysis is a JSON read
@@ -499,10 +507,11 @@ class WatchEventRecorder:
         on a review card; there is no correctness the frame loop depends on here.
         """
         try:
-            from apps.helpers.recordings.blips import analyse_overlay
+            from apps.helpers.recordings.blips import BlipThresholds, analyse_overlay
 
+            thresholds = BlipThresholds.from_overrides(self._blip_threshold_overrides)
             document = await asyncio.to_thread(lambda: json.loads(Path(overlay_path).read_text()))
-            blips = await asyncio.to_thread(analyse_overlay, document)
+            blips = await asyncio.to_thread(analyse_overlay, document, thresholds)
             if not blips:
                 return
 

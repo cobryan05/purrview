@@ -874,6 +874,10 @@ class StreamWatcherTask(Task):
             profile_uuid=self._profile.uuid,
             api_client_factory=self._manager.get_db_api_client,
             log=self.log,
+            # Read once here rather than per clip: a watcher runs for weeks, and editing
+            # a profile restarts it, which is what picks a change up.
+            analyse_blips=getattr(self._profile, "blip_analysis_enabled", True),
+            blip_thresholds=getattr(self._profile, "blip_thresholds_json", None),
         )
 
         # An event this profile left open cannot still be in progress — this run owns its

@@ -30,6 +30,8 @@ from apps.helpers.recordings.blips import (
     KIND_TRACKER_DROPOUT,
     BlipThresholds,
     analyse_overlay,
+    harvest_times,
+    proposed_box_at,
 )
 
 CAT_A = "cat_a"
@@ -281,3 +283,132 @@ class TestTimelapseIsRefused:
         frames = steady(8) + gone + steady(8)
 
         assert analyse_overlay(doc(frames, step=STEP)) != []
+
+
+class TestTuningFromAStoredBundle:
+    """Thresholds come from a JSON column a user can edit.
+
+    The failure to avoid is a watcher that refuses to analyse — or worse, refuses to
+    *record* — because one key was misspelt or typed as a string, so this degrades
+    toward the conservative default rather than toward broken.
+    """
+
+    def test_an_empty_bundle_is_the_conservative_default(self):
+        assert BlipThresholds.from_overrides({}) == BlipThresholds()
+        assert BlipThresholds.from_overrides(None) == BlipThresholds()
+
+    def test_an_override_takes_effect_and_the_rest_stay_default(self):
+        tuned = BlipThresholds.from_overrides({"min_flip_samples": 5})
+
+        assert tuned.min_flip_samples == 5
+        assert tuned.min_dropout_samples == BlipThresholds().min_dropout_samples
+
+    def test_raising_the_flip_floor_suppresses_a_flip_that_the_default_finds(self):
+        """The override reaching the detectors, not just the dataclass."""
+        frames = steady(8) + steady(3, label=CAT_B) + steady(8)
+
+        assert KIND_IDENTITY_FLIP in kinds_of(analyse_overlay(doc(frames)))
+        strict = BlipThresholds.from_overrides({"min_flip_samples": 5})
+        assert KIND_IDENTITY_FLIP not in kinds_of(analyse_overlay(doc(frames), strict))
+
+    def test_enabled_kinds_arrives_as_a_list_because_json_has_no_set(self):
+        tuned = BlipThresholds.from_overrides({"enabled_kinds": [KIND_GHOST, KIND_IDENTITY_FLIP]})
+
+        assert tuned.enabled(KIND_GHOST)
+        assert not tuned.enabled(KIND_FULL_DROPOUT)
+
+    def test_an_empty_kind_list_is_ignored_rather_than_silencing_everything(self):
+        """Disabling every detector is what the per-watcher switch is for. An empty list
+        in a tuning bundle is far more likely to be a mistake than an intent."""
+        tuned = BlipThresholds.from_overrides({"enabled_kinds": []})
+
+        assert tuned.enabled_kinds == BlipThresholds().enabled_kinds
+
+    def test_an_unusable_value_falls_back_instead_of_raising(self):
+        tuned = BlipThresholds.from_overrides({"min_dropout_samples": "three", "occlusion_iou": None})
+
+        assert tuned.min_dropout_samples == BlipThresholds().min_dropout_samples
+        assert tuned.occlusion_iou == BlipThresholds().occlusion_iou
+
+    def test_an_unknown_key_is_ignored(self):
+        assert BlipThresholds.from_overrides({"speed": "fast"}) == BlipThresholds()
+
+
+class TestChoosingWhichFramesToPull:
+    def test_an_incident_yields_its_onset_middle_and_recovery(self):
+        assert harvest_times(4.0, 6.0, 3) == [4.0, 5.0, 6.0]
+
+    def test_a_single_instant_yields_one_moment_not_three_copies(self):
+        assert harvest_times(4.0, 4.0, 3) == [4.0]
+
+    def test_moments_inside_one_frame_interval_collapse(self):
+        """Two "different" moments closer than a millisecond are the same picture, and
+        uploading it twice just leans on dedup to notice."""
+        assert len(harvest_times(4.0, 4.0005, 3)) == 1
+
+
+class TestProposingTheCorrectedBox:
+    """What gets offered for a harvested frame.
+
+    The distinction that matters is not the blip kind but whether the track was *seen*
+    at that moment: seen means the detector's own box with only the label corrected,
+    unseen means an interpolation that must be flagged so the reviewer opens it on the
+    canvas rather than accepting it from a thumbnail.
+    """
+
+    def _doc(self, frames):
+        return doc(frames)
+
+    def test_a_seen_track_proposes_the_detectors_own_box_exactly(self):
+        frames = steady(20)
+        box = proposed_box_at(self._doc(frames), track_id=7, label_uuid=CAT_A, at_s=1.0)
+
+        assert box is not None
+        assert not box.estimated
+        assert (box.x, box.y, box.w, box.h) == (0.10, 0.10, 0.20, 0.20)
+
+    def test_the_label_is_the_correction_not_what_was_seen(self):
+        """The whole point of a flip proposal: geometry from the detector, label from
+        the track's majority."""
+        frames = steady(8) + steady(4, label=CAT_B) + steady(8)
+        box = proposed_box_at(self._doc(frames), track_id=7, label_uuid=CAT_A, at_s=8 * STEP)
+
+        assert box is not None
+        assert box.label_uuid == CAT_A
+        assert not box.estimated
+
+    def test_an_unseen_moment_is_interpolated_and_flagged(self):
+        moving = [
+            {
+                "boxes": [box(x=0.1 + i * 0.02)],
+                "tracks": [track(7, x=0.1 + i * 0.02)],
+            }
+            for i in range(20)
+        ]
+        # Drop the track from the middle so there is a gap to cross.
+        for i in (8, 9, 10):
+            moving[i] = {"boxes": [], "tracks": []}
+
+        box_at = proposed_box_at(self._doc(moving), track_id=7, label_uuid=CAT_A, at_s=9 * STEP)
+
+        assert box_at is not None
+        assert box_at.estimated
+        # Between the box at t=7 (x=0.24) and the one at t=11 (x=0.32).
+        assert 0.24 < box_at.x < 0.32
+
+    def test_nothing_is_proposed_when_only_one_side_exists(self):
+        """Extrapolating from one side puts a box where the subject may not be. A
+        missing proposal costs one frame; a confidently wrong box costs training data."""
+        frames = steady(10)
+        after_the_end = proposed_box_at(self._doc(frames), track_id=7, label_uuid=CAT_A, at_s=30.0)
+
+        assert after_the_end is None
+
+    def test_nothing_is_proposed_across_a_gap_too_long_to_estimate(self):
+        frames = steady(6) + [{"boxes": [], "tracks": []}] * 30 + steady(6)
+        box_at = proposed_box_at(self._doc(frames), track_id=7, label_uuid=CAT_A, at_s=10 * STEP)
+
+        assert box_at is None
+
+    def test_an_unknown_track_proposes_nothing(self):
+        assert proposed_box_at(self._doc(steady(20)), track_id=999, label_uuid=CAT_A, at_s=1.0) is None
