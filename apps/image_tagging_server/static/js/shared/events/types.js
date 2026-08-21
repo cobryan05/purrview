@@ -91,6 +91,21 @@ export const EventTypes = Object.freeze({
    */
   OPEN_REVIEW_WITH_FILTERS: "review:open_with_filters",
   /**
+   * "Show me the clip this frame came from, at the moment it came from."
+   *
+   * Published by the preview panel's harvested-frame cards, where a proposed box has
+   * to be judged against something — a cropped still is the ambiguity that caused the
+   * mistake in the first place, and only the moving picture settles it.
+   *
+   * Handled in app/main.js — the composition root — so Review does not have to import
+   * NVR's modal directly. It deliberately does *not* switch tabs: the player is an
+   * overlay, and taking someone out of a half-triaged run to answer one question about
+   * one frame loses their place in it. They glance at the clip, close it, and are still
+   * where they were.
+   * Payload: { eventUuid: string, atS?: number }
+   */
+  OPEN_EVENT_CLIP: "nvr:event:open_clip",
+  /**
    * Fired after canvas annotations (bboxes + image labels) have been successfully saved.
    * Payload: { runtimeId: string }
    */

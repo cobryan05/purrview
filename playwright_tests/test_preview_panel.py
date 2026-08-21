@@ -986,3 +986,211 @@ class TestSavedPreviewsList:
         panel = page.get_by_test_id("preview-panel")
         expect(panel).to_be_visible()
         expect(page.get_by_test_id("preview-run-title")).to_have_text("First run")
+
+
+def _blip_geometry(
+    *,
+    blip_uuid="blip-1",
+    event_uuid="event-1",
+    at_s=4.6,
+    kind="identity_flip",
+    track_id=7,
+    samples=9,
+    track_samples=121,
+    estimated=False,
+):
+    """Geometry as `HarvestBlipFramesTask` writes it — box plus provenance."""
+    return {
+        "x": 0.1,
+        "y": 0.1,
+        "width": 0.2,
+        "height": 0.2,
+        "estimated": estimated,
+        "sourceBlipUuid": blip_uuid,
+        "sourceEventUuid": event_uuid,
+        "sourceBlipKind": kind,
+        "sourceClipTimeS": at_s,
+        "sourceTrackId": track_id,
+        "sourceBlipSamples": samples,
+        "sourceTrackSamples": track_samples,
+    }
+
+
+class TestTrackingIncidentGrouping:
+    """Option C's review surface: the existing panel, told what it is looking at.
+
+    A harvested frame cannot be judged from the crop alone — that ambiguity is what
+    produced the mistake being reviewed. What makes it decidable is the claim in the
+    group header and the clip being one click away, so both are asserted here rather
+    than merely rendered.
+    """
+
+    def _open_with(self, page, base_url, candidates):
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), candidates)
+        api.install(page)
+        _open_panel(page, "run-1")
+        page.get_by_test_id("preview-sort").select_option("blip")
+        return api
+
+    def _harvested(self, uuid, **geometry_kwargs):
+        return _make_candidate(
+            uuid,
+            is_new=True,
+            geometry=_blip_geometry(**geometry_kwargs),
+        )
+
+    def test_one_header_is_drawn_per_incident_not_per_frame(self, page: Page, base_url: str):
+        self._open_with(
+            page,
+            base_url,
+            [
+                self._harvested("c1", blip_uuid="blip-1"),
+                self._harvested("c2", blip_uuid="blip-1"),
+                self._harvested("c3", blip_uuid="blip-2"),
+            ],
+        )
+
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(3)
+        expect(page.get_by_test_id("preview-blip-header")).to_have_count(2)
+
+    def test_the_header_states_the_claim_that_makes_the_frame_reviewable(self, page: Page, base_url: str):
+        self._open_with(page, base_url, [self._harvested("c1", samples=9, track_samples=121)])
+
+        claim = page.get_by_test_id("preview-blip-claim").first
+        expect(claim).to_contain_text("identity flip")
+        expect(claim).to_contain_text("9 of 121 frames disagree")
+
+    def test_a_partial_claim_omits_the_ratio_rather_than_inventing_a_total(self, page: Page, base_url: str):
+        """Nine out of twelve is a different story from nine out of a hundred and
+        twenty-one. Without the total the ratio is the half that carries no weight."""
+        self._open_with(page, base_url, [self._harvested("c1", samples=9, track_samples=None)])
+
+        claim = page.get_by_test_id("preview-blip-claim").first
+        expect(claim).not_to_contain_text("of")
+        expect(claim).to_contain_text("identity flip")
+
+    def test_the_clip_button_names_the_moment_the_frame_came_from(self, page: Page, base_url: str):
+        self._open_with(page, base_url, [self._harvested("c1", at_s=4.6)])
+
+        expect(page.get_by_test_id("preview-open-clip").first).to_have_text("▶ Clip at 4.6s")
+
+    def test_a_frame_with_no_provenance_offers_no_clip_button(self, page: Page, base_url: str):
+        """An older run, harvested before provenance existed, must not show a button
+        that cannot answer."""
+        geometry = _blip_geometry()
+        geometry.pop("sourceEventUuid")
+        self._open_with(page, base_url, [_make_candidate("c1", is_new=True, geometry=geometry)])
+
+        expect(page.get_by_test_id("preview-blip-header")).to_have_count(1)
+        expect(page.get_by_test_id("preview-open-clip")).to_have_count(0)
+
+    def test_grouping_by_incident_asks_the_server_for_found_order(self, page: Page, base_url: str):
+        """The grouping is a client-side reading of an ordering the server already has.
+        Sending the local name would silently fall back to a default order and make the
+        grouping look broken rather than the sort."""
+        api = self._open_with(page, base_url, [self._harvested("c1")])
+        # Wait for the re-query the sort change triggers to actually land. Reading the
+        # recorded calls straight after `select_option` races it, and the assertion
+        # would be about the *previous* sort.
+        expect(page.get_by_test_id("preview-blip-header")).to_have_count(1)
+
+        sorts = [body.get("sortBy") for _run, body in api.query_bodies]
+        assert "created_at" in sorts, sorts
+        assert "blip" not in sorts, sorts
+
+
+class TestEstimatedGeometryIsMarked:
+    def test_an_interpolated_box_is_called_out(self, page: Page, base_url: str):
+        """The detector produced no box here. Accepting it unchecked is how a box that
+        is twenty pixels out reaches the training set."""
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), [_make_candidate("c1", is_new=True, geometry=_blip_geometry(estimated=True))])
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        expect(page.get_by_test_id("preview-estimated-badge")).to_have_count(1)
+
+    def test_a_real_detection_is_not_marked(self, page: Page, base_url: str):
+        """The conditional half — otherwise the badge would pass while always on."""
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), [_make_candidate("c1", is_new=True, geometry=_blip_geometry(estimated=False))])
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(1)
+        expect(page.get_by_test_id("preview-estimated-badge")).to_have_count(0)
+
+
+class TestTheClipEscapeHatch:
+    """The part that makes option C work rather than just look tidy.
+
+    A crop plus a claim is enough most of the time; when it is not, the moving picture
+    has to be one click away. This exercises the whole path — the card publishes, the
+    composition root resolves NVR's modal on demand, and the player opens over Review
+    rather than navigating away from a half-triaged run.
+    """
+
+    def _mock_event_apis(self, page: Page, event_uuid="event-1"):
+        page.route(
+            f"**/api/watch-events/{event_uuid}",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "event": {
+                            "uuid": event_uuid,
+                            "profileUuid": "prof-1",
+                            "sourceUuid": "src-1",
+                            "ruleName": "cat using litter box",
+                            "startedAt": "2026-08-20T12:00:00+00:00",
+                            "endedAt": "2026-08-20T12:00:24+00:00",
+                            "recordings": [],
+                            "blipCounts": {},
+                        },
+                    }
+                ),
+            ),
+        )
+        page.route(
+            "**/api/sources**",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "sources": []}),
+            ),
+        )
+
+    def test_clicking_the_clip_button_opens_the_player(self, page: Page, base_url: str):
+        _setup_common(page, base_url)
+        self._mock_event_apis(page)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), [_make_candidate("c1", is_new=True, geometry=_blip_geometry())])
+        api.install(page)
+        _open_panel(page, "run-1")
+        page.get_by_test_id("preview-sort").select_option("blip")
+
+        page.get_by_test_id("preview-open-clip").first.click()
+
+        expect(page.get_by_test_id("event-detail-modal")).to_be_visible()
+
+    def test_the_triage_panel_is_still_there_underneath(self, page: Page, base_url: str):
+        """Deliberately not a tab switch. Taking someone out of a half-triaged run to
+        answer one question about one frame loses their place in it."""
+        _setup_common(page, base_url)
+        self._mock_event_apis(page)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), [_make_candidate("c1", is_new=True, geometry=_blip_geometry())])
+        api.install(page)
+        _open_panel(page, "run-1")
+        page.get_by_test_id("preview-sort").select_option("blip")
+
+        page.get_by_test_id("preview-open-clip").first.click()
+        expect(page.get_by_test_id("event-detail-modal")).to_be_visible()
+
+        assert page.get_by_test_id("preview-panel").count() == 1

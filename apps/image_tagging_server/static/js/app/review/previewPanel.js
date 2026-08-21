@@ -39,6 +39,7 @@ import {
   PreviewDecisionAction,
 } from '/app-static/js/shared/api/previewRuns.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { expandLabelFilterSet } from '/app-static/js/app/review/filterPredicate.js';
 import { buildCandidateCard, createCardGrid } from '/app-static/js/app/review/cardGrid.js';
@@ -73,9 +74,26 @@ const DECISION_FILTER_ITEMS = [
 const SORT_MODES = [
   { value: 'label_confidence', text: 'Group: label', group: 'label' },
   { value: 'image_confidence', text: 'Group: image', group: 'image' },
+  // Tracking-blip runs only. `HarvestBlipFramesTask` writes one incident's frames
+  // consecutively and in time order, so the server's existing found-order sort already
+  // returns them contiguous and chronological — the grouping is the only new part, and
+  // no new server ordering is needed. `serverSort` is what actually goes on the wire.
+  { value: 'blip', text: 'Group: tracking incident', group: 'blip', serverSort: 'created_at' },
   { value: 'confidence', text: 'Sort: confidence', group: null },
   { value: 'created_at', text: 'Sort: found order', group: null },
 ];
+
+/** Human-readable names for the blip kinds the analyser emits. */
+const BLIP_KIND_TEXT = {
+  identity_flip: 'identity flip',
+  identity_switch: 'identity switch',
+  detector_dropout: 'detector dropout',
+  full_dropout: 'lost entirely',
+  tracker_dropout: 'tracker dropout',
+  occlusion_merge: 'merged while overlapping',
+  ghost: 'false positive',
+  confidence_dip: 'confidence dip',
+};
 
 /**
  * Mount the triage panel for one run.
@@ -185,6 +203,20 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   /** The grouping the current sort implies, or null for a flat ordering. */
   function _activeGrouping() {
     return SORT_MODES.find(m => m.value === filterState.sortBy)?.group ?? null;
+  }
+
+  /**
+   * The filter state as the server understands it.
+   *
+   * A grouping mode may be a client-side reading of an ordering the server already
+   * supports, in which case only the grouping is local and `serverSort` is what goes on
+   * the wire. Sending the local name instead would reach an endpoint that has never
+   * heard of it — which does not fail, it silently falls back to a default order, and
+   * the grouping then looks broken rather than the sort.
+   */
+  function _queryState() {
+    const mode = SORT_MODES.find(m => m.value === filterState.sortBy);
+    return { ...filterState, sortBy: mode?.serverSort ?? filterState.sortBy };
   }
 
   const decisionDd = createMultiSelectDropdown({
@@ -443,7 +475,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   async function _setDecisionOverFilter(decision, decisionAction) {
     try {
       const { candidates: all } = await queryPreviewCandidates(runUuid, {
-        ...filterState,
+        ..._queryState(),
         limit: Number.MAX_SAFE_INTEGER,
         offset: 0,
       });
@@ -656,6 +688,78 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     return header;
   }
 
+  /**
+   * Header for one tracking incident: the claim the analyser made about it.
+   *
+   * This is what makes a harvested frame reviewable at all. Judging a cropped still on
+   * its own is the ambiguity that produced the mistake in the first place — but
+   * "9 of 121 frames disagree" is a claim you can sanity-check at a glance, and when it
+   * looks wrong the clip is one click away.
+   */
+  function _buildBlipGroupHeader(candidate, entries) {
+    const geometry = candidate.geometry ?? {};
+    const header = document.createElement('div');
+    header.className = 'preview-panel__group-header';
+    header.dataset.testid = 'preview-blip-header';
+    header.dataset.blipUuid = geometry.sourceBlipUuid ?? '';
+
+    const track = document.createElement('span');
+    track.className = 'preview-panel__group-count';
+    track.textContent = geometry.sourceTrackId != null ? `Track #${geometry.sourceTrackId}` : 'Track';
+
+    const claim = document.createElement('span');
+    claim.className = 'preview-panel__blip-claim';
+    claim.dataset.testid = 'preview-blip-claim';
+    claim.textContent = _claimText(geometry, candidate.proposedLabelUuid);
+
+    header.append(track, claim);
+
+    // The escape hatch. Only offered when the frame actually records where it came
+    // from — an older run, or one harvested before provenance existed, would otherwise
+    // show a button that cannot answer.
+    if (geometry.sourceEventUuid) {
+      const clipBtn = document.createElement('button');
+      clipBtn.className = 'secondary preview-panel__group-select';
+      clipBtn.dataset.testid = 'preview-open-clip';
+      const at = geometry.sourceClipTimeS;
+      clipBtn.textContent = at != null ? `▶ Clip at ${Number(at).toFixed(1)}s` : '▶ Open clip';
+      clipBtn.addEventListener('click', () => {
+        events.publish(EventTypes.OPEN_EVENT_CLIP, {
+          eventUuid: geometry.sourceEventUuid,
+          atS: at ?? null,
+        });
+      });
+      header.appendChild(clipBtn);
+    }
+
+    const selectBtn = document.createElement('button');
+    selectBtn.className = 'secondary preview-panel__group-select';
+    selectBtn.dataset.testid = 'preview-group-select';
+    selectBtn.textContent = 'Select group';
+    selectBtn.addEventListener('click', () => _setSelection(entries, true));
+    header.appendChild(selectBtn);
+
+    return header;
+  }
+
+  /** "identity flip · 9 of 121 frames disagree · proposing cat_a" */
+  function _claimText(geometry, proposedLabelUuid) {
+    const parts = [BLIP_KIND_TEXT[geometry.sourceBlipKind] ?? geometry.sourceBlipKind ?? 'tracking issue'];
+    const disagreed = geometry.sourceBlipSamples;
+    const total = geometry.sourceTrackSamples;
+    // Only stated when both numbers are known. "9 frames disagree" without the total is
+    // the half of the claim that carries no weight — nine out of twelve is a different
+    // story from nine out of a hundred and twenty-one.
+    if (disagreed != null && total != null) {
+      parts.push(`${disagreed} of ${total} frames disagree`);
+    } else if (disagreed != null) {
+      parts.push(`${disagreed} frame(s) affected`);
+    }
+    const proposed = _labels.get(proposedLabelUuid)?.name;
+    if (proposed) parts.push(`proposing ${proposed}`);
+    return parts.join(' · ');
+  }
+
   function _renderPage() {
     grid.innerHTML = '';
     _visibleEntries.length = 0;
@@ -672,6 +776,10 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
         groupKey = candidate.proposedLabelUuid;
         groupEntries = [];
         grid.appendChild(_buildGroupHeader(groupKey, groupEntries));
+      } else if (grouping === 'blip' && candidate.geometry?.sourceBlipUuid !== groupKey) {
+        groupKey = candidate.geometry?.sourceBlipUuid;
+        groupEntries = [];
+        grid.appendChild(_buildBlipGroupHeader(candidate, groupEntries));
       }
       groupEntries?.push(entry);
       const card = buildCandidateCard(cardGrid, entry, {
@@ -697,6 +805,9 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     }
 
     for (const header of grid.querySelectorAll('.preview-panel__group-header')) {
+      // Not every header carries a running count. A tracking-incident header states a
+      // claim instead, and its own text must not be overwritten with a tally.
+      if (!header._countEl) continue;
       const n = header._entries?.length ?? 0;
       header._countEl.textContent = `${n} on this page`;
     }
@@ -720,7 +831,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     try {
       page = Math.max(0, nextPage);
       const [{ candidates: rows, totalCount: total }, freshRun] = await Promise.all([
-        queryPreviewCandidates(runUuid, { ...filterState, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+        queryPreviewCandidates(runUuid, { ..._queryState(), limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
         fetchPreviewRun(runUuid).catch(() => run),
       ]);
       if (destroyed) return;

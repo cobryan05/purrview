@@ -147,7 +147,10 @@ export async function captureVideoFrame(video) {
  * @param {Object[]} [ctx.siblings] - the events the modal can walk, in the grid's order
  * @returns {{close: () => void}}
  */
-export function openEventDetailModal(initialEvent, { sourceNames = new Map(), onDeleted, siblings = [] } = {}) {
+export function openEventDetailModal(
+  initialEvent,
+  { sourceNames = new Map(), onDeleted, siblings = [], seekToS = null } = {},
+) {
   // Copied, not aliased: deleting from inside the modal splices this list so the walk
   // stays coherent, and doing that to the grid's own array would corrupt the selection
   // indices of the page behind us.
@@ -375,6 +378,21 @@ export function openEventDetailModal(initialEvent, { sourceNames = new Map(), on
     video.src = recordingFileUrl(recording.uuid);
     video.dataset.testid = 'event-detail-video';
     mediaPane.appendChild(video);
+
+    // Arrived from a harvested frame asking about one instant. Seeking has to wait for
+    // metadata: `currentTime` set before the duration is known is silently discarded,
+    // and the clip would open at zero with no sign anything was asked for.
+    if (seekToS != null && !isTimelapse) {
+      const seek = () => {
+        // Clamped rather than trusted. The moment comes from a blip found in this
+        // clip's own sidecar, so it should always be inside it — but a clip capped by
+        // `max_length_s` after the sidecar was written would put it past the end, and
+        // seeking past the end leaves the player showing nothing at all.
+        video.currentTime = Math.max(0, Math.min(seekToS, (video.duration || seekToS) - 0.01));
+      };
+      if (video.readyState >= 1) seek();
+      else video.addEventListener('loadedmetadata', seek, { once: true });
+    }
 
     if (isTimelapse) {
       // A timelapse has no pre-roll to mark — it begins when its event does. It does

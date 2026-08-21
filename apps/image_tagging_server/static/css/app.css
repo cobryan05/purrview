@@ -3165,6 +3165,12 @@ button.filter-active {
 .card-state-badge.state-tagged {
   background: #aa44ff18; border: 1px solid #aa44ff; color: #cc88ff;
 }
+/* Interpolated geometry: the detector produced no box here and this one was estimated
+   from the frames either side. Warning-coloured rather than neutral because accepting
+   it unchecked is how a box that is twenty pixels out reaches the training set. */
+.card-state-badge--estimated {
+  background: #ffaa0018; border: 1px solid var(--color-warning); color: var(--color-warning);
+}
 /* Preview-candidate decision states (cardGrid.js buildCandidateCard). Applied is
    history; stale means the underlying bbox/image moved out from under the run. */
 .card-state-badge.state-applied {
@@ -3340,6 +3346,14 @@ button.filter-active {
 .preview-panel__group-count {
   font-size: 0.75em;
   color: var(--text-faint);
+}
+
+/* The analyser's claim about one tracking incident — "9 of 121 frames disagree".
+   Louder than the count beside it on purpose: it is the reason the frames below are
+   being questioned at all, and reading it is the whole review step. */
+.preview-panel__blip-claim {
+  font-size: 0.8em;
+  color: var(--text-muted);
 }
 
 .preview-panel__group-select {

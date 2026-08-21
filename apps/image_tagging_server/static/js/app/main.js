@@ -16,6 +16,7 @@ import { mountActiveModelBar } from '/app-static/js/ui/activeModelBar.js';
 import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
 import { seedRunsBadge } from '/app-static/js/ui/runsBadge.js';
+import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 
 const initializedFeatures = new Set();
 
@@ -154,6 +155,20 @@ export async function init(appState) {
       showCanvas: true,
       runtimeId: appState.imgRuntime.id,
     });
+  });
+
+  // "Show me the clip this harvested frame came from." Imported on demand rather than
+  // at module load: the event player and its overlay are only ever reached from a
+  // tracking-blip run, and everyone else should not pay for them.
+  events.subscribe(EventTypes.OPEN_EVENT_CLIP, async ({ eventUuid, atS = null }) => {
+    if (!eventUuid) return;
+    try {
+      const { openEventClipAt } = await import('/app-static/js/app/nvr/events/main.js');
+      await openEventClipAt(eventUuid, { atS });
+    } catch (err) {
+      Logger.error(err);
+      toast('Could not open the clip for this frame', 5000, 'error');
+    }
   });
 
   events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({

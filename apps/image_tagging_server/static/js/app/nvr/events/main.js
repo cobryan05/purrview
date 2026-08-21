@@ -10,7 +10,7 @@
  * events are a bounded append-only log ordered by the single scalar the user also
  * filters on, and the page shows a total, which needs the count anyway.
  */
-import { deleteWatchEvents, fetchWatchEvents } from '/app-static/js/shared/api/watchProfiles.js';
+import { deleteWatchEvents, fetchWatchEvent, fetchWatchEvents } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { buildEventCard } from './eventCard.js';
@@ -45,6 +45,25 @@ function button(text, onClick, { testid = null, className = 'panel-btn' } = {}) 
  *
  * @returns {Promise<Map<string, string>>}
  */
+/**
+ * Open one event's player, seeked to a moment, without the events grid existing.
+ *
+ * The entry point for "show me the clip this frame came from", published from the
+ * preview panel while triaging a tracking-blip run. It fetches the single event rather
+ * than going through the grid, so it works from any tab and costs one request — the
+ * grid, its filters and its facets are irrelevant to answering one question about one
+ * frame.
+ *
+ * Deliberately does not switch tabs. See OPEN_EVENT_CLIP in shared/events/types.js.
+ *
+ * @param {string} eventUuid
+ * @param {{ atS?: ?number }} [opts]
+ */
+export async function openEventClipAt(eventUuid, { atS = null } = {}) {
+  const [event, sourceNames] = await Promise.all([fetchWatchEvent(eventUuid), loadSourceNames()]);
+  openEventDetailModal(event, { sourceNames, seekToS: atS });
+}
+
 async function loadSourceNames() {
   try {
     // A Map of uuid → source record, not an array — see the `fetchLabels` gotcha; a

@@ -1006,6 +1006,20 @@ export function buildCandidateCard(controller, entry, opts) {
   const info = document.createElement('div');
   info.className = 'card-info';
 
+  // A box the detector never actually produced, interpolated between the samples either
+  // side of a dropout. It has to look different from a real one: a box twenty pixels out
+  // is worse for training than no box at all, so this one wants opening on the canvas
+  // rather than accepting from a thumbnail.
+  if (candidate.geometry?.estimated) {
+    const estimated = document.createElement('div');
+    estimated.className = 'card-state-badge card-state-badge--estimated';
+    estimated.dataset.testid = 'preview-estimated-badge';
+    estimated.textContent = '~ position estimated';
+    estimated.title = 'The detector saw nothing here, so this box was interpolated from the '
+      + 'frames either side. Check it on the canvas before accepting.';
+    info.appendChild(estimated);
+  }
+
   const badgeSpec = DECISION_BADGE[candidate.decision];
   if (badgeSpec) {
     const badge = document.createElement('div');
