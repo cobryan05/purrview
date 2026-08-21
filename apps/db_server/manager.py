@@ -4179,6 +4179,14 @@ class Manager:
 
         The file is removed first-effort but a failure there must not leave an
         undeletable row: the row is the index, the file is derived from it.
+
+        Any tracking blips found in this clip are expired here rather than deleted —
+        the finding outlives the video, but it stops offering itself for review, because
+        harvesting frames out of a clip that is gone cannot work and its "play the clip"
+        button would open a dead player. This is the single choke point every deletion
+        path funnels through (the age sweep, the size cap, the reconcile of hand-deleted
+        files, and the DELETE endpoint), which is why the expiry belongs here rather
+        than in each of them.
         """
         recording = await self._db_client.get_recording(uuid)
         if recording is None:
@@ -4190,6 +4198,17 @@ class Manager:
                 Path(path_str).unlink(missing_ok=True)
             except OSError as e:
                 logger.warning("Could not delete recording file %s: %s", path_str, e)
+        # Before the row goes: `expire_blips_for_recording` is keyed on the uuid, which
+        # is still valid either way, but ordering the two makes the intent legible — the
+        # blips are updated while the thing they describe still exists.
+        try:
+            expired = await self._db_client.expire_blips_for_recording(uuid)
+            if expired:
+                logger.info("Expired %s tracking blip(s) whose clip %s was deleted", expired, uuid)
+        except Exception:
+            # A blip is a note about a video; failing to annotate it must never be the
+            # reason a clip stays on a disk that is trying to free space.
+            logger.exception("Could not expire tracking blips for recording %s", uuid)
         return await self._db_client.delete_recording(uuid)
 
     # ── Retention ──────────────────────────────────────────────────────────────

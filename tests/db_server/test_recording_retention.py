@@ -572,3 +572,59 @@ class TestTheOverlaySidecar:
         await manager.reconcile_missing_recording_files()
 
         assert await db_client.get_recording(recording.uuid) is None
+
+
+class TestBlipsOutliveTheirClip:
+    """A blip is a finding about a clip, and it is kept after the clip is swept.
+
+    That is only tolerable if it stops *presenting itself as reviewable* at the same
+    moment. A blip still reading `new` after its video has gone offers a harvest that
+    can never find frames and a "play the clip" button that opens a dead player.
+    """
+
+    async def _blip(self, db_client, event_uuid, recording_uuid, **over):
+        blips = await db_client.replace_event_blips(
+            event_uuid,
+            [{"kind": "detector_dropout", "fault": "detector", "harvestable": True, **over}],
+            recording_uuid=recording_uuid,
+        )
+        return blips[0].uuid
+
+    async def test_deleting_a_clip_expires_the_blips_found_in_it(self, manager, db_client, tmp_path, profile_uuid):
+        event_uuid, _snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="visit")
+        recording_uuid, _clip = await _recording(db_client, tmp_path, age_days=1, name="visit", event_uuid=event_uuid)
+        blip_uuid = await self._blip(db_client, event_uuid, recording_uuid)
+
+        assert await manager.delete_recording(recording_uuid)
+
+        blips, _total = await db_client.list_event_blips(uuids=[blip_uuid])
+        assert blips[0].state == "expired"
+
+    async def test_a_triaged_blip_keeps_its_outcome(self, manager, db_client, tmp_path, profile_uuid):
+        """`harvested` and `dismissed` are decisions a human made. Losing the video does
+        not un-make them, and overwriting them with `expired` would."""
+        event_uuid, _snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="visit")
+        recording_uuid, _clip = await _recording(db_client, tmp_path, age_days=1, name="visit", event_uuid=event_uuid)
+        blip_uuid = await self._blip(db_client, event_uuid, recording_uuid)
+        await db_client.set_event_blip_states([blip_uuid], "harvested")
+
+        await manager.delete_recording(recording_uuid)
+
+        blips, _total = await db_client.list_event_blips(uuids=[blip_uuid])
+        assert blips[0].state == "harvested"
+
+    async def test_a_blip_on_another_clip_of_the_same_event_is_untouched(
+        self, manager, db_client, tmp_path, profile_uuid
+    ):
+        """An event owns a clip *and* a timelapse. Sweeping one must not expire findings
+        whose own evidence is still on disk."""
+        event_uuid, _snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="visit")
+        swept_uuid, _a = await _recording(db_client, tmp_path, age_days=1, name="clip", event_uuid=event_uuid)
+        kept_uuid, _b = await _recording(db_client, tmp_path, age_days=1, name="lapse", event_uuid=event_uuid)
+        await self._blip(db_client, event_uuid, swept_uuid)
+        kept_blip = await self._blip(db_client, event_uuid, kept_uuid)
+
+        await manager.delete_recording(swept_uuid)
+
+        blips, _total = await db_client.list_event_blips(uuids=[kept_blip])
+        assert blips[0].state == "new"
