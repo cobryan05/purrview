@@ -114,6 +114,47 @@ class TestNvrLiveFps:
         expect(page.locator(".nvr-profile-card").first).to_contain_text("1 fps")
 
 
+class TestNvrAddWatcher:
+    def test_the_add_button_opens_a_blank_watcher_editor(self, page: Page, base_url: str):
+        """Wanting a watcher happens while looking at the cameras, but defining one lives
+        in Configuration. Landing on the list — or worse, on the last watcher edited —
+        would leave the user to find the "+" themselves."""
+        _mock_nvr_apis(page, [_profile(PROFILE_UUID, "House cams", [_source("ps-1", 1.0)])])
+        _navigate_to_nvr(page, base_url)
+
+        page.locator("[data-testid='nvr-add-watcher']").click()
+
+        page.wait_for_selector("#watcher-management-box .wp-list-panel", timeout=5000)
+        expect(page.locator("[data-testid='watcher-name']")).to_have_value("")
+        # Scoped to the editor panel: the list panel has a .panel-box__title too.
+        expect(page.locator("#watcher-management-box .wp-editor .panel-box__title")).to_contain_text("New watcher")
+
+    def test_the_add_button_is_hidden_on_the_events_tab(self, page: Page, base_url: str):
+        """It belongs to Live. On Events it would be a floating button for something the
+        user is not doing, over content it partly covers."""
+        _mock_nvr_apis(page, [_profile(PROFILE_UUID, "House cams", [_source("ps-1", 1.0)])])
+        _navigate_to_nvr(page, base_url)
+        expect(page.locator("[data-testid='nvr-add-watcher']")).to_be_visible()
+
+        page.locator("#tab-nvr .workspace-tab-button[data-tab='tab-nvr-events']").click()
+        expect(page.locator("[data-testid='nvr-add-watcher']")).not_to_be_visible()
+
+    def test_the_add_button_survives_a_live_pane_re_render(self, page: Page, base_url: str):
+        """renderLive replaces #nvr-live-box wholesale on every task-stream tick; a button
+        built inside it would be destroyed and its listener lost."""
+        _mock_nvr_apis(page, [_profile(PROFILE_UUID, "House cams", [_source("ps-1", 1.0)])])
+        _navigate_to_nvr(page, base_url)
+
+        # Leaving and returning forces a full re-render of the live list.
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+        page.locator(".main-tab-button[data-tab='tab-nvr']").click()
+        page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+
+        page.locator("[data-testid='nvr-add-watcher']").click()
+        page.wait_for_selector("#watcher-management-box .wp-list-panel", timeout=5000)
+        expect(page.locator("[data-testid='watcher-name']")).to_have_value("")
+
+
 class TestNvrEditRules:
     def test_edit_rules_opens_the_watcher_you_clicked(self, page: Page, base_url: str):
         """Without a pending selection the pane opens on whatever was last selected."""

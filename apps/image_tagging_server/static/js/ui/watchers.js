@@ -16,7 +16,7 @@ import { openFileBrowserModal } from '/app-static/js/ui/utils/openFileBrowserMod
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { openOverlapPreviewModal } from '/app-static/js/ui/utils/overlapPreviewModal.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { NEW_ITEM_SELECTION, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 import { buildSchemaParams } from '/app-static/js/ui/utils/schemaParamsForm.js';
 
 let _rendering = false;
@@ -2568,8 +2568,14 @@ export async function renderWatchProfileManager({ target }) {
       if (profile) showValidation(profile.uuid);
     }
 
-    // Arriving from a Runs launch card's ⚙ means "show me *this* watcher".
+    // Arriving from a Runs launch card's ⚙ means "show me *this* watcher"; from the
+    // Cameras pane's add button, "start me a new one".
     const wantedUuid = takePendingSelection('tab-watcher-management');
+    if (wantedUuid === NEW_ITEM_SELECTION) {
+      renderList(null);
+      openEditor(null);
+      return;
+    }
     const wanted = wantedUuid ? profilesMap.get(wantedUuid) ?? null : null;
     renderList(wanted?.uuid ?? null);
     if (wanted) openEditor(wanted);

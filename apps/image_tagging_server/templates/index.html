@@ -112,6 +112,15 @@
 
       <div id="tab-nvr-live" class="workspace-tab-pane">
         <div id="nvr-live-box"></div>
+        <!-- Floating, and a sibling of the list rather than part of it: renderLive
+             replaces #nvr-live-box wholesale on every task-stream tick, and a button
+             rebuilt that often cannot be a stable anchor for a click, a tour step or a
+             test. Inside the Live pane so it disappears on Events, where "new watcher"
+             is not the thing you are looking for. -->
+        <button type="button" id="nvr-add-watcher" class="nvr-add-fab" data-testid="nvr-add-watcher"
+          data-tour="nvr.addWatcher" title="Define a new watcher in Configuration › Watch Rules">
+          <span aria-hidden="true">+</span> New watcher
+        </button>
       </div>
 
       <div id="tab-nvr-events" class="workspace-tab-pane">

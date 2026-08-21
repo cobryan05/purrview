@@ -675,6 +675,27 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 }
 
 /* ===== NVR ===== */
+/* Floating "new watcher" affordance on the Live pane.
+   Fixed to the viewport rather than the pane so it stays reachable however far the
+   card grid has scrolled. It sits *below* --layer-bottom-bars deliberately: body
+   reserves 2.5rem for that strip and this clears it, but if a notice makes the strip
+   taller the notice wins and this tucks under it — a floating convenience must never
+   cover a warning. */
+.nvr-add-fab {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(2.5rem + var(--space-3));
+  z-index: var(--layer-sticky-header);
+  width: auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-radius: 2em;
+  font-size: 0.9em;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 0.25rem 0.9rem rgb(0 0 0 / 45%);
+}
+
 /* A grid, not a column: as a full-width stack every card was one short line of text
    across a 2500px monitor — 95% whitespace, and only two watchers visible per screen.
    auto-fill with a min track means one wide card on a laptop and three or four side by

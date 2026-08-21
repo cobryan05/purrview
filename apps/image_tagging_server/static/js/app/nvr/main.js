@@ -20,7 +20,7 @@ import { cancelTasks, fetchTaskStatusData, fetchTasksStatus } from '/app-static/
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { NEW_ITEM_SELECTION, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
 import {
@@ -688,6 +688,13 @@ export async function init() {
       previewsStopped = false;
       void renderLive({ target: 'nvr-live-box' });
     }
+  });
+
+  // Defining a watcher lives in Configuration, but wanting one happens here — looking
+  // at the cameras. Hands the pane straight to a blank editor rather than dropping the
+  // user on a list they then have to find the "+" in.
+  document.getElementById('nvr-add-watcher')?.addEventListener('click', () => {
+    navigateTabs('tab-configuration', 'tab-watcher-management', { selectUuid: NEW_ITEM_SELECTION });
   });
 
   // activate default NVR tab

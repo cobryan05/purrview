@@ -93,10 +93,23 @@ export function setupSidebarTabs(containerOrSelector, onTabChange) {
 const _pendingSelections = new Map();
 
 /**
+ * Pass as `selectUuid` to mean "open this pane's editor on a *new* item".
+ *
+ * Rides the same drop box as a uuid rather than adding a second channel: the
+ * destination pane already reads one value on arrival, and the wait-for-wired
+ * machinery in navigateTabs (including dropping the request if the pane never
+ * comes up) is exactly what a "start a new one" request needs too. Not a
+ * plausible uuid, so a pane that hasn't been taught about it looks the value up,
+ * finds nothing, and opens normally.
+ */
+export const NEW_ITEM_SELECTION = '__new__';
+
+/**
  * Read and clear the item a caller asked this tab to open with.
  *
  * @param {string} tabId  the workspace tab's data-tab value
- * @returns {?string} uuid, or null if the tab was opened without one
+ * @returns {?string} uuid, {@link NEW_ITEM_SELECTION}, or null if the tab was
+ *   opened without one
  */
 export function takePendingSelection(tabId) {
   const uuid = _pendingSelections.get(tabId) ?? null;
