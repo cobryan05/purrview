@@ -68,13 +68,22 @@ class _FakeApi:
         self._store.recordings.append(payload)
         return _FakeResponse(status="success", recording=SimpleNamespace(uuid="recording-1"))
 
+    # tracking blips
+    def replace_event_blips(self, payload):
+        if self._store.fail_blips:
+            return _FakeResponse(status="failure", message="db is down")
+        self._store.blips.append(payload)
+        return _FakeResponse(status="success", blips=[])
+
 
 class _Store:
     def __init__(self):
         self.created = []
         self.updated = []
         self.recordings = []
+        self.blips = []
         self.fail_create = False
+        self.fail_blips = False
         self.logs = []
 
 
@@ -92,6 +101,7 @@ def recorder(store, tmp_path, monkeypatch):
     # The generated request bodies are plain data holders here; SimpleNamespace keeps
     # the test independent of whether the client has been regenerated.
     monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
+    monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
     return WatchEventRecorder(
         profile_uuid=PROFILE,
         api_client_factory=lambda: None,
@@ -533,3 +543,112 @@ class TestCardArt:
         await _open(recorder, _signal(EventPhase.START, rule_uuid="rule-1"), _context(frame=self._frame()))
         await _open(recorder, _signal(EventPhase.START, rule_uuid="rule-2"), _context(frame=self._frame()))
         assert len(list((tmp_path / "snapshots").rglob("*.jpg"))) == 2
+
+
+class _Trk(_Det):
+    """A stand-in for `apps.helpers.tracking.Track`, which is also read by attribute."""
+
+    def __init__(self, bbox, track_id=7, **kwargs):
+        super().__init__(bbox, **kwargs)
+        self.track_id = track_id
+
+
+class TestTheTrackingAnalysis:
+    """Blips are found and filed at the moment the clip is registered.
+
+    The contract that matters is the same one the rest of this module lives under:
+    nothing here may raise into the frame loop. An analysis that fails costs a badge on
+    a review card; a watcher that stops recording because of it is a bug, and one that
+    stops watching is much worse. So the failure paths are asserted as hard as the
+    happy one.
+    """
+
+    BOX = (160, 90, 320, 180)
+
+    def _ring(self, *, flip_at=None, count=40):
+        """A ring of one well-behaved track, optionally flipping identity mid-way.
+
+        Detection and track agree on every sample, so nothing here reads as a dropout —
+        the only anomaly is the one a test asks for.
+        """
+        track = DetectionTrack()
+        for i in range(count):
+            label = "lbl-b" if flip_at and flip_at <= i < flip_at + 3 else "lbl-a"
+            track.push(
+                WALLCLOCK_OFFSET + 90.0 + i,
+                [_Det(self.BOX, label_uuid=label)],
+                [_Trk(self.BOX, label_uuid=label)],
+                (640, 360),
+            )
+        return track
+
+    def _clip(self, tmp_path):
+        clip = tmp_path / "a.mp4"
+        clip.write_bytes(b"\x00")
+        return {
+            "path": str(clip),
+            "startedAt": datetime.fromtimestamp(WALLCLOCK_OFFSET + 90.0, tz=timezone.utc).isoformat(),
+            "durationS": 45.0,
+            "sizeBytes": 1,
+            "overlay": True,
+        }
+
+    async def _attach(self, recorder, tmp_path, ring):
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        await recorder.attach_recording(
+            _signal(EventPhase.END, at=130.0),
+            event_uuid,
+            self._clip(tmp_path),
+            context=_context(),
+            detection_track=ring,
+        )
+
+    async def test_a_flipping_identity_is_found_and_filed(self, recorder, store, tmp_path):
+        await self._attach(recorder, tmp_path, self._ring(flip_at=10))
+
+        assert len(store.blips) == 1
+        filed = store.blips[0]
+        assert filed.recording_uuid == "recording-1"
+        assert [b.kind for b in filed.blips] == ["identity_flip"]
+        assert filed.blips[0].harvestable
+
+    async def test_a_clean_clip_files_nothing_at_all(self, recorder, store, tmp_path):
+        """The conditional that makes the test above mean something: the same path, the
+        same clip, no anomaly — and no request. A badge on every event would be noise."""
+        await self._attach(recorder, tmp_path, self._ring())
+
+        assert store.blips == []
+        assert len(store.recordings) == 1, "the recording is registered either way"
+
+    async def test_a_missing_sidecar_does_not_cost_us_the_recording(self, recorder, store, tmp_path):
+        """No overlay means nothing to analyse. The clip is still the artifact."""
+        event_uuid = await _open(recorder, _signal(EventPhase.START), _context())
+        clip = self._clip(tmp_path)
+        clip["overlay"] = False
+        await recorder.attach_recording(
+            _signal(EventPhase.END, at=130.0), event_uuid, clip, context=_context(), detection_track=None
+        )
+
+        assert store.blips == []
+        assert len(store.recordings) == 1
+
+    async def test_an_unreadable_sidecar_is_swallowed(self, recorder, store, tmp_path, monkeypatch):
+        """Whatever the disk does, the frame loop must not see it."""
+        import apps.tasks_server.tasks._watch_event_recorder as module
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(module.Path, "read_text", _boom)
+        await self._attach(recorder, tmp_path, self._ring(flip_at=10))
+
+        assert store.blips == []
+        assert len(store.recordings) == 1, "the recording still landed"
+
+    async def test_a_database_refusal_is_swallowed(self, recorder, store, tmp_path):
+        store.fail_blips = True
+        await self._attach(recorder, tmp_path, self._ring(flip_at=10))
+
+        assert store.blips == []
+        assert len(store.recordings) == 1
+        assert any("Tracking analysis skipped" in line for line in store.logs)

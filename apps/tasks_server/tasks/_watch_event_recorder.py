@@ -44,6 +44,7 @@ failure is.
 
 import asyncio
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -104,6 +105,14 @@ def _payload_models() -> Tuple[Any, Any, Any]:
     from db_client.models.watch_event_update import WatchEventUpdate
 
     return WatchEventCreate, WatchEventUpdate, RecordingCreate
+
+
+def _blip_payload_models() -> Tuple[Any, Any]:
+    """Deferred for the same bootstrap reason as `_payload_models` above."""
+    from db_client.models.event_blip_payload import EventBlipPayload
+    from db_client.models.replace_event_blips_request import ReplaceEventBlipsRequest
+
+    return ReplaceEventBlipsRequest, EventBlipPayload
 
 
 @dataclass
@@ -392,7 +401,10 @@ class WatchEventRecorder:
             response = await asyncio.to_thread(api.create_recording, payload)
             if response.status != JsonValues.SUCCESS or response.recording is None:
                 raise RuntimeError(response.message or "db refused the recording")
-            return response.recording.uuid
+            recording_uuid = response.recording.uuid
+            if overlay_path and event_uuid:
+                await self._analyse_blips(event_uuid, recording_uuid, overlay_path)
+            return recording_uuid
         except Exception as e:
             self._failures += 1
             logger.exception("Could not register recording for rule %s", signal.rule_name)
@@ -468,6 +480,59 @@ class WatchEventRecorder:
             logger.warning("Could not write detection overlay for %s: %s", signal.rule_name, e)
             self._log(f"Clip overlay not written ({signal.rule_name}): {e}")
             return None
+
+    async def _analyse_blips(self, event_uuid: str, recording_uuid: str, overlay_path: Path) -> None:
+        """Find where tracking went wrong in the clip just registered, and file it.
+
+        Runs here, inline, rather than in a task of its own. The analysis is a JSON read
+        and some arithmetic over a few hundred samples — no inference, no video decode —
+        so the orchestration a separate task would need costs more than the work it
+        would schedule, and this is the one moment where the clip, its sidecar and its
+        recording uuid are all in hand at once.
+
+        The read is threaded even so. It is small, but it is disk, and the frame loop is
+        the one thing in this process that must never wait on disk.
+
+        **Never raises**, on the same contract as everything else in this module: a
+        watcher that stops recording events because an analysis hiccuped is a bug, and
+        one that stops *watching* for it is far worse. A missing analysis costs a badge
+        on a review card; there is no correctness the frame loop depends on here.
+        """
+        try:
+            from apps.helpers.recordings.blips import analyse_overlay
+
+            document = await asyncio.to_thread(lambda: json.loads(Path(overlay_path).read_text()))
+            blips = await asyncio.to_thread(analyse_overlay, document)
+            if not blips:
+                return
+
+            ReplaceEventBlipsRequest, EventBlipPayload = _blip_payload_models()
+            api = WatchProfilesApi(self._api_client_factory())
+            payload = ReplaceEventBlipsRequest(
+                event_uuid=event_uuid,
+                recording_uuid=recording_uuid,
+                blips=[
+                    EventBlipPayload(
+                        kind=blip.kind,
+                        track_id=blip.track_id,
+                        start_s=blip.start_s,
+                        end_s=blip.end_s,
+                        severity=blip.severity,
+                        fault=blip.fault,
+                        harvestable=blip.harvestable,
+                        detail=dict(blip.detail),
+                    )
+                    for blip in blips
+                ],
+            )
+            response = await asyncio.to_thread(api.replace_event_blips, payload)
+            if response.status != JsonValues.SUCCESS:
+                raise RuntimeError(response.message or "db refused the blips")
+            logger.info("Filed %d tracking blip(s) for event %s", len(blips), event_uuid)
+        except Exception as e:
+            self._failures += 1
+            logger.warning("Could not analyse tracking for event %s: %s", event_uuid, e)
+            self._log(f"Tracking analysis skipped for this clip: {e}")
 
     # ── card art ─────────────────────────────────────────────────────────────
 
