@@ -49,6 +49,9 @@ import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
+// Shared with the event modal, which names the same findings from the other end of the
+// pipeline. Two spellings of "detector dropout" read as two different problems.
+import { blipKindText } from '/app-static/js/shared/domain/blips.js';
 
 /** Candidates per page. Matches the review grid's feel on a full-width modal. */
 const PAGE_SIZE = 60;
@@ -83,17 +86,6 @@ const SORT_MODES = [
   { value: 'created_at', text: 'Sort: found order', group: null },
 ];
 
-/** Human-readable names for the blip kinds the analyser emits. */
-const BLIP_KIND_TEXT = {
-  identity_flip: 'identity flip',
-  identity_switch: 'identity switch',
-  detector_dropout: 'detector dropout',
-  full_dropout: 'lost entirely',
-  tracker_dropout: 'tracker dropout',
-  occlusion_merge: 'merged while overlapping',
-  ghost: 'false positive',
-  confidence_dip: 'confidence dip',
-};
 
 /**
  * Mount the triage panel for one run.
@@ -744,7 +736,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
 
   /** "identity flip · 9 of 121 frames disagree · proposing cat_a" */
   function _claimText(geometry, proposedLabelUuid) {
-    const parts = [BLIP_KIND_TEXT[geometry.sourceBlipKind] ?? geometry.sourceBlipKind ?? 'tracking issue'];
+    const parts = [blipKindText(geometry.sourceBlipKind)];
     const disagreed = geometry.sourceBlipSamples;
     const total = geometry.sourceTrackSamples;
     // Only stated when both numbers are known. "9 frames disagree" without the total is

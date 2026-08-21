@@ -142,6 +142,21 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
     badge.dataset.testid = 'event-card-timelapse-badge';
     badges.appendChild(badge);
   }
+  // What the tracking analyser found, if anything. Without this the findings are only
+  // discoverable by opening every event in the grid, which for a feature whose whole
+  // value is "these are the frames worth training on" makes it unfindable.
+  //
+  // Every blip counts toward it, including the ones the tracker caused and which can
+  // never be harvested: the badge says "the analyser found something here", and a card
+  // that stayed silent while its detail view listed three problems would be a lie.
+  const blipTotal = Object.values(event.blipCounts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+  if (blipTotal) {
+    const badge = el('span', 'event-card__badge event-card__badge--blips',
+      `⚠ ${blipTotal} tracking issue${blipTotal === 1 ? '' : 's'}`);
+    badge.dataset.testid = 'event-card-blip-badge';
+    badges.appendChild(badge);
+  }
+
   if (badges.childElementCount) media.appendChild(badges);
 
   // The checkbox is the *only* thing on the card that selects on a plain click; the

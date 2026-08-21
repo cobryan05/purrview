@@ -149,6 +149,20 @@ def _make_watch_events_mock():
     return handle
 
 
+def _make_event_blips_mock():
+    """The event detail modal asks for one event's tracking findings whenever it opens.
+
+    Mocked here for the reason spelled out on FILTER_CHAINS_PROXY below: unmocked, this
+    proxy opens a real connection to db_server, so every test that opens an event would
+    pass or fail on whether a live stack happened to be running.
+    """
+
+    async def handle(path: str, request):
+        return JSONResponse(content={"status": "success", "blips": [], "total": 0})
+
+    return handle
+
+
 def _make_recordings_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "recordings": [], "recording": None})
@@ -253,6 +267,7 @@ def live_server() -> Generator[str, None, None]:
         ("FILTER_CHAINS_PROXY", _make_filter_chains_mock()),
         ("PREVIEW_RUNS_PROXY", _make_preview_runs_mock()),
         ("WATCH_EVENTS_PROXY", _make_watch_events_mock()),
+        ("EVENT_BLIPS_PROXY", _make_event_blips_mock()),
         ("RECORDINGS_PROXY", _make_recordings_mock()),
     ]
     originals = []

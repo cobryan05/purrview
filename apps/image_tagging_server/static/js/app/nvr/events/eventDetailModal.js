@@ -36,6 +36,8 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
+import { createBlipsPanel } from './blipsPanel.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
 
@@ -280,6 +282,35 @@ export function openEventDetailModal(
   let mediaRows = [];
 
   /**
+   * Move the open clip to a moment, in clip-relative seconds.
+   *
+   * Shares the readiness dance with the arrive-at-a-timestamp path above and for the
+   * same reason: `currentTime` written before the metadata is known is silently
+   * discarded, and the player would sit at zero looking as though the button did
+   * nothing. Timelapses are refused rather than seeked — a blip's seconds are the
+   * clip's time base, and a timelapse compresses hours into them.
+   */
+  function seekVideoTo(seconds) {
+    if (!video || video.dataset.kind === 'timelapse') return;
+    const apply = () => {
+      video.currentTime = Math.max(0, Math.min(seconds, (video.duration || seconds) - 0.01));
+    };
+    if (video.readyState >= 1) apply();
+    else video.addEventListener('loadedmetadata', apply, { once: true });
+  }
+
+  // Mounted once and moved into each rebuild of the sidebar, rather than rebuilt with
+  // it: the panel owns an in-flight fetch and a selection, and recreating it per event
+  // would drop both on the floor mid-load.
+  const blipsHost = el('div', 'event-detail__blips');
+  const blipsPanel = createBlipsPanel(blipsHost, {
+    onSeek: seekVideoTo,
+    // Handed over in flight. The claims name labels by uuid, and the panel is drawn
+    // from a fetch that usually answers first.
+    labels: fetchLabels().catch(() => new Map()),
+  });
+
+  /**
    * Fetch a recording's full row and show it, degrading to the snapshot.
    *
    * The list only carries a summary of each recording — enough to draw a badge and
@@ -377,6 +408,9 @@ export function openEventDetailModal(
     video.preload = 'metadata';
     video.src = recordingFileUrl(recording.uuid);
     video.dataset.testid = 'event-detail-video';
+    // Read back by `seekVideoTo`: a blip's timestamps are the clip's time base, so the
+    // one thing they must never be applied to is the timelapse tab.
+    video.dataset.kind = isTimelapse ? 'timelapse' : 'clip';
     mediaPane.appendChild(video);
 
     // Arrived from a harvested frame asking about one instant. Seeking has to wait for
@@ -585,6 +619,11 @@ export function openEventDetailModal(
       sidebar.appendChild(detailRow('Ended by', 'The runaway-event cap, not the subject leaving'));
     }
 
+    // Above the delete button, below the facts: the findings are something to act on,
+    // and burying them under the one destructive control in the modal would be an odd
+    // place to put the feature's only entry point.
+    sidebar.appendChild(blipsHost);
+
     const actions = el('div', 'event-detail__side-actions');
     actions.appendChild(button('Delete event', () => void removeEvent(), {
       testid: 'event-detail-delete',
@@ -636,6 +675,10 @@ export function openEventDetailModal(
     savedHint.textContent = '';
     renderHeader();
     renderSidebar();
+    // Fire and forget, like the overlay: the findings are a second opinion about the
+    // clip, and making the modal wait on them would slow every event down for a feature
+    // most of them have nothing to show for.
+    void blipsPanel.show(event);
     mediaSwitcher = buildMediaSwitcher();
     renderSnapshotOnly(mediaRows.length ? 'Loading…' : 'Nothing was recorded for this event.');
     if (mediaRows.length) void showMedia(mediaRows[0]);

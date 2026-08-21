@@ -144,3 +144,40 @@ class TestTheWatchEventsProxyForwardsWrites:
 
         assert r.status_code == 200, r.text
         assert proxied == [("GET", "facets")]
+
+
+class TestTheEventBlipsProxyForwardsBothMethods:
+    """Same seam as the watch-events proxy above, for the same reason.
+
+    The blip triage surface lives entirely in the browser, which can only reach
+    db_server through this port. A GET-only route here would list findings perfectly
+    and then answer 405 to the two things the panel exists to do — mark a selection
+    dismissed, and (through the harvest run's own client) file a fresh analysis.
+    """
+
+    @pytest.fixture
+    def proxied(self, monkeypatch):
+        from fastapi.responses import JSONResponse
+
+        import apps.image_tagging_server.web as web_module
+
+        seen = []
+
+        async def capture(path, request):
+            seen.append((request.method, path))
+            return JSONResponse(content={"status": "success"})
+
+        monkeypatch.setattr(web_module.EVENT_BLIPS_PROXY, "handle_request", capture)
+        return seen
+
+    async def test_listing_one_events_blips_reaches_the_proxy(self, http_client, proxied):
+        r = await http_client.get("/api/event-blips/?event_uuid=e1")
+
+        assert r.status_code == 200, r.text
+        assert proxied == [("GET", "")]
+
+    async def test_setting_states_reaches_the_proxy(self, http_client, proxied):
+        r = await http_client.post("/api/event-blips/states", json={"uuids": ["a"], "state": "dismissed"})
+
+        assert r.status_code == 200, r.text
+        assert proxied == [("POST", "states")]

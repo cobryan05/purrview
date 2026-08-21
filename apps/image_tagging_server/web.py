@@ -90,6 +90,11 @@ WATCH_EVENTS_PROXY = ReverseProxy(
     port=APPS_CONFIG[APPS.DB_SERVER].port,
     path="/api/watch-events",
 )
+EVENT_BLIPS_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/event-blips",
+)
 RECORDINGS_PROXY = ReverseProxy(
     host=APPS_CONFIG[APPS.DB_SERVER].host,
     port=APPS_CONFIG[APPS.DB_SERVER].port,
@@ -373,6 +378,16 @@ class WebApp:
             # so the method list here is part of the API's surface, not a detail —
             # keep it in step with what `/api/watch-events*` actually exposes.
             return await WATCH_EVENTS_PROXY.handle_request(path, request)
+
+        @self._app.api_route(
+            "/api/event-blips/{path:path}",
+            methods=["GET", "POST"],
+        )
+        async def proxy_event_blips(request: Request, path: str):
+            # GET lists them, POST covers `/replace` and `/states`. No DELETE, matching
+            # db_server: a blip is never deleted on its own — it goes with its event, or
+            # it expires when its clip is swept.
+            return await EVENT_BLIPS_PROXY.handle_request(path, request)
 
         @self._app.api_route(
             "/api/recordings/{path:path}",

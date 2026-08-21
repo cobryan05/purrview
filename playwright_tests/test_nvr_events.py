@@ -162,12 +162,43 @@ def _issues_a_search(page: Page, queries: list):
         yield
 
 
-def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, deletes=None):
+def _blip(**overrides) -> dict:
+    """One EventBlipRead, camelCased the way the API sends it.
+
+    Harvestable by default, because that is the row the feature exists for; the
+    unharvestable cases are spelled out at the call site so a test that depends on one
+    says so.
+    """
+    blip = {
+        "uuid": "blip-uuid-0001",
+        "eventUuid": EVENT_UUID,
+        "recordingUuid": RECORDING_UUID,
+        "kind": "identity_flip",
+        "trackId": 3,
+        "startS": 12.0,
+        "endS": 15.5,
+        "severity": 0.82,
+        "fault": "detector",
+        "harvestable": True,
+        "state": "new",
+        "detailJson": {"modalLabel": "lbl-1", "sawLabel": "lbl-2", "samples": 9, "trackSamples": 121},
+        "createdAt": "2026-08-18T09:16:00",
+        "updatedAt": "2026-08-18T09:16:00",
+    }
+    blip.update(overrides)
+    return blip
+
+
+def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, deletes=None, blips=None):
     """Route every call the Events page makes, and record the search queries.
 
     Returns the list of parsed query dicts, so a test can assert that a filter actually
     reached the server rather than merely appearing on screen. Pass `deletes` a list to
     also capture the uuid batches sent to the bulk-delete endpoint.
+
+    `blips` defaults to none found. It is routed unconditionally rather than only when a
+    test asks for it: the detail modal now fetches them for every event it opens, and an
+    unrouted request would leave the page reaching past the mocks at the real server.
     """
     queries = []
     # The mock's own copy of the result set: a delete removes rows from it, so the page
@@ -285,7 +316,30 @@ def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, de
             ),
         )
 
+    rows_blips = list(blips) if blips is not None else []
+
+    def _fulfil_blips(route):
+        if route.request.url.endswith("/states"):
+            payload = json.loads(route.request.post_data)
+            # Actually move them, so a panel that re-reads after dismissing shows the new
+            # state rather than the old one served again.
+            for row in rows_blips:
+                if row["uuid"] in payload["uuids"]:
+                    row["state"] = payload["state"]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "updated": len(payload["uuids"])}),
+            )
+            return
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "blips": rows_blips, "total": len(rows_blips)}),
+        )
+
     page.route(re.compile(r"/api/watch-events"), _fulfil_events)
+    page.route(re.compile(r"/api/event-blips"), _fulfil_blips)
     page.route(re.compile(r"/api/recordings"), _fulfil_recordings)
     page.route(re.compile(r"/api/sources/get"), _fulfil_sources)
     return queries
@@ -1007,3 +1061,184 @@ class TestWalkingTheEventsFromTheModal:
         expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
         expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 1")
         expect(page.locator("[data-testid='event-detail-position']")).to_have_text("1 / 2")
+
+
+class TestTheTrackingBlipsPanel:
+    """The event modal is where a tracking finding becomes training data.
+
+    Analysis is automatic, so by the time anyone opens an event the findings already
+    exist — but harvesting frames from them is deliberately a human decision, and this
+    panel is the only place that decision can be made. What matters is that it never
+    proposes something it cannot honestly do: a finding the tracker caused is not
+    harvestable, and a checkbox offering it anyway would quietly pad the training set
+    with frames the detector already gets right.
+    """
+
+    def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
+        _mock(page, **mock_kwargs)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+
+    def _mock_launch(self, page: Page, calls: list):
+        def handle_create(route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "tc-harvest-1"}),
+            )
+
+        page.route("**/api/tasks/configs/create", handle_create)
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-harvest-1"}),
+            ),
+        )
+
+    def test_an_event_with_no_findings_says_nothing(self, page: Page, base_url: str):
+        """The negative half, and the one that carries the weight: an event with no row
+        is either clean or never analysed, and the two are not distinguishable from the
+        outside. A heading announcing a clean bill of health would be a guess."""
+        self._open_modal(page, base_url, blips=[])
+
+        expect(page.locator("[data-testid='event-blips-title']")).to_have_count(0)
+
+    def test_a_finding_is_listed_with_the_claim_behind_it(self, page: Page, base_url: str):
+        """A bare "identity flip at 12s" is not judgeable. "9 of 121 frames" is."""
+        self._open_modal(page, base_url, blips=[_blip()])
+
+        expect(page.locator("[data-testid='event-blips-title']")).to_contain_text("1")
+        row = page.locator("[data-testid='event-blip-row']")
+        expect(row).to_contain_text("identity flip")
+        expect(row).to_contain_text("12.0–15.5s")
+        expect(page.locator("[data-testid='event-blip-claim']")).to_contain_text("9 of 121 frames")
+
+    def test_a_tracker_fault_offers_no_checkbox_and_says_why(self, page: Page, base_url: str):
+        """The load-bearing distinction of the whole feature. Harvesting a tracker fault
+        pads the set with frames the model already gets right — and from the outside a
+        poisoned harvest looks exactly like a successful one."""
+        self._open_modal(
+            page,
+            base_url,
+            blips=[
+                _blip(),
+                _blip(uuid="blip-uuid-0002", kind="tracker_dropout", fault="tracker", harvestable=False),
+            ],
+        )
+
+        rows = page.locator("[data-testid='event-blip-row']")
+        expect(rows).to_have_count(2)
+        # The conditional is the point: the harvestable row has a checkbox, this one
+        # does not, and it explains itself rather than merely being inert.
+        expect(rows.nth(0).locator("[data-testid='event-blip-check']")).to_have_count(1)
+        expect(rows.nth(1).locator("[data-testid='event-blip-check']")).to_have_count(0)
+        expect(rows.nth(1).locator("[data-testid='event-blip-blocked']")).to_contain_text("tracker was at fault")
+
+    def test_an_expired_finding_cannot_be_harvested_or_played(self, page: Page, base_url: str):
+        """Its clip has been swept. Offering either would open a dead player or start a
+        run that can never find a frame."""
+        self._open_modal(page, base_url, blips=[_blip(state="expired")])
+
+        row = page.locator("[data-testid='event-blip-row']")
+        expect(row.locator("[data-testid='event-blip-check']")).to_have_count(0)
+        expect(row.locator("[data-testid='event-blip-jump']")).to_have_count(0)
+        expect(row.locator("[data-testid='event-blip-blocked']")).to_contain_text("deleted")
+
+    def test_harvest_sends_only_the_selected_findings(self, page: Page, base_url: str):
+        """The task takes an explicit uuid list, so "select one, harvest all" would be
+        invisible here and only discoverable by the frames that turned up in Review."""
+        calls = []
+        self._mock_launch(page, calls)
+        self._open_modal(
+            page,
+            base_url,
+            blips=[_blip(), _blip(uuid="blip-uuid-0002", startS=20.0, endS=22.0)],
+        )
+
+        page.locator("[data-testid='event-blip-row']").nth(1).locator("[data-testid='event-blip-check']").check()
+        page.locator("[data-testid='event-blips-harvest']").click()
+
+        wait_until(
+            page,
+            lambda: len(calls) >= 1,
+            lambda: f"Expected 1 POST to /api/tasks/configs/create, got {len(calls)}",
+        )
+        assert calls[0]["typename"] == "HarvestBlipFramesTask"
+        assert calls[0]["params"]["blip_uuids"] == ["blip-uuid-0002"]
+
+    def test_harvest_is_dead_until_something_is_selected(self, page: Page, base_url: str):
+        """A run over nothing is a task instance that exists only to fail."""
+        self._open_modal(page, base_url, blips=[_blip()])
+
+        harvest = page.locator("[data-testid='event-blips-harvest']")
+        expect(harvest).to_be_disabled()
+
+        page.locator("[data-testid='event-blip-check']").check()
+
+        expect(harvest).to_be_enabled()
+        expect(harvest).to_contain_text("1")
+
+    # There is deliberately no test that the jump button moves `currentTime`. The clip
+    # these tests serve is an empty body — the suite asserts the player's element and
+    # src, never playback, which would be a test of the browser's decoder — so no
+    # metadata ever arrives and the seek's readiness guard correctly never fires. A test
+    # of it here would be a test of the mock. What the seek is guarded by (the button is
+    # absent once the clip has been swept) is covered above.
+
+    def test_dismissing_moves_the_finding_rather_than_hiding_it(self, page: Page, base_url: str):
+        """Dismissing is a judgement, not a delete: the row stays, says so, and can still
+        be harvested if the reviewer changes their mind."""
+        self._open_modal(page, base_url, blips=[_blip()])
+
+        page.locator("[data-testid='event-blip-check']").check()
+        page.locator("[data-testid='event-blips-dismiss']").click()
+
+        row = page.locator("[data-testid='event-blip-row']")
+        expect(row).to_have_count(1)
+        expect(row.locator("[data-testid='event-blip-blocked']")).to_contain_text("dismissed")
+        expect(row.locator("[data-testid='event-blip-check']")).to_have_count(1)
+
+    def test_the_panel_follows_the_walk(self, page: Page, base_url: str):
+        """The modal walks events in place. A panel that kept the previous event's
+        findings would attribute one event's mistakes to another."""
+        events = _events(2)
+        blips = [_blip(eventUuid=events[0]["uuid"])]
+        _mock(page, events=events, blips=blips)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+        expect(page.locator("[data-testid='event-blip-row']")).to_have_count(1)
+
+        # The mock answers every event with the same row, so filtering client-side is
+        # what is under test here: the panel asks per event and repaints from the answer.
+        page.locator("[data-testid='event-detail-next']").click()
+
+        expect(page.locator("[data-testid='event-detail-title']")).to_contain_text("Cat 1")
+        expect(page.locator("[data-testid='event-blip-row']")).to_have_count(1)
+
+
+class TestTheCardSaysWhenTrackingWentWrong:
+    def test_a_card_with_findings_is_badged(self, page: Page, base_url: str):
+        """Without this the findings are only discoverable by opening every event in the
+        grid, which for a feature whose value is "these are the frames worth training
+        on" makes it unfindable."""
+        _mock(page, events=[_event(blipCounts={"identity_flip": 2, "tracker_dropout": 1})])
+        _open_events_pane(page, base_url)
+
+        badge = page.locator("[data-testid='event-card-blip-badge']")
+        expect(badge).to_be_visible()
+        # Every blip counts, the unharvestable ones included: the badge says "the
+        # analyser found something here", and a card that stayed quiet while its detail
+        # view listed three problems would be a lie.
+        expect(badge).to_contain_text("3")
+
+    def test_a_clean_card_is_not_badged(self, page: Page, base_url: str):
+        _mock(page, events=[_event()])
+        _open_events_pane(page, base_url)
+
+        expect(page.locator("[data-testid='event-card']")).to_have_count(1)
+        expect(page.locator("[data-testid='event-card-blip-badge']")).to_have_count(0)
