@@ -747,6 +747,46 @@ class TestZonesModal:
 
         expect(page.locator("[data-testid='watch-zone-row'][data-role='mask']")).to_have_count(2)
 
+    def test_clicking_the_first_point_again_closes_the_polygon(self, page: Page, base_url: str):
+        """Clicking back on the start vertex is the only close affordance a user finds
+        without being told; a click anywhere else must still just add a vertex."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        page.locator("[data-testid='watch-zones-kind']").select_option("polygon")
+
+        canvas = page.locator("[data-testid='watch-zones-canvas']")
+        box = canvas.bounding_box()
+        for dx, dy in [(60, 60), (220, 60), (220, 200)]:
+            page.mouse.click(box["x"] + dx, box["y"] + dy)
+
+        # A fourth point away from the start does not close it.
+        page.mouse.click(box["x"] + 60, box["y"] + 200)
+        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(2)
+
+        # Back on the first point, it does.
+        page.mouse.click(box["x"] + 62, box["y"] + 62)
+        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(3)
+        # The list renders zones before masks, so the new one is the last *zone* row.
+        expect(page.locator("[data-testid='watch-zone-row'][data-role='zone']").last).to_contain_text("poly")
+
+    def test_right_click_closes_the_polygon(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-zones-btn']").first.click()
+        page.locator("[data-testid='watch-zones-kind']").select_option("polygon")
+
+        canvas = page.locator("[data-testid='watch-zones-canvas']")
+        box = canvas.bounding_box()
+        for dx, dy in [(60, 60), (220, 60), (140, 200)]:
+            page.mouse.click(box["x"] + dx, box["y"] + dy)
+        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(2)
+
+        page.mouse.click(box["x"] + 140, box["y"] + 200, button="right")
+        expect(page.locator("[data-testid='watch-zone-row']")).to_have_count(3)
+
     def test_saving_posts_the_regions(self, page: Page, base_url: str):
         """Regions save to the source directly — the camera's geometry is not the
         watcher's to hold hostage until someone saves the watcher."""

@@ -27,6 +27,9 @@ import {
 const MIN_NORMALISED_SIZE = 0.01;
 const STAGE_WIDTH = 720;
 const STAGE_HEIGHT = 405;
+// How close (in stage pixels) a click has to land to the first vertex to mean "close it".
+// Generous, because the alternative — an extra vertex on top of the first — is invisible.
+const CLOSE_SNAP_PX = 12;
 
 const ROLE_STYLES = {
   [REGION_ROLE_ZONE]: { stroke: '#4ade80', fill: 'rgba(74, 222, 128, 0.15)' },
@@ -89,7 +92,8 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
     shell.dialog.appendChild(el('h3', null, `Regions — ${sourceName || sourceUuid}`));
 
     const hint = el('p', 'panel-hint',
-      'Drag to draw a box, or click points and press Enter to close a polygon. '
+      'Drag to draw a box. For a polygon, click each corner, then close it by clicking the '
+      + 'first point again, right-clicking, double-clicking, or pressing Enter — Escape discards it. '
       + 'Zones are named regions a rule can point at; masks suppress any detection whose '
       + 'centre falls inside them, for every rule. '
       + 'Coordinates are stored relative to the frame, so they survive a camera resolution change.');
@@ -172,6 +176,7 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
     kindSelect.addEventListener('change', () => {
       drawKind = kindSelect.value;
       pendingPolygon = [];
+      hoverPoint = null;
       draw();
     });
     toolbar.appendChild(kindSelect);
@@ -189,6 +194,8 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
     let pendingPolygon = [];
     let dragStart = null;
     let selectedUuid = null;
+    /** @type {[number, number]|null} last cursor position, for the rubber-band segment */
+    let hoverPoint = null;
 
     function pointsToPixels(points) {
       return points.map(([x, y]) => [x * overlay.width, y * overlay.height]);
@@ -237,6 +244,7 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
       // In-progress polygon, dashed so it reads as not-yet-real.
       if (pendingPolygon.length) {
         const style = ROLE_STYLES[drawRole];
+        const closing = hoverPoint != null && isNearFirstPoint(hoverPoint);
         ctx.save();
         ctx.strokeStyle = style.stroke;
         ctx.setLineDash([5, 4]);
@@ -245,6 +253,12 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
         const pts = pointsToPixels(pendingPolygon);
         ctx.moveTo(pts[0][0], pts[0][1]);
         for (const [x, y] of pts.slice(1)) ctx.lineTo(x, y);
+        // Rubber-band the segment under the cursor, snapped to the first vertex when the
+        // next click would close the shape — that snap *is* the affordance.
+        if (hoverPoint) {
+          const [hx, hy] = closing ? pts[0] : pointsToPixels([hoverPoint])[0];
+          ctx.lineTo(hx, hy);
+        }
         ctx.stroke();
         for (const [x, y] of pts) {
           ctx.beginPath();
@@ -252,8 +266,32 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
           ctx.fillStyle = style.stroke;
           ctx.fill();
         }
+        // A filled halo on the first vertex when clicking there would close the polygon.
+        if (closing) {
+          ctx.beginPath();
+          ctx.setLineDash([]);
+          ctx.arc(pts[0][0], pts[0][1], CLOSE_SNAP_PX * 0.75, 0, Math.PI * 2);
+          ctx.fillStyle = style.fill;
+          ctx.fill();
+          ctx.strokeStyle = style.stroke;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
         ctx.restore();
       }
+    }
+
+    /**
+     * True when `point` (normalised) lands on the polygon's first vertex closely enough to
+     * mean "close it". Requires 3 points already, so the second click of a fresh polygon
+     * can't collapse it into nothing.
+     */
+    function isNearFirstPoint(point) {
+      if (pendingPolygon.length < 3) return false;
+      const [fx, fy] = pendingPolygon[0];
+      const dx = (point[0] - fx) * overlay.width;
+      const dy = (point[1] - fy) * overlay.height;
+      return Math.hypot(dx, dy) <= CLOSE_SNAP_PX;
     }
 
     function defaultName(role) {
@@ -359,19 +397,51 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
     }
 
     overlay.addEventListener('pointerdown', (event) => {
+      // Right-click closes the polygon; it must never also drop a vertex.
+      if (event.button !== 0) return;
       if (drawKind === 'polygon') {
         const point = toNormalised(event);
-        if (point) {
-          pendingPolygon.push(point);
-          draw();
+        if (!point) return;
+        if (isNearFirstPoint(point)) {
+          commitPolygon();
+          return;
         }
+        pendingPolygon.push(point);
+        draw();
         return;
       }
       dragStart = toNormalised(event);
       if (dragStart) overlay.setPointerCapture(event.pointerId);
     });
 
+    overlay.addEventListener('contextmenu', (event) => {
+      if (drawKind !== 'polygon' || !pendingPolygon.length) return;
+      event.preventDefault();
+      commitPolygon();
+    });
+
+    // Double-click closes too, but the two clicks that make it up have already added two
+    // vertices — drop the stray one so the shape ends where the user stopped clicking.
+    overlay.addEventListener('dblclick', (event) => {
+      if (drawKind !== 'polygon' || pendingPolygon.length < 4) return;
+      event.preventDefault();
+      pendingPolygon.pop();
+      commitPolygon();
+    });
+
+    overlay.addEventListener('pointerleave', () => {
+      if (!hoverPoint) return;
+      hoverPoint = null;
+      draw();
+    });
+
     overlay.addEventListener('pointermove', (event) => {
+      if (drawKind === 'polygon') {
+        if (!pendingPolygon.length) return;
+        hoverPoint = toNormalised(event);
+        draw();
+        return;
+      }
       if (!dragStart) return;
       const current = toNormalised(event);
       if (!current) return;
@@ -417,6 +487,8 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
       }
       addRegion('polygon', pendingPolygon);
       pendingPolygon = [];
+      hoverPoint = null;
+      draw();
     }
 
     function onKeyDown(event) {
@@ -429,6 +501,7 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
         event.preventDefault();
         event.stopPropagation();
         pendingPolygon = [];
+        hoverPoint = null;
         draw();
       }
     }
