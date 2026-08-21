@@ -48,6 +48,7 @@ from .types import (
     BBoxTagLink,
     BBoxTagTerm,
     BBoxVerificationTerm,
+    BlipState,
     Dataset,
     DatasetCreate,
     DatasetFilterCriteria,
@@ -55,6 +56,8 @@ from .types import (
     DatasetRead,
     DatasetUpdate,
     DateTerm,
+    EventBlip,
+    EventBlipRead,
     EventRecordingRead,
     FilenameTerm,
     FilterChain,
@@ -6885,6 +6888,8 @@ class DbClient:
         start_from: Optional[datetime] = None,
         start_to: Optional[datetime] = None,
         has_recording: Optional[bool] = None,
+        has_blips: Optional[bool] = None,
+        review_state: Optional[str] = None,
         limit: int = 200,
         offset: int = 0,
     ) -> Tuple[List[WatchEventRead], int]:
@@ -6916,6 +6921,14 @@ class DbClient:
                 # `recordings.event_uuid` is indexed, so this stays a lookup per row.
                 owns_media = select(Recording.uuid).where(Recording.event_uuid == WatchEvent.uuid).exists()
                 stmt = stmt.where(owns_media if has_recording else ~owns_media)
+            if has_blips is not None:
+                # EXISTS for the same reason as recordings above: an event owns many
+                # blips and no column on the event can answer it. `event_blips.event_uuid`
+                # is indexed, so this stays a lookup per row rather than a scan.
+                flagged = select(EventBlip.uuid).where(EventBlip.event_uuid == WatchEvent.uuid).exists()
+                stmt = stmt.where(flagged if has_blips else ~flagged)
+            if review_state:
+                stmt = stmt.where(WatchEvent.review_state == review_state)
 
             count_stmt = select(func.count()).select_from(stmt.subquery())
             total = (await session.exec(count_stmt)).one()
@@ -6923,7 +6936,8 @@ class DbClient:
             stmt = stmt.order_by(WatchEvent.started_at.desc()).offset(offset).limit(limit)
             result = await session.exec(stmt)
             events = [self._watch_event_to_read(e) for e in result.all()]
-            return await self._attach_event_recordings(session, events), int(total)
+            events = await self._attach_event_recordings(session, events)
+            return await self._attach_event_blip_counts(session, events), int(total)
 
     async def watch_event_facets(self, profile_uuid: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
         """The distinct values each filter dropdown can offer, with display names.
@@ -6972,7 +6986,149 @@ class DbClient:
             if event is None:
                 return None
             read = self._watch_event_to_read(event)
-            return (await self._attach_event_recordings(session, [read]))[0]
+            attached = await self._attach_event_recordings(session, [read])
+            return (await self._attach_event_blip_counts(session, attached))[0]
+
+    # ─── event blips ─────────────────────────────────────────────────────────
+
+    async def _attach_event_blip_counts(self, session: Any, events: List[WatchEventRead]) -> List[WatchEventRead]:
+        """Fill in each event's blip tally with one grouped query for the whole page.
+
+        Same shape and the same reasoning as `_attach_event_recordings`: the grid draws
+        a badge per event, and a query per card would make the list cost scale with the
+        page size.
+
+        Counts every blip, including the ones attributed to the tracker. The badge is
+        "the analyser found things here", and hiding the unharvestable ones would make
+        a card that says nothing while its detail view lists three problems.
+        """
+        if not events:
+            return events
+        uuids = [e.uuid for e in events]
+        rows = (
+            await session.exec(
+                select(EventBlip.event_uuid, EventBlip.kind, func.count())
+                .where(EventBlip.event_uuid.in_(uuids))
+                .group_by(EventBlip.event_uuid, EventBlip.kind)
+            )
+        ).all()
+        by_event: Dict[str, Dict[str, int]] = {}
+        for event_uuid, kind, count in rows:
+            by_event.setdefault(event_uuid, {})[kind] = int(count)
+        for event in events:
+            event.blip_counts = by_event.get(event.uuid, {})
+        return events
+
+    async def replace_event_blips(
+        self,
+        event_uuid: str,
+        blips: Sequence[Dict[str, Any]],
+        recording_uuid: Optional[str] = None,
+    ) -> List[EventBlipRead]:
+        """Write an analysis result, replacing any previous one for the same recording.
+
+        Replace rather than append, because analysis is deterministic over a sidecar
+        that does not change: re-running it must converge rather than accumulate. The
+        delete is scoped to `recording_uuid` when one is given so that re-analysing an
+        event's clip does not discard the blips found in its timelapse.
+
+        Triage state is *not* preserved across a replace. That is deliberate and worth
+        stating: if the analyser now says something different about a span, the earlier
+        decision was made about a different claim, and silently carrying "dismissed"
+        onto a new finding would hide it.
+        """
+        async with self._async_session_maker() as session:
+            stmt = delete(EventBlip).where(EventBlip.event_uuid == event_uuid)
+            if recording_uuid:
+                stmt = stmt.where(EventBlip.recording_uuid == recording_uuid)
+            await session.exec(stmt)
+
+            rows = [
+                EventBlip(
+                    event_uuid=event_uuid,
+                    recording_uuid=recording_uuid,
+                    kind=str(blip.get("kind") or ""),
+                    track_id=int(blip.get("trackId", blip.get("track_id", 0)) or 0),
+                    start_s=float(blip.get("startS", blip.get("start_s", 0.0)) or 0.0),
+                    end_s=float(blip.get("endS", blip.get("end_s", 0.0)) or 0.0),
+                    severity=float(blip.get("severity", 0.0) or 0.0),
+                    fault=str(blip.get("fault") or ""),
+                    harvestable=bool(blip.get("harvestable", False)),
+                    detail_json=dict(blip.get("detail") or {}),
+                )
+                for blip in blips
+            ]
+            for row in rows:
+                session.add(row)
+            await session.commit()
+            for row in rows:
+                await session.refresh(row)
+            return [EventBlipRead.model_validate(row) for row in rows]
+
+    async def list_event_blips(
+        self,
+        event_uuid: Optional[str] = None,
+        recording_uuid: Optional[str] = None,
+        kinds: Optional[Sequence[str]] = None,
+        states: Optional[Sequence[str]] = None,
+        harvestable: Optional[bool] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Tuple[List[EventBlipRead], int]:
+        """Worst first, with the unpaginated total.
+
+        Ordered by severity descending rather than by time, because severity here means
+        "how sure the detector was about what it got wrong" — so the most valuable
+        training data sorts to the top of the queue rather than merely the earliest.
+        """
+        async with self._async_session_maker() as session:
+            stmt = select(EventBlip)
+            if event_uuid:
+                stmt = stmt.where(EventBlip.event_uuid == event_uuid)
+            if recording_uuid:
+                stmt = stmt.where(EventBlip.recording_uuid == recording_uuid)
+            if kinds:
+                stmt = stmt.where(EventBlip.kind.in_(list(kinds)))
+            if states:
+                stmt = stmt.where(EventBlip.state.in_(list(states)))
+            if harvestable is not None:
+                stmt = stmt.where(EventBlip.harvestable == harvestable)
+
+            count_stmt = select(func.count()).select_from(stmt.subquery())
+            total = (await session.exec(count_stmt)).one()
+
+            stmt = stmt.order_by(EventBlip.severity.desc(), EventBlip.start_s).offset(offset).limit(limit)
+            rows = (await session.exec(stmt)).all()
+            return [EventBlipRead.model_validate(row) for row in rows], int(total)
+
+    async def set_event_blip_states(self, uuids: Sequence[str], state: str) -> int:
+        """Bulk triage. Returns how many rows actually moved."""
+        if not uuids:
+            return 0
+        async with self._async_session_maker() as session:
+            result = await session.exec(sa_update(EventBlip).where(EventBlip.uuid.in_(list(uuids))).values(state=state))
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    async def expire_blips_for_recording(self, recording_uuid: str) -> int:
+        """Mark a swept clip's blips unreviewable, without deleting them.
+
+        Retention deletes the video on its own schedule; the finding outlives it. The
+        row stays so the record of what went wrong survives, but nothing will offer to
+        review or harvest it, because the evidence is gone.
+
+        Only untriaged blips move. One already harvested or dismissed has a real
+        outcome, and overwriting that with "expired" would lose it.
+        """
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                sa_update(EventBlip)
+                .where(EventBlip.recording_uuid == recording_uuid)
+                .where(EventBlip.state.in_([BlipState.NEW.value, BlipState.CONFIRMED.value]))
+                .values(state=BlipState.EXPIRED.value)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
 
     async def get_watch_event_snapshot_path(self, uuid: str) -> Optional[str]:
         """The raw path, for the endpoint that streams the file. Deliberately its own
@@ -7000,7 +7156,8 @@ class DbClient:
             await session.commit()
             await session.refresh(event)
             read = self._watch_event_to_read(event)
-            return (await self._attach_event_recordings(session, [read]))[0]
+            attached = await self._attach_event_recordings(session, [read])
+            return (await self._attach_event_blip_counts(session, attached))[0]
 
     async def delete_watch_event(self, uuid: str) -> bool:
         async with self._async_session_maker() as session:
@@ -7147,7 +7304,8 @@ class DbClient:
             await session.commit()
             await session.refresh(event)
             read = self._watch_event_to_read(event)
-            return (await self._attach_event_recordings(session, [read]))[0]
+            attached = await self._attach_event_recordings(session, [read])
+            return (await self._attach_event_blip_counts(session, attached))[0]
 
     async def list_open_watch_events(self, profile_uuid: Optional[str] = None) -> List[WatchEventRead]:
         """Events with no `ended_at` — what resume has to close out after a restart."""

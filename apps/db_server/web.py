@@ -22,10 +22,12 @@ from apps.helpers.db.types import (
     ApiModel,
     BBoxConfidenceRange,
     BBoxUpdate,
+    BlipState,
     DatasetCreate,
     DatasetFilterCriteria,
     DatasetRead,
     DatasetUpdate,
+    EventBlipRead,
     FilterChainCreate,
     FilterChainRead,
     FilterChainUpdate,
@@ -917,6 +919,58 @@ class ListWatchEventsResponse(StatusResponse):
 
 class WatchEventResponse(StatusResponse):
     event: Optional[WatchEventRead] = None
+
+
+class EventBlipPayload(Payload):
+    """One incident, as the analysis task reports it.
+
+    Mirrors `apps.helpers.recordings.blips.Blip.to_dict()`. `harvestable` is sent by the
+    analyser rather than recomputed here on purpose: the rule that decides it lives with
+    the detectors that set `fault`, and re-deriving it at the API boundary would put the
+    same rule in two places to drift apart.
+    """
+
+    kind: str
+    track_id: int = 0
+    start_s: float = 0.0
+    end_s: float = 0.0
+    severity: float = 0.0
+    fault: str = ""
+    harvestable: bool = False
+    detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReplaceEventBlipsRequest(Payload):
+    """A whole analysis result for one event, replacing any previous one.
+
+    Whole-list replace rather than append, because analysis is deterministic over a
+    sidecar that does not change — re-running it must converge rather than accumulate.
+    """
+
+    event_uuid: str
+    recording_uuid: Optional[str] = None
+    blips: List[EventBlipPayload] = Field(default_factory=list)
+
+
+class SetEventBlipStatesRequest(Payload):
+    uuids: List[str] = Field(default_factory=list)
+    state: str = ""
+
+
+class ListEventBlipsResponse(StatusResponse):
+    blips: List[EventBlipRead] = Field(default_factory=list)
+    #: Matches before paging, so the panel can say "N blips" rather than "N so far".
+    total: int = 0
+
+
+class EventBlipsResponse(StatusResponse):
+    blips: List[EventBlipRead] = Field(default_factory=list)
+
+
+class UpdatedCountResponse(StatusResponse):
+    #: How many rows actually moved. Lower than requested when a uuid was already gone
+    #: or already in the target state — a normal outcome, not an error.
+    updated: int = 0
 
 
 class DeleteWatchEventsRequest(Payload):
@@ -4258,6 +4312,8 @@ class WebApp:
             start_from: Optional[datetime] = None,
             start_to: Optional[datetime] = None,
             has_recording: Optional[bool] = None,
+            has_blips: Optional[bool] = None,
+            review_state: Optional[str] = None,
             limit: int = 200,
             offset: int = 0,
         ) -> ListWatchEventsResponse:
@@ -4271,6 +4327,8 @@ class WebApp:
                     start_from=start_from,
                     start_to=start_to,
                     has_recording=has_recording,
+                    has_blips=has_blips,
+                    review_state=review_state,
                     limit=limit,
                     offset=offset,
                 )
@@ -4385,6 +4443,82 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DeleteWatchEventsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ── event blips ──────────────────────────────────────────────────────
+        # Their own `/api/event-blips` prefix rather than nesting under
+        # `/api/watch-events/{uuid}/blips`: blips are queried *across* events for the
+        # cross-event review surface, so an event-scoped path would be the wrong shape
+        # for the main consumer — and it sidesteps the `/{uuid}` ordering trap above.
+
+        @self._app.get(
+            "/api/event-blips",
+            response_model=ListEventBlipsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="list_event_blips",
+        )
+        async def list_event_blips(
+            event_uuid: Optional[str] = None,
+            recording_uuid: Optional[str] = None,
+            kinds: Optional[List[str]] = Query(default=None),
+            states: Optional[List[str]] = Query(default=None),
+            harvestable: Optional[bool] = None,
+            limit: int = 200,
+            offset: int = 0,
+        ) -> ListEventBlipsResponse:
+            try:
+                blips, total = await self._manager.list_event_blips(
+                    event_uuid=event_uuid,
+                    recording_uuid=recording_uuid,
+                    kinds=kinds,
+                    states=states,
+                    harvestable=harvestable,
+                    limit=limit,
+                    offset=offset,
+                )
+                return ListEventBlipsResponse(status=JsonValues.SUCCESS, blips=blips, total=total)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListEventBlipsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/event-blips/replace",
+            response_model=EventBlipsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="replace_event_blips",
+        )
+        async def replace_event_blips(payload: ReplaceEventBlipsRequest) -> EventBlipsResponse:
+            """File one event's analysis result, discarding any previous one.
+
+            POST rather than PUT because the body carries the scope as well as the
+            contents — the caller does not address a resource by path.
+            """
+            try:
+                blips = await self._manager.replace_event_blips(
+                    payload.event_uuid,
+                    [b.model_dump() for b in payload.blips],
+                    recording_uuid=payload.recording_uuid,
+                )
+                return EventBlipsResponse(status=JsonValues.SUCCESS, blips=blips)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return EventBlipsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/event-blips/states",
+            response_model=UpdatedCountResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="set_event_blip_states",
+        )
+        async def set_event_blip_states(payload: SetEventBlipStatesRequest) -> UpdatedCountResponse:
+            """Move a selection of blips to one triage state."""
+            try:
+                if payload.state not in {s.value for s in BlipState}:
+                    raise ValueError(f"unknown blip state {payload.state!r}")
+                updated = await self._manager.set_event_blip_states(payload.uuids, payload.state)
+                return UpdatedCountResponse(status=JsonValues.SUCCESS, updated=updated)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return UpdatedCountResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.delete(
             "/api/watch-events/{uuid}",

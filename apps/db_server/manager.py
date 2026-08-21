@@ -46,6 +46,7 @@ from apps.helpers.db.types import (
     DatasetCreate,
     DatasetRead,
     DatasetUpdate,
+    EventBlipRead,
     FilterChainCreate,
     FilterChainRead,
     FilterChainUpdate,
@@ -4086,6 +4087,23 @@ class Manager:
 
     async def close_stranded_watch_events(self, profile_uuid: str) -> int:
         return await self._db_client.close_stranded_watch_events(profile_uuid)
+
+    async def list_event_blips(self, **kwargs) -> Tuple[List[EventBlipRead], int]:
+        return await self._db_client.list_event_blips(**kwargs)
+
+    async def replace_event_blips(
+        self,
+        event_uuid: str,
+        blips: Sequence[Dict[str, Any]],
+        recording_uuid: Optional[str] = None,
+    ) -> List[EventBlipRead]:
+        return await self._db_client.replace_event_blips(event_uuid, blips, recording_uuid=recording_uuid)
+
+    async def set_event_blip_states(self, uuids: Sequence[str], state: str) -> int:
+        return await self._db_client.set_event_blip_states(uuids, state)
+
+    async def expire_blips_for_recording(self, recording_uuid: str) -> int:
+        return await self._db_client.expire_blips_for_recording(recording_uuid)
 
     async def watch_event_snapshot_file(self, uuid: str) -> Optional[Path]:
         """Resolve an event's card art to a file that actually exists.
