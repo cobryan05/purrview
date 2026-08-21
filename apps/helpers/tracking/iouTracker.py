@@ -31,6 +31,34 @@ def iou(a: BBox, b: BBox) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def _box_scale(box: BBox) -> float:
+    """One length standing in for a box's size: the mean of its two sides.
+
+    Deliberately identical to `watch.geometry.box_scale`, and reimplemented rather than
+    imported because `watch` already imports `tracking` — the dependency only runs one
+    way. Mean side rather than sqrt(area) for the reason given there: a standing cat is
+    tall and narrow, and its root-area reads far smaller than the animal a person sees.
+    """
+    x1, y1, x2, y2 = box
+    return (max(0.0, x2 - x1) + max(0.0, y2 - y1)) / 2.0
+
+
+def _margin_pad(margin: float, a: BBox, b: BBox) -> float:
+    """Edge padding for a `margin` expressed in subject-widths.
+
+    Measured against the *smaller* box and halved, so both boxes growing by it closes a
+    gap of exactly `margin` subject-widths — the same reading a rule's `margin` has, so
+    the number means the same thing in both places.
+    """
+    return margin * min(_box_scale(a), _box_scale(b)) / 2.0
+
+
+def _inflate(box: BBox, pad: float) -> BBox:
+    """Grow `box` by `pad` on every edge."""
+    x1, y1, x2, y2 = box
+    return (x1 - pad, y1 - pad, x2 + pad, y2 + pad)
+
+
 @register_tracker()
 class IouTracker(Tracker):
     """Greedy IoU tracker with per-label lifetimes and anchor latching."""
@@ -42,11 +70,13 @@ class IouTracker(Tracker):
         max_age_s: float = 2.0,
         anchor_confidence: float = 0.6,
         min_confidence: float = 0.25,
+        recovery_margin: float = 0.0,
         label_lifetimes: Optional[Dict[str, LabelLifetimeSpec]] = None,
         **params: Any,
     ) -> None:
         super().__init__(**params)
         self._min_confidence = min_confidence
+        self._recovery_margin = recovery_margin
         self._iou_threshold = iou_threshold
         self._min_hits = min_hits
         self._max_age_s = max_age_s
@@ -77,6 +107,18 @@ class IouTracker(Tracker):
                 "required": False,
                 "default": 0.3,
                 "help": "Minimum box overlap to consider a detection the same object as an existing track.",
+            },
+            "recovery_margin": {
+                "type": "float",
+                "required": False,
+                "default": 0.0,
+                "help": (
+                    "How far a subject may move between samples and still be recognised, in "
+                    "multiples of its own width. 0 disables it. Only ever applied to tracks and "
+                    "detections that found no ordinary match, so stationary objects that already "
+                    "pair exactly are never affected. Try 1.0 if a moving subject keeps being "
+                    "given a new track id at a low analysis rate."
+                ),
             },
             "min_hits": {
                 "type": "int",
@@ -113,20 +155,36 @@ class IouTracker(Tracker):
             return self._label_lifetimes[label_uuid]
         return LabelLifetimeSpec(ttl_s=self._max_age_s, is_anchor=False)
 
-    def _match(self, detections: List[Detection]) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
-        """Greedily pair tracks with detections by descending IoU.
+    def _pair(
+        self,
+        detections: List[Detection],
+        track_idxs: List[int],
+        det_idxs: List[int],
+        margin: float,
+    ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+        """Greedily pair a subset of tracks with a subset of detections by descending IoU.
 
         Greedy rather than Hungarian: with a handful of objects per frame the optimal
         assignment and the greedy one almost always agree, and greedy has no dependency.
         Pairs are only formed between matching labels — a cat detection must never
         inherit the litter box's track id.
+
+        A non-zero `margin` grows both boxes before scoring, which turns the overlap test
+        into a proximity test without introducing a second scoring function to reason
+        about. The threshold is unchanged: the same bar, more generous geometry.
         """
         candidates: List[Tuple[float, int, int]] = []
-        for t_idx, track in enumerate(self._tracks):
-            for d_idx, det in enumerate(detections):
+        for t_idx in track_idxs:
+            track = self._tracks[t_idx]
+            for d_idx in det_idxs:
+                det = detections[d_idx]
                 if track.label_uuid != det.label_uuid:
                     continue
-                score = iou(track.bbox, det.bbox)
+                a, b = track.bbox, det.bbox
+                if margin > 0.0:
+                    pad = _margin_pad(margin, a, b)
+                    a, b = _inflate(a, pad), _inflate(b, pad)
+                score = iou(a, b)
                 if score >= self._iou_threshold:
                     candidates.append((score, t_idx, d_idx))
 
@@ -141,8 +199,35 @@ class IouTracker(Tracker):
             used_dets.add(d_idx)
             pairs.append((t_idx, d_idx))
 
-        unmatched_tracks = [i for i in range(len(self._tracks)) if i not in used_tracks]
-        unmatched_dets = [i for i in range(len(detections)) if i not in used_dets]
+        return (
+            pairs,
+            [i for i in track_idxs if i not in used_tracks],
+            [i for i in det_idxs if i not in used_dets],
+        )
+
+    def _match(self, detections: List[Detection]) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+        """Associate tracks with detections, optionally with a second forgiving pass.
+
+        The second pass exists because requiring overlap is the same property that loses
+        a subject which simply moved: at a low analysis rate a cat can travel more than
+        its own width between samples, and consecutive detections of it then fail to
+        overlap *each other*, so each starts a track that never confirms.
+
+        It runs only on what the strict pass left over, and that ordering is the whole
+        safety argument. Two same-label objects sitting still — the case a loosened rule
+        would be most likely to confuse — match at near-perfect IoU in pass one and are
+        claimed before the forgiving rule ever sees them. Inflating every box up front
+        instead would put those correct pairs back into competition on frames where the
+        exact match was available, trading a guarantee for a ranking contest.
+        """
+        pairs, unmatched_tracks, unmatched_dets = self._pair(
+            detections, list(range(len(self._tracks))), list(range(len(detections))), 0.0
+        )
+        if self._recovery_margin > 0.0 and unmatched_tracks and unmatched_dets:
+            recovered, unmatched_tracks, unmatched_dets = self._pair(
+                detections, unmatched_tracks, unmatched_dets, self._recovery_margin
+            )
+            pairs = pairs + recovered
         return pairs, unmatched_tracks, unmatched_dets
 
     # ------------------------------------------------------------------ API

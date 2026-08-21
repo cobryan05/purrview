@@ -289,3 +289,82 @@ class TestTrackModel:
         payload = Track(track_id=7, bbox=(0, 0, 1, 1)).to_dict()
         assert payload["trackId"] == 7
         assert "labelUuid" in payload and "isAnchor" in payload
+
+
+class TestRecoveryMargin:
+    """The second, forgiving association pass.
+
+    Requiring overlap is what stops a track jumping across the image, and it is also
+    what loses a subject that merely moved: below a few fps a cat can travel more than
+    its own width between samples, so consecutive detections of it fail to overlap
+    *each other* and each starts a track that never confirms.
+    """
+
+    @staticmethod
+    def _walk(tracker, step, frames=6, size=10.0):
+        """Move one box `step` px per frame and return the distinct confirmed ids."""
+        ids = set()
+        for i in range(frames):
+            x = i * step
+            for track in tracker.update([_det(x, 0, x + size, size)], now=i * 1.0):
+                ids.add(track.track_id)
+        return ids
+
+    def test_off_by_default(self):
+        """Nothing changes until it is asked for."""
+        assert IouTracker()._recovery_margin == 0.0
+
+    def test_a_subject_moving_its_own_width_is_lost_without_it(self):
+        # 10px box moving 12px per frame: consecutive boxes never overlap, so every
+        # frame starts a fresh track and min_hits is never reached.
+        assert self._walk(IouTracker(min_hits=3), step=12.0) == set()
+
+    def test_the_same_subject_is_held_by_one_track_with_it(self):
+        ids = self._walk(IouTracker(min_hits=3, recovery_margin=1.5), step=12.0)
+        assert len(ids) == 1
+
+    def test_two_stationary_objects_of_one_label_stay_apart(self):
+        """The case a loosened rule would be most likely to ruin.
+
+        Both match exactly in the strict pass, so the forgiving pass never sees them —
+        that ordering is the whole safety argument, and a margin far wider than the gap
+        between them must not merge them.
+        """
+        tracker = IouTracker(min_hits=1, recovery_margin=3.0)
+        tracks = []
+        for i in range(4):
+            tracks = tracker.update([_det(0, 0, 10, 10), _det(14, 0, 24, 10)], now=i * 1.0)
+        assert len({t.track_id for t in tracks}) == 2
+
+    def test_a_vanished_object_does_not_steal_its_neighbour(self):
+        """One of two same-label boxes disappearing must not hand its track the other.
+
+        The survivor is already claimed by its own track in the strict pass, so the
+        orphaned track has nothing left to match. It stays where it was and ages out —
+        what it must never do is jump onto the box that is still there.
+        """
+        tracker = IouTracker(min_hits=1, recovery_margin=3.0)
+        left, right = (0, 0, 10, 10), (14, 0, 24, 10)
+        for i in range(3):
+            tracks = tracker.update([_det(*left), _det(*right)], now=i * 1.0)
+        before = {t.bbox: t.track_id for t in tracks}
+
+        after = {t.track_id: t.bbox for t in tracker.update([_det(*right)], now=3.0)}
+
+        # The survivor keeps the id it already had...
+        assert after[before[right]] == right
+        # ...and the orphan is still sitting where it was, not on top of the survivor.
+        assert after[before[left]] == left
+
+    def test_margin_cannot_reach_across_the_image(self):
+        """Bounded tolerance, not unbounded. A box the far side of the frame is never
+        the same object, however forgiving the margin."""
+        tracker = IouTracker(min_hits=1, recovery_margin=3.0)
+        near = tracker.update([_det(0, 0, 10, 10)], now=0.0)
+        near_id = near[0].track_id
+
+        far = (900, 0, 910, 10)
+        moved = tracker.update([_det(*far)], now=1.0)
+
+        owner = next(t.track_id for t in moved if t.bbox == far)
+        assert owner != near_id
