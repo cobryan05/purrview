@@ -1963,6 +1963,32 @@ class Recording(TimestampModel, table=True):
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
+class WatchEventReviewState(str, Enum):
+    """Where an event stands in blip review."""
+
+    #: Analysed or not, nobody has looked.
+    UNREVIEWED = "unreviewed"
+    #: A human has settled every blip on it, one way or the other.
+    CONFIRMED = "confirmed"
+    #: Looked at and deliberately set aside — the blips were not worth acting on.
+    DISMISSED = "dismissed"
+
+
+class BlipState(str, Enum):
+    """Per-blip triage state.
+
+    `EXPIRED` is not a triage outcome but a fact about the evidence: retention deleted
+    the clip, so the blip can no longer be reviewed. It is kept rather than deleted so
+    the record of what went wrong survives the video it was found in.
+    """
+
+    NEW = "new"
+    CONFIRMED = "confirmed"
+    HARVESTED = "harvested"
+    DISMISSED = "dismissed"
+    EXPIRED = "expired"
+
+
 class WatchEvent(SQLModel, table=True):
     """One opening and closing of a rule.
 
@@ -2003,11 +2029,64 @@ class WatchEvent(SQLModel, table=True):
     # Closed by `max_duration_s` rather than by the predicate going false. A stuck
     # detection looks exactly like a very long event otherwise.
     truncated: bool = Field(default=False)
+    # Where this event stands in blip review. A column rather than a `metadata_json`
+    # key for the same reason `subject_ref` is one: the events grid filters on it, and
+    # a JSON extract cannot use an index.
+    review_state: str = Field(default=WatchEventReviewState.UNREVIEWED.value, index=True)
     # Absolute path to the event's own thumbnail, written by the task at START. Distinct
     # from whatever a `save_snapshot` action wrote: that one is a training image the user
     # curates, this one is the review page's card art and is deleted with the event.
     snapshot_path: Optional[str] = Field(default=None)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class EventBlip(TimestampModel, table=True):
+    """One stretch of a clip where tracking went wrong.
+
+    Written by the analysis task from the clip's detection sidecar — see
+    `apps.helpers.recordings.blips` for what each `kind` means and how fault is
+    decided. An incident, not a frame: a four-second dropout is one row, not a hundred
+    and twenty.
+
+    **A blip outlives the clip it was found in.** Retention deletes recordings on its
+    own schedule, and a blip whose clip has gone still records that something went
+    wrong even though it can no longer be reviewed — hence `BlipState.EXPIRED` rather
+    than a delete, and hence enough denormalised detail here to stand alone. That is
+    also why `recording_uuid` carries no foreign key: a hard FK would either block the
+    retention sweep or take the blip with it, and the same reasoning already keeps
+    `recordings.event_uuid` FK-free in the other direction.
+
+    The event is different — deleting an event should take its blips, so that link is
+    a real cascade.
+    """
+
+    __tablename__ = "event_blips"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    event_uuid: str = Field(foreign_key="watch_events.uuid", index=True, ondelete="CASCADE")
+    #: Which recording it was found in. Deliberately no FK — see the class docstring.
+    recording_uuid: Optional[str] = Field(default=None, index=True)
+    #: One of the `KIND_*` constants in `apps.helpers.recordings.blips`. A plain string
+    #: for the same reason every other enum-ish column here is one.
+    kind: str = Field(index=True)
+    #: The tracker's id for the object involved. Only unique within its own clip.
+    track_id: int = Field(default=0)
+    #: Clip-relative seconds, matching the sidecar's time base so the player can seek
+    #: straight to it with no clock arithmetic.
+    start_s: float = Field(default=0.0)
+    end_s: float = Field(default=0.0)
+    #: How sure the detector was about the thing it then got wrong, 0..1. Confidently
+    #: wrong is the most valuable training data, so this sorts the way attention should.
+    severity: float = Field(default=0.0, index=True)
+    #: `detector` or `tracker`.
+    fault: str = Field(default="")
+    #: Whether these frames may become training data. Derived from kind + fault at write
+    #: time and stored, because it is the primary filter of the review surface and
+    #: recomputing it in SQL would mean encoding the rule in two places.
+    harvestable: bool = Field(default=False, index=True)
+    state: str = Field(default=BlipState.NEW.value, index=True)
+    #: Kind-specific supporting detail — the modal label, what was seen instead, how
+    #: many samples, which track absorbed which. Display and provenance, never a filter.
+    detail_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 # ─── Watch Profile read/write models ─────────────────────────────────────────
@@ -2383,16 +2462,51 @@ class WatchEventRead(OrmModel):
     target_ref: Optional[str] = None
     target_name: Optional[str] = None
     truncated: bool = False
+    review_state: str = WatchEventReviewState.UNREVIEWED.value
     # Whether the event has card art on disk. The path itself is deliberately not
     # exposed: it is a server filesystem path, and the browser fetches the image from
     # `/api/watch-events/{uuid}/snapshot` instead.
     has_snapshot: bool = False
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
+    #: How many blips the analyser found, by kind — `{"identity_flip": 2, ...}`. Filled
+    #: in by the db client alongside `recordings`, so the events grid can badge a card
+    #: without a second request per event. Empty both when an event is clean and when it
+    #: has not been analysed; `review_state` is what tells those apart.
+    blip_counts: Dict[str, int] = Field(default_factory=dict)
     #: Every recording naming this event, clip and timelapse alike. Filled in by the db
     #: client in one batched query per page — not a relationship, because `Recording`
     #: has no FK back to `watch_events` (an event can be deleted while its extraction is
     #: still in flight, and a hard FK would either block that or take the row with it).
     recordings: List[EventRecordingRead] = Field(default_factory=list)
+
+
+class EventBlipRead(OrmModel):
+    uuid: str
+    event_uuid: str
+    recording_uuid: Optional[str] = None
+    kind: str
+    track_id: int = 0
+    start_s: float = 0.0
+    end_s: float = 0.0
+    severity: float = 0.0
+    fault: str = ""
+    harvestable: bool = False
+    state: str = BlipState.NEW.value
+    detail_json: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @field_validator("detail_json", mode="before")
+    @classmethod
+    def _null_detail_is_empty(cls, v: Any) -> Any:
+        """A NULL JSON column must validate as `{}`, not blow up the whole row.
+
+        The same failure `RecordingRead._null_metadata_is_empty` documents: typing a
+        nullable JSON column as a plain dict makes validating a row that predates it
+        raise, and the endpoint then returns null for the entire object rather than for
+        the one field.
+        """
+        return {} if v is None else v
 
 
 class RecordingRead(OrmModel):
