@@ -79,20 +79,40 @@ async ({ itemLabel, adapterCount, skippedFlags }) => {
     const target = rows.find(r => r.textContent.includes(itemLabel));
     if (!target) return { error: `no menu item matching ${itemLabel}` };
     target.click();                                  // opens the flyout
-    await new Promise(r => setTimeout(r, 300));      // asyncPanel resolves fetchLabels
 
-    const flyouts = [...document.querySelectorAll('.ctx-menu')];
     // The scrolling wrapper around the rows has the same textContent as its
     // single row, so take the innermost match — the wrapper carries no click
     // handler and a mousedown on it would silently do nothing.
-    const labelRow = flyouts
+    const findLabelRow = () => [...document.querySelectorAll('.ctx-menu')]
         .flatMap(f => [...f.querySelectorAll('div')])
         .filter(d => d.textContent.trim() === 'verified-conflict-label')
         .filter(d => !d.querySelector('div'))
         .pop();
+
+    // Poll rather than sleep: asyncPanel resolves fetchLabels off a promise, and
+    // a fixed wait is a race that only loses when the box is busy — which is
+    // exactly when the whole suite runs.
+    const waitFor = async (fn, ms) => {
+        const deadline = Date.now() + ms;
+        for (;;) {
+            const v = fn();
+            if (v) return v;
+            if (Date.now() > deadline) return null;
+            await new Promise(r => setTimeout(r, 20));
+        }
+    };
+
+    const labelRow = await waitFor(findLabelRow, 10000);
     if (!labelRow) return { error: 'label row not found in flyout' };
     labelRow.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await new Promise(r => setTimeout(r, 300));
+
+    // Every adapter must have been asked before the toast decision is readable.
+    await waitFor(() => calls.length === adapterCount, 10000);
+    // The toast (if any) is raised by the same handler, immediately after the
+    // last adapter resolves. Absence is the assertion in one test, so this can
+    // only be a settle — but it is now the sole fixed wait, and nothing has to
+    // happen inside it for the accepted-write case to be correct.
+    await waitFor(() => document.getElementById('toast-container')?.children.length, 500);
 
     const container = document.getElementById('toast-container');
     const toasts = container ? [...container.children].map(c => c.textContent) : [];
