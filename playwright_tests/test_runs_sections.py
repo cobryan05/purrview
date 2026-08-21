@@ -57,6 +57,40 @@ FINISHED_WATCHER = {
 }
 
 
+# Persistence ("_persistent" on the config's params) is independent of
+# CONTINUOUS: this watcher runs until stopped but will NOT come back after a
+# server restart, while PERSISTENT_JOB below runs to completion and will.
+NON_PERSISTENT_WATCHER = {
+    **WATCHER,
+    "config": {
+        "name": "One-off Watcher",
+        "uuid": "cfg-watch-oneoff",
+        "typename": "StreamWatcherTask",
+        "params": {"_persistent": False},
+    },
+}
+
+PERSISTENT_JOB = {
+    **TRAINING,
+    "config": {
+        "name": "Resuming Training",
+        "uuid": "cfg-train-persist",
+        "typename": "TrainModelTask",
+        "params": {"_persistent": True},
+    },
+}
+
+FINISHED_PERSISTENT_JOB = {
+    **PERSISTENT_JOB,
+    "instance": {
+        "uuid": "t-train-done",
+        "status": "completed",
+        "startedAt": "2026-01-01T00:00:00",
+        "endedAt": "2026-01-02T00:00:00",
+    },
+}
+
+
 def _mock_tasks(page: Page, tasks: dict):
     body = json.dumps({"status": "success", "tasks": tasks})
     page.route(
@@ -106,6 +140,43 @@ class TestSectioning:
 
         expect(_section_headers(page).filter(has_text="Completed")).to_have_count(1)
         expect(_section_headers(page).filter(has_text="Continuous")).to_have_count(0)
+
+
+class TestPersistenceBadge:
+    """ "Will this come back on its own?" is not what the sections answer.
+
+    Continuous/Jobs splits by *when a run ends*; persistence is about whether the
+    server starts it again afterwards. A card that reads the wrong one of the two
+    tells the user a watcher will survive a restart when it will not.
+    """
+
+    def _badges(self, page: Page):
+        return page.locator("#active-tasks-list [data-testid='task-persistent-badge']")
+
+    def _card(self, page: Page, task_uuid: str):
+        return page.locator(f"#active-tasks-list [data-task-uuid='{task_uuid}']")
+
+    def test_only_the_persistent_run_is_badged(self, page: Page, base_url: str):
+        """Both are live; one is continuous-but-not-persistent and the other is
+        persistent-but-not-continuous, so keying off `continuous` badges exactly
+        the wrong card."""
+        _open_runs(
+            page,
+            base_url,
+            {"t-watch": NON_PERSISTENT_WATCHER, "t-train": PERSISTENT_JOB},
+        )
+
+        expect(self._badges(page)).to_have_count(1)
+        expect(self._card(page, "t-train").locator("[data-testid='task-persistent-badge']")).to_be_visible()
+        expect(self._card(page, "t-watch").locator("[data-testid='task-persistent-badge']")).to_have_count(0)
+
+    def test_a_finished_run_is_not_badged(self, page: Page, base_url: str):
+        """The flag is still true on the config, but a completed instance is not
+        resumed on startup — badging it would promise a restart that never comes."""
+        _open_runs(page, base_url, {"t-train-done": FINISHED_PERSISTENT_JOB})
+
+        expect(_section_headers(page).filter(has_text="Completed")).to_have_count(1)
+        expect(self._badges(page)).to_have_count(0)
 
 
 class TestBadge:

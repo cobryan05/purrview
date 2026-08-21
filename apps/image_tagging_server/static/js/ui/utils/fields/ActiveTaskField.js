@@ -7,6 +7,10 @@ import { parseApiDate } from '/app-static/js/shared/time.js';
 /** Statuses that mean "this task is no longer doing anything". */
 export const TERMINAL_STATUSES = new Set(['completed', 'error']);
 
+// Mirrors Task.InternalKeys.PERSISTENT ("_persistent") in
+// apps/tasks_server/tasks/Task.py — same key TaskConfigField writes.
+const PERSISTENT_PARAM_KEY = '_persistent';
+
 const STATUS_COLORS = {
   pending: '#888',
   running: '#2196F3',
@@ -147,8 +151,13 @@ export class ActiveTaskField extends Field {
   static async create({ ...rest } = {}) {
     const instance = new ActiveTaskField({ ...rest });
     const { uuid, status, errorMessage, createdAt, startedAt, endedAt } = instance._value.instance || {};
-    const { name, typename } = instance._value.config || {};
+    const { name, typename, params } = instance._value.config || {};
     instance._name = name || typename || uuid;
+    // "Will this come back by itself?" is a property of the config the run was
+    // launched from, not of the instance — Continuous (runs until stopped) and
+    // persistent (restarts with the server) are independent, and the pane's
+    // Continuous/Jobs split answers only the first.
+    instance._persistent = (params || {})[PERSISTENT_PARAM_KEY] === true;
     instance._uuid = uuid;
     instance._status = status;
     instance._message = errorMessage;
@@ -247,6 +256,18 @@ export class ActiveTaskField extends Field {
     statusBadge.textContent = `● ${displayStatus}`;
     statusBadge.style.cssText = `font-size:0.8em; font-weight:bold; color:${displayColor};`;
     summary.appendChild(statusBadge);
+
+    // Only while the run is still a live thing: on a finished job the flag is
+    // true but inert (a completed instance is not resumed on startup), so a
+    // badge there would promise a restart that never comes.
+    if (this._persistent && !TERMINAL_STATUSES.has(this._status)) {
+      const persistentBadge = document.createElement('span');
+      persistentBadge.className = 'le-chip le-chip--accent';
+      persistentBadge.dataset.testid = 'task-persistent-badge';
+      persistentBadge.textContent = '↻ restarts with server';
+      persistentBadge.title = 'Persistent — this starts itself again after the server restarts.';
+      summary.appendChild(persistentBadge);
+    }
 
     details.appendChild(summary);
 
