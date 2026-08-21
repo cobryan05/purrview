@@ -234,6 +234,28 @@ IMAGE_LABEL_BULK_ACTIONS = ("setPresent", "setAbsent", "setUncertain")
 _OUTLINE_WIDTH_RATIO = 0.01
 _OUTLINE_MIN_PX = 2
 
+#: Candidate-geometry keys that describe where a proposal *came from* rather than where
+#: its box sits. Matched by prefix rather than listed exactly, so a producer that starts
+#: recording one more `source*` fact does not silently lose it at apply — the failure
+#: mode an explicit list has, and an invisible one, because the box still applies fine.
+_PROVENANCE_PREFIX = "source"
+_PROVENANCE_KEYS = frozenset({"estimated"})
+
+
+def _provenance_from(geometry: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull the provenance out of a candidate's geometry, dropping the geometry itself.
+
+    `x`/`y`/`width`/`height` are the box and belong to the bbox columns; everything a
+    harvester recorded about *origin* — which event, which blip, where in the clip,
+    whether the box was interpolated — belongs in the bbox's metadata, because that is
+    the only copy that outlives the preview run.
+    """
+    return {
+        key: value
+        for key, value in geometry.items()
+        if (key.startswith(_PROVENANCE_PREFIX) or key in _PROVENANCE_KEYS) and value is not None
+    }
+
 
 def _decode_image_bytes(data: bytes):
     """Decode uploaded bytes, or None if they are not a readable image.
@@ -5294,6 +5316,15 @@ class Manager:
                         "run_model_added": True,
                         "source_model": c.source_model,
                         "confidence": c.confidence,
+                        # Provenance travels from the candidate onto the box, because
+                        # this is where it stops being recoverable. A candidate is
+                        # swept by the preview-run TTL; the bbox it created is
+                        # permanent training data. Dropping the keys here means a
+                        # harvested batch that turns out to be wrong can no longer be
+                        # found — `source_model` alone says "some blip harvest, ever",
+                        # not *which* event or run, which is the granularity a bad
+                        # batch actually needs.
+                        **_provenance_from(geo),
                     },
                 )
             except Exception:

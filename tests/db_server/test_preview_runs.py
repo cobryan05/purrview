@@ -782,6 +782,40 @@ class TestApplyPreviewRun:
         assert metadata["confidence"] == pytest.approx(0.82)
         assert metadata["source_model"] == "model_a"
 
+    async def test_apply_carries_harvest_provenance_onto_the_box(self, http_client, image_file, label_uuid):
+        """Where a harvested frame came from has to survive the preview run that made it.
+
+        The candidate is swept by the run's TTL; the bbox it creates is permanent
+        training data. If the provenance only ever lived on the candidate, a harvest
+        batch that turns out to be wrong stops being findable the moment the run is
+        applied — and `source_model` is no help, because it says "some blip harvest,
+        ever", not which event or run.
+        """
+        run = await _create_run(http_client)
+        image_uuid = await _get_image_uuid(http_client)
+        candidate = _candidate(image_uuid, label_uuid, is_new=True, confidence=0.5)
+        candidate["geometry"] = {
+            **candidate["geometry"],
+            "sourceEventUuid": "evt-1234",
+            "sourceClipTimeS": 4.6,
+            "estimated": True,
+        }
+        await _add_candidates(http_client, run["uuid"], [candidate])
+        candidates, _ = await _query_candidates(http_client, run["uuid"])
+        await self._accept(http_client, run["uuid"], candidates[0]["uuid"])
+        await http_client.post(f"/api/preview-runs/{run['uuid']}/apply", json={})
+
+        meta_r = await http_client.post("/api/images/metadata/get", json={"imagePath": "preview_test.png"})
+        bbox = meta_r.json()["image"]["bboxes"][0]
+        metadata = bbox["metadataJson"]
+        assert metadata["sourceEventUuid"] == "evt-1234"
+        assert metadata["sourceClipTimeS"] == pytest.approx(4.6)
+        assert metadata["estimated"] is True
+        # The box itself stays in the bbox columns — copying it into metadata would
+        # give every reader two disagreeing answers to "where is this box".
+        assert "x" not in metadata and "width" not in metadata
+        assert bbox["x"] == pytest.approx(0.2)
+
     async def test_apply_new_candidate_mark_verified_true(self, http_client, image_file, label_uuid):
         run = await _create_run(http_client)
         image_uuid = await _get_image_uuid(http_client)

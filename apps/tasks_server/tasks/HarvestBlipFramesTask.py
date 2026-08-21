@@ -148,7 +148,7 @@ class HarvestBlipFramesTask(Task):
             return self._build_result()
 
         if self._preview_run_uuid is None:
-            self._preview_run_uuid = await self._create_run()
+            self._preview_run_uuid = await self._create_run(eligible)
 
         # Grouped by recording so one clip is opened once, however many incidents it holds.
         by_recording: Dict[str, List[Any]] = {}
@@ -183,9 +183,14 @@ class HarvestBlipFramesTask(Task):
             raise RuntimeError(response.message or "could not read the blips")
         return list(response.blips or [])
 
-    async def _create_run(self) -> str:
+    async def _create_run(self, blips: List[Any]) -> str:
         PreviewRunCreate, _, _ = _payload_models()
         api = self._api(PreviewRunsApi)
+        # Plural, unlike the plan's `{eventUuid, blipUuids}`: blips are selected by uuid
+        # and nothing constrains a selection to one event, so a run routinely spans
+        # several. A single uuid here would name whichever event happened to sort first
+        # and quietly misattribute the rest.
+        event_uuids = sorted({b.event_uuid for b in blips if getattr(b, "event_uuid", None)})
         payload = PreviewRunCreate(
             name=self._run_name or "Tracking blips",
             # No model ran here. The proposal comes from the track's own majority, and
@@ -193,7 +198,7 @@ class HarvestBlipFramesTask(Task):
             model_name="",
             task_typename=type(self).__name__,
             params_json={"framesPerIncident": self._frames_per_incident},
-            scope_json={"blipUuids": self._blip_uuids},
+            scope_json={"blipUuids": self._blip_uuids, "eventUuids": event_uuids},
         )
         response = await asyncio.to_thread(api.create_preview_run, payload)
         if response.status != JsonValues.SUCCESS or response.run is None:
