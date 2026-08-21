@@ -968,7 +968,7 @@ export async function openSavedPreviewsModal({ labels = null, onApplied = null, 
     if (runs.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'relabel-modal-empty';
-      empty.textContent = 'No saved previews. Runs are kept for 7 days unless you pin them.';
+      empty.textContent = 'No saved previews. Previews are kept for 7 days unless you pin them.';
       listBody.appendChild(empty);
       return;
     }

@@ -47,7 +47,7 @@ export function modelNameForConfig(config) {
  * @param {boolean} [opts.withLabelStats=true] - replay the config's label-stats
  *   query over the manifest. That query is the expensive half of this function
  *   (measured 0.05–0.7s per config against a ~1200-image manifest), and callers
- *   that only want the image totals — the Runs launcher cards, which show a
+ *   that only want the image totals — the Jobs launcher cards, which show a
  *   single "+N since last run" — should pass false. With false,
  *   `labelStatsByUuid` is empty and `stillInDatasetCount` is 0.
  * @returns {Promise<null | {

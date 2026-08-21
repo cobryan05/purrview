@@ -1,4 +1,4 @@
-"""Runs > Start a run — the one place anything is launched from.
+"""Jobs > Start a job — the one place anything is launched from.
 
 Configuration defines recipes; this pane turns one into a running instance and
 hands the user to Active, where it can be watched. It exists because starting a

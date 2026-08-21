@@ -1,5 +1,5 @@
 /**
- * Runs → Start a run.
+ * Jobs → Start a job.
  *
  * The single place anything is launched from. Configuration holds recipes —
  * a training config, a filter chain, a watch profile, a saved task config —
@@ -178,10 +178,10 @@ async function trainingDelta(config) {
 // ── "Training in progress" on training cards ─────────────────────────────────
 //
 // A recipe whose model is training right now is the one card you should not be
-// pressing, and the launcher had no way to say so: the run is visible on Active,
+// pressing, and the launcher had no way to say so: the run is visible on Running,
 // one sub-tab away, and nowhere else.
 //
-// This deliberately owns no SSE stream. Runs already holds exactly one (opened
+// This deliberately owns no SSE stream. Jobs already holds exactly one (opened
 // in app/runs/main.js, closed when the last job ends off-tab — the leak
 // test_leaks_and_races.py guards), so the launcher is *pushed* the task list
 // that stream already delivers rather than subscribing to it a second time.
@@ -191,7 +191,7 @@ let _runStateByConfig = new Map();
 
 /**
  * Which task types a launch card can recognise a live instance of lives in
- * RUN_KINDS, shared with the Active pane so the two screens cannot disagree
+ * RUN_KINDS, shared with the Running pane so the two screens cannot disagree
  * about what a running instance was launched from.
  *
  * Only kinds carrying a `badge` are shown here: the wording is the whole point
@@ -227,7 +227,7 @@ function _runLabel(status, badge) {
  * people that the button does not work.
  *
  * Only the *live view* is gated on this. Every live run, queued and paused
- * included, can still be shown on Active: that pane's whole job is to list runs
+ * included, can still be shown on Running: that pane's whole job is to list runs
  * in whatever state they are in.
  */
 const _VIEWABLE_TONES = new Set(['running']);
@@ -261,11 +261,11 @@ function indexLiveRuns(tasks) {
     if (!configUuid || !label) return;
     // The instance uuid rides along so a card can open the running thing, not
     // just describe it. Falls back to the payload's own key, which is what the
-    // Active pane hangs its rows off (`data-task-uuid`), so the highlight lands
+    // Running pane hangs its rows off (`data-task-uuid`), so the highlight lands
     // even if an entry ever arrives without an inner uuid.
     label.taskUuid = entry.instance?.uuid ?? taskId ?? null;
     // Whether that instance is worth *looking at* is a narrower question than
-    // whether it can be pointed at on Active.
+    // whether it can be pointed at on Running.
     label.liveViewable = _VIEWABLE_TONES.has(label.tone);
     // Running beats queued when a definition has both in flight — the stronger
     // statement is the true one, and two badges do not fit on a card.
@@ -296,7 +296,7 @@ function indexLiveRuns(tasks) {
 /**
  * Paint the live-run badges from a task-status payload.
  *
- * Exported so the Runs tab can hand over the task list its own SSE subscription
+ * Exported so the Jobs tab can hand over the task list its own SSE subscription
  * already receives. No-ops once the launcher has been re-rendered or was never
  * rendered, so a stream message that arrives while the user is elsewhere costs
  * a Map lookup and nothing else.
@@ -343,7 +343,7 @@ export function applyRunsLauncherTaskState(tasks) {
  *   registerRunState there is no live label and this is inert.
  * @param {?(label: {text: string, tone: string, taskUuid: ?string, liveViewable: boolean}) => void} [opts.onLiveClick] -
  *   what pressing an already-running card does instead of starting. Defaults to
- *   showing the run on Active; watchers override it with their live view.
+ *   showing the run on Running; watchers override it with their live view.
  * @returns {HTMLElement}
  */
 function launchCard({
@@ -360,7 +360,7 @@ function launchCard({
   preventDuplicate = true,
   onLiveClick = null,
 }) {
-  // Every live card leads somewhere: to the run itself on Active, unless the
+  // Every live card leads somewhere: to the run itself on Running, unless the
   // caller has something better to show (a watcher's live frames).
   const livePress = onLiveClick ?? ((label) => showRunOnActive(label.taskUuid));
   // The card's current live-run label, kept in the closure so the click handler
@@ -401,7 +401,7 @@ function launchCard({
       card.classList.toggle('is-live', label !== null);
       // A live card is never *blocked*, only repurposed: it stops being a Start
       // button and becomes the way into the run it already has — the live view
-      // for a watcher, the Active pane for everything else. So it keeps the
+      // for a watcher, the Running pane for everything else. So it keeps the
       // normal pointer, is never `disabled` or aria-disabled (both would be a
       // lie to assistive tech about a control that does act), and says in its
       // title what the press will now do.
@@ -409,7 +409,7 @@ function launchCard({
         if (label === null) startBtn.removeAttribute('title');
         else startBtn.title = onLiveClick
           ? `Open the live view for ${name}`
-          : `${name} is already running — show it on Active`;
+          : `${name} is already running — show it on the Running pane`;
       }
       if (label === null) return;
       badge.className = `runs-launch-card__run-badge is-${label.tone}`;
@@ -510,7 +510,7 @@ function launchCard({
       if (confirm && !await showConfirmModal({
         title: confirm.title,
         message: confirm.message,
-        confirmText: 'Start run',
+        confirmText: 'Start job',
         danger: true,
       })) {
         return;
@@ -598,7 +598,7 @@ function group(title, cards, emptyText, emptyAction, headerAction = null) {
  * @param {Object} opts
  * @param {string} [opts.target]
  * @param {() => void} [opts.onStarted] - called after any successful start,
- *   so the caller can show the Active pane where the run now appears.
+ *   so the caller can show the Running pane where the run now appears.
  */
 export async function renderRunsLauncher({ target = 'runs-launcher-box', onStarted = null } = {}) {
   const container = document.getElementById(target);
@@ -709,7 +709,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
         // was meant. Pressing one that is already watching opens the same
         // drill-down the NVR pane uses — "Watching now" invites a press, and
         // the useful answer to that press is the live view, which is more than
-        // the default (a row on Active) can show.
+        // the default (a row on Running) can show.
         onLiveClick: ({ taskUuid, liveViewable }) => {
           if (!liveViewable || !taskUuid) {
             // A queued watcher has no frames yet and a paused one has stopped
@@ -750,7 +750,7 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
     container.replaceChildren(frag);
     _runStateByConfig = runStateSetters;
 
-    // Seeded from one fetch, then kept fresh by the Runs tab handing over its
+    // Seeded from one fetch, then kept fresh by the Jobs tab handing over its
     // stream messages. Without the seed a card arrives blank and stays blank
     // until something happens to a task — precisely the case where it should
     // already read "Training in progress".

@@ -16,10 +16,10 @@ import { parseApiDateMs } from '/app-static/js/shared/time.js';
 /** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
 /**
- * Runs sub-tab that hosts the running/completed instances.
+ * Jobs sub-tab that hosts the running/completed instances.
  *
- * This used to be the Operations sub-tab `tab-task-activity`. Runs is a main
- * tab now, and its Active pane holds the list — its sibling is the launcher.
+ * This used to be the Operations sub-tab `tab-task-activity`. Jobs is a main
+ * tab now, and its Running pane holds the list — its sibling is the launcher.
  */
 export const ACTIVITY_TAB_ID = 'tab-runs-active';
 /** Main tab enclosing it. */
@@ -337,7 +337,7 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
     }
 
     const configs = await refreshList();
-    // Arriving from a Runs launch card's ⚙ means "show me *this* config".
+    // Arriving from a Jobs launch card's ⚙ means "show me *this* config".
     // The uuid is the map key, not a field on the record — mirror the list
     // rows' click handler and put it back on the object.
     const wantedUuid = takePendingSelection(CONFIG_TAB_ID);
@@ -463,12 +463,12 @@ function _scrollParent(el) {
 // polling on it) so the card and this list can't disagree about what "finished" means.
 
 /**
- * Count everything still live, for the Runs tab's badge.
+ * Count everything still live, for the Jobs tab's badge.
  *
  * Jobs and continuous runs both count. Excluding continuous work kept the badge
  * transient (a watcher stays armed for weeks and would pin it at ≥1), but it
  * also made the number impossible to explain from the screen it describes:
- * Active lists a running watcher under Continuous and the badge disagreed with
+ * Running lists a running watcher under Continuous and the badge disagreed with
  * no visible rule. The badge answers "how many things are running?", which is
  * the question the tab's own list answers too. `countContinuousTasks` is still
  * here for anyone who needs the split.
@@ -501,7 +501,7 @@ export function countLiveTasksByKind(tasks) {
  * "how many things are running?", which a paused job and an armed watcher both
  * belong in. The off-tab stream asks "can anything finish behind the user's
  * back?", which a paused job answers no to (only the user can restart it, and
- * they have to come back to Runs to do it) and a continuous run answers no to
+ * they have to come back to Jobs to do it) and a continuous job answers no to
  * by definition — it does not finish, so there is no completion to miss.
  *
  * Counting paused here is what pinned an EventSource open for the life of every
@@ -548,8 +548,8 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
   const container = document.getElementById(target);
   if (!container) return;
 
-  // Skip when the Runs tab, or its Active pane, is not visible. The SSE stream
-  // stays open across both Runs sub-tabs to keep the badge counting, so this
+  // Skip when the Jobs tab, or its Running pane, is not visible. The SSE stream
+  // stays open across both Jobs sub-tabs to keep the badge counting, so this
   // has to check the pane too rather than just the main tab.
   if (!document.getElementById(RUNS_TAB_ID)?.classList.contains('active') ||
       !document.getElementById(ACTIVITY_TAB_ID)?.classList.contains('active')) {
@@ -609,7 +609,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       });
 
       // Build every row in parallel.  The live DOM is untouched until
-      // everything is ready, then partitioned into Active / Completed sections.
+      // everything is ready, then partitioned into Continuous / Completed sections.
       const built = await Promise.all(Object.entries(tasks || {}).map(async ([taskId, task]) => {
         const status = task.instance?.status;
 
@@ -845,7 +845,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
       if (!continuousRows.length && !activeRows.length && !completedRows.length) {
         const empty = document.createElement('p');
         empty.className = 'le-list-empty';
-        empty.textContent = 'No tasks have run yet. Start one from the "Start a run" tab.';
+        empty.textContent = 'No tasks have run yet. Start one from the "Start a job" tab.';
         newListDiv.appendChild(empty);
       }
 

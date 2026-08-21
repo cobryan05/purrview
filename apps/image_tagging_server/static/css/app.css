@@ -397,7 +397,7 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   }
 }
 
-/* ===== Runs → Start a run ===== */
+/* ===== Jobs → Start a job ===== */
 .runs-launch-group {
   margin-bottom: var(--space-5);
 }

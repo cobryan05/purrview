@@ -469,7 +469,7 @@ export async function renderFilterChainManager({ target = 'filter-chain-manageme
     }
 
     const chainsMap = await refreshList();
-    // Arriving from a Runs launch card's ⚙ means "show me *this* chain".
+    // Arriving from a Jobs launch card's ⚙ means "show me *this* chain".
     const wantedUuid = takePendingSelection('tab-filterchain-management');
     await _showForm(wantedUuid ? chainsMap.get(wantedUuid) ?? null : null, { force: true });
   } catch (err) {

@@ -6,8 +6,8 @@
  * have.
  *
  *  - **Live** lists the watch profiles you have defined and whether each is
- *    running. It reads the same task instances Runs shows, over the same shared
- *    SSE stream, so the two views cannot disagree — Runs answers "what is
+ *    running. It reads the same task instances Jobs shows, over the same shared
+ *    SSE stream, so the two views cannot disagree — Jobs answers "what is
  *    holding my GPU?", this answers "is the house being watched?".
  *  - **Events** is the media browser from STREAM_WATCHER_PLAN §7.5 (Phase 8),
  *    which is not started. `watch_events` and `recordings` exist with the
@@ -289,7 +289,7 @@ function _analysisFpsText(profile, task) {
 /**
  * "Start watching" / "Stop", for one card.
  *
- * Starting is exactly what the Runs launcher does — a temporary task config plus an
+ * Starting is exactly what the Jobs launcher does — a temporary task config plus an
  * instance — rather than a second mechanism: two ways to start a watcher that differ in
  * what they write to the DB is how you end up with watchers that behave differently
  * depending on which button started them.
@@ -497,7 +497,7 @@ function _profileCard(profile, task, sources = []) {
     bar.appendChild(liveBtn);
   }
 
-  // Start/stop belongs here as well as in Runs. This pane is where you *look* to see
+  // Start/stop belongs here as well as in Jobs. This pane is where you *look* to see
   // whether the house is being watched, and a card that reports "stopped" and then
   // sends you to another tab to do anything about it is a dead end.
   bar.appendChild(_startStopButton(profile, task));
@@ -509,11 +509,11 @@ function _profileCard(profile, task, sources = []) {
     () => navigateTabs('tab-configuration', 'tab-watcher-management', { selectUuid: profile.uuid }),
   ));
 
-  // Start/stop lives in Runs for now rather than being half-duplicated here:
+  // Start/stop lives in Jobs for now rather than being half-duplicated here:
   // this pane is read-only until the watcher control surface is built out.
   bar.appendChild(_panelButton(
-    'Show in Runs',
-    // Active, not just the Runs tab: "show in Runs" means the running watcher,
+    'Show in Jobs',
+    // Running, not just the Jobs tab: "show in Jobs" means the running watcher,
     // and the bare main-tab click lands on whichever sub-tab was last open.
     () => navigateTabs('tab-runs', 'tab-runs-active'),
   ));
@@ -664,7 +664,7 @@ export async function init() {
   let previewsStopped = false;
 
   function closeStream() {
-    // Both halves, or the pane keeps working off-screen: the stream is shared with Runs
+    // Both halves, or the pane keeps working off-screen: the stream is shared with Jobs
     // and costs a connection while subscribed, and the thumbnails would otherwise keep
     // fetching frames for a pane nobody is looking at.
     unsubscribe?.();

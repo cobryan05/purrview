@@ -1218,7 +1218,7 @@ class TestUnsavedChangesBeforeStartRun:
         )
         self._open_existing(page, base_url)
 
-        # Leave Runs sitting on "Start a run", the way the ⚙ round trip does.
+        # Leave Jobs sitting on "Start a job", the way the ⚙ round trip does.
         page.locator(".main-tab-button[data-tab='tab-runs']").click()
         page.locator("#tab-runs .workspace-tab-button[data-tab='tab-runs-launch']").click()
         expect(page.locator("#tab-runs-launch")).to_have_class(re.compile(r"\bactive\b"))

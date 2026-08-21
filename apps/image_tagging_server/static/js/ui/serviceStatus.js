@@ -268,7 +268,7 @@ function _summarize(services) {
   for (const svc of services) {
     if (svc.tasks?.running) counters.push(`${svc.tasks.running} running`);
     // Tasks the database still calls running that no server is driving — the
-    // gap between what Runs lists and what the service admits to. Worth a slot
+    // gap between what Jobs lists and what the service admits to. Worth a slot
     // precisely because it is the case where the two views disagree.
     if (svc.tasks?.unattached) counters.push(`${svc.tasks.unattached} unattached`);
     if (svc.models?.loaded) counters.push(`${svc.models.loaded} model${svc.models.loaded === 1 ? '' : 's'} loaded`);

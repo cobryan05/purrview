@@ -132,7 +132,7 @@ export function subscribeTaskStream({ onMessage, onError } = {}) {
   // not about the outage being announced once and then forgotten. A subscriber
   // that arrives mid-outage has been told nothing, and the task runners await a
   // promise that only onError can settle — so with a long-lived subscriber (the
-  // Runs badge) holding the set non-empty, starting a model import while the
+  // Jobs badge) holding the set non-empty, starting a model import while the
   // stream is down left the modal waiting for a frame that was never coming.
   // Deferred so the caller has its unsubscribe handle before onError can run.
   if (_outageReported && onError) {

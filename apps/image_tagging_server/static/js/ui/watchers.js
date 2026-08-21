@@ -2150,7 +2150,7 @@ export async function renderWatchProfileManager({ target }) {
       nameInput.dataset.testid = 'watcher-name';
       nameInput.addEventListener('input', onAnyChange);
       identity.appendChild(wfield('Name', nameInput, {
-        help: 'What this watcher is called, in the list on the left and in the Runs tab. It is '
+        help: 'What this watcher is called, in the list on the left and in the Jobs tab. It is '
           + 'also what {watcher} renders as in a topic or folder template, so a rename changes '
           + 'where things are published — use {watcher_uuid} where that would matter.',
       }));
@@ -2164,7 +2164,7 @@ export async function renderWatchProfileManager({ target }) {
       // unticking it stops the watcher would be a lie the user would find out the hard way.
       identity.appendChild(wfield('Enabled', enabled, {
         help: 'Your own on/off marker for this watcher. It does not stop a run that is already '
-          + 'going — stop that from the Runs tab.',
+          + 'going — stop that from the Jobs tab.',
       }));
 
       const description = document.createElement('input');
@@ -2576,8 +2576,8 @@ export async function renderWatchProfileManager({ target }) {
       if (profile) showValidation(profile.uuid);
     }
 
-    // Arriving from a Runs launch card's ⚙ means "show me *this* watcher"; from the
-    // Cameras pane's add button, "start me a new one".
+    // Arriving from a Jobs launch card's ⚙ means "show me *this* watcher"; from the
+    // Watch pane's add button, "start me a new one".
     const wantedUuid = takePendingSelection('tab-watcher-management');
     if (wantedUuid === NEW_ITEM_SELECTION) {
       renderList(null);

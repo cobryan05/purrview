@@ -265,10 +265,10 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     box.appendChild(el('strong', null, anyFilter ? 'No events match these filters' : 'No events recorded yet'));
     box.appendChild(el('p', null, anyFilter
       ? 'Try widening the date range, or clearing a filter.'
-      // Runs → Start a run is where a watcher is actually launched. The Live tab shows
+      // Jobs → Start a job is where a watcher is actually launched. The Live tab shows
       // what a running watcher sees; sending someone there to start one is a dead end,
       // and this is the one screen a user reaches *before* they have ever run a watcher.
-      : 'Events appear here as your watchers detect them. Start a watcher from Runs → Start a run.'));
+      : 'Events appear here as your watchers detect them. Start a watcher from Jobs → Start a job.'));
     if (anyFilter) box.appendChild(button('Clear filters', () => filters.reset()));
     grid.appendChild(box);
   }

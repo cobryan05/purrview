@@ -44,7 +44,7 @@ export async function init() {
     } else if (tabName === 'tab-source-management') {
       // Moved in from the dissolved Operations tab — both of these are
       // definition editors of the same list-beside-editor shape as their
-      // neighbours here. Running what they define is the Runs tab's job.
+      // neighbours here. Starting and supervising what they define belongs to Jobs.
       await renderSourceManager({ target: 'source-management-box' });
     } else if (tabName === 'tab-task-management') {
       const refresh = () => renderTaskConfigs({ target: 'task-config-list', refresh });

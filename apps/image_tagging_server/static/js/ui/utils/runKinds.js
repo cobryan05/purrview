@@ -6,9 +6,9 @@
  * and the recipe that defines it. Two screens need that link and must agree
  * about it:
  *
- *  - Runs → Start a run, to badge a card whose definition is already running
+ *  - Jobs → Start a job, to badge a card whose definition is already running
  *    (`badge`), and to open the live view for the one that is;
- *  - Runs → Active, to send you from a running instance back to the recipe it
+ *  - Jobs → Running, to send you from a running instance back to the recipe it
  *    is running (`configTab`).
  *
  * Kinds without a `badge` are still navigable — a filter chain has a definition

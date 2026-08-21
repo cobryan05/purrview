@@ -58,10 +58,10 @@ function makeNavHint(text, linkText, workspaceTabId) {
 }
 
 /**
- * "Start run" affordance for a saved training config.
+ * "Start training run" affordance for a saved training config.
  *
  * Deliberately not a task runner: it saves any pending edits (a run of a stale
- * recipe is never what was meant), starts the run, and hands the user to Runs,
+ * recipe is never what was meant), starts the run, and hands the user to Jobs,
  * which owns progress, logs and cancel for everything the app runs.
  *
  * @param {Object} opts
@@ -77,14 +77,14 @@ function buildStartRunLink({ config, getDirty, save }) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'panel-btn';
-  btn.textContent = '▶ Start run';
+  btn.textContent = '▶ Start training run';
   btn.dataset.testid = 'training-start-run';
   btn.dataset.tour = 'config.training.startRun';
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     try {
-      const proceed = await confirmStartIfDirty({ getDirty, save, actionText: 'Start run' });
+      const proceed = await confirmStartIfDirty({ getDirty, save, actionText: 'Start training run' });
       if (!proceed) return;
 
       await launchRun({
@@ -98,13 +98,13 @@ function buildStartRunLink({ config, getDirty, save }) {
         persistent: true,
       });
       toast(`Started Train ${config.name}`, 3000);
-      // Runs is where it can actually be watched — and specifically Active.
-      // Clicking the main tab alone lands on whichever Runs sub-tab was last
-      // open, which is "Start a run" for anyone who got here from a launch
-      // card's ⚙: you press Start and arrive at a launcher, not your run.
+      // Jobs is where it can actually be watched — and specifically Running.
+      // Clicking the main tab alone lands on whichever Jobs sub-tab was last
+      // open, which is "Start a job" for anyone who got here from a launch
+      // card's ⚙: you press Start and arrive at a launcher, not your job.
       navigateTabs('tab-runs', 'tab-runs-active');
     } catch (err) {
-      toast(err.message || 'Could not start the run', 5000, 'error');
+      toast(err.message || 'Could not start the training run', 5000, 'error');
     } finally {
       btn.disabled = false;
     }
@@ -112,7 +112,7 @@ function buildStartRunLink({ config, getDirty, save }) {
 
   const hint = document.createElement('span');
   hint.className = 'training-start-run__hint';
-  hint.textContent = 'Progress, logs and cancel live in Runs.';
+  hint.textContent = 'Progress, logs and cancel live in Jobs.';
 
   section.append(btn, hint);
   return section;
@@ -618,7 +618,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
         // progress bar, a log tail and a Cancel, embedded in the editor. That
         // made a *configuration* screen own job monitoring, which is the same
         // miscategorisation that had task definitions filed under Operations.
-        // The recipe is defined here; the run starts and is watched in Runs.
+        // The recipe is defined here; the run starts and is watched in Jobs.
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
           editorBody.appendChild(buildStartRunLink({
             config,
@@ -672,7 +672,7 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
     }
 
     const configsMap = await refreshList();
-    // An explicit "configure this one" (the ⚙ on a Runs launch card) wins over
+    // An explicit "configure this one" (the ⚙ on a Jobs launch card) wins over
     // the remembered selection — it is the reason this screen was opened.
     const wantedUuid = takePendingSelection('tab-training-management') ?? _lastSelectedUuid;
     const autoConfig = wantedUuid ? configsMap.get(wantedUuid) ?? null : null;

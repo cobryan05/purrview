@@ -123,7 +123,7 @@ export async function init(appState) {
     // canvas "back to review" path) while the chrome is scrolled out of view —
     // land on the new tab with it showing rather than seemingly headerless.
     showChrome();
-    // Let features react to main-tab focus changes (e.g. the Runs tab closes
+    // Let features react to main-tab focus changes (e.g. the Jobs tab closes
     // its task SSE stream when it loses focus).
     events.publish(EventTypes.MAIN_TAB_CHANGED, { tabName });
     // The pane that just became visible may hold a list-editor split, which can
@@ -212,10 +212,10 @@ export async function init(appState) {
   const defaultTabBtn = container?.querySelector('.main-tab-button.active');
   if (defaultTabBtn) defaultTabBtn.click();
 
-  // The Runs badge is the one piece of a tab that must be right before the tab
+  // The Jobs badge is the one piece of a tab that must be right before the tab
   // is ever opened — it exists to tell you something is running from wherever
-  // you are. Runs' own init is lazy, so seed the count here with a single fetch
-  // (no SSE stream: the stream is Runs' to open when it has focus).
+  // you are. Jobs' own init is lazy, so seed the count here with a single fetch
+  // (no SSE stream: the stream is Jobs' to open when it has focus).
   seedRunsBadge();
 
 }

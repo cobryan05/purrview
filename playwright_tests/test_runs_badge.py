@@ -3,10 +3,10 @@
 Two defects this covers:
 
   1. The count was painted by Runs' own lazy init, so a freshly loaded page read
-     a bare "Runs" until you visited the tab — which is exactly backwards for a
+     a bare "Jobs" until you visited the tab — which is exactly backwards for a
      badge whose whole job is telling you something is running from elsewhere.
-  2. It counted jobs only. A running watcher appeared under Active but not in
-     the number describing Active, with no rule visible from the screen.
+  2. It counted jobs only. A running watcher appeared under Running but not in
+     the number describing Running, with no rule visible from the screen.
 
 Run with:
     pytest playwright_tests/test_runs_badge.py -p no:asyncio -n 0 -v
@@ -70,9 +70,9 @@ class TestSeededAtPageLoad:
         expect(_badge(page)).to_have_text("1")
 
 
-class TestCountsEverythingUnderActive:
+class TestCountsEverythingUnderRunning:
     def test_a_running_watcher_counts(self, page: Page, base_url: str):
-        """It is listed under Active, so it belongs in Active's number."""
+        """It is listed under Running, so it belongs in Running's number."""
         _load(page, base_url, {"t-watch": WATCHER})
 
         expect(_badge(page)).to_have_text("1")
@@ -88,7 +88,7 @@ class TestCountsEverythingUnderActive:
 
         title = _badge(page).get_attribute("title") or ""
         assert "1 job" in title, title
-        assert "1 continuous run" in title, title
+        assert "1 continuous job" in title, title
 
 
 class TestBothBadgesAgree:

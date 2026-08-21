@@ -1,5 +1,5 @@
 /**
- * Runs — the app's single runtime surface.
+ * Jobs — the app's single runtime surface.
  *
  * Was Operations › Activity. Operations dissolved: its Tasks and Sources panes
  * were definition editors and moved to Configuration, leaving the one thing
@@ -7,7 +7,7 @@
  * everything launched anywhere in the app reports here, and because service
  * health belongs beside what is running rather than above two config editors.
  *
- * Two panes: Active (what is running, plus service health) and Start a run
+ * Two panes: Running (what is live, plus service health) and Start a job
  * (everything launchable). Starting lives here rather than in the Configuration
  * editors, so a config screen defines a recipe and never runs or monitors one.
  */
@@ -30,12 +30,12 @@ export async function init() {
 
   /** Jobs that can still finish on their own; drives the stream's lifetime. */
   let advancingCount = 0;
-  /** Whether Runs is the main tab on screen. Runs itself always needs the feed. */
+  /** Whether Jobs is the main tab on screen. Jobs itself always needs the feed. */
   let onRunsTab = true;
 
   /**
    * Repaint the badge, and re-derive whether the SSE stream is still worth
-   * holding once the user leaves Runs.
+   * holding once the user leaves Jobs.
    */
   function updateBadge(tasks) {
     updateRunsBadge(tasks);
@@ -53,7 +53,7 @@ export async function init() {
    * Re-poll the badge; SSE keeps it fresh but only pushes *on change*.
    *
    * Routed through this tab's own `updateBadge` rather than the module default,
-   * so the poll also refreshes `advancingCount` — otherwise leaving Runs while
+   * so the poll also refreshes `advancingCount` — otherwise leaving Jobs while
    * a job is running drops the stream on a count that was never filled in.
    */
   const seedBadge = () => seedRunsBadge(updateBadge);
@@ -79,7 +79,7 @@ export async function init() {
         if (!data?.tasks) return;
         updateBadge(data.tasks);
         // renderActiveTasks no-ops unless its pane is visible, so this costs
-        // nothing while the Active pane is not the one on screen.
+        // nothing while the Running pane is not the one on screen.
         renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });
         // The launcher shows "Training in progress" on the card that started a
         // run. It is fed from here rather than subscribing itself: this stream
@@ -90,7 +90,7 @@ export async function init() {
     // EventSource reconnects automatically on error; no extra handling needed.
   }
 
-  // The stream outlives Runs-tab focus only while something is actually running.
+  // The stream outlives Jobs-tab focus only while something is actually running.
   //
   // Two failures to avoid at once. Closing it unconditionally froze both badges
   // at whatever they read on the way out — a training that finished while you
@@ -116,7 +116,7 @@ export async function init() {
   });
 
   /**
-   * Land the user on Active after starting something, so the run they just
+   * Land the user on Running after starting something, so the run they just
    * kicked off is visible rather than leaving them on the launcher wondering
    * whether the click took.
    */
@@ -134,7 +134,7 @@ export async function init() {
     }
   });
 
-  // activate default Runs tab
+  // activate default Jobs tab
   const defaultTabBtn = tabs.container?.querySelector('.workspace-tab-button');
   if (defaultTabBtn) defaultTabBtn.click();
 

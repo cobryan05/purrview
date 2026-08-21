@@ -1,16 +1,16 @@
 /**
- * The Runs tab's live-work counter.
+ * The Jobs tab's live-work counter.
  *
  * Lives here rather than inside `app/runs/main.js` because the badge is visible
- * from every tab but Runs' own init only happens the first time someone opens
+ * from every tab but Jobs' own init only happens the first time someone opens
  * the tab. Seeding it at page load is the whole point: on a fresh load the badge
- * used to read blank until you visited Runs, which is exactly backwards — the
+ * used to read blank until you visited Jobs, which is exactly backwards — the
  * number is there to tell you something is running *without* going to look.
  *
- * The count is "everything under Active that has not finished": jobs and
+ * The count is "everything under Running that has not finished": jobs and
  * continuous runs alike. It used to exclude continuous work (a watcher stays
  * armed for weeks, so it pins the badge at >= 1) but that made the number
- * unexplainable from the screen it describes — Active lists a running watcher
+ * unexplainable from the screen it describes — Running lists a running watcher
  * and the badge silently disagreed. A steady 1 is honest; the tooltip breaks it
  * down into jobs vs continuous for anyone who cares which kind is which.
  */
@@ -18,9 +18,9 @@ import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
 import { countLiveTasks, countLiveTasksByKind } from '/app-static/js/ui/tasks.js';
 
 /**
- * Both places the same count appears: the main Runs tab button (visible from
- * anywhere in the app) and the Active sub-tab, which is the pane the count is
- * actually about — from inside Runs the main-tab badge is out of the eyeline.
+ * Both places the same count appears: the main Jobs tab button (visible from
+ * anywhere in the app) and the Running sub-tab, which is the pane the count is
+ * actually about — from inside Jobs the main-tab badge is out of the eyeline.
  */
 const BADGE_IDS = ['task-activity-badge', 'task-activity-badge-active'];
 
@@ -38,7 +38,7 @@ function _plural(n, word) {
 function _badgeTitle({ jobs, continuous }) {
   const parts = [];
   if (jobs) parts.push(_plural(jobs, 'job'));
-  if (continuous) parts.push(`${_plural(continuous, 'continuous run')}`);
+  if (continuous) parts.push(`${_plural(continuous, 'continuous job')}`);
   if (!parts.length) return 'Nothing running';
   return `${parts.join(', ')} — click to see them`;
 }
@@ -68,14 +68,14 @@ export function updateRunsBadge(tasks) {
 /**
  * Seed the badge from a one-off fetch.
  *
- * Called at page load (before Runs has ever been opened) and again whenever
- * Runs regains focus. SSE keeps the badge fresh while the stream is open, but
+ * Called at page load (before Jobs has ever been opened) and again whenever
+ * Jobs regains focus. SSE keeps the badge fresh while the stream is open, but
  * the stream only pushes *on change* — so without this the badge stays blank on
  * arrival until something happens to a task, which is precisely the case where
  * it should already read "2".
  *
  * @param {?(tasks: Record<string, any>) => void} onTasks
- *   Optional: receives the fetched task map instead of the default paint. Runs
+ *   Optional: receives the fetched task map instead of the default paint. Jobs
  *   passes its own `updateBadge`, which paints *and* re-derives whether its SSE
  *   stream is still worth holding — a seed that only painted left that count
  *   stale at zero and dropped the stream on the way out of the tab.
