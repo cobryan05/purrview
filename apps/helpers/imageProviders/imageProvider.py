@@ -36,6 +36,19 @@ class ImageProvider:
     # Subclasses that support source-level pacing assign this in __init__.
     min_capture_interval: float = 0.0
 
+    def set_source_fps_ceiling(self, fps: float) -> None:
+        """Tell the source not to send more than *fps* frames per second, if it can.
+
+        A hint about the *source*, not a promise to the caller: it never makes a
+        provider yield frames more slowly than it otherwise would, so a caller that
+        already paces itself can set it freely. Distinct from `min_capture_interval`,
+        which does pace the caller, by sleeping inside getNextImage().
+
+        A no-op by default. Frame-at-a-time providers have nothing to throttle — the
+        source sends what it sends — and only ones that pull a continuous stream they
+        must then drain (see FfmpegImageProvider) can act on it.
+        """
+
     def set_source_identity(self, name: str) -> None:
         """Sets the human-readable identity of the source this provider reads from,
         used to name notices, status rows and output filenames."""

@@ -312,15 +312,48 @@ class TestFfmpegImageProviderDrain:
         assert timestamps[1] >= 1.0
         assert timestamps[2] >= 2.0
 
-    async def test_min_capture_interval_adds_vf_output_filter(self):
+    async def test_min_capture_interval_decimates_at_the_source(self):
         provider = FfmpegImageProvider(
             video_path="rtsp://cam.invalid/stream", rtsp_relay=False, min_capture_interval=2.0
         )
-        assert provider._ffmpeg_args.get("vf") == "fps=1/2.0"
+        args = provider._spawn_args()
+        assert "2.0" in args["vf"]
+        # Without this the CFR rawvideo output re-pads the decimated stream back up to
+        # the input rate, so the filter saves nothing.
+        assert args["vsync"] == "0"
 
     async def test_zero_interval_omits_vf_output_filter(self):
         provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
-        assert "vf" not in provider._ffmpeg_args
+        assert "vf" not in provider._spawn_args()
+
+    async def test_fps_ceiling_set_after_construction_reaches_the_spawn(self):
+        """The watcher only learns its analysis rate after building the provider.
+
+        A ceiling frozen at construction would silently never apply, which is the bug
+        this exists to catch: four cameras firehosing raw video into a 64 KiB pipe
+        until ffmpeg wedged on the write and the relay dropped every session.
+        """
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        assert "vf" not in provider._spawn_args()
+
+        provider.set_source_fps_ceiling(5.0)
+
+        assert "vf" in provider._spawn_args()
+
+    async def test_fps_ceiling_drops_frames_rather_than_padding_them(self):
+        """An intermittent source must pass through untouched, not be duplicated up.
+
+        ffmpeg's `fps` filter pads a slow input to hit its target rate, so a camera
+        that only sends during motion would have its frames repeated. `select` only
+        ever drops.
+        """
+        provider = FfmpegImageProvider(video_path="rtsp://cam.invalid/stream", rtsp_relay=False)
+        provider.set_source_fps_ceiling(5.0)
+
+        vf = provider._spawn_args()["vf"]
+
+        assert vf.startswith("select=")
+        assert "fps=" not in vf
 
 
 class TestFfmpegImageProviderRestartBound:

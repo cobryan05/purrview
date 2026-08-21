@@ -96,9 +96,6 @@ class FfmpegImageProvider(ImageProvider):
             "pix_fmt": "bgr24",
             "codec": "rawvideo",
         }  # decode raw frames
-        if min_capture_interval > 0:
-            # Let ffmpeg itself decimate frames rather than decoding+discarding in Python.
-            output_args["vf"] = f"fps=1/{min_capture_interval}"
         self._video_path: str = video_path.strip()
         self._loop: bool = loop
         self._frame_size: Optional[Tuple[int, int]] = None
@@ -117,6 +114,15 @@ class FfmpegImageProvider(ImageProvider):
         self._ffmpeg_args: dict = output_args
         self._min_capture_interval: float = min_capture_interval
         self.min_capture_interval: float = min_capture_interval
+        #: Smallest interval, in seconds, between frames ffmpeg is asked to emit.
+        #: 0 means "whatever the source sends".
+        #:
+        #: Deliberately NOT `min_capture_interval`, even though it starts out equal to
+        #: it. That one *also* makes getNextImage() sleep to pace its caller, and a
+        #: caller that services several sources sequentially from one loop (the
+        #: watcher does) pays every source's sleep on all the others. This attribute
+        #: only ever tells ffmpeg to send less, which costs the caller nothing.
+        self._decimate_interval: float = min_capture_interval
         self._next_capture_time: float = 0.0
         self._frame_idx: int = 0
         self._restart_count: int = 0
@@ -186,7 +192,7 @@ class FfmpegImageProvider(ImageProvider):
                 # Kept so reconnect() can rebuild the reader without re-running the
                 # whole lease handshake to rediscover where to read from.
                 self._stream_url = stream_url
-                self._stream = FFmpegStreamerIn(stream_url, output_args=self._ffmpeg_args)
+                self._stream = FFmpegStreamerIn(stream_url, output_args=self._spawn_args())
 
                 self._stream_started_at = self._now()
                 await self._stream.astart()
@@ -199,7 +205,7 @@ class FfmpegImageProvider(ImageProvider):
             return
 
         self._stream_url = self._video_path
-        self._stream = FFmpegStreamerIn(self._video_path, output_args=self._ffmpeg_args)
+        self._stream = FFmpegStreamerIn(self._video_path, output_args=self._spawn_args())
 
         self._stream_started_at = self._now()
         await self._stream.astart()
@@ -243,7 +249,7 @@ class FfmpegImageProvider(ImageProvider):
             await self.start()
             return
 
-        self._stream = FFmpegStreamerIn(self._stream_url, output_args=self._ffmpeg_args)
+        self._stream = FFmpegStreamerIn(self._stream_url, output_args=self._spawn_args())
 
         self._stream_started_at = self._now()
         await self._stream.astart()
@@ -273,6 +279,49 @@ class FfmpegImageProvider(ImageProvider):
     def is_ready(self) -> bool:
         """True once ffmpeg has reported geometry — i.e. the source is actually there."""
         return self._stream is not None and self._stream.metadata_ready()
+
+    def set_source_fps_ceiling(self, fps: float) -> None:
+        """Ask ffmpeg for at most *fps* frames per second, dropped at the source.
+
+        The point is the pipe, not the CPU. Output here is rawvideo, so one 1280x720
+        frame is 2.7 MB and a 25 fps camera is ~69 MB/s down a 64 KiB stdout pipe. A
+        caller that only analyses a few frames a second still has to read every byte of
+        the rest off that pipe just to throw it away, and when it cannot keep up the
+        pipe fills, ffmpeg blocks in write(), stops reading its RTSP input, and MediaMTX
+        drops the stalled session. That failure reads as a dead camera while the logs
+        show the stream starting cleanly every time. Dropping frames before they are
+        written is the only place the saving is real.
+
+        Takes effect on the next spawn, so set it before start(). reconnect() rebuilds
+        against it too.
+        """
+        self._decimate_interval = 1.0 / fps if fps > 0 else 0.0
+
+    def _spawn_args(self) -> dict:
+        """Output args for a new reader, including any source-side decimation.
+
+        Built per spawn rather than frozen in __init__ so that a ceiling set after
+        construction is honoured, and so reconnect() rebuilds against the current one.
+        """
+        args = dict(self._ffmpeg_args)
+        if self._decimate_interval <= 0:
+            return args
+        # `select`, not `fps`: the fps filter pads as well as drops, so a source slower
+        # than the ceiling — an event-only feed, a camera that only sends during motion
+        # — would have its frames duplicated up to the target rate, which is the
+        # opposite of the point. `select` only ever drops, so an intermittent source
+        # passes through untouched and only a fast one is thinned.
+        #
+        # The comma is escaped for ffmpeg's filtergraph parser, which would otherwise
+        # read it as a filter separator. No shell is involved, so the backslash is a
+        # literal argv byte — which is exactly what the parser wants.
+        args["vf"] = f"select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{self._decimate_interval})'"
+        # Without this, a CFR rawvideo output re-pads the decimated stream back up to
+        # the input rate and undoes the whole thing. `-vsync 0` rather than
+        # `-fps_mode passthrough` because this image ships ffmpeg 4.4, which predates
+        # fps_mode.
+        args["vsync"] = "0"
+        return args
 
     async def _renew_lease_forever(self) -> None:
         """Heartbeat the relay for as long as this provider is reading.

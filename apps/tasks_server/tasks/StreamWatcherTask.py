@@ -378,6 +378,17 @@ class StreamWatcherTask(Task):
             if self._analysis_fps_cap:
                 fps = min(fps, self._analysis_fps_cap)
 
+            # Tell the source to stop sending what this watcher was only going to
+            # throw away. Analysing at 5 fps does not mean reading at 5 fps: a
+            # continuous provider still has to drain everything the camera sends, and
+            # for raw video that is ~69 MB/s per 720p25 camera down a 64 KiB pipe.
+            # Left unset, four cameras out-ran the reader, ffmpeg wedged on a full
+            # stdout pipe and stopped pulling RTSP, and the relay dropped every one of
+            # them — reported as four failed cameras that tested fine by hand.
+            #
+            # Set before start(), which is what the ceiling is read at.
+            provider.set_source_fps_ceiling(fps)
+
             tracker = create_tracker(
                 self._profile.tracker_typename,
                 label_lifetimes=lifetimes,
