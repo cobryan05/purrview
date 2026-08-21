@@ -770,9 +770,17 @@ function buildLifetimeRow(lifetime, ctx) {
   anchor.type = 'checkbox';
   anchor.checked = lifetime.isAnchor === true;
   anchor.dataset.testid = 'watch-lifetime-anchor';
+  // Says what it changes *and* what it does not: the flag is about the box, and the
+  // most expensive misreading of it is "anchored things stay alive longer", which it
+  // has never done — the TTL beside it is the only thing that decides that.
   anchor.title =
-    'Latch this label’s box once seen confidently, instead of trusting a detector that '
-    + 'intermittently misses a stationary object. Appropriate for furniture, not for animals.';
+    'Pins the box in place. Once this label is detected confidently (at or above the '
+    + 'tracker’s Anchor confidence), later weak detections keep refreshing the track but '
+    + 'no longer move its box — so a stationary object stops jittering in and out of a '
+    + 'zone. A confident detection still moves it.\n\n'
+    + 'It does not extend the lifetime: an anchored track still dies after the TTL beside '
+    + 'it with no detections at all, so pair this with a long TTL.\n\n'
+    + 'For furniture — a litter box, a feeder, a door. Not for animals, which really do move.';
   anchor.addEventListener('change', ctx.onAnyChange);
   row.appendChild(wfield('Anchor', anchor, { help: anchor.title }));
 
