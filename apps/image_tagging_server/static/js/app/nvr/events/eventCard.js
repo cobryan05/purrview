@@ -56,6 +56,40 @@ export function formatDuration(startedAt, endedAt) {
 }
 
 /**
+ * How a cut-short event describes its ending.
+ *
+ * The badge used to say "capped" for every truncated event, because one boolean carried
+ * two very different endings. A watcher that is stopped or restarted — which is what
+ * saving its own config does — force-closes everything open, and reporting that as the
+ * runaway cap sends the user to tune a `max_duration_s` that may be disabled outright.
+ * Rows written before `closeReason` existed get the neutral wording: they genuinely do
+ * not record which of the two it was, and guessing is the bug this replaced.
+ *
+ * @param {?string} closeReason 'cap' | 'forced' | 'predicate' | null
+ * @returns {{label: string, title: string}}
+ */
+export function describeCloseReason(closeReason) {
+  if (closeReason === 'cap') {
+    return {
+      label: 'capped',
+      title: "Closed by the rule's runaway-event cap, not by the subject leaving.",
+    };
+  }
+  if (closeReason === 'forced') {
+    return {
+      label: 'interrupted',
+      title: 'The watcher was stopped, paused or restarted while this event was open — '
+        + 'the subject may well have still been there.',
+    };
+  }
+  return {
+    label: 'cut short',
+    title: 'This event was cut short rather than ending on its own. '
+      + 'It predates the recording of which cause it was.',
+  };
+}
+
+/**
  * The headline: what happened, phrased as actor → acted-on when both are known.
  *
  * Falls back through progressively less specific descriptions rather than showing a
@@ -222,8 +256,10 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
     if (duration) meta.appendChild(el('span', 'event-card__meta-item', duration));
   }
   if (event.truncated) {
-    const capped = el('span', 'event-card__meta-item event-card__meta-item--warn', 'capped');
-    capped.title = 'Closed by the runaway-event cap, not by the subject leaving.';
+    const { label, title } = describeCloseReason(event.closeReason);
+    const capped = el('span', 'event-card__meta-item event-card__meta-item--warn', label);
+    capped.title = title;
+    capped.dataset.testid = 'event-card-truncated';
     meta.appendChild(capped);
   }
   if (meta.childElementCount) body.appendChild(meta);

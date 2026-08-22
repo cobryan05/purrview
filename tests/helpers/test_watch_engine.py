@@ -12,7 +12,7 @@ import pytest
 
 from apps.helpers.tracking.tracker import Track
 from apps.helpers.watch.engine import WatchEngine
-from apps.helpers.watch.events import EventPhase
+from apps.helpers.watch.events import EventCloseReason, EventPhase
 from apps.helpers.watch.geometry import (
     Zone,
     area,
@@ -445,6 +445,41 @@ class TestRuleMachine:
         signal = machine.force_close(5.0)
         assert signal is not None and signal.phase is EventPhase.END
         assert signal.truncated is True
+
+    def test_a_forced_close_is_not_reported_as_the_cap(self):
+        """The two cut-short endings must stay tellable apart.
+
+        They were one boolean, so a watcher restarting — which is what saving its own
+        config does — closed every open event and each was reported as "capped by max
+        duration", on rules whose cap was `0`, i.e. disabled. The user goes looking at a
+        setting that cannot have caused it. Asserting the *difference* rather than one
+        value is the point: collapsing them back into one flag fails this.
+        """
+        machine = RuleMachine(_rule(min_duration_s=1.0, max_duration_s=0.0))
+        self._run(machine, [(True, 0.0), (True, 2.0)])
+        forced = machine.force_close(5.0)
+        assert forced is not None
+        assert forced.close_reason is EventCloseReason.FORCED
+
+        capped = RuleMachine(_rule(min_duration_s=1.0, max_duration_s=30.0))
+        signals = self._run(capped, [(True, 0.0), (True, 2.0), (True, 40.0)])
+        assert signals[-1].close_reason is EventCloseReason.CAP
+
+    def test_an_ordinary_end_reports_the_predicate(self):
+        """And is therefore not truncated at all — `truncated` is derived from the
+        reason, so the flag and the reason cannot drift apart."""
+        machine = RuleMachine(_rule(min_duration_s=1.0, rearm_delay_s=2.0))
+        signals = self._run(machine, [(True, 0.0), (True, 2.0), (False, 3.0), (False, 6.0)])
+        assert signals[-1].close_reason is EventCloseReason.PREDICATE
+        assert signals[-1].truncated is False
+
+    def test_disabling_a_rule_mid_event_is_a_forced_close(self):
+        """The subject may still be right there; the rule simply stopped watching."""
+        machine = RuleMachine(_rule(min_duration_s=1.0))
+        self._run(machine, [(True, 0.0), (True, 2.0)])
+        machine.spec.enabled = False
+        signals = self._run(machine, [(True, 3.0)])
+        assert signals[-1].close_reason is EventCloseReason.FORCED
 
     def test_force_close_on_an_idle_rule_emits_nothing(self):
         assert RuleMachine(_rule()).force_close(1.0) is None

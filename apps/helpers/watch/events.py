@@ -11,6 +11,26 @@ class EventPhase(str, Enum):
     END = "end"
 
 
+class EventCloseReason(str, Enum):
+    """Why an event ended. Only meaningful on an END signal.
+
+    These used to be one boolean (`truncated`), which read as "the runaway cap fired".
+    It did not distinguish the cap from a watcher that was simply stopped — so saving a
+    watcher's config, which restarts the task and force-closes everything open, reported
+    every interrupted event as capped. That is a diagnosis pointing at a setting the
+    rule may not even have enabled (`max_duration_s = 0` disables the cap outright), and
+    it cost a real debugging session.
+    """
+
+    #: The predicate went false and the rearm delay elapsed — the ordinary ending.
+    PREDICATE = "predicate"
+    #: `max_duration_s` elapsed while the predicate still held.
+    CAP = "cap"
+    #: The watcher stopped, paused or restarted with the event open. Says nothing about
+    #: the subject: it may well still have been there.
+    FORCED = "forced"
+
+
 @dataclass
 class WatchEventSignal:
     """One transition in a rule's life, as the engine reports it.
@@ -31,9 +51,9 @@ class WatchEventSignal:
     source_uuid: Optional[str] = None
     track_ids: List[int] = field(default_factory=list)
     peak_confidence: float = 0.0
-    #: True when the event was closed by `max_duration_s` rather than by the predicate
-    #: going false. A stuck detection looks exactly like a very long event otherwise.
-    truncated: bool = False
+    #: Why the event ended. `truncated` is derived from this rather than stored beside
+    #: it, so the flag and the reason cannot disagree.
+    close_reason: EventCloseReason = EventCloseReason.PREDICATE
     #: Which member of each multi-ref slot actually matched — a label uuid for the
     #: subject, a zone uuid (or label uuid) for the target. Uuids, not names: the engine
     #: is pure and has no vocabulary to resolve them with. The task that owns the DB
@@ -51,6 +71,15 @@ class WatchEventSignal:
     def duration_s(self) -> float:
         return max(0.0, self.at - self.started_at)
 
+    @property
+    def truncated(self) -> bool:
+        """The event was cut short — by the cap or by the watcher stopping.
+
+        Kept because everything downstream asks "is this span the whole story?" and the
+        answer is no in both cases; `close_reason` is what says *which*.
+        """
+        return self.close_reason is not EventCloseReason.PREDICATE
+
     def to_dict(self) -> dict:
         return {
             "ruleUuid": self.rule_uuid,
@@ -63,6 +92,7 @@ class WatchEventSignal:
             "trackIds": list(self.track_ids),
             "peakConfidence": round(self.peak_confidence, 4),
             "truncated": self.truncated,
+            "closeReason": self.close_reason.value,
             "subjectRef": self.subject_ref,
             "targetRef": self.target_ref,
             "subjectName": self.subject_name,

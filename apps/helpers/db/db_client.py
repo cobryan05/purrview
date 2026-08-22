@@ -32,6 +32,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from apps import FILES_ROOT
 from apps.helpers.consts import TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.watch.events import EventCloseReason
 
 from .types import (
     BBOX_CONFIDENCE_METADATA_KEYS,
@@ -7415,6 +7416,13 @@ class DbClient:
             rows = (await session.exec(stmt)).all()
             for event in rows:
                 event.ended_at = event.started_at
+                # Recorded in the same column as every other forced ending, so anything
+                # asking "why did this end?" gets one answer in one place. `truncated`
+                # is deliberately *not* set: it means "the span is real but cut short",
+                # and this row's span is not real at all — `ended_at` is a placeholder.
+                # The card has its own, blunter treatment for that, and both badges at
+                # once would say the same thing twice.
+                event.close_reason = EventCloseReason.FORCED.value
                 # Reassigned, not mutated in place: a JSON column tracks changes by
                 # identity, so mutating the dict leaves the row unchanged on commit.
                 event.metadata_json = {**(event.metadata_json or {}), "closedBy": "restart"}

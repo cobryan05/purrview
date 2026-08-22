@@ -32,7 +32,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..tracking.tracker import Track
-from .events import EventPhase, WatchEventSignal
+from .events import EventCloseReason, EventPhase, WatchEventSignal
 from .geometry import Zone, centroid, containment, inflate, iou, margin_pad, normalised_distance, overlap_ratio
 
 
@@ -333,7 +333,12 @@ class RuleMachine:
 
     # ------------------------------------------------------------------ helpers
 
-    def _signal(self, phase: EventPhase, now: float, truncated: bool = False) -> WatchEventSignal:
+    def _signal(
+        self,
+        phase: EventPhase,
+        now: float,
+        close_reason: EventCloseReason = EventCloseReason.PREDICATE,
+    ) -> WatchEventSignal:
         return WatchEventSignal(
             rule_uuid=self.spec.uuid,
             rule_name=self.spec.name,
@@ -343,7 +348,7 @@ class RuleMachine:
             source_uuid=self.source_uuid,
             track_ids=list(self._track_ids),
             peak_confidence=self._peak_confidence,
-            truncated=truncated,
+            close_reason=close_reason,
             subject_ref=self._subject_ref,
             target_ref=self._target_ref,
             metadata={"eventLabel": self.spec.event_label} if self.spec.event_label else {},
@@ -366,7 +371,9 @@ class RuleMachine:
         if not self.spec.enabled:
             if self.state != RuleState.IDLE:
                 # Disabling a rule mid-event must close it, not strand it open forever.
-                signals = [self._signal(EventPhase.END, now)]
+                # Forced, not predicate: the subject may still be right there, and the
+                # span stops short of whatever it was actually doing.
+                signals = [self._signal(EventPhase.END, now, EventCloseReason.FORCED)]
                 self._reset()
                 return signals
             return []
@@ -429,7 +436,7 @@ class RuleMachine:
             and self.spec.max_duration_s > 0
             and now - self._event_started_at >= self.spec.max_duration_s
         ):
-            signals.append(self._signal(EventPhase.END, now, truncated=True))
+            signals.append(self._signal(EventPhase.END, now, EventCloseReason.CAP))
             self._reset()
 
         return signals
@@ -441,7 +448,7 @@ class RuleMachine:
         must be closed and its clip enqueued, not left dangling.
         """
         if self.state in (RuleState.ACTIVE, RuleState.CLOSING):
-            signal = self._signal(EventPhase.END, now, truncated=True)
+            signal = self._signal(EventPhase.END, now, EventCloseReason.FORCED)
             self._reset()
             return signal
         self._reset()

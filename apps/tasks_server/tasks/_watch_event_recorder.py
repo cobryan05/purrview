@@ -295,6 +295,7 @@ class WatchEventRecorder:
             ended_at=datetime.now(timezone.utc),
             peak_confidence=signal.peak_confidence,
             truncated=signal.truncated,
+            close_reason=signal.close_reason.value,
         )
         response = await asyncio.to_thread(api.update_watch_event, uuid, payload)
         if response.status != JsonValues.SUCCESS:

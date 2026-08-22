@@ -21,7 +21,7 @@ import pytest
 
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.recordings.detectionTrack import DetectionTrack
-from apps.helpers.watch.events import EventPhase, WatchEventSignal
+from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
 from apps.tasks_server.tasks._watch_event_recorder import WatchEventRecorder
 
 
@@ -213,7 +213,7 @@ class TestEventLifecycle:
         assert uuid == "event-1"
         assert len(store.created) == 1
 
-        end = _signal(EventPhase.END, at=130.0, peak_confidence=0.95, truncated=True)
+        end = _signal(EventPhase.END, at=130.0, peak_confidence=0.95, close_reason=EventCloseReason.CAP)
         assert await recorder.record(end, _context()) == "event-1"
         # One row, patched — not a second row for the closing edge.
         assert len(store.created) == 1
@@ -221,6 +221,9 @@ class TestEventLifecycle:
         assert patched_uuid == "event-1"
         assert patch.peak_confidence == pytest.approx(0.95)
         assert patch.truncated is True
+        # The *reason* rides along with the flag, so a card can say which of the two
+        # cut-short endings this was instead of asserting the cap fired.
+        assert patch.close_reason == "cap"
 
     async def test_update_phase_persists_nothing(self, recorder, store):
         """UPDATE re-fires the `event_started` trigger for actions that want a repeated

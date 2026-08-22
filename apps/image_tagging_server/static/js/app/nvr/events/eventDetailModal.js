@@ -38,7 +38,7 @@ import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/a
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
 import { createBlipsPanel } from './blipsPanel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
-import { eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
+import { describeCloseReason, eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
 
 /**
@@ -616,7 +616,7 @@ export function openEventDetailModal(
       sidebar.appendChild(detailRow('Tracks', event.trackIdsJson.join(', ')));
     }
     if (event.truncated) {
-      sidebar.appendChild(detailRow('Ended by', 'The runaway-event cap, not the subject leaving'));
+      sidebar.appendChild(detailRow('Ended by', describeCloseReason(event.closeReason).title));
     }
 
     // Above the delete button, below the facts: the findings are something to act on,

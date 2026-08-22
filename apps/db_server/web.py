@@ -1026,6 +1026,7 @@ class WatchEventCreate(Payload):
     target_ref: Optional[str] = None
     target_name: Optional[str] = None
     truncated: bool = False
+    close_reason: Optional[str] = None
     snapshot_path: Optional[str] = None
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
 
@@ -1040,6 +1041,7 @@ class WatchEventUpdate(Payload):
     ended_at: Optional[datetime] = None
     peak_confidence: Optional[float] = None
     truncated: Optional[bool] = None
+    close_reason: Optional[str] = None
     snapshot_path: Optional[str] = None
     metadata_json: Optional[Dict[str, Any]] = None
 

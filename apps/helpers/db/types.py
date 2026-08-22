@@ -2074,9 +2074,18 @@ class WatchEvent(SQLModel, table=True):
     subject_name: Optional[str] = Field(default=None)
     target_ref: Optional[str] = Field(default=None, index=True)
     target_name: Optional[str] = Field(default=None)
-    # Closed by `max_duration_s` rather than by the predicate going false. A stuck
-    # detection looks exactly like a very long event otherwise.
+    # The event's span stops short of what actually happened — see `close_reason` for
+    # which of the two ways. Kept as its own column rather than derived in a query
+    # because the events grid filters on it and rows written before `close_reason`
+    # existed have nothing to derive it from.
     truncated: bool = Field(default=False)
+    # Why the event ended: `predicate` (the ordinary ending), `cap` (`max_duration_s`
+    # elapsed) or `forced` (the watcher stopped, paused or restarted with the event
+    # open). One boolean could not tell the last two apart, so saving a watcher's config
+    # — which restarts the task — reported every interrupted event as capped, including
+    # for rules whose cap is disabled. Nullable: rows written before this column cannot
+    # be back-filled, since the information was never recorded.
+    close_reason: Optional[str] = Field(default=None)
     # Where this event stands in blip review. A column rather than a `metadata_json`
     # key for the same reason `subject_ref` is one: the events grid filters on it, and
     # a JSON extract cannot use an index.
@@ -2528,6 +2537,10 @@ class WatchEventRead(OrmModel):
     target_ref: Optional[str] = None
     target_name: Optional[str] = None
     truncated: bool = False
+    #: `predicate` | `cap` | `forced`, or null for rows written before it was recorded.
+    #: The UI must not spell out a cause when this is null — that guess is the bug this
+    #: field exists to end.
+    close_reason: Optional[str] = None
     review_state: str = WatchEventReviewState.UNREVIEWED.value
     # Whether the event has card art on disk. The path itself is deliberately not
     # exposed: it is a server filesystem path, and the browser fetches the image from

@@ -53,7 +53,7 @@ from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, Detect
 from apps.helpers.tracking.Registry import create_tracker
 from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.engine import WatchEngine
-from apps.helpers.watch.events import EventPhase, WatchEventSignal
+from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
 from apps.helpers.watch.rules import RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
@@ -1312,8 +1312,16 @@ class StreamWatcherTask(Task):
         """
         verb = {EventPhase.START: "started", EventPhase.UPDATE: "updated", EventPhase.END: "ended"}[signal.phase]
         detail = f" ({signal.duration_s:.1f}s)" if signal.phase is EventPhase.END else ""
-        capped = " [capped by max duration]" if signal.truncated else ""
-        self.log(f"Event {verb}: {signal.rule_name}{detail}{capped} tracks={signal.track_ids}")
+        # Name the actual ending. This line said "[capped by max duration]" for every
+        # truncated event, including ones the watcher itself force-closed on a restart
+        # and ones whose rule has no cap at all — which is a log that actively misleads
+        # whoever is reading it to find out why their event was short.
+        ending = {
+            EventCloseReason.CAP: " [capped by max duration]",
+            EventCloseReason.FORCED: " [cut short: the watcher stopped]",
+        }.get(signal.close_reason, "")
+        ending = ending if signal.phase is EventPhase.END else ""
+        self.log(f"Event {verb}: {signal.rule_name}{detail}{ending} tracks={signal.track_ids}")
         if self._dry_run:
             return
 
