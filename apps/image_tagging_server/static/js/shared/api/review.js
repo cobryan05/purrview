@@ -22,6 +22,46 @@ export const VERIFICATION_TAG_BY_STATE = {
   unverified: UNVERIFIED_TAG_UUID,
 };
 
+// Sentinel used in the Source filter's selection list to mean "no source
+// recorded" (images.source_uuid IS NULL). It is not a uuid and never reaches
+// the server as one — buildImageSourceTerms turns it into the term's
+// `includeUnknown` flag. Manual uploads and everything collected before
+// images.source_uuid existed are only reachable through it.
+export const NO_SOURCE_KEY = '__no_source__';
+
+/**
+ * Build the `imageSource` filter terms for a Source-filter selection.
+ *
+ * Includes collapse into ONE term (an image has exactly one source, so the
+ * selected sources are always an OR). Each exclusion becomes its own negated
+ * term, because terms are ANDed server-side and excluding two cameras has to
+ * exclude both — the same serialisation the bbox-tag and filename exclusions
+ * use.
+ *
+ * @param {string[]} sourceUuids        sources to include; may contain NO_SOURCE_KEY
+ * @param {string[]} sourceExcludeUuids sources to exclude; may contain NO_SOURCE_KEY
+ */
+export function buildImageSourceTerms(sourceUuids = [], sourceExcludeUuids = []) {
+  const terms = [];
+  const split = (list) => ({
+    uuids: (list ?? []).filter(u => u && u !== NO_SOURCE_KEY),
+    unknown: (list ?? []).includes(NO_SOURCE_KEY),
+  });
+
+  const inc = split(sourceUuids);
+  if (inc.uuids.length > 0 || inc.unknown) {
+    terms.push({ kind: 'imageSource', sourceUuids: inc.uuids, includeUnknown: inc.unknown });
+  }
+  for (const uuid of sourceExcludeUuids ?? []) {
+    if (uuid === NO_SOURCE_KEY) {
+      terms.push({ kind: 'imageSource', sourceUuids: [], includeUnknown: true, negate: true });
+    } else if (uuid) {
+      terms.push({ kind: 'imageSource', sourceUuids: [uuid], includeUnknown: false, negate: true });
+    }
+  }
+  return terms;
+}
+
 /**
  * Normalise the two filename-filter option shapes into one condition list.
  *
@@ -118,6 +158,8 @@ function buildReviewFilterBody({
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
+  sourceUuids = [],
+  sourceExcludeUuids = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -238,6 +280,7 @@ function buildReviewFilterBody({
     // 'uncertain' → 'unreviewed' mapping used for image labels.
     terms.push({ kind: 'imageTag', tagUuid: c.tagUuid, state: c.state === 'unset' ? 'unreviewed' : c.state });
   }
+  terms.push(...buildImageSourceTerms(sourceUuids, sourceExcludeUuids));
 
   if (afterUuid) body.afterUuid = afterUuid;
   if (afterSortValue) body.afterSortValue = afterSortValue;

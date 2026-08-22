@@ -13,7 +13,13 @@
  * serialised when saving/loading a dataset.
  */
 
-import { UNVERIFIED_TAG_UUID, buildFilenameTerms, normalizeFilenameConditions } from '/app-static/js/shared/api/review.js';
+import {
+  NO_SOURCE_KEY,
+  UNVERIFIED_TAG_UUID,
+  buildFilenameTerms,
+  buildImageSourceTerms,
+  normalizeFilenameConditions,
+} from '/app-static/js/shared/api/review.js';
 
 /**
  * Convert a review filter state to { filterJson, labelUuids } for saving as a dataset.
@@ -86,6 +92,7 @@ export function reviewStateToDatasetForm(reviewState) {
       state: c.state === 'unset' ? 'unreviewed' : c.state,
     });
   }
+  terms.push(...buildImageSourceTerms(reviewState.sourceUuids, reviewState.sourceExcludeUuids));
 
   return {
     filterJson: {
@@ -146,6 +153,19 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
       state: t.state === 'unreviewed' ? 'unset' : t.state,
     }));
 
+  // Mirror of buildImageSourceTerms: one include term (multi-uuid) plus one
+  // negated term per exclusion, with includeUnknown folded back into the
+  // NO_SOURCE_KEY sentinel the picker speaks.
+  const sourceTerms = terms.filter(t => t.kind === 'imageSource');
+  const sourceIncludeTerm = sourceTerms.find(t => !t.negate);
+  const sourceUuids = [
+    ...(sourceIncludeTerm?.sourceUuids ?? []),
+    ...(sourceIncludeTerm?.includeUnknown ? [NO_SOURCE_KEY] : []),
+  ];
+  const sourceExcludeUuids = sourceTerms
+    .filter(t => t.negate)
+    .flatMap(t => [...(t.sourceUuids ?? []), ...(t.includeUnknown ? [NO_SOURCE_KEY] : [])]);
+
   return {
     tagUuids: tagTerm?.tagUuids ?? [],
     tagExcludeUuids,
@@ -156,6 +176,11 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     labelIncludeChildren: f.labelIncludeChildren ?? false,
     imageLabelConditions,
     imageTagConditions,
+    // Always present, for the same reason bboxVerification is below: setState
+    // is partial, so omitting these on a View that carries no source term
+    // would leave the previous selection applied.
+    sourceUuids,
+    sourceExcludeUuids,
     filenameConditions,
     filenameMatchMode: filenameIncludeTerm?.matchMode ?? 'any',
     dateFrom: dateTerm?.from ?? null,
@@ -215,6 +240,8 @@ export function reviewStateToFilterOpts(reviewState, { viewFilter = 'all', train
     labelIncludeChildren: fs.labelIncludeChildren,
     imageLabelConditions: fs.imageLabelConditions ?? [],
     imageTagConditions: fs.imageTagConditions ?? [],
+    sourceUuids: fs.sourceUuids ?? [],
+    sourceExcludeUuids: fs.sourceExcludeUuids ?? [],
     filenameSearch: fs.filenameSearch || undefined,
     filenameNegate: fs.filenameNegate ?? false,
     filenameConditions: fs.filenameConditions ?? [],

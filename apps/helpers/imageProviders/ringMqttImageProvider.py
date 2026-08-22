@@ -531,7 +531,7 @@ class RingMqttImageProvider(ImageProvider):
 
             provider = FfmpegImageProvider(self.live_url, loop=True, rtsp_relay=True)
             if self.source_name:
-                provider.set_source_identity(self.source_name)
+                provider.set_source_identity(self.source_name, self.source_uuid)
             if self._fps_ceiling > 0:
                 provider.set_source_fps_ceiling(self._fps_ceiling)
             try:

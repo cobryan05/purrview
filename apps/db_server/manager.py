@@ -873,7 +873,7 @@ class Manager:
         if safe_path is None or not safe_path.exists():
             logger.warning(f"Path not found or inaccessible: {image_rel_path}")
             return None
-        image = await self._db_client.add_image(safe_path)
+        image = await self._db_client.add_image(safe_path, source_uuid=update.source_uuid)
 
         # Capture old bbox entries BEFORE the DB write so we can remove stale hash
         # index entries.  write_image_metadata_to_db does a full DELETE + INSERT, so
@@ -2112,6 +2112,7 @@ class Manager:
         data: bytes,
         *,
         overwrite: bool = False,
+        source_uuid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Write an uploaded image under FILES_ROOT and register it.
 
@@ -2192,7 +2193,7 @@ class Manager:
 
         try:
             await asyncio.to_thread(target.write_bytes, data)
-            image = await self._db_client.add_image(target)
+            image = await self._db_client.add_image(target, source_uuid=source_uuid)
         except Exception:
             # Do not leave a file the DB does not know about — it would show in
             # the browser and be missing from every search.

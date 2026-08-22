@@ -45,5 +45,5 @@ class SourceHelper:
                 f"(registered: {sorted(image_provider_registry)})"
             )
         image_provider: ImageProvider = provider_cls(**source_metadata.params)
-        image_provider.set_source_identity(source_metadata.name)
+        image_provider.set_source_identity(source_metadata.name, source_uuid)
         return image_provider

@@ -30,6 +30,8 @@ import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
+import { NO_SOURCE_KEY } from '/app-static/js/shared/api/review.js';
 
 const DEFAULT_STATE = () => ({
   tagUuids: [],
@@ -47,6 +49,13 @@ const DEFAULT_STATE = () => ({
   // Distinct from `tagUuids` above, which filters on tags carried by an image's
   // BBOXES — an image with no bboxes can only ever be matched by these.
   imageTagConditions: [],
+  // Which sources produced the image (images.source_uuid) — "the camera that
+  // took it". Selecting several ORs them: an image has exactly one source, so
+  // there is no "all of" mode here. NO_SOURCE_KEY stands for images with no
+  // source recorded (manual uploads, and anything collected before the column
+  // existed) — otherwise unreachable, since NULL never satisfies IN.
+  sourceUuids: [],
+  sourceExcludeUuids: [],
   // Filename filters, one entry per row of the File list:
   // [{ pattern: string, negate: boolean }]. Includes are combined by
   // filenameMatchMode; every exclude applies. Replaces the old single
@@ -224,6 +233,69 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       emit();
     },
   );
+
+  // ── Source multi-select ───────────────────────────────────────────────────
+  // Sources are fetched rather than passed in: unlike labels and tags they are
+  // not part of the panel's constructor contract, and every other consumer of
+  // the source list goes through the same cached fetcher.
+  /** @type {Map<string, object>} */
+  let _sources = new Map();
+  let _sourcesDropdown = null;
+  // Set by destroy(); read by the in-flight source fetch below.
+  let _destroyed = false;
+
+  function _buildSourcesDropdown() {
+    const items = [...(_sources?.values?.() ?? [])]
+      .map(s => ({ uuid: s.uuid, name: s.name || s.uuid }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // Always offered, even with no sources configured: "images with no source"
+    // is a meaningful thing to ask for on its own.
+    items.push({ isSeparator: true, label: 'Other' });
+    items.push({ uuid: NO_SOURCE_KEY, name: 'No source recorded' });
+
+    return createMultiSelectDropdown({
+      label: 'Source',
+      items,
+      defaultSelected: [],
+      // An image has exactly one source, so "all of" would match nothing —
+      // offering the toggle would only invite that dead end.
+      showModeToggle: false,
+      filterKey: 'sources',
+      inline: inlineControls,
+      defaultWidth: '220px',
+      defaultHeight: '300px',
+      onChange: (selected, excluded) => {
+        _state.sourceUuids = selected;
+        _state.sourceExcludeUuids = excluded;
+        emit();
+      },
+    });
+  }
+
+  const sourcesContainer = document.createElement('div');
+  if (inlineControls) sourcesContainer.style.width = '100%';
+  _sourcesDropdown = _buildSourcesDropdown();
+  sourcesContainer.appendChild(_sourcesDropdown.element);
+
+  // Populate for real once the source list arrives. The selection is re-applied
+  // rather than reset: setState() can run before the fetch resolves (a saved
+  // View, a "See results" button), and dropping it would silently lose a filter
+  // the caller already asked for.
+  fetchSourceList()
+    .then((map) => {
+      // The panel can be torn down while this is in flight (a tab switch during
+      // the fetch). Rebuilding then would install a fresh dropdown — with its
+      // document-level listeners and resize observer — that nothing will ever
+      // destroy again, since destroy() has already run.
+      if (_destroyed) return;
+      _sources = map;
+      _sourcesDropdown.destroy();
+      sourcesContainer.innerHTML = '';
+      _sourcesDropdown = _buildSourcesDropdown();
+      sourcesContainer.appendChild(_sourcesDropdown.element);
+      _sourcesDropdown.setState(_state.sourceUuids, undefined, undefined, _state.sourceExcludeUuids);
+    })
+    .catch(() => { /* leave the "No source recorded" entry as the only option */ });
 
   // Destroy `dropdown`, rebuild it via `buildFn` into `container`, and return the new instance.
   function _rebuildDropdown(dropdown, container, buildFn) {
@@ -490,6 +562,17 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   imageTagSection.appendChild(imageTagSectionLabel);
   imageTagSection.appendChild(imageTagConditionsComp.element);
 
+  // Source section — which camera/stream/file produced the image.
+  const sourceSection = document.createElement('div');
+  sourceSection.className = 'filter-section';
+
+  const sourceSectionLabel = document.createElement('div');
+  sourceSectionLabel.className = 'filter-section-label';
+  sourceSectionLabel.textContent = 'Source';
+  sourceSection.appendChild(sourceSectionLabel);
+  sourceSection.appendChild(sourcesContainer);
+
+  secondaryRow.appendChild(sourceSection);
   secondaryRow.appendChild(verificationSection);
   secondaryRow.appendChild(bboxVerificationControl.element);
   secondaryRow.appendChild(confidenceControl.element);
@@ -515,6 +598,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + s.labelExcludeUuids.length
       + s.imageLabelConditions.length
       + s.imageTagConditions.length
+      + s.sourceUuids.length
+      + s.sourceExcludeUuids.length
       + _activeFilenameConditions().length
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
@@ -533,6 +618,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   // Filters, being already a real per-condition list, gets one chip per row.
   function _labelName(uuid) { return labels.get(uuid)?.name ?? uuid; }
   function _tagName(uuid) { return tags.get(uuid)?.name ?? uuid; }
+  function _sourceName(uuid) {
+    if (uuid === NO_SOURCE_KEY) return 'No source';
+    return _sources.get(uuid)?.name ?? uuid;
+  }
 
   function getChipDescriptors() {
     const s = _state;
@@ -574,6 +663,15 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
         onRemove: () => setState({ imageTagConditions: s.imageTagConditions.filter((_, i) => i !== idx) }),
       });
     });
+
+    if (s.sourceUuids.length > 0 || s.sourceExcludeUuids.length > 0) {
+      const names = [...s.sourceUuids.map(_sourceName), ...s.sourceExcludeUuids.map(u => `¬${_sourceName(u)}`)];
+      chips.push({
+        key: 'sources',
+        label: `Source: ${names.join(', ')}`,
+        onRemove: () => setState({ sourceUuids: [], sourceExcludeUuids: [] }),
+      });
+    }
 
     // One chip per filename filter — removing a chip must drop only that
     // pattern, so the chip is keyed by its position in the (blank-free) list
@@ -634,6 +732,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.labelMatchMode === 'any'
       && s.imageLabelConditions.length === 0
       && s.imageTagConditions.length === 0
+      && s.sourceUuids.length === 0
+      && s.sourceExcludeUuids.length === 0
       && _activeFilenameConditions().length === 0
       && !s.dateFrom
       && !s.dateTo
@@ -672,6 +772,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     if (partial.labelUuids !== undefined && !('labelExcludeUuids' in partial)) {
       partial = { ...partial, labelExcludeUuids: [] };
     }
+    if (partial.sourceUuids !== undefined && !('sourceExcludeUuids' in partial)) {
+      partial = { ...partial, sourceExcludeUuids: [] };
+    }
     _state = { ..._state, ...partial };
 
     if (partial.tagUuids !== undefined || partial.tagMatchMode !== undefined || partial.tagExcludeUuids !== undefined) {
@@ -685,6 +788,9 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     }
     if (partial.imageTagConditions !== undefined) {
       imageTagConditionsComp.setState(_state.imageTagConditions);
+    }
+    if (partial.sourceUuids !== undefined || partial.sourceExcludeUuids !== undefined) {
+      _sourcesDropdown?.setState(_state.sourceUuids, undefined, undefined, _state.sourceExcludeUuids);
     }
     if (partial.dateFrom !== undefined) {
       dateFromInput.value = _state.dateFrom
@@ -727,8 +833,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   }
 
   function destroy() {
+    _destroyed = true;
     tagsDropdown.destroy();
     _labelsDropdown?.destroy();
+    _sourcesDropdown?.destroy();
     imageLabelConditionsComp.destroy();
     imageTagConditionsComp.destroy();
     bboxVerificationControl.destroy();

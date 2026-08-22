@@ -15,7 +15,11 @@ class ImageProviderType(Enum):
 
 @dataclass
 class ImageProviderMetadata:
+    # Human-readable, and not uniformly the source's name — some providers put a
+    # file path here, and it is used to build output filenames. Use source_uuid,
+    # not this, to say *which source row* a frame came from.
     source: Optional[str] = None
+    source_uuid: Optional[str] = None
     frame_idx: Optional[int] = None
     additional_info: dict[str, Any] = field(default_factory=dict)
 
@@ -30,6 +34,9 @@ class ImageWithProviderMetadata:
 
 class ImageProvider:
     source_name: Optional[str] = None
+    # The `sources` row this provider was built from, when it was built from one.
+    # None for ad-hoc providers constructed outside SourceHelper (previews, tests).
+    source_uuid: Optional[str] = None
     # Minimum seconds between frames this provider will return, self-paced inside
     # getNextImage() (snapshots sleep, streams drain to the newest frame). 0.0 = unset;
     # the task-level fallback interval (keyed by ImageProviderType) applies instead.
@@ -49,10 +56,17 @@ class ImageProvider:
         must then drain (see FfmpegImageProvider) can act on it.
         """
 
-    def set_source_identity(self, name: str) -> None:
-        """Sets the human-readable identity of the source this provider reads from,
-        used to name notices, status rows and output filenames."""
+    def set_source_identity(self, name: str, uuid: Optional[str] = None) -> None:
+        """Sets the identity of the source this provider reads from.
+
+        `name` is the human-readable half, used to name notices, status rows and
+        output filenames. `uuid` is the `sources` row itself, and is what gets
+        recorded on the images this provider's frames become — it survives the
+        source being renamed, which the name does not.
+        """
         self.source_name = name
+        if uuid is not None:
+            self.source_uuid = uuid
 
     @classmethod
     def provider_type(cls) -> ImageProviderType:

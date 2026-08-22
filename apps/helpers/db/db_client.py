@@ -75,6 +75,7 @@ from .types import (
     ImageRecordRead,
     ImageRecordUpdate,
     ImageSearchParams,
+    ImageSourceTerm,
     ImageTagLink,
     ImageTagTerm,
     InteractionRule,
@@ -528,6 +529,26 @@ def _apply_filter_terms(
                     )
                     .exists()
                 )
+
+        elif isinstance(term, ImageSourceTerm):
+            # A column predicate, not an EXISTS — images.source_uuid is indexed.
+            sub_exprs = []
+            if term.source_uuids:
+                # The IS NOT NULL guard is not redundant. `NULL IN ('a')` is
+                # NULL, and negation (line ~620 applies `~expr`) turns NULL into
+                # NULL, not TRUE — so without it "not camera A" would silently
+                # drop every image that has no source at all, which is the
+                # opposite of what it says. `FALSE AND NULL` is FALSE, so the
+                # guard collapses those rows to a definite FALSE that negates.
+                sub_exprs.append(
+                    and_(
+                        ImageRecord.source_uuid.is_not(None),
+                        ImageRecord.source_uuid.in_(term.source_uuids),
+                    )
+                )
+            if term.include_unknown:
+                sub_exprs.append(ImageRecord.source_uuid.is_(None))
+            expr = or_(*sub_exprs) if sub_exprs else true()
 
         elif isinstance(term, BBoxVerificationTerm):
             term_implies_bbox = True
@@ -1355,9 +1376,21 @@ class DbClient:
             result = await session.exec(statement)
             return {row[0]: {"uuid": row[1], "bbox_count": row[2]} for row in result.all()}
 
-    async def add_image(self, filename: Path, metadata_json: Optional[Dict[str, Any]] = None) -> ImageRecord:
+    async def add_image(
+        self,
+        filename: Path,
+        metadata_json: Optional[Dict[str, Any]] = None,
+        source_uuid: Optional[str] = None,
+    ) -> ImageRecord:
         """
         Add a new image record or return existing object if filename exists.
+
+        `source_uuid` records which source produced the image. It only ever
+        *fills in* a blank: every annotation save re-enters through here with no
+        source, so overwriting would erase the provenance on the first edit.
+        Backfilling an existing blank row is intentional though — it is how an
+        image registered by a plain path save (which runs before the collecting
+        task reports its source) acquires one.
 
         Returns:
             Image: The fully populated Image SQLModel instance.
@@ -1369,6 +1402,20 @@ class DbClient:
             existing_image = result.one_or_none()
 
             if existing_image:
+                if source_uuid and existing_image.source_uuid is None:
+                    existing_image.source_uuid = source_uuid
+                    session.add(existing_image)
+                    try:
+                        await session.commit()
+                        await session.refresh(existing_image)
+                    except IntegrityError:
+                        # The source was deleted between the caller reading it and
+                        # this write. Provenance is not worth failing an image save
+                        # over — see the same trade-off on the INSERT path below.
+                        logger.warning("Source %s no longer exists; leaving %s unattributed", source_uuid, filename)
+                        await session.rollback()
+                        result = await session.exec(statement)
+                        return result.one()
                 return existing_image
 
             # Create new record; catch the race where two concurrent callers
@@ -1377,6 +1424,7 @@ class DbClient:
                 uuid=str(uuid4()),
                 filename=str(filename),
                 metadata_json=metadata_json or {},
+                source_uuid=source_uuid,
             )
             session.add(new_image)
             try:
@@ -1386,7 +1434,25 @@ class DbClient:
             except IntegrityError:
                 await session.rollback()
                 result = await session.exec(statement)
-                return result.one()
+                existing_image = result.one_or_none()
+                if existing_image is not None:
+                    return existing_image
+                # Not the filename race, so it was the source FK: the source row
+                # went away mid-run. Losing the image because we can no longer say
+                # which camera took it would be far worse than losing the
+                # attribution, so register it unattributed.
+                if source_uuid is None:
+                    raise
+                logger.warning("Source %s no longer exists; registering %s unattributed", source_uuid, filename)
+                new_image = ImageRecord(
+                    uuid=str(uuid4()),
+                    filename=str(filename),
+                    metadata_json=metadata_json or {},
+                )
+                session.add(new_image)
+                await session.commit()
+                await session.refresh(new_image)
+                return new_image
 
     async def list_images(self, limit: int = 100, offset: int = 0) -> List[ImageRecord]:
         """List images with basic pagination."""

@@ -2359,7 +2359,11 @@ class CollectTrainingImagesTask(Task):
             async with self._meta_write_lock:
                 await asyncio.to_thread(
                     images_api.update_image_metadata,
-                    UpdateMetadataPayload(image_path=rel_path, boxes=boxes),
+                    UpdateMetadataPayload(
+                        image_path=rel_path,
+                        boxes=boxes,
+                        source_uuid=provided.metadata.source_uuid,
+                    ),
                 )
             logger.debug(
                 "Metadata save: %.1fms for %s",
@@ -2684,6 +2688,13 @@ class CollectTrainingImagesTask(Task):
                 )
             if _attempt < self._MAX_RETRIES - 1:
                 logger.warning("Retrying '%s' (attempt %d/%d)", source_key, _attempt + 2, self._MAX_RETRIES)
+        # Stamp the frame with the source row it came from. Done here rather than
+        # inside each provider because providers fill `metadata.source` with
+        # whatever they find natural (a name, a file path, nothing at all) —
+        # this is the one place that has both the provider and its frame, and it
+        # feeds every _save_image call site, including the dedup worker's.
+        if provided is not None and getattr(provided, "metadata", None) is not None:
+            provided.metadata.source_uuid = provider.source_uuid
         return provided, fetch_error, t0, time.perf_counter()
 
     @staticmethod

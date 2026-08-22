@@ -328,6 +328,15 @@ class ImageRecord(ImageRecordBase, TimestampModel, table=True):
         sa.Index("ix_images_updated_at_uuid", "updated_at", "uuid"),
     )
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    # Which source produced this image ("the camera that took it"). NULL for
+    # manual uploads, for anything collected before this column existed, and for
+    # frames whose producer had no sources row. Deliberately a real FK rather
+    # than a per-source tag: sources get renamed, and a tag named after a camera
+    # drifts from it. ondelete="SET NULL" so deleting a camera does not delete
+    # the training data it collected — it only forgets where it came from.
+    source_uuid: Optional[str] = Field(
+        default=None, foreign_key="sources.uuid", ondelete="SET NULL", index=True, nullable=True
+    )
     bboxes: List["BBox"] = Relationship(
         back_populates="image", sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
@@ -345,6 +354,7 @@ class ImageRecord(ImageRecordBase, TimestampModel, table=True):
 class ImageRecordRead(OrmModel):
     uuid: str
     filename: str
+    source_uuid: Optional[str] = None
     bboxes: List["BBoxRead"]
     tags: List["TagRead"] = []
     created_at: Optional[datetime] = None
@@ -473,6 +483,23 @@ class ImageTagTerm(ApiModel):
     negate: bool = False
 
 
+class ImageSourceTerm(ApiModel):
+    """Matches on images.source_uuid — "which camera took this".
+
+    Multi-select like BBoxTagTerm, but "all" would be vacuous (an image has
+    exactly one source), so there is no match_mode: the listed sources are
+    OR'd. `include_unknown` additionally matches images with no source
+    recorded — manual uploads, and everything collected before the column
+    existed — which is otherwise unreachable, since NULL never satisfies IN.
+    An empty selection with include_unknown=False is vacuously true.
+    """
+
+    kind: Literal["imageSource"] = "imageSource"
+    source_uuids: List[str] = Field(default_factory=list)
+    include_unknown: bool = False
+    negate: bool = False
+
+
 class BBoxVerificationTerm(ApiModel):
     """Matches images having a BBOX in the given verification state.
 
@@ -559,6 +586,7 @@ FilterTerm = Annotated[
         ImageLabelTerm,
         BBoxTagTerm,
         ImageTagTerm,
+        ImageSourceTerm,
         BBoxVerificationTerm,
         BBoxConfidenceTerm,
         LabelVerificationTerm,
@@ -752,6 +780,8 @@ class ImageRecordUpdate(BaseModel):
     """Input data for replacing all bboxes on an image."""
 
     bboxes: List[BBoxUpdate] = []
+    # Fills in images.source_uuid when it is still blank; never clears it.
+    source_uuid: Optional[str] = None
 
 
 class TagBase(SQLModel):

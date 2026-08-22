@@ -546,6 +546,149 @@ class TestImageTagTerm:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# imageSource
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def source_uuids(http_client):
+    """Two sources, so "only camera A" can be told apart from "any source"."""
+    made = []
+    for name in ("cam-a", "cam-b"):
+        r = await http_client.post(
+            "/api/sources/create",
+            json={
+                "sourceName": name,
+                "imageProvider": "UrlImageProvider",
+                "providerParams": {"url": f"http://example.com/{name}.jpg"},
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "success", body
+        made.append(body["source"]["uuid"])
+    return made
+
+
+async def _register_image_from(http_client, image_path: str, source_uuid) -> None:
+    r = await http_client.post(
+        "/api/images/metadata/update",
+        json={"imagePath": image_path, "boxes": [], "sourceUuid": source_uuid},
+    )
+    assert r.status_code == 200
+
+
+class TestImageSourceTerm:
+    async def test_selects_only_the_named_source(self, http_client, files_root, source_uuids):
+        cam_a, cam_b = source_uuids
+        for name in ("from-a.png", "from-b.png", "from-nowhere.png"):
+            _make_image(files_root, name)
+        await _register_image_from(http_client, "from-a.png", cam_a)
+        await _register_image_from(http_client, "from-b.png", cam_b)
+        await _register_image(http_client, "from-nowhere.png")
+
+        only_a = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": [cam_a]}],
+            )
+        )
+        assert any("from-a.png" in f for f in only_a)
+        assert not any("from-b.png" in f for f in only_a)
+        assert not any("from-nowhere.png" in f for f in only_a)
+
+        both = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": [cam_a, cam_b]}],
+            )
+        )
+        assert any("from-a.png" in f for f in both)
+        assert any("from-b.png" in f for f in both)
+        assert not any("from-nowhere.png" in f for f in both)
+
+    async def test_include_unknown_reaches_sourceless_images(self, http_client, files_root, source_uuids):
+        """NULL never satisfies IN, so images with no source are unreachable
+        without the flag — and reachable with it, alongside a named source."""
+        cam_a, _ = source_uuids
+        for name in ("known.png", "orphan.png"):
+            _make_image(files_root, name)
+        await _register_image_from(http_client, "known.png", cam_a)
+        await _register_image(http_client, "orphan.png")
+
+        without = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": [cam_a]}],
+            )
+        )
+        assert not any("orphan.png" in f for f in without)
+
+        unknown_only = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": [], "includeUnknown": True}],
+            )
+        )
+        assert any("orphan.png" in f for f in unknown_only)
+        assert not any("known.png" in f for f in unknown_only)
+
+        both = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": [cam_a], "includeUnknown": True}],
+            )
+        )
+        assert any("orphan.png" in f for f in both)
+        assert any("known.png" in f for f in both)
+
+    async def test_negate_excludes_that_source_but_keeps_sourceless(self, http_client, files_root, source_uuids):
+        """A negated term is SQL NOT, and `source_uuid NOT IN (...)` is NULL —
+        not true — for a sourceless image. "Not camera A" has to keep them."""
+        cam_a, cam_b = source_uuids
+        for name in ("neg-a.png", "neg-b.png", "neg-none.png"):
+            _make_image(files_root, name)
+        await _register_image_from(http_client, "neg-a.png", cam_a)
+        await _register_image_from(http_client, "neg-b.png", cam_b)
+        await _register_image(http_client, "neg-none.png")
+
+        not_a = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": [cam_a], "negate": True}],
+            )
+        )
+        assert not any("neg-a.png" in f for f in not_a)
+        assert any("neg-b.png" in f for f in not_a)
+        assert any("neg-none.png" in f for f in not_a)
+
+    async def test_empty_selection_is_a_no_op(self, http_client, files_root, source_uuids):
+        """An empty Source filter must not silently drop every image — the
+        panel emits no term at all, but a saved View could still carry one."""
+        cam_a, _ = source_uuids
+        for name in ("noop-a.png", "noop-none.png"):
+            _make_image(files_root, name)
+        await _register_image_from(http_client, "noop-a.png", cam_a)
+        await _register_image(http_client, "noop-none.png")
+
+        every = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "imageSource", "sourceUuids": []}],
+            )
+        )
+        assert any("noop-a.png" in f for f in every)
+        assert any("noop-none.png" in f for f in every)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # bboxVerification
 # ──────────────────────────────────────────────────────────────────────────────
 

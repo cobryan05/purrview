@@ -103,6 +103,10 @@ class UpdateMetadataPayload(ApiPayload):
     image_path: str
     boxes: List[BoundingBoxMetadataModel] = Field(default_factory=list)
     extra: Optional[Any] = None
+    # Which source produced this image. Only meaningful on the save that first
+    # registers the image (a collecting task); the canvas omits it, and an
+    # omission never clears a source already recorded — see DbClient.add_image.
+    source_uuid: Optional[str] = None
 
 
 class BboxPatchPayload(ApiPayload):
@@ -1868,6 +1872,7 @@ class WebApp:
                 return UpdateMetadataResponse(status=JsonValues.FAILURE, message="Image not found")
 
             update = ImageRecordUpdate(
+                source_uuid=payload.source_uuid,
                 bboxes=[
                     BBoxUpdate(
                         uuid=b.uuid,
@@ -1883,7 +1888,7 @@ class WebApp:
                     )
                     for b in payload.boxes
                     if b.label_uuid
-                ]
+                ],
             )
 
             updated = await self._manager.update_image_metadata(image_path, update)
@@ -1948,6 +1953,7 @@ class WebApp:
             files: List[UploadFile] = File(...),
             path: str = Form(""),
             overwrite: bool = Form(False),
+            source_uuid: str = Form(""),
         ) -> UploadImagesResponse:
             """Import images from the user's machine into FILES_ROOT.
 
@@ -1968,6 +1974,7 @@ class WebApp:
                         filename=name,
                         data=data,
                         overwrite=overwrite,
+                        source_uuid=source_uuid or None,
                     )
                     results.append(
                         UploadedImageRead(

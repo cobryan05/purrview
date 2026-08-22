@@ -231,7 +231,7 @@ class HarvestBlipFramesTask(Task):
             if self._cancel_flag.is_set():
                 break
             await self._check_pause()
-            candidates.extend(await self._harvest_blip(blip, clip_path, document))
+            candidates.extend(await self._harvest_blip(blip, clip_path, document, source_uuid=recording.source_uuid))
             self._done_blips.add(blip.uuid)
             self._update_progress(min(100.0, len(self._done_blips) / max(len(self._blip_uuids), 1) * 100.0))
 
@@ -239,7 +239,13 @@ class HarvestBlipFramesTask(Task):
             await self._add_candidates(candidates)
         await self._mark_harvested([b.uuid for b in blips if b.uuid in self._done_blips])
 
-    async def _harvest_blip(self, blip: Any, clip_path: str, document: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def _harvest_blip(
+        self,
+        blip: Any,
+        clip_path: str,
+        document: Dict[str, Any],
+        source_uuid: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """One incident: its frames, uploaded, with a proposal each."""
         label_uuid = str((blip.detail_json or {}).get("modalLabel") or "")
         if not label_uuid:
@@ -265,7 +271,7 @@ class HarvestBlipFramesTask(Task):
                 self._note_failure(f"could not decode {clip_path} at {at_s:.2f}s")
                 continue
 
-            uploaded = await self._upload(frame, blip, at_s)
+            uploaded = await self._upload(frame, blip, at_s, source_uuid=source_uuid)
             if uploaded is None:
                 continue
 
@@ -283,12 +289,20 @@ class HarvestBlipFramesTask(Task):
 
         return proposals
 
-    async def _upload(self, jpeg: bytes, blip: Any, at_s: float) -> Optional[Any]:
-        """Write one frame into the dataset, letting the endpoint dedup it."""
+    async def _upload(self, jpeg: bytes, blip: Any, at_s: float, source_uuid: Optional[str] = None) -> Optional[Any]:
+        """Write one frame into the dataset, letting the endpoint dedup it.
+
+        `source_uuid` is the camera the clip was recorded from, carried through so a
+        harvested frame is filterable by origin exactly like a collected one.
+        """
         images = self._api(ImagesApi)
         name = f"blip_{blip.event_uuid[:8]}_{blip.kind}_t{at_s:.2f}.jpg".replace(".", "-", 1)
         response = await asyncio.to_thread(
-            images.upload_images, files=[(name, jpeg)], path=self._dest_path, overwrite=False
+            images.upload_images,
+            files=[(name, jpeg)],
+            path=self._dest_path,
+            overwrite=False,
+            source_uuid=source_uuid or "",
         )
         if response.status != JsonValues.SUCCESS or not response.results:
             self._failed += 1
