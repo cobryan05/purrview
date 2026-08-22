@@ -12,6 +12,7 @@ import { navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tab
 import { configTargetForTask } from '/app-static/js/ui/utils/runKinds.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
 import { parseApiDateMs } from '/app-static/js/shared/time.js';
+import { promptRestartOwnTask } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 
 /** Configuration sub-tab that hosts the config list-editor; used by the nav guard. */
 const CONFIG_TAB_ID = 'tab-task-management';
@@ -274,6 +275,11 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
               updateTitle(name);
               toast('Task config saved', 3000);
               await refreshList();
+              // Params are read once, in the task's _init — a live instance keeps
+              // the ones it started with, so saving alone changes nothing for it.
+              // No-op (and no modal) when nothing is running, which is the common
+              // case; only an update can have a live instance, never a create.
+              await promptRestartOwnTask(config.uuid);
             } else {
               await createTaskConfig({ name, typename, params, persistent });
               setDirty(false);

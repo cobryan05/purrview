@@ -178,12 +178,81 @@ export async function promptRestartAffectedTasks(configUuid, { label = 'configur
 
   const names = affected.map(a => `"${a.name}"`).join(', ');
   const plural = affected.length === 1 ? 'task is' : 'tasks are';
+  return _confirmAndRestart(affected,
+    `${affected.length} running ${plural} using this ${label}: ${names}. ` +
+    `A running task keeps the settings it started with — restart ${affected.length === 1 ? 'it' : 'them'} to pick up your changes.`);
+}
+
+/**
+ * Live instances started from `configUuid` itself.
+ *
+ * The sibling of `findTasksUsing`, and deliberately not the same query. That one
+ * asks "whose params mention this uuid?", which is the right question for a
+ * source or a filter chain but never matches a task config: a config's params
+ * do not contain its own uuid. Editing a running task's own settings is the
+ * *most* common version of this gap and was the one case the deep scan could
+ * not see.
+ *
+ * @param {string} configUuid
+ * @returns {Promise<Array<{taskUuid: string, configUuid: string, name: string}>>}
+ */
+export async function findRunningInstancesOfConfig(configUuid) {
+  if (!configUuid) return [];
+  let tasks;
+  try {
+    ({ tasks } = await fetchTasksStatus());
+  } catch {
+    // Same reasoning as findTasksUsing: the save succeeded, so a failed status
+    // poll must not turn into a second error on top of it.
+    return [];
+  }
+  const affected = [];
+  for (const [taskUuid, info] of Object.entries(tasks || {})) {
+    if (!LIVE_STATUSES.has(info?.instance?.status)) continue;
+    if (info?.config?.uuid !== configUuid) continue;
+    affected.push({
+      taskUuid,
+      configUuid,
+      name: info?.config?.name || info?.config?.typename || 'task',
+    });
+  }
+  return affected;
+}
+
+/**
+ * Offers to restart the task whose own config was just saved.
+ *
+ * Call this after a task-config *update* succeeds. Like
+ * `promptRestartAffectedTasks` it is a no-op when nothing is live, so it is safe
+ * to call unconditionally — and there is nothing to prompt about on a create.
+ *
+ * @param {string} configUuid — UUID of the task config just saved.
+ * @returns {Promise<number>} how many instances were restarted (0 if declined/none).
+ */
+export async function promptRestartOwnTask(configUuid) {
+  const affected = await findRunningInstancesOfConfig(configUuid);
+  if (!affected.length) return 0;
+
+  const one = affected.length === 1;
+  return _confirmAndRestart(affected,
+    `${one ? 'This task is' : `${affected.length} instances of this task are`} still running with the ` +
+    `settings ${one ? 'it' : 'they'} started with. Your changes are saved, but they will not take effect ` +
+    `until ${one ? 'it is' : 'they are'} restarted.`);
+}
+
+/**
+ * Shared tail of both prompts: confirm, then cancel-and-restart each instance.
+ *
+ * @param {Array<{taskUuid: string, configUuid: string, name: string}>} affected
+ * @param {string} message
+ * @returns {Promise<number>}
+ */
+async function _confirmAndRestart(affected, message) {
+  const one = affected.length === 1;
   const confirmed = await showConfirmModal({
     title: 'Restart to apply changes?',
-    message:
-      `${affected.length} running ${plural} using this ${label}: ${names}. ` +
-      `A running task keeps the settings it started with — restart ${affected.length === 1 ? 'it' : 'them'} to pick up your changes.`,
-    confirmText: affected.length === 1 ? 'Restart it' : 'Restart them',
+    message,
+    confirmText: one ? 'Restart it' : 'Restart them',
     cancelText: 'Keep running',
   });
   if (!confirmed) return 0;

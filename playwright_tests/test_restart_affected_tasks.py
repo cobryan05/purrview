@@ -18,7 +18,8 @@ from playwright.sync_api import Page
 # the four task endpoints this module touches. `window.__calls` is the log the
 # assertions read back.
 _SETUP = """
-    const { promptRestartAffectedTasks, findTasksUsing } =
+    const { promptRestartAffectedTasks, findTasksUsing,
+            promptRestartOwnTask, findRunningInstancesOfConfig } =
         await import('/app-static/js/ui/utils/restartAffectedTasks.js');
 
     window.__calls = [];
@@ -205,6 +206,110 @@ class TestPromptRestartAffectedTasks:
             return { threw, n };
         }""")
         assert result == {"threw": False, "n": 0}
+
+
+class TestRestartOwnTask:
+    """Saving a *task config* while an instance of it is running.
+
+    Distinct from every other case in this file: the deep params scan cannot see
+    this one at all, because a config's params never contain its own uuid.
+    """
+
+    def test_the_deep_scan_alone_would_miss_it(self, shared_page: Page):
+        """Why the sibling finder exists. Same running task, same uuid — the
+        params scan finds nothing and the config scan finds it."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            window.__tasks = {_running_task("{ output_dir: 'run_ring' }")};
+            const byParams = await findTasksUsing('cfg-1');
+            const byConfig = await findRunningInstancesOfConfig('cfg-1');
+            {_TEARDOWN}
+            return {{ byParams: byParams.length, byConfig: byConfig.length }};
+        }}""")
+        assert result == {"byParams": 0, "byConfig": 1}
+
+    def test_no_prompt_for_a_different_config(self, shared_page: Page):
+        """Saving config B must not offer to restart config A's instance."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            window.__tasks = {_running_task("{ output_dir: 'run_ring' }")};
+            const n = await promptRestartOwnTask('cfg-2');
+            const dialogs = document.querySelectorAll('[data-testid="modal-shell-overlay"]').length;
+            {_TEARDOWN}
+            return {{ n, dialogs }};
+        }}""")
+        assert result == {"n": 0, "dialogs": 0}
+
+    @pytest.mark.parametrize("status", ["completed", "error", "cancelled"])
+    def test_no_prompt_when_the_instance_is_not_live(self, shared_page: Page, status: str):
+        """A finished instance is not using the old settings any more, so the
+        prompt would be pure noise on every save."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            window.__tasks = {_running_task("{ output_dir: 'run_ring' }", status=status)};
+            const n = await promptRestartOwnTask('cfg-1');
+            const dialogs = document.querySelectorAll('[data-testid="modal-shell-overlay"]').length;
+            {_TEARDOWN}
+            return {{ n, dialogs }};
+        }}""")
+        assert result == {"n": 0, "dialogs": 0}
+
+    def test_confirming_cancels_then_starts_the_same_config(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            window.__tasks = {_running_task("{ output_dir: 'run_ring' }")};
+            const p = promptRestartOwnTask('cfg-1');
+            await new Promise(r => setTimeout(r, 150));
+            const btn = [...document.querySelectorAll('[data-testid="modal-shell-dialog"] button')]
+                .find(b => b.textContent === 'Restart it');
+            btn.click();
+            const n = await p;
+            const calls = window.__calls.map(c => ({{ url: c.url.replace(location.origin, ''), body: c.body }}));
+            {_TEARDOWN}
+            return {{ n, calls }};
+        }}""")
+        assert result["n"] == 1
+        urls = [c["url"] for c in result["calls"]]
+        assert "/api/tasks/instances/cancel" in urls
+        assert urls.index("/api/tasks/instances/cancel") < urls.index("/api/tasks/instances/start")
+        # The replacement must be started from the config that was just saved,
+        # or the restart would relaunch something else entirely.
+        start = next(c for c in result["calls"] if c["url"].endswith("/start"))
+        assert start["body"]["configUuid"] == "cfg-1"
+
+    def test_declining_leaves_the_instance_running(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            window.__tasks = {_running_task("{ output_dir: 'run_ring' }")};
+            const p = promptRestartOwnTask('cfg-1');
+            await new Promise(r => setTimeout(r, 150));
+            [...document.querySelectorAll('[data-testid="modal-shell-dialog"] button')]
+                .find(b => b.textContent === 'Keep running').click();
+            const n = await p;
+            const urls = window.__calls.map(c => c.url);
+            {_TEARDOWN}
+            return {{ n, cancelled: urls.some(u => u.includes('cancel')),
+                      started: urls.some(u => u.includes('start')) }};
+        }}""")
+        assert result == {"n": 0, "cancelled": False, "started": False}
+
+    def test_prompt_says_the_changes_are_saved_but_not_applied(self, shared_page: Page):
+        """The point of the wording: the save *did* work, and the user should not
+        be left thinking it failed."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            window.__tasks = {_running_task("{ output_dir: 'run_ring' }")};
+            const p = promptRestartOwnTask('cfg-1');
+            await new Promise(r => setTimeout(r, 150));
+            const text = document.querySelector('[data-testid="modal-shell-dialog"]').textContent;
+            [...document.querySelectorAll('[data-testid="modal-shell-dialog"] button')]
+                .find(b => b.textContent === 'Keep running').click();
+            await p;
+            {_TEARDOWN}
+            return text;
+        }}""")
+        assert "saved" in result
+        assert "restarted" in result
 
 
 class TestIndirectReferences:
