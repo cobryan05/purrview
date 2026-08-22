@@ -1,0 +1,374 @@
+"""RingMqttImageProvider's two-tier behaviour, and the reconnect race underneath it.
+
+A Ring camera is asleep almost all of the time, so this provider idles on ring-mqtt's
+free snapshot topic and only wakes the camera — an operation with a real battery and
+cloud cost — when something asks for video. The tests here are about *when* it decides
+to do that and when it decides to stop, because getting either wrong is expensive in a
+way that no assertion about the frames themselves would catch.
+
+No broker and no camera are contacted: `MqttClient` connects inside its own
+constructor, and the live tier's `FfmpegImageProvider` spawns ffmpeg, so both are
+replaced with fakes that record what they were asked to do.
+"""
+
+import asyncio
+import io
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from apps.helpers.imageProviders import ringMqttImageProvider as ring_module
+from apps.helpers.imageProviders.imageProvider import ImageWithProviderMetadata
+from apps.helpers.imageProviders.ringMqttImageProvider import RingMqttImageProvider
+from apps.helpers.mqttClient import MqttClient
+
+LOCATION = "loc-uuid"
+CAMERA = "abc123"
+BASE = f"ring/{LOCATION}/camera/{CAMERA}"
+
+
+class FakeMqttClient:
+    """Stand-in for MqttClient that never touches a network."""
+
+    def __init__(self, broker_address, prefix="myhome/", broker_port=1883):
+        self.callbacks: dict[str, object] = {}
+        self.published: list[tuple[str, str]] = []
+        self.unsubscribed: list[str] = []
+        self.disconnected = False
+
+    def subscribe(self, topic, callback, absoluteTopic=False):
+        self.callbacks[topic] = callback
+
+    def unsubscribe(self, topic):
+        self.unsubscribed.append(topic)
+        self.callbacks.pop(topic, None)
+
+    def publish(self, topic, value, retain=False, absoluteTopic=False):
+        self.published.append((topic, value))
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def deliver(self, topic: str, payload: bytes) -> None:
+        self.callbacks[topic](FakeMessage(payload))
+
+
+class FakeMessage:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+
+class FakeLiveProvider:
+    """Stand-in for the inner FfmpegImageProvider, which would spawn ffmpeg."""
+
+    instances: list["FakeLiveProvider"] = []
+    fail_on_start = False
+
+    def __init__(self, url, loop=True, rtsp_relay=True):
+        self.url = url
+        self.started = False
+        self.stopped = False
+        FakeLiveProvider.instances.append(self)
+
+    def set_source_identity(self, name):
+        self.name = name
+
+    def set_source_fps_ceiling(self, fps):
+        self.fps = fps
+
+    def is_connecting(self):
+        return False
+
+    async def start(self):
+        if FakeLiveProvider.fail_on_start:
+            raise RuntimeError("relay refused")
+        self.started = True
+
+    async def stop(self):
+        self.stopped = True
+
+    async def getNextImage(self):
+        return ImageWithProviderMetadata(np.zeros((8, 8, 3), dtype=np.uint8))
+
+
+def _jpeg_bytes(rgb: tuple[int, int, int]) -> bytes:
+    buf = io.BytesIO()
+    Image.fromarray(np.full((4, 4, 3), rgb, dtype=np.uint8)).save(buf, format="JPEG", quality=100)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def fakes(monkeypatch):
+    made: list[FakeMqttClient] = []
+    FakeLiveProvider.instances = []
+    FakeLiveProvider.fail_on_start = False
+
+    def factory(*args, **kwargs):
+        client = FakeMqttClient(*args, **kwargs)
+        made.append(client)
+        return client
+
+    monkeypatch.setattr(ring_module, "MqttClient", factory)
+    monkeypatch.setattr(ring_module, "FfmpegImageProvider", FakeLiveProvider)
+    return made
+
+
+async def _started_provider(**kwargs) -> tuple[RingMqttImageProvider, FakeMqttClient]:
+    provider = RingMqttImageProvider(
+        broker_address="broker.invalid",
+        location_id=LOCATION,
+        camera_id=CAMERA,
+        **kwargs,
+    )
+    await provider.start()
+    return provider, provider._mqtt_client
+
+
+class TestEscalationTriggers:
+    """What is allowed to wake the camera."""
+
+    async def test_motion_escalates_only_when_enabled(self, fakes):
+        """`live_on_motion` is the whole point of the setting: with it off, a motion
+        event must not wake the camera, however loudly ring-mqtt reports it."""
+        for enabled in (True, False):
+            provider, client = await _started_provider(live_on_motion=enabled)
+            client.deliver(f"{BASE}/motion/state", b"ON")
+            assert provider._escalate_requested is enabled
+
+    async def test_motion_off_does_not_escalate(self, fakes):
+        """Motion clearing is not a reason to start streaming — only motion starting is."""
+        provider, client = await _started_provider(live_on_motion=True)
+        client.deliver(f"{BASE}/motion/state", b"OFF")
+        assert provider._escalate_requested is False
+
+    async def test_a_deliberate_stream_request_escalates(self, fakes):
+        """A stream someone else asked for (the UI button, Home Assistant, the Ring
+        app) is joined rather than ignored — this is the external-trigger path, and it
+        is the reason the trigger is a broker message rather than an RPC."""
+        provider, client = await _started_provider(live_on_motion=False)
+        client.deliver(f"{BASE}/stream/command", b"on")
+        assert provider._escalate_requested is True
+
+    async def test_on_demand_churn_does_not_escalate(self, fakes):
+        """The whole point of keying on the command topic rather than the state topic.
+
+        ring-mqtt's RTSP server cycles `stream/state` OFF→ON constantly on its own —
+        measured at roughly every 20 seconds per camera on a live system, with no MQTT
+        command involved. A provider that treated that as demand would hold the camera
+        awake and run inference on full-rate 1080p forever without anyone asking.
+        """
+        provider, client = await _started_provider(live_on_motion=False)
+        for _ in range(5):
+            client.deliver(f"{BASE}/stream/state", b"OFF")
+            client.deliver(f"{BASE}/stream/state", b"ON")
+        assert provider._escalate_requested is False
+
+    async def test_someone_elses_off_does_not_end_our_live_window(self, fakes):
+        """One client's `off` must not cut short a stream another is mid-way through
+        reading. The hold timer is what ends our window."""
+        provider, client = await _started_provider(live_on_motion=False)
+        client.deliver(f"{BASE}/stream/command", b"on")
+        await provider.getNextImage()
+        assert provider._live_provider is not None
+
+        client.deliver(f"{BASE}/stream/command", b"off")
+
+        assert provider._live_provider is not None
+
+
+class TestTierTransitions:
+    async def test_live_window_expiry_returns_to_snapshots(self, fakes):
+        """The camera must go back to sleep on its own once nothing re-triggers it."""
+        provider, client = await _started_provider(live_hold_s=10.0)
+        now = [1000.0]
+        provider._now = lambda: now[0]
+
+        await provider.request_live()
+        await provider.getNextImage()
+        assert provider._live_provider is not None
+
+        # Past the hold window with no further trigger.
+        now[0] += 11.0
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        await provider.getNextImage()
+
+        assert provider._live_provider is None
+        assert FakeLiveProvider.instances[0].stopped is True
+
+    async def test_motion_outlasting_the_hold_is_not_cut_short(self, fakes):
+        """Ring decides how long an event lasts, not us.
+
+        `motion/state` stays ON for the bridge's `motion_duration` — 180s by default,
+        against a `live_hold_s` default of 120s. Expiring on our own timer would end
+        the capture a minute before Ring considers the event over, losing the tail of
+        every single motion event.
+        """
+        provider, client = await _started_provider(live_hold_s=10.0, live_on_motion=True)
+        now = [1000.0]
+        provider._now = lambda: now[0]
+
+        # A snapshot is kept queued before every read. Without one, a regression that
+        # de-escalates early would leave getNextImage() blocked on the real 300s
+        # IDLE_FRAME_TIMEOUT (which `_now` does not fake) and the test would fail five
+        # minutes later on a timeout instead of immediately on the assertion below.
+        def read():
+            client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((7, 8, 9)))
+            return provider.getNextImage()
+
+        client.deliver(f"{BASE}/motion/state", b"ON")
+        await read()
+        assert provider._live_provider is not None
+
+        # Well past live_hold_s, but Ring still reports the event as running.
+        now[0] += 100.0
+        await read()
+        assert provider._live_provider is not None, "must stay live while motion is active"
+
+        # Motion clears: the grace period starts now, not when the event began.
+        client.deliver(f"{BASE}/motion/state", b"OFF")
+        now[0] += 5.0
+        await read()
+        assert provider._live_provider is not None, "grace period must run from the clear"
+
+        now[0] += 11.0
+        await read()
+        assert provider._live_provider is None
+
+    async def test_motion_reasserting_during_the_grace_keeps_the_same_stream(self, fakes):
+        """A second event inside the grace period must not cost a reconnect.
+
+        Ring re-publishes `ON` for fresh motion inside an open window, and events
+        cluster (someone walking back past the camera). Tearing the stream down and
+        rebuilding it would cost ~8.5s to first frame, and — worse — briefly let the
+        camera sleep, so the reconnect is not merely slow but drops the very footage
+        the re-trigger was about.
+        """
+        provider, client = await _started_provider(live_hold_s=10.0, live_on_motion=True)
+        now = [1000.0]
+        provider._now = lambda: now[0]
+
+        def read():
+            client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((7, 8, 9)))
+            return provider.getNextImage()
+
+        client.deliver(f"{BASE}/motion/state", b"ON")
+        await read()
+        first = provider._live_provider
+        assert first is not None
+
+        # Motion clears; part-way through the grace, a new event arrives.
+        client.deliver(f"{BASE}/motion/state", b"OFF")
+        now[0] += 5.0
+        await read()
+        client.deliver(f"{BASE}/motion/state", b"ON")
+        now[0] += 2.0
+        await read()
+
+        assert provider._live_provider is first, "must be the same reader, not a rebuilt one"
+        assert first.stopped is False, "the stream must never have been torn down"
+        assert len(FakeLiveProvider.instances) == 1, "no second reader may be constructed"
+
+        # And the grace now runs from the *new* clear, not the original one.
+        client.deliver(f"{BASE}/motion/state", b"OFF")
+        now[0] += 9.0
+        await read()
+        assert provider._live_provider is first, "grace must restart from the later clear"
+        now[0] += 2.0
+        await read()
+        assert provider._live_provider is None
+
+    async def test_failed_live_start_falls_back_to_snapshots(self, fakes):
+        """A camera that will not stream is not a dead source — the free snapshot tier
+        is still perfectly good, and reporting failure would take the whole source
+        down over an optional upgrade."""
+        FakeLiveProvider.fail_on_start = True
+        provider, client = await _started_provider()
+
+        await provider.request_live()
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((4, 5, 6)))
+        image = await provider.getNextImage()
+
+        assert provider._live_provider is None
+        assert image.metadata.additional_info["tier"] == "snapshot"
+
+
+class TestSleepCourtesy:
+    """We only ever put back to sleep what we ourselves woke."""
+
+    async def test_publishes_off_for_a_stream_we_started(self, fakes):
+        provider, client = await _started_provider()
+        await provider.request_live()
+        await provider.getNextImage()
+        client.published.clear()
+
+        await provider.release_live()
+
+        assert (f"{BASE}/stream/command", "off") in client.published
+
+    async def test_does_not_publish_off_for_someone_elses_stream(self, fakes):
+        """Frigate or Home Assistant may be holding this camera up for its own
+        reasons. Releasing our interest must not cancel a stream we never asked for."""
+        provider, client = await _started_provider(live_on_motion=False)
+        client.deliver(f"{BASE}/stream/state", b"ON")
+        client.published.clear()
+
+        await provider.release_live()
+
+        assert client.published == []
+
+
+class TestSnapshotFrames:
+    async def test_snapshot_is_bgr_and_keeps_the_original_jpeg(self, fakes):
+        """Channel order is silent when wrong — nothing downstream can tell, and it
+        shows up only as worse detections. The published JPEG is carried through
+        rather than re-encoded so a clip built from snapshots stays full quality.
+        """
+        provider, client = await _started_provider()
+        payload = _jpeg_bytes((255, 0, 0))  # pure red in RGB
+        client.deliver(f"{BASE}/snapshot/image", payload)
+
+        image = await provider.getNextImage()
+
+        blue, green, red = image.image[0, 0]
+        assert red > 200 and blue < 60, "red pixel must land in the red channel of a BGR frame"
+        assert image.encoded_b64 is not None
+
+
+class TestReconnectSubscriptionRace:
+    """`mqtt_connected_callback` runs on paho's thread while the owner is still
+    subscribing from its own.
+
+    `connect()` returns as soon as the socket is up, so a caller that constructs a
+    client and immediately subscribes races the CONNACK. Iterating the live dict raised
+    part-way through, which killed the connack handler — so every subscription it had
+    not yet reached was silently never registered, and that topic stayed quiet for the
+    life of the client. It looked like a source that simply never published.
+    """
+
+    def test_resubscribes_everything_when_a_topic_is_added_mid_reconnect(self):
+        client = object.__new__(MqttClient)
+        client._prefix = ""
+        client._subMap = {
+            f"{BASE}/{suffix}": MqttClient.SubMapData(callback=lambda m: None)
+            for suffix in ("snapshot/image", "motion/state", "stream/state")
+        }
+
+        resubscribed: list[str] = []
+
+        class RacingPaho:
+            def disconnect(self):
+                """Only for MqttClient.__del__, which runs when the test's client is
+                collected and would otherwise raise into an unraisable-exception warning."""
+
+            def subscribe(self, topic):
+                resubscribed.append(topic)
+                # Another thread getting a subscription in while the handler runs.
+                if len(resubscribed) == 1:
+                    client._subMap[f"{BASE}/ding/state"] = MqttClient.SubMapData(callback=lambda m: None)
+
+        client._mqtt = RacingPaho()
+
+        client.mqtt_connected_callback(client._mqtt, None, {}, 0)
+
+        assert len(resubscribed) == 3, "connack handler must resubscribe every known topic"

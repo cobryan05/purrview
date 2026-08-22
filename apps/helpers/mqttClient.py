@@ -80,8 +80,21 @@ class MqttClient:
 
     def mqtt_connected_callback(self, client: mqtt.Client, userdata, flags, rc):
         logger.info("MQTT server connect: {}".format(rc))
-        # Reconnect subscriptions
-        for subTopic, subData in self._subMap.items():
+        # Reconnect subscriptions.
+        #
+        # Over a copy, because this runs on paho's thread while the owning code is
+        # usually still adding subscriptions from its own: `connect()` returns as soon
+        # as the socket is up, so a caller that constructs a client and immediately
+        # subscribes races the CONNACK. Iterating the live dict raises "dictionary
+        # changed size during iteration" *inside* the connack handler, which kills it
+        # part-way — so the subscriptions it had not reached yet are silently never
+        # registered and that topic goes quiet for the life of the client. The failure
+        # looks like a source that never publishes, not like an error.
+        #
+        # `mqtt_message_callback` already copies for the same reason; this path was
+        # simply missed. A provider subscribing to a single topic almost always wins
+        # the race, which is why it survived this long.
+        for subTopic, subData in self._subMap.copy().items():
             self._mqtt.subscribe(subTopic)
 
     def mqtt_disconnect_callback(self, client: mqtt.Client, userdata, rc):
