@@ -23,6 +23,55 @@ export const VERIFICATION_TAG_BY_STATE = {
 };
 
 /**
+ * Normalise the two filename-filter option shapes into one condition list.
+ *
+ * `filenameConditions` ([{ pattern, negate }]) is the current shape — the
+ * review panel holds an arbitrary number of them. `filenameSearch`/
+ * `filenameNegate` is the older single-value shape, still used by the curated
+ * (client-side) toolbar and by saved Views written before multiple filename
+ * filters existed; it is folded in as one more condition so both can be
+ * supplied without either winning silently.
+ *
+ * @returns {{pattern: string, negate: boolean}[]} blank patterns dropped
+ */
+export function normalizeFilenameConditions({ filenameConditions = [], filenameSearch, filenameNegate = false } = {}) {
+  const out = [];
+  for (const c of filenameConditions ?? []) {
+    const pattern = (c?.pattern ?? '').trim();
+    if (pattern) out.push({ pattern, negate: !!c?.negate });
+  }
+  const legacy = (filenameSearch ?? '').trim();
+  if (legacy) out.push({ pattern: legacy, negate: !!filenameNegate });
+  return out;
+}
+
+/**
+ * Build the `filename` filter terms for a set of conditions.
+ *
+ * The include conditions collapse into ONE term whose patterns are combined
+ * by `filenameMatchMode` ('any' — the panel's default — is an OR, so two
+ * cameras can be requested at once; 'all' requires every pattern in the same
+ * path). Each exclude condition becomes its own negated term, because terms
+ * are ANDed server-side and excluding two names must exclude both — exactly
+ * how bbox-tag exclusions are serialised above.
+ */
+export function buildFilenameTerms(conditions, filenameMatchMode = 'any') {
+  const terms = [];
+  const includes = conditions.filter(c => !c.negate).map(c => c.pattern);
+  if (includes.length > 0) {
+    const term = { kind: 'filename', patterns: includes };
+    // Omitted for a single pattern: the two modes are identical there, and the
+    // server default is 'all' — same omit-when-default rule the other terms use.
+    if (includes.length > 1) term.matchMode = filenameMatchMode;
+    terms.push(term);
+  }
+  for (const c of conditions.filter(c => c.negate)) {
+    terms.push({ kind: 'filename', patterns: [c.pattern], negate: true });
+  }
+  return terms;
+}
+
+/**
  * Build the JSON body sent to the review-queue / bulk-apply-filter endpoints.
  * The single source of truth for filter-body assembly — fetchReviewQueue,
  * bulkApplyAll and bulkApplyImages each call this with the option subset they
@@ -59,6 +108,8 @@ function buildReviewFilterBody({
   requireBboxes = false,
   filenameSearch,
   filenameNegate = false,
+  filenameConditions = [],
+  filenameMatchMode = 'any',
   dateFrom = null,
   dateTo = null,
   dateNegate = false,
@@ -131,7 +182,10 @@ function buildReviewFilterBody({
     terms.push({ kind: 'objectLabel', labelUuids: [uuid], negate: true, rollUp: false });
   }
 
-  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch], negate: filenameNegate });
+  terms.push(...buildFilenameTerms(
+    normalizeFilenameConditions({ filenameConditions, filenameSearch, filenameNegate }),
+    filenameMatchMode,
+  ));
   if (dateFrom || dateTo) {
     const term = { kind: 'date', field: 'created' };
     if (dateFrom) term.from = dateFrom;
@@ -237,6 +291,8 @@ export async function fetchReviewQueue({
   sortOrder = 'desc',
   filenameSearch,
   filenameNegate = false,
+  filenameConditions = [],
+  filenameMatchMode = 'any',
   dateFrom = null,
   dateTo = null,
   dateNegate = false,
@@ -271,6 +327,8 @@ export async function fetchReviewQueue({
     requireBboxes,
     filenameSearch,
     filenameNegate,
+    filenameConditions,
+    filenameMatchMode,
     dateFrom,
     dateTo,
     dateNegate,
@@ -465,6 +523,8 @@ export async function bulkApplyAll({
   sortOrder = 'desc',
   filenameSearch,
   filenameNegate = false,
+  filenameConditions = [],
+  filenameMatchMode = 'any',
   dateFrom = null,
   dateTo = null,
   dateNegate = false,
@@ -501,6 +561,8 @@ export async function bulkApplyAll({
     requireBboxes,
     filenameSearch,
     filenameNegate,
+    filenameConditions,
+    filenameMatchMode,
     dateFrom,
     dateTo,
     dateNegate,
@@ -566,6 +628,8 @@ export async function countMatchingBboxes({
   labelIncludeChildren = false,
   filenameSearch,
   filenameNegate = false,
+  filenameConditions = [],
+  filenameMatchMode = 'any',
   dateFrom = null,
   dateTo = null,
   dateNegate = false,
@@ -596,6 +660,8 @@ export async function countMatchingBboxes({
     requireBboxes,
     filenameSearch,
     filenameNegate,
+    filenameConditions,
+    filenameMatchMode,
     dateFrom,
     dateTo,
     dateNegate,
@@ -707,6 +773,8 @@ export async function bulkApplyImages({
   sortOrder = 'desc',
   filenameSearch,
   filenameNegate = false,
+  filenameConditions = [],
+  filenameMatchMode = 'any',
   dateFrom = null,
   dateTo = null,
   dateNegate = false,
@@ -748,6 +816,8 @@ export async function bulkApplyImages({
     requireBboxes,
     filenameSearch,
     filenameNegate,
+    filenameConditions,
+    filenameMatchMode,
     dateFrom,
     dateTo,
     dateNegate,

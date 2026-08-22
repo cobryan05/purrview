@@ -13,7 +13,7 @@
  * serialised when saving/loading a dataset.
  */
 
-import { UNVERIFIED_TAG_UUID } from '/app-static/js/shared/api/review.js';
+import { UNVERIFIED_TAG_UUID, buildFilenameTerms, normalizeFilenameConditions } from '/app-static/js/shared/api/review.js';
 
 /**
  * Convert a review filter state to { filterJson, labelUuids } for saving as a dataset.
@@ -28,8 +28,8 @@ export function reviewStateToDatasetForm(reviewState) {
   const dateFrom = reviewState.dateFrom ?? null;
   const dateTo = reviewState.dateTo ?? null;
   const dateNegate = reviewState.dateNegate ?? false;
-  const filenameSearch = reviewState.filenameSearch ?? '';
-  const filenameNegate = reviewState.filenameNegate ?? false;
+  const filenameConditions = normalizeFilenameConditions(reviewState);
+  const filenameMatchMode = reviewState.filenameMatchMode ?? 'any';
   const imageLabelConditions = reviewState.imageLabelConditions ?? [];
   const imageTagConditions = reviewState.imageTagConditions ?? [];
   // 'any' (and a missing key) is the no-op default — see review/filters.js's
@@ -58,7 +58,7 @@ export function reviewStateToDatasetForm(reviewState) {
     if (dateNegate) term.negate = true;
     terms.push(term);
   }
-  if (filenameSearch) terms.push({ kind: 'filename', patterns: [filenameSearch], negate: filenameNegate });
+  terms.push(...buildFilenameTerms(filenameConditions, filenameMatchMode));
   for (const c of imageLabelConditions) {
     // 'uncertain' (never assessed) is the term model's 'unreviewed' — see
     // shared/api/review.js's buildReviewFilterBody for the same mapping.
@@ -116,7 +116,16 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     .filter(t => t.kind === 'bboxTag' && t.negate)
     .flatMap(t => t.tagUuids ?? []);
   const dateTerm = terms.find(t => t.kind === 'date' && t.field === 'created');
-  const filenameTerm = terms.find(t => t.kind === 'filename');
+  // Every filename term, not just the first: the panel writes one include term
+  // (possibly multi-pattern) plus one negated term per exclusion, and reading
+  // back only terms[0] silently dropped every exclusion on load.
+  const filenameTerms = terms.filter(t => t.kind === 'filename');
+  const filenameConditions = filenameTerms.flatMap(t =>
+    (t.patterns ?? []).map(pattern => ({ pattern, negate: t.negate ?? false })),
+  );
+  // A multi-pattern include term is the only one whose matchMode is meaningful
+  // (single-pattern terms are always written as 'all' — see buildFilenameTerms).
+  const filenameIncludeTerm = filenameTerms.find(t => !t.negate && (t.patterns ?? []).length > 1);
   const bboxVerificationTerm = terms.find(t => t.kind === 'bboxVerification' && !t.negate);
   const confidenceTerm = terms.find(t => t.kind === 'bboxConfidence' && !t.negate);
   const imageLabelConditions = terms
@@ -147,8 +156,8 @@ export function datasetFormToReviewState(filterJson, labelUuids) {
     labelIncludeChildren: f.labelIncludeChildren ?? false,
     imageLabelConditions,
     imageTagConditions,
-    filenameSearch: filenameTerm?.patterns?.[0] ?? '',
-    filenameNegate: filenameTerm?.negate ?? false,
+    filenameConditions,
+    filenameMatchMode: filenameIncludeTerm?.matchMode ?? 'any',
     dateFrom: dateTerm?.from ?? null,
     dateTo: dateTerm?.to ?? null,
     dateNegate: dateTerm?.negate ?? false,
@@ -208,6 +217,8 @@ export function reviewStateToFilterOpts(reviewState, { viewFilter = 'all', train
     imageTagConditions: fs.imageTagConditions ?? [],
     filenameSearch: fs.filenameSearch || undefined,
     filenameNegate: fs.filenameNegate ?? false,
+    filenameConditions: fs.filenameConditions ?? [],
+    filenameMatchMode: fs.filenameMatchMode ?? 'any',
     dateFrom: fs.dateFrom || undefined,
     dateTo: fs.dateTo || undefined,
     dateNegate: fs.dateNegate ?? false,

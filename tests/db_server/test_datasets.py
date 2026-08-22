@@ -249,7 +249,9 @@ async def test_filter_json_valid_flat_fields_accepted(http_client):
         "valid-flat",
         filter_json={"terms": [{"kind": "filename", "patterns": ["test"]}], "label_match_mode": "all"},
     )
-    assert ds["filterJson"]["terms"] == [{"kind": "filename", "patterns": ["test"], "negate": False}]
+    assert ds["filterJson"]["terms"] == [
+        {"kind": "filename", "patterns": ["test"], "matchMode": "all", "negate": False}
+    ]
     assert ds["filterJson"]["labelMatchMode"] == "all"
 
 
@@ -573,7 +575,9 @@ async def test_patch_filter_json(http_client):
     )
     assert r.json()["status"] == "success"
     updated = r.json()["dataset"]
-    assert updated["filterJson"]["terms"] == [{"kind": "filename", "patterns": ["cats"], "negate": False}]
+    assert updated["filterJson"]["terms"] == [
+        {"kind": "filename", "patterns": ["cats"], "matchMode": "all", "negate": False}
+    ]
     assert label_uuid in updated["labelUuids"]  # labelUuids unchanged
 
 

@@ -811,8 +811,8 @@ class TestFilenameDateNegateReachesTheGridQuery:
         calls.clear()  # drop the initial default-filter load
 
         page.get_by_test_id("review-filter-toggle").click()
-        page.locator("#review-root .review-filter-panel input[placeholder='substring…']").fill("closet")
-        page.locator("#review-root .filter-filename-negate input[type=checkbox]").check()
+        page.locator("#review-root [data-testid=filename-condition-input]").first.fill("closet")
+        page.locator("#review-root [data-testid=filename-condition-negate]").first.check()
 
         # Neither "some new search arrived" nor a fixed sleep is the right barrier here:
         # the filename box is debounced 400ms while the negate checkbox searches

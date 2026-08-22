@@ -275,6 +275,70 @@ async def test_filename_search_matches(http_client, files_root, label_uuid):
     assert not any("no-match.png" in f for f in filenames)
 
 
+class TestMultipleFilenameFilters:
+    """The review panel can hold more than one filename filter.
+
+    Includes collapse into ONE term whose patterns are combined by match_mode
+    ('any' = OR, so two cameras can be asked for at once); each exclusion is
+    its own negated term, and terms are ANDed, so every exclusion applies.
+    """
+
+    async def _setup(self, http_client, files_root, label_uuid):
+        for name in ("cam1-front.png", "cam2-back.png", "cam3-side.png"):
+            _make_image(files_root, name)
+            await _add_bbox(http_client, name, label_uuid, [UNVERIFIED_TAG_UUID])
+
+    async def _search(self, http_client, terms):
+        r = await http_client.post("/api/images/review", json={"showAllBboxes": True, "terms": terms})
+        assert r.status_code == 200
+        return sorted(img["filename"].rsplit("/", 1)[-1] for img in r.json()["images"])
+
+    async def test_match_mode_any_matches_either_pattern(self, http_client, files_root, label_uuid):
+        await self._setup(http_client, files_root, label_uuid)
+        found = await self._search(
+            http_client,
+            [{"kind": "filename", "patterns": ["cam1", "cam2"], "matchMode": "any"}],
+        )
+        assert found == ["cam1-front.png", "cam2-back.png"]
+
+    async def test_match_mode_all_still_requires_every_pattern(self, http_client, files_root, label_uuid):
+        """The default stays AND — two different cameras can't be in one path."""
+        await self._setup(http_client, files_root, label_uuid)
+        assert (
+            await self._search(
+                http_client,
+                [{"kind": "filename", "patterns": ["cam1", "cam2"], "matchMode": "all"}],
+            )
+            == []
+        )
+        assert await self._search(
+            http_client,
+            [{"kind": "filename", "patterns": ["cam1", "front"], "matchMode": "all"}],
+        ) == ["cam1-front.png"]
+
+    async def test_two_exclusions_both_apply(self, http_client, files_root, label_uuid):
+        await self._setup(http_client, files_root, label_uuid)
+        found = await self._search(
+            http_client,
+            [
+                {"kind": "filename", "patterns": ["cam1"], "negate": True},
+                {"kind": "filename", "patterns": ["cam2"], "negate": True},
+            ],
+        )
+        assert found == ["cam3-side.png"]
+
+    async def test_include_any_narrowed_by_an_exclusion(self, http_client, files_root, label_uuid):
+        await self._setup(http_client, files_root, label_uuid)
+        found = await self._search(
+            http_client,
+            [
+                {"kind": "filename", "patterns": ["cam1", "cam2"], "matchMode": "any"},
+                {"kind": "filename", "patterns": ["back"], "negate": True},
+            ],
+        )
+        assert found == ["cam1-front.png"]
+
+
 async def test_filename_search_no_results(http_client, files_root, label_uuid):
     _make_image(files_root, "any.png")
     await _add_bbox(http_client, "any.png", label_uuid, [UNVERIFIED_TAG_UUID])

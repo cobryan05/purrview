@@ -88,7 +88,7 @@ class TestBBoxVerificationRoundTrip:
         assert restored["bboxVerification"] == state
         assert sorted(restored["tagUuids"]) == ["tag-a", "tag-b"]
         assert restored["tagMatchMode"] == "all"
-        assert restored["filenameSearch"] == "cat"
+        assert restored["filenameConditions"] == [{"pattern": "cat", "negate": False}]
         assert restored["labelUuids"] == ["lbl-1"]
         assert restored["labelMatchMode"] == "all"
 
@@ -178,9 +178,11 @@ class TestFilenameNegateRoundTrip:
         assert term["negate"] is True
 
     def test_filename_negate_defaults_false(self, shared_page: Page):
+        """Omitted rather than written as false — the same omit-when-default
+        rule the other terms follow; the server defaults negate to false."""
         form = _to_form(shared_page, {"filenameSearch": "foo"})
         term = [t for t in form["filterJson"]["terms"] if t.get("kind") == "filename"][0]
-        assert term["negate"] is False
+        assert term.get("negate", False) is False
 
     def test_no_filename_search_means_no_term_regardless_of_negate(self, shared_page: Page):
         """negate is a modifier on the filename search, not an independent
@@ -194,19 +196,48 @@ class TestFilenameNegateRoundTrip:
             shared_page,
             {"terms": [{"kind": "filename", "patterns": ["foo"], "negate": True}]},
         )
-        assert restored["filenameNegate"] is True
-        assert restored["filenameSearch"] == "foo"
+        assert restored["filenameConditions"] == [{"pattern": "foo", "negate": True}]
 
     def test_filename_negate_restored_defaults_false(self, shared_page: Page):
         restored = _to_state(shared_page, {"terms": [{"kind": "filename", "patterns": ["foo"]}]})
-        assert restored["filenameNegate"] is False
+        assert restored["filenameConditions"] == [{"pattern": "foo", "negate": False}]
 
     @pytest.mark.parametrize("negate", [True, False])
     def test_full_round_trip(self, shared_page: Page, negate: bool):
         form = _to_form(shared_page, {"filenameSearch": "foo", "filenameNegate": negate})
         restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
-        assert restored["filenameSearch"] == "foo"
-        assert restored["filenameNegate"] == negate
+        assert restored["filenameConditions"] == [{"pattern": "foo", "negate": negate}]
+
+
+class TestMultipleFilenameRoundTrip:
+    """A saved View must keep every filename filter, not just the first — the
+    include patterns share one term, each exclusion gets its own, and reading
+    back only terms[0] would silently drop the exclusions on load."""
+
+    def test_all_filenames_survive_a_round_trip(self, shared_page: Page):
+        original = {
+            "filenameConditions": [
+                {"pattern": "cam1", "negate": False},
+                {"pattern": "cam2", "negate": False},
+                {"pattern": "thumb", "negate": True},
+            ],
+            "filenameMatchMode": "any",
+        }
+        form = _to_form(shared_page, original)
+        restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
+        assert restored["filenameConditions"] == original["filenameConditions"]
+        assert restored["filenameMatchMode"] == "any"
+
+    def test_match_mode_all_survives_a_round_trip(self, shared_page: Page):
+        form = _to_form(
+            shared_page,
+            {
+                "filenameConditions": [{"pattern": "cam1"}, {"pattern": "2026-08"}],
+                "filenameMatchMode": "all",
+            },
+        )
+        restored = _to_state(shared_page, form["filterJson"], form["labelUuids"])
+        assert restored["filenameMatchMode"] == "all"
 
 
 class TestDateNegateRoundTrip:
@@ -308,4 +339,4 @@ class TestConfidenceBandRoundTrip:
         assert restored["confidenceMax"] == 0.9
         assert restored["confidenceIncludeMissing"] is include_missing
         assert restored["bboxVerification"] == "unverified"
-        assert restored["filenameSearch"] == "cam1"
+        assert restored["filenameConditions"] == [{"pattern": "cam1", "negate": False}]

@@ -23,6 +23,7 @@ import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js
 import { createImageLabelConditions, createImageTagConditions } from '/app-static/js/ui/imageTagConditions.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
+import { createFilenameConditions } from '/app-static/js/app/review/filenameConditions.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { filterVisibleTags, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
@@ -46,8 +47,13 @@ const DEFAULT_STATE = () => ({
   // Distinct from `tagUuids` above, which filters on tags carried by an image's
   // BBOXES — an image with no bboxes can only ever be matched by these.
   imageTagConditions: [],
-  filenameSearch: '',
-  filenameNegate: false,
+  // Filename filters, one entry per row of the File list:
+  // [{ pattern: string, negate: boolean }]. Includes are combined by
+  // filenameMatchMode; every exclude applies. Replaces the old single
+  // filenameSearch/filenameNegate pair, which could only hold one filter —
+  // setState still accepts that older shape and folds it in.
+  filenameConditions: [],
+  filenameMatchMode: 'any',
   dateFrom: null,
   dateTo: null,
   dateNegate: false,
@@ -359,32 +365,17 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   primaryRow.appendChild(makeSep());
   primaryRow.appendChild(makeLabel('File:'));
 
-  const filenameInput = document.createElement('input');
-  filenameInput.type = 'text';
-  filenameInput.placeholder = 'substring…';
-
-  let _filenameDebounce = null;
-  filenameInput.addEventListener('input', () => {
-    clearTimeout(_filenameDebounce);
-    _filenameDebounce = setTimeout(() => {
-      _state.filenameSearch = filenameInput.value.trim();
-      emit();
-    }, 400);
-  });
-
-  primaryRow.appendChild(filenameInput);
-
-  const filenameNegateLabel = document.createElement('label');
-  filenameNegateLabel.className = 'itc-negate-label filter-filename-negate';
-  filenameNegateLabel.title = 'Exclude matches (filename does NOT contain this)';
-  const filenameNegateCb = document.createElement('input');
-  filenameNegateCb.type = 'checkbox';
-  filenameNegateCb.addEventListener('change', () => {
-    _state.filenameNegate = filenameNegateCb.checked;
+  // Multiple filename filters, each independently negatable — see
+  // filenameConditions.js. Starts with one blank row so the common
+  // single-filter case needs no extra click.
+  const filenameConditionsComp = createFilenameConditions(({ conditions, matchMode }) => {
+    _state.filenameConditions = conditions;
+    _state.filenameMatchMode = matchMode;
     emit();
   });
-  filenameNegateLabel.append(filenameNegateCb, document.createTextNode('¬'));
-  primaryRow.appendChild(filenameNegateLabel);
+  filenameConditionsComp.setState({ conditions: [{ pattern: '', negate: false }], matchMode: 'any' });
+
+  primaryRow.appendChild(filenameConditionsComp.element);
 
   panel.appendChild(primaryRow);
 
@@ -507,6 +498,15 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   panel.appendChild(secondaryRow);
 
   // ── Public API ────────────────────────────────────────────────────────────
+  // The File list always carries at least one row, and a row the user hasn't
+  // typed into yet is not a filter — every consumer (count, chips, isDefault,
+  // the request body) sees only the non-blank ones.
+  function _activeFilenameConditions() {
+    return (_state.filenameConditions ?? [])
+      .map(c => ({ pattern: (c.pattern ?? '').trim(), negate: !!c.negate }))
+      .filter(c => c.pattern);
+  }
+
   function getActiveFilterCount() {
     const s = _state;
     return s.tagUuids.length
@@ -515,7 +515,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       + s.labelExcludeUuids.length
       + s.imageLabelConditions.length
       + s.imageTagConditions.length
-      + (s.filenameSearch ? 1 : 0)
+      + _activeFilenameConditions().length
       + (s.dateFrom ? 1 : 0)
       + (s.dateTo ? 1 : 0)
       + (s.verificationCheck ? 1 : 0)
@@ -575,14 +575,20 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       });
     });
 
-    if (s.filenameSearch) {
-      const negate = s.filenameNegate ? '¬' : '';
+    // One chip per filename filter — removing a chip must drop only that
+    // pattern, so the chip is keyed by its position in the (blank-free) list
+    // and removal is expressed against the raw state at the same pattern.
+    _activeFilenameConditions().forEach((c, idx) => {
+      const negate = c.negate ? '¬' : '';
       chips.push({
-        key: 'filename',
-        label: `${negate}File: ${s.filenameSearch}`,
-        onRemove: () => setState({ filenameSearch: '', filenameNegate: false }),
+        key: `filename-${idx}-${c.pattern}`,
+        label: `${negate}File: ${c.pattern}`,
+        onRemove: () => {
+          const remaining = _activeFilenameConditions().filter((_, i) => i !== idx);
+          setState({ filenameConditions: remaining });
+        },
       });
-    }
+    });
 
     if (s.dateFrom || s.dateTo) {
       const negate = s.dateNegate ? '¬' : '';
@@ -628,8 +634,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       && s.labelMatchMode === 'any'
       && s.imageLabelConditions.length === 0
       && s.imageTagConditions.length === 0
-      && !s.filenameSearch
-      && !s.filenameNegate
+      && _activeFilenameConditions().length === 0
       && !s.dateFrom
       && !s.dateTo
       && !s.dateNegate
@@ -649,6 +654,18 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
    * @param {Partial<ReturnType<typeof DEFAULT_STATE>>} partial
    */
   function setState(partial) {
+    // Accept the pre-multi-filter shape (a single filenameSearch/filenameNegate
+    // pair) and fold it into the condition list. Saved Views, task "See
+    // results" buttons and anything else written before this list existed still
+    // set it, and silently ignoring it would drop their filename filter.
+    if (partial.filenameSearch !== undefined || partial.filenameNegate !== undefined) {
+      const legacy = (partial.filenameSearch ?? '').trim();
+      const legacyConditions = legacy ? [{ pattern: legacy, negate: !!partial.filenameNegate }] : [];
+      const { filenameSearch: _fs, filenameNegate: _fn, ...rest } = partial;
+      // An explicit filenameConditions in the same call wins — the caller is
+      // then already speaking the current shape.
+      partial = { filenameConditions: legacyConditions, ...rest };
+    }
     if (partial.tagUuids !== undefined && !('tagExcludeUuids' in partial)) {
       partial = { ...partial, tagExcludeUuids: [] };
     }
@@ -679,11 +696,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
         ? new Date(_state.dateTo).toISOString().slice(0, 16)
         : '';
     }
-    if (partial.filenameSearch !== undefined) {
-      filenameInput.value = _state.filenameSearch ?? '';
-    }
-    if (partial.filenameNegate !== undefined) {
-      filenameNegateCb.checked = !!_state.filenameNegate;
+    if (partial.filenameConditions !== undefined || partial.filenameMatchMode !== undefined) {
+      // The list must never render empty — with no rows there is no input to
+      // type into, and clearing the last filter would leave the File filter
+      // unreachable until the panel was rebuilt.
+      const rows = _state.filenameConditions.length > 0
+        ? _state.filenameConditions
+        : [{ pattern: '', negate: false }];
+      filenameConditionsComp.setState({ conditions: rows, matchMode: _state.filenameMatchMode });
     }
     if (partial.dateNegate !== undefined) {
       dateNegateCb.checked = !!_state.dateNegate;
@@ -713,6 +733,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     imageTagConditionsComp.destroy();
     bboxVerificationControl.destroy();
     confidenceControl.destroy();
+    filenameConditionsComp.destroy();
     _unsubAll();
   }
 
@@ -735,6 +756,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     toolbarControls: [tagsContainer, labelsDropdownContainer],
     getState: () => ({
       ..._state,
+      // Blank rows are UI, not filter state — see _activeFilenameConditions.
+      filenameConditions: _activeFilenameConditions(),
       showAllBboxes: _state.tagUuids.length === 0,
     }),
     setState,

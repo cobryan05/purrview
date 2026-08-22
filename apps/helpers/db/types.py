@@ -538,10 +538,18 @@ class DateTerm(ApiModel):
 
 
 class FilenameTerm(ApiModel):
-    """AND of substring patterns against images.filename (like filename_searches)."""
+    """Substring patterns matched against images.filename.
+
+    match_mode combines the patterns *within* this term: "all" (the default,
+    and the historical behaviour) requires every pattern to appear in the
+    path; "any" requires at least one. Separate filename terms are still
+    ANDed like every other term, so an exclusion is expressed as its own
+    negated term rather than as a pattern in this list.
+    """
 
     kind: Literal["filename"] = "filename"
     patterns: List[str] = Field(default_factory=list)
+    match_mode: Literal["any", "all"] = "all"
     negate: bool = False
 
 

@@ -2897,6 +2897,58 @@ button.filter-active {
   margin-top: 3px;
 }
 
+/* ── Filename condition list (.fnc-*) ─────────────────────────────────────
+   A column of filename filters sitting inside the otherwise single-line
+   .filter-row-primary, so it aligns to the top of that row rather than
+   stretching the whole row's height. Reuses the .itc-* row/negate/remove
+   styling above; only the free-text input and the add button are new. */
+.fnc-root {
+  align-self: flex-start;
+}
+
+.fnc-row {
+  gap: 4px;
+}
+
+.fnc-input {
+  font-size: 0.78em;
+  height: auto;
+  padding: 0.15em 0.35em;
+  margin-bottom: 0;
+  border-radius: 3px;
+  width: 150px;
+}
+
+.fnc-add-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.fnc-add {
+  font-size: 0.72em;
+  padding: 0.1em 0.45em;
+  line-height: 1.6;
+  cursor: pointer;
+  background: none;
+  border: 1px dashed var(--border-strong);
+  border-radius: 3px;
+  color: var(--text-faint);
+  margin-bottom: 0;
+  width: auto;
+}
+
+.fnc-add:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+  background: none;
+}
+
+/* Only meaningful with two or more include patterns; hidden otherwise. */
+.fnc-match-mode[hidden] {
+  display: none;
+}
+
 .itc-picker {
   font-size: 0.78em;
   height: auto;

@@ -122,7 +122,9 @@ async def test_sidecar_stores_filter_json(tmp_path):
     rows = await _read_sidecar(tmp_path)
     row = next((r for r in rows if r["uuid"] == uuid), None)
     assert row is not None
-    assert row["filter_json"]["terms"] == [{"kind": "filename", "patterns": [".jpg"], "negate": False}]
+    assert row["filter_json"]["terms"] == [
+        {"kind": "filename", "patterns": [".jpg"], "match_mode": "all", "negate": False}
+    ]
 
     await client.close()
 

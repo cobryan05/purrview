@@ -597,7 +597,12 @@ def _apply_filter_terms(
             for pattern in term.patterns:
                 escaped = _escape_like_pattern(pattern)
                 sub_exprs.append(rel_filename.like(f"%{escaped}%", escape="!"))
-            expr = and_(*sub_exprs) if sub_exprs else true()
+            if not sub_exprs:
+                expr = true()
+            elif term.match_mode == "any":
+                expr = or_(*sub_exprs)
+            else:
+                expr = and_(*sub_exprs)
 
         else:  # pragma: no cover - unreachable, pydantic discriminator rejects unknown kinds
             raise ValueError(f"Unknown filter term kind: {term!r}")

@@ -133,14 +133,15 @@ class TestFilterPanelDefaults:
         }}""")
         assert result == 0
 
-    def test_filename_search_empty_initially(self, shared_page: Page):
+    def test_filename_conditions_empty_initially(self, shared_page: Page):
+        """The one blank row the panel starts with is UI, not a filter."""
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             const s = panel.getState();
             {_TEARDOWN}
-            return s.filenameSearch;
+            return s.filenameConditions;
         }}""")
-        assert result == ""
+        assert result == []
 
     def test_match_modes_default_to_any(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
@@ -1131,9 +1132,10 @@ class TestFilterPanelNegateCheckboxes:
     def test_filename_negate_defaults_false(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
+            panel.setState({{ filenameConditions: [{{ pattern: 'foo' }}] }});
             const s = panel.getState();
             {_TEARDOWN}
-            return s.filenameNegate;
+            return s.filenameConditions[0].negate;
         }}""")
         assert result is False
 
@@ -1149,10 +1151,11 @@ class TestFilterPanelNegateCheckboxes:
     def test_checking_filename_negate_updates_state(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            document.querySelector('.filter-filename-negate input').click();
+            panel.setState({{ filenameConditions: [{{ pattern: 'foo' }}] }});
+            document.querySelector('[data-testid=filename-condition-negate]').click();
             const s = window.__fpLastState();
             {_TEARDOWN}
-            return s.filenameNegate;
+            return s.filenameConditions[0].negate;
         }}""")
         assert result is True
 
@@ -1170,7 +1173,7 @@ class TestFilterPanelNegateCheckboxes:
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ filenameSearch: 'foo', filenameNegate: true }});
-            const checked = document.querySelector('.filter-filename-negate input').checked;
+            const checked = document.querySelector('[data-testid=filename-condition-negate]').checked;
             {_TEARDOWN}
             return checked;
         }}""")
@@ -1189,7 +1192,7 @@ class TestFilterPanelNegateCheckboxes:
     def test_filename_negate_makes_panel_non_default(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            panel.setState({{ filenameNegate: true }});
+            panel.setState({{ filenameConditions: [{{ pattern: 'foo', negate: true }}] }});
             const d = panel.isDefault();
             {_TEARDOWN}
             return d;
@@ -1212,7 +1215,7 @@ class TestFilterPanelNegateCheckboxes:
             panel.setState({{ filenameSearch: 'foo', filenameNegate: true }});
             const chips = panel.getChipDescriptors();
             {_TEARDOWN}
-            return chips.find(c => c.key === 'filename').label;
+            return chips.find(c => c.key.startsWith('filename-')).label;
         }}""")
         assert result == "¬File: foo"
 
@@ -1230,13 +1233,13 @@ class TestFilterPanelNegateCheckboxes:
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ filenameSearch: 'foo', filenameNegate: true }});
-            const chip = panel.getChipDescriptors().find(c => c.key === 'filename');
+            const chip = panel.getChipDescriptors().find(c => c.key.startsWith('filename-'));
             chip.onRemove();
             const s = panel.getState();
             {_TEARDOWN}
-            return {{ filenameSearch: s.filenameSearch, filenameNegate: s.filenameNegate }};
+            return s.filenameConditions;
         }}""")
-        assert result == {"filenameSearch": "", "filenameNegate": False}
+        assert result == []
 
 
 class TestFetchReviewQueueFilenameDateNegateMapping:
@@ -1271,7 +1274,7 @@ class TestFetchReviewQueueFilenameDateNegateMapping:
     def test_filename_negate_defaults_false(self, page: Page, base_url: str):
         body = self._capture(page, base_url, {"filenameSearch": "foo"})
         terms = [t for t in body["terms"] if t["kind"] == "filename"]
-        assert terms == [{"kind": "filename", "patterns": ["foo"], "negate": False}]
+        assert terms == [{"kind": "filename", "patterns": ["foo"]}]
 
     def test_date_negate_true_is_sent(self, page: Page, base_url: str):
         body = self._capture(page, base_url, {"dateFrom": "2026-01-01T00:00:00.000Z", "dateNegate": True})
@@ -1406,3 +1409,164 @@ class TestFilterPanelConfidenceRange:
         assert result["min"] is None
         assert result["max"] is None
         assert result["chipsAfter"] == 0
+
+
+# ── Multiple filename filters ───────────────────────────────────────────────
+#
+# The File filter used to be a single input, so "+ Add filter" and typing a
+# different name just re-edited the one filter already there — two cameras
+# could not be asked for, and two could not be excluded. It is now a list.
+
+
+class TestMultipleFilenameFilters:
+    def test_adding_a_row_and_typing_makes_a_second_filter(self, shared_page: Page):
+        """The regression: the second filename must ADD, not overwrite the first."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const type = async (el, text) => {{
+                el.value = text;
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                await new Promise(r => setTimeout(r, 500));
+            }};
+            const inputs = () => [...panel.element.querySelectorAll('[data-testid=filename-condition-input]')];
+            await type(inputs()[0], 'cam1');
+            panel.element.querySelector('[data-testid=filename-condition-add]').click();
+            await type(inputs()[1], 'cam2');
+            const s = panel.getState();
+            {_TEARDOWN}
+            return s.filenameConditions.map(c => c.pattern);
+        }}""")
+        assert result == ["cam1", "cam2"]
+
+    def test_each_filter_gets_its_own_chip(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameConditions: [
+                {{ pattern: 'cam1' }},
+                {{ pattern: 'cam2', negate: true }},
+            ] }});
+            const chips = panel.getChipDescriptors().filter(c => c.key.startsWith('filename-'));
+            {_TEARDOWN}
+            return chips.map(c => c.label);
+        }}""")
+        assert result == ["File: cam1", "¬File: cam2"]
+
+    def test_removing_one_chip_keeps_the_others(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameConditions: [
+                {{ pattern: 'cam1' }}, {{ pattern: 'cam2' }}, {{ pattern: 'cam3' }},
+            ] }});
+            panel.getChipDescriptors().filter(c => c.key.startsWith('filename-'))[1].onRemove();
+            const s = panel.getState();
+            {_TEARDOWN}
+            return s.filenameConditions.map(c => c.pattern);
+        }}""")
+        assert result == ["cam1", "cam3"]
+
+    def test_active_filter_count_counts_every_filename(self, shared_page: Page):
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameConditions: [
+                {{ pattern: 'cam1' }}, {{ pattern: 'cam2' }}, {{ pattern: '' }},
+            ] }});
+            const c = panel.getActiveFilterCount();
+            {_TEARDOWN}
+            return c;
+        }}""")
+        assert result == 2
+
+    def test_match_mode_toggle_appears_only_with_two_includes(self, shared_page: Page):
+        """Hidden for one include (both modes are identical there), shown for two.
+
+        An exclusion doesn't count — excludes always all apply.
+        """
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            const sel = () => panel.element.querySelector('[data-testid=filename-match-mode]').hidden;
+            panel.setState({{ filenameConditions: [{{ pattern: 'cam1' }}] }});
+            const one = sel();
+            panel.setState({{ filenameConditions: [{{ pattern: 'cam1' }}, {{ pattern: 'cam2', negate: true }}] }});
+            const oneAndExclude = sel();
+            panel.setState({{ filenameConditions: [{{ pattern: 'cam1' }}, {{ pattern: 'cam2' }}] }});
+            const two = sel();
+            {_TEARDOWN}
+            return {{ one, oneAndExclude, two }};
+        }}""")
+        assert result == {"one": True, "oneAndExclude": True, "two": False}
+
+    def test_clearing_every_filter_leaves_an_editable_row(self, shared_page: Page):
+        """Removing the last chip must not leave the File filter with no input."""
+        result = shared_page.evaluate(f"""async () => {{
+            {_SETUP}
+            panel.setState({{ filenameConditions: [{{ pattern: 'cam1' }}] }});
+            panel.getChipDescriptors().find(c => c.key.startsWith('filename-')).onRemove();
+            const rows = panel.element.querySelectorAll('[data-testid=filename-condition-input]').length;
+            {_TEARDOWN}
+            return rows;
+        }}""")
+        assert result == 1
+
+
+class TestMultipleFilenameFiltersOnTheWire:
+    @staticmethod
+    def _capture(page: Page, base_url: str, opts: dict) -> dict:
+        captured = {}
+
+        def handle(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"status": "success", "images": [], "hasMore": false, "totalCount": 0}',
+            )
+
+        page.goto(base_url)
+        page.route("**/api/images/review", handle)
+        page.evaluate(
+            """async (opts) => {
+                const { fetchReviewQueue } = await import('/app-static/js/shared/api/review.js');
+                await fetchReviewQueue({ tagUuids: [], showAllBboxes: true, ...opts });
+            }""",
+            opts,
+        )
+        return captured["body"]
+
+    def test_two_includes_become_one_or_term(self, page: Page, base_url: str):
+        body = self._capture(
+            page,
+            base_url,
+            {"filenameConditions": [{"pattern": "cam1"}, {"pattern": "cam2"}]},
+        )
+        terms = [t for t in body["terms"] if t["kind"] == "filename"]
+        assert terms == [{"kind": "filename", "patterns": ["cam1", "cam2"], "matchMode": "any"}]
+
+    def test_match_mode_all_is_honoured(self, page: Page, base_url: str):
+        body = self._capture(
+            page,
+            base_url,
+            {
+                "filenameConditions": [{"pattern": "cam1"}, {"pattern": "2026-08"}],
+                "filenameMatchMode": "all",
+            },
+        )
+        terms = [t for t in body["terms"] if t["kind"] == "filename"]
+        assert terms[0]["matchMode"] == "all"
+
+    def test_each_exclusion_is_its_own_negated_term(self, page: Page, base_url: str):
+        """Excludes must not share a term — patterns inside one are combined,
+        and two exclusions have to apply independently."""
+        body = self._capture(
+            page,
+            base_url,
+            {"filenameConditions": [{"pattern": "cam1", "negate": True}, {"pattern": "cam2", "negate": True}]},
+        )
+        terms = [t for t in body["terms"] if t["kind"] == "filename"]
+        assert terms == [
+            {"kind": "filename", "patterns": ["cam1"], "negate": True},
+            {"kind": "filename", "patterns": ["cam2"], "negate": True},
+        ]
+
+    def test_blank_patterns_produce_no_term(self, page: Page, base_url: str):
+        body = self._capture(page, base_url, {"filenameConditions": [{"pattern": "   "}]})
+        assert [t for t in body.get("terms", []) if t["kind"] == "filename"] == []
