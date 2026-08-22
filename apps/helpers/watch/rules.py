@@ -34,6 +34,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from ..tracking.tracker import Track
 from .events import EventCloseReason, EventPhase, WatchEventSignal
 from .geometry import Zone, centroid, containment, inflate, iou, margin_pad, normalised_distance, overlap_ratio
+from .motion import DEFAULT_SENSITIVITY as MOTION_DEFAULT_SENSITIVITY
+from .motion import MotionField
 
 
 class RuleState(str, Enum):
@@ -54,7 +56,7 @@ class RuleSpec:
     #: rule rather than three, and the member that actually matched is reported back on
     #: the event so an action's template can name it.
     subject_a_refs: List[str] = field(default_factory=list)
-    relation: str = "contains"  # "present" | "iou" | "contains" | "overlaps" | "centroid_in" | "distance"
+    relation: str = "contains"  # "present" | "iou" | "contains" | "overlaps" | "centroid_in" | "distance" | "motion"
     subject_b_kind: str = "none"  # "label" | "zone" | "none"
     subject_b_refs: List[str] = field(default_factory=list)
     #: Whether each slot's refs were widened to include their label descendants. Recorded
@@ -71,6 +73,11 @@ class RuleSpec:
     #: the frame so it survives perspective — see `geometry.margin_pad`.
     #: Ignored by `present` (no geometry) and `distance` (already a proximity measure).
     margin: float = 0.0
+    #: `motion` only: how big a per-pixel luminance change counts as movement, normalised
+    #: to 0..1. Separate from `threshold`, which is *how much of the region* must change:
+    #: they are the two independent halves of "did anything move", and one value cannot
+    #: express both. 0 means "use the module default" — see `motion.DEFAULT_SENSITIVITY`.
+    motion_sensitivity: float = 0.0
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -98,6 +105,7 @@ class RuleSpec:
             subject_b_include_descendants=bool(get("subject_b_include_descendants", False)),
             threshold=get("threshold", 0.5),
             margin=get("margin", 0.0) or 0.0,
+            motion_sensitivity=get("motion_sensitivity", 0.0) or 0.0,
             min_duration_s=get("min_duration_s", 2.0),
             rearm_delay_s=get("rearm_delay_s", 10.0),
             max_duration_s=get("max_duration_s", 300.0),
@@ -184,8 +192,32 @@ def evaluate_predicate(
     zones: Dict[str, Zone],
     frame_width: float,
     frame_height: float,
+    motion: Optional[MotionField] = None,
 ) -> PredicateResult:
     """Evaluate a rule against one frame's tracks. Pure — no state, no I/O."""
+    # Arity 0: motion is the one relation that reads pixels rather than tracks, so it
+    # has to be answered before the subject lookup below — which would return an empty
+    # list on a frame with no detections and report "no motion" for exactly the frames
+    # a motion rule exists to catch.
+    if spec.relation == "motion":
+        if motion is None or not motion.measured:
+            return PredicateResult(holds=False)
+        # Subject A names *where* to measure, not what to look for: zones scope the
+        # measurement to a region, anything else means the whole (unmasked) frame.
+        zone_refs = spec.subject_a_refs if spec.subject_a_kind == "zone" else ()
+        sensitivity = spec.motion_sensitivity or MOTION_DEFAULT_SENSITIVITY
+        score, zone_uuid = motion.best(sensitivity, zone_refs)
+        holds = score >= spec.threshold
+        return PredicateResult(
+            holds=holds,
+            # Motion has no tracks by construction. An event opened by it still names
+            # its zone, which is what an action's template needs.
+            track_ids=[],
+            score=score,
+            confidence=score,
+            subject_ref=zone_uuid if holds else None,
+        )
+
     subjects_a = _matching_tracks(tracks, spec.subject_a_kind, spec.subject_a_refs)
     if not subjects_a:
         return PredicateResult(holds=False)

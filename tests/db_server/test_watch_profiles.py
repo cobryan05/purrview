@@ -514,6 +514,70 @@ class TestRuleValidation:
         )
         assert body["status"] == "failure"
 
+    async def test_motion_is_arity_zero(self, http_client):
+        """Motion reads pixels, so it needs no subject at all — and `any` with no refs
+        (the "whole frame" case) must not be mistaken for an unconfigured slot."""
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            rules=[
+                _rule(
+                    relation="motion",
+                    subjectAKind="any",
+                    subjectARefsJson=[],
+                    subjectBKind="none",
+                    subjectBRef=None,
+                    threshold=0.02,
+                    motionSensitivity=0.15,
+                )
+            ],
+        )
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["motionSensitivity"] == 0.15
+
+    async def test_motion_rejects_a_label_subject(self, http_client):
+        """A label slot on a motion rule promises a filter the engine never applies:
+        the measurement is pixels, and nothing about it consults a label."""
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            rules=[_rule(relation="motion", subjectBKind="none", subjectBRef=None)],
+        )
+        assert body["status"] == "failure"
+
+    async def test_motion_rejects_a_second_subject(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[_rule(relation="motion", subjectAKind="any", subjectARefsJson=[])],
+        )
+        assert body["status"] == "failure"
+
+    async def test_motion_scoped_to_zones_round_trips(self, http_client):
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        body = await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[
+                _rule(
+                    relation="motion",
+                    subjectAKind="zone",
+                    subjectARefsJson=[_ZONE_A_UUID],
+                    subjectBKind="none",
+                    subjectBRef=None,
+                )
+            ],
+        )
+        assert body["status"] == "success", body
+        saved = body["profile"]["rules"][0]
+        assert saved["subjectAKind"] == "zone"
+        assert saved["subjectARefsJson"] == [_ZONE_A_UUID]
+
     async def test_zone_subject_requires_a_ref(self, http_client):
         body = await _create_profile(
             http_client,

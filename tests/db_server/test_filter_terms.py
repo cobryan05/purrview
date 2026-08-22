@@ -771,6 +771,66 @@ class TestBBoxVerificationTerm:
         assert any("state-mixed.png" in f for f in images)
         assert not any("state-pending.png" in f for f in images)
 
+    async def test_no_boxes_finds_images_no_tag_state_can_reach(self, http_client, files_root, label_uuid):
+        """ "Unverified because there is nothing on it" is invisible to the tag states.
+
+        A verification tag needs a box to hang off, so an image with no boxes at all
+        matches neither `verified` nor `unverified` — it simply never appears. This
+        state is the only way to see them.
+        """
+        _make_image(files_root, "state-empty.png")
+        await _register_image(http_client, "state-empty.png")
+        _make_image(files_root, "state-pending.png")
+        await _add_bbox(http_client, "state-pending.png", label_uuid, [UNVERIFIED_TAG_UUID])
+
+        images = _filenames(
+            await _review(http_client, show_all_bboxes=True, terms=[{"kind": "bboxVerification", "state": "no_boxes"}])
+        )
+        assert any("state-empty.png" in f for f in images)
+        assert not any("state-pending.png" in f for f in images)
+
+        # And the state it is contrasted with really does miss it.
+        unverified = _filenames(
+            await _review(
+                http_client, show_all_bboxes=True, terms=[{"kind": "bboxVerification", "state": "unverified"}]
+            )
+        )
+        assert not any("state-empty.png" in f for f in unverified)
+
+    async def test_no_boxes_does_not_narrow_the_query_to_images_that_have_boxes(
+        self, http_client, files_root, label_uuid
+    ):
+        """The `bbox_implied` optimisation would make this term unsatisfiable.
+
+        Every other verification state proves the image HAS a box, which lets the
+        query narrow to those images. This one asks for the opposite, so setting the
+        same flag would AND "has a bbox" onto "has no bbox" and return nothing —
+        silently, and only for this state.
+        """
+        _make_image(files_root, "state-empty.png")
+        await _register_image(http_client, "state-empty.png")
+
+        images = _filenames(
+            await _review(http_client, show_all_bboxes=True, terms=[{"kind": "bboxVerification", "state": "no_boxes"}])
+        )
+        assert any("state-empty.png" in f for f in images)
+
+    async def test_no_boxes_negated_finds_images_that_have_boxes(self, http_client, files_root, label_uuid):
+        _make_image(files_root, "state-empty.png")
+        await _register_image(http_client, "state-empty.png")
+        _make_image(files_root, "state-pending.png")
+        await _add_bbox(http_client, "state-pending.png", label_uuid, [UNVERIFIED_TAG_UUID])
+
+        images = _filenames(
+            await _review(
+                http_client,
+                show_all_bboxes=True,
+                terms=[{"kind": "bboxVerification", "state": "no_boxes", "negate": True}],
+            )
+        )
+        assert any("state-pending.png" in f for f in images)
+        assert not any("state-empty.png" in f for f in images)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bboxConfidence

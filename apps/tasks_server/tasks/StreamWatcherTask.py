@@ -55,6 +55,7 @@ from apps.helpers.tracking.tracker import Detection
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
+from apps.helpers.watch.motion import MotionDetector
 from apps.helpers.watch.rules import RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
 
@@ -420,8 +421,20 @@ class StreamWatcherTask(Task):
                 model_names = resolve_model_names(
                     self._profile.default_model_group_uuid, self._profile.default_model_name, groups_by_uuid
                 )
+            # Motion is measured from pixels, so it costs a blur and an absdiff per
+            # frame whether or not a rule reads it. Built only when a motion rule
+            # actually survived this source's scoping — asking the engine rather than
+            # the raw rule list keeps that answer in one place.
+            motion_rules = [r for r in rule_specs if r.relation == "motion" and r.uuid in set(engine.rule_uuids)]
+            motion_detector = MotionDetector(masks=masks, zones=zones) if motion_rules else None
+
             if not model_names:
-                self.log(f"Source {src.source_uuid} has no models configured — nothing will be detected on it")
+                # Motion needs no model, so a motion-only camera is a legitimate setup
+                # rather than the misconfiguration this line otherwise reports.
+                if motion_rules and len(motion_rules) == len(engine.rule_uuids):
+                    self.log(f"Source {src.source_uuid} has no models — running motion rules only")
+                else:
+                    self.log(f"Source {src.source_uuid} has no models configured — nothing will be detected on it")
 
             self._pipelines.append(
                 WatchPipeline(
@@ -438,10 +451,16 @@ class StreamWatcherTask(Task):
                     ring_max_mb=getattr(src, "ring_max_mb", 32.0) or 32.0,
                     buffer_mode=str(getattr(src, "buffer_mode", "auto") or "auto"),
                     masks=masks,
+                    motion_detector=motion_detector,
                 )
             )
             if masks:
                 self.log(f"Source {src.source_uuid}: {len(masks)} mask(s) active")
+            if motion_rules:
+                self.log(
+                    f"Source {src.source_uuid}: motion detection on for "
+                    f"{len(motion_rules)} rule(s); {len(masks)} mask(s) excluded from the measured area"
+                )
 
         if not self._pipelines:
             raise RuntimeError("No usable sources — every source in this profile failed to build a provider")
@@ -1022,6 +1041,11 @@ class StreamWatcherTask(Task):
         if not pipeline.provider.is_ready():
             self._record_source_failure(pipeline, now, "source has not come back yet")
             return False
+        # The last frame before the outage and the first one after it can be minutes
+        # apart. Differencing them reports the whole scene as having moved at the exact
+        # moment the camera comes back, which is a recording every reconnect.
+        if pipeline.motion_detector is not None:
+            pipeline.motion_detector.reset()
         return True
 
     def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:

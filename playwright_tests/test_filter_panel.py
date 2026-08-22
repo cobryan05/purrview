@@ -381,7 +381,11 @@ class TestFilterPanelBboxVerification:
             {_TEARDOWN}
             return texts;
         }}""")
-        assert result == ["Any", "Verified", "Unverified"]
+        # "No boxes" is image-scoped where the other two are per-bbox tag tests, and it
+        # belongs in this one-of control precisely because of that: an image with no
+        # boxes carries no verification tag either, so it is invisible to "Unverified"
+        # and was unreachable from the Review filters entirely.
+        assert result == ["Any", "Verified", "Unverified", "No boxes"]
 
     def test_control_label_is_distinct_from_config_ready(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{

@@ -552,9 +552,16 @@ def _apply_filter_terms(
             expr = or_(*sub_exprs) if sub_exprs else true()
 
         elif isinstance(term, BBoxVerificationTerm):
-            term_implies_bbox = True
-            tag_uuid = BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
-            expr = _tag_predicate(BBoxTagLink.tag_uuid == tag_uuid)
+            if term.state == "no_boxes":
+                # The inverse of every other state here, so it must NOT set
+                # term_implies_bbox — that flag exists to let the query narrow to
+                # images that have a box, and this term asks for exactly the ones
+                # that do not. Setting it would make the predicate unsatisfiable.
+                expr = ~(select(BBox).where(BBox.image_uuid == ImageRecord.uuid).exists())
+            else:
+                term_implies_bbox = True
+                tag_uuid = BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
+                expr = _tag_predicate(BBoxTagLink.tag_uuid == tag_uuid)
 
         elif isinstance(term, BBoxConfidenceTerm):
             term_implies_bbox = True
@@ -1552,6 +1559,11 @@ class DbClient:
                 estimates.append(max(counts) if term.match_mode == "any" else min(counts))
 
             elif isinstance(term, BBoxVerificationTerm):
+                if term.state == "no_boxes":
+                    # A NOT EXISTS over bboxes has no COUNT probe that means
+                    # anything — counting bbox rows says nothing about how many
+                    # images have none. Fall back to the non-EXISTS dispatch.
+                    return False
                 tag_uuid = BBOX_VERIFICATION_STATE_TO_TAG_UUID[term.state]
                 estimates.append(
                     await self._selectivity_count(
@@ -6782,6 +6794,7 @@ class DbClient:
                     subject_b_include_descendants=rule.subject_b_include_descendants,
                     threshold=rule.threshold,
                     margin=rule.margin,
+                    motion_sensitivity=rule.motion_sensitivity,
                     min_duration_s=rule.min_duration_s,
                     rearm_delay_s=rule.rearm_delay_s,
                     max_duration_s=rule.max_duration_s,

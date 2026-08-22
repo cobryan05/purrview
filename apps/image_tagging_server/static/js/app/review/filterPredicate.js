@@ -42,7 +42,9 @@ export { VERIFICATION_TAG_BY_STATE };
  */
 export function defaultCuratedFilterState() {
   return {
-    bboxVerification: 'any', // 'any' | 'verified' | 'unverified'
+    // 'no_boxes' is image-scoped (the image has no bbox at all); the other two
+    // are per-bbox tag tests. See imageMatchesFilter for where that splits.
+    bboxVerification: 'any', // 'any' | 'verified' | 'unverified' | 'no_boxes'
     labelUuids: [],
     labelExcludeUuids: [],
     labelMatchMode: 'any', // 'any' | 'all'
@@ -225,7 +227,12 @@ export function bboxHasAllTags(bbox, tagUuidSet) {
  * @returns {boolean}
  */
 export function bboxMatchesFilter(bbox, state, labels) {
-  // ── Bbox verification (tri-state, exclusive) ──────────────────────────────
+  // ── Bbox verification (exclusive states) ─────────────────────────────────
+  // 'no_boxes' is not a bbox predicate at all — it is about the image having
+  // none. `imageMatchesFilter` answers it before any bbox is examined; reaching
+  // here with it means a caller is filtering boxes on an image that, by
+  // definition, has none, so nothing can match.
+  if (state.bboxVerification === 'no_boxes') return false;
   if (state.bboxVerification && state.bboxVerification !== 'any') {
     const wantTagUuid = VERIFICATION_TAG_BY_STATE[state.bboxVerification];
     if (!wantTagUuid || !bboxHasAnyTag(bbox, new Set([wantTagUuid]))) return false;
@@ -296,6 +303,14 @@ export function bboxMatchesFilter(bbox, state, labels) {
 export function imageMatchesFilter(img, state, labels) {
   if (!imageMatchesFilename(img, state)) return false;
   if (!imageMatchesDate(img, state)) return false;
+
+  // 'no_boxes' is image-scoped, unlike every other verification state: it asks
+  // about the ABSENCE of boxes, so it cannot be answered by a per-bbox predicate
+  // (there is no bbox to ask). Answered here, before the loop below, which would
+  // otherwise reject the very images this state selects.
+  if (state.bboxVerification === 'no_boxes') {
+    return (img.bboxes || []).length === 0;
+  }
 
   const matching = (img.bboxes || []).filter(b => bboxMatchesFilter(b, state, labels));
   if (matching.length === 0) {

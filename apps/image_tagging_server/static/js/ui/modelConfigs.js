@@ -10,6 +10,7 @@ import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-static/js/ui/modelSpec.js';
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
+import { NEW_ITEM_SELECTION, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
 let _rendering = false;
 let _navGuardController = null; // AbortController for the tab-navigation guard
@@ -397,10 +398,15 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
       }
     }
 
+    // Last list fetch, so arrival-with-a-selection can resolve a uuid to its
+    // config without a second round trip.
+    let _configsMap = new Map();
+
     async function refreshList() {
       listBody.innerHTML = '';
 
       const configsMap = await fetchModelConfigs();
+      _configsMap = configsMap;
 
       if (configsMap.size === 0) {
         const empty = document.createElement('p');
@@ -441,7 +447,16 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
     }
 
     await refreshList();
-    await _showForm(null, { force: true });
+
+    // Somewhere else (e.g. the Training config's Model Shape field) may have
+    // sent the user here to look at — or create — a specific shape.
+    // NEW_ITEM_SELECTION needs no branch: the create form is what _showForm(null)
+    // already opens, and an unknown uuid falls through to the same place.
+    const wantedUuid = takePendingSelection('tab-model-management');
+    const wantedConfig = wantedUuid && wantedUuid !== NEW_ITEM_SELECTION
+      ? (_configsMap.get(wantedUuid) ?? null)
+      : null;
+    await _showForm(wantedConfig, { force: true });
   } catch (err) {
     const errMsg = document.createElement('p');
     errMsg.style.color = 'red';

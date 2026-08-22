@@ -46,6 +46,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +64,18 @@ from apps.helpers.timeUtils import parse_iso_utc
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
 logger = logging.getLogger(__name__)
+
+#: Seconds to shift a buffer-cut clip's overlay back by, compensating the ingest latency
+#: between the relay's record clock (which the clip is on) and the watcher's fetch clock
+#: (which the boxes are on). See `build_overlay`'s docstring for why the two differ and
+#: why nothing here can observe the true capture instant.
+#:
+#: An env var rather than a per-source column because it is a property of the deployment's
+#: ingest path — same relay, same ffmpeg, same buffering for every camera behind it — and
+#: because it is a calibration, not a preference: measure it with
+#: `scripts/measure_overlay_lag.py` against real clips and set the number it reports.
+#: 0.0 keeps the previous behaviour exactly.
+OVERLAY_LAG_S: float = float(os.environ.get("WATCH_OVERLAY_LAG_S", "0") or 0.0)
 
 #: Outside `image_datasets` on purpose — these are not training images and must not turn
 #: up in the annotation file browser. Defined in `apps/__init__.py` because db_server's
@@ -463,7 +476,17 @@ class WatchEventRecorder:
                 write_overlay,
             )
 
-            samples = detection_track.samples_between(started_at.timestamp(), started_at.timestamp() + duration_s)
+            # A ring-cut clip is stamped from the very ring the boxes come from, so its
+            # two timelines are the same clock and compensating would *introduce* an
+            # error. Only a buffer-cut clip has the relay-vs-watcher gap.
+            lag_s = 0.0 if clip.get("lowFps") else OVERLAY_LAG_S
+            # Widened by the lag, since every sample is about to be shifted back by it:
+            # slicing the unshifted window would drop exactly the `lag_s` of samples at
+            # the end that the shift is about to bring inside the clip.
+            samples = detection_track.samples_between(
+                started_at.timestamp() + lag_s,
+                started_at.timestamp() + lag_s + duration_s,
+            )
             if not samples:
                 # Nothing was analysed inside the clip's window — a source whose watcher
                 # started mid-buffer, say. An empty sidecar would tell the player the
@@ -473,6 +496,7 @@ class WatchEventRecorder:
                 samples,
                 started_at,
                 duration_s,
+                lag_s=lag_s,
                 event=event_window(
                     started_at,
                     duration_s,
@@ -480,6 +504,7 @@ class WatchEventRecorder:
                     self._wallclock(signal.at, context),
                     rule_name=signal.rule_name,
                     event_uuid=event_uuid,
+                    lag_s=lag_s,
                 ),
             )
             dest = overlay_path_for(Path(clip["path"]))

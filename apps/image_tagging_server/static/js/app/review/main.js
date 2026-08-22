@@ -679,6 +679,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       _pageCursors = [null];
       _lastCursor = null;
       render();
+    }, {
+      // Names only — redraw the chips without re-running the image query.
+      onNamesChanged: () => renderChipBar(),
     });
     filterPanel.element.hidden = true;
     filterPanel.element.classList.add('review-filter-popover');
@@ -3361,7 +3364,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
   // ── Wire shared toolbar (select / bbox / delete) ───────────────────
   toolbarHandle = initToolbar(instance.runtime, toolbarEl, {
-    buttons: ['undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'enhance'],
+    buttons: ['undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'enhance', 'search'],
   });
 
   // ── Setup sidebar tabs ─────────────────────────────────────────────

@@ -34,6 +34,46 @@ def image_manifest_fields(
     }
 
 
+#: Machine tokens for why a training run stopped. Kept short and stable — the
+#: human sentence lives beside them in ``stop_detail``, which is free to be reworded.
+STOP_COMPLETED = "completed"  # ran the full epoch budget
+STOP_EARLY = "early_stopping"  # patience exhausted before the budget
+STOP_CANCELLED = "cancelled"  # a human asked it to stop
+
+
+def stop_summary(
+    *,
+    reason: str,
+    detail: str,
+    epochs_run: int,
+    max_epochs: int,
+    best_epoch: int | None = None,
+) -> dict[str, Any]:
+    """The "why did it stop" fields every trainer returns from ``train()``.
+
+    Whatever ``train()`` returns is splatted straight into the job's terminal
+    ``done`` SSE event (see ``job_queue``), so these reach the task — and its log
+    — with no plumbing of their own. That is the whole point: a run that stopped
+    at epoch 14 of 50 used to produce a final log line identical to one that ran
+    all 50, and the reason existed only in the training server's own process log,
+    which the UI never shows. "Finished" and "gave up early" are the two facts a
+    user most needs from a finished run, and they were indistinguishable.
+
+    Written through one helper so a fourth trainer cannot report the same thing
+    under a different key — the failure mode `image_manifest_fields` above exists
+    to prevent, and the one NOTES.md records for the patience keys.
+    """
+    return {
+        "stop_reason": reason,
+        "stop_detail": detail,
+        "epochs_run": int(epochs_run),
+        "max_epochs": int(max_epochs),
+        # Omitted rather than sent as 0 when unknown: a reader can then tell
+        # "this trainer does not track a best epoch" from "the first one was best".
+        **({"best_epoch": int(best_epoch)} if best_epoch is not None else {}),
+    }
+
+
 class Trainer(ABC):
     # Single source of truth for this trainer's hyperparam defaults — the
     # keys it reads out of ``config`` via ``config.get(key, default)`` and

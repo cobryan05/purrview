@@ -21,6 +21,8 @@ from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, T
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import WatchEventSignal
 from apps.helpers.watch.geometry import Zone, is_masked
+from apps.helpers.watch.motion import DEFAULT_SENSITIVITY as MOTION_DEFAULT_SENSITIVITY
+from apps.helpers.watch.motion import NO_MOTION, MotionDetector, MotionField
 from apps.helpers.watch.rules import descendants_of
 
 logger = logging.getLogger(__name__)
@@ -211,6 +213,10 @@ class WatchPipeline:
     #: not opted out of. Unlike zones these are not addressable by any rule — a mask acts
     #: on everything or not at all, which is exactly why a watcher can disable one.
     masks: List[Zone] = field(default_factory=list)
+    #: Frame differencer for `motion` rules, or None when this watcher has no motion
+    #: rule that could run on this source. None rather than an idle detector so a
+    #: watcher that never asked for motion pays nothing per frame for it.
+    motion_detector: Optional[MotionDetector] = None
     health: SourceHealth = field(default_factory=SourceHealth)
     _next_frame_at: float = 0.0
     _last_tracks: List[Track] = field(default_factory=list)
@@ -224,6 +230,14 @@ class WatchPipeline:
     #: the status row because a mask that is silently eating every detection and a model
     #: that has stopped detecting look identical otherwise — and they have opposite fixes.
     _last_masked_count: int = 0
+    #: This frame's motion, produced by `prepare_frame` and consumed by `step`. Held on
+    #: the pipeline rather than passed between them because the frame is only in scope
+    #: in the first and the rules are only evaluated in the second.
+    _last_motion: MotionField = field(default=NO_MOTION)
+    #: Whole-frame unmasked motion at the default sensitivity, for the status panel.
+    #: A number here is the difference between "the rule's threshold is too high" and
+    #: "this camera reports no motion at all", which look identical from the outside.
+    _last_motion_ratio: Optional[float] = None
     #: Most recent analysed frame, kept for snapshot actions. One frame per source,
     #: replaced each time — deliberately not a history.
     last_frame: Optional[np.ndarray] = None
@@ -275,6 +289,15 @@ class WatchPipeline:
             # Zones are stored normalised, so they only become pixels once we know the
             # analysis size — which isn't known until the first frame arrives.
             self.engine.set_frame_size(width, height)
+
+        # Differenced here rather than in `step`, because this is the only place the
+        # picture itself is in scope — and against the *analysed* frame, so a motion
+        # ratio means the same thing as a zone, which is scaled to this same geometry.
+        if self.motion_detector is not None:
+            self._last_motion = self.motion_detector.update(analysed)
+            self._last_motion_ratio = (
+                round(self._last_motion.ratio(MOTION_DEFAULT_SENSITIVITY), 4) if self._last_motion.measured else None
+            )
         return analysed
 
     def apply_masks(self, detections: Sequence[Detection]) -> List[Detection]:
@@ -301,7 +324,7 @@ class WatchPipeline:
         # same picture the rules are reasoning about.
         self._last_detections = list(surviving)
         self._last_tracks = self.tracker.update(list(surviving), now)
-        return self.engine.step(self._last_tracks, now)
+        return self.engine.step(self._last_tracks, now, motion=self._last_motion)
 
     def close_open_events(self, now: float) -> List[WatchEventSignal]:
         return self.engine.close_all(now)
@@ -353,6 +376,9 @@ class WatchPipeline:
             "tracks": len(self._last_tracks),
             "masks": len(self.masks),
             "maskedLastFrame": self._last_masked_count,
+            # None means this source is not being differenced at all (no motion rule
+            # applies to it), which is a different thing from "nothing moved".
+            "motionRatio": self._last_motion_ratio,
             "lastError": self.health.last_error,
         }
 

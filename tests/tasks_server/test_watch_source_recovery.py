@@ -72,6 +72,9 @@ def _pipeline(provider=None, name="Front door", uuid="src-1") -> SimpleNamespace
         source_name=name,
         provider=provider or _FakeProvider(),
         health=SourceHealth(),
+        # None is the real value for a source with no motion rule; reconnect clears the
+        # differencer so a gap in the frames is not read as the whole scene moving.
+        motion_detector=None,
     )
     # Only what _service_source touches before the first frame arrives.
     pipeline.schedule_next = lambda now: None

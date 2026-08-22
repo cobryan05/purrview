@@ -33,7 +33,19 @@ const RELATIONS = [
   { key: 'iou', text: 'closely matches (same size)' },
   { key: 'distance', text: 'is near' },
   { key: 'present', text: 'is present' },
+  // Reads as a whole sentence on its own because it has no subject: motion is the one
+  // relation measured from pixels rather than from a detection, so there is no label to
+  // put in front of it. `syncArity` hides the subject slot when this is chosen.
+  { key: 'motion', text: 'motion is detected' },
 ];
+
+/** Fraction of a region that must change for a motion rule to hold, by default.
+ *  2% of the frame is roughly a person at mid-distance; the geometric relations' 0.6
+ *  would demand most of the picture change and could never fire. */
+const MOTION_DEFAULT_AREA = 0.02;
+
+/** Per-pixel change that counts as movement, matching `watch.motion.DEFAULT_SENSITIVITY`. */
+const MOTION_DEFAULT_SENSITIVITY = 0.1;
 
 /**
  * What a rule's `threshold` actually means, per relation — the caption and the tooltip
@@ -85,6 +97,15 @@ const THRESHOLD_HELP = {
     label: 'match',
     title: 'Not used by this relation: the subject’s centre is either inside the target or '
       + 'it is not. Use the nearby margin to widen the target instead.',
+  },
+  motion: {
+    label: 'area',
+    title: 'How much of the watched area must change between frames, as a fraction of it. '
+      + '0.02 is about a person at mid-distance; 0.2 is most of the view. Masked areas are '
+      + 'left out of both what changed and what is measured, so a mask over a busy road '
+      + 'does not just fail to trigger — it stops diluting this number for the rest of the '
+      + 'frame. Pair it with the sensitivity beside it, which sets how big a change to a '
+      + 'single pixel counts at all.',
   },
 };
 
@@ -1154,7 +1175,62 @@ function buildRuleRow(rule, ctx) {
   }
   buildSubjectA();
 
+  // Where a motion rule measures. Its own slot rather than reusing subject A, which is a
+  // *label* picker: motion looks for no label, and the two mean different things by an
+  // empty selection — an empty label slot can never fire, an empty motion slot is the
+  // common case ("the whole frame").
+  let motionZoneRefs = rule.relation === 'motion' ? [...(rule.subjectARefsJson || [])] : [];
+  let motionZoneDropdown = null;
+  const motionZoneHost = el('span', 'watch-rule-slot');
+  motionZoneHost.dataset.testid = 'watch-rule-motion-zones';
+  motionZoneHost.title =
+    'Which drawn zones to watch for movement. Leave it empty to watch the whole frame. '
+    + 'Masks are always excluded either way — a mask is how you tell this rule to ignore a '
+    + 'road, a tree or a timestamp overlay.';
+
+  function buildMotionZones() {
+    const items = ctx.zoneItems();
+    const available = new Set(items.map(i => i.uuid));
+    motionZoneRefs = motionZoneRefs.filter(r => available.has(r));
+    motionZoneDropdown?.destroy();
+    motionZoneHost.innerHTML = '';
+    motionZoneDropdown = createMultiSelectDropdown({
+      label: '',
+      items,
+      defaultSelected: motionZoneRefs,
+      showModeToggle: false,
+      allowExclude: false,
+      // "Anywhere", not "None selected": an empty motion slot watches the whole frame,
+      // so the empty state must not read as the opposite of what it does.
+      emptySummary: 'Anywhere',
+      emptyText: '(no zones drawn on this watcher’s sources)',
+      filterKey: 'watch-rule-motion-zones',
+      onChange: (selected) => { motionZoneRefs = [...selected]; ctx.onAnyChange(); },
+    });
+    motionZoneHost.appendChild(motionZoneDropdown.element);
+  }
+  buildMotionZones();
+
+  // The threshold means something different in kind for motion (a changed-area
+  // fraction, ~0.02) than for the geometric relations (~0.6). Carrying one across the
+  // switch leaves a rule that silently cannot fire, so each side remembers its own.
+  let lastGeometricThreshold = rule.relation === 'motion' ? 0.6 : (rule.threshold ?? 0.6);
+  let lastMotionThreshold = rule.relation === 'motion' ? (rule.threshold ?? MOTION_DEFAULT_AREA) : MOTION_DEFAULT_AREA;
+  let previousRelation = rule.relation || 'contains';
+
   const relation = select(RELATIONS, rule.relation || 'contains', () => {
+    const wasMotion = previousRelation === 'motion';
+    const isMotion = relation.value === 'motion';
+    if (wasMotion !== isMotion) {
+      if (wasMotion) {
+        lastMotionThreshold = num(threshold, MOTION_DEFAULT_AREA);
+        threshold.value = String(lastGeometricThreshold);
+      } else {
+        lastGeometricThreshold = num(threshold, 0.6);
+        threshold.value = String(lastMotionThreshold);
+      }
+    }
+    previousRelation = relation.value;
     syncArity();
     ctx.onAnyChange();
   });
@@ -1164,7 +1240,9 @@ function buildRuleRow(rule, ctx) {
     + 'much of the subject is within it; “overlaps” measures against the smaller of the two; '
     + '“closely matches” is IoU and only suits boxes of similar size; “has its centre in” is '
     + 'the cheapest robust test; “is near” compares centre points; “is present” needs no '
-    + 'target at all. Use Preview… to see any of them on boxes you can drag.';
+    + 'target at all. “motion is detected” needs no subject either — it compares pixels '
+    + 'between frames, so it fires with no model and no detection. Use Preview… to see any '
+    + 'of the geometric ones on boxes you can drag.';
 
   const subjectBKind = select(
     [{ key: 'zone', text: 'Zone' }, { key: 'label', text: 'Label' }],
@@ -1276,14 +1354,21 @@ function buildRuleRow(rule, ctx) {
   }
   buildSourceScope();
 
-  sentence.append(el('span', null, 'When'), subjectAHost, relation, subjectBKind, subjectBHost);
+  const motionInWord = el('span', null, 'in');
+  sentence.append(el('span', null, 'When'), subjectAHost, relation, motionInWord, motionZoneHost, subjectBKind, subjectBHost);
   sentence.append(el('span', null, 'on'), sourceScopeHost);
   row.appendChild(sentence);
 
   function syncArity() {
+    // Motion is arity 0 — no subject at all. It reads pixels, so a label slot in front
+    // of it would promise a filter the engine never applies.
+    const isMotion = relation.value === 'motion';
+    subjectAHost.hidden = isMotion;
+    motionInWord.hidden = !isMotion;
+    motionZoneHost.hidden = !isMotion;
     // `present` is arity 1; showing a second subject for it would imply a
     // comparison that never happens.
-    const isUnary = relation.value === 'present';
+    const isUnary = relation.value === 'present' || isMotion;
     subjectBKind.hidden = isUnary;
     subjectBHost.hidden = isUnary;
     // The margin widens boxes before they are compared, so it means nothing to a
@@ -1293,7 +1378,10 @@ function buildRuleRow(rule, ctx) {
     // earlier relation cannot survive as a payload the save would bounce.
     const usesMargin = !isUnary && relation.value !== 'distance';
     for (const field of marginField) field.hidden = !usesMargin;
-    // Nothing to drag for `present`: there is no second box.
+    // Sensitivity is meaningless without pixels to difference.
+    for (const field of sensitivityField) field.hidden = !isMotion;
+    // Nothing to drag for `present`, and nothing to *draw* for motion: the preview
+    // modal is two boxes and a score, and motion has neither.
     previewBtn.hidden = isUnary;
     // The threshold field is renamed, not just re-explained: under `present` it is a
     // detection confidence and calling it `match` was simply wrong. See THRESHOLD_HELP.
@@ -1313,12 +1401,18 @@ function buildRuleRow(rule, ctx) {
   // the rule can never fire, and +2 already reaches two subject-widths away.
   const margin = numberInput(rule.margin ?? 0, { step: '0.1', min: -1 });
   margin.max = '2';
+  // 0 is a real value here and means "use the backend default", so it must not be
+  // coerced away — the floor is 0 and `num`'s fallback only fires on a blank field.
+  const sensitivity = numberInput(rule.motionSensitivity ?? MOTION_DEFAULT_SENSITIVITY, { step: '0.02', min: 0 });
+  sensitivity.max = '1';
+  sensitivity.dataset.testid = 'watch-rule-motion-sensitivity';
   const minDuration = numberInput(rule.minDurationS ?? 2, { step: '0.5', min: 0 });
   const rearm = numberInput(rule.rearmDelayS ?? 10, { step: '1', min: 0 });
   // min 0, not 1: zero is the "never expire" value, for a rule whose event should last
   // exactly as long as its subject is there. See the caption's tooltip.
   const maxDuration = numberInput(rule.maxDurationS ?? 300, { step: '10', min: 0 });
-  for (const input of [threshold, margin, minDuration, rearm, maxDuration]) {
+  maxDuration.dataset.testid = 'watch-rule-max-duration';
+  for (const input of [threshold, margin, sensitivity, minDuration, rearm, maxDuration]) {
     input.addEventListener('input', ctx.onAnyChange);
   }
   const tuningFields = [
@@ -1347,8 +1441,21 @@ function buildRuleRow(rule, ctx) {
       + 'chain of separate timelapses. 0 disables the cap, for an event that should last '
       + 'exactly as long as its subject does.',
     ],
+    // Appended last on purpose. The four fields above are indexed positionally by the
+    // Playwright defaults test, so a motion-only field inserted beside the threshold it
+    // belongs with would renumber every one of them.
+    [
+      'sens',
+      sensitivity,
+      'How big a change to a single pixel counts as movement, 0–1. Raise it on a noisy or '
+      + 'infrared camera that reports motion with nothing in front of it; lower it to catch '
+      + 'a dark animal against a dark floor. This is the other half of “area” beside it: '
+      + 'sensitivity decides which pixels changed, area decides how many is enough. '
+      + '0 means use the default (0.1).',
+    ],
   ];
   const marginField = [];
+  const sensitivityField = [];
   let thresholdField = null;
   let thresholdLabel = null;
   for (const [label, input, title] of tuningFields) {
@@ -1365,6 +1472,10 @@ function buildRuleRow(rule, ctx) {
       field.dataset.testid = 'watch-rule-threshold-field';
       thresholdField = field;
       thresholdLabel = field.querySelector('.watch-field__label');
+    }
+    if (input === sensitivity) {
+      field.dataset.testid = 'watch-rule-sensitivity-field';
+      sensitivityField.push(field);
     }
     tuning.appendChild(field);
   }
@@ -1419,16 +1530,21 @@ function buildRuleRow(rule, ctx) {
      */
     refreshZones: () => {
       if (subjectBKind.value !== 'label') buildSubjectB();
+      // The motion slot is always zones, so it always needs the new list — including
+      // when subject B happens to be a label picker.
+      buildMotionZones();
     },
     /** Adopt the watcher's current source list — see `buildScopes` on the action row. */
     refreshScopes: () => buildSourceScope(),
     destroy: () => {
       subjectADropdown?.destroy();
       subjectBDropdown?.destroy();
+      motionZoneDropdown?.destroy();
       sourceScopeDropdown?.destroy();
     },
     getRule: () => {
-      const isUnary = relation.value === 'present';
+      const isMotion = relation.value === 'motion';
+      const isUnary = relation.value === 'present' || isMotion;
       return {
         uuid: rule.uuid || null,
         order: 0,
@@ -1437,9 +1553,13 @@ function buildRuleRow(rule, ctx) {
         // Always sent: a watch profile saves as a whole-list replace, so a field the
         // editor omits is a field the save resets to its default.
         sourceUuidsJson: [...sourceScope],
-        subjectAKind: 'label',
-        subjectARefsJson: subjectARefs,
-        subjectAIncludeDescendants: subjectADescendants,
+        // For motion, subject A is *where* to measure, not what to look for: zones if
+        // any are picked, otherwise `any`, which the engine reads as the whole frame.
+        // The backend rejects `label` here, so this must not fall through.
+        subjectAKind: isMotion ? (motionZoneRefs.length ? 'zone' : 'any') : 'label',
+        subjectARefsJson: isMotion ? [...motionZoneRefs] : subjectARefs,
+        // Zones have no hierarchy and the backend rejects the flag on a non-label slot.
+        subjectAIncludeDescendants: isMotion ? false : subjectADescendants,
         relation: relation.value,
         subjectBKind: isUnary ? 'none' : subjectBKind.value,
         subjectBRefsJson: isUnary ? [] : subjectBRefs,
@@ -1447,9 +1567,12 @@ function buildRuleRow(rule, ctx) {
         // where there is no hierarchy to descend.
         subjectBIncludeDescendants:
           !isUnary && subjectBKind.value === 'label' && subjectBDescendants,
-        threshold: num(threshold, 0.6),
+        threshold: num(threshold, isMotion ? MOTION_DEFAULT_AREA : 0.6),
         // Zero unless the relation actually measures boxes — see `syncArity`.
         margin: isUnary || relation.value === 'distance' ? 0 : num(margin, 0),
+        // Zero for every other relation, which is also the backend's "use the default"
+        // value — so a sensitivity typed under motion cannot leak into a geometric rule.
+        motionSensitivity: isMotion ? num(sensitivity, MOTION_DEFAULT_SENSITIVITY) : 0,
         // These three defaults are not arbitrary: without them a raw threshold flaps
         // into an MQTT storm and a dozen clips for one visit.
         minDurationS: num(minDuration, 2),

@@ -19,7 +19,7 @@
  *     onChange: (value) => { ... },
  *   });
  *   container.appendChild(ctl.element);
- *   ctl.getValue();       // 'any' | 'verified' | 'unverified'
+ *   ctl.getValue();       // 'any' | 'verified' | 'unverified' | 'no_boxes'
  *   ctl.setValue('verified');
  */
 
@@ -27,12 +27,17 @@ const OPTIONS = [
   ['any', 'Any'],
   ['verified', 'Verified'],
   ['unverified', 'Unverified'],
+  // Image-scoped, unlike the two above, and that is exactly why it belongs in this
+  // control: "unverified because there is nothing on it" is invisible to a tag-based
+  // state, since a verification tag needs a box to hang off. Without it those images
+  // are unreachable from the Review filters entirely.
+  ['no_boxes', 'No boxes'],
 ];
 
 /**
  * @param {{
- *   value?: 'any'|'verified'|'unverified',
- *   onChange: (value: 'any'|'verified'|'unverified') => void,
+ *   value?: 'any'|'verified'|'unverified'|'no_boxes',
+ *   onChange: (value: 'any'|'verified'|'unverified'|'no_boxes') => void,
  *   label?: string,
  * }} opts
  * @returns {{

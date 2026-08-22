@@ -855,31 +855,51 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         newListDiv.appendChild(empty);
       }
 
-      const appendSection = (title, rows, actionEl = null) => {
+      // Each section is a real element, not a heading followed by a loose grid.
+      // A thin underlined caption between two grids of identically-bordered cards
+      // reads as one continuous field of cards, so "what is running right now?"
+      // could not be answered at a glance — which is the whole job of this pane.
+      // The section owns the boundary (its own surface and spacing) and the
+      // `variant` lets finished work recede behind live work in CSS.
+      const appendSection = (title, rows, { variant, actionEl = null } = {}) => {
         if (!rows.length) return;
+        const section = document.createElement('section');
+        section.className = `task-section task-section--${variant}`;
+        section.dataset.taskSection = variant;
+
+        const headerRow = document.createElement('div');
+        headerRow.className = 'task-section__header';
+
         const h4 = document.createElement('h4');
         h4.className = 'task-section-header';
         h4.textContent = title;
+        headerRow.appendChild(h4);
+
+        // The count belongs in the header, not implied by the grid: "Running 0"
+        // never renders (the section is skipped), so a visible number is always
+        // the number of things actually there.
+        const count = document.createElement('span');
+        count.className = 'task-section__count';
+        count.textContent = String(rows.length);
+        headerRow.appendChild(count);
+
         if (actionEl) {
-          const headerRow = document.createElement('div');
-          Object.assign(headerRow.style, { display: 'flex', alignItems: 'center', gap: '0.5em' });
-          h4.style.margin = '0';
-          h4.style.flex = '1';
-          headerRow.appendChild(h4);
-          headerRow.appendChild(actionEl);
-          newListDiv.appendChild(headerRow);
-        } else {
-          newListDiv.appendChild(h4);
+          const spacer = document.createElement('span');
+          spacer.className = 'task-section__spacer';
+          headerRow.append(spacer, actionEl);
         }
+        section.appendChild(headerRow);
+
         // Cards flow into as many columns as the (now full-width) pane fits,
         // instead of one per row down half a split.
         const grid = document.createElement('div');
         grid.className = 'task-instance-grid';
         rows.forEach(row => grid.appendChild(row));
-        newListDiv.appendChild(grid);
+        section.appendChild(grid);
+        newListDiv.appendChild(section);
       };
-      appendSection('Continuous', continuousRows);
-      appendSection('Jobs', activeRows);
+      appendSection('Continuous', continuousRows, { variant: 'continuous' });
+      appendSection('Jobs', activeRows, { variant: 'running' });
 
       if (completedRows.length) {
         const clearBtn = document.createElement('button');
@@ -895,7 +915,7 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
             toast(error.message || 'Failed to clear completed tasks', 5000, 'error');
           }
         });
-        appendSection('Completed', completedRows, clearBtn);
+        appendSection('Completed', completedRows, { variant: 'completed', actionEl: clearBtn });
       }
 
       // Atomic swap: old content stays visible until this exact line.

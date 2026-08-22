@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import register_trainer
-from .base import Trainer, image_manifest_fields
+from .base import STOP_CANCELLED, STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
 from .onnx_validation import export_and_validate_onnx
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,13 @@ class MultiLabelClassifier(Trainer):
             best_val_acc = 0.0
             patience_counter = 0
             best_state: Optional[dict] = None
+            # Why the loop below ends, decided at each of its three exits. Seeded
+            # with the "ran the whole budget" answer, which is the only one that
+            # needs no `break` to reach.
+            stop_reason = STOP_COMPLETED
+            stop_detail = ""
+            epochs_run = 0
+            best_epoch: Optional[int] = None
 
             artifact_dir = Path(artifact_dir_str)
             artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +213,10 @@ class MultiLabelClassifier(Trainer):
 
             for epoch in range(start_epoch, max_epochs + 1):
                 if cancel_event.is_set():
+                    stop_reason = STOP_CANCELLED
+                    stop_detail = f"cancelled by user before epoch {epoch}"
                     break
+                epochs_run = epoch
 
                 # ── Train ─────────────────────────────────────────────────
                 model.train()
@@ -264,11 +274,23 @@ class MultiLabelClassifier(Trainer):
                     best_val_loss = val_loss
                     best_val_acc = val_acc
                     best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    best_epoch = epoch
                     patience_counter = 0
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
-                        logger.info("Early stopping at epoch %d (patience=%d)", epoch, patience)
+                        stop_reason = STOP_EARLY
+                        stop_detail = (
+                            f"early stopping at epoch {epoch} of {max_epochs}: validation loss did not "
+                            f"improve for {patience} epoch(s) (patience={patience}); "
+                            f"best was {best_val_loss:.4f}"
+                            + (f" at epoch {best_epoch}" if best_epoch is not None else "")
+                        )
+                        logger.info(stop_detail)
+                        # The frontend log is the one the user reads. logger.info goes
+                        # only to the training server's process log — the exact gap
+                        # this whole change exists to close.
+                        progress_cb({"log": stop_detail})
                         break
 
                 await asyncio.to_thread(
@@ -322,8 +344,20 @@ class MultiLabelClassifier(Trainer):
         json_path.write_text(json.dumps(model_config, indent=2))
         logger.info("Model config written to %s", json_path)
 
+        if stop_reason == STOP_COMPLETED and not stop_detail:
+            stop_detail = f"ran the full {max_epochs} epoch(s)" + (
+                f"; best validation loss at epoch {best_epoch}" if best_epoch is not None else ""
+            )
+
         return {
             "model_path": str(onnx_path),
             "val_accuracy": round(best_val_acc, 4),
             "model_name": model_name,
+            **stop_summary(
+                reason=stop_reason,
+                detail=stop_detail,
+                epochs_run=epochs_run,
+                max_epochs=max_epochs,
+                best_epoch=best_epoch,
+            ),
         }

@@ -43,7 +43,7 @@ from typing import Any, Callable
 
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
-from .base import Trainer, image_manifest_fields
+from .base import STOP_CANCELLED, STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,17 @@ class UltralyticsDetectionTrainer(Trainer):
             # Progress state captured by the epoch callback closure.
             progress_state: dict[str, Any] = {"total_epochs": max_epochs}
 
+            # Ultralytics owns the patience logic, so the only evidence of an early
+            # stop is which epoch the callback last saw: a full run ends on
+            # `max_epochs`, a stopped one ends short. `cancelled` disambiguates the
+            # third case, which also ends short but for a reason the user already knows.
+            observed: dict[str, Any] = {
+                "last_epoch": 0,
+                "best_epoch": None,
+                "best_map50": None,
+                "cancelled": False,
+            }
+
             def _on_train_epoch_end(trainer) -> None:
                 epoch = int(getattr(trainer, "epoch", 0)) + 1
                 total = int(progress_state["total_epochs"])
@@ -215,7 +226,14 @@ class UltralyticsDetectionTrainer(Trainer):
                 if map50 is not None:
                     payload["val_accuracy"] = round(map50, 4)
                 progress_cb(payload)
+                observed["last_epoch"] = epoch
+                # Only validated epochs carry a mAP50 (see above), so "best epoch"
+                # here means the best *measured* one.
+                if map50 is not None and (observed["best_map50"] is None or map50 > observed["best_map50"]):
+                    observed["best_map50"] = map50
+                    observed["best_epoch"] = epoch
                 if cancel_event.is_set():
+                    observed["cancelled"] = True
                     trainer.stop_training = True
 
             def _run_training() -> dict:
@@ -284,6 +302,25 @@ class UltralyticsDetectionTrainer(Trainer):
             best_map50 = train_result["best_map50"]
             logger.info("Training complete. best_mAP50=%.4f", best_map50)
 
+            epochs_run = observed["last_epoch"] or max_epochs
+            if observed["cancelled"]:
+                stop_reason = STOP_CANCELLED
+                stop_detail = f"cancelled by user at epoch {epochs_run} of {max_epochs}"
+            elif epochs_run < max_epochs:
+                stop_reason = STOP_EARLY
+                stop_detail = (
+                    f"early stopping at epoch {epochs_run} of {max_epochs}: mAP50 did not improve "
+                    f"for {patience} epoch(s) (patience={patience})"
+                )
+            else:
+                stop_reason = STOP_COMPLETED
+                stop_detail = f"ran the full {max_epochs} epoch(s)"
+            if observed["best_epoch"] is not None:
+                stop_detail += f"; best mAP50 {best_map50:.4f} at epoch {observed['best_epoch']}"
+            # Through progress_cb, not just logger.info: the latter reaches only this
+            # server's process log, which the task UI never shows.
+            progress_cb({"log": stop_detail})
+
             onnx_dest = str(artifact_path / f"{model_name}.onnx")
             exported_path = train_result["exported_path"]
             if str(exported_path) != onnx_dest:
@@ -319,4 +356,11 @@ class UltralyticsDetectionTrainer(Trainer):
             "model_path": onnx_dest,
             "model_name": model_name,
             "val_accuracy": best_map50,
+            **stop_summary(
+                reason=stop_reason,
+                detail=stop_detail,
+                epochs_run=epochs_run,
+                max_epochs=max_epochs,
+                best_epoch=observed["best_epoch"],
+            ),
         }

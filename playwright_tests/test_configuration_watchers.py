@@ -970,8 +970,13 @@ class TestWatcherEditorDensity:
         this counts both kinds: they are still controls that must not go full-width.
         """
         self._open_profile(page, base_url)
+        # Only the controls actually on screen. The sentence legitimately carries hidden
+        # slots — subject B is hidden for `present`, the motion zone picker for every
+        # relation but `motion` — and a hidden element reports a zero rect, which reads
+        # as "wrapped to the top of the page" rather than "not rendered".
         tops = page.locator(".watch-rule-sentence select, .watch-rule-sentence .ms-dropdown__trigger").evaluate_all(
-            "els => els.map(e => Math.round(e.getBoundingClientRect().top))"
+            "els => els.filter(e => e.offsetParent !== null)"
+            "        .map(e => Math.round(e.getBoundingClientRect().top))"
         )
         assert len(tops) >= 4, f"expected the sentence's controls, got {tops}"
         # Rounded tops: a dropdown trigger and a select of slightly different heights are
@@ -1950,8 +1955,9 @@ class TestAnUncappedRule:
         page.locator("[data-testid='watcher-list-item']").first.click()
         expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
 
-        # The tuning group is indexed positionally: threshold, margin, starts, ends, max.
-        page.locator(".watch-rule-tuning input").last.fill("0")
+        # Targeted by testid rather than `.last`: the tuning group grew a motion-only
+        # sensitivity field on the end, and "the last input" stopped being max-duration.
+        page.locator("[data-testid='watch-rule-max-duration']").first.fill("0")
         page.locator("#watcher-management-box button:has-text('Save')").first.click()
 
         wait_until(page, lambda: bool(saved.get("rules")))

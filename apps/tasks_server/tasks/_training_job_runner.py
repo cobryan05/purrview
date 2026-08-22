@@ -655,7 +655,13 @@ class TrainingJobRunnerMixin:
             val_accuracy = data.get("val_accuracy")
             if val_accuracy is not None:
                 result["val_accuracy"] = val_accuracy
-            self.log(f"Training complete — model: {self._model_name}, val_accuracy: {val_accuracy}")
+            # Carried onto the task result too, not only logged: the log is a ring
+            # buffer, and a run whose reason scrolled out of it is exactly the run
+            # someone comes back to days later asking why it was short.
+            for key in ("stop_reason", "stop_detail", "epochs_run", "max_epochs", "best_epoch"):
+                if data.get(key) is not None:
+                    result[key] = data[key]
+            self.log(self._completion_summary(data, val_accuracy))
             return result
 
         elif event_type == "error":
@@ -663,6 +669,50 @@ class TrainingJobRunnerMixin:
             raise RuntimeError(f"Training job failed: {msg}")
 
         return None
+
+    def _completion_summary(self, data: dict, val_accuracy: Any) -> str:
+        """The last line of a training run's log.
+
+        It used to read "Training complete — model: X, val_accuracy: Y" whether the
+        run used its whole epoch budget or gave up at epoch 14 of 50, and the reason
+        lived only in the training server's own process log, which the UI never
+        shows. "Finished" and "stopped early" are the two facts most worth having
+        from a completed run and they were indistinguishable.
+
+        Degrades cleanly: a trainer that reports no stop fields (or an older
+        training server that has not been redeployed) produces the original line
+        rather than an empty clause.
+        """
+        parts = [f"Training complete — model: {self._model_name}"]
+
+        epochs_run = data.get("epochs_run")
+        max_epochs = data.get("max_epochs")
+        if epochs_run and max_epochs:
+            parts.append(f"epochs: {epochs_run}/{max_epochs}")
+
+        if val_accuracy is not None:
+            parts.append(f"val_accuracy: {val_accuracy}")
+
+        best_epoch = data.get("best_epoch")
+        if best_epoch is not None:
+            parts.append(f"best epoch: {best_epoch}")
+
+        # The token first, so a scan of the log finds "stopped early" without
+        # reading the sentence; the sentence after it, because the token alone
+        # never says *what* stopped improving or for how long.
+        stop_reason = data.get("stop_reason")
+        stop_detail = data.get("stop_detail")
+        if stop_reason:
+            label = {
+                "completed": "ran to completion",
+                "early_stopping": "STOPPED EARLY",
+                "cancelled": "cancelled",
+            }.get(stop_reason, stop_reason)
+            parts.append(f"reason: {label}")
+        if stop_detail:
+            parts.append(str(stop_detail))
+
+        return ", ".join(parts)
 
     async def _save_artifact(self, job_id: str) -> None:
         """Download the artifact tar from the training server and write to /models."""

@@ -216,11 +216,30 @@ def build_overlay(
     *,
     event: Optional[Dict[str, Any]] = None,
     max_staleness_s: float = DEFAULT_MAX_STALENESS_S,
+    lag_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Slice samples into a clip-relative overlay document.
 
     `clip_start` must be the clip's **actual** first frame, which for a buffer-cut clip
     is the clamped start the extractor reports and not the start that was requested.
+
+    `lag_s` compensates the **two-clock problem** between the boxes and the picture, and
+    it is not a fudge factor — the two really are measured on different clocks. A
+    buffer-cut clip's timeline is the relay's *record* clock (when a packet reached
+    MediaMTX from the camera); a sample's `at` is the watcher's *fetch* clock (when its
+    own copy of that picture came back out of ffmpeg, a decoder and a jitter buffer
+    later). The watcher cannot observe the capture instant — nothing in the rawvideo
+    pipe carries it — so the difference is a per-deployment ingest latency, and it makes
+    every box render that much late.
+
+    Measured on this install at +0.4 s to +1.6 s across five clips, consistently
+    positive, using `scripts/measure_overlay_lag.py` — which is committed precisely so
+    this number is re-measurable rather than folklore. It defaults to 0.0 (the previous
+    behaviour exactly) because the right value belongs to the camera and the ingest
+    path, not to this code.
+
+    A ring-cut clip needs no compensation at all and must be left at 0: its frames and
+    its boxes are stamped by the same `arrived_at`, so they are aligned by construction.
 
     Samples outside `[0, duration_s]` are dropped rather than clamped to the ends:
     pinning an out-of-window sample to t=0 would draw a box at a moment the detector had
@@ -230,7 +249,7 @@ def build_overlay(
     origin = clip_start.timestamp()
     frames: List[Dict[str, Any]] = []
     for sample in samples:
-        offset = sample.at - origin
+        offset = (sample.at - lag_s) - origin
         if offset < 0 or offset > duration_s:
             continue
         frames.append({"t": _round(offset), "boxes": sample.boxes, "tracks": sample.tracks})
@@ -243,6 +262,10 @@ def build_overlay(
         # 5 fps overlay on 30 fps video but wrong across a gap. It needs to know how long
         # a hold is legitimate, and only this side knows the analysis cadence.
         "maxStalenessS": _round(max_staleness_s),
+        # Recorded, not just applied: a sidecar written under one calibration and read
+        # after it changed is otherwise indistinguishable from one written under the
+        # new value, and "are these boxes compensated?" becomes unanswerable.
+        "lagS": _round(lag_s),
         "frames": frames,
     }
     if event:
@@ -299,6 +322,7 @@ def event_window(
     event_end: Optional[datetime],
     rule_name: Optional[str] = None,
     event_uuid: Optional[str] = None,
+    lag_s: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     """The rule's own span, in clip-relative seconds, for the player to mark.
 
@@ -313,10 +337,14 @@ def event_window(
     if event_start is None:
         return None
     origin = clip_start.timestamp()
-    start_s = max(0.0, event_start.timestamp() - origin)
+    # The same `lag_s` the boxes get, for the same reason: the rule fired on the
+    # watcher's copy of the frame, so its span is on the watcher's clock too. Leaving
+    # the marker uncompensated while shifting the boxes would make the red frame and
+    # the boxes disagree — a worse state than both being late together.
+    start_s = max(0.0, (event_start.timestamp() - lag_s) - origin)
     if start_s > duration_s:
         return None
-    end_s = duration_s if event_end is None else min(duration_s, max(start_s, event_end.timestamp() - origin))
+    end_s = duration_s if event_end is None else min(duration_s, max(start_s, (event_end.timestamp() - lag_s) - origin))
     return {
         "startS": _round(start_s),
         "endS": _round(end_s),

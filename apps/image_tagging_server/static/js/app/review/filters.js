@@ -28,7 +28,7 @@ import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { filterVisibleTags, groupTagsByKind } from '/app-static/js/shared/activeModel.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchTags, refreshTagsIfUnknown } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { NO_SOURCE_KEY } from '/app-static/js/shared/api/review.js';
@@ -85,7 +85,17 @@ const DEFAULT_STATE = () => ({
  * @param {Map<string, object>} tags     - tag uuid → tag record
  * @param {(state: object) => void} onFilterChange
  */
-export function createFilterPanel(labels, tags, onFilterChange, { inlineControls = false } = {}) {
+/**
+ * @param {Map} labels
+ * @param {Map} tags
+ * @param {(state: Object) => void} onFilterChange
+ * @param {Object} [opts]
+ * @param {boolean} [opts.inlineControls]
+ * @param {() => void} [opts.onNamesChanged] - called after a tag refetch changed
+ *   the names this panel renders, so the caller can redraw its chip bar. Kept
+ *   separate from `onFilterChange`, which re-runs the whole image query.
+ */
+export function createFilterPanel(labels, tags, onFilterChange, { inlineControls = false, onNamesChanged = null } = {}) {
   let _state = DEFAULT_STATE();
 
   function emit() { onFilterChange({ ..._state }); }
@@ -340,6 +350,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
         imageTagConditionsComp.setAvailableTags(_visibleTags());
         imageTagConditionsComp.setState(_state.imageTagConditions);
       } while (_tagsUpdatePending);
+      // Chips render tag names straight out of `tags`; they are stale until told.
+      onNamesChanged?.();
     } finally {
       _tagsUpdateInFlight = false;
     }
@@ -705,7 +717,10 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     }
 
     if (s.bboxVerification !== 'any') {
-      chips.push({ key: 'bboxVerification', label: `Bbox: ${s.bboxVerification}`, onRemove: () => setState({ bboxVerification: 'any' }) });
+      // 'no_boxes' is a state name, not a description — spelled out here so the chip
+      // reads as a sentence rather than as an identifier that leaked into the UI.
+      const verificationChipText = s.bboxVerification === 'no_boxes' ? 'no boxes' : s.bboxVerification;
+      chips.push({ key: 'bboxVerification', label: `Bbox: ${verificationChipText}`, onRemove: () => setState({ bboxVerification: 'any' }) });
     }
 
     if (s.confidenceMin !== null || s.confidenceMax !== null) {
@@ -776,6 +791,15 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       partial = { ...partial, sourceExcludeUuids: [] };
     }
     _state = { ..._state, ...partial };
+
+    // A filter can name a tag this session has never fetched — most often one a
+    // task minted server-side. Heal the cache so the chip shows a name instead
+    // of the raw uuid; the TAGS_UPDATED it publishes drives the re-render.
+    refreshTagsIfUnknown([
+      ..._state.tagUuids,
+      ..._state.tagExcludeUuids,
+      ..._state.imageTagConditions.map(c => c.tagUuid),
+    ]).catch(() => {});
 
     if (partial.tagUuids !== undefined || partial.tagMatchMode !== undefined || partial.tagExcludeUuids !== undefined) {
       tagsDropdown.setState(_state.tagUuids, _state.tagMatchMode, undefined, _state.tagExcludeUuids);

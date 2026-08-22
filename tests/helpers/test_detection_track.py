@@ -184,6 +184,63 @@ class TestBuildingTheOverlay:
         assert doc["maxStalenessS"] == 4.0
 
 
+class TestTheIngestLagCompensation:
+    """The boxes and the picture are measured on two different clocks.
+
+    A buffer-cut clip's timeline is the relay's record clock; a sample's `at` is the
+    watcher's fetch clock, one ffmpeg pipe and jitter buffer later. Uncompensated, every
+    box renders that much late — measured at +0.4 s to +1.6 s on a real install.
+    """
+
+    def _track(self):
+        track = DetectionTrack()
+        base = T0.timestamp()
+        for offset in range(0, 20):
+            track.push(base + offset, [_Det((160, 90, 320, 180))], [], (640, 360))
+        return track
+
+    def test_the_lag_moves_every_box_earlier_in_the_clip(self):
+        track = self._track()
+        clip_start = T0 + timedelta(seconds=5)
+        samples = track.samples_between(clip_start.timestamp(), clip_start.timestamp() + 10)
+
+        plain = build_overlay(samples, clip_start, 10.0)
+        shifted = build_overlay(samples, clip_start, 10.0, lag_s=1.0)
+
+        # Same samples, each one second earlier in the clip. The first now falls before
+        # t=0 and is dropped rather than pinned there, exactly as an out-of-window
+        # sample is.
+        assert [f["t"] for f in shifted["frames"]] == [t - 1.0 for t in [f["t"] for f in plain["frames"]][1:]]
+
+    def test_no_lag_is_byte_for_byte_the_old_behaviour(self):
+        """0.0 is the default and must be a true no-op — an install that has not
+        calibrated must not have its overlays quietly moved."""
+        track = self._track()
+        clip_start = T0 + timedelta(seconds=5)
+        samples = track.samples_between(clip_start.timestamp(), clip_start.timestamp() + 10)
+
+        assert build_overlay(samples, clip_start, 10.0, lag_s=0.0) == build_overlay(samples, clip_start, 10.0)
+
+    def test_the_applied_lag_is_recorded_in_the_document(self):
+        """A sidecar written under one calibration and read after it changed is
+        otherwise indistinguishable from one written under the new value."""
+        assert build_overlay([], T0, 10.0, lag_s=1.5)["lagS"] == 1.5
+
+    def test_the_event_marker_shifts_with_the_boxes(self):
+        """The rule fired on the watcher's copy of the frame, so its span is on the
+        watcher's clock too. Shifting only the boxes would make the red frame and the
+        boxes disagree — worse than both being late together."""
+        window = event_window(T0, 30.0, T0 + timedelta(seconds=10), T0 + timedelta(seconds=20), lag_s=1.0)
+
+        assert window["startS"] == 9.0
+        assert window["endS"] == 19.0
+
+    def test_a_lag_cannot_push_the_event_marker_before_the_clip_starts(self):
+        window = event_window(T0, 30.0, T0 + timedelta(seconds=0.5), T0 + timedelta(seconds=20), lag_s=1.0)
+
+        assert window["startS"] == 0.0
+
+
 class TestTheEventWindow:
     def test_the_rules_span_is_reported_relative_to_the_clip(self):
         clip_start = T0

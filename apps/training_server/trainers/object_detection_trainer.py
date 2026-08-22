@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
-from .base import Trainer, image_manifest_fields
+from .base import STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,14 @@ class ObjectDetectionTrainer(Trainer):
                 len(class_names),
             )
 
+            # libreyolo owns the patience logic, so the only evidence of an early
+            # stop here is which epoch the callback last saw: a run that used its
+            # whole budget ends on `max_epochs`, one that gave up ends short.
+            # Tracked in a dict rather than via `nonlocal` — the callback is defined
+            # far from the epilogue that reads these, and a plain name would be easy
+            # to shadow in between.
+            observed = {"last_epoch": 0, "best_epoch": None, "best_map50": None}
+
             # Epoch callback — wired via libreyolo's callback parameter.
             # Receives TrainEpochEvent dataclasses.
             def _epoch_cb(event) -> None:
@@ -152,6 +160,12 @@ class ObjectDetectionTrainer(Trainer):
                 if map50 is not None:
                     payload["val_accuracy"] = round(map50, 4)
                 progress_cb(payload)
+                observed["last_epoch"] = epoch
+                # Only validated epochs carry a mAP50 at all (see above), so the
+                # "best epoch" this reports is the best *measured* one.
+                if map50 is not None and (observed["best_map50"] is None or map50 > observed["best_map50"]):
+                    observed["best_map50"] = map50
+                    observed["best_epoch"] = epoch
                 if cancel_event.is_set():
                     raise RuntimeError("Training cancelled by user")
 
@@ -191,6 +205,22 @@ class ObjectDetectionTrainer(Trainer):
 
                 best_map50: float = float(results.get("best_mAP50", 0.0))
                 logger.info("Training complete. best_mAP50=%.4f", best_map50)
+
+                epochs_run = observed["last_epoch"] or max_epochs
+                if epochs_run < max_epochs:
+                    stop_reason = STOP_EARLY
+                    stop_detail = (
+                        f"early stopping at epoch {epochs_run} of {max_epochs}: mAP50 did not improve "
+                        f"for {patience} epoch(s) (patience={patience})"
+                    )
+                else:
+                    stop_reason = STOP_COMPLETED
+                    stop_detail = f"ran the full {max_epochs} epoch(s)"
+                if observed["best_epoch"] is not None:
+                    stop_detail += f"; best mAP50 {best_map50:.4f} at epoch {observed['best_epoch']}"
+                # Through progress_cb, not just logger.info: the latter reaches only
+                # this server's process log, which the task UI never shows.
+                progress_cb({"log": stop_detail})
 
                 # Export trained model to ONNX.
                 onnx_dest = str(artifact_path / f"{model_name}.onnx")
@@ -242,4 +272,11 @@ class ObjectDetectionTrainer(Trainer):
             "model_path": onnx_dest,
             "model_name": model_name,
             "val_accuracy": best_map50,
+            **stop_summary(
+                reason=stop_reason,
+                detail=stop_detail,
+                epochs_run=epochs_run,
+                max_epochs=max_epochs,
+                best_epoch=observed["best_epoch"],
+            ),
         }

@@ -311,7 +311,7 @@ function buildReviewFilterBody({
  *                              exclude?: boolean, rollUp?: boolean}>,  // rollUp defaults false
  *   imageLabelConditions?: {labelUuid: string, state: 'present'|'absent'|'uncertain',
  *                           rollUp?: boolean, negate?: boolean}[],  // rollUp defaults true
- *   bboxVerification?: 'any'|'verified'|'unverified',  // 'any' is a no-op
+ *   bboxVerification?: 'any'|'verified'|'unverified'|'no_boxes',  // 'any' is a no-op
  *   requireVerifiedBbox?: boolean, // AND an extra "has a human-verified box" term
  *                                  // on top of the rest of the filter (not instead
  *                                  // of bboxVerification) — see buildReviewFilterBody

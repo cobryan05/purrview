@@ -15,7 +15,10 @@
  */
 
 import { fetchModelTrainingImages } from '/app-static/js/shared/api/models.js';
-import { fetchTrainingConfigLabelStatsForImages } from '/app-static/js/shared/api/trainingConfigs.js';
+import {
+  fetchTrainingConfigLabelStatsForImages,
+  fetchTrainingConfigReadinessForImages,
+} from '/app-static/js/shared/api/trainingConfigs.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
 
 /**
@@ -50,6 +53,11 @@ export function modelNameForConfig(config) {
  *   that only want the image totals — the Jobs launcher cards, which show a
  *   single "+N since last run" — should pass false. With false,
  *   `labelStatsByUuid` is empty and `stillInDatasetCount` is 0.
+ * @param {boolean} [opts.withReadinessSplit=false] - also read the manifest's
+ *   positive/background split, so a caller can say whether the images gained
+ *   since the last run carry training signal or are all background. One extra
+ *   round trip; off by default because most callers only show image totals.
+ *   With false, `baselinePositiveCount`/`baselineNegativeCount` are null.
  * @returns {Promise<null | {
  *   modelName: string,
  *   imageUuids: string[],
@@ -61,7 +69,7 @@ export function modelNameForConfig(config) {
  *   labelStatsByUuid: Map<string, object>,
  * }>}
  */
-export async function loadPreviousRun(config, { withLabelStats = true } = {}) {
+export async function loadPreviousRun(config, { withLabelStats = true, withReadinessSplit = false } = {}) {
   if (!config?.uuid) return null;
   const modelName = modelNameForConfig(config);
   if (!modelName) return null;
@@ -93,6 +101,24 @@ export async function loadPreviousRun(config, { withLabelStats = true } = {}) {
     return null;
   }
 
+  // The positive/background split over the manifest, read through the SAME
+  // endpoint the "ready now" numbers come from — so a re-labelled image moves
+  // both sides rather than appearing as growth on one of them.
+  let baselinePositiveCount = null;
+  let baselineNegativeCount = null;
+  if (withReadinessSplit) {
+    try {
+      const before = await fetchTrainingConfigReadinessForImages(config.uuid, imageUuids);
+      baselinePositiveCount = before.readyPositiveCount ?? 0;
+      baselineNegativeCount = before.readyNegativeCount ?? 0;
+    } catch {
+      // null, not 0: a baseline we could not read must render as "unknown", and
+      // 0 would report the entire current positive count as newly gained.
+      baselinePositiveCount = null;
+      baselineNegativeCount = null;
+    }
+  }
+
   let labelStats = [];
   let stillInDatasetCount = 0;
   if (withLabelStats) {
@@ -116,6 +142,8 @@ export async function loadPreviousRun(config, { withLabelStats = true } = {}) {
     valCount: manifest.val.length,
     manifestCount: imageUuids.length,
     stillInDatasetCount,
+    baselinePositiveCount,
+    baselineNegativeCount,
     labelStatsByUuid: new Map(labelStats.map(s => [s.labelUuid, s])),
   };
 }

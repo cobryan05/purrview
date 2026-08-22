@@ -172,6 +172,10 @@ export function openEventDetailModal(
     onClose: () => {
       overlay?.destroy();
       overlay = null;
+      _dropFullscreenSyncs();
+      // Leaving fullscreen behind a closing modal strands the user on a fullscreen
+      // element that is about to be removed from the document.
+      if (document.fullscreenElement) document.exitFullscreen?.();
       revokePreview();
       document.removeEventListener('keydown', onKeydown);
     },
@@ -274,6 +278,11 @@ export function openEventDetailModal(
 
   let video = null;
   let overlay = null;
+  //: `fullscreenchange` listeners belonging to fullscreen buttons that may already have
+  //: been thrown away with their media pane. Unhooked together on close and on every
+  //: re-render, in the same spirit as the overlay's loops above: this modal replaces its
+  //: media pane wholesale, so nothing calls a per-button destroy.
+  let _fullscreenSyncs = [];
   let saveBtn = null;
   let mediaSwitcher = null;
   //: Object URL of a mid-event timelapse preview, held so it can be revoked. The
@@ -497,6 +506,12 @@ export function openEventDetailModal(
     if (message) mediaPane.appendChild(el('p', 'event-detail__no-video', message));
   }
 
+  /** Unhook every fullscreen-button listener whose button is going away. */
+  function _dropFullscreenSyncs() {
+    for (const sync of _fullscreenSyncs) document.removeEventListener('fullscreenchange', sync);
+    _fullscreenSyncs = [];
+  }
+
   function renderVideo(recording) {
     // Same wipe as `renderSnapshotOnly`, and for the same reason: switching between an
     // event's clip and its timelapse replaces the <video> the overlay's animation loop
@@ -504,6 +519,7 @@ export function openEventDetailModal(
     // clip's worth of boxes alive for as long as the modal is open.
     overlay?.destroy();
     overlay = null;
+    _dropFullscreenSyncs();
     mediaPane.innerHTML = '';
     if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
 
@@ -512,6 +528,13 @@ export function openEventDetailModal(
     video = document.createElement('video');
     video.className = 'event-detail__video';
     video.controls = true;
+    // The control bar's own fullscreen button fullscreens the <video> ELEMENT, which
+    // leaves the overlay canvas — its sibling inside `.clip-overlay` — behind on the
+    // page: the picture fills the screen and the boxes silently vanish. Suppressed where
+    // the browser honours it, in favour of the tools-row button that fullscreens the
+    // wrapper and keeps them. Advisory only (Chromium-family today), so the wrapper
+    // button is the real answer and this just removes a wrong-looking route to it.
+    video.setAttribute('controlsList', 'nofullscreen');
     // No autoplay: this is a review surface, and a grid of events opened one after
     // another that each start talking and moving is hostile.
     video.preload = 'metadata';
@@ -616,6 +639,40 @@ export function openEventDetailModal(
     label.appendChild(box);
     label.appendChild(el('span', null, 'Show what the watcher saw'));
     tools.appendChild(label);
+
+    tools.appendChild(_fullscreenButton());
+  }
+
+  /**
+   * Fullscreen for a clip, without losing the boxes drawn over it.
+   *
+   * The native control-bar button fullscreens the `<video>` element itself, which leaves
+   * the overlay canvas — a *sibling* of the video inside `.clip-overlay` — behind on the
+   * page, so the picture fills the screen and the boxes vanish. `controlsList` suppresses
+   * that button where the browser honours it (see `renderVideo`); this one fullscreens
+   * the wrapper, so the canvas comes with it and the overlay's own resize loop refits it.
+   *
+   * @returns {HTMLElement}
+   */
+  function _fullscreenButton() {
+    const btn = button('⛶ Fullscreen', () => {
+      const wrapper = video?.closest('.clip-overlay');
+      if (!wrapper) return;
+      if (document.fullscreenElement) document.exitFullscreen?.();
+      // Not awaited: a refusal must leave the label alone, and `fullscreenchange` is
+      // what sets it either way.
+      else wrapper.requestFullscreen?.().catch(() => {});
+    }, { testid: 'event-detail-fullscreen' });
+    btn.title = 'Fill the screen with the clip, keeping the detection overlay on it.';
+    const sync = () => {
+      btn.textContent = document.fullscreenElement ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
+    };
+    document.addEventListener('fullscreenchange', sync);
+    // The modal replaces `mediaPane` wholesale when switching clip/timelapse, so the
+    // button is discarded without anything calling a destroy hook — the listener has to
+    // unhook itself when its button is no longer on the page.
+    _fullscreenSyncs.push(sync);
+    return btn;
   }
 
   // ---------------------------------------------------------------- save

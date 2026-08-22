@@ -200,7 +200,7 @@ export function renderReadinessStats(content, { config, readiness, previousRun =
   content.appendChild(status);
 
   if (previousRun) {
-    content.appendChild(_makePreviousRunLine(previousRun, readyCount));
+    content.appendChild(_makePreviousRunLine(previousRun, readyCount, readyPositiveCount, readyNegativeCount));
   }
 }
 
@@ -268,8 +268,69 @@ function _makeReadySplit({ config, readyPositiveCount, readyNegativeCount, openI
  *
  * @param {object} previousRun - result of loadPreviousRun()
  * @param {number} readyCount - images that would go into a run started now
+ * @param {number} readyPositiveCount - of those, ones carrying an in-scope label
+ * @param {number} readyNegativeCount - of those, confirmed-background ones
  */
-function _makePreviousRunLine(previousRun, readyCount) {
+/**
+ * "of which N positive · M background" — the composition of the delta above.
+ *
+ * Returns null when the baseline split could not be read (an older sidecar, a
+ * failed request, or a caller that did not ask for it): an unattributed delta is
+ * still worth showing, and inventing a zero baseline would report every current
+ * positive as newly gained.
+ *
+ * @param {object} previousRun - result of loadPreviousRun({ withReadinessSplit: true })
+ * @param {number} readyPositiveCount - positives ready now
+ * @param {number} readyNegativeCount - background images ready now
+ * @returns {?HTMLElement}
+ */
+function _makeDeltaSplit(previousRun, readyPositiveCount, readyNegativeCount) {
+  const { baselinePositiveCount, baselineNegativeCount } = previousRun;
+  if (baselinePositiveCount == null || baselineNegativeCount == null) return null;
+
+  const posDelta = readyPositiveCount - baselinePositiveCount;
+  const negDelta = readyNegativeCount - baselineNegativeCount;
+  if (posDelta === 0 && negDelta === 0) return null;
+
+  const el = document.createElement('div');
+  el.dataset.testid = 'training-previous-run-delta-split';
+  el.style.cssText = 'font-size: 0.9em; margin-left: 1.2em;';
+
+  const part = (testid, value, noun, color) => {
+    const span = document.createElement('span');
+    span.dataset.testid = testid;
+    span.style.cssText = `color:${color};`;
+    span.textContent = `${value >= 0 ? '+' : ''}${value.toLocaleString()} ${noun}`;
+    return span;
+  };
+
+  el.appendChild(document.createTextNode('of which '));
+  el.appendChild(part(
+    'training-previous-run-delta-positive',
+    posDelta,
+    'positive',
+    // Only positives are green: a thousand more confirmed-absence images is not
+    // a gain in training signal, and colouring it green would say it was.
+    posDelta > 0 ? '#4c4' : 'var(--pico-muted-color, #888)',
+  ));
+  el.appendChild(document.createTextNode(' · '));
+  el.appendChild(part(
+    'training-previous-run-delta-negative',
+    negDelta,
+    'background',
+    'var(--pico-muted-color, #888)',
+  ));
+
+  if (posDelta <= 0 && negDelta > 0) {
+    const note = document.createElement('span');
+    note.style.cssText = 'color: var(--pico-muted-color, #888);';
+    note.textContent = ' — no new training signal';
+    el.appendChild(note);
+  }
+  return el;
+}
+
+function _makePreviousRunLine(previousRun, readyCount, readyPositiveCount, readyNegativeCount) {
   const { modelName, trainedAt, trainCount, valCount, manifestCount, stillInDatasetCount } = previousRun;
 
   const line = document.createElement('div');
@@ -303,6 +364,14 @@ function _makePreviousRunLine(previousRun, readyCount) {
     deltaSpan.textContent = '  no change since';
   }
   line.appendChild(deltaSpan);
+
+  // "+1,200 ready since" is the number people act on, and on its own it is
+  // routinely wrong about what it implies: a collect task sweeping up background
+  // frames moves it by a thousand while adding no training signal at all. The
+  // split says which kind of images arrived, so "worth retraining?" is answerable
+  // from the line rather than by opening the two modals and subtracting.
+  const split = _makeDeltaSplit(previousRun, readyPositiveCount, readyNegativeCount);
+  if (split) line.appendChild(split);
 
   // Only worth saying when it isn't the whole manifest — otherwise it's noise on
   // every healthy config.

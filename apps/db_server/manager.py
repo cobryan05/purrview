@@ -84,6 +84,7 @@ from apps.helpers.db.types import (
     RecordingRead,
     RecordingStatus,
     RegionRole,
+    RuleRelation,
     Source,
     SourceRegionRead,
     SourceRegionWrite,
@@ -3899,10 +3900,27 @@ class Manager:
             has_own = bool(src.model_group_uuid or src.model_name)
             has_default = bool(profile.default_model_group_uuid or profile.default_model_name)
             if not has_own and not has_default:
-                errors.append(
-                    f"Source {src.source_uuid} has no models selected and the profile sets no default, "
-                    "so nothing will be detected on it."
+                # Motion reads pixels, not detections, so a motion-only watcher on a
+                # model-less camera is a legitimate setup — a bare "did anything move at
+                # the gate" recorder. Only say nothing will be detected when something
+                # actually depends on a detection.
+                # No rules at all still needs a model: the watcher is misconfigured in
+                # two ways, and "nothing will be detected" is the one this line reports.
+                needs_detections = not enabled_rules or any(
+                    r.relation != RuleRelation.MOTION.value
+                    for r in enabled_rules
+                    if not r.source_uuids_json or src.source_uuid in [str(u) for u in r.source_uuids_json]
                 )
+                if needs_detections:
+                    errors.append(
+                        f"Source {src.source_uuid} has no models selected and the profile sets no default, "
+                        "so nothing will be detected on it."
+                    )
+                elif enabled_rules:
+                    warnings.append(
+                        f"Source {src.source_uuid} has no models selected. Its motion rules will still run; "
+                        "nothing else will, because nothing will be detected on it."
+                    )
             fps = src.analysis_fps or profile.default_analysis_fps
             if fps > 10:
                 warnings.append(

@@ -29,7 +29,7 @@ import {
 import { renderCoverageStats, renderReadinessStats } from '/app-static/js/ui/utils/coverageStatsTable.js';
 import { loadPreviousRun } from '/app-static/js/ui/utils/previousTrainingRun.js';
 import { makeFieldRow, buildPanelEditorBar, confirmStartIfDirty, toast, showPaneError } from '/app-static/js/ui/utils/index.js';
-import { navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { NEW_ITEM_SELECTION, navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { createHyperparamsFieldset } from '/app-static/js/ui/utils/hyperparamsFieldset.js';
@@ -175,8 +175,59 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
     if (uuid === initConfigUuid) o.selected = true;
     configSel.appendChild(o);
   }
-  configSel.addEventListener('change', () => { refreshNodeSel(); refreshTreePreview(); _markDirty(); _refreshHyperparamsArchitecture(); });
-  el.appendChild(makeFieldRow('Model Shape', configSel));
+  configSel.addEventListener('change', () => {
+    refreshNodeSel(); refreshTreePreview(); _markDirty(); _refreshHyperparamsArchitecture();
+    _refreshShapeLinks();
+  });
+
+  // "Model Shape" is the least self-explanatory field on this form — it names a
+  // thing configured on a different tab. Give it the two doors it needs: open
+  // the selected shape, or start a new one. Both land on the Model Shapes pane
+  // with the right item already open (see takePendingSelection there).
+  const shapeControls = document.createElement('div');
+  shapeControls.style.cssText = 'display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;';
+  shapeControls.appendChild(configSel);
+
+  const editShapeLink = document.createElement('a');
+  editShapeLink.href = '#';
+  editShapeLink.textContent = 'Edit ↗';
+  editShapeLink.dataset.testid = 'training-edit-model-shape';
+  editShapeLink.style.cssText = 'font-size: 0.85em; white-space: nowrap;';
+  editShapeLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!configSel.value) return;
+    navigateTabs('tab-configuration', 'tab-model-management', { selectUuid: configSel.value });
+  });
+  shapeControls.appendChild(editShapeLink);
+
+  const newShapeBtn = document.createElement('button');
+  newShapeBtn.type = 'button';
+  newShapeBtn.className = 'panel-btn';
+  // "+ New shape", not "+ New": the pane's own create-a-training-config button
+  // already reads "+ New", and two of them on one screen say nothing about which
+  // thing is about to be created.
+  newShapeBtn.textContent = '+ New shape';
+  newShapeBtn.title = 'Create a new model shape';
+  newShapeBtn.dataset.testid = 'training-new-model-shape';
+  newShapeBtn.style.cssText = 'font-size: 0.85em; padding: 0.15em 0.6em; width: auto; margin: 0;';
+  newShapeBtn.addEventListener('click', () => {
+    navigateTabs('tab-configuration', 'tab-model-management', { selectUuid: NEW_ITEM_SELECTION });
+  });
+  shapeControls.appendChild(newShapeBtn);
+
+  /** The Edit link is meaningless with nothing selected — hide it rather than dead-link it. */
+  function _refreshShapeLinks() {
+    editShapeLink.hidden = !configSel.value;
+  }
+  _refreshShapeLinks();
+
+  el.appendChild(makeFieldRow('Model Shape', shapeControls));
+
+  const shapeHint = document.createElement('p');
+  shapeHint.style.cssText = 'font-size: 0.8em; color: var(--pico-muted-color, #888); margin: 0; padding: 2px 4px;';
+  shapeHint.textContent = 'A model shape is the label→model tree this run trains against. It lives in Model Shapes.';
+  el.appendChild(shapeHint);
+
   if (modelConfigsMap.size === 0) {
     el.appendChild(makeNavHint(
       'No model shapes exist yet — a training run needs one.',
@@ -356,7 +407,10 @@ function renderReadinessPanel(config) {
       // panel.
       const [readiness, previousRun] = await Promise.all([
         fetchTrainingConfigReadiness(config.uuid),
-        loadPreviousRun(config),
+        // With the split: "+1,200 ready since" is misleading when all 1,200 are
+        // background images a collect task swept up, which is a very different
+        // thing from 1,200 newly annotated positives.
+        loadPreviousRun(config, { withReadinessSplit: true }),
       ]);
       content.innerHTML = '';
       renderReadinessStats(content, { config, readiness, previousRun });

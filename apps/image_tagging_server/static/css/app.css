@@ -1326,6 +1326,37 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   pointer-events: none;
 }
 
+/* Fullscreen a clip WITH its boxes.
+   The wrapper goes fullscreen, not the <video> — fullscreening the video element would
+   leave this canvas, its sibling, behind on the page, and the boxes would simply
+   disappear at the moment you most want a closer look. The canvas is pinned to the
+   wrapper's box (`inset: 0` above) and `videoRect()` does the letterbox maths from the
+   video's own client box each frame, so the overlay refits itself with no extra work. */
+.clip-overlay:fullscreen {
+  background: #000;
+}
+
+/* The video fills the whole fullscreen box and letterboxes INSIDE itself, rather than
+   being shrunk to its aspect ratio and centred.
+   That distinction is load-bearing, not stylistic. The canvas is pinned to the WRAPPER
+   (`inset: 0`), while `videoRect()` computes the picture's position from the VIDEO's
+   client box. The two agree only while the video's box and the wrapper's box are the
+   same rectangle. Centring a shrunken video breaks that: the canvas would still start at
+   the wrapper's top-left, and every box would be offset by the letterbox margin — the
+   exact class of consistent-few-percent error this file already warns about above.
+   With `object-fit: contain` the boxes are the same rectangle and `videoRect()`'s
+   existing contain maths does the letterboxing, which is what it was written for. */
+.clip-overlay:fullscreen > video {
+  width: 100%;
+  height: 100%;
+  /* `.event-detail__video` caps the player at 60vh so it cannot dominate the modal.
+     On a fullscreen element that cap would leave the bottom 40% of the screen black —
+     and, worse, the canvas is pinned to the full-height wrapper, so the overlay would
+     be offset from the picture as well as small. */
+  max-height: none;
+  object-fit: contain;
+}
+
 .event-detail__side-title {
   margin: 0 0 var(--space-1);
 }
@@ -5898,17 +5929,81 @@ button.filter-active {
 }
 
 /* Active vs Completed task sections (ui/tasks.js) */
+/* ===== Jobs pane sections =====
+   Continuous / Jobs / Completed used to be a thin underlined caption above each
+   grid. Between two grids of identically-bordered cards that reads as one
+   continuous field, so "what is running right now?" — the only question this
+   pane exists to answer — could not be read at a glance. Each section now owns a
+   surface and a gap, and Completed recedes behind the live sections. */
+.task-section {
+  /* The gap IS the separation. Deliberately NO horizontal padding, border or box of its
+     own: the cards below are laid out in a `minmax(340px, 1fr)` grid sized to the
+     column this pane gets, and every horizontal pixel taken here comes straight out of
+     that column — a 1px border each side was enough to push the widest expanded card
+     2px past its own border (test_expanded_card_does_not_overflow_its_border). The
+     separation is carried by vertical space, a ruled header, and the completed
+     section's dimming, none of which cost width. */
+  margin: 0 0 var(--space-6);
+}
+.task-section:last-child {
+  margin-bottom: 0;
+}
+
+.task-section__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  margin-bottom: var(--space-2);
+  padding-bottom: var(--space-1);
+  /* Spans the full width, so it reads as the lid of the grid beneath it rather than as
+     a caption floating above a continuous field of cards. */
+  border-bottom: 1px solid var(--pico-muted-border-color, var(--border-strong));
+}
+
+/* A left accent on the header alone, not down the whole section: it marks the live
+   sections without any element wrapping — and so without narrowing — the card grid. */
+.task-section--continuous .task-section__header,
+.task-section--running .task-section__header {
+  border-left: 3px solid var(--pico-primary);
+  padding-left: var(--space-2);
+}
+
+.task-section__spacer {
+  flex: 1;
+}
+
+.task-section__count {
+  font-size: 0.75em;
+  line-height: 1;
+  padding: 0.25em 0.5em;
+  border-radius: 999px;
+  background: var(--pico-muted-border-color, var(--border-strong));
+  color: var(--pico-color, var(--text));
+}
+
 .task-section-header {
-  margin: 0.75em 0 0.4em;
-  padding-bottom: 0.2em;
+  margin: 0;
   font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--pico-muted-color, var(--text-muted));
-  border-bottom: 1px solid var(--pico-muted-border-color, var(--border-strong));
+  color: var(--pico-color, var(--text));
 }
-.task-section-header:first-child {
-  margin-top: 0;
+
+/* Finished work is history. It stays fully legible — it is still read — but must
+   not compete with what is happening now, which is what "one big grid" meant. */
+.task-section--completed .task-section__header {
+  border-bottom-style: dashed;
+}
+.task-section--completed .task-section-header,
+.task-section--completed .task-section__count {
+  color: var(--pico-muted-color, var(--text-muted));
+}
+.task-section--completed .task-instance-card {
+  opacity: 0.72;
+}
+.task-section--completed .task-instance-card:hover,
+.task-section--completed .task-instance-card:focus-within {
+  opacity: 1;
 }
 
 /* ===== Operations tab — service health =====
@@ -7614,6 +7709,29 @@ progress.progress-indeterminate:indeterminate {
   display: block;
   width: 100%;
   height: auto;
+}
+
+/* Fullscreen live view. The stage goes fullscreen rather than the canvas, so the
+   letterbox bars are this element's black and not whatever the UA paints.
+   Box overlays need no special handling at all: they are drawn into the very same
+   canvas as the picture, so they scale with it by construction. */
+.watch-live-stage:fullscreen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0;
+  background: #000;
+}
+
+/* `width: 100%` from the rule above would stretch a 16:9 frame onto a taller screen.
+   Bounding both axes and letting the intrinsic canvas size drive the aspect ratio is
+   the `object-fit: contain` behaviour, which a canvas does not get for free. */
+.watch-live-stage:fullscreen canvas {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .watch-live-side {

@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Sequence
 from ..tracking.tracker import Track
 from .events import WatchEventSignal
 from .geometry import Zone
+from .motion import MotionField
 from .rules import RuleMachine, RuleSpec, evaluate_predicate
 from .scoping import rule_applies_to_source
 
@@ -70,8 +71,19 @@ class WatchEngine:
 
     # ------------------------------------------------------------------ step
 
-    def step(self, tracks: Sequence[Track], now: float) -> List[WatchEventSignal]:
-        """Advance every rule by one frame and collect the transitions."""
+    def step(
+        self,
+        tracks: Sequence[Track],
+        now: float,
+        motion: Optional[MotionField] = None,
+    ) -> List[WatchEventSignal]:
+        """Advance every rule by one frame and collect the transitions.
+
+        `motion` is this frame's pixel-difference measurement, or None for a caller
+        that computes none. Only `motion` rules read it; passing None simply means
+        those rules never hold, which is the right answer for a source that is not
+        being differenced.
+        """
         signals: List[WatchEventSignal] = []
         for machine in self._machines.values():
             result = evaluate_predicate(
@@ -80,6 +92,7 @@ class WatchEngine:
                 self._zones,
                 self.frame_width,
                 self.frame_height,
+                motion=motion,
             )
             signals.extend(machine.step(result, now))
         return signals

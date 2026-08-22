@@ -217,8 +217,10 @@ class TestTrainingConfigPaneStructure:
         expect(item).to_contain_text("Corrupt Detector")
         expect(item).to_contain_text("Alpha Dataset")
 
-        # Footer new-config button
-        expect(_box(page).locator("button", has_text="+ New")).to_be_visible()
+        # Footer new-config button. Targeted by its block class, not by its text:
+        # the form also carries a "+ New shape" button for the Model Shape field,
+        # and `has_text` is a substring match, so "+ New" alone matches both.
+        expect(_box(page).locator("button.panel-btn--block", has_text="+ New")).to_be_visible()
 
         # Right panel defaults to create form
         expect(_editor_bar(page)).to_contain_text("New Training Run")

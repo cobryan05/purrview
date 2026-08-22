@@ -152,6 +152,34 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   }, { testid: 'watch-live-pause' });
   bar.appendChild(pauseBtn);
 
+  // Fullscreen the *stage*, not the canvas and not the dialog. The canvas alone would
+  // be fine here — frame and boxes are drawn into the same one, so the overlay comes
+  // along for free — but the stage is what carries the black letterbox background, and
+  // a bare fullscreen canvas sits on whatever the UA paints behind it.
+  const fullscreenBtn = button('⛶ Fullscreen', () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      // Not awaited and not assumed to succeed: a browser can refuse (no user gesture
+      // in some embeddings, or a policy block), and `fullscreenchange` is what actually
+      // decides the label — so a refusal simply leaves the button as it was.
+      stage.requestFullscreen?.().catch(() => {});
+    }
+  }, { testid: 'watch-live-fullscreen' });
+  fullscreenBtn.title = 'Fill the screen with the live view. Box overlays are drawn into '
+    + 'the same canvas as the picture, so they scale with it.';
+  bar.appendChild(fullscreenBtn);
+
+  function _syncFullscreenLabel() {
+    const on = document.fullscreenElement === stage;
+    fullscreenBtn.textContent = on ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
+    // The canvas is laid out by CSS, not by JS, but the *drawing* is sized from the
+    // element's client box in a couple of places — redraw so the first fullscreen frame
+    // is not the pre-fullscreen one stretched.
+    draw();
+  }
+  document.addEventListener('fullscreenchange', _syncFullscreenLabel);
+
   bar.appendChild(checkbox('Detections', true, v => { state.show.detections = v; draw(); }, 'watch-live-show-detections'));
   bar.appendChild(checkbox('Tracks', true, v => { state.show.tracks = v; draw(); }, 'watch-live-show-tracks'));
   bar.appendChild(checkbox('Zones', true, v => { state.show.zones = v; draw(); }, 'watch-live-show-zones'));
@@ -548,6 +576,11 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     state.stopped = true;
     clearTimeout(state.timer);
     document.removeEventListener('visibilitychange', onVisibility);
+    document.removeEventListener('fullscreenchange', _syncFullscreenLabel);
+    // Removing the stage would drop fullscreen anyway, but not before the modal has
+    // already torn down behind it — the user gets a frame of fullscreen nothing. Ask
+    // for the exit first so the two happen in the order they look like they happen.
+    if (document.fullscreenElement === stage) document.exitFullscreen?.();
   }
 
   void poll({ immediate: true });

@@ -25,6 +25,9 @@ export const tagsFetcher = createCachedFetcher(async (keys) => {
  */
 export function clearTagCache() {
   tagsFetcher.clear();
+  // A uuid that was missing may exist again (re-created, or restored); an
+  // explicit invalidation is exactly the moment to stop suppressing its lookup.
+  _knownMissing.clear();
 }
 
 
@@ -38,7 +41,51 @@ export async function fetchTags() {
 
 export async function fetchTagByUuid(uuid) {
   const tags = await fetchTags();
-  return tags.get(uuid) || null;
+  if (tags.has(uuid)) return tags.get(uuid);
+  return (await refreshTagsIfUnknown([uuid])).get(uuid) || null;
+}
+
+/**
+ * Tag uuids we have already refetched for and still do not know about.
+ *
+ * Without this, a genuinely deleted tag whose uuid is still referenced by some
+ * saved filter would trigger a fresh `/api/tags/list` on every render.
+ */
+const _knownMissing = new Set();
+let _missRefresh = null;
+
+/**
+ * Heal the cache when the app meets a tag uuid it has never heard of.
+ *
+ * The client only invalidates its tag cache on its *own* CRUD, but tags are
+ * also minted server-side — `CollectTrainingImagesTask` creates a TASK_GENERATED
+ * tag named after the task, and renaming that task mints another one. That tag
+ * exists in the DB and comes back attached to images, but the running SPA's map
+ * has never seen it, so every `tags.get(uuid)?.name ?? uuid` fallback rendered
+ * the raw uuid until a page reload.
+ *
+ * Refetches once (coalesced across the many chips that render at the same
+ * moment) and publishes TAGS_UPDATED only if something new was actually
+ * learned, so a re-render cannot loop.
+ *
+ * @param {Iterable<string>} uuids
+ * @returns {Promise<Map<string, Object>>} the (possibly refreshed) tags map
+ */
+export async function refreshTagsIfUnknown(uuids) {
+  const tags = await fetchTags();
+  const unknown = [...uuids].filter(u => u && !tags.has(u) && !_knownMissing.has(u));
+  if (unknown.length === 0) return tags;
+
+  _missRefresh ??= (async () => {
+    tagsFetcher.clear();
+    return await fetchTags();
+  })().finally(() => { _missRefresh = null; });
+
+  const fresh = await _missRefresh;
+  const learned = unknown.filter(u => fresh.has(u));
+  unknown.filter(u => !fresh.has(u)).forEach(u => _knownMissing.add(u));
+  if (learned.length) events.publish(EventTypes.TAGS_UPDATED, {});
+  return fresh;
 }
 
 

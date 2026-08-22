@@ -505,10 +505,17 @@ class BBoxVerificationTerm(ApiModel):
 
     Backed by the system verification tags (UNVERIFIED / VERIFIED), which are
     mutually exclusive per bbox via exclusive_group="verification".
+
+    `no_boxes` is the odd one out and is deliberately here rather than in a term
+    of its own: it answers the same question the user is asking ("what still
+    needs looking at?") and belongs in the same one-of control. It matches
+    images with NO bbox at all — which is what "unverified because there is
+    nothing on it" actually looks like in the data, and which every tag-based
+    state necessarily misses, since a tag needs a box to hang off.
     """
 
     kind: Literal["bboxVerification"] = "bboxVerification"
-    state: Literal["verified", "unverified"]
+    state: Literal["verified", "unverified", "no_boxes"]
     negate: bool = False
 
 
@@ -1652,6 +1659,10 @@ class RuleRelation(str, Enum):
     OVERLAPS = "overlaps"  # intersection / min(area) — partial edge overlap, symmetric
     CENTROID_IN = "centroid_in"  # A's centre is inside B — cheapest and very robust
     DISTANCE = "distance"  # normalised centre distance — "cat near door"
+    # Arity 0: pixels changed, no detection involved. Subject A names *where* to
+    # measure (zones, or nothing for the whole frame) rather than what to look for,
+    # which is why it is the one relation that fires on a frame with no tracks at all.
+    MOTION = "motion"
 
 
 class ZoneKind(str, Enum):
@@ -1845,6 +1856,11 @@ class InteractionRule(SQLModel, table=True):
     # a fraction of the frame would not. Negative shrinks, demanding a deeper overlap
     # than the raw boxes show. See `apps.helpers.watch.geometry.margin_pad`.
     margin: float = Field(default=0.0)
+    # `motion` only: how big a per-pixel luminance change counts as movement (0..1).
+    # The independent other half of `threshold`, which says how much of the region must
+    # change — a noisy IR camera needs a higher sensitivity *and* the same area, and one
+    # number cannot say both. 0 means "use the default" (see `watch.motion`).
+    motion_sensitivity: float = Field(default=0.0)
     # The predicate must hold continuously this long before the event STARTS.
     min_duration_s: float = Field(default=2.0)
     # ...and be continuously false this long before it ENDS, which is what stops one
@@ -2269,6 +2285,7 @@ class InteractionRuleRead(OrmModel):
     subject_b_include_descendants: bool = False
     threshold: float = 0.5
     margin: float = 0.0
+    motion_sensitivity: float = 0.0
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -2294,6 +2311,10 @@ class InteractionRuleWrite(ApiModel):
     # already fires on objects two subject-widths apart, which is most of a small room,
     # and -1.0 erodes a box to nothing — a rule that can never fire.
     margin: float = Field(default=0.0, ge=-1.0, le=2.0)
+    # Bounded like `margin`, and for the same reason: the ends of the slider have to
+    # mean something. 1.0 demands a full black-to-white swing on a pixel and can never
+    # fire; 0 is not "most sensitive" but "use the default", so the floor is above it.
+    motion_sensitivity: float = Field(default=0.0, ge=0.0, le=1.0)
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -2301,9 +2322,20 @@ class InteractionRuleWrite(ApiModel):
 
     @model_validator(mode="after")
     def _validate_arity(self) -> "InteractionRuleWrite":
+        # `motion` is arity 0 — it reads pixels, not tracks. Subject A is optional and
+        # means "where to measure": zones, or `any`/`none` for the whole frame. There is
+        # nothing for a second subject to be, so naming one is a configuration error.
+        if self.relation == RuleRelation.MOTION:
+            if self.subject_b_kind != RuleSubjectKind.NONE:
+                raise ValueError("relation 'motion' takes no second subject; subject_b_kind must be 'none'")
+            if self.subject_a_kind == RuleSubjectKind.LABEL:
+                raise ValueError(
+                    "relation 'motion' does not look at labels; subject_a_kind must be 'zone' "
+                    "(measure inside those zones) or 'any' (measure the whole frame)"
+                )
         # `present` is the arity-1 relation; every other relation compares two things,
         # so a missing second subject would silently never fire.
-        if self.relation == RuleRelation.PRESENT:
+        elif self.relation == RuleRelation.PRESENT:
             if self.subject_b_kind != RuleSubjectKind.NONE:
                 raise ValueError("relation 'present' takes one subject; subject_b_kind must be 'none'")
         elif self.subject_b_kind == RuleSubjectKind.NONE:

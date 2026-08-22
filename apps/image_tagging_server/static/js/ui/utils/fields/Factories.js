@@ -12,7 +12,7 @@ import { TextField } from './TextField.js'
 import { ModelLabelSelectField } from './ModelLabelSelectField.js';
 import { MultiSelectField } from './MultiSelectField.js';
 import { DropDownField } from './DropDownField.js';
-import { fetchTags, createNewTag } from '/app-static/js/shared/api/tags.js';
+import { fetchTags, createNewTag, refreshTagsIfUnknown } from '/app-static/js/shared/api/tags.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { isDynamicLabelsVisible, filterVisibleTags } from '/app-static/js/shared/activeModel.js';
 import { GroupField } from './GroupField.js';
@@ -240,7 +240,13 @@ export const fieldFactories = {
   async tags(fieldName, fieldMeta, values, onChange) {
     const { type, required, description, label, allow_add_tag, ...rest } = fieldMeta;
 
-    const tags = await fetchTags();
+    // A task's stored tag uuids can name a tag this session has never fetched —
+    // CollectTrainingImagesTask mints its own TASK_GENERATED tag server-side,
+    // and renaming it mints another. Without this the option list lacks the
+    // tag and MultiSelectField.renderView falls back to printing the raw uuid.
+    const tags = await refreshTagsIfUnknown(
+      Array.isArray(values[fieldName]) ? values[fieldName] : [],
+    ).catch(() => fetchTags());
 
     const tagOptions = filterVisibleTags(tags.values())
       .map(tag => ({
