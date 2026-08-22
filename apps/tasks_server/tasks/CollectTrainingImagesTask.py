@@ -728,10 +728,16 @@ class CollectTrainingImagesTask(Task):
         # covers FIXED sources too so the table lists everything the task reads from.
         self._source_names = []
         self._source_types = {}
+        # Kept so staleness can ask a provider what it currently expects, rather than
+        # reading the one number captured here at setup. A source whose cadence changes
+        # at runtime (a Ring camera is ~30s idle and ~20fps live) cannot be described by
+        # any single value fixed now — see `ImageProvider.next_frame_expected_by`.
+        self._providers_by_source: dict[str, ImageProvider] = {}
         for provider in providers:
             name = provider.source_name or "unknown"
             self._source_names.append(name)
             self._source_types[name] = provider.provider_type().value
+            self._providers_by_source[name] = provider
             if provider.provider_type() == ImageProviderType.FIXED:
                 continue
             interval = provider.min_capture_interval or _rate_limits.get(provider.provider_type(), 0.0)
@@ -914,6 +920,18 @@ class CollectTrainingImagesTask(Task):
                 inference_api = InferenceApi(self._manager.get_inference_api_client())
 
                 any_fetched = False
+
+                # Pick who is due this pass (cheap and sequential), then fetch them all
+                # at once. Fetching in a plain loop silently turns each source's timeout
+                # into a budget for *everyone*: one quiet source — a Ring camera idling
+                # on ~30s cloud snapshots — stalls the whole rotation, and its peers go
+                # stale behind it while nothing is actually failing, which reads as
+                # several broken cameras rather than one slow one.
+                #
+                # Only the *fetch* is concurrent. Everything downstream stays sequential
+                # and in the original source order, because dedup, inference and the DB
+                # writes all share state that is not safe to interleave.
+                due: list[tuple[Any, str]] = []
                 for provider in list(active):
                     if self._cancel_flag.is_set():
                         break
@@ -933,42 +951,19 @@ class CollectTrainingImagesTask(Task):
                     if self._source_in_backoff(source_key, time.perf_counter()):
                         continue
 
-                    t0 = time.perf_counter()  # PERF
-                    provided = None
-                    fetch_error: Optional[str] = None
-                    # A self-pacing provider sleeps for up to min_capture_interval *inside*
-                    # getNextImage() before it even starts fetching. That scheduled wait is not
-                    # a stall, so the fetch budget has to sit on top of it — otherwise any
-                    # source configured slower than _FETCH_TIMEOUT_S (e.g. a camera polled once
-                    # a minute) times out on every call, burns all _MAX_RETRIES attempts and is
-                    # dropped from `active` on its very first fetch despite behaving correctly.
-                    fetch_timeout = self._FETCH_TIMEOUT_S + max(0.0, provider.min_capture_interval)
-                    for _attempt in range(self._MAX_RETRIES):
-                        try:
-                            provided = await asyncio.wait_for(provider.getNextImage(), timeout=fetch_timeout)
-                            fetch_error = None
-                            break
-                        except asyncio.TimeoutError:
-                            fetch_error = f"timed out after {fetch_timeout:.0f}s"
-                        # Anything the provider raises is a failure of THIS source, not of
-                        # the run: a camera's TLS handshake timing out (urllib raises
-                        # URLError, which asyncio.wait_for does not convert) used to escape
-                        # to _execute and kill a collection that every other source was
-                        # still feeding. Note this deliberately doesn't catch
-                        # asyncio.CancelledError (BaseException) — cancellation must
-                        # continue to propagate.
-                        except Exception as e:
-                            fetch_error = f"{type(e).__name__}: {e}"
-                            logger.warning(
-                                "Fetch from '%s' failed on attempt %d/%d: %s",
-                                source_key,
-                                _attempt + 1,
-                                self._MAX_RETRIES,
-                                fetch_error,
-                            )
-                        if _attempt < self._MAX_RETRIES - 1:
-                            logger.warning("Retrying '%s' (attempt %d/%d)", source_key, _attempt + 2, self._MAX_RETRIES)
-                    t_fetch = time.perf_counter()
+                    due.append((provider, source_key))
+
+                # gather rather than a TaskGroup: a provider's own failure is already
+                # captured and returned by _fetch_with_retries, so the only thing that
+                # can escape here is cancellation, which must propagate.
+                fetch_results = await asyncio.gather(*(self._fetch_with_retries(p, k) for p, k in due)) if due else []
+
+                for (provider, source_key), (provided, fetch_error, t0, t_fetch) in zip(due, fetch_results):
+                    # Re-checked per result, not just before the gather: a long pass can
+                    # span a cancel, and the frames already in hand must not be processed
+                    # after the user asked to stop.
+                    if self._cancel_flag.is_set():
+                        break
 
                     if fetch_error is not None:
                         # Kept in `active` — it gets another go once its backoff expires.
@@ -2646,6 +2641,74 @@ class CollectTrainingImagesTask(Task):
     async def _deinit(self) -> None:
         pass
 
+    async def _fetch_with_retries(self, provider, source_key: str) -> tuple[Any, Optional[str], float, float]:
+        """One source's fetch, retries included, as `(provided, error, t0, t_fetch)`.
+
+        Never raises for a provider's own failure — the error is *returned*. These run
+        under `asyncio.gather`, and a raise would abandon every sibling fetch in the
+        same pass over one bad camera. `asyncio.CancelledError` is deliberately not
+        caught (it is a BaseException), so cancellation still propagates.
+        """
+        # A self-pacing provider sleeps for up to min_capture_interval *inside*
+        # getNextImage() before it even starts fetching. That scheduled wait is not a
+        # stall, so the fetch budget has to sit on top of it — otherwise any source
+        # configured slower than _FETCH_TIMEOUT_S (e.g. a camera polled once a minute)
+        # times out on every call, burns all _MAX_RETRIES attempts and is dropped from
+        # `active` on its very first fetch despite behaving correctly.
+        fetch_timeout = self._FETCH_TIMEOUT_S + max(0.0, provider.min_capture_interval)
+        t0 = time.perf_counter()
+        provided = None
+        fetch_error: Optional[str] = None
+        for _attempt in range(self._MAX_RETRIES):
+            try:
+                provided = await asyncio.wait_for(provider.getNextImage(), timeout=fetch_timeout)
+                fetch_error = None
+                break
+            except asyncio.TimeoutError:
+                fetch_error = f"timed out after {fetch_timeout:.0f}s"
+            except Exception as e:
+                fetch_error = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "Fetch from '%s' failed on attempt %d/%d: %s",
+                    source_key,
+                    _attempt + 1,
+                    self._MAX_RETRIES,
+                    fetch_error,
+                )
+            if _attempt < self._MAX_RETRIES - 1:
+                logger.warning("Retrying '%s' (attempt %d/%d)", source_key, _attempt + 2, self._MAX_RETRIES)
+        return provided, fetch_error, t0, time.perf_counter()
+
+    def _expected_interval(self, source_name: str, configured: float) -> float:
+        """How long silence from this source is normal, right now.
+
+        `configured` is the setup-time number: the source's own `min_capture_interval`
+        or the task-level rate limit for its provider type. That conflates two things
+        which only coincide for a continuous stream — how often we *fetch*, and how
+        often frames actually *arrive*. A source that publishes a cloud snapshot every
+        30s is not stalled at 1s, but the rate limit says it is, and it gets reported
+        as failing forever.
+
+        So a provider that knows better gets to say so. Never *shortens* the
+        configured interval: this decides when to complain, and a provider is only
+        trusted to ask for more patience, not less.
+        """
+        provider = getattr(self, "_providers_by_source", {}).get(source_name)
+        if provider is None:
+            return configured
+        try:
+            deadline = provider.next_frame_expected_by()
+        except Exception:
+            # A provider misbehaving here must not take out the status panel, which is
+            # often the only way to see that it is misbehaving at all.
+            logger.debug("next_frame_expected_by() failed for %s", source_name, exc_info=True)
+            return configured
+        if deadline is None:
+            return configured
+        # time.monotonic() specifically — the deadline is on that clock, and
+        # perf_counter() (used elsewhere in this class) has a different epoch.
+        return max(configured, deadline - time.monotonic())
+
     def _source_staleness(self, source_name: str, interval: float) -> tuple[str, float]:
         """(level, elapsed_s) for one live source, as a function of how many multiples
         of its configured fetch interval have elapsed since its last successful frame.
@@ -2655,6 +2718,7 @@ class CollectTrainingImagesTask(Task):
         status-panel sources table (which shows every level, including "ok"), so the
         two can never independently drift apart on what counts as stale.
         """
+        interval = self._expected_interval(source_name, interval)
         now = time.perf_counter()
         last = self._last_fetch_by_source.get(source_name)
         baseline = last if last is not None else getattr(self, "_run_started_at", now)
@@ -2725,12 +2789,16 @@ class CollectTrainingImagesTask(Task):
             level, elapsed = self._source_staleness(source_name, interval)
             if level == "ok":
                 continue
+            # Report the interval staleness was actually judged against, not the
+            # setup-time one — otherwise a source whose provider asked for more
+            # patience is described by a number that contradicts its own level.
+            effective = self._expected_interval(source_name, interval)
             notices.append(
                 {
                     "key": f"stale_source_{source_name}",
                     "level": level,
                     "message": (
-                        f"No frames from '{source_name}' in {elapsed:.0f}s " f"(expected every {interval:.0f}s)"
+                        f"No frames from '{source_name}' in {elapsed:.0f}s " f"(expected every {effective:.0f}s)"
                     ),
                 }
             )

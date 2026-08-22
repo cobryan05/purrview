@@ -4640,3 +4640,75 @@ class TestCrossModelAmbiguity:
         frame = await self._run(task, [cat], [dog])
 
         assert frame._det_meta[cat.bbox.uuid]["ambiguity"] is not None
+
+
+class TestConcurrentFetch:
+    """One quiet source must not stall the others.
+
+    The fetch loop used to be sequential, which quietly turned each source's timeout
+    into a budget for *everyone*: a Ring camera idling on ~30s cloud snapshots held up
+    the whole rotation, and its peers went stale behind it while nothing was actually
+    failing. That reads as several broken cameras rather than one slow one, which is
+    the expensive part — you go looking in the wrong place.
+    """
+
+    class _Provider:
+        min_capture_interval = 0.0
+        source_name = "s"
+
+        def __init__(self, delay, fail=False):
+            self._delay, self._fail = delay, fail
+            self.calls = 0
+
+        async def getNextImage(self):
+            self.calls += 1
+            await asyncio.sleep(self._delay)
+            if self._fail:
+                raise RuntimeError("camera is down")
+            return object()
+
+    def _task(self):
+        task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+        task._FETCH_TIMEOUT_S = 5.0
+        task._MAX_RETRIES = 1
+        return task
+
+    async def test_a_slow_source_does_not_delay_a_fast_one(self):
+        task = self._task()
+        slow, fast = self._Provider(0.30), self._Provider(0.0)
+
+        started = time.perf_counter()
+        results = await asyncio.gather(
+            task._fetch_with_retries(slow, "slow"),
+            task._fetch_with_retries(fast, "fast"),
+        )
+        elapsed = time.perf_counter() - started
+
+        assert all(r[1] is None for r in results), "neither fetch should have errored"
+        # Sequentially this is >= 0.30s *per* slow source; concurrently it is one 0.30s.
+        assert elapsed < 0.30 + 0.20, f"fetches did not overlap (took {elapsed:.2f}s)"
+
+    async def test_one_failing_source_does_not_abandon_its_siblings(self):
+        """The reason _fetch_with_retries returns errors instead of raising: a raise
+        inside gather() takes down every sibling fetch in the same pass."""
+        task = self._task()
+        broken, healthy = self._Provider(0.0, fail=True), self._Provider(0.0)
+
+        (broken_img, broken_err, _, _), (ok_img, ok_err, _, _) = await asyncio.gather(
+            task._fetch_with_retries(broken, "broken"),
+            task._fetch_with_retries(healthy, "healthy"),
+        )
+
+        assert broken_err is not None and "camera is down" in broken_err
+        assert broken_img is None
+        assert ok_err is None and ok_img is not None, "the healthy source must still have been fetched"
+
+    async def test_a_timeout_is_reported_not_raised(self):
+        task = self._task()
+        task._FETCH_TIMEOUT_S = 0.05
+        stuck = self._Provider(5.0)
+
+        provided, error, _, _ = await task._fetch_with_retries(stuck, "stuck")
+
+        assert provided is None
+        assert error is not None and "timed out" in error

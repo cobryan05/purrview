@@ -293,6 +293,102 @@ class TestTierTransitions:
         assert image.metadata.additional_info["tier"] == "snapshot"
 
 
+class TestFrameExpectations:
+    """`next_frame_expected_by` — what stops a healthy idle camera being called failing.
+
+    A Ring source publishes a cloud snapshot every ~30s while idle. A consumer that
+    times out a fetch at 30s marks it *failing*, not merely stale, which is why an
+    interval derived from a rate limit is not good enough: it has to reflect the tier
+    the provider is actually in.
+    """
+
+    async def test_idle_expectation_covers_the_measured_snapshot_cadence(self, fakes):
+        provider, client = await _started_provider()
+        now = [1000.0]
+        provider._now = lambda: now[0]
+
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        now[0] += 30.0
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+
+        horizon = provider.next_frame_expected_by() - now[0]
+        assert horizon >= 30.0, "must give at least one whole cadence before complaining"
+
+    async def test_a_motion_snapshot_does_not_shrink_the_learned_cadence(self, fakes):
+        """Motion injects an out-of-band snapshot seconds after the interval one.
+
+        Learning from the newest gap would teach a ~2s cadence and then report a
+        perfectly healthy idle camera as overdue on every read.
+        """
+        provider, client = await _started_provider()
+        now = [1000.0]
+        provider._now = lambda: now[0]
+
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        now[0] += 30.0
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        now[0] += 2.0  # a motion-triggered snapshot lands right behind an interval one
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+
+        assert provider._snapshot_cadence_s == 30.0
+        assert provider.next_frame_expected_by() - now[0] >= 30.0
+
+    async def test_live_tier_expects_frames_promptly(self, fakes):
+        """The point of a deadline over an interval: the same source, a different answer."""
+        provider, client = await _started_provider()
+        now = [1000.0]
+        provider._now = lambda: now[0]
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        now[0] += 30.0
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        idle_horizon = provider.next_frame_expected_by() - now[0]
+
+        client.deliver(f"{BASE}/motion/state", b"ON")
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        await provider.getNextImage()
+        live_horizon = provider.next_frame_expected_by() - now[0]
+
+        assert provider._live_provider is not None
+        assert live_horizon < idle_horizon, "a live stream must not inherit the idle tier's patience"
+
+    async def test_never_returns_a_deadline_in_the_past(self, fakes):
+        """A consumer derives a wait budget from this; a past deadline means zero,
+        which would time out instantly on a source that is merely overdue."""
+        provider, client = await _started_provider()
+        now = [1000.0]
+        provider._now = lambda: now[0]
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        now[0] += 30.0
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+
+        now[0] += 10_000.0  # long overdue
+        assert provider.next_frame_expected_by() > now[0]
+
+    async def test_min_capture_interval_actually_paces(self, fakes):
+        """It is advertised in the source editor, so it has to do something.
+
+        Without this the live tier hands a collector ~20fps of 1080p regardless of
+        what it asked for.
+        """
+        provider, client = await _started_provider(min_capture_interval=5.0)
+        now = [1000.0]
+        slept: list[float] = []
+        provider._now = lambda: now[0]
+
+        async def fake_sleep(d):
+            slept.append(d)
+            now[0] += d
+
+        provider._sleep = fake_sleep
+
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        await provider.getNextImage()
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((4, 5, 6)))
+        await provider.getNextImage()
+
+        assert slept and slept[-1] == pytest.approx(5.0), f"expected a 5s pacing sleep, got {slept}"
+
+
 class TestSleepCourtesy:
     """We only ever put back to sleep what we ourselves woke."""
 

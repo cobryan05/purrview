@@ -117,6 +117,40 @@ class ImageProvider:
         """
         return True
 
+    def next_frame_expected_by(self) -> Optional[float]:
+        """Deadline by which this provider expects to produce its next frame.
+
+        **On the `time.monotonic()` clock.** Callers must compare against
+        `time.monotonic()` and nothing else — `time.perf_counter()` is also monotonic
+        but has a different epoch, so subtracting the two yields a plausible-looking
+        number that is wrong by an arbitrary constant.
+
+        `None` — the default — means "no opinion", and a caller falls back to whatever
+        pacing it already applies. Every provider that returns None behaves exactly as
+        it did before this existed.
+
+        A *deadline* rather than an interval, because an interval cannot describe a
+        source whose cadence changes. A Ring camera is not simply "slow": it is ~30s
+        between cloud snapshots while idle and ~20fps while live, with an ~8.5s
+        connect gap in between where neither is true. There is no single interval that
+        is not badly wrong in one of those states, whereas a deadline is just
+        recomputed as the state changes — so the caller never has to know the states
+        exist.
+
+        Consumers should use it for two distinct things that otherwise get conflated:
+
+        * **how long one `getNextImage()` may legitimately block** — a source that
+          genuinely has nothing to say for 30s is not stalled, and timing it out
+          burns retries and marks a healthy source as failing.
+        * **when silence becomes worth reporting** — the point past this deadline at
+          which a human should be told, rather than a fixed multiple of a rate limit.
+
+        Deliberately "expected", not "guaranteed": being past it is evidence, not
+        proof. Treat it as the point where suspicion starts, and leave slack before
+        acting.
+        """
+        return None
+
     def is_connecting(self) -> bool:
         """Whether this provider is still coming up and should be left alone.
 

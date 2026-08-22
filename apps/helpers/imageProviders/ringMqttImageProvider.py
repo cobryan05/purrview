@@ -183,6 +183,14 @@ class RingMqttImageProvider(ImageProvider):
         self._subscribed: bool = False
 
         self._snapshot_queue: asyncio.Queue = asyncio.Queue(maxsize=self.QUEUE_SIZE)
+        #: Pacing state for `min_capture_interval`, mirroring UrlImageProvider.
+        self._next_capture_time: float = 0.0
+        #: When the last snapshot arrived, and the cadence learned from consecutive
+        #: arrivals. Measured rather than configured: ring-mqtt's snapshot interval is
+        #: a setting on the bridge (`snapshot_interval/command`), so any constant here
+        #: would silently rot the moment someone changed it there.
+        self._last_snapshot_at: Optional[float] = None
+        self._snapshot_cadence_s: Optional[float] = None
         self._frame_idx: int = 0
 
         #: The live tier's reader. Built on escalation, torn down on de-escalation, so
@@ -276,6 +284,47 @@ class RingMqttImageProvider(ImageProvider):
         """Only the live tier can be mid-connect; the idle tier is either up or not."""
         return self._live_provider is not None and self._live_provider.is_connecting()
 
+    #: What to promise while the live reader is still coming up. Measured cold-start to
+    #: first frame is ~8.5s through the relay; this is generous enough that a normal
+    #: connect never looks like a stall.
+    CONNECT_EXPECTATION_S = 30.0
+
+    #: Fallback cadence before enough snapshots have arrived to measure one.
+    #: ring-mqtt's documented default is 90s; the deployment this was built against
+    #: runs 30s. Assume the slower of the two — guessing fast reports a healthy camera
+    #: as overdue, guessing slow only delays a real complaint.
+    ASSUMED_SNAPSHOT_CADENCE_S = 90.0
+
+    #: Multiplier on the snapshot cadence before the next frame is "expected". Ring's
+    #: interval is not tightly periodic and a cloud snapshot can slip a cycle, so a
+    #: deadline at exactly one cadence would cry wolf routinely.
+    CADENCE_SLACK = 2.0
+
+    def next_frame_expected_by(self) -> Optional[float]:
+        """When the next frame should have arrived, given the tier we are in now.
+
+        Three different answers, which is the whole reason this is a deadline and not
+        an interval:
+
+        * **live** — frames arrive at stream rate, so anything beyond a couple of
+          seconds is a genuine stall worth noticing quickly.
+        * **connecting** — neither tier is producing. Not a stall; just wait.
+        * **idle** — the next cloud snapshot, from the cadence measured off the
+          bridge, with slack.
+        """
+        now = self._now()
+        if self._live_provider is not None:
+            if self._live_provider.is_connecting():
+                return now + self.CONNECT_EXPECTATION_S
+            return now + 2.0
+        cadence = self._snapshot_cadence_s or self.ASSUMED_SNAPSHOT_CADENCE_S
+        base = self._last_snapshot_at if self._last_snapshot_at is not None else now
+        deadline = base + cadence * self.CADENCE_SLACK
+        # Never hand back a deadline already in the past: a consumer deriving a wait
+        # budget from it would get zero and time out instantly on a source that is
+        # merely overdue.
+        return max(deadline, now + cadence)
+
     def set_source_fps_ceiling(self, fps: float) -> None:
         """Remembered, and applied to each live reader as it is built.
 
@@ -306,6 +355,7 @@ class RingMqttImageProvider(ImageProvider):
             # BGR, so the swap has to happen here. Getting it wrong is silent —
             # nothing downstream can tell — and shows up only as worse detections.
             frame = np.array(image.convert("RGB"))[..., ::-1]
+            self._note_snapshot_arrival()
             asyncio.run_coroutine_threadsafe(self._offer_snapshot(frame, raw), loop)
         except Exception:
             logger.error("Failed to decode a Ring snapshot", exc_info=True)
@@ -386,6 +436,25 @@ class RingMqttImageProvider(ImageProvider):
         """
         self._escalate_requested = True
         self._live_until = self._now() + self._live_hold_s
+
+    def _note_snapshot_arrival(self) -> None:
+        """Learn the bridge's snapshot cadence from consecutive arrivals.
+
+        Runs on the broker thread. Uses the max of the observed gaps rather than the
+        latest one, because a motion event injects an out-of-band snapshot
+        (`attributes.type` flips to "motion") that is far closer to its predecessor
+        than the interval — taking the newest gap would teach us a cadence of two
+        seconds and then report a perfectly healthy idle camera as overdue.
+        """
+        now = self._now()
+        previous, self._last_snapshot_at = self._last_snapshot_at, now
+        if previous is None:
+            return
+        gap = now - previous
+        if gap <= 0:
+            return
+        if self._snapshot_cadence_s is None or gap > self._snapshot_cadence_s:
+            self._snapshot_cadence_s = gap
 
     async def _offer_snapshot(self, frame: np.ndarray, raw: bytes) -> None:
         """Queue a snapshot, discarding the oldest if the consumer has fallen behind."""
@@ -506,6 +575,15 @@ class RingMqttImageProvider(ImageProvider):
         if self._loop is None:
             # A caller that skipped start() still gets frames rather than silence.
             await self.start()
+
+        # Self-pace exactly as UrlImageProvider does. This matters most on the live
+        # tier: without it an escalated camera hands the caller ~20fps of 1080p, and
+        # a collector wanting a frame every few seconds gets a flood.
+        if self._min_capture_interval > 0:
+            now = self._now()
+            if now < self._next_capture_time:
+                await self._sleep(self._next_capture_time - now)
+            self._next_capture_time = self._now() + self._min_capture_interval
 
         if self._escalate_requested:
             self._escalate_requested = False
