@@ -179,6 +179,8 @@ export const fieldFactories = {
 
     return await FilterChainSelectField.create({
       value: values[fieldName],
+      // An optional chain must be un-selectable again; a required one must not be.
+      allowNone: !required,
       onChange: (val) => {
         onChange?.(val);
       },

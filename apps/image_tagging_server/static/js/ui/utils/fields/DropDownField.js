@@ -17,8 +17,12 @@ export class DropDownField extends Field {
   async renderEdit() {
     const select = document.createElement('select');
 
-    // Add placeholder if no value is set
-    if (!this._value) {
+    // Add placeholder if no value is set — unless an option already represents the
+    // empty value (e.g. an explicit "none" entry keyed ''). Without that guard the
+    // disabled placeholder and the real option would both claim `selected`, and
+    // which one wins is left to the browser's option-insertion rules.
+    const hasMatchingOption = this._options.some(opt => this._isMatchingOption(opt, this._value));
+    if (!this._value && !hasMatchingOption) {
       const placeholderOption = document.createElement('option');
       placeholderOption.value = '';
       placeholderOption.textContent = this._placeholder || 'Select...';
