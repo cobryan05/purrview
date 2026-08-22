@@ -70,15 +70,20 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Seconds a clip's detection boxes are shifted back by, to line them up with the
-      # picture. A clip is cut on the relay's record clock; the boxes are stamped on the
-      # watcher's fetch clock, one ffmpeg pipe and jitter buffer later, so uncompensated
-      # boxes render late. A CALIBRATION OF THIS INGEST PATH, not a preference — 1.0 is
-      # the median measured here (three clear clips at +0.8 / +1.2 / +1.6). Re-measure
-      # after changing camera, relay or transport:
-      #   docker exec -w /project whiskerwatcher_mono_dev \
-      #     python scripts/measure_overlay_lag.py /data/recordings/clips/<day>/*.mp4
-      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-1.0}
+      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
+      # them later. A clip is cut on the relay's record clock while the boxes are
+      # stamped on the watcher's fetch clock, and the two do not agree; this is the
+      # knob for the difference.
+      #
+      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
+      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
+      # a value of 1.0 was set on that basis, and direct observation then showed boxes
+      # running AHEAD of the picture — the opposite sign — with the correction having
+      # made it worse. Treat that script as a weak instrument (its peaks were barely
+      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
+      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
+      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       # Reach the training node; defaults to the `training` compose service.
@@ -164,15 +169,20 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Seconds a clip's detection boxes are shifted back by, to line them up with the
-      # picture. A clip is cut on the relay's record clock; the boxes are stamped on the
-      # watcher's fetch clock, one ffmpeg pipe and jitter buffer later, so uncompensated
-      # boxes render late. A CALIBRATION OF THIS INGEST PATH, not a preference — 1.0 is
-      # the median measured here (three clear clips at +0.8 / +1.2 / +1.6). Re-measure
-      # after changing camera, relay or transport:
-      #   docker exec -w /project whiskerwatcher_mono_dev \
-      #     python scripts/measure_overlay_lag.py /data/recordings/clips/<day>/*.mp4
-      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-1.0}
+      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
+      # them later. A clip is cut on the relay's record clock while the boxes are
+      # stamped on the watcher's fetch clock, and the two do not agree; this is the
+      # knob for the difference.
+      #
+      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
+      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
+      # a value of 1.0 was set on that basis, and direct observation then showed boxes
+      # running AHEAD of the picture — the opposite sign — with the correction having
+      # made it worse. Treat that script as a weak instrument (its peaks were barely
+      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
+      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
+      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: localhost
@@ -221,15 +231,20 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Seconds a clip's detection boxes are shifted back by, to line them up with the
-      # picture. A clip is cut on the relay's record clock; the boxes are stamped on the
-      # watcher's fetch clock, one ffmpeg pipe and jitter buffer later, so uncompensated
-      # boxes render late. A CALIBRATION OF THIS INGEST PATH, not a preference — 1.0 is
-      # the median measured here (three clear clips at +0.8 / +1.2 / +1.6). Re-measure
-      # after changing camera, relay or transport:
-      #   docker exec -w /project whiskerwatcher_mono_dev \
-      #     python scripts/measure_overlay_lag.py /data/recordings/clips/<day>/*.mp4
-      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-1.0}
+      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
+      # them later. A clip is cut on the relay's record clock while the boxes are
+      # stamped on the watcher's fetch clock, and the two do not agree; this is the
+      # knob for the difference.
+      #
+      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
+      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
+      # a value of 1.0 was set on that basis, and direct observation then showed boxes
+      # running AHEAD of the picture — the opposite sign — with the correction having
+      # made it worse. Treat that script as a weak instrument (its peaks were barely
+      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
+      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
+      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training-dev}
@@ -315,15 +330,20 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Seconds a clip's detection boxes are shifted back by, to line them up with the
-      # picture. A clip is cut on the relay's record clock; the boxes are stamped on the
-      # watcher's fetch clock, one ffmpeg pipe and jitter buffer later, so uncompensated
-      # boxes render late. A CALIBRATION OF THIS INGEST PATH, not a preference — 1.0 is
-      # the median measured here (three clear clips at +0.8 / +1.2 / +1.6). Re-measure
-      # after changing camera, relay or transport:
-      #   docker exec -w /project whiskerwatcher_mono_dev \
-      #     python scripts/measure_overlay_lag.py /data/recordings/clips/<day>/*.mp4
-      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-1.0}
+      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
+      # them later. A clip is cut on the relay's record clock while the boxes are
+      # stamped on the watcher's fetch clock, and the two do not agree; this is the
+      # knob for the difference.
+      #
+      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
+      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
+      # a value of 1.0 was set on that basis, and direct observation then showed boxes
+      # running AHEAD of the picture — the opposite sign — with the correction having
+      # made it worse. Treat that script as a weak instrument (its peaks were barely
+      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
+      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
+      WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       TRAINING_SERVER_HOST: localhost
       DB_SERVER_HOST: localhost

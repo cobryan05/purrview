@@ -65,16 +65,20 @@ from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
 logger = logging.getLogger(__name__)
 
-#: Seconds to shift a buffer-cut clip's overlay back by, compensating the ingest latency
-#: between the relay's record clock (which the clip is on) and the watcher's fetch clock
-#: (which the boxes are on). See `build_overlay`'s docstring for why the two differ and
-#: why nothing here can observe the true capture instant.
+#: Seconds to shift a buffer-cut clip's overlay EARLIER by; negative shifts it later.
+#: The clip is on the relay's record clock and the boxes are on the watcher's fetch
+#: clock (see `build_overlay`), and this is the knob for the disagreement between them.
 #:
-#: An env var rather than a per-source column because it is a property of the deployment's
-#: ingest path — same relay, same ffmpeg, same buffering for every camera behind it — and
-#: because it is a calibration, not a preference: measure it with
-#: `scripts/measure_overlay_lag.py` against real clips and set the number it reports.
-#: 0.0 keeps the previous behaviour exactly.
+#: **Defaults to 0, and the reason is worth keeping.** A value of 1.0 was set from
+#: `scripts/measure_overlay_lag.py`, which reported boxes lagging the picture by ~1.2 s.
+#: Direct observation of a clip then showed the boxes running *ahead* — the opposite
+#: sign — and the correction had made it worse. The script's peaks were barely above
+#: their baseline, and the sidecar samples at well under 1 Hz, so its resolution is no
+#: better than the effect it is measuring. Do not set this from that script alone;
+#: set it from what a clip actually looks like.
+#:
+#: An env var rather than a per-source column because it describes the deployment's
+#: ingest path — same relay, same ffmpeg, same buffering for every camera behind it.
 OVERLAY_LAG_S: float = float(os.environ.get("WATCH_OVERLAY_LAG_S", "0") or 0.0)
 
 #: Outside `image_datasets` on purpose — these are not training images and must not turn

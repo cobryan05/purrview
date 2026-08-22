@@ -229,14 +229,18 @@ def build_overlay(
     MediaMTX from the camera); a sample's `at` is the watcher's *fetch* clock (when its
     own copy of that picture came back out of ffmpeg, a decoder and a jitter buffer
     later). The watcher cannot observe the capture instant — nothing in the rawvideo
-    pipe carries it — so the difference is a per-deployment ingest latency, and it makes
-    every box render that much late.
+    pipe carries it — so the difference is a per-deployment property, and it displaces
+    every box in the clip by the same amount. Positive shifts the boxes earlier in the
+    video; negative shifts them later.
 
-    Measured on this install at +0.4 s to +1.6 s across five clips, consistently
-    positive, using `scripts/measure_overlay_lag.py` — which is committed precisely so
-    this number is re-measurable rather than folklore. It defaults to 0.0 (the previous
-    behaviour exactly) because the right value belongs to the camera and the ingest
-    path, not to this code.
+    **The sign is not settled, and the default is 0.** `scripts/measure_overlay_lag.py`
+    reported this lag as consistently positive (+0.4 s to +1.6 s across five clips), a
+    value of 1.0 was set on that basis, and watching a clip afterwards showed the boxes
+    running *ahead* of the subject instead — the opposite sign, made worse by the
+    correction. The script cross-correlates in-box motion energy, its peaks there stood
+    barely above their own baseline, and the sidecar samples at well under 1 Hz, so its
+    resolution is no better than the effect. Whatever this value ends up being, derive
+    it from watching a clip, not from that script alone.
 
     A ring-cut clip needs no compensation at all and must be left at 0: its frames and
     its boxes are stamped by the same `arrived_at`, so they are aligned by construction.

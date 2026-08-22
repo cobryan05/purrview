@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 import pytest
 
+import apps.tasks_server.tasks._watch_event_recorder as _watch_event_recorder
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.recordings.detectionTrack import DetectionTrack
 from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
@@ -422,6 +423,18 @@ class TestTheDetectionSidecar:
     right after an event and mysteriously stops later.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_ingest_lag(self, monkeypatch):
+        """Pin the overlay lag, rather than inheriting whatever the container sets.
+
+        `OVERLAY_LAG_S` is read from `WATCH_OVERLAY_LAG_S` at import, so without this the
+        sidecar's box times and event window shift by whatever the deployment happens to
+        be calibrated to and these assertions pass or fail by environment. It cost a real
+        failure: the suite was green, a rebuild put 1.0 into the container, and the event
+        window moved to 9.0 s with no code change behind it.
+        """
+        monkeypatch.setattr(_watch_event_recorder, "OVERLAY_LAG_S", 0.0)
+
     def _track(self, *, first_at=90.0, count=40):
         """A ring covering the clip's whole window, one sample a second."""
         track = DetectionTrack()
@@ -429,7 +442,7 @@ class TestTheDetectionSidecar:
             track.push(WALLCLOCK_OFFSET + first_at + i, [_Det((160, 90, 320, 180))], [], (640, 360))
         return track
 
-    def _clip(self, tmp_path, *, overlay=True, start_offset=90.0, duration=45.0):
+    def _clip(self, tmp_path, *, overlay=True, start_offset=90.0, duration=45.0, low_fps=False):
         clip = tmp_path / "a.mp4"
         clip.write_bytes(b"\x00")
         return {
@@ -438,6 +451,8 @@ class TestTheDetectionSidecar:
             "durationS": duration,
             "sizeBytes": 1,
             "overlay": overlay,
+            # The ring backend's marker — see RingClipBackend.extract.
+            "lowFps": low_fps,
         }
 
     async def _attach(self, recorder, tmp_path, *, track=..., **clip_kw):
@@ -449,6 +464,26 @@ class TestTheDetectionSidecar:
             context=_context(),
             detection_track=self._track() if track is ... else track,
         )
+
+    async def test_a_ring_cut_clip_is_never_lag_compensated(self, recorder, tmp_path, monkeypatch):
+        """A ring clip's frames and its boxes are stamped by the same `arrived_at`, so
+        they are aligned by construction. Compensating one of them would *introduce* the
+        error the setting exists to remove — and the setting is global, so this exemption
+        is the only thing standing between a calibrated deployment and broken ring clips.
+        """
+        monkeypatch.setattr(_watch_event_recorder, "OVERLAY_LAG_S", 1.0)
+        await self._attach(recorder, tmp_path, low_fps=True)
+
+        assert json.loads((tmp_path / "a.mp4.boxes.json").read_text())["lagS"] == 0.0
+
+    async def test_a_buffer_cut_clip_carries_the_configured_lag(self, recorder, tmp_path, monkeypatch):
+        """The other side of the branch above: the setting has to actually reach the
+        sidecar, and be recorded on it, or a clip written under one calibration is
+        indistinguishable from one written under another."""
+        monkeypatch.setattr(_watch_event_recorder, "OVERLAY_LAG_S", 1.0)
+        await self._attach(recorder, tmp_path, low_fps=False)
+
+        assert json.loads((tmp_path / "a.mp4.boxes.json").read_text())["lagS"] == 1.0
 
     async def test_the_sidecar_lands_beside_the_clip_and_is_named_on_the_row(self, recorder, store, tmp_path):
         await self._attach(recorder, tmp_path)
