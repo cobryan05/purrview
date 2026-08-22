@@ -1101,7 +1101,14 @@ class StreamWatcherTask(Task):
 
         # A fresh reading, not the `now` from before the fetch: a slow camera can make
         # that stale by seconds, and these timestamps are what the clip window indexes.
-        self._push_to_ring(pipeline, base64_img, time.monotonic(), full_res=provided.encoded_b64)
+        #
+        # Kept, rather than re-read, because the detection track is stamped with it too
+        # (further down, after inference has run). It is the closest thing this loop has
+        # to "when this picture existed", and the boxes have to be filed against the
+        # same instant as the frame they describe — stamping them after inference would
+        # date every one of them by however long the model took.
+        arrived_at = time.monotonic()
+        self._push_to_ring(pipeline, base64_img, arrived_at, full_res=provided.encoded_b64)
 
         # analysed.shape is (h, w, c); the detections must land in the same pixel
         # space the zones were scaled to by prepare_frame() just above.
@@ -1133,7 +1140,13 @@ class StreamWatcherTask(Task):
         # because dispatch is where a closing event cuts its clip and writes the sidecar
         # out of this ring, and the frame that closed the event is one of the frames you
         # most want to see boxes on.
-        self._push_detection_track(pipeline, now, (analysed_w, analysed_h))
+        #
+        # Stamped with `arrived_at`, not `now`. `now` was re-read after inference
+        # returned, so using it dated every sample by the model's own latency and slid
+        # the whole overlay that far past the picture — on top of which it disagreed
+        # with the frame ring, which files the very same frame under `arrived_at`, so a
+        # ring-cut clip and its boxes were built on two different clocks.
+        self._push_detection_track(pipeline, arrived_at, (analysed_w, analysed_h))
 
         for signal in signals:
             self._resolve_slot_names(signal, pipeline)

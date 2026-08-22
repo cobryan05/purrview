@@ -112,6 +112,30 @@ class FFmpegStreamerIn:
                 "rtsp_transport": "tcp",
                 "format": "rtsp",
                 "use_wallclock_as_timestamps": 1,
+                # Read at the live edge. Without these ffmpeg holds roughly three
+                # seconds of the stream before it hands over the first frame, and —
+                # because it then delivers in real time rather than catching up — that
+                # head start never closes: every frame reaches the reader ~3.2 s after
+                # the camera sent it, for the whole life of the process.
+                #
+                # Measured against the relay, matching a live frame back to the same
+                # picture in the recording buffer: 3.20 s and 3.40 s on the two
+                # cameras with no flags, 0.41 s and 0.21 s with both of these.
+                #
+                # That lag is what desynchronised clip overlays. A detection is
+                # timestamped when the watcher analyses the frame, while the clip it
+                # is drawn over is timestamped when MediaMTX recorded that same
+                # picture, so the reader's latency is subtracted from one side only
+                # and every box lands seconds late.
+                #
+                # Both are needed and neither alone does anything: `nobuffer` on its
+                # own measured 3.20 s, unchanged. `probesize`/`analyzeduration` reach
+                # the same latency but cost more than they are worth here — they
+                # suppress ffmpeg's frame-rate estimate ("not enough frames to
+                # estimate rate"), and the banner is where this class reads geometry
+                # and fps from.
+                "fflags": "nobuffer",
+                "flags": "low_delay",
             }
 
         self._source: str = source
