@@ -17,7 +17,48 @@ import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /** @typedef {{sourceUuid: ?string, ruleUuid: ?string, subjectRef: ?string,
  *             targetRef: ?string, startFrom: ?string, startTo: ?string,
- *             hasRecording: ?boolean}} EventFilterState */
+ *             hasRecording: ?boolean, recordingKind: ?string}} EventFilterState */
+
+/**
+ * The Video select's options, as `[value, label]`.
+ *
+ * One control rather than two, because the four questions are alternatives a user picks
+ * between — "no video" and "has a timelapse" cannot both be on. The value encodes which
+ * of the two filters it sets: a bare boolean for the has/hasn't pair, `kind:<name>` for
+ * a specific medium, which keeps the mapping in one place instead of spread across the
+ * read and the write.
+ */
+const VIDEO_FILTER_OPTIONS = [
+  ['', 'With or without video'],
+  ['true', 'Has video'],
+  ['false', 'No video'],
+  ['kind:clip', 'Has a clip'],
+  ['kind:timelapse', 'Has a timelapse'],
+];
+
+/** @param {EventFilterState} state @returns {string} the select value for a state */
+export function videoFilterValue(state) {
+  if (state.recordingKind) return `kind:${state.recordingKind}`;
+  return state.hasRecording == null ? '' : String(state.hasRecording);
+}
+
+/**
+ * Apply a Video select value to the state, clearing whichever of the two filters this
+ * choice does not set — otherwise picking "has a timelapse" after "no video" would ask
+ * for both at once and always return nothing.
+ *
+ * @param {EventFilterState} state
+ * @param {string} value
+ */
+export function applyVideoFilter(state, value) {
+  if (value.startsWith('kind:')) {
+    state.recordingKind = value.slice('kind:'.length);
+    state.hasRecording = null;
+    return;
+  }
+  state.recordingKind = null;
+  state.hasRecording = value === '' ? null : value === 'true';
+}
 
 /** @returns {EventFilterState} */
 export function defaultFilterState() {
@@ -29,6 +70,7 @@ export function defaultFilterState() {
     startFrom: null,
     startTo: null,
     hasRecording: null,
+    recordingKind: null,
   };
 }
 
@@ -154,15 +196,15 @@ export async function createEventFilters(onChange) {
 
     clipSelect = document.createElement('select');
     clipSelect.className = 'event-filters__select';
-    for (const [value, label] of [['', 'With or without video'], ['true', 'Has video'], ['false', 'No video']]) {
+    for (const [value, label] of VIDEO_FILTER_OPTIONS) {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = label;
       clipSelect.appendChild(option);
     }
-    clipSelect.value = state.hasRecording == null ? '' : String(state.hasRecording);
+    clipSelect.value = videoFilterValue(state);
     clipSelect.addEventListener('change', () => {
-      state.hasRecording = clipSelect.value === '' ? null : clipSelect.value === 'true';
+      applyVideoFilter(state, clipSelect.value);
       commit();
     });
 

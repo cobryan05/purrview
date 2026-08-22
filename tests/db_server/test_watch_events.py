@@ -237,6 +237,39 @@ class TestWatchEventFilters:
         assert (await _list(http_client, has_recording=True))["total"] == 1
         assert (await _list(http_client, has_recording=False))["total"] == 1
 
+    async def test_filter_by_recording_kind(self, http_client):
+        """ "Has a timelapse" is a different question from "has video".
+
+        An event can own a clip, a timelapse, both or neither, so the kind filter has to
+        select on the kind rather than on the presence of any media — the failure it
+        guards against is a clip-only event turning up under "has a timelapse".
+        """
+        profile_uuid = await _make_profile(http_client)
+        clip_only = await _make_event(http_client, profile_uuid)
+        lapse_only = await _make_event(http_client, profile_uuid)
+        both = await _make_event(http_client, profile_uuid)
+        await _make_event(http_client, profile_uuid)  # no media at all
+
+        for event, kinds in ((clip_only, ["clip"]), (lapse_only, ["timelapse"]), (both, ["clip", "timelapse"])):
+            for kind in kinds:
+                await http_client.post(
+                    "/api/recordings",
+                    json={
+                        "profileUuid": profile_uuid,
+                        "eventUuid": event["uuid"],
+                        "kind": kind,
+                        "filePath": f"/tmp/{event['uuid']}-{kind}.mp4",
+                    },
+                )
+
+        clips = await _list(http_client, recording_kind="clip")
+        assert {e["uuid"] for e in clips["events"]} == {clip_only["uuid"], both["uuid"]}
+        lapses = await _list(http_client, recording_kind="timelapse")
+        assert {e["uuid"] for e in lapses["events"]} == {lapse_only["uuid"], both["uuid"]}
+        # The event owning both is one row in each result, not two — same EXISTS
+        # reasoning as `has_recording`, which a join would break.
+        assert clips["total"] == 2 and lapses["total"] == 2
+
     async def test_an_event_owning_two_recordings_is_counted_once(self, http_client):
         """The filter is an EXISTS, not a join.
 

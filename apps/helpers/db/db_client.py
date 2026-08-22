@@ -6960,6 +6960,7 @@ class DbClient:
         start_from: Optional[datetime] = None,
         start_to: Optional[datetime] = None,
         has_recording: Optional[bool] = None,
+        recording_kind: Optional[str] = None,
         has_blips: Optional[bool] = None,
         review_state: Optional[str] = None,
         limit: int = 200,
@@ -6993,6 +6994,17 @@ class DbClient:
                 # `recordings.event_uuid` is indexed, so this stays a lookup per row.
                 owns_media = select(Recording.uuid).where(Recording.event_uuid == WatchEvent.uuid).exists()
                 stmt = stmt.where(owns_media if has_recording else ~owns_media)
+            if recording_kind:
+                # Narrower than `has_recording`, and deliberately a separate parameter
+                # rather than a third state of it: "owns a timelapse" says nothing about
+                # whether it also owns a clip, and the two questions compose. Same
+                # indexed `event_uuid` lookup, with `kind` — also indexed — alongside.
+                owns_kind = (
+                    select(Recording.uuid)
+                    .where(Recording.event_uuid == WatchEvent.uuid, Recording.kind == recording_kind)
+                    .exists()
+                )
+                stmt = stmt.where(owns_kind)
             if has_blips is not None:
                 # EXISTS for the same reason as recordings above: an event owns many
                 # blips and no column on the event can answer it. `event_blips.event_uuid`

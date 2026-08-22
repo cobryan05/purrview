@@ -148,7 +148,8 @@ export async function deleteWatchProfile(uuid) {
  * @param {?string} [opts.targetRef] - the thing acted on
  * @param {?string} [opts.startFrom] - ISO, inclusive
  * @param {?string} [opts.startTo] - ISO, inclusive
- * @param {?boolean} [opts.hasRecording]
+ * @param {?boolean} [opts.hasRecording] - owns any media, or none
+ * @param {?string} [opts.recordingKind] - owns one of a specific kind: 'clip' | 'timelapse'
  * @param {number} [opts.limit]
  * @param {number} [opts.offset]
  * @returns {Promise<{events: Array<Object>, total: number}>}
@@ -162,6 +163,7 @@ export async function fetchWatchEvents({
   startFrom,
   startTo,
   hasRecording,
+  recordingKind,
   limit = 60,
   offset = 0,
 } = {}) {
@@ -176,6 +178,7 @@ export async function fetchWatchEvents({
   // Explicit null check: `false` is a real filter ("events with no clip") and must not
   // be dropped the way a falsy guard would drop it.
   if (hasRecording != null) params.set('has_recording', String(hasRecording));
+  if (recordingKind) params.set('recording_kind', recordingKind);
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const res = await apiFetch(`/api/watch-events/?${params}`);
