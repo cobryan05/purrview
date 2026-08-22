@@ -356,6 +356,78 @@ class TestLiveViewContent:
         expect(page.locator("[data-testid='watch-live-pause']")).to_have_text("Resume")
 
 
+class TestFullscreen:
+    """Fullscreen has to actually make the picture bigger.
+
+    It shipped not doing that: the canvas kept `width: auto`, which for a canvas is its
+    bitmap size — the 640px analysis width — and `max-width: 100%` only ever shrinks. So
+    the picture sat at its original size in the middle of a black screen and fullscreen
+    looked broken. Measuring the canvas is the only way to catch that; every assertion
+    about the button, the class or the fullscreen element passed throughout.
+    """
+
+    def _enter(self, page: Page):
+        page.locator("[data-testid='watch-live-fullscreen']").click()
+        page.wait_for_function("() => document.fullscreenElement !== null", timeout=5000)
+
+    def _canvas_box(self, page: Page):
+        return page.locator("[data-testid='watch-live-canvas']").evaluate(
+            "el => { const r = el.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height)}; }"
+        )
+
+    def test_the_picture_grows_to_fill_the_screen(self, page: Page, base_url: str):
+        _mock_nvr(page)
+        _open_live_view(page, base_url)
+
+        before = self._canvas_box(page)
+        self._enter(page)
+        after = self._canvas_box(page)
+
+        screen = page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+        assert after["w"] > before["w"] and after["h"] > before["h"], (before, after)
+        # Filling at least one axis is what "fullscreen" means; the other letterboxes
+        # unless the frame and the screen happen to share an aspect ratio.
+        assert after["w"] >= screen["w"] - 2 or after["h"] >= screen["h"] - 2, (after, screen)
+
+    def test_the_frame_is_not_stretched_out_of_shape(self, page: Page, base_url: str):
+        """`object-fit: contain`, not `fill` — a squashed cat is worse than black bars."""
+        _mock_nvr(page)
+        _open_live_view(page, base_url)
+
+        before = self._canvas_box(page)
+        self._enter(page)
+        after = self._canvas_box(page)
+
+        assert abs(after["w"] / after["h"] - before["w"] / before["h"]) < 0.02, (before, after)
+
+    def test_double_clicking_the_picture_toggles_fullscreen(self, page: Page, base_url: str):
+        """The other half of "where people look for it" — the button alone was missed."""
+        _mock_nvr(page)
+        _open_live_view(page, base_url)
+
+        page.locator("[data-testid='watch-live-stage']").dblclick()
+        page.wait_for_function("() => document.fullscreenElement !== null", timeout=5000)
+
+        page.locator("[data-testid='watch-live-stage']").dblclick()
+        page.wait_for_function("() => document.fullscreenElement === null", timeout=5000)
+
+    def test_the_button_sits_on_the_picture_not_in_the_toolbar(self, page: Page, base_url: str):
+        """It was in the toolbar and took real hunting to find. Asserted as a *relation*
+        — inside the stage's box — rather than as pixel coordinates."""
+        _mock_nvr(page)
+        _open_live_view(page, base_url)
+
+        stage = page.locator("[data-testid='watch-live-stage']").bounding_box()
+        btn = page.locator("[data-testid='watch-live-fullscreen']").bounding_box()
+
+        assert stage["x"] <= btn["x"] and stage["y"] <= btn["y"], (stage, btn)
+        assert btn["x"] + btn["width"] <= stage["x"] + stage["width"] + 1, (stage, btn)
+        assert btn["y"] + btn["height"] <= stage["y"] + stage["height"] + 1, (stage, btn)
+        # Bottom-right specifically: in the lower and right halves of the stage.
+        assert btn["y"] > stage["y"] + stage["height"] / 2, (stage, btn)
+        assert btn["x"] > stage["x"] + stage["width"] / 2, (stage, btn)
+
+
 class TestSaveFrameForAnnotation:
     def _mock_save_endpoints(self, page: Page, captured: dict):
         def _upload(route):

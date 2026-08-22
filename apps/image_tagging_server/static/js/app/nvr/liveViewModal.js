@@ -152,34 +152,6 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   }, { testid: 'watch-live-pause' });
   bar.appendChild(pauseBtn);
 
-  // Fullscreen the *stage*, not the canvas and not the dialog. The canvas alone would
-  // be fine here — frame and boxes are drawn into the same one, so the overlay comes
-  // along for free — but the stage is what carries the black letterbox background, and
-  // a bare fullscreen canvas sits on whatever the UA paints behind it.
-  const fullscreenBtn = button('⛶ Fullscreen', () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen?.();
-    } else {
-      // Not awaited and not assumed to succeed: a browser can refuse (no user gesture
-      // in some embeddings, or a policy block), and `fullscreenchange` is what actually
-      // decides the label — so a refusal simply leaves the button as it was.
-      stage.requestFullscreen?.().catch(() => {});
-    }
-  }, { testid: 'watch-live-fullscreen' });
-  fullscreenBtn.title = 'Fill the screen with the live view. Box overlays are drawn into '
-    + 'the same canvas as the picture, so they scale with it.';
-  bar.appendChild(fullscreenBtn);
-
-  function _syncFullscreenLabel() {
-    const on = document.fullscreenElement === stage;
-    fullscreenBtn.textContent = on ? '⛶ Exit fullscreen' : '⛶ Fullscreen';
-    // The canvas is laid out by CSS, not by JS, but the *drawing* is sized from the
-    // element's client box in a couple of places — redraw so the first fullscreen frame
-    // is not the pre-fullscreen one stretched.
-    draw();
-  }
-  document.addEventListener('fullscreenchange', _syncFullscreenLabel);
-
   bar.appendChild(checkbox('Detections', true, v => { state.show.detections = v; draw(); }, 'watch-live-show-detections'));
   bar.appendChild(checkbox('Tracks', true, v => { state.show.tracks = v; draw(); }, 'watch-live-show-tracks'));
   bar.appendChild(checkbox('Zones', true, v => { state.show.zones = v; draw(); }, 'watch-live-show-zones'));
@@ -198,6 +170,64 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   canvas.dataset.testid = 'watch-live-canvas';
   stage.appendChild(canvas);
   const ctx = canvas.getContext('2d');
+
+  // ---------------------------------------------------------- fullscreen
+  //
+  // Fullscreen the *stage*, not the canvas and not the dialog. The canvas alone would
+  // very nearly do — frame and boxes are drawn into the same one, so the overlay comes
+  // along for free — but the stage carries the black letterbox background, and a bare
+  // fullscreen canvas sits on whatever the UA paints behind it.
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      // Not awaited and not assumed to succeed: a browser can refuse (no user gesture
+      // in some embeddings, or a policy block), and `fullscreenchange` is what actually
+      // decides the label — so a refusal simply leaves the button as it was.
+      stage.requestFullscreen?.().catch(() => {});
+    }
+  }
+
+  // Over the picture's bottom-right corner rather than in the toolbar above: that is
+  // where every other video player puts it, and so where people look — in the toolbar
+  // it was only findable by reading the whole row.
+  // Not `panel-btn`: this one sits ON the picture and is styled for legibility over a
+  // moving frame rather than to match the toolbar it no longer lives in.
+  const fullscreenBtn = button('⛶', toggleFullscreen, {
+    testid: 'watch-live-fullscreen',
+    className: 'watch-live-fullscreen',
+  });
+  fullscreenBtn.title = 'Fullscreen (or double-click the picture). Box overlays are drawn '
+    + 'into the same canvas as the picture, so they scale with it.';
+  fullscreenBtn.setAttribute('aria-label', 'Fullscreen');
+  stage.appendChild(fullscreenBtn);
+
+  // The other half of "where people look": double-clicking the video is the near
+  // universal gesture for this, and costs nothing here — the stage has no other click
+  // handling to disturb.
+  stage.addEventListener('dblclick', (e) => {
+    // The button is inside the stage, so a double-click ON it would toggle twice —
+    // once from its own click handler, once from this — and land back where it started.
+    if (e.target.closest('.watch-live-fullscreen')) return;
+    toggleFullscreen();
+  });
+
+  function _syncFullscreenLabel() {
+    const on = document.fullscreenElement === stage;
+    // The glyph does not change — being fullscreen is self-evident from the screen, and
+    // a second icon for it is one more thing to decode. Only the wording moves.
+    fullscreenBtn.title = on
+      ? 'Exit fullscreen (or double-click the picture, or press Esc).'
+      : 'Fullscreen (or double-click the picture). Box overlays are drawn into the same '
+        + 'canvas as the picture, so they scale with it.';
+    fullscreenBtn.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Fullscreen');
+    // The canvas is laid out by CSS, not by JS, but the *drawing* is sized from the
+    // element's client box in a couple of places — redraw so the first fullscreen frame
+    // is not the pre-fullscreen one stretched.
+    draw();
+  }
+  document.addEventListener('fullscreenchange', _syncFullscreenLabel);
 
   const side = el('div', 'watch-live-side');
   side.dataset.testid = 'watch-live-side';

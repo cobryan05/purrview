@@ -231,6 +231,20 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
   video.addEventListener('timeupdate', redraw);
   video.addEventListener('seeked', redraw);
   video.addEventListener('loadedmetadata', redraw);
+
+  // Double-clicking a `<video>` is the browser's own shortcut for fullscreen, and it
+  // fullscreens the VIDEO ELEMENT — which leaves this canvas, its sibling, behind on the
+  // page: the picture fills the screen and the boxes silently vanish. That is the one
+  // failure this wrapper exists to prevent, so the gesture is taken over here rather
+  // than left to whichever browser happens to implement it. Handled on the wrapper so
+  // the whole letterboxed area responds, not only the picture.
+  const onDoubleClick = (e) => {
+    e.preventDefault();
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    // Not awaited: a refusal should leave the player exactly as it was.
+    else wrapper.requestFullscreen?.().catch(() => {});
+  };
+  wrapper.addEventListener('dblclick', onDoubleClick);
   const observer = new ResizeObserver(redraw);
   observer.observe(video);
   draw();
@@ -253,6 +267,7 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
       video.removeEventListener('timeupdate', redraw);
       video.removeEventListener('seeked', redraw);
       video.removeEventListener('loadedmetadata', redraw);
+      wrapper.removeEventListener('dblclick', onDoubleClick);
       if (rafHandle != null && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(rafHandle);
       canvas.remove();
       // Put the video back where it was before unwrapping, so a caller that kept a
