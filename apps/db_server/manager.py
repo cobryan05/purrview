@@ -5313,9 +5313,6 @@ class Manager:
                     # readers accept both, see CONFIDENCE_KEYS in
                     # static/js/shared/domain/image/confidence.js.
                     metadata_json={
-                        "run_model_added": True,
-                        "source_model": c.source_model,
-                        "confidence": c.confidence,
                         # Provenance travels from the candidate onto the box, because
                         # this is where it stops being recoverable. A candidate is
                         # swept by the preview-run TTL; the bbox it created is
@@ -5324,7 +5321,15 @@ class Manager:
                         # found — `source_model` alone says "some blip harvest, ever",
                         # not *which* event or run, which is the granularity a bad
                         # batch actually needs.
+                        #
+                        # Splatted FIRST so the candidate's own columns below always
+                        # win: _provenance_from matches by `source` *prefix*, so a
+                        # producer that ever wrote `source_model` into its geometry
+                        # would otherwise silently overwrite c.source_model here.
                         **_provenance_from(geo),
+                        "run_model_added": True,
+                        "source_model": c.source_model,
+                        "confidence": c.confidence,
                     },
                 )
             except Exception:

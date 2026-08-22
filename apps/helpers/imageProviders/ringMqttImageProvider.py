@@ -537,9 +537,17 @@ class RingMqttImageProvider(ImageProvider):
             try:
                 await provider.start()
             except Exception:
-                # A failed start has already handed back any relay lease it took, so
-                # there is nothing to clean up here beyond not keeping the provider.
+                # A failed start has already handed back any relay lease it took — but
+                # the `on` published above is still outstanding, and nothing else will
+                # ever retract it: the de-escalation check in getNextImage() is gated on
+                # `_live_provider is not None`, which a failed start leaves as None. The
+                # camera would then be held awake with no reader attached until the task
+                # stopped, and an awake Ring camera raises no motion events. So withdraw
+                # our own claim here.
                 logger.error("Could not open the live stream for %s", self._camera_id, exc_info=True)
+                if self._we_requested_live:
+                    await self._publish_stream_command("off")
+                    self._we_requested_live = False
                 return
             self._live_provider = provider
             logger.info("Ring camera %s is live at %s", self._camera_id, self.live_url)

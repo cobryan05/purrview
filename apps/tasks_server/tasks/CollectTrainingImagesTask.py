@@ -2655,7 +2655,14 @@ class CollectTrainingImagesTask(Task):
         # configured slower than _FETCH_TIMEOUT_S (e.g. a camera polled once a minute)
         # times out on every call, burns all _MAX_RETRIES attempts and is dropped from
         # `active` on its very first fetch despite behaving correctly.
-        fetch_timeout = self._FETCH_TIMEOUT_S + max(0.0, provider.min_capture_interval)
+        #
+        # A provider that knows its own cadence extends the budget further: an idle
+        # Ring camera has nothing to say for a whole snapshot interval (90s out of the
+        # ring-mqtt box) and carries no min_capture_interval, so a flat 30s budget times
+        # out on every attempt, burns all _MAX_RETRIES, records the source as failing and
+        # walks it up the exponential backoff — a healthy camera reported as broken. See
+        # `ImageProvider.next_frame_expected_by`, whose first documented use this is.
+        fetch_timeout = self._extended_wait(provider, self._FETCH_TIMEOUT_S + max(0.0, provider.min_capture_interval))
         t0 = time.perf_counter()
         provided = None
         fetch_error: Optional[str] = None
@@ -2679,6 +2686,29 @@ class CollectTrainingImagesTask(Task):
                 logger.warning("Retrying '%s' (attempt %d/%d)", source_key, _attempt + 2, self._MAX_RETRIES)
         return provided, fetch_error, t0, time.perf_counter()
 
+    @staticmethod
+    def _extended_wait(provider, configured: float) -> float:
+        """`configured`, stretched to whatever this provider says it needs.
+
+        Never *shortens* it: a provider is trusted to ask for more patience, never
+        less. Shared by the fetch budget and the staleness threshold so the two can
+        never disagree about how long silence from a source is normal.
+        """
+        if provider is None:
+            return configured
+        try:
+            deadline = provider.next_frame_expected_by()
+        except Exception:
+            # A provider misbehaving here must not take out the status panel, which is
+            # often the only way to see that it is misbehaving at all.
+            logger.debug("next_frame_expected_by() failed for %r", provider, exc_info=True)
+            return configured
+        if deadline is None:
+            return configured
+        # time.monotonic() specifically — the deadline is on that clock, and
+        # perf_counter() (used elsewhere in this class) has a different epoch.
+        return max(configured, deadline - time.monotonic())
+
     def _expected_interval(self, source_name: str, configured: float) -> float:
         """How long silence from this source is normal, right now.
 
@@ -2689,25 +2719,9 @@ class CollectTrainingImagesTask(Task):
         30s is not stalled at 1s, but the rate limit says it is, and it gets reported
         as failing forever.
 
-        So a provider that knows better gets to say so. Never *shortens* the
-        configured interval: this decides when to complain, and a provider is only
-        trusted to ask for more patience, not less.
+        So a provider that knows better gets to say so.
         """
-        provider = getattr(self, "_providers_by_source", {}).get(source_name)
-        if provider is None:
-            return configured
-        try:
-            deadline = provider.next_frame_expected_by()
-        except Exception:
-            # A provider misbehaving here must not take out the status panel, which is
-            # often the only way to see that it is misbehaving at all.
-            logger.debug("next_frame_expected_by() failed for %s", source_name, exc_info=True)
-            return configured
-        if deadline is None:
-            return configured
-        # time.monotonic() specifically — the deadline is on that clock, and
-        # perf_counter() (used elsewhere in this class) has a different epoch.
-        return max(configured, deadline - time.monotonic())
+        return self._extended_wait(getattr(self, "_providers_by_source", {}).get(source_name), configured)
 
     def _source_staleness(self, source_name: str, interval: float) -> tuple[str, float]:
         """(level, elapsed_s) for one live source, as a function of how many multiples

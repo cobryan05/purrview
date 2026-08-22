@@ -135,12 +135,17 @@ export function createFilenameConditions(onChange, { matchMode = 'any' } = {}) {
     removeBtn.dataset.testid = 'filename-condition-remove';
     removeBtn.addEventListener('click', () => {
       const wasActive = !!_conditions[idx].pattern.trim();
+      // A pending debounce is some *other* row's text edit — already applied to
+      // _conditions, not yet emitted. _flushPending only cancels the timer, so
+      // skipping the emit below would strand that edit: typed, visible in the
+      // box, and never sent to the search.
+      const hadPending = _debounce !== null;
       _conditions.splice(idx, 1);
       _flushPending();
       _renderAll();
       // Removing a row that was still blank changes nothing the search can
       // see, so don't re-run it.
-      if (wasActive) _emit();
+      if (wasActive || hadPending) _emit();
     });
     row.appendChild(removeBtn);
 
