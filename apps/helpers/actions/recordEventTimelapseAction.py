@@ -197,6 +197,17 @@ class RecordEventTimelapseAction(Action):
         # Compiled per event and attached to its row, exactly as a clip is.
         return True
 
+    def holds_open_event(self, signal: WatchEventSignal) -> bool:
+        """True once this event's session has enough frames to be worth compiling.
+
+        Below `min_frames` nothing will be written, so the event has earned no row yet —
+        the same line `_on_end` draws, asked earlier. Above it the video is a certainty
+        (bar the watcher dying), and the event can be listed while it is still running
+        instead of appearing only once the cat has left.
+        """
+        session = self._sessions.get(_session_key(signal))
+        return session is not None and session.frames >= self.min_frames
+
     def wrote_to_event(self, result) -> bool:
         # The case this whole distinction exists for: a visit too short to reach
         # `min_frames` compiles nothing and reports **ok**, because there is nothing
@@ -542,6 +553,60 @@ class RecordEventTimelapseAction(Action):
             # compile is not retryable (the event is over and the session is gone).
             session.discard()
 
+    #: A preview must not become a way to run an unbounded encode on demand: at one
+    #: frame per interval a long event holds thousands, and re-encoding all of them on
+    #: every click would cost more than the watcher itself. Past this the preview shows
+    #: the most recent frames, which is the part anyone previewing is looking for.
+    PREVIEW_MAX_FRAMES = 900
+
+    async def preview(self, key: SessionKey) -> Optional[Dict[str, Any]]:
+        """Compile what one still-open session has collected so far, without disturbing it.
+
+        The answer to "this event has been running for an hour — what does it look like
+        so far?". The session keeps sampling: nothing here mutates it, the frames stay
+        on disk, and the real compile at the close still sees all of them.
+
+        Returns None when there is no such session or it holds too little to play.
+
+        The newest frame is deliberately left out. `write_bytes` is not atomic and the
+        sampler may be part-way through that very file, so including it risks a torn
+        JPEG at the end of every preview — one frame is nothing next to a video that is
+        seconds long.
+        """
+        session = self._sessions.get(key)
+        if session is None:
+            return None
+        frames = self._buffered_frames(session)[:-1]
+        if len(frames) < 2:
+            return None
+        frames = frames[-self.PREVIEW_MAX_FRAMES :]
+
+        scratch = Path(tempfile.mkdtemp(prefix="wwtl-preview-"))
+        dest = scratch / "preview.mp4"
+        try:
+            await asyncio.to_thread(self._compile, session, dest, frames, "preview.txt")
+            return {
+                "video": dest.read_bytes(),
+                "frames": len(frames),
+                "durationS": len(frames) / self.output_fps,
+                # What the previewed frames span in real time, so the player can say
+                # "the last 40 minutes" rather than only "18 seconds of video".
+                "sourceSpanS": max(0.0, (session.last_at or 0) - (session.first_at or 0)),
+                "intervalS": self.interval_s,
+                # True when the preview is a tail rather than the whole event so far —
+                # the modal has to say so, or it reads as the event having started later
+                # than it did.
+                "partial": len(frames) < session.frames - 1,
+            }
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+            # The preview's own list file, not the session's — see `_compile`.
+            (session.directory / "preview.txt").unlink(missing_ok=True)
+
+    def open_session_keys(self) -> List[SessionKey]:
+        """Every session currently buffering, so a caller can offer a preview of one."""
+        return list(self._sessions)
+
     async def close(self) -> None:
         """Drop every open session's buffer.
 
@@ -624,17 +689,30 @@ class RecordEventTimelapseAction(Action):
             logger.warning("Timelapse overlay not written for %s: %s", dest.name, e)
             return None
 
-    def _compile(self, session: _Session, dest: Path) -> int:
+    def _compile(
+        self,
+        session: _Session,
+        dest: Path,
+        frames: Optional[List[Path]] = None,
+        listing_name: str = "frames.txt",
+    ) -> int:
         """Encode the buffered frames to an mp4. Runs in a worker thread.
 
         The concat demuxer rather than `image2pipe`: the frames are already files, and
         piping them would mean reading hundreds of MB back into this process to hand
         straight to ffmpeg. A list file also survives a gap in the numbering, which a
         `%06d` glob would silently truncate at.
+
+        `frames` and `listing_name` exist for the mid-event preview, which encodes a
+        prefix of a session that is still being written to. It needs its own list file
+        because the closing compile may run while a preview is in flight, and both
+        writing `frames.txt` at once would give one of them a truncated or interleaved
+        list — a corrupt video from a race that reproduces about never.
         """
         dest.parent.mkdir(parents=True, exist_ok=True)
-        listing = session.directory / "frames.txt"
-        listing.write_text("".join(f"file '{p.name}'\n" for p in self._buffered_frames(session)))
+        listing = session.directory / listing_name
+        chosen = self._buffered_frames(session) if frames is None else frames
+        listing.write_text("".join(f"file '{p.name}'\n" for p in chosen))
 
         partial = dest.with_suffix(dest.suffix + ".part")
         cmd = [

@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Union
 
 from fastapi import FastAPI, Form, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import Field
@@ -536,6 +536,66 @@ class WebApp:
             if preview is None:
                 return TaskLivePreviewResponse(status=WebApp.FAILURE_KEY, message="This task type has no live view")
             return TaskLivePreviewResponse(status=WebApp.SUCCESS_KEY, preview=preview)
+
+        @self._app.get(
+            "/api/tasks/instances/{task_uuid}/timelapse-preview",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_timelapse_preview",
+        )
+        async def get_task_timelapse_preview_api(
+            task_uuid: str,
+            source_uuid: str,
+            rule_uuid: str,
+            subject_ref: str = "",
+            target_ref: str = "",
+        ) -> Response:
+            """The video an in-progress event timelapse has collected so far.
+
+            Returns the mp4 itself rather than a JSON envelope: it is played by a
+            `<video>` element, and base64 in a JSON field would cost a third more bytes
+            for a file that is already megabytes.
+
+            Facts about the preview ride along as headers, because the body is the
+            video. `X-Timelapse-Partial` says the video is only the most recent frames
+            of a longer event, which the player has to disclose.
+
+            A GET, and it reads without mutating: the session keeps sampling throughout
+            and its frames are untouched. Not cached — the whole point is that the
+            answer is different a minute later.
+            """
+            try:
+                preview = await self._manager.get_task_timelapse_preview(
+                    task_uuid,
+                    source_uuid=source_uuid,
+                    rule_uuid=rule_uuid,
+                    subject_ref=subject_ref,
+                    target_ref=target_ref,
+                )
+            except ValueError as e:
+                # The watcher stopped while the modal was open — ordinary, not a fault.
+                return JSONResponse(status_code=404, content={"status": WebApp.FAILURE_KEY, "message": str(e)})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(status_code=500, content={"status": WebApp.FAILURE_KEY, "message": str(e)})
+            if preview is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "status": WebApp.FAILURE_KEY,
+                        "message": "Nothing has been buffered for this event yet",
+                    },
+                )
+            return Response(
+                content=preview["video"],
+                media_type="video/mp4",
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Timelapse-Frames": str(preview["frames"]),
+                    "X-Timelapse-Duration-S": f"{preview['durationS']:.3f}",
+                    "X-Timelapse-Source-Span-S": f"{preview['sourceSpanS']:.3f}",
+                    "X-Timelapse-Partial": "true" if preview["partial"] else "false",
+                },
+            )
 
         @self._app.get(
             "/api/tasks/sources/{source_uuid}/grab-frame",

@@ -179,6 +179,73 @@ export async function fetchTaskLivePreview(taskUuid, { sourceUuid = null, sinceS
   return data.status === 'success' ? (data.preview ?? null) : null;
 }
 
+/** Task typename of the watcher, which is what owns a live event's frame buffers. */
+const WATCHER_TYPENAME = 'StreamWatcherTask';
+
+/** Statuses in which a watcher still holds its buffers. A stopped one has none. */
+const LIVE_WATCHER_STATUSES = new Set(['running', 'pending', 'paused']);
+
+/**
+ * The running watcher instance for one watch profile, or null if none is live.
+ *
+ * A watcher carries its profile uuid in its config params rather than in a column, so
+ * this reads params rather than joining. The instance filter matters: finished
+ * instances are retained after a watcher stops, and one of those holds no buffer at
+ * all — asking it for a preview would 404 in a way that reads as "nothing recorded"
+ * rather than "not running".
+ *
+ * @param {string} profileUuid
+ * @returns {Promise<?string>} the task instance uuid
+ */
+export async function fetchRunningWatcherUuid(profileUuid) {
+  if (!profileUuid) return null;
+  const { tasks } = await fetchTasksStatus();
+  for (const [taskUuid, task] of Object.entries(tasks ?? {})) {
+    if (task?.config?.typename !== WATCHER_TYPENAME) continue;
+    if (!LIVE_WATCHER_STATUSES.has(task?.instance?.status)) continue;
+    if (task?.config?.params?.watch_profile_uuid === profileUuid) return taskUuid;
+  }
+  return null;
+}
+
+/**
+ * The video an in-progress event timelapse has collected so far.
+ *
+ * An event timelapse only becomes a recording when its event closes, and the events
+ * worth watching this way run for hours — so this asks the running watcher to compile
+ * what it is holding right now. The session keeps sampling; nothing here interrupts it.
+ *
+ * Returns an object URL rather than the bytes: the caller hands it to a `<video>`, and
+ * a blob URL means the browser never has to hold the whole file as a JS string. **The
+ * caller owns it and must `URL.revokeObjectURL` when the player goes away**, or a modal
+ * opened repeatedly on a long event leaks a video per open.
+ *
+ * @param {string} taskUuid - the running watcher instance
+ * @param {{sourceUuid: string, ruleUuid: string, subjectRef?: string, targetRef?: string}} event
+ * @returns {Promise<?{url: string, frames: number, durationS: number, sourceSpanS: number,
+ *   partial: boolean}>} null when nothing is buffered yet, or the watcher has stopped
+ * @throws {Error} only on a transport failure
+ */
+export async function fetchTimelapsePreview(taskUuid, { sourceUuid, ruleUuid, subjectRef = '', targetRef = '' }) {
+  const params = new URLSearchParams({ source_uuid: sourceUuid, rule_uuid: ruleUuid });
+  if (subjectRef) params.set('subject_ref', subjectRef);
+  if (targetRef) params.set('target_ref', targetRef);
+
+  const res = await apiFetch(`/api/tasks/instances/${encodeURIComponent(taskUuid)}/timelapse-preview?${params}`);
+  // 404 is the ordinary "not yet" — too few frames, or the event closed while the modal
+  // was open — and must read as "nothing to show", not as a failure.
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Timelapse preview failed (${res.status})`);
+  const blob = await res.blob();
+  return {
+    url: URL.createObjectURL(blob),
+    frames: Number(res.headers.get('X-Timelapse-Frames') || 0),
+    durationS: Number(res.headers.get('X-Timelapse-Duration-S') || 0),
+    sourceSpanS: Number(res.headers.get('X-Timelapse-Source-Span-S') || 0),
+    partial: res.headers.get('X-Timelapse-Partial') === 'true',
+  };
+}
+
 /**
  * Sends a command to a running task instance — the `task_command` status-action
  * back-channel. `Task.handle_command()` on the backend is only supposed to set

@@ -306,6 +306,9 @@ class WatchPipeline:
     def close_open_events(self, now: float) -> List[WatchEventSignal]:
         return self.engine.close_all(now)
 
+    def open_event_signals(self, now: float) -> List[WatchEventSignal]:
+        return self.engine.open_signals(now)
+
     @property
     def tracks(self) -> List[Track]:
         return list(self._last_tracks)

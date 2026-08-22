@@ -441,6 +441,19 @@ class RuleMachine:
 
         return signals
 
+    def open_signal(self, now: float) -> Optional[WatchEventSignal]:
+        """This machine's open event as an UPDATE signal, or None when nothing is open.
+
+        Carries the same identity the START and END signals do — rule, source and both
+        matched slots — so a caller can find the event's row, or the buffer an action is
+        filling for it, while it is still running. Emits nothing itself: it is a view of
+        the current state, not a transition, and `step` remains the only thing that
+        advances the machine.
+        """
+        if not self.is_open:
+            return None
+        return self._signal(EventPhase.UPDATE, now)
+
     def force_close(self, now: float) -> Optional[WatchEventSignal]:
         """Close an open event without waiting for hysteresis.
 

@@ -90,6 +90,7 @@ def _harness():
     task._dispatch = _noop
     task._service_drain = _noop
     task._dispatch_frame = _noop
+    task._promote_open_events = _noop
 
     pipeline = SimpleNamespace(
         source_uuid="src-1",

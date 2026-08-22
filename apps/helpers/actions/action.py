@@ -144,6 +144,29 @@ class Action(ABC):
         """
         return False
 
+    def holds_open_event(self, signal: "WatchEventSignal") -> bool:
+        """Whether this action has already committed to filing media for a *still-open* event.
+
+        The third question in the set, and the only one asked mid-event. `logs_event` is
+        configuration ("can this kind file a row"), `wrote_to_event` is history ("did this
+        run file one"), and this is a promise: the action is holding material it will
+        certainly turn into a recording when the event closes.
+
+        It exists because an event whose only action is a timelapse has no row until it
+        ends — and an event timelapse of a cat asleep in a window runs for hours, which is
+        exactly the event a user most wants to see listed while it is happening. Answering
+        True brings the row forward to now, where the Events grid renders it "In progress".
+
+        Deliberately *not* the same as "a session is open". A timelapse below its frame
+        minimum compiles nothing, so a session that has just started is not yet a promise
+        of anything; only one past that minimum is. Answering True too eagerly re-creates
+        the empty-card bug `wrote_to_event` exists to prevent.
+
+        Default False: an action that produces its artifact at one instant has nothing to
+        promise beforehand, and must not bring a row forward.
+        """
+        return False
+
     def wrote_to_event(self, result: "ActionResult") -> bool:
         """Whether this run actually put something in the event.
 

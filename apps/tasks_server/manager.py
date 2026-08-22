@@ -759,6 +759,26 @@ class Manager:
             raise ValueError(f"Task {task_uuid} is not currently running")
         return await task_info.task.get_live_preview(source_uuid=source_uuid, **options)
 
+    async def get_task_timelapse_preview(
+        self, task_uuid: str, source_uuid: str, rule_uuid: str, **options: Any
+    ) -> Optional[dict[str, Any]]:
+        """Compile what a running watcher's open event timelapse holds so far.
+
+        Live-only for the same reason as `get_task_live_preview`: the buffered frames
+        exist in the running task's process and nowhere else, so a finished run has
+        nothing to preview — by then the real video is a recording on the event.
+
+        Raises ValueError if the task isn't running; returns None if this task type
+        keeps no such buffer, or has none open for that event.
+        """
+        task_info = self._running_tasks.get(task_uuid)
+        if task_info is None or task_info.task is None:
+            raise ValueError(f"Task {task_uuid} is not currently running")
+        preview_fn = getattr(task_info.task, "get_timelapse_preview", None)
+        if preview_fn is None:
+            return None
+        return await preview_fn(source_uuid=source_uuid, rule_uuid=rule_uuid, **options)
+
     #: How long to wait for a cold camera to hand over one frame. An RTSP handshake plus
     #: a keyframe wait is a couple of seconds on a healthy camera; past this the user is
     #: better served by an error than by a spinner.

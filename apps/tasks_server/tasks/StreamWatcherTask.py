@@ -1163,6 +1163,61 @@ class StreamWatcherTask(Task):
         # were evaluated against rather than raw model output the watcher then ignored.
         await self._dispatch_frame(pipeline)
 
+        # Last, because the frame this pass just handed to the per-frame actions is what
+        # may have carried a timelapse session over its frame minimum — checking before
+        # it would list every such event one analysis interval late.
+        await self._promote_open_events(pipeline)
+
+    async def _promote_open_events(self, pipeline: WatchPipeline) -> None:
+        """Give a still-open event its row once an action has committed to filing media.
+
+        An event's row normally appears when something is written to it, which for a
+        clip or a timelapse is the moment it *closes*. That is right for a clip — there
+        is nothing to show mid-event, and the cut happens at the end — but wrong for an
+        event timelapse, which is the one action that spends the whole event
+        accumulating its artifact. A cat asleep in a window for two hours produced no
+        card at all until it left, so the Events grid could not show the very event a
+        user would most want to watch happening.
+
+        Gated on `Action.holds_open_event`, not merely on the event being open: below
+        its frame minimum a timelapse still compiles nothing, and a row brought forward
+        for an event that then writes nothing is the empty card this design avoids.
+
+        Costs one dict lookup per open event per pass once the row exists — the HTTP
+        call happens exactly once per event, because `event_uuid_for` answers from then
+        on.
+
+        The one thing it gives up: a watcher killed between the promotion and the close
+        leaves a row whose media never got compiled. That row is not a lie — the event
+        did happen and is marked as force-closed — but it is a card with no video, which
+        did not previously exist. Being able to see a long event while it runs is worth
+        it; a row nobody can explain is not.
+        """
+        if self._dry_run:
+            return
+        for signal in pipeline.open_event_signals(time.monotonic()):
+            if self._recorder.event_uuid_for(signal) is not None:
+                continue
+            if not self._event_is_logged(signal):
+                continue
+            # Scoped by rule and source, but *not* by trigger. Which trigger an action
+            # is configured on says when it produces its artifact — a timelapse row
+            # honestly reads `event_ended` — and has nothing to do with whether it is
+            # holding one right now. Filtering on `event_started` here silently
+            # promoted nothing at all, since that is not the trigger any of these
+            # actions is configured with.
+            if not any(
+                getattr(row, "enabled", True)
+                and getattr(row, "trigger", None) != FRAME_ANALYSED
+                and in_scope(getattr(row, "rule_uuids_json", None), signal.rule_uuid or None)
+                and in_scope(getattr(row, "source_uuids_json", None), signal.source_uuid or None)
+                and action.holds_open_event(signal)
+                for row, action in self._actions
+            ):
+                continue
+            self._resolve_slot_names(signal, pipeline)
+            await self._recorder.ensure_event(signal, self._action_context(signal, pipeline))
+
     def _push_detection_track(self, pipeline: WatchPipeline, now: float, frame_size: Tuple[int, int]) -> None:
         """Record one frame's boxes for the clip overlay, if this source keeps one.
 
@@ -1640,6 +1695,38 @@ class StreamWatcherTask(Task):
     #: Preview JPEG quality. Lower than the analysis path's: this is a monitoring
     #: view polled a few times a second, not a training image.
     _PREVIEW_QUALITY: int = 70
+
+    async def get_timelapse_preview(
+        self,
+        source_uuid: str,
+        rule_uuid: str,
+        subject_ref: str = "",
+        target_ref: str = "",
+    ) -> Optional[dict[str, Any]]:
+        """A playable video of what an in-progress event timelapse has collected so far.
+
+        An event timelapse is the one recording that exists only in fragments until its
+        event closes, and a rule like "a cat is present" holds for hours — so the video
+        a user most wants to see is precisely the one they cannot have yet. This
+        compiles the frames on disk into a throwaway mp4 and hands it over, leaving the
+        session untouched and still sampling.
+
+        Keyed the same way the action keys its sessions, so an event identifies its own
+        buffer rather than "whatever this camera is recording" — two rules can hold on
+        one camera at once and each has its own video.
+
+        Returns None when nothing is buffering for that key, which is the ordinary case:
+        the event closed while the modal was open, or the watcher never held one.
+        """
+        key = (source_uuid or "", rule_uuid or "", subject_ref or "", target_ref or "")
+        for _row, action in self._actions:
+            preview_fn = getattr(action, "preview", None)
+            if preview_fn is None:
+                continue
+            preview = await preview_fn(key)
+            if preview is not None:
+                return preview
+        return None
 
     async def get_live_preview(self, source_uuid: Optional[str] = None, **options: Any) -> Optional[dict[str, Any]]:
         """The most recent analysed frame for one source, with everything seen in it.

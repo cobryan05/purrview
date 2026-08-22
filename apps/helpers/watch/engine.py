@@ -84,6 +84,15 @@ class WatchEngine:
             signals.extend(machine.step(result, now))
         return signals
 
+    def open_signals(self, now: float) -> List[WatchEventSignal]:
+        """One UPDATE signal per currently-open event. Advances nothing."""
+        signals = []
+        for machine in self._machines.values():
+            signal = machine.open_signal(now)
+            if signal is not None:
+                signals.append(signal)
+        return signals
+
     def close_all(self, now: float) -> List[WatchEventSignal]:
         """Close every open event. Used on shutdown, pause and resume."""
         signals = []

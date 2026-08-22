@@ -17,6 +17,7 @@ that we build a command line, not that the command line produces a video a brows
 play, and the pixel format is exactly the sort of thing that only fails for real.
 """
 
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -551,3 +552,109 @@ class TestPreRoll:
         # Two rung frames + the live one. That it is non-empty at all is the point: the
         # ring did not go stale while the first event held it.
         assert second.data["frames"] == 3
+
+
+class TestMidEventPreview:
+    """Watching a long event before it ends.
+
+    The action's whole reason to exist is events too long to watch in real time, and
+    those are exactly the ones that hold their video hostage until the subject leaves.
+    The preview compiles what is on disk without disturbing the session — the failure to
+    guard against is a preview that consumes, truncates or renames the frames the real
+    compile still needs.
+    """
+
+    async def test_a_preview_plays_before_the_event_ends(self, action, tmp_path):
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
+
+        preview = await action.preview(("src-1", "rule-1", "", ""))
+        assert preview is not None
+        # A real mp4, not merely bytes: the point of compiling server-side is that a
+        # browser can play the result.
+        out = tmp_path / "preview.mp4"
+        out.write_bytes(preview["video"])
+        capture = cv2.VideoCapture(str(out))
+        assert capture.isOpened()
+        assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) >= 1
+        capture.release()
+
+    async def test_the_event_still_compiles_everything_afterwards(self, action):
+        """The preview must not consume the buffer. This is the regression that would
+        cost the user the real video in exchange for a glimpse of it."""
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
+
+        await action.preview(("src-1", "rule-1", "", ""))
+        await _feed(action, context, [140.0, 150.0])
+        result = await _close(action, context, at=160.0)
+
+        assert result.ok
+        # Every frame sampled, before and after the preview — nothing was eaten.
+        assert result.data["frames"] == 6
+
+    async def test_the_newest_frame_is_left_out(self, action):
+        """It may be half-written — `write_bytes` is not atomic and the sampler could be
+        inside that very file — and a torn JPEG at the end corrupts the preview."""
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0, 120.0])
+
+        preview = await action.preview(("src-1", "rule-1", "", ""))
+        assert preview is not None and preview["frames"] == 2
+
+    async def test_a_session_with_almost_nothing_previews_nothing(self, action):
+        """One usable frame is not a video. Returning None is what lets the caller say
+        "not yet" rather than handing back an unplayable file."""
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0])
+        assert await action.preview(("src-1", "rule-1", "", "")) is None
+
+    async def test_an_unknown_event_previews_nothing(self, action):
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0, 120.0])
+        assert await action.preview(("src-1", "another-rule", "", "")) is None
+
+    async def test_two_rules_on_one_camera_preview_their_own_buffers(self, action):
+        """Same reason each gets its own video: the key is the event, not the camera."""
+        context = _context()
+        await _open(action, context)
+        await _open(action, context, rule_uuid="rule-2", started_at=100.0)
+        await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
+
+        first = await action.preview(("src-1", "rule-1", "", ""))
+        second = await action.preview(("src-1", "rule-2", "", ""))
+        assert first is not None and second is not None
+        assert first["frames"] == second["frames"]
+
+    async def test_a_long_event_previews_only_its_most_recent_frames(self, tmp_path, monkeypatch):
+        """An unbounded re-encode on every click would cost more than the watcher does.
+        The tail is the part anyone previewing a running event is looking for."""
+        action = RecordEventTimelapseAction(interval_s=10.0, min_frames=2, output_dir=str(tmp_path / "t"))
+        monkeypatch.setattr(action, "PREVIEW_MAX_FRAMES", 4)
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0 + 10 * i for i in range(12)])
+
+        preview = await action.preview(("src-1", "rule-1", "", ""))
+        assert preview is not None
+        assert preview["frames"] == 4
+        # And it says so, so the modal does not present a tail as the whole event.
+        assert preview["partial"] is True
+
+    async def test_a_preview_leaves_no_scratch_behind(self, action):
+        """It compiles into a temp directory of its own; leaking one per click on a
+        watcher that runs for weeks is a disk leak nothing would ever clean up."""
+        context = _context()
+        await _open(action, context)
+        await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
+
+        session = action._sessions[("src-1", "rule-1", "", "")]
+        await action.preview(("src-1", "rule-1", "", ""))
+
+        assert not (session.directory / "preview.txt").exists()
+        assert not list(Path(tempfile.gettempdir()).glob("wwtl-preview-*"))

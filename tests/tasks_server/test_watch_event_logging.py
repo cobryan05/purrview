@@ -250,3 +250,78 @@ class TestOnlyASuccessfulWriteFiles:
         assert recorder.filed == [RULE_A]
         # And the recording is linked to the row that was just created for it.
         assert recorder.attached == [("event-1", "timelapse")]
+
+
+class _Accumulating(_Filing):
+    """A stand-in for `record_event_timelapse`: spends the event filling a buffer, and
+    only becomes a certainty once that buffer is big enough to compile."""
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.committed = False
+
+    def holds_open_event(self, signal) -> bool:
+        return self.committed
+
+
+class _Pipeline(SimpleNamespace):
+    def open_event_signals(self, now):
+        return list(self.signals)
+
+
+class TestPromotingAnOpenEvent:
+    """A long event has to be listed while it is happening, not only once it ends.
+
+    An event timelapse accumulates its video for the whole event, so under the
+    "row follows the artifact" rule its row appeared only at the close — and a
+    timelapse of a cat asleep for two hours is exactly the event a user wants to see in
+    progress. The row is brought forward once the action promises it will produce
+    something, and not one frame before that.
+    """
+
+    def _task_and_pipeline(self, action, *, rule=RULE_A):
+        recorder = _SpyRecorder()
+        task = _task([(_row("record_event_timelapse", trigger="event_ended"), action)], recorder)
+        pipeline = _Pipeline(signals=[_signal(EventPhase.UPDATE, rule_uuid=rule)])
+        task._resolve_slot_names = lambda signal, pipeline: None
+        return recorder, task, pipeline
+
+    async def test_an_open_event_is_not_filed_before_the_action_commits(self):
+        """The empty-card bug in its mid-event form: a session below its frame minimum
+        still compiles nothing, so a row now would point at a video that never arrives."""
+        action = _Accumulating()
+        recorder, task, pipeline = self._task_and_pipeline(action)
+
+        await task._promote_open_events(pipeline)
+        assert recorder.filed == []
+
+    async def test_an_open_event_is_filed_once_the_action_commits(self):
+        action = _Accumulating()
+        recorder, task, pipeline = self._task_and_pipeline(action)
+
+        action.committed = True
+        await task._promote_open_events(pipeline)
+        assert recorder.filed == [RULE_A]
+
+    async def test_the_row_is_created_once_however_long_the_event_runs(self):
+        """Every analysed frame passes through here, and the promotion is an HTTP call.
+        Filing per frame would be a request per frame for the length of the event."""
+        action = _Accumulating()
+        recorder, task, pipeline = self._task_and_pipeline(action)
+
+        action.committed = True
+        for _ in range(5):
+            await task._promote_open_events(pipeline)
+        assert recorder.filed == [RULE_A]
+
+    async def test_an_action_that_files_nothing_never_promotes(self):
+        """`_Silent` is an MQTT publish: it holds no artifact, so an event whose only
+        action is one of these has no row at all — open or closed."""
+        recorder = _SpyRecorder()
+        task = _task([(_row("publish_mqtt"), _Silent())])
+        task._recorder = recorder
+        task._resolve_slot_names = lambda signal, pipeline: None
+        pipeline = _Pipeline(signals=[_signal(EventPhase.UPDATE)])
+
+        await task._promote_open_events(pipeline)
+        assert recorder.filed == []

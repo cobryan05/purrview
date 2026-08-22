@@ -34,6 +34,7 @@ import {
   recordingFileUrl,
   watchEventSnapshotUrl,
 } from '/app-static/js/shared/api/watchProfiles.js';
+import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
 import { createBlipsPanel } from './blipsPanel.js';
@@ -171,6 +172,7 @@ export function openEventDetailModal(
     onClose: () => {
       overlay?.destroy();
       overlay = null;
+      revokePreview();
       document.removeEventListener('keydown', onKeydown);
     },
   });
@@ -274,6 +276,9 @@ export function openEventDetailModal(
   let overlay = null;
   let saveBtn = null;
   let mediaSwitcher = null;
+  //: Object URL of a mid-event timelapse preview, held so it can be revoked. The
+  //: browser keeps a blob alive until it is, and these are whole videos.
+  let previewUrl = null;
   const savedHint = el('div', 'event-detail__hint');
 
   // The clip first when there is one: it is the literal record, and the timelapse is a
@@ -364,6 +369,110 @@ export function openEventDetailModal(
       bar.appendChild(tab);
     }
     return bar;
+  }
+
+  /**
+   * The snapshot, plus an offer to compile what the watcher has buffered so far.
+   *
+   * Only for an event that is still open. A finished event's timelapse is a recording
+   * like any other; this exists for the hours-long event whose video does not exist
+   * yet, which is the one a user is most likely to have the modal open for.
+   *
+   * The button is offered without first checking that a buffer exists, because finding
+   * out costs the same request as fetching it: the watcher is asked, and "not yet" is a
+   * perfectly good answer to show. Checking first would double the round trips to
+   * decide whether to draw a button.
+   */
+  function renderInProgress() {
+    renderSnapshotOnly('This event is still happening — no video has been compiled yet.');
+    const preview = button('Preview what has been recorded so far', () => void showTimelapsePreview(), {
+      testid: 'event-detail-timelapse-preview',
+    });
+    mediaPane.appendChild(preview);
+  }
+
+  /** Ask the running watcher to compile its buffer for this event, and play it. */
+  async function showTimelapsePreview() {
+    const seq = loadSeq;
+    renderSnapshotOnly('Compiling what has been recorded so far…');
+    try {
+      const taskUuid = await fetchRunningWatcherUuid(event.profileUuid);
+      if (seq !== loadSeq) return;
+      if (!taskUuid) {
+        renderInProgressMessage('This watcher is not running, so there is nothing buffered to preview.');
+        return;
+      }
+      const preview = await fetchTimelapsePreview(taskUuid, {
+        sourceUuid: event.sourceUuid,
+        ruleUuid: event.ruleUuid,
+        subjectRef: event.subjectRef || '',
+        targetRef: event.targetRef || '',
+      });
+      // Navigated away while ffmpeg ran. Revoking here rather than leaking it is the
+      // whole reason this is not fire-and-forget.
+      if (seq !== loadSeq) {
+        if (preview) URL.revokeObjectURL(preview.url);
+        return;
+      }
+      if (!preview) {
+        renderInProgressMessage('Not enough has been recorded yet to play. Try again in a minute.');
+        return;
+      }
+      playPreview(preview);
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      Logger.error(err);
+      renderInProgressMessage('That preview could not be built.');
+    }
+  }
+
+  /** `renderInProgress` with a different explanation — the retry offer must survive. */
+  function renderInProgressMessage(message) {
+    renderSnapshotOnly(message);
+    mediaPane.appendChild(button('Try the preview again', () => void showTimelapsePreview(), {
+      testid: 'event-detail-timelapse-preview',
+    }));
+  }
+
+  /**
+   * Play a compiled preview, and say what it is.
+   *
+   * No detection overlay: the sidecar is written at the close, out of the frames that
+   * were actually kept, and there is none for a session still being written. Drawing
+   * the finished event's boxes over a partial video would put them on the wrong frames.
+   */
+  function playPreview(preview) {
+    revokePreview();
+    previewUrl = preview.url;
+    overlay?.destroy();
+    overlay = null;
+    mediaPane.innerHTML = '';
+    if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
+
+    video = document.createElement('video');
+    video.className = 'event-detail__video';
+    video.controls = true;
+    video.src = preview.url;
+    video.dataset.testid = 'event-detail-timelapse-preview-video';
+    mediaPane.appendChild(video);
+
+    const span = formatDuration(0, preview.sourceSpanS * 1000);
+    const note = preview.partial
+      // Says so explicitly: a tail presented as the whole thing reads as the event
+      // having started much later than it did.
+      ? `The most recent ${preview.frames} frames, still recording.`
+      : `${preview.frames} frames${span ? ` covering ${span}` : ''} so far — still recording.`;
+    mediaPane.appendChild(el('p', 'event-detail__no-video', note));
+    mediaPane.appendChild(button('Refresh', () => void showTimelapsePreview(), {
+      testid: 'event-detail-timelapse-refresh',
+    }));
+  }
+
+  /** A blob URL is held by the browser until revoked; a modal walked across a dozen
+   * open events would otherwise hold a dozen videos in memory. */
+  function revokePreview() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
   }
 
   function renderSnapshotOnly(message) {
@@ -680,8 +789,19 @@ export function openEventDetailModal(
     // most of them have nothing to show for.
     void blipsPanel.show(event);
     mediaSwitcher = buildMediaSwitcher();
-    renderSnapshotOnly(mediaRows.length ? 'Loading…' : 'Nothing was recorded for this event.');
-    if (mediaRows.length) void showMedia(mediaRows[0]);
+    // Walking to another event must not leave the previous one's preview holding a
+    // whole video in memory.
+    revokePreview();
+    if (mediaRows.length) {
+      renderSnapshotOnly('Loading…');
+      void showMedia(mediaRows[0]);
+    } else if (!event.endedAt) {
+      // Still running: its video does not exist yet, but the watcher is holding the
+      // frames for it and can compile them on request.
+      renderInProgress();
+    } else {
+      renderSnapshotOnly('Nothing was recorded for this event.');
+    }
   }
 
   loadEvent();
