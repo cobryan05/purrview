@@ -49,6 +49,10 @@ GRID_W, GRID_H = 160, 90
 #: a static scene scores identically at every offset and only flattens the peak.
 MOTION_FLOOR = 500
 
+#: How far the best offset's in-box motion share must stand above the median across all
+#: offsets before the reading counts. Below this the "peak" is the argmax of noise.
+PEAK_OVER_BASELINE = 1.15
+
 
 def _boxes_at(frames, max_stale, t):
     """The sidecar's boxes in effect at `t`, mirroring the player's own hold rule."""
@@ -131,19 +135,41 @@ def measure(path, verbose=True):
         return None
     best_offset, best_score = max(scored, key=lambda pair: pair[1])
     baseline = statistics.median(score for _, score in scored)
+    # A peak that barely clears the median is where the subject moved too little (or too
+    # much of the frame moved) for the boxes to localise it. Such a clip's "best" offset
+    # is the argmax of noise, and it is roughly uniform across the search range — so
+    # averaging it in does not merely add variance, it drags the estimate toward zero.
+    trustworthy = best_score >= baseline * PEAK_OVER_BASELINE
     if verbose:
         print(f"  best {best_offset:+.1f}s (in-box motion {best_score:.3f} vs {baseline:.3f} median)")
-        if best_score < baseline * 1.15:
-            print("  ⚠ peak barely clears the baseline — too little motion here to trust")
-    return best_offset
+        if not trustworthy:
+            print("  ⚠ peak barely clears the baseline — too little motion here to trust; excluded")
+    return best_offset, trustworthy
 
 
 def main(paths):
-    results = [r for r in (measure(p) for p in paths) if r is not None]
-    if not results:
-        print("\nNo clip carried enough motion to measure.")
+    measured = [r for r in (measure(p) for p in paths) if r is not None]
+    trusted = [offset for offset, ok in measured if ok]
+
+    if not trusted:
+        print(f"\nNo usable signal: {len(measured)} clip(s) measured, none with a clear peak.")
+        print("Feed it more clips — ones where the subject actually crosses the frame.")
         return 1
-    print(f"\nWATCH_OVERLAY_LAG_S={statistics.median(results):.1f}   (median of {len(results)} clip(s))")
+
+    median = statistics.median(trusted)
+    print(
+        f"\nWATCH_OVERLAY_LAG_S={median:.1f}   (median of {len(trusted)} clear clip(s)" f" of {len(measured)} measured)"
+    )
+    # One clip is an anecdote. The sidecar is sampled at well under a frame a second, so
+    # a single reading's resolution is no better than the hold between samples, and the
+    # spread across clips is the only honest guide to whether the median means anything.
+    if len(trusted) < 3:
+        print("⚠ Too few clear clips to trust this number — treat it as a hint, not a value.")
+    elif max(trusted) - min(trusted) > 1.0:
+        print(
+            f"⚠ Readings range {min(trusted):+.1f}s..{max(trusted):+.1f}s. A single constant "
+            "cannot correct a lag that varies this much; the median is the best of a bad job."
+        )
     return 0
 
 
