@@ -30,6 +30,8 @@ _DEFAULT_CACHE_DIR = "/training-cache"
 _DEFAULT_MAX_MB = 10000  # 10 GB — matches TRAINING_CACHE_MAX_MB in docker-compose.yaml
 _DEFAULT_MAX_AGE_DAYS = 30  # 0 disables the age bound
 _MAX_IMAGE_MB = 50  # reject members larger than this
+# A scratch file this old cannot belong to a live write; it is a crash orphan.
+_SCRATCH_MAX_AGE_S = 3600
 
 
 def _tmp_name(uuid: str) -> str:
@@ -43,8 +45,9 @@ def _tmp_name(uuid: str) -> str:
     each write its own scratch file; the final rename stays atomic, and losing
     the race just means overwriting the destination with identical bytes.
 
-    Keeps the ``.tmp_`` prefix — eviction and the cached-total count both skip
-    files that start with it.
+    Keeps the ``.tmp_`` prefix — the size/age bounds and the cached-total count both
+    skip files that start with it. Because the suffix makes each orphan unique, and so
+    unbounded, ``evict`` additionally reaps ``.tmp_`` files past ``_SCRATCH_MAX_AGE_S``.
     """
     return f".tmp_{uuid}.{secrets.token_hex(8)}"
 
@@ -197,6 +200,31 @@ class ImageCache:
         """Run the combined age + size eviction sweep. Called after every ingest."""
         self.evict()
 
+    def _reap_scratch(self, path: Path, now: float) -> None:
+        """Delete a `.tmp_` scratch file left behind by a dead process.
+
+        Both ingest paths unlink their scratch file on exception, but nothing runs on
+        SIGKILL/OOM/container restart — which is exactly how a long training push dies.
+        While the scratch name was derived from the UUID alone that orphan was bounded
+        at one file per UUID and the next attempt overwrote it; the random suffix that
+        fixed the concurrent-push collision made every attempt leave a distinct file
+        instead. Every sweep in this class skips `.tmp_` names, so those files counted
+        against neither `cached_total` nor the size budget while still filling the
+        volume — an unbounded leak with no path that reclaimed it.
+
+        The age floor is what makes this safe to run mid-ingest: an in-flight write is
+        seconds old, so nothing within the window is ever a live one.
+        """
+        try:
+            if now - path.stat().st_mtime <= _SCRATCH_MAX_AGE_S:
+                return
+            path.unlink()
+            logger.info("Reaped orphaned scratch file %s", path.name)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning("Could not reap scratch file %s: %s", path.name, e)
+
     def evict(self) -> None:
         """Evict files that are past the age TTL, then oldest-first until
         total size is within the limit.
@@ -210,7 +238,10 @@ class ImageCache:
         total_bytes = 0
         now = time.time()
         for p in self._dir.iterdir():
-            if not p.is_file() or p.name.startswith(".tmp_"):
+            if not p.is_file():
+                continue
+            if p.name.startswith(".tmp_"):
+                self._reap_scratch(p, now)
                 continue
             try:
                 st = p.stat()
