@@ -247,6 +247,16 @@ export function createTagPanel(container, runtime) {
     try {
       const statuses = await fetchImageTagStatuses(path);
       if (seq !== _loadSeq) return; // superseded by a newer navigation
+      // The response is a snapshot from when the request was issued, so anything
+      // the user cycled while it was in flight is missing from it — assigning it
+      // raw would visibly undo those clicks while still queuing them for the next
+      // save. _pendingTagFlush is the authority for the keys it holds; it is
+      // cleared on navigation and on a successful flush. Mirrors
+      // ui/labelList.js's applyPendingOver.
+      for (const [uuid, status] of _pendingTagFlush) {
+        if (status === 'uncertain') statuses.delete(uuid);
+        else statuses.set(uuid, /** @type {'present'|'absent'} */ (status));
+      }
       _serverTagStatuses = statuses;
       _refreshTagStatusButtons();
     } catch (err) {

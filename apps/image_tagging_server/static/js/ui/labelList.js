@@ -1003,6 +1003,31 @@ async function mountSelectMode(container, { runtime, filter }) {
     pendingFlush.set(uuid, status);
   }
 
+  /**
+   * Re-apply unsaved marks on top of a freshly fetched server snapshot.
+   *
+   * Every server read is a snapshot from the moment the request was *issued*, so
+   * anything the user marked while it was in flight is missing from it. Writing
+   * the response straight into `serverStates` therefore silently undoes those
+   * marks on screen — the "I hit Mark absent, it showed absent, then reverted"
+   * bug. The marks themselves are still queued in `pendingFlush` and would land
+   * on the next save, which makes the UI actively lie about what will be
+   * written. The fetch window widens with database size (the label-state read
+   * competes with the training-run stats/readiness aggregates), which is why
+   * this only shows up on a busy install.
+   *
+   * `pendingFlush` is the authority for anything it holds: it is cleared when
+   * the image changes and when a flush succeeds, so an entry in it always means
+   * "the user asked for this, and the server has not been told yet".
+   * @param {Map<string, 'present'|'absent'>} states
+   */
+  function applyPendingOver(states) {
+    for (const [uuid, status] of pendingFlush) {
+      if (status === 'uncertain') states.delete(uuid);
+      else states.set(uuid, /** @type {'present'|'absent'} */ (status));
+    }
+  }
+
   // ── Apply-to-all targeting ──────────────────────────────────────────────
   // Two layers: a persisted preset provides the baseline; per-row overrides
   // (and the section all/none controls) refine it. Any manual toggle switches
@@ -1493,6 +1518,7 @@ async function mountSelectMode(container, { runtime, filter }) {
     // Retain explicit PRESENT and ABSENT marks from the server.
     // Derived PRESENT (from verified bboxes) is computed separately via computeDerivedPresent.
     serverStates = new Map([...states].filter(([, v]) => v !== 'uncertain'));
+    applyPendingOver(serverStates);
     derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
     // Gaps were already requested above; this just repaints with the label
     // states that have now arrived (and whatever gaps landed meanwhile).
@@ -1635,6 +1661,7 @@ async function mountSelectMode(container, { runtime, filter }) {
       const states = await fetchImageLabels(alreadyLoadedPath);
       if (seq === _loadSeq) {
         serverStates = new Map([...states].filter(([, v]) => v !== 'uncertain'));
+        applyPendingOver(serverStates);
         derivedPresent = computeDerivedPresent(runtime?.state?.image?.bboxes);
         refreshStatusButtons();
       }
@@ -1644,6 +1671,21 @@ async function mountSelectMode(container, { runtime, filter }) {
   }
 
   return {
+    /**
+     * Repaint the stats-derived parts (the ✓/⚠ badges) after a stats refresh,
+     * WITHOUT rebuilding the panel.
+     *
+     * A full re-mount would tear down this closure, and `pendingFlush` —
+     * presence marks the user has made but not saved yet — lives in it. Since
+     * the stats/readiness fetch is fired off by every canvas save (and takes
+     * seconds on a large database), a re-mount there both wiped those marks and
+     * re-read label states behind the writes still in flight. Only the badge
+     * numbers change on a stats update, so redraw the rows and keep the state.
+     */
+    onStatsUpdated() {
+      _statsMap = _buildStatsMap();
+      remount();
+    },
     destroy() {
       closeMenu();
       unsubImage();
@@ -2011,7 +2053,18 @@ export async function createLabelList(container, options = {}) {
   let _unsubMode = null;
   if (mode === 'select') {
     _unsubMode = events.subscribeMany([
-      [EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED,    () => mount()],
+      // `statsUpdated` means only the cached label stats/readiness changed — the
+      // active run, its label set and the presets are all the same. Rebuilding
+      // the whole panel for that destroys unsaved presence marks (they live in
+      // mountSelectMode's closure) and re-reads label states behind writes that
+      // may still be in flight, so take the light path when the handle offers it.
+      [EventTypes.ACTIVE_TRAINING_CONFIG_CHANGED, (payload) => {
+        // While a mount is in flight `_handle` is the outgoing panel; the one
+        // being built reads the fresh cached stats itself, so drop this.
+        if (payload?.statsUpdated && _mounting) return;
+        if (payload?.statsUpdated && _handle?.onStatsUpdated) _handle.onStatsUpdated();
+        else mount();
+      }],
       [EventTypes.DYNAMIC_LABELS_VISIBILITY_CHANGED, () => mount()],
       [EventTypes.LABELS_UPDATED,                    () => mount()],
     ]);
