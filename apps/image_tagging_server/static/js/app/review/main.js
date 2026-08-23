@@ -425,13 +425,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     refresh: () => render(),
   }));
 
-  // Refresh
+  // Refresh — lives in the action bar next to the page info, not up in the
+  // query bar. It acts on the page you are looking at, and the page counter is
+  // what tells you which page that is; parked among "Most Unique First" and
+  // "Open in Datasets Tab" it read as one more feature button and was hard to
+  // pick out.
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'review-toolbar__btn';
-  refreshBtn.textContent = 'Refresh';
+  refreshBtn.dataset.testid = 'review-refresh';
+  refreshBtn.textContent = '⟳ Refresh';
+  refreshBtn.title = 'Reload the current page';
 
   // ── Persistent utility group (slice 3, PR 3.1) ─────────────────────
-  // Refresh, "Most Unique First", "Open in Datasets Tab", and any
+  // "Most Unique First", "Open in Datasets Tab", and any
   // caller-supplied controls (e.g. a similarity-search threshold slider)
   // read as one "toolbar" cluster instead of being scattered across
   // separately-appended groups. Created once and appended to `toolbar` in
@@ -442,7 +448,6 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const persistentUtilityGroup = makeToolbarGroup();
   persistentUtilityGroup.classList.add('review-toolbar__group--persistent');
   if (toolbarControls) persistentUtilityGroup.appendChild(toolbarControls);
-  persistentUtilityGroup.appendChild(refreshBtn);
 
   // Pagination — filter mode only. Custom/fetchImages mode uses infinite
   // scroll instead (M2), so Prev/Next never apply there.
@@ -556,13 +561,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     },
   });
 
-  // ── Query bar: filter · sort · view mode · page size · refresh ────
+  // ── Query bar: filter · sort · view mode · page size ──────────────
   // Controls that change *what* is shown. Stays compact so it never wraps.
+  // Refresh used to be the one thing this group always held. Now that it has
+  // moved to the action bar the group can end up empty (modal/preview mode,
+  // where neither Most Unique First nor Open in Datasets Tab is built), which
+  // would leave a separator with nothing after it — so keep a reference and
+  // drop both once the conditional buttons below have had their say.
+  const persistentUtilitySep = makeToolbarSep();
   toolbar.append(
     makeToolbarGroup(sortLabel, sortBySelect, sortOrderSelect),
     makeToolbarSep(),
     makeToolbarGroup(viewToggle, pageSizeSelect),
-    makeToolbarSep(),
+    persistentUtilitySep,
     persistentUtilityGroup,
   );
 
@@ -572,7 +583,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   actionBar.dataset.testid = 'review-action-bar';
   actionBar.append(
     makeToolbarGroup(selectAllLabel),
-    makeToolbarGroup(prevBtn, pageInfo, nextBtn),
+    makeToolbarGroup(prevBtn, pageInfo, nextBtn, refreshBtn),
     makeToolbarGroup(statusMsg),
   );
 
@@ -866,11 +877,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       }
       openDissimilarGlobalModal({ candidateUuids });
     });
-    // Insert before exportToDatasetBtn so the group reads Refresh → ★ Most
-    // Unique First → ⊞ Open in Datasets Tab, matching creation-order-independent
-    // display order (UI_REDESIGN_PLAN.md, slice 3, PR 3.1).
+    // Insert before exportToDatasetBtn so the group reads ★ Most Unique First →
+    // ⊞ Open in Datasets Tab, matching creation-order-independent display order
+    // (UI_REDESIGN_PLAN.md, slice 3, PR 3.1).
     persistentUtilityGroup.insertBefore(uniqueFirstBtn, exportToDatasetBtn);
     } // end if (datasetActions)
+  }
+
+  // Every conditional member has now been appended, so an empty group here is
+  // final, not just early. Drop it and its leading separator rather than
+  // rendering a divider that separates nothing.
+  if (persistentUtilityGroup.childElementCount === 0) {
+    persistentUtilitySep.remove();
+    persistentUtilityGroup.remove();
   }
 
   // ── Curated result-filter surface (M1, fetchImages/custom mode only) ──────
