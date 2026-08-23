@@ -99,6 +99,132 @@ function _renderJob(job, onCancel) {
   return row;
 }
 
+/** Human bytes, matching the wording the server's own `fmt_bytes` produces. */
+function _fmtBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * Disk the training server is holding, and the two ways to give it back.
+ *
+ * The numbers were already computed — `/api/training/info` walks both directories
+ * and the landing page renders them — but they were not reachable from the app,
+ * so a cache that had grown to its 10 GB bound was invisible until you went
+ * looking on the server itself. The two actions map to the endpoints that already
+ * existed and had no caller:
+ *
+ *  - **Evict now** applies the configured age and size bounds immediately instead
+ *    of waiting for the sweep timer. Safe by construction — it removes only what
+ *    the server was going to remove anyway.
+ *  - **Clear cache** drops everything unpinned. Images pinned by a live job are
+ *    kept, because dropping those leaves a queued job unable to run without a
+ *    fresh upload of every image it needs; the response says how many it spared.
+ *
+ * Artifacts are reported but not clearable here. A job's artifact directory holds
+ * the weights it produced and is what a restart or a download reads from — that is
+ * output, not cache, and deleting it is a different decision from reclaiming
+ * scratch space.
+ *
+ * @param {() => Promise<void>} onChanged - re-read the panel after an action.
+ * @returns {HTMLElement}
+ */
+function _renderStorage(info, onChanged) {
+  const wrap = document.createElement('div');
+  wrap.dataset.testid = 'training-storage';
+  wrap.style.cssText = 'margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--pico-muted-border-color, #333);';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size: 0.8em; font-weight: 600; margin-bottom: 6px;';
+  title.textContent = 'Storage';
+  wrap.appendChild(title);
+
+  const cache = info?.cache ?? {};
+  const artifacts = info?.artifacts ?? {};
+  const pct = cache.max_bytes ? Math.round((cache.bytes / cache.max_bytes) * 100) : null;
+
+  const lines = document.createElement('div');
+  lines.style.cssText = 'font-size: 0.78em; color: var(--pico-muted-color,#888); display: grid; gap: 2px;';
+
+  const cacheLine = document.createElement('div');
+  cacheLine.dataset.testid = 'training-cache-usage';
+  cacheLine.textContent =
+    `Image cache: ${_fmtBytes(cache.bytes)}`
+    + (cache.max_bytes ? ` of ${_fmtBytes(cache.max_bytes)}${pct === null ? '' : ` (${pct}%)`}` : '')
+    + ` · ${cache.files ?? 0} file(s)`
+    + (cache.pinned ? ` · ${cache.pinned} pinned by live jobs` : '');
+
+  const artifactLine = document.createElement('div');
+  artifactLine.dataset.testid = 'training-artifacts-usage';
+  artifactLine.textContent = `Artifacts: ${_fmtBytes(artifacts.bytes)} · ${artifacts.jobs ?? 0} job folder(s)`;
+
+  lines.append(cacheLine, artifactLine);
+  wrap.appendChild(lines);
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display: flex; gap: 6px; margin-top: 8px;';
+
+  const status = document.createElement('div');
+  status.style.cssText = 'font-size: 0.75em; color: var(--pico-muted-color,#888); margin-top: 6px; min-height: 1.1em;';
+  status.dataset.testid = 'training-cache-status';
+
+  /** Run one cache action, reporting what it freed and re-reading the figures. */
+  const action = (label, title, run) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'secondary';
+    btn.textContent = label;
+    btn.title = title;
+    btn.style.cssText = 'font-size: 0.72em; padding: 0.15em 0.5em; min-width: 0; margin: 0;';
+    btn.addEventListener('click', async () => {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '…';
+      try {
+        const result = await run();
+        if (result === null) return; // declined at the confirm
+        const removed = result?.removed ?? 0;
+        status.textContent = removed
+          ? `Removed ${removed} file(s), freeing ${_fmtBytes(result?.freedBytes ?? result?.freed_bytes ?? 0)}`
+            + (result?.keptPinned ?? result?.kept_pinned ? ` · kept ${result.keptPinned ?? result.kept_pinned} pinned` : '')
+          : 'Nothing to remove.';
+        await onChanged();
+      } catch (e) {
+        status.textContent = `✗ ${e.message}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+    return btn;
+  };
+
+  actions.append(
+    action('Evict now', 'Apply the age and size limits immediately instead of waiting for the sweep', async () => {
+      const res = await apiFetch('/api/training/cache/evict', { method: 'POST' });
+      if (!res.ok) throw new Error(`Eviction failed (${res.status})`);
+      return await res.json();
+    }),
+    action('Clear cache', 'Delete every cached image except those a live job is using', async () => {
+      if (!window.confirm(
+        'Delete the training server\'s cached images?\n\n'
+        + 'Images a running or queued job is using are kept. Everything else is re-uploaded '
+        + 'automatically the next time a job needs it, so this costs upload time, not data.'
+      )) return null;
+      const res = await apiFetch('/api/training/cache', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`Clear failed (${res.status})`);
+      return await res.json();
+    }),
+  );
+
+  wrap.append(actions, status);
+  return wrap;
+}
+
 export function showTrainingServerModal() {
   const { dialog, open, close } = createModalShell();
   dialog.style.cssText = 'min-width: min(480px, 95vw); max-width: 560px;';
@@ -128,10 +254,29 @@ export function showTrainingServerModal() {
   const body = document.createElement('div');
   body.style.cssText = 'max-height: 60vh; overflow-y: auto;';
 
+  // Its own element rather than part of `body`, which refresh() empties: the
+  // storage figures come from a separate, heavier endpoint and should not be torn
+  // down and re-fetched every time the job list repaints.
+  const storageBox = document.createElement('div');
+
   const statusLine = document.createElement('div');
   statusLine.style.cssText = 'font-size: 0.78em; color: var(--pico-muted-color,#888); margin-top: 10px; text-align: right;';
 
-  dialog.append(header, body, statusLine);
+  dialog.append(header, body, storageBox, statusLine);
+
+  async function refreshStorage() {
+    try {
+      const res = await apiFetch('/api/training/info');
+      if (!res.ok) throw new Error(String(res.status));
+      const info = await res.json();
+      storageBox.innerHTML = '';
+      storageBox.appendChild(_renderStorage(info, refreshStorage));
+    } catch (_) {
+      // The jobs list above already reports an unreachable server; a second
+      // failure line for the same outage is noise.
+      storageBox.innerHTML = '';
+    }
+  }
 
   async function refresh() {
     refreshBtn.disabled = true;
@@ -179,7 +324,8 @@ export function showTrainingServerModal() {
     }
   }
 
-  refreshBtn.addEventListener('click', refresh);
+  refreshBtn.addEventListener('click', () => { refresh(); refreshStorage(); });
   open();
   refresh();
+  refreshStorage();
 }
