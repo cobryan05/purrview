@@ -33,6 +33,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional, Protocol, Sequence
 
+from ..timeUtils import parse_iso_utc
+
 logger = logging.getLogger(__name__)
 
 #: How close to "now" a drain is willing to read. MediaMTX is still writing the current
@@ -48,6 +50,10 @@ DRAIN_FRACTION = 1.0 / 3.0
 #: Never drain more often than this regardless of how short the retention is, so a
 #: misconfigured 3 s buffer cannot turn into a busy loop against the playback server.
 MIN_DRAIN_INTERVAL_S = 5.0
+
+#: How far the extractor's actual window may differ from the requested one before it
+#: counts as lost video rather than segment boundaries and rounding.
+_CLAMP_TOLERANCE_S = 0.5
 
 
 class ExtractFn(Protocol):
@@ -175,7 +181,7 @@ class ClipDrain:
 
         dest = self._chunk_path(start)
         try:
-            await self._extract(start=start, duration_s=duration, dest=dest)
+            result = await self._extract(start=start, duration_s=duration, dest=dest) or {}
         except Exception as e:
             # A failed drain must not advance the cursor: the next pass retries the same
             # window, and only genuine eviction (handled above) is allowed to lose it.
@@ -183,10 +189,54 @@ class ClipDrain:
             self._log(f"Clip drain on {self.source_uuid} failed: {e}")
             return None
 
-        chunk = DrainedChunk(path=dest, start=start, end=end, gap_before=self._pending_gap)
+        # What the extractor actually cut, which is NOT always what was asked for. It
+        # clamps the window to what the buffer holds at both ends, and the far end is the
+        # one that bites: a drain reads up to `now - SEGMENT_LAG_S`, and MediaMTX may not
+        # have flushed that far yet.
+        #
+        # Recording the *requested* span here was a silent three-way bug. The chunk
+        # overstated its own length, so `sum(c.duration_s)` gave the assembled clip a
+        # `durationS` longer than the file (a real one declared 246.4 s against 231.2 s,
+        # putting its last box 14 s past the end of the video); `gap_before` stayed False,
+        # because the eviction check above only covers material lost *before* the window,
+        # so `hasGap` never fired and the overlay was not suppressed; and the cursor
+        # advanced past material that was never copied, making the hole permanent.
+        #
+        # A backend that reports neither field (a test double, or one with nothing to
+        # add) falls back to the requested window — the previous behaviour exactly.
+        actual_start = parse_iso_utc(result.get("startedAt")) or start
+        actual_duration = float(result.get("durationS") or 0.0) or duration
+        actual_end = actual_start + timedelta(seconds=actual_duration)
+
+        # Tolerance, because a clamp of a few hundred milliseconds is segment boundaries
+        # and rounding rather than lost video, and flagging it would mark every ordinary
+        # clip as gapped.
+        clamped_head = (actual_start - start).total_seconds() > _CLAMP_TOLERANCE_S
+        short_tail = (end - actual_end).total_seconds() > _CLAMP_TOLERANCE_S
+        if clamped_head:
+            self._log(
+                f"Clip drain on {self.source_uuid}: the buffer no longer held "
+                f"{(actual_start - start).total_seconds():.0f}s of the requested window"
+            )
+
+        chunk = DrainedChunk(
+            path=dest,
+            start=actual_start,
+            end=actual_end,
+            # A head clamp is eviction by another route — material that existed when the
+            # window was chosen and was gone by the time it was read — so it is the same
+            # discontinuity `_pending_gap` reports, and the finished clip must declare it.
+            gap_before=self._pending_gap or clamped_head,
+        )
         self._pending_gap = False
         self._chunks.append(chunk)
-        self._cursor = end
+        # The actual end, not the requested one. A short tail is material that has not
+        # been flushed *yet* rather than material that is gone, so leaving the cursor
+        # there makes the next drain ask for it again instead of skipping it — which is
+        # what turns a transient flush lag into a permanent hole. If it really never
+        # arrives, the eviction branch above eventually forces the cursor forward and
+        # declares the gap.
+        self._cursor = actual_end if short_tail else end
         return chunk
 
     def chunks_for(self, start: datetime, end: datetime) -> List[DrainedChunk]:

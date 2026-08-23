@@ -180,6 +180,95 @@ class TestEviction:
         assert chunk.gap_before is False
 
 
+class TestTheExtractorsActualWindow:
+    """A drain records what was CUT, not what it asked for.
+
+    `StreamManager.extract_clip` clamps the window to what the buffer holds at both ends
+    and reports the real `startedAt`/`durationS`. Discarding that was one silent bug with
+    three faces: the chunk overstated its own length, so the assembled clip's summed
+    `durationS` ran past the end of its own file (a real one declared 246.4 s against
+    231.2 s, putting its last box 14 s past the video); `hasGap` stayed False because the
+    eviction check only covers material lost *before* the window, so the overlay was
+    never suppressed; and the cursor advanced past video that was never copied, making
+    the hole permanent.
+    """
+
+    def _clamping(self, *, start_delay=0.0, duration=None):
+        """An extractor that returns a window narrower than the one requested."""
+
+        class _Clamping(_FakeExtract):
+            async def __call__(self, start, duration_s, dest):
+                await super().__call__(start, duration_s, dest)
+                actual_start = start + timedelta(seconds=start_delay)
+                actual = duration_s - start_delay if duration is None else duration
+                return {
+                    "path": str(dest),
+                    "sizeBytes": 5,
+                    "startedAt": actual_start.isoformat(),
+                    "durationS": actual,
+                }
+
+        return _Clamping()
+
+    async def test_a_short_cut_is_not_recorded_as_a_full_one(self, tmp_path):
+        """The chunk's own length is what `_assemble_from_chunks` sums into the clip's
+        `durationS`, so an overstatement here is what puts boxes past the end."""
+        drain, _ = _drain(tmp_path, lead_s=0.0, extract=self._clamping(duration=20.0))
+        drain.note_open(_at(0))
+
+        chunk = await drain.drain(_at(30))
+
+        assert chunk.duration_s == pytest.approx(20.0), "recorded the requested span, not the cut"
+
+    async def test_material_the_buffer_had_not_flushed_yet_is_asked_for_again(self, tmp_path):
+        """The far-end clamp is a flush lag, not eviction: the video exists moments
+        later. Advancing past it is what turned a transient lag into a lost stretch."""
+        drain, extract = _drain(tmp_path, lead_s=0.0, extract=self._clamping(duration=20.0))
+        drain.note_open(_at(0))
+
+        await drain.drain(_at(30))
+        await drain.drain(_at(60))
+
+        second_start = extract.calls[1][0]
+        assert second_start == _at(20), f"resumed at {second_start} instead of the end of what was cut"
+
+    async def test_a_clamped_head_is_declared_as_a_gap(self, tmp_path):
+        """Material that existed when the window was chosen and was gone when it was read
+        is eviction by another route, and the finished clip has a hole in it. `hasGap` is
+        what suppresses the overlay, so an unflagged chunk draws boxes that slide."""
+        drain, _ = _drain(tmp_path, lead_s=0.0, extract=self._clamping(start_delay=5.0))
+        drain.note_open(_at(0))
+
+        chunk = await drain.drain(_at(30))
+
+        assert chunk.gap_before is True
+        assert chunk.start == _at(5)
+
+    async def test_a_sub_second_clamp_is_rounding_not_a_hole(self, tmp_path):
+        """Segment boundaries never land exactly on the request. Flagging that would mark
+        every ordinary clip as gapped and silence every overlay."""
+        drain, _ = _drain(tmp_path, lead_s=0.0, extract=self._clamping(start_delay=0.2))
+        drain.note_open(_at(0))
+
+        chunk = await drain.drain(_at(30))
+
+        assert chunk.gap_before is False
+
+    async def test_a_backend_reporting_nothing_keeps_the_requested_window(self, tmp_path):
+        """The ring backend and the test doubles return no window at all; falling back to
+        the request is the previous behaviour and must stay."""
+        drain, _ = _drain(tmp_path, lead_s=0.0)
+        drain.note_open(_at(0))
+
+        chunk = await drain.drain(_at(30))
+
+        assert chunk.start == _at(0)
+        # 24, not 30: a drain never reads closer to now than SEGMENT_LAG_S, because
+        # MediaMTX is still writing the current segment.
+        assert chunk.duration_s == pytest.approx(30.0 - SEGMENT_LAG_S)
+        assert chunk.gap_before is False
+
+
 class TestSharedAcrossEvents:
     """Two rules open on one camera share one drain — the whole reason this beats
     recording each event live."""
