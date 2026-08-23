@@ -344,6 +344,15 @@ export async function fetchReviewQueue({
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
+  // Forwarded to buildReviewFilterBody like every other filter dimension.
+  // These four wrappers relist their options by hand rather than spreading, so
+  // a dimension that is missing here is silently dropped from the request —
+  // which is exactly what happened to the Source filter: the panel held the
+  // selection, getState/reviewStateToFilterOpts carried it, and it died at this
+  // boundary, so selecting a camera changed nothing. Add new dimensions to all
+  // four wrappers *and* to buildReviewFilterBody.
+  sourceUuids = [],
+  sourceExcludeUuids = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -380,6 +389,8 @@ export async function fetchReviewQueue({
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,
+    sourceUuids,
+    sourceExcludeUuids,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
@@ -574,6 +585,15 @@ export async function bulkApplyAll({
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
+  // Forwarded to buildReviewFilterBody like every other filter dimension.
+  // These four wrappers relist their options by hand rather than spreading, so
+  // a dimension that is missing here is silently dropped from the request —
+  // which is exactly what happened to the Source filter: the panel held the
+  // selection, getState/reviewStateToFilterOpts carried it, and it died at this
+  // boundary, so selecting a camera changed nothing. Add new dimensions to all
+  // four wrappers *and* to buildReviewFilterBody.
+  sourceUuids = [],
+  sourceExcludeUuids = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -612,6 +632,8 @@ export async function bulkApplyAll({
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,
+    sourceUuids,
+    sourceExcludeUuids,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
@@ -679,6 +701,15 @@ export async function countMatchingBboxes({
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
+  // Forwarded to buildReviewFilterBody like every other filter dimension.
+  // These four wrappers relist their options by hand rather than spreading, so
+  // a dimension that is missing here is silently dropped from the request —
+  // which is exactly what happened to the Source filter: the panel held the
+  // selection, getState/reviewStateToFilterOpts carried it, and it died at this
+  // boundary, so selecting a camera changed nothing. Add new dimensions to all
+  // four wrappers *and* to buildReviewFilterBody.
+  sourceUuids = [],
+  sourceExcludeUuids = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -711,6 +742,8 @@ export async function countMatchingBboxes({
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,
+    sourceUuids,
+    sourceExcludeUuids,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
@@ -824,6 +857,15 @@ export async function bulkApplyImages({
   imageLabelFilters = [],
   imageLabelConditions = [],
   imageTagConditions = [],
+  // Forwarded to buildReviewFilterBody like every other filter dimension.
+  // These four wrappers relist their options by hand rather than spreading, so
+  // a dimension that is missing here is silently dropped from the request —
+  // which is exactly what happened to the Source filter: the panel held the
+  // selection, getState/reviewStateToFilterOpts carried it, and it died at this
+  // boundary, so selecting a camera changed nothing. Add new dimensions to all
+  // four wrappers *and* to buildReviewFilterBody.
+  sourceUuids = [],
+  sourceExcludeUuids = [],
   verificationCheck = null,
   verificationLabelUuids = [],
   bboxVerification = null,
@@ -867,6 +909,8 @@ export async function bulkApplyImages({
     imageLabelFilters,
     imageLabelConditions,
     imageTagConditions,
+    sourceUuids,
+    sourceExcludeUuids,
     verificationCheck,
     verificationLabelUuids,
     bboxVerification,
