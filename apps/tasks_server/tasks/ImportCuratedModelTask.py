@@ -69,6 +69,9 @@ class ImportCuratedModelTask(Task, TrainingJobRunnerMixin):
     # Model production: this is the run that makes a model.
     CARD_ACCENT = TaskAccent.VIOLET
 
+    # Started from Configuration → Models → Import model. See ImportModelTask.
+    SYSTEM_TASK = True
+
     # Conversion is generally quick, but reuse ConvertModelTask/TrainModelTask's
     # more tolerant heartbeat interval since it shares the same SSE-relay code path.
     HEARTBEAT_INTERVAL = 60

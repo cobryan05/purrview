@@ -43,6 +43,10 @@ class PreviewClassifierMatchTask(Task):
     # A dry run: produces a result to look at, changes nothing.
     CARD_ACCENT = TaskAccent.TEAL
 
+    # Started by Review's "Run Model on Results" when the chosen model is a
+    # classifier. See PreviewModelRelabelTask.
+    SYSTEM_TASK = True
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         self._model_name: str = str(params.get("model_name") or "")
         if not self._model_name:

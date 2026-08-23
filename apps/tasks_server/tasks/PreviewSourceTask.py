@@ -20,6 +20,10 @@ class PreviewSourceTask(Task):
     # A dry run: produces a result to look at, changes nothing.
     CARD_ACCENT = TaskAccent.TEAL
 
+    # Started by the source editor's preview button, and its result is one-shot:
+    # the config it runs under is scaffolding that outlives the answer by seconds.
+    SYSTEM_TASK = True
+
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
         config = params.get("source_config", {})

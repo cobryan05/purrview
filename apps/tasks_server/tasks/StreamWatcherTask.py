@@ -95,6 +95,11 @@ class StreamWatcherTask(Task):
     # Live watching — the always-on kind, not a job that finishes.
     CARD_ACCENT = TaskAccent.BLUE
 
+    # A watcher is defined in Configuration → Watchers and armed from there or
+    # from Jobs → Start a job; both hand this task the profile uuid they own.
+    # Hand-building a config for it duplicates that editor with none of it.
+    SYSTEM_TASK = True
+
     # A watcher runs for weeks. Checkpoint far more often than the 300 s base default so
     # a restart loses seconds of open-event state, not minutes.
     CHECKPOINT_INTERVAL: int = 60

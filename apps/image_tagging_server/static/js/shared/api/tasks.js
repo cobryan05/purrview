@@ -22,14 +22,23 @@ export const TaskStatus = Object.freeze({
  */
 let _accentsByTypename = new Map();
 
+/**
+ * Typenames a dedicated screen starts, which the "new task config" form hides
+ * unless "Show system" is ticked. Rides along with the type list for the same
+ * reason the accents do — it is the same static fact about a task type.
+ * @type {Set<string>}
+ */
+let _systemTypenames = new Set();
+
 async function fetchTaskTypeListFromServer(keys) {
   const res = await apiFetch('/api/tasks/types/list');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task types');
   }
-  const { types, accents } = await res.json();
+  const { types, accents, systemTypes } = await res.json();
   _accentsByTypename = new Map(Object.entries(accents || {}));
+  _systemTypenames = new Set(systemTypes || []);
   return ignoreKeyReturn(keys, types);
 }
 const taskTypeFetcher = createCachedFetcher(fetchTaskTypeListFromServer);
@@ -52,6 +61,17 @@ export function clearTaskTypeCache() {
 export async function fetchTaskTypeAccents() {
   await fetchTaskTypeList(); // populates _accentsByTypename (cached after the first call)
   return _accentsByTypename;
+}
+
+/**
+ * The typenames that dedicated UI starts. Anything not in here is a type a user
+ * can meaningfully build a saved config for.
+ *
+ * @returns {Promise<Set<string>>}
+ */
+export async function fetchSystemTaskTypenames() {
+  await fetchTaskTypeList(); // populates _systemTypenames (cached after the first call)
+  return _systemTypenames;
 }
 
 /* ---- Task type schemas --- */

@@ -55,6 +55,10 @@ class ConvertModelTask(Task, TrainingJobRunnerMixin):
     # Model production: this is the run that makes a model.
     CARD_ACCENT = TaskAccent.VIOLET
 
+    # Started from the model import form, on a staging id that form just created
+    # by uploading the source weights. The id is meaningless a minute later.
+    SYSTEM_TASK = True
+
     # Conversion is generally quick, but reuse TrainModelTask's more tolerant
     # heartbeat interval since it shares the same SSE-relay code path.
     HEARTBEAT_INTERVAL = 60

@@ -2,7 +2,7 @@ import { DropDownField } from './DropDownField.js';
 import { Field } from './Field.js';
 import { SchemaField } from './SchemaField.js';
 import { TextField } from './TextField.js';
-import { fetchTaskConfigs, fetchTaskTypeList, fetchTaskTypeSchemas } from '/app-static/js/shared/api/tasks.js';
+import { fetchSystemTaskTypenames, fetchTaskConfigs, fetchTaskTypeList, fetchTaskTypeSchemas } from '/app-static/js/shared/api/tasks.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { pickExistingModal } from '/app-static/js/ui/utils/pickExistingModal.js';
 
@@ -18,7 +18,7 @@ export class TaskConfigField extends Field {
     super(rest);
   }
 
-  static async create({ name = '', typename = null, schema = null, uuid = null, ...rest } = {}) {
+  static async create({ name = '', typename = null, schema = null, uuid = null, showSystemTypes = false, ...rest } = {}) {
     const instance = new TaskConfigField({ ...rest });
     let isInvalid = false;
 
@@ -39,10 +39,18 @@ export class TaskConfigField extends Field {
     // Default false — this must be explicit opt-in (see PERSISTENT_PARAM_KEY comment above).
     instance._persistent = (instance._value || {})[PERSISTENT_PARAM_KEY] === true;
     const taskTypes = await fetchTaskTypeList();
+    const systemTypes = await fetchSystemTaskTypenames();
+    // Types a dedicated screen owns are noise in this dropdown — see Task.SYSTEM_TASK.
+    // The config being *edited* is always offered whatever its type, otherwise opening
+    // a watcher's or a preview's config would silently reset the dropdown to blank and
+    // a save would rewrite the config as a different type.
+    const offered = showSystemTypes
+      ? taskTypes
+      : taskTypes.filter(t => !systemTypes.has(t) || t === typename);
     const taskTypeOptions = [
       { key: FROM_EXISTING_SENTINEL, text: 'From Existing...' },
       ...(isInvalid && typename ? [{ key: typename, text: `${typename} (unknown type)` }] : []),
-      ...taskTypes,
+      ...offered,
     ];
 
     instance._dropDownField = new DropDownField({

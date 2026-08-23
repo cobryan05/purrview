@@ -78,6 +78,9 @@ class ListTaskTypesResponse(StatusResponse):
     # frontend fact about a task type; a second endpoint would mean a second
     # request on every page that draws a task card.
     accents: dict[str, str] = Field(default_factory=dict)
+    # Subset of `types` that dedicated UI starts and the "new task config" form
+    # therefore hides by default. Rides along for the same reason `accents` does.
+    system_types: List[str] = Field(default_factory=list)
 
 
 class PauseTasksPayload(Payload):
@@ -436,7 +439,13 @@ class WebApp:
             try:
                 types_list = await self._manager.list_task_types()
                 accents = await self._manager.list_task_accents()
-                return ListTaskTypesResponse(status=WebApp.SUCCESS_KEY, types=types_list, accents=accents)
+                system_types = await self._manager.list_system_task_types()
+                return ListTaskTypesResponse(
+                    status=WebApp.SUCCESS_KEY,
+                    types=types_list,
+                    accents=accents,
+                    system_types=system_types,
+                )
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListTaskTypesResponse(status=WebApp.FAILURE_KEY, message=str(e))

@@ -176,11 +176,18 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
     toggleChk.type = 'checkbox';
     toggleChk.checked = showTemporary;
     // Short label: the list panel is 240px and the long form wrapped to two lines.
-    toggleRow.title = 'Show configs created by the app for preview runs and other internal jobs';
+    toggleRow.title = 'Show configs created by the app for preview runs and other internal jobs, '
+      + 'and offer their task types when creating one';
     toggleRow.append(toggleChk, document.createTextNode('Show system'));
-    toggleChk.addEventListener('change', () => {
+    toggleChk.addEventListener('change', async () => {
       showTemporary = toggleChk.checked;
-      refreshList();
+      await refreshList();
+      // The toggle governs the type dropdown too, and a form that is already open
+      // was built with the old list — ticking the box and watching the dropdown not
+      // change reads as the toggle being broken. Only an untouched *new* form is
+      // rebuilt: doing it to a dirty one would throw away what was typed, and doing
+      // it to a saved config would be rebuilding it for no reason at all.
+      if (_selectedUuid === null && !screen.isDirty()) await _showForm(null, { force: true });
     });
     screen.listPanel.insertBefore(toggleRow, listBody);
 
@@ -215,10 +222,20 @@ export async function renderTaskConfigs({ target = 'task-config-list', refresh =
         screen.setBarHandle(barHandle);
         const { setDirty, setSaving, getDirty, updateTitle } = barHandle;
 
+        // The same toggle governs the type dropdown, not just the list: the types
+        // hidden from it are hidden for the same reason those configs are, and two
+        // separate switches for one idea is one more than the idea deserves.
         const field = await TaskConfigField.create(
           config
-            ? { value: config.params, name: config.name, typename: config.typename, uuid: config.uuid, editMode: true }
-            : { editMode: true },
+            ? {
+                value: config.params,
+                name: config.name,
+                typename: config.typename,
+                uuid: config.uuid,
+                editMode: true,
+                showSystemTypes: showTemporary,
+              }
+            : { editMode: true, showSystemTypes: showTemporary },
         );
 
         const formWrap = document.createElement('div');

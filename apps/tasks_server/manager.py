@@ -304,6 +304,15 @@ class Manager:
     async def list_task_types(self) -> List[str]:
         return list(task_registry.keys())
 
+    async def list_system_task_types(self) -> List[str]:
+        """Typenames that dedicated UI starts, rather than ones a user configures.
+
+        A list of the exceptions rather than a flag on every entry, for the reason
+        `list_task_accents` omits the untinted: the common answer is "no", and the
+        set that says otherwise is small and stable.
+        """
+        return [typename for typename, cls in task_registry.items() if cls.SYSTEM_TASK]
+
     async def list_task_accents(self) -> dict[str, str]:
         """Card accent name per task typename, for the types that claim one.
 

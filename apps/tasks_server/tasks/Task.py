@@ -93,6 +93,30 @@ class Task(ABC):
     # collects), not one hue per class.
     CARD_ACCENT: Optional[TaskAccent] = None
 
+    # Is this task type machinery, rather than something a user builds a saved
+    # config for?
+    #
+    # Most registered types are started by a screen that already knows every
+    # parameter: the model import forms build an ImportModelTask, Review builds
+    # a preview run, the NVR blips panel builds a harvest, the Watchers editor
+    # builds a StreamWatcherTask. Offering those in the "new task config"
+    # typename dropdown lists a dozen types of which only a few can be filled in
+    # by hand at all — and picking one of the others gets you a config that
+    # either refuses to start or needs uuids you would have to copy out of the
+    # database.
+    #
+    # This hides them from that dropdown. It does *not* restrict what may be
+    # launched: the API is unchanged, the dedicated screens still start these,
+    # and the Task Configs screen's existing "Show system" toggle reveals them
+    # for anyone who does want to hand-build one.
+    #
+    # Declared per type rather than inferred, for the reason CONTINUOUS is:
+    # nothing observable separates "needs a uuid only Review can supply" from
+    # "has a form a person can fill in". Default False so a newly written task
+    # is offered — a task nobody can find is a worse failure than one listed
+    # that need not have been.
+    SYSTEM_TASK: bool = False
+
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid
         self._instance_uuid: Optional[str] = None

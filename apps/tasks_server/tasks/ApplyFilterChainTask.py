@@ -140,6 +140,11 @@ class ApplyFilterChainTask(Task):
     # Bulk change to the annotation database.
     CARD_ACCENT = TaskAccent.AMBER
 
+    # Started from Review's "Run Filter Chain on Results", which supplies both the
+    # chain uuid and the image scope the current filter resolved to. Neither is
+    # something to type into a config form.
+    SYSTEM_TASK = True
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         self._filter_chain_uuid: str = str(params.get("filter_chain_uuid") or "")
         if not self._filter_chain_uuid:

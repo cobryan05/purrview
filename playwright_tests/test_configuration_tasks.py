@@ -184,13 +184,19 @@ def _open_config(page: Page, name: str = FAKE_CONFIG["name"]):
     expect(page.locator("#task-config-list .le-editor")).to_be_visible()
 
 
-def _mock_task_types(page: Page, types: list | None = None):
+def _mock_task_types(page: Page, types: list | None = None, system_types: list | None = None):
     page.route(
         "**/api/tasks/types/list",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({"status": "success", "types": types or [TASK_TYPE]}),
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "types": types or [TASK_TYPE],
+                    "systemTypes": system_types or [],
+                }
+            ),
         ),
     )
 
@@ -348,6 +354,64 @@ class TestTaskTypeDropdown:
         options = _type_select(page).locator("option").all_text_contents()
         for t in types:
             assert t in options, f"Type '{t}' not in dropdown options: {options}"
+
+    def test_system_types_are_hidden_until_show_system_is_ticked(self, page: Page, base_url: str):
+        """Types a dedicated screen owns are not offered for a hand-built config.
+
+        The conditional is the point: `StreamWatcherTask` must be absent while the
+        toggle is off and present while it is on. Asserting only that the ordinary
+        type is listed would pass just as happily with no filtering at all.
+        """
+        types = ["DatabaseMaintenanceTask", "StreamWatcherTask"]
+        _mock_task_types(page, types, system_types=["StreamWatcherTask"])
+        _mock_task_schema(page)
+        _mock_task_configs(page, {})
+        _mock_active_tasks(page, {})
+
+        _navigate_to_tasks(page, base_url)
+        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+
+        options = _type_select(page).locator("option").all_text_contents()
+        assert "DatabaseMaintenanceTask" in options, options
+        assert "StreamWatcherTask" not in options, options
+
+        page.locator("#task-config-list .tc-system-toggle input").check()
+
+        wait_until(
+            page,
+            lambda: "StreamWatcherTask" in _type_select(page).locator("option").all_text_contents(),
+            "Expected 'Show system' to add StreamWatcherTask to the type dropdown",
+        )
+
+    def test_editing_a_system_config_keeps_its_own_type_offered(self, page: Page, base_url: str):
+        """Opening a saved config of a hidden type must not blank its dropdown.
+
+        Filtering the option away would leave the <select> with no matching value,
+        and saving from there would rewrite the config as whatever happened to be
+        first in the list.
+        """
+        watcher_config = {
+            **FAKE_CONFIG,
+            "uuid": "cfg-watcher",
+            "name": "Armed watcher",
+            "typename": "StreamWatcherTask",
+        }
+        _mock_task_types(page, ["DatabaseMaintenanceTask", "StreamWatcherTask"], system_types=["StreamWatcherTask"])
+        page.route(
+            "**/api/tasks/types/schema",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"schemas": {"StreamWatcherTask": {}, TASK_TYPE: REFRESH_DB_SCHEMA}}),
+            ),
+        )
+        _mock_task_configs(page, {watcher_config["uuid"]: watcher_config})
+        _mock_active_tasks(page, {})
+
+        _navigate_to_tasks(page, base_url)
+        _open_config(page, "Armed watcher")
+
+        expect(_type_select(page)).to_have_value("StreamWatcherTask")
 
     def test_selecting_type_fetches_schema(self, page: Page, base_url: str):
         """Selecting a task type triggers a /api/tasks/types/schema call."""

@@ -77,6 +77,10 @@ class HarvestBlipFramesTask(Task):
     # Gathering data — same family as CollectTrainingImages.
     CARD_ACCENT = TaskAccent.GREEN
 
+    # Started from the event modal's blips panel, on a selection of blip uuids.
+    # There is no way to name those by hand.
+    SYSTEM_TASK = True
+
     @classmethod
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {

@@ -40,6 +40,11 @@ class ImportModelTask(Task):
     # Model production: this is the run that makes a model.
     CARD_ACCENT = TaskAccent.VIOLET
 
+    # Started from Configuration → Models → Import model, which is where the
+    # curated catalogue is browsable. A saved config for "download this model
+    # again" is not a thing anyone wants.
+    SYSTEM_TASK = True
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         # Task _init params are raw, unvalidated JSON — validate everything here.
         curated_key = str(params.get("curated_key") or "")
