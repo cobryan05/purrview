@@ -126,6 +126,37 @@ export function eventActiveAt(doc, t) {
   return t >= ev.startS && t <= end;
 }
 
+/** Below this, a duration disagreement is muxer rounding rather than an untrimmed head. */
+const LEAD_FLOOR_S = 0.25;
+
+/**
+ * Seconds of video playing *before* the sidecar's t=0, from the two durations.
+ *
+ * `declaredS` is how long the clip was meant to be (the sidecar's `durationS`);
+ * `actualS` is how long this browser thinks it is. A browser that applied the clip's
+ * edit list agrees with the first; one that did not reports the untrimmed head as extra
+ * length, and that surplus is exactly how far ahead of the picture the overlay would
+ * otherwise be drawn. Measuring it needs no user-agent sniffing.
+ *
+ * Clamped at 0 in both directions that matter:
+ * - a *shorter* file than declared is a chunk-assembled clip whose duration was summed
+ *   arithmetically instead of measured — a different fault, which shifting cannot fix
+ *   and would only disguise;
+ * - a sub-`LEAD_FLOOR_S` surplus is ordinary rounding (the final frame's own duration),
+ *   and shifting the overlay by that noise is worse than leaving it alone.
+ *
+ * @param {number} declaredS
+ * @param {number} actualS
+ * @returns {number} seconds, >= 0
+ */
+export function untrimmedLead(declaredS, actualS) {
+  const declared = Number(declaredS);
+  const actual = Number(actualS);
+  if (!Number.isFinite(declared) || !Number.isFinite(actual) || declared <= 0) return 0;
+  const surplus = actual - declared;
+  return surplus > LEAD_FLOOR_S ? surplus : 0;
+}
+
 /**
  * Attach an overlay canvas to a `<video>`.
  *
@@ -155,6 +186,36 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
 
   let showing = visible;
 
+  /**
+   * Seconds of video that play *before* the sidecar's t=0, or 0 when there are none.
+   *
+   * MediaMTX cannot cut a clip at an arbitrary instant: it starts at the keyframe at or
+   * before the requested one and marks the excess with a negative PTS plus an mp4 edit
+   * list. Measured on real clips that lead runs to several seconds — one sampled here
+   * began 4.2 s early, another 8.8 s.
+   *
+   * Whether it is *played* is entirely up to the browser. ffmpeg and Chromium apply the
+   * edit list, so their t=0 is the instant that was asked for and the sidecar lines up.
+   * A browser that does not apply it starts at the earlier keyframe, and every box is
+   * then drawn against a picture from `lead` seconds earlier — the overlay runs ahead of
+   * the video by exactly that much, which is what a user on such a browser sees.
+   *
+   * So it is measured rather than assumed, and the measurement needs no user agent
+   * sniffing: `durationS` is how long the clip was *meant* to be, and `video.duration`
+   * is how long this browser thinks it is. A browser that trimmed agrees; one that did
+   * not reports the lead as extra length, and that surplus IS the offset.
+   *
+   * Deliberately clamped at 0. A negative difference means the file is *shorter* than
+   * the sidecar claims — a chunk-assembled clip whose duration was summed arithmetically
+   * rather than measured — and that is a different fault, which shifting cannot repair
+   * and would only obscure.
+   */
+  let lead = 0;
+
+  function measureLead() {
+    lead = untrimmedLead(doc?.durationS, video.duration);
+  }
+
   function draw() {
     const rect = videoRect(video);
     // Backed at device resolution so a 1px stroke is a real pixel on a HiDPI screen,
@@ -175,7 +236,9 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
     ctx.clearRect(0, 0, cssW, cssH);
     if (!showing) return;
 
-    const t = video.currentTime || 0;
+    // Sidecar time, which is only the same as player time on a browser that honoured the
+    // clip's edit list — see `lead`.
+    const t = (video.currentTime || 0) - lead;
 
     if (eventActiveAt(doc, t)) {
       ctx.strokeStyle = '#ef4444';
@@ -228,9 +291,15 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
   if (video.requestVideoFrameCallback) rafHandle = video.requestVideoFrameCallback(pump);
 
   const redraw = () => draw();
+  // The lead can only be measured once the browser knows the duration, and it must be
+  // measured before the first paint that uses it — hence its own handler rather than a
+  // bare redraw, and a call now for a video whose metadata already arrived.
+  const onMetadata = () => { measureLead(); draw(); };
+  measureLead();
   video.addEventListener('timeupdate', redraw);
   video.addEventListener('seeked', redraw);
-  video.addEventListener('loadedmetadata', redraw);
+  video.addEventListener('loadedmetadata', onMetadata);
+  video.addEventListener('durationchange', onMetadata);
 
   // Double-clicking a `<video>` is the browser's own shortcut for fullscreen, and it
   // fullscreens the VIDEO ELEMENT — which leaves this canvas, its sibling, behind on the
@@ -258,15 +327,26 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
     /**
      * The boxes in effect at `t`, normalised. Exposed so "save frame for annotation" can
      * seed the captured frame with exactly the boxes drawn over it.
+     *
+     * `t` is PLAYER time — every caller passes `video.currentTime` — so the same lead
+     * correction the drawing uses is applied here. Without it a frame saved on a browser
+     * that plays the untrimmed head would be filed with the boxes belonging to a moment
+     * several seconds away, which is far worse than a misdrawn overlay: it puts wrong
+     * annotations into the training set.
      */
     boxesAt(t) {
-      return sampleAt(doc, t)?.boxes || [];
+      return sampleAt(doc, t - lead)?.boxes || [];
+    },
+    /** Seconds of untrimmed head this browser is playing; 0 when it honoured the trim. */
+    leadSeconds() {
+      return lead;
     },
     destroy() {
       observer.disconnect();
       video.removeEventListener('timeupdate', redraw);
       video.removeEventListener('seeked', redraw);
-      video.removeEventListener('loadedmetadata', redraw);
+      video.removeEventListener('loadedmetadata', onMetadata);
+      video.removeEventListener('durationchange', onMetadata);
       wrapper.removeEventListener('dblclick', onDoubleClick);
       if (rafHandle != null && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(rafHandle);
       canvas.remove();
