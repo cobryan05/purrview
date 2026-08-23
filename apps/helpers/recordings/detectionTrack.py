@@ -217,6 +217,7 @@ def build_overlay(
     event: Optional[Dict[str, Any]] = None,
     max_staleness_s: float = DEFAULT_MAX_STALENESS_S,
     lag_s: float = 0.0,
+    part_count: int = 1,
 ) -> Dict[str, Any]:
     """Slice samples into a clip-relative overlay document.
 
@@ -270,6 +271,13 @@ def build_overlay(
         # after it changed is otherwise indistinguishable from one written under the
         # new value, and "are these boxes compensated?" becomes unanswerable.
         "lagS": _round(lag_s),
+        # How many cuts were concatenated to make this file. The player's untrimmed-head
+        # correction infers a single keyframe head from `video.duration - durationS`;
+        # across a `-c copy -fflags +genpts` concat that surplus is the *sum* of every
+        # part's head while `durationS` stays the sum of the logical spans, so applying
+        # it would over-shift by N-1 heads. The player declines the correction unless
+        # this is 1.
+        "partCount": max(1, int(part_count)),
         "frames": frames,
     }
     if event:

@@ -145,14 +145,23 @@ const LEAD_FLOOR_S = 0.25;
  * - a sub-`LEAD_FLOOR_S` surplus is ordinary rounding (the final frame's own duration),
  *   and shifting the overlay by that noise is worse than leaving it alone.
  *
+ * Declined outright for a chunk-assembled clip (`partCount > 1`). `concat_parts` runs
+ * `-c copy -fflags +genpts`, which regenerates timestamps and discards each part's edit
+ * list, so the file physically plays *every* part's untrimmed head — in every browser,
+ * Chromium included. `declaredS` for that path is the sum of the logical spans, so the
+ * surplus is the sum of all N heads rather than one, and shifting by it would
+ * over-correct by N-1 heads on exactly the long events this path exists for.
+ *
  * @param {number} declaredS
  * @param {number} actualS
+ * @param {number} [partCount=1]
  * @returns {number} seconds, >= 0
  */
-export function untrimmedLead(declaredS, actualS) {
+export function untrimmedLead(declaredS, actualS, partCount = 1) {
   const declared = Number(declaredS);
   const actual = Number(actualS);
   if (!Number.isFinite(declared) || !Number.isFinite(actual) || declared <= 0) return 0;
+  if (Number(partCount) > 1) return 0;
   const surplus = actual - declared;
   return surplus > LEAD_FLOOR_S ? surplus : 0;
 }
@@ -213,7 +222,7 @@ export function attachClipOverlay(video, doc, { visible = true, labelColours = n
   let lead = 0;
 
   function measureLead() {
-    lead = untrimmedLead(doc?.durationS, video.duration);
+    lead = untrimmedLead(doc?.durationS, video.duration, doc?.partCount);
   }
 
   function draw() {

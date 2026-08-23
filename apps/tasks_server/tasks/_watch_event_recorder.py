@@ -501,6 +501,7 @@ class WatchEventRecorder:
                 started_at,
                 duration_s,
                 lag_s=lag_s,
+                part_count=int(clip.get("partCount") or 1),
                 event=event_window(
                     started_at,
                     duration_s,
