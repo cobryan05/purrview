@@ -4954,6 +4954,8 @@ button.filter-active {
 .le-list-body {
   flex: 1;
   min-height: 0;
+  /* Scrolls via .panel-box__body; this only stops the hand-off to the page. */
+  overscroll-behavior-y: contain;
 }
 
 .le-editor {
@@ -4976,6 +4978,12 @@ button.filter-active {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Stop the wheel handing off to the page when this reaches its end. Without it
+     a long editor (the Watchers form is the worst of them) scrolls to the bottom
+     and then keeps going, taking the pinned bar — and the Save button in it —
+     off-screen. Getting back meant scrolling a *different* scroller than the one
+     under the pointer, which is the part that made it feel broken. */
+  overscroll-behavior-y: contain;
 }
 
 .le-editor-footer {
@@ -6627,12 +6635,12 @@ button.filter-active {
   font-style: italic;
 }
 
-/* Give the page enough bottom clearance so the bottom bars don't cover content.
-   The notices bar may add extra height temporarily, but 2.5em covers the
-   active-model bar; content scrolls away from transient notices. */
-main.container {
-  padding-bottom: 2.5em;
-}
+/* Bottom clearance for the fixed bars lives on `body` (see the top of this file),
+   not here. It was declared in both places, for the same stated reason, which gave
+   the bars 80px of clearance for a ~32px strip. Harmless-looking, but it is 40px
+   taken off every full-height pane: `.list-editor-split` sizes itself as
+   `100vh - chrome`, and that chrome counts everything in flow below the split. The
+   Watchers editor was the pane where losing it showed. */
 
 /* ===== Model tree summary panel ===== */
 .model-tree-panel {

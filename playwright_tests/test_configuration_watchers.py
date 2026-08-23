@@ -997,17 +997,33 @@ class TestWatcherEditorDensity:
     def test_a_small_profile_fits_without_scrolling(self, page: Page, base_url: str):
         """One source, one rule and one action used to overflow the editor pane.
 
-        The allowance was 2px and is now 30px. Two deliberate additions spent it: the
-        MQTT topic template is a real new control in the action row, and the subject
-        slots became multi-select dropdowns, whose trigger is a few pixels taller than
-        the `<select>` it replaced. Every row is still one line per control group, which
-        is the regression this test actually exists to catch — a control going
-        full-width and stacking, which costs ~35px each and hundreds in total.
+        The allowance was 2px, then 30px, and is now 50px. Two deliberate additions
+        spent the first rise: the MQTT topic template is a real new control in the
+        action row, and the subject slots became multi-select dropdowns, whose trigger
+        is a few pixels taller than the `<select>` it replaced.
+
+        The rise to 50px is not extra content — it is the editor pane getting *shorter*
+        by the amount it was previously overhanging the viewport. `--le-chrome-h` did
+        not count the in-flow padding below the split, so the pane ran ~48px past the
+        bottom of the window and the whole page scrolled to compensate, taking the
+        pinned Save bar with it. Sizing the pane correctly hands those pixels back to
+        the page, and the content that used to overflow the *window* now overflows this
+        scroller instead. Same content, one scroller instead of two, Save always
+        visible. (Half of it was then reclaimed by dropping a duplicated
+        `padding-bottom` — 78px measured, 46px after.)
+
+        Every row is still one line per control group, which is the regression this
+        test actually exists to catch — a control going full-width and stacking, which
+        costs ~35px each and hundreds in total, and would clear 50px on its own.
+
+        Note the viewport: Playwright's default is 720px tall, which is the tightest
+        window anyone would realistically use, so this is the worst case rather than
+        the typical one — the pane grows with the window.
         """
         self._open_profile(page, base_url)
         body = page.locator("#watcher-management-box .le-editor-body").first
         overflow = body.evaluate("e => e.scrollHeight - e.clientHeight")
-        assert overflow <= 30, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
+        assert overflow <= 50, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
 
     def test_checkboxes_keep_their_box(self, page: Page, base_url: str):
         """Overriding Pico's explicit checkbox width collapses it to a thin bar."""

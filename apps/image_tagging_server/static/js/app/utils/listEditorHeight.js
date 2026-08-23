@@ -37,10 +37,26 @@ export function refreshListEditorHeights() {
     // offsetParent is null for display:none subtrees — the cheap visibility test.
     if (split.offsetParent === null) continue;
 
-    const top = split.getBoundingClientRect().top;
-    // `top` is relative to the viewport, which is exactly what `100vh - chrome`
-    // wants: everything above the split plus the bar below it.
-    const chrome = Math.max(0, Math.round(top + barsH));
+    const rect = split.getBoundingClientRect();
+    // Document-relative, not viewport-relative. The two only agree while the page
+    // is at scroll 0 — and the whole point of this measurement is the case where
+    // it is *not*, because a mis-sized split is what put a scrollbar on the page.
+    // Measuring from a scrolled viewport reported the split as starting higher
+    // than it does and grew it further, so the overflow never converged away.
+    const above = rect.top + window.scrollY;
+
+    // Padding and margins that sit *below* the split in normal flow — the app
+    // shell has some on both `main.container` and `body`. They were unaccounted
+    // for, which is what left the page ~48px taller than the viewport on every
+    // list-editor screen: enough to scroll the editor bar (and its Save button)
+    // out of sight, with no obvious way back because the wheel belongs to the
+    // inner scroller.
+    const below = Math.max(0, document.documentElement.scrollHeight - (rect.bottom + window.scrollY));
+
+    // max, not sum: the bottom bars are fixed, so they overlay that in-flow space
+    // rather than adding to it. Adding them would shrink the split by the bar
+    // height a second time and leave a permanent gap above the bars.
+    const chrome = Math.max(0, Math.round(above + Math.max(below, barsH)));
 
     // Guard against a measurement that would collapse the split. min-height in
     // CSS already floors the rendered size; this keeps the variable itself sane.
