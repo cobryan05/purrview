@@ -61,11 +61,48 @@ export class BboxView extends Konva.Group {
       listening: false,
     });
 
+    // Per-box selection marker. The Transformer draws a single border around
+    // the *whole* selection, which says nothing about which boxes are in it
+    // once there is more than one — this is the only per-box feedback.
+    this._selectionRect = new Konva.Rect({
+      width: this.width(),
+      height: this.height(),
+      stroke: 'white',
+      strokeWidth: 2,
+      dash: [6, 4],
+      name: 'selection-marker',
+      strokeScaleEnabled: false,
+      listening: false,
+      visible: false,
+    });
+
     this.add(this._rect);
+    this.add(this._selectionRect);
     this.add(this._text);
     this.add(this._iconText);
 
     this._setupEvents();
+  }
+
+  /**
+   * Resize the box body and everything that must track it.
+   * @private
+   * @param {number} width
+   * @param {number} height
+   */
+  _setBoxSize(width, height) {
+    this._rect.setAttrs({ width, height });
+    this._selectionRect.setAttrs({ width, height });
+  }
+
+  /**
+   * Show or hide this box's selection marker.
+   * Called only by canvas/selection.js, which owns the selection set.
+   * @param {boolean} on
+   */
+  setSelected(on) {
+    this._selectionRect.visible(!!on);
+    this.getLayer()?.batchDraw();
   }
 
   /**
@@ -118,7 +155,9 @@ export class BboxView extends Konva.Group {
       const newHeight = this.height() * scaleY;
 
       this.setAttrs({ width: newWidth, height: newHeight, scaleX: 1, scaleY: 1 });
-      this._rect.setAttrs({ width: newWidth, height: newHeight, scaleX: 1, scaleY: 1 });
+      this._setBoxSize(newWidth, newHeight);
+      this._rect.setAttrs({ scaleX: 1, scaleY: 1 });
+      this._selectionRect.setAttrs({ scaleX: 1, scaleY: 1 });
       this._text.setAttrs({ scaleX: 1, scaleY: 1, y: LABEL_OFFSET_Y });
       this._iconText.setAttrs({ scaleX: 1, scaleY: 1 });
 
@@ -143,7 +182,7 @@ export class BboxView extends Konva.Group {
   /** @param {import('@image_tagging_types').CanvasRect} rect */
   updatePosition({ x, y, width, height }) {
     this.setAttrs({ x, y, width, height });
-    this._rect.setAttrs({ width, height });
+    this._setBoxSize(width, height);
     this.getLayer()?.batchDraw();
   }
 
@@ -216,6 +255,6 @@ export class BboxView extends Konva.Group {
       width: w,
       height: h
     });
-    this._rect.size({ width: w, height: h });
+    this._setBoxSize(w, h);
   }
 }

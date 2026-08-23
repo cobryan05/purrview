@@ -1,6 +1,7 @@
 
 import { computeViewport } from './viewport.js';
 import { BboxView } from './views/bboxView.js';
+import { clearSelectionState } from './selection.js';
 import { renderEnhanced, DEFAULT_ENHANCE_MODE } from './enhance.js';
 
 /**
@@ -128,6 +129,10 @@ export function rerenderBboxViews(canvas, bboxes, viewport) {
   const { layer, transformer } = canvas;
   const vp = viewport ?? canvas.viewport;
   transformer.nodes([]);
+  // Every view below is about to be destroyed, so the selection set must be
+  // emptied too — otherwise interactionState holds references to dead nodes
+  // and the next delete or copy operates on them.
+  clearSelectionState(canvas);
   layer.find('.bbox').forEach(n => n.destroy());
   bboxes.forEach(bbox => layer.add(new BboxView(bbox, vp)));
   layer.batchDraw();

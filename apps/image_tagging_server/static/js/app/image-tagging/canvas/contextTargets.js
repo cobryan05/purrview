@@ -12,6 +12,8 @@
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchTagByUuid } from '/app-static/js/shared/api/tags.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+import { setSelection, getSelectedViews } from './selection.js';
+import { toClipboardEntry } from './bboxClipboard.js';
 import {
   UNVERIFIED_TAG_UUID,
   VERIFIED_TAG_UUID,
@@ -115,6 +117,17 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
       await _toggleBboxTag(bboxView, uuid, runtime);
     },
 
+    /**
+     * Snapshot of this bbox for the copy/paste clipboard.
+     *
+     * Only the canvas adapter has one — the review grid's bbox adapters do not,
+     * which is what keeps the Copy item out of that menu (the provider only
+     * offers it when every target can produce an entry).
+     */
+    getClipboardEntry() {
+      return toClipboardEntry(bboxView.uiBBox);
+    },
+
     async setVerification(uuid) {
       const tags = bboxView.uiBBox.tags ?? [];
       let next;
@@ -139,13 +152,13 @@ export function makeCanvasBboxAdapter(bboxView, runtime) {
 
     remove() {
       const layer = runtime.canvas?.layer;
-      const transformer = runtime.canvas?.transformer;
       runtime.state.image?.bboxes.delete(bboxView.uiBBox.uuid);
+      // Drop it from the selection *before* destroying the node, so the
+      // transformer and interactionState never keep a reference to a dead
+      // node — going through setSelection rather than transformer.nodes()
+      // keeps those two in step.
+      setSelection(runtime, getSelectedViews(runtime).filter(v => v !== bboxView));
       bboxView.destroy();
-      if (transformer) {
-        const nodes = transformer.nodes().filter(n => n !== bboxView);
-        transformer.nodes(nodes);
-      }
       runtime.pushState();
       events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
       layer?.draw();

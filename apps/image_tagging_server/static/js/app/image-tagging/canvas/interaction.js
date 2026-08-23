@@ -9,6 +9,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { setCanvasViewport, visibleContainerHeight } from './manager.js';
 import { screenToImage } from './viewport.js';
+import { setSelection, toggleSelection, addToSelection, getSelectedViews, isSelected } from './selection.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/registry.js';
 import { makeCanvasBboxAdapter } from './contextTargets.js';
 
@@ -173,12 +174,33 @@ export async function handleMouseDown(e, runtime) {
     return;
   }
 
+  // Releasing the button outside the stage never reaches our mouseup, so a
+  // marquee can be left dangling. Clear any stale one here rather than letting
+  // the next drag resume it from the old anchor.
+  if (ist.marqueeStart) {
+    ist.marqueeRect?.destroy();
+    ist.marqueeRect = null;
+    ist.marqueeStart = null;
+  }
+
+  // Shift+drag on empty canvas: rubber-band select. Checked before the pan
+  // branch below, which would otherwise claim the same gesture.
+  if (e.evt.button === 0 && e.evt.shiftKey && runtime.tool === 'select') {
+    const pos = getPointerPosition(runtime.canvas);
+    if (pos && !findGroupAtPoint(runtime, pos)) {
+      ist.marqueeStart = pos;
+      e.evt.preventDefault();
+      return;
+    }
+  }
+
   // Left click on empty canvas with a non-draw tool: pan
   if (e.evt.button === 0 && !isDrawTool(runtime.tool)) {
     const pos = getPointerPosition(runtime.canvas);
     if (pos && !findGroupAtPoint(runtime, pos)) {
       ist.isPanning = true;
       ist.lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
+      ist.panDistance = 0;
       stage.container().style.cursor = 'grabbing';
       return;
     }
@@ -207,6 +229,7 @@ export async function handleMouseMove(e, runtime) {
     const dx = e.evt.clientX - ist.lastPanPos.x;
     const dy = e.evt.clientY - ist.lastPanPos.y;
     ist.lastPanPos = { x: e.evt.clientX, y: e.evt.clientY };
+    ist.panDistance = (ist.panDistance ?? 0) + Math.abs(dx) + Math.abs(dy);
     const viewport = runtime.canvas?.viewport;
     if (!viewport) return;
 
@@ -216,6 +239,14 @@ export async function handleMouseMove(e, runtime) {
 
   const pos = getPointerPosition(runtime.canvas);
   if (!pos) return;
+
+  // Rubber-band selection in progress: draw it and do nothing else. Crosshairs
+  // and draw-tool tracking below are not reachable from a shift+drag on empty
+  // canvas with the select tool.
+  if (ist.marqueeStart) {
+    _updateMarquee(runtime, pos);
+    return;
+  }
 
   const currentTool = runtime.tool;
   if (isDrawTool(currentTool)) {
@@ -261,6 +292,75 @@ export async function handleMouseMove(e, runtime) {
   }
 }
 
+/** Smallest rubber-band drag that counts as a marquee rather than a stray click. */
+const MARQUEE_MIN_PX = 4;
+
+/** The rectangle spanned by the marquee so far, in canvas coordinates. */
+function _marqueeBounds(ist, pos) {
+  return {
+    x: Math.min(ist.marqueeStart.x, pos.x),
+    y: Math.min(ist.marqueeStart.y, pos.y),
+    width: Math.abs(pos.x - ist.marqueeStart.x),
+    height: Math.abs(pos.y - ist.marqueeStart.y),
+  };
+}
+
+/** Create (once) and reposition the marquee rectangle. */
+function _updateMarquee(runtime, pos) {
+  const ist = runtime.canvas.interactionState;
+  const layer = runtime.canvas.layer;
+  if (!ist.marqueeRect) {
+    ist.marqueeRect = new Konva.Rect({
+      stroke: 'white',
+      strokeWidth: 1,
+      dash: [4, 4],
+      fill: 'rgba(255,255,255,0.08)',
+      name: 'marquee',
+      listening: false,
+      strokeScaleEnabled: false,
+    });
+    layer.add(ist.marqueeRect);
+  }
+  ist.marqueeRect.setAttrs(_marqueeBounds(ist, pos));
+  ist.marqueeRect.moveToTop();
+  layer.batchDraw();
+}
+
+/**
+ * Finish a rubber-band drag: add every bbox the band touches to the selection.
+ *
+ * Additive rather than replacing, because the gesture that starts it is Shift —
+ * the same modifier that extends the selection on click. A plain click on empty
+ * canvas is still how you clear it.
+ */
+function _commitMarquee(runtime, pos) {
+  const ist = runtime.canvas.interactionState;
+  const layer = runtime.canvas.layer;
+  const band = _marqueeBounds(ist, pos);
+
+  ist.marqueeRect?.destroy();
+  ist.marqueeRect = null;
+  ist.marqueeStart = null;
+
+  // Too small to be a deliberate band — treat it as a click and leave the
+  // selection alone (handleClick's suppression below still applies).
+  if (band.width < MARQUEE_MIN_PX && band.height < MARQUEE_MIN_PX) {
+    layer.batchDraw();
+    return;
+  }
+
+  const hits = layer.getChildren(n => n.name() === 'bbox').filter(group => {
+    const r = group.getClientRect({ relativeTo: layer });
+    // Intersection, not containment: a band drawn across a large box that runs
+    // off-screen would otherwise never catch it.
+    return r.x < band.x + band.width && r.x + r.width > band.x &&
+      r.y < band.y + band.height && r.y + r.height > band.y;
+  });
+
+  addToSelection(runtime, hits);
+  layer.batchDraw();
+}
+
 /**
  * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime - The image tagging runtime for this canvas.
@@ -272,8 +372,23 @@ export async function handleMouseUp(e, runtime) {
   runtime.canvas.stage.container().style.cursor =
     isDrawTool(runtime.tool) ? 'crosshair' : isTagTool(runtime.tool) ? 'pointer' : 'default';
 
+  if (ist.marqueeStart) {
+    const pos = getPointerPosition(runtime.canvas);
+    if (pos) _commitMarquee(runtime, pos);
+    // Konva synthesizes a 'click' on this same mouseup; without suppression it
+    // reaches handleClick, finds no bbox under the pointer, and clears the very
+    // selection the band just built.
+    ist.suppressNextClick = true;
+    return;
+  }
+
   if (e.evt.button === 1 || ist.isPanning) {
+    // A pan that actually moved must not read as a click on empty canvas —
+    // that would drop the selection every time the user scrolled the image to
+    // look at the next box they wanted to add.
+    if ((ist.panDistance ?? 0) > MARQUEE_MIN_PX) ist.suppressNextClick = true;
     ist.isPanning = false;
+    ist.panDistance = 0;
     return;
   }
   ist.startPos = null;
@@ -367,45 +482,23 @@ export async function handleWheel(e, runtime) {
 }
 
 /**
- * Make `bboxGroup` the canvas's selected bbox: attach the transformer, record
- * it as the selection, and wire the resize handler that keeps a transform from
- * being lost.
+ * Make `bboxGroup` the canvas's sole selected bbox, replacing any existing
+ * selection.
  *
- * ⚠️ The ONLY supported way to put the transformer on a bbox. Calling
+ * ⚠️ The ONLY supported way to put the transformer on a single bbox (see
+ * canvas/selection.js for the multi-box entry points). Calling
  * `transformer.nodes([view])` directly renders live resize anchors while
- * skipping this bookkeeping, so dragging them mutates the box without ever
- * marking the canvas dirty — the edit looks applied, the Save button stays
- * clean, and it is discarded on close. That is exactly the bug the review
- * modal's open-on-a-bbox highlight shipped with.
+ * skipping the transformend bookkeeping, so dragging them mutates the box
+ * without ever marking the canvas dirty — the edit looks applied, the Save
+ * button stays clean, and it is discarded on close. That is exactly the bug
+ * the review modal's open-on-a-bbox highlight shipped with.
  *
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {import('./views/bboxView.js').BboxView} bboxGroup
  */
 export function selectBboxView(runtime, bboxGroup) {
   if (!runtime.canvas || !bboxGroup) return;
-  const { transformer } = runtime.canvas;
-  const ist = runtime.canvas.interactionState;
-
-  if (ist.selectedBbox && ist.selectedBbox !== bboxGroup) {
-    ist.selectedBbox.off('transformend.transformer');
-  }
-  ist.selectedBbox = bboxGroup;
-  transformer.nodes([bboxGroup]);
-  transformer.moveToTop();
-
-  // Konva .on() with a namespace appends rather than replaces, so re-selecting
-  // the same bbox would stack a duplicate handler (N undo pushes per resize).
-  // Clear unconditionally before wiring.
-  bboxGroup.off('transformend.transformer');
-
-  // Resize handler: Konva fires transformend from the Transformer node (not the
-  // BboxView group), so the stage-level bubbling guard won't catch it. Wire it
-  // directly on the group so we reliably get pushState + dirty notification.
-  bboxGroup.on('transformend.transformer', () => {
-    transformer.forceUpdate();
-    runtime.pushState();
-    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-  });
+  setSelection(runtime, [bboxGroup]);
 }
 
 /**
@@ -415,8 +508,15 @@ export function selectBboxView(runtime, bboxGroup) {
  */
 export function handleClick(e, runtime) {
   if (!runtime.canvas) return;
-  const { layer, transformer } = runtime.canvas;
+  const { layer } = runtime.canvas;
   const ist = runtime.canvas.interactionState;
+
+  // Consumed even when the tool is not 'select': a pan with the tag tool sets
+  // it too, and a flag left standing would eat the next real click.
+  if (ist.suppressNextClick) {
+    ist.suppressNextClick = false;
+    return;
+  }
 
   // Selection (and stacked-bbox cycling) only happens with the select tool.
   if (runtime.tool !== 'select') return;
@@ -424,12 +524,29 @@ export function handleClick(e, runtime) {
   const pos = getPointerPosition(runtime.canvas);
   const groups = pos ? findGroupsAtPoint(runtime, pos) : [];
 
-  // Clicked empty space → clear selection.
+  // Ctrl / Shift means "add to or remove from the current selection" rather
+  // than "make this the selection" — same contract as the review grid's cards.
+  const additive = e.evt.ctrlKey || e.evt.metaKey || e.evt.shiftKey;
+
+  // Clicked empty space → clear selection, unless the user is mid-multiselect
+  // (a missed shift-click should not throw away everything they just picked).
   if (!groups.length) {
-    ist.selectedBbox?.off('transformend.transformer');
-    ist.selectedBbox = null;
     ist.cycleAnchor = null;
-    transformer.nodes([]);
+    if (!additive) setSelection(runtime, []);
+    layer.batchDraw();
+    return;
+  }
+
+  // Modifier-click toggles the smallest box under the pointer. No stack
+  // cycling here: cycling is driven by repeated clicks at the same spot, which
+  // is exactly the gesture used to build up a multi-selection.
+  if (additive) {
+    const target = groups[0];
+    ist.cycleAnchor = null;
+    const nowSelected = toggleSelection(runtime, target);
+    if (nowSelected) {
+      events.publish(EventTypes.CANVAS_BBOX_CLICKED, { bboxId: target.id(), bboxView: target, runtimeId: runtime.id });
+    }
     layer.batchDraw();
     return;
   }
@@ -497,8 +614,13 @@ export async function handleContextMenu(e, runtime) {
   // canvas surface menu (similar/dissimilar search) is reached via the toolbar button
   // instead (see toolbar.js), not via right-click.
   if (bboxGroup) {
-    const obj = { adapters: { bbox: makeCanvasBboxAdapter(bboxGroup, runtime) } };
-    const opened = await openContextMenuForObjects([obj], { x: e.evt.clientX, y: e.evt.clientY });
+    // Right-clicking a member of a multi-selection acts on the whole selection
+    // (Apply label, Verify, Delete… all fan out), matching what the review
+    // grid does with its checked cards. Right-clicking a box that is *not*
+    // selected acts on that box alone and leaves the selection untouched.
+    const targets = isSelected(runtime, bboxGroup) ? getSelectedViews(runtime) : [bboxGroup];
+    const objects = targets.map(view => ({ adapters: { bbox: makeCanvasBboxAdapter(view, runtime) } }));
+    const opened = await openContextMenuForObjects(objects, { x: e.evt.clientX, y: e.evt.clientY });
     if (opened) return;
   }
 

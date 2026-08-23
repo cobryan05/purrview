@@ -3,6 +3,8 @@ import { getCanvasAction } from './image-tagging/canvasActions.js';
 import { resetCanvasZoom } from './image-tagging/canvas/manager.js';
 import { cycleCanvasEnhancement } from './image-tagging/canvas/enhance.js';
 import { setTool } from './image-tagging/canvas/tools.js';
+import { selectAllBboxes } from './image-tagging/canvas/selection.js';
+import { copySelectedBboxes, pasteBboxes } from './image-tagging/canvas/bboxClipboard.js';
 import { next_image, prev_image, deleteCurrentImage } from './image-tagging/files.js';
 import { actionForCombo, eventToCombo } from './image-tagging/hotkeyBindings.js';
 import { isTextEntryElement } from '/app-static/js/ui/utils/focus.js';
@@ -17,6 +19,26 @@ import { openDialogCount } from '/app-static/js/ui/utils/modalZIndex.js';
  * @type {{ runtime: import('@image_tagging_types').ImageTaggingRuntime, dialogBaseline: number }[]}
  */
 const _stack = [];
+
+/**
+ * Is this runtime's canvas actually on screen?
+ *
+ * The hotkey stack is not tab-aware: the main canvas stays on top of it while
+ * the user is over in Review or Jobs, so every bound key still reaches it. That
+ * is tolerable for canvas-specific keys nothing else wants, but Ctrl+A / C / V
+ * have strong browser meanings everywhere on the page. Those check this first
+ * and report unhandled when the canvas is hidden, leaving the browser's own
+ * behaviour intact.
+ *
+ * `offsetParent` is null for an element inside a `display: none` subtree, which
+ * is exactly how the inactive tabs are hidden.
+ *
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ */
+function canvasIsVisible(runtime) {
+  const container = runtime?.canvas?.container;
+  return !!container && container.offsetParent !== null;
+}
 
 /**
  * Run a bound action against a runtime. Returns true if it was handled.
@@ -42,6 +64,30 @@ function dispatchAction(action, runtime) {
     case 'action:prevImage': if (!runtime.fileNavigation) return false; prev_image(runtime); return true;
     case 'action:nextImage': if (!runtime.fileNavigation) return false; next_image(runtime); return true;
     case 'action:delete': deleteSelected(runtime); return true;
+    case 'action:selectAll':
+      if (!canvasIsVisible(runtime)) return false;
+      selectAllBboxes(runtime);
+      return true;
+    // A live text selection on the page means the user meant the browser's own
+    // copy — reporting unhandled leaves Ctrl+C doing what it always did. Text
+    // *inputs* are already handled upstream by the isTextEntryElement guard;
+    // this covers selected text in ordinary elements (label lists, captions).
+    case 'action:copyBboxes': {
+      if (!canvasIsVisible(runtime)) return false;
+      if ((window.getSelection?.()?.toString() ?? '').trim()) return false;
+      copySelectedBboxes(runtime);
+      return true;
+    }
+    // Fire-and-forget: paste resolves label names over the (cached) labels API,
+    // and nothing here can act on the outcome.
+    case 'action:pasteBboxes':
+      if (!canvasIsVisible(runtime)) return false;
+      pasteBboxes(runtime);
+      return true;
+    case 'action:pasteBboxesForce':
+      if (!canvasIsVisible(runtime)) return false;
+      pasteBboxes(runtime, { force: true });
+      return true;
     case 'action:deleteImage': deleteCurrentImage(runtime); return true;
     case 'action:undo': runtime.undo(); return true;
     case 'action:redo': runtime.redo(); return true;

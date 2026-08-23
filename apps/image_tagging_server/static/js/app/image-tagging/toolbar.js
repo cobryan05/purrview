@@ -7,11 +7,12 @@ import { makeCanvasSurfaceAdapter } from './canvas/contextTargets.js';
 import { openContextMenuForObjects } from '/app-static/js/ui/contextMenu/index.js';
 import { cycleCanvasEnhancement, getEnhanceMode, defaultEnhanceMode } from './canvas/enhance.js';
 import { importImages } from '/app-static/js/ui/imageUpload.js';
+import { copySelectedBboxes, pasteBboxes } from './canvas/bboxClipboard.js';
 
 // 'import' is in the default set, so the main canvas gets it. Editor modals
 // (Review's card editor) pass an explicit `buttons` list and therefore do not —
 // importing files from inside a modal about one existing image makes no sense.
-const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'save', 'enhance', 'resetZoom', 'deleteImage', 'search', 'import'];
+const ALL_BUTTONS = ['reload', 'undo', 'redo', 'select', 'bbox', 'clear', 'delete', 'copy', 'paste', 'save', 'enhance', 'resetZoom', 'deleteImage', 'search', 'import'];
 
 /**
  * Initialises a canvas toolbar into an explicit container element.
@@ -57,6 +58,20 @@ export function init(runtime, container, options = {}) {
     { key: 'bbox',   label: 'BBox',    onClick: () => setTool(runtime, 'bbox'),   dataTool: 'bbox' },
     { key: 'clear',  label: 'Clear',   onClick: () => clearAnnotations(runtime) },
     { key: 'delete', label: 'Delete',  onClick: () => deleteSelected(runtime) },
+    {
+      key: 'copy',
+      label: '⧉',
+      flex: '0 0 auto',
+      title: 'Copy selected bboxes (Ctrl+C) — Ctrl/Shift+click or Shift+drag to select several',
+      onClick: () => copySelectedBboxes(runtime),
+    },
+    {
+      key: 'paste',
+      label: '⎘',
+      flex: '0 0 auto',
+      title: 'Paste bboxes (Ctrl+V) — skips boxes already on this image; Ctrl+Shift+V pastes all',
+      onClick: () => pasteBboxes(runtime),
+    },
     { key: 'save',        label: 'Save',       onClick: () => saveAnnotations(runtime) },
     {
       key: 'enhance',

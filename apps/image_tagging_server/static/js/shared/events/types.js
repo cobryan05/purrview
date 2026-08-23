@@ -58,6 +58,13 @@ export const EventTypes = Object.freeze({
   MAIN_TAB_CHANGED: "tabs:main:changed",
   CANVAS_BBOX_DOUBLE_CLICKED: "canvas:bbox:double_clicked",
   CANVAS_BBOX_CLICKED: "canvas:bbox:clicked",
+  /**
+   * Fired whenever the set of selected bboxes changes, including when it
+   * becomes empty. CANVAS_BBOX_CLICKED only ever announces a single box that
+   * was just picked, so it cannot describe a multi-selection or a deselect.
+   * Payload: { runtimeId: string, bboxIds: string[] }
+   */
+  CANVAS_SELECTION_CHANGED: "canvas:selection:changed",
   CANVAS_TOOL_CHANGED: "canvas:tool:changed",
   /**
    * Fired when a canvas's display-only image enhancement mode changes.

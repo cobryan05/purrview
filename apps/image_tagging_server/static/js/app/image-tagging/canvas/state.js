@@ -39,8 +39,19 @@ export function createCanvasState(container) {
 
   const interactionState = {
     pendingDraggedBbox: null,
+    // `selectedBbox` is the *primary* (most recently added) member of
+    // `selectedBboxes`, kept for the single-box consumers (inspector,
+    // double-click tool switch). Both are owned by canvas/selection.js.
     selectedBbox: null,
+    /** @type {import('@canvas_types').BboxView[]} */
+    selectedBboxes: [],
     isPanning: false,
+    // Shift+drag rubber-band selection over empty canvas.
+    marqueeStart: null,
+    marqueeRect: null,
+    // Set when a drag (pan or marquee) ends, so the 'click' Konva synthesizes
+    // on mouseup does not clear the selection the drag just built.
+    suppressNextClick: false,
     startPos: null,
     lastPanPos: null,
     lastClickTime: 0,

@@ -24,6 +24,7 @@ import {
   VERIFIED_TAG_UUID,
 } from '/app-static/js/shared/api/review.js';
 import { runAll, buildTagPanel } from '../tagPanelBuilder.js';
+import { setClipboard } from '/app-static/js/app/image-tagging/canvas/bboxClipboard.js';
 
 /**
  * Build a label picker flyout panel.
@@ -117,12 +118,33 @@ export function buildSimilarBboxesItem(adapters, ctx) {
   };
 }
 
+/**
+ * "Copy" for the canvas clipboard — only offered when every target can produce
+ * a clipboard entry, which is true of the canvas bbox adapter and of nothing
+ * else. That capability check is what keeps this item out of the review grid's
+ * identical menu, where there is no canvas to paste onto.
+ */
+export function buildCopyItem(adapters, ctx) {
+  const count = ctx.count;
+  return {
+    label: count > 1 ? `Copy ${count} boxes` : 'Copy',
+    onSelect: () => {
+      setClipboard(adapters.map(a => a.getClipboardEntry()));
+      ctx.close();
+    },
+  };
+}
+
 registerContextProvider('bbox', async (adapters, ctx) => {
   const count = ctx.count;
+  const canCopy = adapters.every(a => typeof a.getClipboardEntry === 'function');
 
   const items = [
     // ── Apply label ────────────────────────────────────────────────────────
     buildApplyLabelItem(adapters, ctx),
+
+    // ── Copy to the canvas bbox clipboard (canvas targets only) ────────────
+    ...(canCopy ? [buildCopyItem(adapters, ctx)] : []),
 
     // ── Tags (toggle on/off, checkbox + indeterminate for multi-select) ────
     buildTagsItem(adapters, ctx),

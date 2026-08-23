@@ -9,6 +9,8 @@ import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID } from '/app-static/js/shared/ap
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
 import { syncBboxDraggable } from './tools.js';
 import { applyVerifiedTag } from './interaction.js';
+import { getSelectedViews, setSelection } from './selection.js';
+import { computeIou } from './geometry.js';
 
 /**
  * Prompt about unsaved changes before navigating away from the current image.
@@ -71,8 +73,9 @@ export async function loadImageOntoCanvas(runtime, imageName, { allowCached = fa
  */
 export function clearAnnotations(runtime) {
   if (!runtime.canvas) return;
-  const { layer, transformer } = runtime.canvas;
-  transformer?.nodes([]);
+  const { layer } = runtime.canvas;
+  // Every bbox view is destroyed below, so the selection has to go with it.
+  setSelection(runtime, []);
   runtime.clearBboxes();
 
   const children = [...layer.getChildren()];
@@ -128,6 +131,7 @@ export function clearUnmatched(runtime) {
   [...layer.getChildren()].forEach(child => {
     if (child.name() !== 'bbox' || !(child instanceof BboxView)) return;
     if (child.uiBBox.label?.uuid) return;
+    setSelection(runtime, getSelectedViews(runtime).filter(v => v !== child));
     transformer?.nodes(transformer.nodes().filter(n => n !== child && n.getParent() !== child));
     runtime.state.image?.bboxes.delete(child.uiBBox.uuid);
     child.destroy();
@@ -210,32 +214,25 @@ async function _saveAnnotationsNow(runtime) {
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export function deleteSelected(runtime) {
-  const transformer = runtime.canvas?.transformer;
   const layer = runtime.canvas?.layer;
-  if (!transformer || !layer) return;
+  if (!layer) return;
 
-  const selectedNodes = transformer.nodes();
-  if (!selectedNodes.length) return;
+  const views = getSelectedViews(runtime);
+  if (!views.length) return;
 
-  // Walk up from the selected node to find the BboxView group
-  let node = selectedNodes[0];
-  let bboxView = null;
-  while (node && node !== layer) {
-    if (node instanceof BboxView) {
-      bboxView = node;
-      break;
-    }
-    node = node.getParent();
+  // Detach the transformer before destroying anything, so it never holds a
+  // reference to a dead node.
+  setSelection(runtime, []);
+
+  for (const view of views) {
+    runtime.state.image?.bboxes.delete(view.uiBBox.uuid);
+    view.destroy();
   }
 
-  if (bboxView) {
-    runtime.state.image?.bboxes.delete(bboxView.uiBBox.uuid);
-    bboxView.destroy();
-    runtime.pushState();
-    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-  }
-
-  transformer.nodes([]);
+  // One undo step for the whole deletion — undoing a multi-box delete should
+  // bring every box back at once, not one press per box.
+  runtime.pushState();
+  events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
   layer.draw();
 }
 
@@ -304,23 +301,11 @@ export const INFERENCE_DUPLICATE_IOU_THRESHOLD = 0.7;
 export const GLOW_MATCHED = '#ffd60a'; // duplicate skipped, or an existing box replaced
 export const GLOW_CONFLICT_KEPT = '#ff453a'; // different label detected but left untouched
 
-/**
- * Intersection-over-union of two normalized (0-1) rects.
- * @param {{x:number,y:number,width:number,height:number}} a
- * @param {{x:number,y:number,width:number,height:number}} b
- * @returns {number}
- */
-export function computeIou(a, b) {
-  const ax2 = a.x + a.width, ay2 = a.y + a.height;
-  const bx2 = b.x + b.width, by2 = b.y + b.height;
-  const ix1 = Math.max(a.x, b.x), iy1 = Math.max(a.y, b.y);
-  const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
-  const iw = Math.max(0, ix2 - ix1), ih = Math.max(0, iy2 - iy1);
-  const inter = iw * ih;
-  if (inter <= 0) return 0;
-  const union = a.width * a.height + b.width * b.height - inter;
-  return union > 0 ? inter / union : 0;
-}
+// Lives in canvas/geometry.js now (see that file for why); re-exported here so
+// existing importers — and the tests that reach for it by this path — keep
+// working. Imported at the top rather than re-exported inline, because a bare
+// `export ... from` creates no local binding and this module calls it below.
+export { computeIou };
 
 /**
  * Identifies a bbox's label for "same label" comparisons even before it has a
@@ -439,11 +424,14 @@ export async function addInferenceResults(runtime, results, { replaceExisting = 
       // stale selectedBbox reference so a later click doesn't operate on a
       // destroyed node.
       runtime.state.image.bboxes.delete(bestMatch.uuid);
-      const { transformer, interactionState } = runtime.canvas;
+      setSelection(runtime, getSelectedViews(runtime).filter(v => v !== matchView));
+      // Belt and braces for a transformer that was attached outside the
+      // selection module (older code paths, tests driving it directly).
+      const { transformer } = runtime.canvas;
       transformer?.nodes(transformer.nodes().filter(n => n !== matchView && n.getParent() !== matchView));
-      if (interactionState?.selectedBbox === matchView) {
+      if (runtime.canvas.interactionState?.selectedBbox === matchView) {
         matchView.off('transformend.transformer');
-        interactionState.selectedBbox = null;
+        runtime.canvas.interactionState.selectedBbox = null;
       }
       matchView?.destroy();
     }
