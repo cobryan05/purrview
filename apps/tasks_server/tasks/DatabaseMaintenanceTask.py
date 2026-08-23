@@ -24,7 +24,7 @@ from db_client.models.recompute_phash_payload import RecomputePhashPayload
 from db_client.models.reconcile_image_payload import ReconcileImagePayload
 
 from apps import FILES_ROOT
-from apps.helpers.consts import TaskStatus
+from apps.helpers.consts import TaskAccent, TaskStatus
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.hashUtils import DEFAULT_BBOX_HASH_SIZE, DEFAULT_IMAGE_HASH_SIZE
 from apps.helpers.logUtils import LOG_LEVEL
@@ -63,6 +63,9 @@ class DatabaseMaintenanceTask(Task):
 
     Disk listing is skipped entirely when only hash work or tag clearing is requested.
     """
+
+    # Housekeeping — deliberately the quietest colour on the pane.
+    CARD_ACCENT = TaskAccent.SLATE
 
     # Approximate relative cost of each phase — used to portion the progress bar.
     _PHASE_WEIGHTS: dict[str, float] = {

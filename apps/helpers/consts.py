@@ -38,6 +38,28 @@ class ApiTags(str, Enum):
     RECORDINGS = "recordings"
 
 
+class TaskAccent(str, Enum):
+    """Named card accents a task type may claim (Task.CARD_ACCENT).
+
+    Names, not colours, deliberately. The Jobs pane is dark-only and Pico paints
+    the surfaces under these cards, so a hex chosen inside a task class cannot
+    know what it will sit on — the actual values live with every other colour in
+    static/css/tokens.css (`--task-accent-*`) and are picked for separation
+    against that surface and from each other.
+
+    Adding a member means adding the matching token and the
+    `[data-task-accent="..."]` rule in app.css; test_task_accents pins the two
+    sides together, since a name with no rule fails silently as "no colour".
+    """
+
+    BLUE = "blue"
+    GREEN = "green"
+    AMBER = "amber"
+    VIOLET = "violet"
+    TEAL = "teal"
+    SLATE = "slate"
+
+
 class TaskStatus(str, Enum):
     NEW = "new"
     PENDING = "pending"

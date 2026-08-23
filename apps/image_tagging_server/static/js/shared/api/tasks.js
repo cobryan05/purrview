@@ -12,13 +12,24 @@ export const TaskStatus = Object.freeze({
 
 
 /* ---- Task type list --- */
+
+/**
+ * typename -> card accent name, from the same response as the type list.
+ *
+ * Static per task type (it is a class attribute), so it rides along with the
+ * already-cached type list rather than costing a request of its own — every
+ * task card drawn in the Jobs pane needs it.
+ */
+let _accentsByTypename = new Map();
+
 async function fetchTaskTypeListFromServer(keys) {
   const res = await apiFetch('/api/tasks/types/list');
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || 'Failed to fetch task types');
   }
-  const { types } = await res.json();
+  const { types, accents } = await res.json();
+  _accentsByTypename = new Map(Object.entries(accents || {}));
   return ignoreKeyReturn(keys, types);
 }
 const taskTypeFetcher = createCachedFetcher(fetchTaskTypeListFromServer);
@@ -28,6 +39,19 @@ export async function fetchTaskTypeList() {
 
 export function clearTaskTypeCache() {
   taskTypeFetcher.clear();
+}
+
+/**
+ * Card accent name per task typename, for the types that declare one.
+ *
+ * Typenames the server did not name are absent from the Map — "no accent" is a
+ * real answer, and callers render an untinted card for it.
+ *
+ * @returns {Promise<Map<string, string>>}
+ */
+export async function fetchTaskTypeAccents() {
+  await fetchTaskTypeList(); // populates _accentsByTypename (cached after the first call)
+  return _accentsByTypename;
 }
 
 /* ---- Task type schemas --- */

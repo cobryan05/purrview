@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from apps.helpers.consts import TaskAccent
 from apps.helpers.curatedModels import get_curated_model
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import (
@@ -36,6 +37,9 @@ _DOWNLOAD_TIMEOUT = 300.0  # seconds; matches _training_job_runner._save_artifac
 
 @register_task()
 class ImportModelTask(Task):
+    # Model production: this is the run that makes a model.
+    CARD_ACCENT = TaskAccent.VIOLET
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         # Task _init params are raw, unvalidated JSON — validate everything here.
         curated_key = str(params.get("curated_key") or "")

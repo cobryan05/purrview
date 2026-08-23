@@ -73,6 +73,11 @@ class GetTaskConfigResponse(StatusResponse):
 
 class ListTaskTypesResponse(StatusResponse):
     types: List[str] = Field(default_factory=list)
+    # typename -> TaskAccent value, only for types that claim one. Rides along
+    # with the type list because it is the same static, already-cached-by-the-
+    # frontend fact about a task type; a second endpoint would mean a second
+    # request on every page that draws a task card.
+    accents: dict[str, str] = Field(default_factory=dict)
 
 
 class PauseTasksPayload(Payload):
@@ -430,7 +435,8 @@ class WebApp:
             """
             try:
                 types_list = await self._manager.list_task_types()
-                return ListTaskTypesResponse(status=WebApp.SUCCESS_KEY, types=types_list)
+                accents = await self._manager.list_task_accents()
+                return ListTaskTypesResponse(status=WebApp.SUCCESS_KEY, types=types_list, accents=accents)
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ListTaskTypesResponse(status=WebApp.FAILURE_KEY, message=str(e))

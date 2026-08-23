@@ -1,6 +1,7 @@
 import {
   cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus,
-  pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask, updateTaskConfig,
+  fetchTaskTypeAccents, pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask,
+  updateTaskConfig,
 } from '/app-static/js/shared/api/tasks.js';
 import {
   ActiveTaskField, FIELD_EDIT_EVENT, TaskConfigField, TERMINAL_STATUSES,
@@ -614,6 +615,17 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         };
       });
 
+      // Per-kind card tints, declared by the task types themselves. Awaited
+      // before the build (rather than per card) so every card in one pass
+      // agrees, and never fatal: a pane full of uncoloured cards is the old
+      // behaviour, an empty pane is not.
+      let accentsByTypename = new Map();
+      try {
+        accentsByTypename = await fetchTaskTypeAccents();
+      } catch (err) {
+        Logger.warn('Could not load task card accents; rendering plain cards', err);
+      }
+
       // Build every row in parallel.  The live DOM is untouched until
       // everything is ready, then partitioned into Continuous / Completed sections.
       const built = await Promise.all(Object.entries(tasks || {}).map(async ([taskId, task]) => {
@@ -802,6 +814,11 @@ export function renderActiveTasks({ target = 'active-tasks-list', refresh = null
         const row = document.createElement('div');
         row.className = 'task-instance-card';
         row.dataset.taskUuid = taskId;
+        // Only when the type claims one — the attribute's presence is what
+        // app.css keys the tint off, so an absent accent must leave it unset
+        // rather than write an empty string.
+        const accent = accentsByTypename.get(task.config?.typename);
+        if (accent) row.dataset.taskAccent = accent;
         // A hook for styling and for tests: "the user asked this to stop" is card
         // state, distinct from any status the server reports.
         if (isStopping) row.dataset.stopping = 'true';

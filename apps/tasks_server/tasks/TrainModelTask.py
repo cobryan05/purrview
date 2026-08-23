@@ -32,6 +32,7 @@ from db_client.models.training_target_detection_dataset_payload import (
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
+from apps.helpers.consts import TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.model_type_map import resolve_trainer_type
 
@@ -50,6 +51,9 @@ logger.setLevel(LOG_LEVEL)
 
 @register_task()
 class TrainModelTask(Task, TrainingJobRunnerMixin):
+    # Model production: this is the run that makes a model.
+    CARD_ACCENT = TaskAccent.VIOLET
+
     # Epochs can take minutes each — extend heartbeat tolerance.
     HEARTBEAT_INTERVAL = 60
 

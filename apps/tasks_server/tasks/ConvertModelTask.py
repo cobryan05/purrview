@@ -34,6 +34,7 @@ from training_client.models.submit_job_payload import SubmitJobPayload
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
+from apps.helpers.consts import TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 from apps.helpers.modelStaging import staged_model_path
@@ -51,6 +52,9 @@ _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 
 @register_task()
 class ConvertModelTask(Task, TrainingJobRunnerMixin):
+    # Model production: this is the run that makes a model.
+    CARD_ACCENT = TaskAccent.VIOLET
+
     # Conversion is generally quick, but reuse TrainModelTask's more tolerant
     # heartbeat interval since it shares the same SSE-relay code path.
     HEARTBEAT_INTERVAL = 60

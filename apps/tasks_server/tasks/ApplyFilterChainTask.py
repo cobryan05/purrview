@@ -44,6 +44,7 @@ from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
+from apps.helpers.consts import TaskAccent
 from apps.helpers.db.types import UNVERIFIED_TAG_UUID
 from apps.helpers.fileUtils import filter_stubs_by_directory
 from apps.helpers.logUtils import LOG_LEVEL
@@ -136,6 +137,9 @@ class _HttpInferenceBackend:
 
 @register_task()
 class ApplyFilterChainTask(Task):
+    # Bulk change to the annotation database.
+    CARD_ACCENT = TaskAccent.AMBER
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         self._filter_chain_uuid: str = str(params.get("filter_chain_uuid") or "")
         if not self._filter_chain_uuid:

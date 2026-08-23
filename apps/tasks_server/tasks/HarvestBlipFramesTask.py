@@ -40,7 +40,7 @@ from db_client.api.preview_runs_api import PreviewRunsApi
 from db_client.api.recordings_api import RecordingsApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
 
-from apps.helpers.consts import JsonValues
+from apps.helpers.consts import JsonValues, TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.blips import harvest_times, proposed_box_at
 
@@ -74,6 +74,9 @@ def _payload_models() -> Tuple[Any, Any, Any]:
 
 @register_task()
 class HarvestBlipFramesTask(Task):
+    # Gathering data — same family as CollectTrainingImages.
+    CARD_ACCENT = TaskAccent.GREEN
+
     @classmethod
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {

@@ -53,6 +53,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
+from apps.helpers.consts import TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 
@@ -100,6 +101,9 @@ _DEFAULT_CONCURRENCY = 4
 
 @register_task()
 class PreviewModelRelabelTask(Task):
+    # A dry run: produces a result to look at, changes nothing.
+    CARD_ACCENT = TaskAccent.TEAL
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         self._model_name: str = str(params.get("model_name") or "")
         if not self._model_name:

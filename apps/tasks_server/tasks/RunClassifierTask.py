@@ -22,6 +22,7 @@ from db_client.models.set_image_label_payload import SetImageLabelPayload
 from apps import FILES_ROOT
 from apps.helpers.classifier_utils import preprocess_image_bytes as _preprocess_image
 from apps.helpers.classifier_utils import softmax as _softmax
+from apps.helpers.consts import TaskAccent
 from apps.helpers.fileUtils import get_safe_path
 from apps.helpers.logUtils import LOG_LEVEL
 
@@ -38,6 +39,9 @@ _MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/models"))
 
 @register_task()
 class RunClassifierTask(Task):
+    # Bulk change to the annotation database.
+    CARD_ACCENT = TaskAccent.AMBER
+
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._model_name: str = str(params["model_name"])
         # model_name is joined onto _MODELS_ROOT to build .onnx/.json paths.

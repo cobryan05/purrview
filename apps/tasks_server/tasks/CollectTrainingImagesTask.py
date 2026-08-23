@@ -31,7 +31,7 @@ from inference_client.models.batch_inference_payload import BatchInferencePayloa
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.bboxUtils import iou_xywh
-from apps.helpers.consts import TaskStatus
+from apps.helpers.consts import TaskAccent, TaskStatus
 from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.hashUtils import (
     DEFAULT_BBOX_HASH_SIZE,
@@ -255,6 +255,11 @@ def _parse_confidence_band(raw: Any) -> Optional[ConfidenceBand]:
 
 @register_task()
 class CollectTrainingImagesTask(Task):
+    # Gathering data. Kept apart from training (violet) on purpose:
+    # telling a collection from the training it feeds is the whole reason the
+    # Jobs pane needed colour.
+    CARD_ACCENT = TaskAccent.GREEN
+
     # Per-call retry limits and timeouts for I/O operations that can hang indefinitely.
     _MAX_RETRIES: int = 3
     _FETCH_TIMEOUT_S: float = 30.0  # seconds to wait for a single getNextImage() call

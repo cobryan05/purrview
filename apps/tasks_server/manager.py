@@ -304,6 +304,18 @@ class Manager:
     async def list_task_types(self) -> List[str]:
         return list(task_registry.keys())
 
+    async def list_task_accents(self) -> dict[str, str]:
+        """Card accent name per task typename, for the types that claim one.
+
+        Typenames with CARD_ACCENT unset are omitted rather than mapped to a
+        default — "no tint" is a real answer, and the frontend renders a plain
+        card for anything missing here (including a task type it has never
+        heard of).
+        """
+        return {
+            typename: cls.CARD_ACCENT.value for typename, cls in task_registry.items() if cls.CARD_ACCENT is not None
+        }
+
     async def get_tasks_result(self, task_ids: Union[List[str], str]) -> dict[str, dict]:
         if isinstance(task_ids, str):
             task_ids = [task_ids]

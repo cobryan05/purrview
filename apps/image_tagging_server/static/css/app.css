@@ -5764,6 +5764,34 @@ button.filter-active {
   min-width: 0;
 }
 
+/* Per-kind card tint, claimed by the task type itself (Task.CARD_ACCENT →
+   /api/tasks/types/list → data-task-accent in ui/tasks.js). The pane is a grid
+   of identically shaped cards, so "is that the training or the collection
+   feeding it?" cost a read of every typename badge; a hue answers it without
+   reading.
+
+   The name→colour mapping lives here rather than in the API so a task ships a
+   *meaning* ("this is model production"), not a hex — the value has to be
+   chosen against --surface, which no task class can know about. An accent the
+   CSS has never heard of therefore renders as a plain card, which is also what
+   a task with no CARD_ACCENT gets: the tint is decoration on top of the badge,
+   never the only thing carrying the information.
+
+   Border + wash rather than a solid fill: these cards hold status text, log
+   tails and charts, and a saturated background would fight all three. */
+.task-instance-card[data-task-accent] {
+  border-left-width: 3px;
+  border-left-color: var(--task-accent);
+  background: color-mix(in srgb, var(--task-accent) 9%, transparent);
+}
+
+.task-instance-card[data-task-accent="blue"] { --task-accent: var(--task-accent-blue); }
+.task-instance-card[data-task-accent="green"] { --task-accent: var(--task-accent-green); }
+.task-instance-card[data-task-accent="amber"] { --task-accent: var(--task-accent-amber); }
+.task-instance-card[data-task-accent="violet"] { --task-accent: var(--task-accent-violet); }
+.task-instance-card[data-task-accent="teal"] { --task-accent: var(--task-accent-teal); }
+.task-instance-card[data-task-accent="slate"] { --task-accent: var(--task-accent-slate); }
+
 /* The user has clicked Stop and the task has not finished stopping. Marked on the
    card rather than left to a toast, because a shutdown can outlast any toast — a
    watcher closing its streams takes seconds, and a wedged one never finishes at all.

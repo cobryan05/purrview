@@ -46,7 +46,7 @@ from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
 from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
 from apps.helpers.actions.Registry import create_action
-from apps.helpers.consts import JsonValues, TaskStatus
+from apps.helpers.consts import JsonValues, TaskAccent, TaskStatus
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
@@ -91,6 +91,9 @@ _NULL_RECORDER = NullWatchEventRecorder()
 @register_task()
 class StreamWatcherTask(Task):
     """Watches a Watch Profile's sources and raises events from interaction rules."""
+
+    # Live watching — the always-on kind, not a job that finishes.
+    CARD_ACCENT = TaskAccent.BLUE
 
     # A watcher runs for weeks. Checkpoint far more often than the 300 s base default so
     # a restart loses seconds of open-event state, not minutes.

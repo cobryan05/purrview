@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from apps.helpers.consts import TaskAccent
 from apps.helpers.imageProviders.Registry import image_provider_registry
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.logUtils import LOG_LEVEL
@@ -16,6 +17,9 @@ logger.setLevel(LOG_LEVEL)
 
 @register_task()
 class PreviewSourceTask(Task):
+    # A dry run: produces a result to look at, changes nothing.
+    CARD_ACCENT = TaskAccent.TEAL
+
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         """Run any initialization logic for the task."""
         config = params.get("source_config", {})

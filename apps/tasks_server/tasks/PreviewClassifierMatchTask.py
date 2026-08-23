@@ -20,6 +20,7 @@ from db_client.api.labels_api import LabelsApi
 from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 
 from apps import FILES_ROOT
+from apps.helpers.consts import TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name
 
@@ -39,6 +40,9 @@ _IMAGE_BATCH_SIZE = 32
 
 @register_task()
 class PreviewClassifierMatchTask(Task):
+    # A dry run: produces a result to look at, changes nothing.
+    CARD_ACCENT = TaskAccent.TEAL
+
     async def _init(self, params: Dict[str, Any], resume_data: Optional[Dict[str, Any]]) -> None:
         self._model_name: str = str(params.get("model_name") or "")
         if not self._model_name:

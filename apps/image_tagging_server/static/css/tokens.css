@@ -123,6 +123,29 @@
   --chart-series-2: #c96805;
   --chart-series-3: #a366cd;
   --chart-series-4: #20a04e;
+  /* ---- task card accents (categorical) ----
+   * Tints for the Jobs pane's task cards, one per *kind of work* rather than
+   * per task type — a task claims one by name via Task.CARD_ACCENT
+   * (apps/helpers/consts.py: TaskAccent), and app.css turns the name into a
+   * left border and a faint wash. Named here rather than chosen inside a task
+   * class so the values stay with the rest of the palette and stay legible
+   * against --surface.
+   *
+   * These are used at low opacity as a *background* and at full strength on a
+   * 3px border, so they are picked for hue separation at a glance rather than
+   * for text contrast — nothing is ever set in these colours. Deliberately not
+   * the --chart-series-* scale: those are tuned against --surface-sunken and
+   * are assigned positionally, so reusing them would make a task card's colour
+   * change meaning depending on what a nearby chart happened to plot.
+   *
+   * Adding one means adding a TaskAccent member and the [data-task-accent]
+   * rule in app.css; test_task_accents pins the three sides together. */
+  --task-accent-blue: #4385e4;
+  --task-accent-green: #35b86a;
+  --task-accent-amber: #d4820f;
+  --task-accent-violet: #a366cd;
+  --task-accent-teal: #2ba8a0;
+  --task-accent-slate: #7c879b;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -253,6 +276,12 @@
     --chart-series-2: #a85504;
     --chart-series-3: #8a4fb0;
     --chart-series-4: #1a8442;
+    --task-accent-blue: #3672c9;
+    --task-accent-green: #1a8442;
+    --task-accent-amber: #a85504;
+    --task-accent-violet: #8a4fb0;
+    --task-accent-teal: #12807a;
+    --task-accent-slate: #5f6878;
     --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
   }
 }
@@ -284,6 +313,12 @@
   --chart-series-2: #c96805;
   --chart-series-3: #a366cd;
   --chart-series-4: #20a04e;
+  --task-accent-blue: #4385e4;
+  --task-accent-green: #35b86a;
+  --task-accent-amber: #d4820f;
+  --task-accent-violet: #a366cd;
+  --task-accent-teal: #2ba8a0;
+  --task-accent-slate: #7c879b;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -311,5 +346,11 @@
   --chart-series-2: #a85504;
   --chart-series-3: #8a4fb0;
   --chart-series-4: #1a8442;
+    --task-accent-blue: #3672c9;
+    --task-accent-green: #1a8442;
+    --task-accent-amber: #a85504;
+    --task-accent-violet: #8a4fb0;
+    --task-accent-teal: #12807a;
+    --task-accent-slate: #5f6878;
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 16px rgba(20, 20, 30, 0.08);
 }

@@ -9,7 +9,7 @@ from collections import deque
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
-from apps.helpers.consts import TaskStatus
+from apps.helpers.consts import TaskAccent, TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
 
 if TYPE_CHECKING:
@@ -75,6 +75,23 @@ class Task(ABC):
     # resume_data, so a task that never calls set_resume_data is marked ERROR on
     # an interrupted restart no matter what this says.
     DEFAULT_PERSISTENT: bool = False
+
+    # Optional card tint for this task type, in the Jobs pane's Active list.
+    #
+    # The pane is a grid of visually identical cards, and the question it has to
+    # answer at a glance — "is that a training or the collection feeding it?" —
+    # was only answerable by reading each card's typename badge. Colour is the
+    # cheapest way to make the kinds separable without reading anything.
+    #
+    # Owned by the task type rather than by the pane so a new task ships its own
+    # colour with it, instead of the Jobs UI carrying a hardcoded list of every
+    # typename that exists. None means no tint (the plain card) — that is the
+    # right answer for a task with no family to be confused with.
+    #
+    # A shared accent between two typenames is fine and intended: the useful
+    # grouping is by *kind of work* (everything that trains, everything that
+    # collects), not one hue per class.
+    CARD_ACCENT: Optional[TaskAccent] = None
 
     def __init__(self, task_config_uuid: str, params: dict[str, Any], manager: Manager):
         self._config_uuid: str = task_config_uuid

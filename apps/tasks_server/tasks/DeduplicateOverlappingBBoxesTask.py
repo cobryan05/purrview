@@ -8,6 +8,7 @@ from db_client.models.batch_by_uuids_payload import BatchByUuidsPayload
 
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
+from apps.helpers.consts import TaskAccent
 from apps.helpers.fileUtils import filter_stubs_by_directory
 from apps.helpers.logUtils import LOG_LEVEL
 
@@ -36,6 +37,9 @@ class DeduplicateOverlappingBBoxesTask(Task):
 
     Defaults to dry_run=True so users can preview before committing deletions.
     """
+
+    # Bulk change to the annotation database.
+    CARD_ACCENT = TaskAccent.AMBER
 
     async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
         self._status_msg = "Initializing"
