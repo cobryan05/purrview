@@ -7,6 +7,7 @@ import {
   purgeTimelapseFrames,
   runStorageSweep,
 } from '/app-static/js/shared/api/storage.js';
+import { createServiceStatusPanel } from '/app-static/js/ui/serviceStatus.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import {
@@ -54,9 +55,17 @@ export async function init() {
   // and fills in when the measurement lands.
   const storagePanel = _buildStorageSection();
 
+  // Hotkeys lead: the panel is collapsed by default, so at the bottom of a tall
+  // grid it was effectively undiscoverable. It costs one row collapsed.
+  //
+  // Service health sits directly above the Servers panel that configures those
+  // same services: "is the training server up" and "which URL is it" are the
+  // same question two minutes apart. It is a collapsed strip, so leading with it
+  // costs a row.
   wrap.append(
-    serverPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
     _buildHotkeySection(),
+    _buildServiceStatusSection(),
+    serverPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
   );
   container.appendChild(wrap);
 }
@@ -1161,6 +1170,21 @@ async function _buildUiSettingsSection() {
 
   body.appendChild(row);
   return section;
+}
+
+/* ── Service status (collapsible, full width) ───────────────────────────────── */
+
+/**
+ * The live service-health strip, hosted in Settings.
+ *
+ * The panel builds and refreshes itself; all Settings adds is the full-row span,
+ * because collapsed it is a one-line summary and expanded it is a row per
+ * service — neither belongs in a 360px column.
+ */
+function _buildServiceStatusSection() {
+  const panel = createServiceStatusPanel();
+  panel.classList.add('settings-panel--full');
+  return panel;
 }
 
 /* ── Keyboard shortcuts (collapsible, full width) ──────────────────────────── */
