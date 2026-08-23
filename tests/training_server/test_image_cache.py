@@ -1,7 +1,10 @@
 """Tests for ImageCache eviction (size + age) and local (no-copy) ingest."""
 
 import errno
+import io
 import os
+import tarfile
+import threading
 import time
 
 from apps.training_server.image_cache import ImageCache
@@ -189,3 +192,92 @@ def test_ingest_local_skips_already_cached_uuid(tmp_path):
     assert result["copied"] == 0
     # Existing cached content is untouched, not overwritten from source.
     assert (cache_dir / "uuid-a").read_bytes() == b"already-here"
+
+
+# ---------------------------------------------------------------------------
+# Concurrent ingest of overlapping manifests
+# ---------------------------------------------------------------------------
+
+
+def _make_tar(uuids):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as tf:
+        for u in uuids:
+            data = f"image-{u}".encode()
+            info = tarfile.TarInfo(name=u)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_concurrent_ingest_tar_of_same_uuids_caches_every_image(tmp_path):
+    """Two jobs pushing an overlapping manifest must each see all their images cached.
+
+    Overlapping manifests are the normal case — one image can carry boxes for
+    several models — and both pushers are told the UUID is missing before
+    either writes it. If they share scratch files, one job's rename steals the
+    other's, and the loser reports fewer images cached than it sent, which
+    aborts an otherwise healthy training job.
+    """
+    cache = ImageCache(cache_dir=str(tmp_path), max_mb=5000, max_age_days=0)
+    cache.ensure_dir()
+
+    uuids = [f"shared-uuid-{i}" for i in range(20)]
+    tar = _make_tar(uuids)
+    results = []
+    barrier = threading.Barrier(6)
+
+    def push():
+        barrier.wait()
+        results.append(cache.ingest_tar(tar, required_uuids=set(uuids)))
+
+    threads = [threading.Thread(target=push) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 6
+    for r in results:
+        assert r["received"] == len(uuids)
+    for u in uuids:
+        assert (tmp_path / u).read_bytes() == f"image-{u}".encode()
+    # No scratch files survive a clean run.
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".tmp_")] == []
+
+
+def test_concurrent_ingest_local_of_same_uuids_caches_every_image(tmp_path):
+    """Same overlap, via the zero-copy local path: neither job may lose an image."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    cache_dir = tmp_path / "cache"
+    cache = ImageCache(cache_dir=str(cache_dir), max_mb=5000, max_age_days=0)
+    cache.ensure_dir()
+
+    entries = []
+    for i in range(20):
+        u = f"shared-uuid-{i}"
+        src = src_dir / f"{u}.jpg"
+        src.write_bytes(f"image-{u}".encode())
+        entries.append((u, src))
+
+    results = []
+    barrier = threading.Barrier(6)
+
+    def push():
+        barrier.wait()
+        results.append(cache.ingest_local(list(entries), required_uuids={u for u, _ in entries}))
+
+    threads = [threading.Thread(target=push) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 6
+    for r in results:
+        assert r["received"] == len(entries)
+        assert r["not_found"] == []
+    for u, _ in entries:
+        assert (cache_dir / u).read_bytes() == f"image-{u}".encode()
+    assert [p.name for p in cache_dir.iterdir() if p.name.startswith(".tmp_")] == []

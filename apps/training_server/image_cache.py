@@ -17,6 +17,7 @@ import errno
 import io
 import logging
 import os
+import secrets
 import shutil
 import tarfile
 import time
@@ -29,6 +30,23 @@ _DEFAULT_CACHE_DIR = "/training-cache"
 _DEFAULT_MAX_MB = 10000  # 10 GB — matches TRAINING_CACHE_MAX_MB in docker-compose.yaml
 _DEFAULT_MAX_AGE_DAYS = 30  # 0 disables the age bound
 _MAX_IMAGE_MB = 50  # reject members larger than this
+
+
+def _tmp_name(uuid: str) -> str:
+    """Return a scratch filename unique to one in-flight write of *uuid*.
+
+    Two jobs whose manifests overlap both see the same UUID as missing and both
+    push it, concurrently. A temp name derived only from the UUID makes them
+    collide: the first rename moves the shared scratch file into place and the
+    second rename then fails with ENOENT, so a perfectly good image is reported
+    as un-cached and the pusher aborts the whole job. The random suffix gives
+    each write its own scratch file; the final rename stays atomic, and losing
+    the race just means overwriting the destination with identical bytes.
+
+    Keeps the ``.tmp_`` prefix — eviction and the cached-total count both skip
+    files that start with it.
+    """
+    return f".tmp_{uuid}.{secrets.token_hex(8)}"
 
 
 class ImageCache:
@@ -148,7 +166,7 @@ class ImageCache:
                     received += 1
                     continue
 
-                tmp = self._dir / f".tmp_{uuid}"
+                tmp = self._dir / _tmp_name(uuid)
                 try:
                     fobj = tf.extractfile(member)
                     if fobj is None:
@@ -341,7 +359,7 @@ class ImageCache:
                 not_found.append(uuid)
                 continue
 
-            tmp = self._dir / f".tmp_{uuid}"
+            tmp = self._dir / _tmp_name(uuid)
             try:
                 try:
                     os.link(source_path, tmp)
@@ -355,6 +373,12 @@ class ImageCache:
                         os.fsync(fd.fileno())
                     copied += 1
                 tmp.rename(dest)
+                # rename() is specified to do nothing — successfully — when both
+                # paths already resolve to the same inode. On the hardlink path a
+                # concurrent job may have just linked the same source into dest,
+                # in which case tmp survives the rename and would leak forever:
+                # .tmp_ files are skipped by both eviction and the cache count.
+                tmp.unlink(missing_ok=True)
                 received += 1
             except Exception:
                 logger.exception("Failed to locally ingest %s from %s", uuid, source_path)
