@@ -468,7 +468,7 @@ class TestHistorySurvivesConfigEdits:
         """`rule_name`/`subject_name`/`target_name` are denormalised precisely so a
         tidy-up of the watcher config does not blank the history it produced. Note the
         event row itself is CASCADEd with its profile — what this protects is the row
-        for a *rule* that went away, whose FK is SET NULL."""
+        for a *rule* that went away."""
         profile_uuid = await _make_profile(http_client)
         created = await _make_event(
             http_client,
@@ -487,6 +487,54 @@ class TestHistorySurvivesConfigEdits:
             "Tabby",
             "litter box",
         )
+
+    async def test_saving_the_profile_does_not_orphan_the_events_its_rules_fired(self, http_client):
+        """Saving a profile replaces its nested lists wholesale — every `InteractionRule`
+        is deleted and re-inserted carrying its original uuid. While `watch_events.rule_uuid`
+        was a foreign key with `ON DELETE SET NULL`, that delete cleared the pointer on
+        every event the rule had ever produced, and the re-insert did not put it back.
+
+        The damage was invisible until someone used the Event type filter, which then
+        matched only events fired since the last save and hid all the older ones — the
+        rest of the page still rendered fine off the denormalised `rule_name`.
+        """
+        rule_uuid = "33333333-3333-3333-3333-333333333333"
+        rule = {
+            "uuid": rule_uuid,
+            "order": 0,
+            "name": "cat using litter box",
+            "enabled": True,
+            "subjectAKind": "label",
+            "subjectARefsJson": ["label-cat"],
+            "relation": "contains",
+            "subjectBKind": "label",
+            "subjectBRefsJson": ["label-litter-box"],
+            "threshold": 0.6,
+        }
+        profile_uuid = await _make_profile(http_client)
+        r = await http_client.patch(f"/api/watch-profiles/{profile_uuid}", json={"rules": [rule]})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "success", r.text
+
+        created = await _make_event(http_client, profile_uuid, ruleUuid=rule_uuid, ruleName=rule["name"])
+
+        # An ordinary edit that leaves the rule itself alone — the user nudged a threshold.
+        r = await http_client.patch(
+            f"/api/watch-profiles/{profile_uuid}",
+            json={"rules": [{**rule, "threshold": 0.7}]},
+        )
+        assert r.status_code == 200, r.text
+
+        r = await http_client.get(f"/api/watch-events/{created['uuid']}")
+        assert r.json()["event"]["ruleUuid"] == rule_uuid
+
+        # The two symptoms the orphaning actually produced, rather than just the column:
+        # the filter stops finding the event, and the dropdown stops offering the rule.
+        body = await _list(http_client, profile_uuid=profile_uuid, rule_uuid=rule_uuid)
+        assert [e["uuid"] for e in body["events"]] == [created["uuid"]]
+
+        r = await http_client.get("/api/watch-events/facets", params={"profile_uuid": profile_uuid})
+        assert [f["ref"] for f in r.json()["rules"]] == [rule_uuid]
 
 
 class TestClosingStrandedEvents:

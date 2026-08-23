@@ -2070,13 +2070,23 @@ class WatchEvent(SQLModel, table=True):
     uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     profile_uuid: str = Field(foreign_key="watch_profiles.uuid", index=True, ondelete="CASCADE")
     source_uuid: Optional[str] = Field(default=None, foreign_key="sources.uuid", index=True, ondelete="SET NULL")
-    rule_uuid: Optional[str] = Field(
-        default=None, foreign_key="interaction_rules.uuid", index=True, ondelete="SET NULL"
-    )
-    # Denormalised from the rule at event time, on purpose. A rule can be renamed or
-    # deleted (`ondelete="SET NULL"`) long after the events it fired, and an event
-    # review page whose rows go blank when someone tidies up a profile is worthless.
-    # This is the history of what happened, not a live view of the config.
+    # ⚠️ Deliberately *not* a foreign key, unlike the two above. It used to be one with
+    # `ondelete="SET NULL"`, and that silently destroyed the event history's link to its
+    # rule: saving a watch profile replaces its nested lists wholesale
+    # (`update_watch_profile` deletes every `InteractionRule` for the profile and
+    # re-inserts them with their original uuids), so the delete fired SET NULL across
+    # every event that rule had ever produced. The rule came back with the same uuid;
+    # the events did not get their pointer back. The visible symptom was the Event type
+    # filter matching only events fired since the last time anyone saved the profile.
+    #
+    # SET NULL was wrong even without that: the facets endpoint builds the dropdown from
+    # `rule_uuid` values present in history precisely so a deleted rule keeps its month
+    # of events filterable, which NULLing the column defeats.
+    rule_uuid: Optional[str] = Field(default=None, index=True)
+    # Denormalised from the rule at event time, on purpose, for the same reason as the
+    # uuid above: a rule can be renamed or deleted long after the events it fired, and
+    # an event review page whose rows go blank when someone tidies up a profile is
+    # worthless. This is the history of what happened, not a live view of the config.
     rule_name: Optional[str] = Field(default=None)
     event_label: Optional[str] = Field(default=None)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_type=UtcDateTime())
