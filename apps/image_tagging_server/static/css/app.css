@@ -1,8 +1,13 @@
 /* ===== Base ===== */
 body {
   margin: 0;
-  /* Prevent fixed #bottom-bars from overlapping page content */
-  padding-bottom: 2.5rem;
+  /* Prevent fixed #bottom-bars from overlapping page content.
+     Tracks the bar's measured height (published by listEditorHeight.js) rather
+     than reserving a flat 2.5rem: the notices bar expands in place, and a static
+     reserve equal to the resting height puts the last row of content under the
+     bars exactly when there is something to read. The fallback is the resting
+     height, for the first paint before the measurement lands. */
+  padding-bottom: var(--bottom-bars-h, 2.5rem);
 }
 
 main.container {

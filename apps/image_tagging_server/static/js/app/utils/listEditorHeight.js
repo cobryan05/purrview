@@ -16,6 +16,38 @@
 const MIN_SPLIT_H = 380;
 
 /**
+ * In-flow space below `el`, all the way out to the document.
+ *
+ * Deliberately NOT `documentElement.scrollHeight - el.bottom`. `scrollHeight` is
+ * `max(content, clientHeight)`, so as soon as the page fits the viewport — which
+ * is precisely the state this module works to produce — that expression collapses
+ * to `innerHeight - above - splitHeight`, i.e. an identity: `chrome` recomputes to
+ * whatever it already was and the split can never grow. Enlarging the window left
+ * the pane at its old height with the new space dead beneath it, and a pane that
+ * mounted undersized stayed undersized forever.
+ *
+ * Walking the ancestors measures the padding/border/margin and trailing siblings
+ * that actually sit below the split, which is independent of the split's own
+ * height — so the value converges in one pass whether the page overflows or not.
+ *
+ * @param {Element} el
+ * @returns {number} pixels
+ */
+function inFlowSpaceBelow(el) {
+  let total = 0;
+  let node = el;
+  while (node.parentElement) {
+    const parent = node.parentElement;
+    // Gap between the node's bottom and the parent's — trailing siblings plus the
+    // parent's own bottom padding and border.
+    total += parent.getBoundingClientRect().bottom - node.getBoundingClientRect().bottom;
+    total += parseFloat(getComputedStyle(parent).marginBottom) || 0;
+    node = parent;
+  }
+  return Math.max(0, total);
+}
+
+/**
  * @returns {number} height of the fixed bottom bar strip, or 0 when absent.
  */
 function bottomBarsHeight() {
@@ -32,6 +64,13 @@ function bottomBarsHeight() {
  */
 export function refreshListEditorHeights() {
   const barsH = bottomBarsHeight();
+
+  // Published for `body { padding-bottom }`, so every page's bottom clearance is the
+  // bar's *current* height rather than a flat reserve guessed from its resting one —
+  // the notices bar expands in place, and that is precisely when content hidden under
+  // the bars matters. No feedback loop: the bars are fixed, so their height does not
+  // depend on the padding that reads it.
+  document.documentElement.style.setProperty('--bottom-bars-h', `${barsH}px`);
 
   for (const split of document.querySelectorAll('.list-editor-split')) {
     // offsetParent is null for display:none subtrees — the cheap visibility test.
@@ -51,7 +90,7 @@ export function refreshListEditorHeights() {
     // list-editor screen: enough to scroll the editor bar (and its Save button)
     // out of sight, with no obvious way back because the wheel belongs to the
     // inner scroller.
-    const below = Math.max(0, document.documentElement.scrollHeight - (rect.bottom + window.scrollY));
+    const below = inFlowSpaceBelow(split);
 
     // max, not sum: the bottom bars are fixed, so they overlay that in-flow space
     // rather than adding to it. Adding them would shrink the split by the bar
