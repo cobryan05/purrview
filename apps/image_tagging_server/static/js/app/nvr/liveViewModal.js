@@ -99,6 +99,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     hz: DEFAULT_HZ,
     paused: false,
     show: { detections: true, tracks: true, zones: true, labels: true },
+    /** Serve the camera's resolution rather than the frame inference ran on. */
+    fullRes: false,
+    /** `fullRes` before fullscreen turned it on, restored on the way back out. */
+    fullResBeforeFullscreen: null,
     saveWithBoxes: true,
     /** Last preview payload, whatever it contained. */
     preview: null,
@@ -156,6 +160,30 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   bar.appendChild(checkbox('Tracks', true, v => { state.show.tracks = v; draw(); }, 'watch-live-show-tracks'));
   bar.appendChild(checkbox('Zones', true, v => { state.show.zones = v; draw(); }, 'watch-live-show-zones'));
   bar.appendChild(checkbox('Labels', true, v => { state.show.labels = v; draw(); }, 'watch-live-show-labels'));
+
+  // Off by default: the diagnostic reading of this view wants the frame the models were
+  // actually shown, and a full-resolution frame costs a real encode and transfer on
+  // every poll. It is opt-in, and fullscreen opts in for you (see below) because at
+  // that size the downscaled frame is what people complain about.
+  const fullResToggle = checkbox('Full res', false, v => {
+    state.fullResBeforeFullscreen = null;
+    setFullRes(v);
+  }, 'watch-live-full-res');
+  fullResToggle.title = 'Show the camera’s own resolution instead of the downscaled frame '
+    + 'inference runs on. Boxes are still the model’s, scaled up to match.';
+  bar.appendChild(fullResToggle);
+  const fullResInput = fullResToggle.querySelector('input');
+
+  /** Switch resolutions and re-fetch: the new pixels carry the frame seq we already hold. */
+  function setFullRes(on) {
+    if (state.fullRes === on) return;
+    state.fullRes = on;
+    if (fullResInput) fullResInput.checked = on;
+    // Same frame, different pixels — without this the conditional fetch would answer
+    // `frameUnchanged` and the picture would stay at the resolution we just left.
+    state.frameSeq = null;
+    void poll({ immediate: true });
+  }
 
   const body = el('div', 'watch-live-body');
   shell.dialog.appendChild(body);
@@ -222,6 +250,20 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
       : 'Fullscreen (or double-click the picture). Box overlays are drawn into the same '
         + 'canvas as the picture, so they scale with it.';
     fullscreenBtn.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Fullscreen');
+
+    // Fullscreen is the one place the analysis-resolution frame is indefensible: a
+    // 640px picture blown up to a whole screen is mush. So going fullscreen turns full
+    // res on, and leaving puts it back exactly as the user had it — a user who ticked
+    // the box themselves keeps it ticked on the way out (that choice cleared the memo).
+    if (on) {
+      if (state.fullResBeforeFullscreen === null) state.fullResBeforeFullscreen = state.fullRes;
+      setFullRes(true);
+    } else if (state.fullResBeforeFullscreen !== null) {
+      const restore = state.fullResBeforeFullscreen;
+      state.fullResBeforeFullscreen = null;
+      setFullRes(restore);
+    }
+
     // The canvas is laid out by CSS, not by JS, but the *drawing* is sized from the
     // element's client box in a couple of places — redraw so the first fullscreen frame
     // is not the pre-fullscreen one stretched.
@@ -279,6 +321,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
       const preview = await fetchTaskLivePreview(taskUuid, {
         sourceUuid: state.sourceUuid,
         sinceSeq: state.frameSeq,
+        full: state.fullRes,
       });
       if (state.stopped) return;
       if (!preview) {
@@ -349,6 +392,23 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
 
   // ---------------------------------------------------------------- drawing
 
+  /**
+   * Pixels of served frame per pixel of analysed frame.
+   *
+   * 1 unless a full-resolution frame is being shown: detections and tracks are always
+   * reported in the *analysis* coordinate space, whatever picture the backend served,
+   * so drawing them onto a full-res frame unscaled would cram every box into the
+   * top-left corner. Zones are normalised and need none of this.
+   */
+  function overlayScale(preview) {
+    const served = preview?.frameWidth;
+    const analysed = preview?.analysisFrameWidth;
+    if (!served || !analysed) return 1;
+    return served / analysed;
+  }
+
+  const scaleBox = (bbox, k) => (k === 1 ? bbox : bbox.map(v => v * k));
+
   function draw() {
     const preview = state.preview;
     if (!ctx) return;
@@ -372,14 +432,20 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     }
     if (!preview) return;
 
+    const k = overlayScale(preview);
+    // Strokes and captions are in canvas pixels, so a 4x bigger canvas needs 4x the
+    // line weight and text to look the same on screen — otherwise full res trades a
+    // sharp picture for hairline boxes and unreadable labels.
+    const pen = { lineWidth: 2 * k, fontPx: 12 * k };
+
     if (state.show.zones) {
-      for (const zone of preview.zones ?? []) drawZone(zone, width, height);
+      for (const zone of preview.zones ?? []) drawZone(zone, width, height, pen);
     }
     if (state.show.detections) {
       for (const det of preview.detections ?? []) {
-        drawBox(det.bbox, boxColour(det, DETECTION_COLOUR), state.show.labels
+        drawBox(scaleBox(det.bbox, k), boxColour(det, DETECTION_COLOUR), state.show.labels
           ? `${labelText(det.labelName, det.labelUuid, 'det')} ${(det.confidence ?? 0).toFixed(2)}`
-          : null, { dashed: true });
+          : null, { dashed: true, ...pen });
       }
     }
     if (state.show.tracks) {
@@ -398,9 +464,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
           // knowing *which* one latched onto this object is the whole diagnosis.
           active ? `● ${rules.join(', ')}` : '',
         ].filter(Boolean).join(' ');
-        drawBox(track.bbox, colour, state.show.labels ? caption : null, {
+        drawBox(scaleBox(track.bbox, k), colour, state.show.labels ? caption : null, {
           emphasis: active,
           glow: active || track.isAnchor ? status : null,
+          ...pen,
         });
       }
     }
@@ -411,12 +478,12 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     drawOverlayBox(ctx, bbox, colour, label, opts);
   }
 
-  function drawZone(zone, width, height) {
+  function drawZone(zone, width, height, { lineWidth = 2, fontPx = 12 } = {}) {
     const points = (zone.points ?? []).map(([x, y]) => [x * width, y * height]);
     if (points.length < 2) return;
     ctx.save();
     ctx.strokeStyle = ZONE_COLOUR;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = lineWidth;
     ctx.setLineDash([2, 3]);
     if (zone.kind === 'box') {
       const [[x1, y1], [x2, y2]] = points;
@@ -431,8 +498,8 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     if (state.show.labels && zone.name) {
       ctx.setLineDash([]);
       ctx.fillStyle = ZONE_COLOUR;
-      ctx.font = '12px sans-serif';
-      ctx.fillText(zone.name, points[0][0] + 3, points[0][1] + 13);
+      ctx.font = `${fontPx}px sans-serif`;
+      ctx.fillText(zone.name, points[0][0] + 3, points[0][1] + fontPx + 1);
     }
     ctx.restore();
   }
@@ -533,6 +600,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
       return;
     }
     const preview = state.preview ?? {};
+    // The blob is whatever resolution was served, and `frameWidth`/`Height` below
+    // describe that same picture — so the boxes have to be moved into its space too,
+    // or a frame saved in full res gets its annotations in the top-left quarter.
+    const k = overlayScale(preview);
     saveBtn.disabled = true;
     try {
       const result = await saveFrameForAnnotation({
@@ -545,7 +616,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
         boxes: state.saveWithBoxes
           ? (preview.detections ?? []).map(d => ({
             labelUuid: d.labelUuid,
-            bbox: d.bbox,
+            bbox: scaleBox(d.bbox, k),
             confidence: d.confidence,
           }))
           : [],

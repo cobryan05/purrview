@@ -340,6 +340,75 @@ class TestLivePreviewCost:
         assert preview["frame"]
 
 
+class TestLivePreviewFullResolution:
+    """`full=True` — the camera's own pixels instead of the model's input.
+
+    The trap this guards is silent and visual: detections are always reported in the
+    *analysis* coordinate space, so a full-resolution frame that forgets to say what
+    that space was leaves the client drawing every box in the top-left corner of the
+    picture, with no error anywhere.
+    """
+
+    async def test_analysis_geometry_is_reported_alongside_the_full_frame(self):
+        pipeline = _pipeline()  # analysis_width=64
+        pipeline.prepare_frame(_frame(256, 192))
+        pipeline.step([_detection()], now=100.0)
+        task = _task([pipeline])
+
+        preview = await task.get_live_preview(full=True)
+
+        assert (preview["frameWidth"], preview["frameHeight"]) == (256, 192)
+        assert preview["frameFull"] is True
+        # The scale factor the client needs; without it the boxes below are unusable.
+        assert (preview["analysisFrameWidth"], preview["analysisFrameHeight"]) == (64, 48)
+        # Boxes stay in analysis space in both modes — the client scales them.
+        assert preview["detections"][0]["bbox"] == [1.0, 2.0, 10.0, 12.0]
+
+    async def test_default_stays_the_analysed_frame(self):
+        pipeline = _pipeline()
+        pipeline.prepare_frame(_frame(256, 192))
+        task = _task([pipeline])
+
+        preview = await task.get_live_preview()
+
+        assert (preview["frameWidth"], preview["frameHeight"]) == (64, 48)
+        assert preview["frameFull"] is False
+        assert preview["analysisFrameWidth"] == 64
+
+    async def test_switching_to_full_res_is_not_served_the_cached_small_frame(self):
+        """Same frame, different pixels: the encode cache must not answer the wrong one."""
+        pipeline = _pipeline()
+        pipeline.prepare_frame(_frame(256, 192))
+        task = _task([pipeline])
+
+        small = await task.get_live_preview()
+        large = await task.get_live_preview(full=True)
+        small_again = await task.get_live_preview()
+
+        assert large["frame"] != small["frame"]
+        assert small_again["frame"] == small["frame"]
+
+    async def test_a_camera_smaller_than_the_analysis_width_is_not_upscaled(self):
+        """`downscale_to_width` passes small frames through, so both names are one array."""
+        pipeline = _pipeline()
+        pipeline.prepare_frame(_frame(32, 24))
+        task = _task([pipeline])
+
+        preview = await task.get_live_preview(full=True)
+
+        assert (preview["frameWidth"], preview["frameHeight"]) == (32, 24)
+        assert preview["frameFull"] is False
+
+    async def test_endpoint_passes_full_through(self, http_client, manager):
+        pipeline = _pipeline()
+        pipeline.prepare_frame(_frame(256, 192))
+        uuid = _register_running(manager, _task([pipeline]))
+
+        resp = await http_client.get(f"/api/tasks/instances/{uuid}/live-preview", params={"full": "true"})
+
+        assert resp.json()["preview"]["frameWidth"] == 256
+
+
 class TestLivePreviewHook:
     async def test_a_task_type_without_a_live_view_returns_none(self):
         """The base hook is what lets the endpoint say "not available" rather than 500."""

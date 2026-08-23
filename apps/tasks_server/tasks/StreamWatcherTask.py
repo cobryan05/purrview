@@ -171,7 +171,7 @@ class StreamWatcherTask(Task):
         # rolling buffer is addressed. Captured once so a clock adjustment mid-run
         # can't make two events disagree about when 'now' was.
         self._wallclock_offset: float = time.time() - time.monotonic()
-        # source_uuid → (frame_seq, quality, base64 jpeg). Populated only by the live
+        # source_uuid → (frame_seq, quality, full_res, base64 jpeg). Populated only by the live
         # view, so a watcher with no viewer never allocates one.
         self._preview_cache: Dict[str, tuple] = {}
         # source_uuid → FrameRing, for sources with no rewind buffer. Created on first
@@ -1765,10 +1765,18 @@ class StreamWatcherTask(Task):
         3. **The encode is cached per (frame, quality)** so two viewers, or a caller
            that doesn't pass `since_seq`, still only cost one encode per frame.
 
-        Deliberately reports the frame *as analysed* — downscaled, and byte-identical to
+        Reports the frame *as analysed* by default — downscaled, and byte-identical to
         what was handed to inference — because the whole point of this view is to answer
-        "is the model being shown what I think it is?". A prettier full-resolution frame
-        would show coordinates that do not line up with the boxes drawn on it.
+        "is the model being shown what I think it is?".
+
+        `full=True` serves the camera's own resolution instead, for a viewer that wants
+        to look at the picture rather than at the model's input. The geometry then no
+        longer matches the boxes, so the payload always reports the analysis frame's
+        pixel size (`analysisFrameWidth`/`Height`) alongside the served image's size:
+        detections and tracks are in the *analysis* space in both modes, and a full-res
+        caller must scale them by the ratio. Getting that wrong draws boxes in the
+        top-left corner of the picture, which is why both sizes are always sent rather
+        than the caller inferring one.
         """
         pipeline = self._pipeline_for(source_uuid)
         payload: dict[str, Any] = {
@@ -1787,7 +1795,13 @@ class StreamWatcherTask(Task):
         now = time.monotonic()
         # One reference, grabbed once: the loop replaces this attribute between frames,
         # and reading it twice could encode one frame and report another's geometry.
-        frame = pipeline.last_frame
+        analysed = pipeline.last_frame
+        full = bool(options.get("full"))
+        # Falls back to the analysed frame rather than erroring when no full frame is
+        # held — an already-small camera stores one array under both names anyway.
+        frame = pipeline.last_full_frame if full else None
+        if frame is None:
+            frame = analysed
         quality = int(options.get("quality") or self._PREVIEW_QUALITY)
 
         open_events = pipeline.engine.open_events()
@@ -1852,6 +1866,13 @@ class StreamWatcherTask(Task):
         payload["frameSeq"] = seq
         payload["frameWidth"] = width
         payload["frameHeight"] = height
+        payload["frameFull"] = frame is not analysed
+        # The coordinate space detections and tracks are expressed in — the same as
+        # `frameWidth`/`Height` unless a full-resolution frame was served.
+        if analysed is not None:
+            a_height, a_width = analysed.shape[:2]
+            payload["analysisFrameWidth"] = a_width
+            payload["analysisFrameHeight"] = a_height
 
         since = options.get("since_seq")
         if since is not None and int(since) == seq:
@@ -1861,15 +1882,17 @@ class StreamWatcherTask(Task):
             payload["frameUnchanged"] = True
             return payload
 
-        cached_seq, cached_quality, cached_b64 = self._preview_cache.get(pipeline.source_uuid, (None, None, None))
-        if cached_seq == seq and cached_quality == quality:
+        cached_seq, cached_quality, cached_full, cached_b64 = self._preview_cache.get(
+            pipeline.source_uuid, (None, None, None, None)
+        )
+        if cached_seq == seq and cached_quality == quality and cached_full == full:
             payload["frame"] = cached_b64
             return payload
 
         encoded = await asyncio.to_thread(self._encode_preview, frame, quality)
         # One entry per source, overwritten — a bounded ~50 KB per watched source, and
         # only for sources someone has actually opened the live view on.
-        self._preview_cache[pipeline.source_uuid] = (seq, quality, encoded)
+        self._preview_cache[pipeline.source_uuid] = (seq, quality, full, encoded)
         payload["frame"] = encoded
         return payload
 

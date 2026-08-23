@@ -509,6 +509,7 @@ class WebApp:
             source_uuid: Optional[str] = None,
             quality: Optional[int] = None,
             since_seq: Optional[int] = None,
+            full: bool = False,
         ) -> TaskLivePreviewResponse:
             """
             The frame a running task is currently working on, plus what it sees in it.
@@ -521,10 +522,14 @@ class WebApp:
             for this endpoint existing. Pass `since_seq` with the last `frameSeq` you
             received and a poll that outruns the camera returns fresh metadata with no
             image attached, rather than re-encoding and re-sending pixels you have.
+
+            `full=true` serves the camera's own resolution rather than the downscaled
+            frame inference ran on. Detections stay in the analysis coordinate space
+            either way — see `analysisFrameWidth`/`analysisFrameHeight` in the payload.
             """
             try:
                 preview = await self._manager.get_task_live_preview(
-                    task_uuid, source_uuid=source_uuid, quality=quality, since_seq=since_seq
+                    task_uuid, source_uuid=source_uuid, quality=quality, since_seq=since_seq, full=full
                 )
             except ValueError as e:
                 # Not running is the ordinary case (the watcher was stopped while the

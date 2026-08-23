@@ -165,12 +165,18 @@ export async function fetchTaskStatusData(taskUuids) {
  * @returns {Promise<?object>} the preview, or null when there is none to show
  * @throws {Error} only on a transport failure
  */
-export async function fetchTaskLivePreview(taskUuid, { sourceUuid = null, sinceSeq = null, quality = null } = {}) {
+export async function fetchTaskLivePreview(
+  taskUuid,
+  { sourceUuid = null, sinceSeq = null, quality = null, full = false } = {},
+) {
   const params = new URLSearchParams();
   if (sourceUuid) params.set('source_uuid', sourceUuid);
   // 0 is a legitimate seq (no frame yet), so test for null rather than falsiness.
   if (sinceSeq != null) params.set('since_seq', String(sinceSeq));
   if (quality != null) params.set('quality', String(quality));
+  // The camera's own resolution instead of the downscaled frame inference ran on.
+  // Costs a bigger encode and transfer per frame, so it is only ever sent when asked.
+  if (full) params.set('full', 'true');
   const query = params.toString();
 
   const res = await apiFetch(`/api/tasks/instances/${encodeURIComponent(taskUuid)}/live-preview${query ? `?${query}` : ''}`);
