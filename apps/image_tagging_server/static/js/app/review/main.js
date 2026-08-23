@@ -1638,16 +1638,21 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     };
   }
 
+  // Does this entry survive the current view toggle? Shared with render()'s
+  // auto-skip check so "the page looks empty" can never mean one thing to the
+  // grid and another to the thing that decides to throw the page away.
+  function _matchesViewFilter(e) {
+    if (_viewFilter === 'images') return e.kind === 'image';
+    if (_viewFilter === 'bboxes') return e.kind === 'bbox';
+    return true; // 'all'
+  }
+
   // ── Render filtered entries to grid ──────────────────────────────
   function renderFromEntries() {
     cardGrid.resetForRender();
 
     // Filter entries by view mode
-    _visibleEntries = _allEntries.filter(e => {
-      if (_viewFilter === 'images') return e.kind === 'image';
-      if (_viewFilter === 'bboxes') return e.kind === 'bbox';
-      return true; // 'all'
-    });
+    _visibleEntries = _allEntries.filter(_matchesViewFilter);
 
     updateBulkBtn();
 
@@ -1938,11 +1943,23 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         _hasMore = true; // there are more, user must paginate
       }
 
-      // Auto-skip empty pages (when client-side tag filter leaves nothing).
-      // Skip only in full-filter mode — in custom fetchImages mode (preview) we
-      // want to show image entries even when they have no bbox annotations.
-      const bboxEntries = _allEntries.filter(e => e.kind === 'bbox');
-      if (!fetchImages && bboxEntries.length === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
+      // Auto-skip empty pages (when the client-side bbox filter leaves nothing
+      // to render). Skip only in full-filter mode — in custom fetchImages mode
+      // (preview) we want to show image entries even when they have no bbox
+      // annotations.
+      //
+      // "Empty" has to mean *what this view would render*, not "has no bboxes".
+      // Only the bboxes view is blank on a page with no bbox entries; in the
+      // images and all views every returned image is a card in its own right,
+      // so a bbox-less page is a full page. Testing bbox count regardless of
+      // view made any filter selecting mostly-unannotated images (a camera
+      // source, say — 1535 images, 1 of them annotated) burn all ten skips in
+      // a row and walk to the end of the result set. And because a skip
+      // *overwrites* the current page cursor rather than pushing one, the pager
+      // still read "Page 1 of 7" with Prev disabled while the grid showed the
+      // last page — no click involved, and nothing on screen to explain it.
+      const visibleEntryCount = _allEntries.filter(_matchesViewFilter).length;
+      if (!fetchImages && visibleEntryCount === 0 && _hasMore && autoSkipped < MAX_AUTO_SKIP) {
         autoSkipped++;
         _pageCursors[_pageCursors.length - 1] = _lastCursor;
         continue fetchLoop;
