@@ -1,10 +1,9 @@
-"""Service Status lives in Runs, not Settings.
+"""Service Status lives in Settings, not Jobs.
 
-Decision register #8 moves service health off Settings; UI_REDESIGN §12 calls
-its presence there the original miscategorisation (it persists nothing and is
-pure live monitoring). It rode along with Activity when Operations dissolved
-into Configuration + Runs, which is the surface it belongs on: health sits
-beside what is running.
+It spent a while on Jobs (decision register #8 / UI_REDESIGN §12, on the grounds
+that it persists nothing and is pure live monitoring), but it reads as a
+statement about the servers rather than about the work: it belongs beside the
+Servers panel that configures the very services it reports on.
 """
 
 import json
@@ -33,10 +32,11 @@ def _mock_service_status(page: Page, services=None):
     )
 
 
-def _navigate_to_runs(page: Page, base_url: str):
+def _navigate_to_settings(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    page.locator(".main-tab-button[data-tab='tab-runs']").click()
+    page.locator(".main-tab-button[data-tab='tab-settings']").click()
+    page.wait_for_selector("#tab-settings .settings-wrap", timeout=8000)
     page.wait_for_load_state("networkidle")
 
 
@@ -44,7 +44,7 @@ def _expand_service_status(page: Page):
     """Open the service-status disclosure.
 
     The panel is a <details> collapsed by default -- expanded it is five rows
-    above every Runs pane, and the answer is almost always "all green".
+    at the top of Settings, and the answer is almost always "all green".
     The per-service rows only exist to be looked at on demand, so tests that
     assert on them have to open it first.
     """
@@ -64,10 +64,10 @@ def _expand_service_status(page: Page):
     )
 
 
-class TestServiceStatusInRuns:
+class TestServiceStatusInSettings:
     def test_panel_renders_a_row_per_service(self, page: Page, base_url: str):
         _mock_service_status(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
 
         _expand_service_status(page)
         panel = page.locator("[data-testid='service-status-panel']")
@@ -75,7 +75,7 @@ class TestServiceStatusInRuns:
 
     def test_row_detail_reflects_service_payload(self, page: Page, base_url: str):
         _mock_service_status(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
 
         _expand_service_status(page)
         expect(page.locator("[data-testid='service-status-row-tasks_server']")).to_contain_text("running: 2")
@@ -88,7 +88,7 @@ class TestServiceStatusInRuns:
         page.on("request", lambda req: calls.append(req.url) if "/api/service-status" in req.url else None)
 
         _mock_service_status(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         expect(page.locator("[data-testid='service-status-panel']")).to_be_visible()
         before = len(calls)
 
@@ -119,7 +119,7 @@ class TestServiceStatusInRuns:
                 body=json.dumps({"jobs": []}),
             ),
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
 
         _expand_service_status(page)
         page.locator("[data-testid='service-status-open-training_server']").click()
@@ -175,7 +175,7 @@ class TestServiceStatusDetails:
 
     def test_service_summary_string_is_used_verbatim(self, page: Page, base_url: str):
         _mock_service_status(page, DETAILED_SERVICES)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         expect(page.locator("[data-testid='service-status-row-inference_server']")).to_contain_text(
@@ -184,7 +184,7 @@ class TestServiceStatusDetails:
 
     def test_detail_rows_are_hidden_until_the_row_is_expanded(self, page: Page, base_url: str):
         _mock_service_status(page, DETAILED_SERVICES)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         details = page.locator("[data-testid='service-status-details-inference_server']")
@@ -198,7 +198,7 @@ class TestServiceStatusDetails:
 
     def test_a_section_with_no_rows_shows_its_empty_text(self, page: Page, base_url: str):
         _mock_service_status(page, DETAILED_SERVICES)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         page.locator("[data-testid='service-status-row-tasks_server'] .service-status-row__line").click()
@@ -206,7 +206,7 @@ class TestServiceStatusDetails:
 
     def test_a_service_without_details_is_not_expandable(self, page: Page, base_url: str):
         _mock_service_status(page)  # the plain SERVICES payload
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         expect(page.locator("[data-testid='service-status-details-db_server']")).to_have_count(0)
@@ -214,7 +214,7 @@ class TestServiceStatusDetails:
 
     def test_an_unreachable_service_does_not_render_stale_details(self, page: Page, base_url: str):
         _mock_service_status(page, DETAILED_SERVICES)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         row = page.locator("[data-testid='service-status-row-stream_server']")
@@ -233,7 +233,7 @@ class TestServiceStatusDetails:
                 body=json.dumps({"jobs": []}),
             ),
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         row = page.locator("[data-testid='service-status-row-training_server']")
@@ -246,7 +246,7 @@ class TestServiceStatusDetails:
         """Refresh rebuilds every row, so which ones are open has to live
         outside the DOM — otherwise refreshing collapses what you opened."""
         _mock_service_status(page, DETAILED_SERVICES)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line").click()
@@ -264,7 +264,7 @@ class TestServiceStatusDetails:
 
     def test_an_expanded_row_survives_a_reload(self, page: Page, base_url: str):
         _mock_service_status(page, DETAILED_SERVICES)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
         page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line").click()
         wait_until(
@@ -274,7 +274,7 @@ class TestServiceStatusDetails:
             "Open-row state was never persisted",
         )
 
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
 
         expect(page.locator("[data-testid='service-status-details-inference_server']")).to_be_visible()
 
@@ -282,9 +282,9 @@ class TestServiceStatusDetails:
 class TestServiceStatusCollapsedSummary:
     def test_panel_is_collapsed_by_default(self, page: Page, base_url: str):
         """Collapsed is the default: the strip must not eat a third of the pane
-        above every Runs pane just to say everything is fine."""
+        at the top of Settings just to say everything is fine."""
         _mock_service_status(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
 
         panel = page.locator("[data-testid='service-status-panel']")
         expect(panel).to_be_visible()
@@ -295,7 +295,7 @@ class TestServiceStatusCollapsedSummary:
         """The collapsed line must say *which* service is unhealthy — a bare
         count would send you into the list anyway, defeating the collapse."""
         _mock_service_status(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
 
         summary = page.locator("[data-testid='service-status-summary']")
         expect(summary).to_be_visible()
@@ -305,24 +305,24 @@ class TestServiceStatusCollapsedSummary:
     def test_expanded_state_survives_a_reload(self, page: Page, base_url: str):
         """Whether the panel is open is a user preference, not per-visit state."""
         _mock_service_status(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         panel = page.locator("[data-testid='service-status-panel']")
         expect(panel).to_be_visible()
         assert panel.evaluate("el => el.open") is True
 
 
-class TestServiceStatusNotInSettings:
-    def test_settings_no_longer_shows_service_status(self, page: Page, base_url: str):
+class TestServiceStatusNotInRuns:
+    def test_jobs_no_longer_shows_service_status(self, page: Page, base_url: str):
         _mock_service_status(page)
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
-        page.locator(".main-tab-button[data-tab='tab-settings']").click()
-        page.wait_for_selector("#tab-settings .settings-wrap", timeout=4000)
+        page.locator(".main-tab-button[data-tab='tab-runs']").click()
+        page.wait_for_selector("#active-tasks-list", timeout=4000)
 
-        expect(page.locator("#tab-settings [data-testid='service-status-panel']")).to_have_count(0)
+        expect(page.locator("#tab-runs [data-testid='service-status-panel']")).to_have_count(0)
 
 
 class TestServiceStatusWhileProbing:
@@ -381,7 +381,7 @@ class TestServiceStatusWhileProbing:
                 ),
             ),
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         summary = page.locator("[data-testid='service-status-summary']")
         expect(summary).to_be_visible()
         expect(summary).not_to_contain_text("down")
@@ -393,7 +393,7 @@ class TestServiceStatusWhileProbing:
         exactly once, so a provisional status was never revisited and only a
         manual Refresh could move it."""
         calls = self._mock_settling(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         row = page.locator("[data-testid='service-status-row-db_server']")
@@ -412,7 +412,7 @@ class TestServiceStatusWhileProbing:
         """The retry is for probes in flight only — a settled panel must not sit
         there re-requesting forever."""
         calls = self._mock_settling(page)
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         row = page.locator("[data-testid='service-status-row-db_server']")
         _expand_service_status(page)
         wait_until(
@@ -443,7 +443,7 @@ class TestServiceStatusWhileProbing:
                 ),
             ),
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         summary = page.locator("[data-testid='service-status-summary']")
         expect(summary).to_contain_text("Tasks Server down")
         assert summary.get_attribute("data-tone") == "bad"
@@ -465,7 +465,7 @@ class TestDisclosureAffordanceIsFindable:
                 }
             ],
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         line = page.locator("[data-testid='service-status-row-inference_server'] .service-status-row__line")
@@ -491,7 +491,7 @@ class TestDisclosureAffordanceIsFindable:
                 }
             ],
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         caret_x = page.locator(".service-status-panel__header").evaluate(
@@ -515,7 +515,7 @@ class TestDisclosureAffordanceIsFindable:
                 }
             ],
         )
-        _navigate_to_runs(page, base_url)
+        _navigate_to_settings(page, base_url)
         _expand_service_status(page)
 
         size = page.locator("[data-testid='service-status-twisty-inference_server']").evaluate(

@@ -157,8 +157,6 @@ def test_runs_holds_the_task_instance_list(page: Page, base_url: str):
 
     expect(page.locator("#tab-runs")).to_have_class(re.compile(r"\bactive\b"))
     expect(page.locator("#active-tasks-list")).to_be_visible()
-    # Service health rides with what is running.
-    expect(page.locator("#service-status-box")).to_be_attached()
     # Operations is gone entirely.
     expect(page.locator(".main-tab-button[data-tab='tab-operations']")).to_have_count(0)
 

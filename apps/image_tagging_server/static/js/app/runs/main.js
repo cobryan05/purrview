@@ -4,10 +4,9 @@
  * Was Operations › Activity. Operations dissolved: its Tasks and Sources panes
  * were definition editors and moved to Configuration, leaving the one thing
  * that was genuinely about *running* behind. It is a main tab now because
- * everything launched anywhere in the app reports here, and because service
- * health belongs beside what is running rather than above two config editors.
+ * everything launched anywhere in the app reports here.
  *
- * Two panes: Running (what is live, plus service health) and Start a job
+ * Two panes: Running (what is live) and Start a job
  * (everything launchable). Starting lives here rather than in the Configuration
  * editors, so a config screen defines a recipe and never runs or monitors one.
  */
@@ -17,7 +16,6 @@ import { countAdvancingTasks, renderActiveTasks } from '/app-static/js/ui/tasks.
 import { seedRunsBadge, updateRunsBadge } from '/app-static/js/ui/runsBadge.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { notifyModelsChanged } from '/app-static/js/shared/api/models.js';
-import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
 import { applyRunsLauncherTaskState, renderRunsLauncher } from '/app-static/js/ui/runsLauncher.js';
 
 /**
@@ -34,9 +32,6 @@ const MODEL_PRODUCING_TYPENAMES = new Set([
 ]);
 
 export async function init() {
-  // Service health sits above the task list — it applies to the whole surface.
-  renderServiceStatus({ target: 'service-status-box' });
-
   let unsubscribeTaskStream = null;
 
   /**

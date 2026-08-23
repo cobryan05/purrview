@@ -2391,6 +2391,22 @@ button.lt-swatch:hover {
   cursor: default;
 }
 
+/* The one button in these bars that is reached for repeatedly (Refresh). The
+   bars are otherwise a row of muted outlines, so it takes the accent border and
+   ink — not a solid fill, which at this size would outweigh the status text it
+   sits beside. */
+.review-toolbar__btn--accent {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  font-weight: 600;
+}
+
+.review-toolbar__btn--accent:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
 
 .review-toolbar__select-all {
   display: flex;
@@ -6027,11 +6043,26 @@ button.filter-active {
   opacity: 1;
 }
 
-/* ===== Operations tab — service health =====
+/* ===== Settings tab — service health =====
    A <details>: collapsed it is a single strip, expanded it is the per-service
    rows. See the comment at the top of ui/serviceStatus.js for why. */
 .service-status-panel {
   padding: var(--space-1) 0 0;
+}
+
+/* In Settings the strip sits in a grid of bordered `.panel-box` cards, so it
+   borrows their frame — a borderless strip between two framed panels reads as a
+   rendering glitch. The header's own rule already draws the divider under it,
+   which only makes sense once the panel is open. */
+.settings-wrap > .service-status-panel {
+  padding: 0;
+  border: 1px solid var(--pico-muted-border-color, var(--border-strong));
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.settings-wrap > .service-status-panel:not([open]) .service-status-panel__header {
+  border-bottom: none;
 }
 
 .service-status-panel__header {

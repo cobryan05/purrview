@@ -3,14 +3,16 @@ import { prefs } from '/app-static/js/shared/prefs.js';
 import { showTrainingServerModal } from '/app-static/js/ui/trainingServerModal.js';
 
 /**
- * Live service-health panel for the Operations tab.
+ * Live service-health panel, hosted by the Settings tab.
  *
- * This is pure monitoring — it persists nothing about the *services* — which is
- * why it lives here rather than in Settings (UI_REDESIGN §12: its presence in
- * Settings was the original miscategorisation).
+ * It is pure monitoring and persists nothing about the services, which is why it
+ * spent a while on Jobs (UI_REDESIGN §12). It reads better beside the Servers
+ * panel that configures those same services: "is the training server up" and
+ * "which URL is it pointed at" are the same question two minutes apart, and Jobs
+ * is about the work, not the machines running it.
  *
  * It is collapsed by default. Expanded it is five rows plus a heading — about
- * 38% of a 950px viewport — sitting above every Operations sub-tab, and the
+ * 38% of a 950px viewport — and the
  * answer it gives is almost always "everything is green". The collapsed summary
  * carries the part worth a permanent slot (are all services up, and the few
  * live counters), and the rows are one click away. Whether it is open is a user
@@ -357,9 +359,9 @@ export function createServiceStatusPanel() {
    * answered yet sat at "checking…" permanently — the state was never wrong,
    * it just never got updated, and only a manual Refresh could move it.
    *
-   * The timer is only armed while the panel is in the document: renderServiceStatus()
-   * replaces the container's contents, and a detached panel's retry would keep
-   * firing forever, writing into DOM nobody can see.
+   * The timer is only armed while the panel is in the document: a host that
+   * rebuilds its container detaches the panel, and a detached panel's retry
+   * would keep firing forever, writing into DOM nobody can see.
    */
   function _scheduleRetry(services) {
     clearTimeout(_retryTimer);
@@ -404,16 +406,4 @@ export function createServiceStatusPanel() {
   // Fire-and-forget so the rest of the pane renders immediately.
   refresh();
   return section;
-}
-
-/**
- * Mount the service-status panel into a container element by id.
- *
- * @param {{target?: string}} opts
- */
-export function renderServiceStatus({ target = 'service-status-box' } = {}) {
-  const container = document.getElementById(target);
-  if (!container) return;
-  container.innerHTML = '';
-  container.appendChild(createServiceStatusPanel());
 }
