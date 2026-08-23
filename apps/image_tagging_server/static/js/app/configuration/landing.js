@@ -20,8 +20,11 @@ import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
+import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchTaskConfigs } from '/app-static/js/shared/api/tasks.js';
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
+import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 
 /** Count of a fetcher result that may be an Array or a Map (fetchLabels returns a Map). */
@@ -47,17 +50,26 @@ async function fetchCounts() {
     }
   };
 
-  const [labels, tags, models, rows, modelShapes, modelStacks, trainingRuns, filterChains] = await Promise.all([
+  const [
+    labels, tags, models, rows, sources,
+    modelShapes, modelStacks, trainingRuns, filterChains, taskConfigs, watchRules,
+  ] = await Promise.all([
     settle(fetchLabels),
     settle(fetchTags),
     settle(fetchModelsList),
     // ⚠️ Returns a Map keyed by uuid, not an array (same shape trap as
     // fetchLabels — see CLAUDE.md "Key Gotchas").
     settle(fetchDatasetsAndViews, m => [...m.values()]),
+    settle(fetchSourceList),
     settle(fetchModelConfigs),
     settle(fetchModelGroups),
     settle(fetchTrainingConfigs),
     settle(fetchFilterChains),
+    // Temporary configs are throwaway scaffolding created by ad-hoc runs; the
+    // Tasks pane hides them by default, so counting them here would disagree
+    // with what the destination shows.
+    settle(() => fetchTaskConfigs(null, { excludeTemporary: true })),
+    settle(fetchWatchProfiles),
   ]);
 
   return {
@@ -66,10 +78,13 @@ async function fetchCounts() {
     models,
     datasets: rows ? rows.filter(r => r.promoted).length : null,
     views: rows ? rows.filter(r => !r.promoted).length : null,
+    sources,
     modelShapes,
     modelStacks,
     trainingRuns,
     filterChains,
+    taskConfigs,
+    watchRules,
   };
 }
 
@@ -107,6 +122,10 @@ function buildGroups(counts) {
           name: 'Views', count: counts.views, tab: 'tab-dataset-management',
           hint: 'Saved searches — promote one to make it a Dataset',
         },
+        {
+          name: 'Sources', count: counts.sources, tab: 'tab-source-management',
+          hint: 'Where images come from — folders, URLs and camera streams',
+        },
       ],
     },
     {
@@ -120,18 +139,31 @@ function buildGroups(counts) {
           name: 'Model Stacks', count: counts.modelStacks, tab: 'tab-modelstack-management',
           hint: 'Reusable ordered detector lists, nestable',
         },
+      ],
+    },
+    {
+      title: 'Pipelines',
+      entries: [
         {
-          name: 'Training Runs', count: counts.trainingRuns, tab: 'tab-training-management',
+          name: 'Training', count: counts.trainingRuns, tab: 'tab-training-management',
           hint: 'Reusable training definitions and their datasets',
+        },
+        {
+          name: 'Filter Chains', count: counts.filterChains, tab: 'tab-filterchain-management',
+          hint: 'Ordered filter steps runnable over search results',
+        },
+        {
+          name: 'Tasks', count: counts.taskConfigs, tab: 'tab-task-management',
+          hint: 'Saved task definitions — start and supervise them under Jobs',
         },
       ],
     },
     {
-      title: 'Automation',
+      title: 'Watching',
       entries: [
         {
-          name: 'Filter Chains', count: counts.filterChains, tab: 'tab-filterchain-management',
-          hint: 'Ordered filter steps runnable over search results',
+          name: 'Watch Rules', count: counts.watchRules, tab: 'tab-watcher-management',
+          hint: 'What a camera watches for, and what happens when it sees it',
         },
       ],
     },

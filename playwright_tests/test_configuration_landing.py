@@ -2,7 +2,7 @@
 Tests for the Configuration > Overview landing (PR 5.4).
 
 Exercises renderConfigLanding() inside #config-overview-box:
-  - the four purpose groups render
+  - every Configuration rail section has an entry (the landing must not go stale)
   - counts come from the live API, not hardcoded numbers
   - Datasets vs Views are split by the `promoted` flag
   - a failing count endpoint degrades to "—" instead of blanking the pane
@@ -46,6 +46,18 @@ FAKE_TRAINING_CONFIGS = [{"uuid": f"ffffffff-0000-0000-0000-00000000000{i}", "na
 
 FAKE_FILTER_CHAINS = [{"uuid": "99999999-0000-0000-0000-000000000001", "name": "Chain"}]  # 1
 
+FAKE_SOURCES = {
+    f"11111111-0000-0000-0000-00000000000{i}": {"uuid": f"11111111-0000-0000-0000-00000000000{i}", "name": f"S{i}"}
+    for i in range(1, 3)
+}  # 2
+
+FAKE_TASK_CONFIGS = {
+    f"22222222-0000-0000-0000-00000000000{i}": {"uuid": f"22222222-0000-0000-0000-00000000000{i}", "name": f"TC{i}"}
+    for i in range(1, 7)
+}  # 6
+
+FAKE_WATCH_PROFILES = [{"uuid": f"33333333-0000-0000-0000-00000000000{i}", "name": f"W{i}"} for i in range(1, 9)]  # 8
+
 
 # ---------------------------------------------------------------------------
 # Mocking helpers
@@ -81,6 +93,17 @@ def _mock_counts(page: Page, *, break_labels: bool = False):
     _json_route(page, "**/api/model-configs", {"status": "success", "configs": FAKE_MODEL_CONFIGS})
     _json_route(page, "**/api/training-configs", {"status": "success", "configs": FAKE_TRAINING_CONFIGS})
     _json_route(page, "**/api/filter-chains", {"status": "success", "chains": FAKE_FILTER_CHAINS})
+    _json_route(page, "**/api/sources/get", {"status": "success", "sources": FAKE_SOURCES})
+    _json_route(page, "**/api/watch-profiles", {"status": "success", "profiles": FAKE_WATCH_PROFILES})
+    # Task configs are fetched with POST, so this one cannot go through _json_route.
+    page.route(
+        "**/api/tasks/configs/get",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "configs": FAKE_TASK_CONFIGS}),
+        ),
+    )
 
 
 def _navigate_to_landing(page: Page, base_url: str, *, break_labels: bool = False):
@@ -131,8 +154,33 @@ class TestConfigLandingCounts:
         assert _count_text(page, "tab-tag-management", "Tags") == "2"
         assert _count_text(page, "tab-tag-management", "Inference Class Map") == "4"
         assert _count_text(page, "tab-model-management", "Model Shapes") == "7"
-        assert _count_text(page, "tab-training-management", "Training Runs") == "9"
+        assert _count_text(page, "tab-training-management", "Training") == "9"
         assert _count_text(page, "tab-filterchain-management", "Filter Chains") == "1"
+
+    def test_every_configuration_subtab_has_a_landing_entry(self, page: Page, base_url: str):
+        """The landing is the map of Configuration — a new rail section must appear here too."""
+        _navigate_to_landing(page, base_url)
+        rail_tabs = page.eval_on_selector_all(
+            "#tab-configuration .config-rail__item",
+            "els => els.map(e => e.dataset.tab)",
+        )
+        entry_tabs = page.eval_on_selector_all(
+            "[data-testid='config-landing'] .config-landing__entry",
+            "els => els.map(e => e.dataset.testid)",
+        )
+        missing = [
+            tab
+            for tab in rail_tabs
+            if tab != "tab-config-overview"
+            and not any(t.startswith(f"config-landing-entry-{tab}-") for t in entry_tabs)
+        ]
+        assert missing == [], f"Configuration sub-tabs with no Overview entry: {missing}"
+
+    def test_the_newer_sections_are_counted(self, page: Page, base_url: str):
+        _navigate_to_landing(page, base_url)
+        assert _count_text(page, "tab-source-management", "Sources") == "2"
+        assert _count_text(page, "tab-task-management", "Tasks") == "6"
+        assert _count_text(page, "tab-watcher-management", "Watch Rules") == "8"
 
     def test_datasets_and_views_are_split_by_the_promoted_flag(self, page: Page, base_url: str):
         """A View must never be counted as a trainable Dataset (the slice 5 trap)."""
