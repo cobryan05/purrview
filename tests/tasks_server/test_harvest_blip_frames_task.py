@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import pytest
 
+from apps.helpers.db.types import HARVESTED_TAG_UUID
 from apps.tasks_server.tasks.HarvestBlipFramesTask import HarvestBlipFramesTask, _grab_frame
 
 _MOCK_MANAGER = MagicMock()
@@ -237,3 +238,106 @@ class TestRefusingToGuess:
         assert proposals == []
         assert task._no_proposal > 0
         grabbed.assert_not_called()
+
+
+class TestFindingTheFramesAgain:
+    """The frames are the point, and until now nothing pointed at them.
+
+    A harvest writes its proposals into a preview run, and a preview run is a
+    temporary address: apply it or delete it and the frames become ordinary images
+    in `blip_harvest`, indistinguishable from anything else. Two things fix that —
+    a durable image tag, and actions on the finished job card that lead back.
+    """
+
+    async def _upload_result(self, ok=True, duplicate_of=None, path="blip_harvest/frame.jpg"):
+        return SimpleNamespace(ok=ok, duplicate_of=duplicate_of, path=path, uuid="img-1", message=None)
+
+    async def test_a_harvested_frame_is_tagged(self, monkeypatch):
+        """Without this the only record that an image came from a harvest is the
+        preview run, which the user is expected to delete when they are done."""
+        task = _make_task()
+        await task._init(task._params, None)
+        tagged = AsyncMock()
+        monkeypatch.setattr(task, "_tag_harvested", tagged)
+
+        images = MagicMock()
+        images.upload_images.return_value = SimpleNamespace(
+            status="success",
+            results=[SimpleNamespace(ok=True, duplicate_of=None, path="p.jpg", uuid="u", message=None)],
+        )
+        monkeypatch.setattr(task, "_api", lambda cls: images)
+
+        await task._upload(b"jpeg", _blip(), 1.0)
+
+        tagged.assert_awaited_once()
+
+    async def test_a_duplicate_is_not_tagged_again(self, monkeypatch):
+        """A re-run must stay close to free. The image the duplicate matched already
+        carries the tag from the run that first filed it, and a second tag write per
+        skipped frame is work for no change."""
+        task = _make_task()
+        await task._init(task._params, None)
+        tagged = AsyncMock()
+        monkeypatch.setattr(task, "_tag_harvested", tagged)
+
+        images = MagicMock()
+        images.upload_images.return_value = SimpleNamespace(
+            status="success",
+            results=[SimpleNamespace(ok=True, duplicate_of="other", path="p.jpg", uuid="u", message=None)],
+        )
+        monkeypatch.setattr(task, "_api", lambda cls: images)
+
+        assert await task._upload(b"jpeg", _blip(), 1.0) is None
+        tagged.assert_not_awaited()
+
+    async def test_a_failed_tag_does_not_fail_the_harvest(self, monkeypatch):
+        """The frame and its proposal are already filed by the time the tag is
+        written. Losing the run over a bookkeeping call would throw away the work
+        that actually matters."""
+        task = _make_task()
+        await task._init(task._params, None)
+        images = MagicMock()
+        images.set_image_tag.side_effect = RuntimeError("tags are down")
+        monkeypatch.setattr(task, "_api", lambda cls: images)
+
+        await task._tag_harvested(SimpleNamespace(path="blip_harvest/frame.jpg"))  # must not raise
+
+    async def test_the_finished_job_offers_a_way_into_the_run(self, monkeypatch):
+        task = _make_task()
+        await task._init(task._params, None)
+        task._preview_run_uuid = "run-1"
+
+        kinds = {a["type"]: a for a in task._result_actions()}
+
+        assert kinds["open_preview_run"]["payload"]["run_uuid"] == "run-1"
+
+    async def test_the_tag_action_survives_a_run_that_never_opened(self, monkeypatch):
+        """The conditional. With no preview run there is nothing to open — but the
+        tag filter is still a valid destination, so the card must not end up with no
+        actions at all."""
+        task = _make_task()
+        await task._init(task._params, None)
+        task._preview_run_uuid = None
+
+        kinds = {a["type"] for a in task._result_actions()}
+
+        assert "open_preview_run" not in kinds
+        assert "open_review" in kinds
+
+    def test_status_actions_are_safe_before_init_has_run(self):
+        """get_status_actions() is reachable during the PENDING window, before _init
+        has assigned anything. An AttributeError here breaks the whole Jobs card."""
+        task = HarvestBlipFramesTask(task_config_uuid="cfg", params={"blip_uuids": ["b"]}, manager=_MOCK_MANAGER)
+
+        assert isinstance(task.get_status_actions(), list)
+
+    async def test_the_review_action_filters_on_images_not_bboxes(self, monkeypatch):
+        """A harvested frame has no bbox until its run is applied, so a bbox-tag
+        filter would match nothing at exactly the moment the user follows the link."""
+        task = _make_task()
+        await task._init(task._params, None)
+
+        review = next(a for a in task._result_actions() if a["type"] == "open_review")
+
+        assert review["payload"]["image_tag_uuids"] == [HARVESTED_TAG_UUID]
+        assert review["payload"]["tag_uuids"] == []

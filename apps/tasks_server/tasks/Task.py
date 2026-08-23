@@ -495,6 +495,12 @@ class Task(ABC):
         Each action is a dict with at minimum a "type" key naming the action kind and
         a "label" for the button text; other keys are kind-specific. Existing kinds:
             - "open_review" — {"type": "open_review", "label": ..., "payload": {"tag_uuids": [...]}}
+            - "open_preview_run" — {"type": "open_preview_run", "label": ...,
+                                 "payload": {"run_uuid": <str>}}. Opens that persisted
+                                 preview run's triage panel directly. For a task whose
+                                 output *is* a run of proposals: sending the user to
+                                 Review and asking them to find it again in Saved
+                                 Previews is how those runs got lost.
             - "task_command" — {"type": "task_command", "label": ..., "command": <str>,
                                  "params": {...}}. The frontend posts {taskUuid, command, params}
                                  to POST /api/tasks/instances/command, which forwards to this

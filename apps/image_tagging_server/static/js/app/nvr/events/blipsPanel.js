@@ -247,7 +247,15 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
       // preview run, and the frames are triaged in Review. A toast that only said
       // "started" would leave the user watching this panel for something that is never
       // going to happen in it.
-      toast(`Harvesting frames from ${uuids.length} incident(s) — they will appear in Review`, 6000);
+      //
+      // It names Jobs rather than Review because that is the screen with the button:
+      // the finished run's card carries "Review harvested frames", which opens the run
+      // directly. "They will appear in Review" was true and still left people hunting.
+      toast(
+        `Harvesting frames from ${uuids.length} incident(s) — open the finished job in Jobs to review them, `
+        + 'or find them any time under the "Harvested" image tag',
+        7000,
+      );
       // Not marked harvested here. The task sets that itself once frames have actually
       // landed, so a run that fails does not leave behind a record claiming otherwise.
       // Re-reading now shows the truth at this instant, which is still `new`.

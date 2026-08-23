@@ -564,6 +564,22 @@ export class ActiveTaskField extends Field {
       events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, payload);
       return;
     }
+    if (action.type === 'open_preview_run') {
+      // Straight into the run's triage panel. A task whose whole output is a set
+      // of proposals has nowhere useful to send you *except* the run — routing via
+      // Review and "now find it in Saved Previews" is what made harvested frames
+      // feel lost. Imported on demand: this is Review's modal and most task cards
+      // never need it.
+      const runUuid = action.payload?.run_uuid ?? action.payload?.runUuid;
+      if (!runUuid) return;
+      try {
+        const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
+        await openPreviewRunModal({ runUuid });
+      } catch (err) {
+        console.error('Could not open the preview run:', err);
+      }
+      return;
+    }
     if (action.type === 'task_command') {
       const command = action.command ?? action.payload?.command;
       const params = action.params ?? action.payload?.params ?? null;

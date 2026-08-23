@@ -25,6 +25,19 @@ VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 # AMBIGUITY_REVIEW_PLAN.md). Deliberately NOT in the "verification" exclusive
 # group: a box is independently confusable *and* unverified/verified.
 CONFUSABLE_TAG_UUID = "00000000-0000-0000-0000-000000000006"
+# Marks an *image* pulled out of a clip by HarvestBlipFramesTask.
+#
+# Image-scope, unlike every tag above it: the frame is the thing that came from a
+# harvest, and it arrives with no bbox at all — the proposal lives on a preview
+# candidate until someone applies the run. A bbox tag would have nothing to
+# attach to.
+#
+# It exists because the preview run is not a permanent address. Applying a run,
+# or deleting it, takes the harvested frames out of Saved Previews and leaves
+# them indistinguishable from any other image in the dataset — which is exactly
+# the "I harvest frames and then lose them" complaint. This tag survives all of
+# that, so "show me everything I have ever harvested" stays answerable.
+HARVESTED_TAG_UUID = "00000000-0000-0000-0000-000000000007"
 
 # System tags that used to exist and must never come back. A tags.json dumped
 # before the removing migration ran still lists them, and sync_tags_from_json()

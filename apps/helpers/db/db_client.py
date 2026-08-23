@@ -37,6 +37,7 @@ from apps.helpers.watch.events import EventCloseReason
 from .types import (
     BBOX_CONFIDENCE_METADATA_KEYS,
     CONFUSABLE_TAG_UUID,
+    HARVESTED_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
     RETIRED_TAG_UUIDS,
@@ -179,6 +180,17 @@ _SYSTEM_TAGS = [
         # renders any tag's icon on the canvas, so this single field is what
         # marks a confusable box in the UI without a line of JS.
         icon="⇄",
+    ),
+    Tag(
+        uuid=HARVESTED_TAG_UUID,
+        name="Harvested",
+        color="#2980b9",
+        kind=TagKind.SYSTEM,
+        exclusive_group=None,
+        protected=True,
+        # No icon: this one is applied to the *image*, and the canvas icon
+        # renderer draws bbox tags. An icon here would never be seen.
+        icon=None,
     ),
 ]
 

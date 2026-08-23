@@ -41,6 +41,7 @@ from db_client.api.recordings_api import RecordingsApi
 from db_client.api.watch_profiles_api import WatchProfilesApi
 
 from apps.helpers.consts import JsonValues, TaskAccent
+from apps.helpers.db.types import HARVESTED_TAG_UUID
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.blips import harvest_times, proposed_box_at
 
@@ -326,7 +327,34 @@ class HarvestBlipFramesTask(Task):
             # makes re-running a harvest close to free.
             self._duplicates += 1
             return None
+        await self._tag_harvested(result)
         return result
+
+    async def _tag_harvested(self, uploaded: Any) -> None:
+        """Mark the image as harvested, so it stays findable after the run is gone.
+
+        A preview run is a temporary address: applying it or deleting it takes these
+        frames out of Saved Previews, and what is left is an image in `blip_harvest`
+        that looks like any other. The tag is the durable answer to "where did the
+        frames I harvested go?" — Review can filter on it forever.
+
+        Best-effort on purpose. The frame and its proposal are already filed by this
+        point, and failing the whole harvest over a missing tag would throw away the
+        work that actually matters. It is logged, not raised.
+        """
+        from db_client.models.set_image_tag_payload import SetImageTagPayload
+
+        path = getattr(uploaded, "path", None)
+        if not path:
+            return
+        try:
+            images = self._api(ImagesApi)
+            await asyncio.to_thread(
+                images.set_image_tag,
+                SetImageTagPayload(image_path=path, tag_uuid=HARVESTED_TAG_UUID, action="add"),
+            )
+        except Exception as e:
+            logger.warning("Could not tag harvested frame %s: %s", path, e)
 
     async def _add_candidates(self, proposals: List[Dict[str, Any]]) -> None:
         _, PreviewCandidateCreate, AddPreviewCandidatesPayload = _payload_models()
@@ -394,6 +422,49 @@ class HarvestBlipFramesTask(Task):
             self._sample_errors.append(message)
         self.log(message)
 
+    def _result_actions(self) -> List[Dict[str, Any]]:
+        """The two ways back to what this run produced.
+
+        Without these the harvest ended with a toast and a preview run whose uuid
+        appears nowhere a person can click. The frames were three levels down —
+        Review → Saved Previews → find the right run — which is close enough to
+        "lost" that it was reported as lost.
+
+        Shared by the live status card and the completion result so the two cannot
+        drift apart (the pattern CollectTrainingImagesTask sets).
+        """
+        actions: List[Dict[str, Any]] = []
+        # getattr, not attribute access: get_status_actions() is reachable while the
+        # task is still PENDING, before _init has assigned anything.
+        run_uuid = getattr(self, "_preview_run_uuid", None)
+        if run_uuid:
+            actions.append(
+                {
+                    "type": "open_preview_run",
+                    "label": "Review harvested frames",
+                    "payload": {"run_uuid": run_uuid},
+                }
+            )
+        # The second one outlives the first. Once the run is applied or deleted the
+        # preview run is gone, and this tag is the only thing still naming these
+        # images. Image-scope: a harvested frame has no bbox until the run is applied,
+        # so a bbox-tag filter would match nothing.
+        actions.append(
+            {
+                "type": "open_review",
+                "label": "Browse all harvested frames",
+                "payload": {
+                    "tag_uuids": [],
+                    "image_tag_uuids": [HARVESTED_TAG_UUID],
+                    "bbox_verification": "any",
+                },
+            }
+        )
+        return actions
+
+    def get_status_actions(self) -> List[Dict[str, Any]]:
+        return self._result_actions()
+
     def _build_result(self) -> Dict[str, Any]:
         return {
             "previewRunUuid": self._preview_run_uuid,
@@ -403,6 +474,7 @@ class HarvestBlipFramesTask(Task):
             "skippedNotHarvestable": self._skipped_not_harvestable,
             "failed": self._failed,
             "sampleErrors": list(self._sample_errors),
+            "actions": self._result_actions(),
         }
 
     def get_resume_data(self) -> Dict[str, Any]:

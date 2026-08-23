@@ -7,6 +7,10 @@ export const VERIFIED_TAG_UUID = '00000000-0000-0000-0000-000000000005';
 // Model was "confident but confused" — the runner-up class scored close to the
 // winner. Not a verification state (see VERIFICATION_TAG_UUIDS below).
 export const CONFUSABLE_TAG_UUID = '00000000-0000-0000-0000-000000000006';
+// Applied to an *image* pulled from a clip by a blip harvest. Image-scope, so it
+// belongs in an `imageTagUuids` filter, never a `tagUuids` (bbox) one — a
+// harvested frame has no bbox until its preview run is applied.
+export const HARVESTED_TAG_UUID = '00000000-0000-0000-0000-000000000007';
 
 // Both are in the verification exclusive group — mutually exclusive per bbox
 export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID]);
