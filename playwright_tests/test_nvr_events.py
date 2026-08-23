@@ -680,12 +680,18 @@ class TestTheDetectionOverlay:
         the video's source is still the raw clip file."""
         self._open_modal(page, base_url, overlay=_overlay())
 
-        video = page.locator("[data-testid='event-detail-video']")
-        assert video.get_attribute("src").endswith(f"/api/recordings/{RECORDING_UUID}/file")
         # Siblings inside the overlay wrapper, not nested — a <video> cannot host
         # children, and compositing into it would mean re-encoding.
-        assert page.locator(".clip-overlay > [data-testid='event-detail-video']").count() == 1
-        assert page.locator(".clip-overlay > [data-testid='clip-overlay-canvas']").count() == 1
+        #
+        # expect(), not a bare .count(): _open_modal's barrier is the modal, and
+        # the overlay wrapper is built a tick later, so an immediate read races
+        # it. The bare count passed alone and failed under a loaded parallel run
+        # — the assertion needs its own barrier, which only the retrying form has.
+        expect(page.locator(".clip-overlay > [data-testid='event-detail-video']")).to_have_count(1)
+        expect(page.locator(".clip-overlay > [data-testid='clip-overlay-canvas']")).to_have_count(1)
+
+        video = page.locator(".clip-overlay > [data-testid='event-detail-video']")
+        assert video.get_attribute("src").endswith(f"/api/recordings/{RECORDING_UUID}/file")
 
     def test_the_overlay_never_swallows_clicks_on_the_controls(self, page: Page, base_url: str):
         """The canvas covers the video, scrubber included. Without pointer-events: none
