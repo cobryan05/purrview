@@ -1,6 +1,12 @@
 import { renderHotkeyPanel } from '/app-static/js/app/image-tagging/hotkeyModal.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import { getSetting, setSetting } from '/app-static/js/shared/api/settings.js';
+import {
+  clearThumbnailCache,
+  fetchStorageUsage,
+  purgeTimelapseFrames,
+  runStorageSweep,
+} from '/app-static/js/shared/api/storage.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import {
@@ -42,8 +48,15 @@ export async function init() {
     _buildUiSettingsSection(),
   ]);
 
+  // Not in that Promise.all: the usage figures come from a directory walk, and
+  // making the whole Settings tab wait on it would put a visible delay in front of
+  // six panels that were ready immediately. The panel renders its own placeholder
+  // and fills in when the measurement lands.
+  const storagePanel = _buildStorageSection();
+
   wrap.append(
-    serverPanel, mqttPanel, retentionPanel, timelapsePanel, dedupPanel, uiPanel, _buildHotkeySection(),
+    serverPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
+    _buildHotkeySection(),
   );
   container.appendChild(wrap);
 }
@@ -478,6 +491,225 @@ async function _buildTimelapseRetentionSection() {
     + 'folder you also annotate in is safe. Deleting the action itself stops its old frames being '
     + 'managed, because nothing left names the folder — clear them out before removing it.';
   body.appendChild(caveat);
+
+  return section;
+}
+
+/* ── Storage usage ──────────────────────────────────────────────────────────
+ *
+ * The two panels above set the bounds; this one says where you actually are
+ * against them. Without it the settings were unanswerable in the only way that
+ * matters — "is 20 GB the right cap?" cannot be judged without knowing that the
+ * timelapses are already at 9.9 GB and the clips at 2.4.
+ *
+ * It sits directly under the retention panels rather than in Operations → service
+ * status, where a first instinct might put it. Service status is monitoring: it
+ * answers "is everything up", refreshes on a timer, and must stay cheap. These
+ * numbers cost a walk of three directory trees, and the decision they inform — how
+ * long to keep footage — is made right here, next to the inputs that set it.
+ */
+
+/** Human-readable bytes. Binary units, matching what the server logs. */
+function _fmtBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * One bucket's line: what it holds, and how close that is to its cap.
+ *
+ * The percentage is only shown when there *is* a cap. A bucket with the size
+ * limit switched off has no "% full" — printing one against an invented ceiling
+ * would be the most misleading thing on the panel.
+ */
+function _storageRow({ label, bucket, note }) {
+  const row = document.createElement('div');
+  row.className = 'settings-storage-row';
+
+  const head = document.createElement('div');
+  head.className = 'settings-storage-head';
+
+  const name = document.createElement('span');
+  name.className = 'settings-storage-label';
+  name.textContent = label;
+
+  const value = document.createElement('span');
+  value.className = 'settings-storage-value';
+  const max = bucket?.maxBytes ?? 0;
+  const used = bucket?.bytes ?? 0;
+  const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : null;
+  value.textContent = max > 0
+    ? `${_fmtBytes(used)} of ${_fmtBytes(max)} (${pct}%)`
+    : `${_fmtBytes(used)} — no size limit set`;
+
+  head.append(name, value);
+  row.appendChild(head);
+
+  if (max > 0) {
+    const meter = document.createElement('div');
+    meter.className = 'settings-storage-meter';
+    const fill = document.createElement('div');
+    fill.className = 'settings-storage-meter__fill';
+    fill.style.width = `${pct}%`;
+    // Over 90% the next thing that happens is eviction, which is a normal, working
+    // outcome — but it is the moment where "why did my old clips vanish?" gets asked,
+    // so the bar says it is about to happen rather than leaving it to be discovered.
+    if (pct >= 90) fill.dataset.state = 'full';
+    meter.appendChild(fill);
+    row.appendChild(meter);
+  }
+
+  const detail = document.createElement('div');
+  detail.className = 'settings-storage-detail';
+  const parts = [`${(bucket?.files ?? 0).toLocaleString()} file(s)`];
+  if (bucket?.retentionDays) parts.push(`kept ${bucket.retentionDays} day(s)`);
+  else if (bucket?.retentionDays === 0) parts.push('no age limit');
+  if (note) parts.push(note);
+  detail.textContent = parts.join(' · ');
+  row.appendChild(detail);
+
+  return row;
+}
+
+function _buildStorageSection() {
+  const { section, bar, body } = _panel('Storage', { id: 'settings-section-storage' });
+
+  const refreshBtn = _rowButton('↻ Refresh', { secondary: true });
+  refreshBtn.dataset.testid = 'settings-storage-refresh';
+  bar.appendChild(refreshBtn);
+
+  const note = document.createElement('p');
+  note.className = 'settings-dedup-warning';
+  note.textContent =
+    'Measured the same way the sweeps that delete this material measure it, so these '
+    + 'numbers and the limits above always agree about what counts. Annotated images are '
+    + 'not included: they are your dataset, not managed storage, and nothing here can '
+    + 'reach them.';
+  body.appendChild(note);
+
+  const rows = document.createElement('div');
+  rows.className = 'settings-storage-rows';
+  rows.dataset.testid = 'settings-storage-rows';
+  rows.textContent = 'Measuring…';
+  body.appendChild(rows);
+
+  const actions = document.createElement('div');
+  actions.className = 'settings-storage-actions';
+
+  const status = document.createElement('div');
+  status.className = 'settings-server-status';
+  status.dataset.state = 'muted';
+  status.dataset.testid = 'settings-storage-status';
+
+  /**
+   * Wire one reclaim button: confirm if it asks to, run it, say what it freed,
+   * then re-measure. Re-measuring is not optional — the whole panel's credibility
+   * is that the number under the button reflects the button having been pressed.
+   */
+  function _action({ label, testid, title, confirm, run }) {
+    const btn = _rowButton(label, { secondary: true });
+    btn.dataset.testid = testid;
+    btn.title = title;
+    btn.addEventListener('click', async () => {
+      if (confirm && !window.confirm(confirm)) return;
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Working…';
+      status.dataset.state = 'muted';
+      status.textContent = '';
+      try {
+        const result = await run();
+        const bits = [];
+        if (result.events) bits.push(`${result.events} event(s)`);
+        if (result.recordings) bits.push(`${result.recordings} clip(s)`);
+        if (result.files) bits.push(`${result.files} file(s)`);
+        status.textContent = bits.length
+          ? `Removed ${bits.join(', ')}, freeing ${_fmtBytes(result.bytes)}`
+          : 'Nothing to remove — everything is inside its limits.';
+        status.dataset.state = bits.length ? 'ok' : 'muted';
+        await refresh();
+      } catch (e) {
+        status.textContent = `✗ ${e.message}`;
+        status.dataset.state = 'error';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+    return btn;
+  }
+
+  actions.append(
+    _action({
+      label: 'Clean up now',
+      testid: 'settings-storage-sweep',
+      title: 'Apply the age and size limits above immediately, instead of waiting for the hourly sweep',
+      run: runStorageSweep,
+    }),
+    _action({
+      label: 'Delete all timelapse frames',
+      testid: 'settings-storage-purge-timelapse',
+      title: 'Delete every timelapse frame regardless of the limits above',
+      confirm:
+        'Delete every timelapse frame?\n\n'
+        + 'This ignores the retention limits and removes the lot. Only files a "Save timelapse" '
+        + 'action wrote are affected — anything with a JSON sidecar beside it is left alone, so '
+        + 'images you have annotated are safe. This cannot be undone.',
+      run: purgeTimelapseFrames,
+    }),
+    _action({
+      label: 'Clear thumbnail cache',
+      testid: 'settings-storage-clear-thumbs',
+      title: 'Delete cached thumbnails; they are rebuilt from the originals on next view',
+      run: clearThumbnailCache,
+    }),
+  );
+
+  body.append(actions, status);
+
+  const caveat = document.createElement('p');
+  caveat.className = 'settings-dedup-warning';
+  caveat.textContent =
+    'There is deliberately no "delete all recordings" here. An event is the record that '
+    + 'something happened, and losing the lot to one click is not recoverable — set the '
+    + 'limits above to shed history, or delete individual events from Watch.';
+  body.appendChild(caveat);
+
+  async function refresh() {
+    refreshBtn.disabled = true;
+    try {
+      const usage = await fetchStorageUsage();
+      rows.innerHTML = '';
+      rows.append(
+        _storageRow({
+          label: 'Event clips & snapshots',
+          bucket: usage.recordings,
+          note: 'bounded by Recording Retention',
+        }),
+        _storageRow({
+          label: 'Timelapse frames',
+          bucket: usage.timelapse,
+          note: 'bounded by Timelapse Retention',
+        }),
+        _storageRow({
+          label: 'Thumbnail cache',
+          bucket: usage.thumbnailCache,
+          note: 'rebuilt on demand — safe to clear',
+        }),
+      );
+    } catch (e) {
+      rows.textContent = `Could not measure storage: ${e.message}`;
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  refreshBtn.addEventListener('click', () => { void refresh(); });
+  void refresh();
 
   return section;
 }

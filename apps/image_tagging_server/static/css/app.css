@@ -6454,6 +6454,68 @@ button.filter-active {
   margin: var(--space-2) 0 var(--space-1);
 }
 
+/* ===== Settings › Storage =====
+ * Three usage rows, each a label/value line over a fill bar. The bar exists
+ * because the number alone does not answer the question the panel is for: "9.9 GB"
+ * means nothing until you can see it against the 20 GB cap set two panels up. */
+.settings-storage-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.settings-storage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.settings-storage-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.settings-storage-value {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--pico-muted-color, var(--text-faint));
+}
+
+.settings-storage-meter {
+  height: 6px;
+  margin-top: var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--pico-muted-border-color, var(--border));
+  overflow: hidden;
+}
+
+.settings-storage-meter__fill {
+  height: 100%;
+  background: var(--pico-primary, #4b8);
+  transition: width 120ms ease-out;
+}
+
+/* Near the cap the next write evicts something. That is working as designed, but
+   it is also the moment "where did my old clips go?" gets asked. */
+.settings-storage-meter__fill[data-state="full"] {
+  background: var(--app-warning-color);
+}
+
+.settings-storage-detail {
+  margin-top: var(--space-1);
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+}
+
+.settings-storage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
 /* ===== Bottom Bars Wrapper (notices + active-model stacked) ===== */
 #bottom-bars {
   position: fixed;

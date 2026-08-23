@@ -4923,6 +4923,120 @@ class Manager:
         capped = await self.enforce_timelapse_size_cap()
         return {"files": aged["files"] + capped["files"], "bytes": aged["bytes"] + capped["bytes"]}
 
+    # ── Storage accounting ─────────────────────────────────────────────────────
+
+    async def get_storage_usage(self) -> Dict[str, Any]:
+        """What the recording-side of the app is holding on disk, against its bounds.
+
+        Every number here is measured the way the sweep that deletes it measures —
+        `_recording_disk_entries` and `_scan_timelapse_frames` are the same calls
+        `enforce_*_size_cap` uses. That is the point: a figure produced by a
+        different walk would disagree with the cap in exactly the cases that matter
+        (a clip written to a custom `output_dir`, a folder full of orphans), and a
+        readout that disagrees with the enforcement is worse than none.
+
+        Deliberately three separate buckets rather than one total. They are bounded
+        independently, they grow for unrelated reasons, and the useful question is
+        always "which of these is the one filling the disk?".
+
+        Walks directories, so it is a request the caller asks for — never something
+        on a polling path. `/status` in particular must not grow this.
+        """
+        recording_entries = await self._recording_disk_entries()
+        recording_bytes = sum(size for _p, size, _m in recording_entries)
+
+        timelapse_roots = await self.timelapse_roots()
+        timelapse_entries = await asyncio.to_thread(self._scan_timelapse_frames, timelapse_roots)
+        timelapse_bytes = sum(size for _p, size, _d in timelapse_entries)
+
+        thumb_files, thumb_bytes = await asyncio.to_thread(self._thumb_cache_usage)
+
+        return {
+            "recordings": {
+                "bytes": recording_bytes,
+                "files": len(recording_entries),
+                "maxBytes": (await self.get_recording_max_total_mb()) * 1024 * 1024,
+                "retentionDays": await self.get_recording_retention_days(),
+                "roots": [str(root) for root in self._recording_roots],
+            },
+            "timelapse": {
+                "bytes": timelapse_bytes,
+                "files": len(timelapse_entries),
+                "maxBytes": (await self.get_timelapse_max_total_mb()) * 1024 * 1024,
+                "retentionDays": await self.get_timelapse_retention_days(),
+                "roots": [str(root) for root in timelapse_roots],
+            },
+            "thumbnailCache": {
+                "bytes": thumb_bytes,
+                "files": thumb_files,
+                "maxBytes": THUMB_CACHE_MAX_MB * 1024 * 1024,
+                "dir": str(self._thumb_cache_dir()),
+            },
+        }
+
+    def _thumb_cache_usage(self) -> Tuple[int, int]:
+        """`(files, bytes)` in the thumbnail cache. Blocking."""
+        cache_dir = self._thumb_cache_dir()
+        files = 0
+        total = 0
+        if not cache_dir.is_dir():
+            return (0, 0)
+        for path in cache_dir.glob("*.png"):
+            try:
+                total += path.stat().st_size
+                files += 1
+            except OSError:
+                continue
+        return (files, total)
+
+    async def clear_thumbnail_cache(self) -> Dict[str, int]:
+        """Delete every cached thumbnail.
+
+        The one purge here that costs nothing but CPU: thumbnails are derived from
+        images that are still on disk and are regenerated on the next request. It is
+        also the honest fix for a cache that has gone wrong — a stale entry, a
+        half-written png — where the alternative is hunting for the one bad file.
+        """
+
+        def _remove() -> Dict[str, int]:
+            cache_dir = self._thumb_cache_dir()
+            files = 0
+            freed = 0
+            if not cache_dir.is_dir():
+                return {"files": 0, "bytes": 0}
+            for path in cache_dir.glob("*.png"):
+                try:
+                    size = path.stat().st_size
+                    path.unlink()
+                except OSError:
+                    continue
+                files += 1
+                freed += size
+            return {"files": files, "bytes": freed}
+
+        result = await asyncio.to_thread(_remove)
+        logger.info("Cleared thumbnail cache: %s file(s), %.1f MB", result["files"], result["bytes"] / 1048576)
+        return result
+
+    async def purge_all_timelapse_frames(self) -> Dict[str, int]:
+        """Delete every timelapse frame under every `save_timelapse` output folder.
+
+        Separate from the bounded sweeps rather than "set the cap to 1 byte", because
+        a bound is a policy and this is an act: someone reclaiming space now should
+        not have to change a setting they then have to remember to change back.
+
+        Scope is exactly `_scan_timelapse_frames` — day folders, matching filenames,
+        no JSON sidecar — which is what makes this safe to expose. It cannot touch a
+        curated image even when one is sitting in the same directory tree.
+        """
+        roots = await self.timelapse_roots()
+        entries = await asyncio.to_thread(self._scan_timelapse_frames, roots)
+        if not entries:
+            return {"files": 0, "bytes": 0}
+        files, freed = await asyncio.to_thread(self._delete_timelapse_frames, [p for p, _s, _d in entries], roots)
+        logger.info("Purged all timelapse frames: %s frame(s), %.1f MB", files, freed / 1048576)
+        return {"files": files, "bytes": freed}
+
     # ── Model groups ───────────────────────────────────────────────────────────
 
     async def list_model_groups(self) -> List[ModelGroupRead]:

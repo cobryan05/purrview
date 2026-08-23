@@ -1046,6 +1046,41 @@ class WatchEventUpdate(Payload):
     metadata_json: Optional[Dict[str, Any]] = None
 
 
+class StorageBucketRead(BaseModel):
+    """One independently-bounded pile of files on disk.
+
+    Carries the alias generator itself: it is nested inside a StatusResponse but
+    does not inherit from one, and without this its multi-word fields would go out
+    snake_case while every field around them is camel.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    bytes: int = 0
+    files: int = 0
+    # 0 means "no size limit", matching how the settings themselves read a 0.
+    max_bytes: int = 0
+    retention_days: Optional[int] = None
+    roots: List[str] = Field(default_factory=list)
+    dir: Optional[str] = None
+
+
+class StorageUsageResponse(StatusResponse):
+    recordings: Optional[StorageBucketRead] = None
+    timelapse: Optional[StorageBucketRead] = None
+    thumbnail_cache: Optional[StorageBucketRead] = None
+
+
+class StoragePurgeResponse(StatusResponse):
+    """What a purge or a sweep actually removed. Counts, not a bare success —
+    "0 files" and "4,000 files" are very different answers to the same click."""
+
+    files: int = 0
+    bytes: int = 0
+    events: int = 0
+    recordings: int = 0
+
+
 class ListRecordingsResponse(StatusResponse):
     recordings: List[RecordingRead] = Field(default_factory=list)
 
@@ -4566,6 +4601,92 @@ class WebApp:
             return FileResponse(path, media_type="image/jpeg")
 
     def _register_recording_routes(self) -> None:
+        @self._app.get(
+            "/api/storage/usage",
+            response_model=StorageUsageResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="get_storage_usage",
+        )
+        async def get_storage_usage() -> StorageUsageResponse:
+            """How much disk the recordings, timelapses and thumbnail cache hold.
+
+            Walks directories, so it is deliberately its own endpoint rather than a
+            field on /status — the notices loop polls that every few seconds.
+            """
+            try:
+                usage = await self._manager.get_storage_usage()
+                return StorageUsageResponse(
+                    status=JsonValues.SUCCESS,
+                    recordings=StorageBucketRead(**usage["recordings"]),
+                    timelapse=StorageBucketRead(**usage["timelapse"]),
+                    thumbnail_cache=StorageBucketRead(**usage["thumbnailCache"]),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StorageUsageResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/storage/sweep",
+            response_model=StoragePurgeResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="run_storage_sweep",
+        )
+        async def run_storage_sweep() -> StoragePurgeResponse:
+            """Apply the configured retention bounds right now.
+
+            Not a purge: it removes exactly what the hourly sweep would have removed
+            on its own. That is what makes it the safe button — it changes *when*,
+            never *what*.
+            """
+            try:
+                recordings = await self._manager.prune_expired_recordings()
+                timelapse = await self._manager.prune_expired_timelapse()
+                return StoragePurgeResponse(
+                    status=JsonValues.SUCCESS,
+                    events=recordings.get("events", 0),
+                    recordings=recordings.get("recordings", 0),
+                    files=timelapse.get("files", 0) + recordings.get("orphanFiles", 0),
+                    bytes=timelapse.get("bytes", 0) + recordings.get("bytes", 0),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StoragePurgeResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/storage/timelapse",
+            response_model=StoragePurgeResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="purge_timelapse_frames",
+        )
+        async def purge_timelapse_frames() -> StoragePurgeResponse:
+            """Delete every timelapse frame, ignoring the retention bounds.
+
+            Scoped to exactly what the timelapse sweep considers deletable — day
+            folders holding frames the action wrote, never a file with a JSON
+            sidecar — so it cannot reach an annotated image sharing the tree.
+            """
+            try:
+                result = await self._manager.purge_all_timelapse_frames()
+                return StoragePurgeResponse(status=JsonValues.SUCCESS, files=result["files"], bytes=result["bytes"])
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StoragePurgeResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/storage/thumbnail-cache",
+            response_model=StoragePurgeResponse,
+            tags=[ApiTags.RECORDINGS],
+            operation_id="clear_thumbnail_cache",
+        )
+        async def clear_thumbnail_cache() -> StoragePurgeResponse:
+            """Drop every cached thumbnail. They regenerate on the next request."""
+            try:
+                result = await self._manager.clear_thumbnail_cache()
+                return StoragePurgeResponse(status=JsonValues.SUCCESS, files=result["files"], bytes=result["bytes"])
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StoragePurgeResponse(status=JsonValues.FAILURE, message=str(e))
+
         @self._app.get(
             "/api/recordings",
             response_model=ListRecordingsResponse,

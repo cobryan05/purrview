@@ -105,6 +105,11 @@ SETTINGS_PROXY = ReverseProxy(
     port=APPS_CONFIG[APPS.DB_SERVER].port,
     path="/api/settings",
 )
+STORAGE_PROXY = ReverseProxy(
+    host=APPS_CONFIG[APPS.DB_SERVER].host,
+    port=APPS_CONFIG[APPS.DB_SERVER].port,
+    path="/api/storage",
+)
 
 
 class TestServerPayload(BaseModel):
@@ -405,6 +410,10 @@ class WebApp:
         @self._app.api_route("/api/settings/{path:path}", methods=["GET", "PUT"])
         async def proxy_settings(request: Request, path: str):
             return await SETTINGS_PROXY.handle_request(path, request)
+
+        @self._app.api_route("/api/storage/{path:path}", methods=["GET", "POST", "DELETE"])
+        async def proxy_storage(request: Request, path: str):
+            return await STORAGE_PROXY.handle_request(path, request)
 
         @self._app.api_route(
             "/api/training/{path:path}",
