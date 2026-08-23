@@ -1002,7 +1002,16 @@ class TestConfigLink:
             _open_launcher(page, base_url)
             _config(page, name).click()
 
-            expect(page.locator(f"#{tab} [data-{attr}='{uuid}']")).to_have_class(re.compile(r"\bactive\b"))
+            row = page.locator(f"#{tab} [data-{attr}='{uuid}']")
+            # Wait for the row to exist before asserting *which* row is active.
+            # Arriving here lazy-loads the Configuration tab's modules and then
+            # fetches the list, which on a loaded box can take longer than the
+            # default 5s expect timeout — the Watchers pane in particular. That
+            # is not a statement about the selection contract under test, so it
+            # gets its own generous barrier rather than failing as "element(s)
+            # not found".
+            row.wait_for(state="attached", timeout=15000)
+            expect(row).to_have_class(re.compile(r"\bactive\b"))
 
     def test_the_config_link_does_not_start_anything(self, page: Page, base_url: str):
         """The two controls sit in one card, so the gear must not fall through

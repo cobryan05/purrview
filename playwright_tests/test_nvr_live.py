@@ -114,6 +114,20 @@ class TestNvrLiveFps:
         expect(page.locator(".nvr-profile-card").first).to_contain_text("1 fps")
 
 
+def _wait_for_watcher_editor(page: Page):
+    """Wait for the watcher *editor form*, not merely the Watchers screen.
+
+    These tests used to wait on `.wp-list-panel`, which appears as soon as the
+    list renders -- while the editor pane beside it is still being built. That is
+    not a barrier on the thing under test, so the assertion could run before
+    `watcher-name` existed and fail with "element(s) not found". Observed once in
+    a full parallel run and passing on every sequential re-run. Waiting on the
+    field itself is the real barrier; the timeout is generous because reaching
+    this pane lazy-loads the Configuration tab's modules.
+    """
+    page.wait_for_selector("#watcher-management-box [data-testid='watcher-name']", timeout=15000)
+
+
 class TestNvrAddWatcher:
     def test_the_add_button_opens_a_blank_watcher_editor(self, page: Page, base_url: str):
         """Wanting a watcher happens while looking at the cameras, but defining one lives
@@ -124,7 +138,7 @@ class TestNvrAddWatcher:
 
         page.locator("[data-testid='nvr-add-watcher']").click()
 
-        page.wait_for_selector("#watcher-management-box .wp-list-panel", timeout=5000)
+        _wait_for_watcher_editor(page)
         expect(page.locator("[data-testid='watcher-name']")).to_have_value("")
         # Scoped to the editor panel: the list panel has a .panel-box__title too.
         expect(page.locator("#watcher-management-box .wp-editor .panel-box__title")).to_contain_text("New watcher")
@@ -151,7 +165,7 @@ class TestNvrAddWatcher:
         page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
 
         page.locator("[data-testid='nvr-add-watcher']").click()
-        page.wait_for_selector("#watcher-management-box .wp-list-panel", timeout=5000)
+        _wait_for_watcher_editor(page)
         expect(page.locator("[data-testid='watcher-name']")).to_have_value("")
 
 
@@ -171,5 +185,5 @@ class TestNvrEditRules:
         card = page.locator(".nvr-profile-card", has_text="Zzz garden cam").first
         card.locator("button:has-text('Edit rules')").click()
 
-        page.wait_for_selector("#watcher-management-box .wp-list-panel", timeout=5000)
+        _wait_for_watcher_editor(page)
         expect(page.locator("[data-testid='watcher-name']")).to_have_value("Zzz garden cam")

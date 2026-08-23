@@ -60,6 +60,21 @@ def test_verified_bbox_conflict_shows_info_not_error_and_is_not_requeued(page: P
     page.route("**/api/images/labels/set", _serve_set_label)
 
     result = page.evaluate("""async () => {
+        // Poll for the state each step actually depends on. These were fixed
+        // 300ms sleeps, which are not barriers: under a loaded box the row had
+        // not rendered / the toast had not been appended yet, and the test
+        // failed with an empty toast list for reasons unrelated to the contract
+        // it asserts.
+        const waitFor = async (cond, what, timeoutMs = 10000) => {
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            const v = cond();
+            if (v) return v;
+            await new Promise(r => setTimeout(r, 20));
+          }
+          throw new Error(`timed out waiting for ${what}`);
+        };
+
         const { createLabelList } = await import('/app-static/js/ui/labelList.js');
         const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
         const { events, EventTypes } = await import('/app-static/js/shared/events/index.js');
@@ -74,22 +89,27 @@ def test_verified_bbox_conflict_shows_info_not_error_and_is_not_requeued(page: P
         const list = await createLabelList(div, { mode: 'select', runtime });
 
         events.publish(EventTypes.IMAGE_LOADED_ONTO_CANVAS, { path: 'test.png', runtimeId: runtime.id });
-        await new Promise(r => setTimeout(r, 300));
+        const row = await waitFor(() => div.querySelector('.label-panel-row'), 'the label row to render');
 
-        const row = div.querySelector('.label-panel-row');
         row.querySelector('.label-status-btn').click(); // uncertain -> absent
 
         events.publish(EventTypes.CANVAS_ANNOTATIONS_SAVED, { runtimeId: runtime.id });
-        await new Promise(r => setTimeout(r, 300));
-
-        const toastContainer = document.getElementById('toast-container');
-        const firstSaveToasts = toastContainer
-          ? [...toastContainer.children].map(c => ({ text: c.textContent, bg: c.style.background }))
-          : [];
+        const toastContainer = await waitFor(
+          () => {
+            const c = document.getElementById('toast-container');
+            return c && c.children.length ? c : null;
+          },
+          'a toast to be raised for the conflict response',
+        );
+        const firstSaveToasts = [...toastContainer.children]
+          .map(c => ({ text: c.textContent, bg: c.style.background }));
 
         // A second save with nothing re-queued must not re-issue the request.
+        // This one stays a settle rather than a poll: the assertion is that a
+        // request never happens, so there is no state to wait for — only time
+        // to give it in which to go wrong.
         events.publish(EventTypes.CANVAS_ANNOTATIONS_SAVED, { runtimeId: runtime.id });
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 500));
 
         list.destroy();
         div.remove();
