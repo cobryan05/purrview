@@ -205,7 +205,12 @@ class ClipDrain:
         # A backend that reports neither field (a test double, or one with nothing to
         # add) falls back to the requested window — the previous behaviour exactly.
         actual_start = parse_iso_utc(result.get("startedAt")) or start
-        actual_duration = float(result.get("durationS") or 0.0) or duration
+        # Presence, not truthiness. A backend that successfully cut nothing reports
+        # `durationS: 0.0`, and treating that as "no report" reinstates all three faces
+        # of the bug above — the chunk claims the whole requested span, `short_tail`
+        # computes false, and the cursor jumps past video that was never copied.
+        reported_duration = result.get("durationS")
+        actual_duration = duration if reported_duration is None else max(0.0, float(reported_duration))
         actual_end = actual_start + timedelta(seconds=actual_duration)
 
         # Tolerance, because a clamp of a few hundred milliseconds is segment boundaries
@@ -363,5 +368,16 @@ async def assemble(
         "partCount": len(parts),
         # Declared rather than smoothed over: a clip missing a stretch in the middle is
         # a different artifact from a complete one, and only this layer knows.
-        "hasGap": any(c.gap_before for c in chunks),
+        #
+        # `chunks[1:]`, deliberately. A gap before the *first* chunk is a discontinuity
+        # ahead of any video in the clip: `startedAt` is `chunks[0].start`, the material
+        # that actually got cut, so every box still lands where it belongs and the
+        # sidecar is exactly right. Counting it cost the whole clip its overlay whenever
+        # the buffer held less than the requested pre-roll — a routine occurrence after
+        # a relay restart. Only an interior gap slides the boxes off the picture.
+        "hasGap": any(c.gap_before for c in chunks[1:]),
+        # Reported separately because it is still true and still worth knowing — the
+        # clip really did start later than asked — it just does not invalidate the
+        # overlay the way an interior gap does.
+        "headClamped": bool(chunks[0].gap_before) if chunks else False,
     }

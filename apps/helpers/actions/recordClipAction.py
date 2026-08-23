@@ -346,8 +346,10 @@ class RecordClipAction(Action):
                 tail.unlink(missing_ok=True)
         result["requestedStart"] = chunks[0].start.isoformat()
         # A clip built this way always reached back past the buffer, so its pre-roll is
-        # whole unless a drain was actually missed — which `hasGap` reports.
-        result["partialPreroll"] = bool(result.get("hasGap"))
+        # whole unless a drain was missed (`hasGap`) or the first cut started later than
+        # it was asked to (`headClamped`). The two are separate because only the former
+        # invalidates the overlay; both mean the pre-roll is short.
+        result["partialPreroll"] = bool(result.get("hasGap")) or bool(result.get("headClamped"))
         # Playing time, summed from the parts rather than measured off the file. It is
         # the sum of the drained spans plus whatever the tail cut actually held, capped
         # the same way `concat_parts` caps the muxer. Reporting nothing here is not a
