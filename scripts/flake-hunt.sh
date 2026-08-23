@@ -64,8 +64,10 @@ fi
 
 echo "==> ${RUNS} runs of: ${TARGET[*]}"
 for i in $(seq "$RUNS"); do
+  # Low priority for the same reason as scripts/test.sh: this runs the suite N
+  # times over on the box serving the live app.
   docker exec -w /project "$CONTAINER" \
-    pytest "${TARGET[@]}" "${EXTRA[@]}" -q > "$OUT/run$i.txt" 2>&1
+    nice -n 19 ionice -c3 pytest "${TARGET[@]}" "${EXTRA[@]}" -q > "$OUT/run$i.txt" 2>&1
   # `-q` prints one FAILED/ERROR line per failure in the short summary.
   grep -oE '^(FAILED|ERROR) [^ ]+' "$OUT/run$i.txt" | awk '{print $2}' | sort -u > "$OUT/fail$i.txt"
   printf '   run %-3s %-46s %s failed\n' "$i" "$(tail -1 "$OUT/run$i.txt")" \
