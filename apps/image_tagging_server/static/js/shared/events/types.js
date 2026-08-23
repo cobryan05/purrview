@@ -163,6 +163,24 @@ export const EventTypes = Object.freeze({
    */
   LABELS_UPDATED: "labels:updated",
   /**
+   * Fired after the set of available models changes — an import, a conversion, a
+   * finished training run, or a delete.
+   *
+   * The model list is cached for the session (`shared/api/models.js`), which is
+   * right for a list that is read on every panel build and changes a handful of
+   * times a day. The cost was that a model you had just made did not exist as far
+   * as any open picker was concerned until you reloaded the page: the canvas
+   * inference panel is built once and kept, so its manual ↻ was the only way to
+   * see a new model at all.
+   *
+   * Publish it through `notifyModelsChanged()` rather than directly — the cache
+   * has to be cleared before subscribers refetch, or they all re-read the stale
+   * list and nothing changes.
+   *
+   * Payload: none.
+   */
+  MODELS_UPDATED: "models:updated",
+  /**
    * Fired after an image is permanently deleted from the DB and disk.
    * Payload: { imageUuid: string, imagePath: string }
    */

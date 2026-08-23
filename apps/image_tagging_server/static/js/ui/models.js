@@ -11,6 +11,7 @@ import {
   fetchModelsList,
   importModelUpload,
   isTrainingServerReachable,
+  notifyModelsChanged,
   setModelDevice,
   stageSourceModel,
 } from '/app-static/js/shared/api/models.js';
@@ -70,7 +71,7 @@ export function renderModelLabelAssignments({
             if (!window.confirm(`Delete model "${preselectedModel}"? This cannot be undone.`)) return;
             try {
               await deleteModel(preselectedModel);
-              clearModelsCache();
+              notifyModelsChanged();
               toast(`Deleted model "${preselectedModel}"`);
               renderModelLabelAssignments({ target, editable, preselectedModel: null });
             } catch (err) {
@@ -254,7 +255,10 @@ function renderImportModelForm(formDiv, { target, editable }) {
 }
 
 function _afterImportSuccess(target, editable, modelName) {
-  clearModelsCache();
+  // notify, not just clear: the canvas inference panel and Review's model picker
+  // are built elsewhere and stay built, so clearing the cache alone would leave a
+  // model you just imported invisible to them until a reload.
+  notifyModelsChanged();
   renderModelLabelAssignments({ target, editable, preselectedModel: modelName });
 }
 

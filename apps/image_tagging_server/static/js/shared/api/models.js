@@ -46,6 +46,26 @@ export function clearModelsCache() {
   _modelKindCache.clear();
 }
 
+/**
+ * Drop the cached model list *and* tell every open picker to rebuild from it.
+ *
+ * Call this from anywhere the set of models changes — an upload, a delete, a
+ * finished import/convert/train run. `clearModelsCache()` on its own only helps
+ * the caller: a panel that was built earlier keeps the list it already rendered,
+ * which is why a freshly trained model needed a page reload before it appeared
+ * anywhere. Ordering matters — the cache is cleared first so subscribers that
+ * refetch synchronously do not re-read what was just invalidated.
+ *
+ * Imported lazily so `shared/api/*` keeps its one-way dependency on the event bus
+ * out of the module graph's hot path; the publish is fire-and-forget either way.
+ */
+export function notifyModelsChanged() {
+  clearModelsCache();
+  import('/app-static/js/shared/events/index.js')
+    .then(({ events, EventTypes }) => events.publish(EventTypes.MODELS_UPDATED, {}))
+    .catch(() => { /* the cache is already clear; the next fetch is correct regardless */ });
+}
+
 /** @type {Map<string, string>} model name → modelKind */
 const _modelKindCache = new Map();
 

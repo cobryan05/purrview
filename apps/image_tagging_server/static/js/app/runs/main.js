@@ -16,14 +16,53 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { countAdvancingTasks, renderActiveTasks } from '/app-static/js/ui/tasks.js';
 import { seedRunsBadge, updateRunsBadge } from '/app-static/js/ui/runsBadge.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
+import { notifyModelsChanged } from '/app-static/js/shared/api/models.js';
 import { renderServiceStatus } from '/app-static/js/ui/serviceStatus.js';
 import { applyRunsLauncherTaskState, renderRunsLauncher } from '/app-static/js/ui/runsLauncher.js';
+
+/**
+ * Task types whose successful completion means a new file in the models
+ * directory. Training is the one that matters day to day; the imports are here
+ * because they finish the same way and the alternative is remembering to add
+ * them later.
+ */
+const MODEL_PRODUCING_TYPENAMES = new Set([
+  'TrainModelTask',
+  'ConvertModelTask',
+  'ImportModelTask',
+  'ImportCuratedModelTask',
+]);
 
 export async function init() {
   // Service health sits above the task list — it applies to the whole surface.
   renderServiceStatus({ target: 'service-status-box' });
 
   let unsubscribeTaskStream = null;
+
+  /**
+   * Instance uuids already announced, so a task sitting in `completed` for the
+   * rest of the session announces itself once rather than on every frame.
+   */
+  const _announcedModelRuns = new Set();
+
+  /**
+   * Tell the model pickers when a run has just produced a model.
+   *
+   * This lives on the Jobs stream rather than in the model API because the model
+   * API never hears about it: the file is written by the tasks server, and the
+   * only thing the browser sees is a status going to `completed`. Jobs holds this
+   * stream for as long as anything is still advancing, including while the user
+   * is on another tab — which is exactly when a training run finishes.
+   */
+  function announceFinishedModelRuns(tasks) {
+    for (const [uuid, task] of Object.entries(tasks || {})) {
+      if (task?.instance?.status !== 'completed') continue;
+      if (!MODEL_PRODUCING_TYPENAMES.has(task?.config?.typename)) continue;
+      if (_announcedModelRuns.has(uuid)) continue;
+      _announcedModelRuns.add(uuid);
+      notifyModelsChanged();
+    }
+  }
 
   // The badge itself lives in ui/runsBadge.js: it is painted at page load,
   // before this init has ever run, so it cannot be owned by this module.
@@ -78,6 +117,7 @@ export async function init() {
       onMessage: (data) => {
         if (!data?.tasks) return;
         updateBadge(data.tasks);
+        announceFinishedModelRuns(data.tasks);
         // renderActiveTasks no-ops unless its pane is visible, so this costs
         // nothing while the Running pane is not the one on screen.
         renderActiveTasks({ target: 'active-tasks-list', tasks: data.tasks, refresh: refreshTaskTab });

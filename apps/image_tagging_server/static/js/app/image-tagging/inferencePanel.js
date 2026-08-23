@@ -338,6 +338,23 @@ export async function createInferencePanel(runtime, container) {
     }
   }
 
+  /**
+   * Rebuild the list from an already-invalidated cache.
+   *
+   * Split from handleRefresh because that one *does* the invalidating and drives
+   * the button state. Here the cache has already been cleared by whoever changed
+   * the models, and there is no button press to acknowledge.
+   */
+  async function _reloadModelList() {
+    try {
+      await _loadModels();
+      renderList();
+      _updateRunBtn();
+    } catch (err) {
+      Logger.error('Failed to reload models:', err);
+    }
+  }
+
   /** Expand the current selection (models pass through, groups recurse) into a flat, ordered model-name list. */
   function _resolveSelectedModelNames() {
     const names = [];
@@ -506,6 +523,38 @@ export async function createInferencePanel(runtime, container) {
     handleRun().catch(err => Logger.error('Run inference failed:', err));
   });
 
+  // ── Staying current ───────────────────────────────────────────────
+  // This panel is built once and lives for the session, so without these it shows
+  // whatever models existed when Annotate was first opened. Two signals, because
+  // they cover different gaps:
+  //
+  //  - MODELS_UPDATED is the in-app one: an import or a delete elsewhere in this
+  //    tab, published with the cache already cleared.
+  //  - Coming back to Annotate covers everything else — a training run that
+  //    finished while the tab was closed, a model added from another browser tab,
+  //    a file dropped into the models directory by hand. One `/api/models` call
+  //    on a tab switch is not a cost worth optimising away.
+  const unsubModels = events.subscribe(EventTypes.MODELS_UPDATED, () => {
+    void _reloadModelList();
+  });
+  //
+  // "Came back", not "is here": the refresh only fires once the tab has actually
+  // been left and returned to. Firing on arrival as well would re-read the list the
+  // panel loaded moments earlier — two extra requests, on the critical path of the
+  // very first thing a user does, to learn nothing.
+  let _leftAnnotate = false;
+  const unsubTab = events.subscribe(EventTypes.MAIN_TAB_CHANGED, ({ tabName }) => {
+    if (tabName !== 'tab-image-tagging') {
+      _leftAnnotate = true;
+      return;
+    }
+    if (!_leftAnnotate) return;
+    _leftAnnotate = false;
+    clearModelsCache();
+    clearModelGroupsCache();
+    void _reloadModelList();
+  });
+
   // ── Initial load ──────────────────────────────────────────────────
   _loadPersistedSelection();
   try {
@@ -523,6 +572,8 @@ export async function createInferencePanel(runtime, container) {
   return {
     destroy() {
       unregisterRunAction();
+      unsubModels();
+      unsubTab();
       container.innerHTML = '';
       container.classList.remove('inference-panel');
     },
