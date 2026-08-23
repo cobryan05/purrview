@@ -112,6 +112,9 @@ def _navigate_to_review(page: Page, base_url: str):
 
 def _apply_label_filter(page: Page):
     """Check the Cat label in the Labels dropdown — enough to make isDefault() false."""
+    # The Labels dropdown lives in the filter popover (it used to sit in the
+    # toolbar, always visible), so the popover has to be opened to reach it.
+    page.get_by_test_id("review-filter-toggle").click()
     trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
     trigger.wait_for(state="visible", timeout=5000)
     trigger.click()

@@ -232,14 +232,19 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // Filter toggle — only visible in full-filter mode
   // Slice 3, PR 3.2: no longer a "☰ Filters (n)" toggle for a hidden inline
   // panel — the chip bar below is always visible and shows what's active, so
-  // this only ever opens the popover editor for filters that aren't already
-  // one of the toolbar's own dropdowns (Date / Filename / Config Ready /
-  // Bbox Verification / Image Label Filters — see filterPanel.element).
+  // this only opens the popover editor.
+  //
+  // That popover is now the ONE place every filter lives. The Tags and Labels
+  // dropdowns used to be spliced into the toolbar below (filterPanel's old
+  // `toolbarControls`), which meant label/tag filtering was split across two
+  // surfaces with nothing to say which held what — and this button's tooltip
+  // listed only some of what was actually behind it. Keep the tooltip in step
+  // with filterPanel.element if a dimension is added.
   const filterToggleBtn = document.createElement('button');
   filterToggleBtn.className = 'review-toolbar__btn review-filter-chip-bar__add';
   filterToggleBtn.dataset.testid = 'review-filter-toggle';
   filterToggleBtn.textContent = '+ Add filter';
-  filterToggleBtn.title = 'Date, filename, config-ready and image-label filters';
+  filterToggleBtn.title = 'Tags, labels, source, date, filename, confidence and verification filters';
   if (fetchImages) filterToggleBtn.hidden = true;
 
   // Sort controls — hidden when a custom fetchImages is provided (caller controls ordering)
@@ -751,10 +756,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       setFilterPopoverOpen(filterPanel.element.hidden);
     });
 
-    // Inject Tags + Labels dropdowns into the toolbar as the first group.
-    const filterControlsGroup = makeToolbarGroup(...filterPanel.toolbarControls);
-    toolbar.insertBefore(filterControlsGroup, toolbar.firstChild);
-    toolbar.insertBefore(makeToolbarSep(), toolbar.children[1]);
+    // The Tags + Labels dropdowns used to be spliced in here as the toolbar's
+    // first group. They now sit in the filter popover with every other filter
+    // (see createFilterPanel's Labels & Tags row) — the toolbar is for view,
+    // sort and actions, not for a subset of the filters.
 
     // ── Views (server-backed saved searches) + dataset export (hidden in
     // modal/preview contexts) — UI_REDESIGN_PLAN.md slice 5, PR 5.2. Replaces
@@ -1063,11 +1068,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     });
     dateContainer.append(dateLabel, dateFromInput, document.createTextNode('–'), dateToInput);
 
-    // Append after the caller's own toolbarControls (threshold/count/switch) —
-    // toolbarControls is a positional contract elsewhere (createFilterPanel's
-    // toolbarControls array); here it's simpler (a single element/fragment),
-    // but the same "append, don't insert" rule applies so caller-built
-    // controls never shift position (NOTES.md).
+    // Append after the caller's own toolbarControls (threshold/count/switch):
+    // the "append, don't insert" rule keeps caller-built controls from shifting
+    // position (NOTES.md). This is the curated/modal toolbar — the main page's
+    // filters all live in the filter popover instead.
     const curatedGroup = makeToolbarGroup(verificationControl.element, confidenceControl.element, labelsContainer, tagsContainer, filenameContainer, dateContainer);
     curatedGroup.classList.add('modal-toolbar-row');
     toolbar.append(makeToolbarSep(), curatedGroup);

@@ -76,24 +76,11 @@ function buildDatasetForm(container, { name = '', description = '', labelUuids =
     inlineControls: true,
   });
 
-  // Date + Verification + Image Label Conditions rows are in filterPanel.element
+  // One mount: every control, Tags and Labels included, is inside the panel.
+  // They used to be handed out separately as `toolbarControls` and re-hosted
+  // here in a `ds-inline-controls` row of the form's own making; they now live
+  // in the panel's Labels & Tags row, which carries its own section headings.
   container.appendChild(filterPanel.element);
-
-  // Tags and Labels as side-by-side expanded boxes below
-  const inlineRow = document.createElement('div');
-  inlineRow.className = 'ds-inline-controls';
-  const [tagsEl, labelsEl] = filterPanel.toolbarControls;
-  for (const [title, el] of [['Tags', tagsEl], ['Labels', labelsEl]]) {
-    const box = document.createElement('div');
-    box.className = 'ds-inline-control';
-    const lbl = document.createElement('div');
-    lbl.className = 'ds-inline-control__label';
-    lbl.textContent = title;
-    box.appendChild(lbl);
-    box.appendChild(el);
-    inlineRow.appendChild(box);
-  }
-  container.appendChild(inlineRow);
 
   // Populate from saved state
   filterPanel.setState(datasetFormToReviewState(filterJson, labelUuids));

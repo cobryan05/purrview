@@ -5,10 +5,12 @@ The filter panel is a pure DOM component: it accepts label/tag Maps, builds a
 UI, and exposes getState/setState/isDefault/getActiveFilterCount.  No network
 calls are made by the panel itself; all API dependency is injected via the Maps.
 
-Layout after the multi-select refactor:
-  toolbarControls[0] — Tags multi-select dropdown  (.ms-dropdown[data-filter-key='tags'])
-  toolbarControls[1] — Labels multi-select dropdown (.ms-dropdown[data-filter-key='labels'])
-  panel.element      — Date range + Filename + Advanced (image-label) filters
+Layout: panel.element holds EVERY filter control, including the Tags
+(.ms-dropdown[data-filter-key='tags']) and Labels
+(.ms-dropdown[data-filter-key='labels-v2']) dropdowns. Those two used to be
+handed to the caller separately as `toolbarControls` to mount in the review
+toolbar; they were moved into the panel so label/tag filtering lives on one
+surface rather than being split across two.
 
 All tests share one pre-navigated `shared_page` (module-scoped, see
 conftest.py); each test builds and removes its own panel element so the
@@ -42,15 +44,13 @@ _SETUP = f"""
     window.__fp = panel;
     window.__fpLastState = () => lastState;
 
-    // Mount panel element and toolbar controls (Tags + Labels dropdowns) into DOM.
+    // One mount: every control, Tags and Labels included, is inside the panel.
     document.body.appendChild(panel.element);
-    panel.toolbarControls.forEach(el => document.body.appendChild(el));
 """
 
 # For use within the SAME evaluate call as _SETUP (panel is in-scope).
 _TEARDOWN = """
     panel.element.remove();
-    panel.toolbarControls.forEach(el => el.remove());
     panel.destroy && panel.destroy();
     window.__fp = null;
 """
@@ -59,7 +59,6 @@ _TEARDOWN = """
 _TEARDOWN_EXT = """
     if (window.__fp) {
         window.__fp.element.remove();
-        window.__fp.toolbarControls.forEach(el => el.remove());
         window.__fp.destroy && window.__fp.destroy();
         window.__fp = null;
     }
@@ -167,7 +166,7 @@ class TestFilterPanelTagsDropdown:
         """
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[0].querySelector('input[value="{UNVERIFIED_UUID}"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="tags"]').querySelector('input[value="{UNVERIFIED_UUID}"]');
             {_TEARDOWN}
             return cb === null;
         }}""")
@@ -176,7 +175,7 @@ class TestFilterPanelTagsDropdown:
     def test_no_tags_checked_sets_show_all(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            panel.toolbarControls[0].querySelectorAll('input[type="checkbox"]').forEach(cb => {{
+            panel.element.querySelector('.ms-dropdown[data-filter-key="tags"]').querySelectorAll('input[type="checkbox"]').forEach(cb => {{
                 cb.checked = false;
                 cb.dispatchEvent(new Event('change'));
             }});
@@ -189,7 +188,7 @@ class TestFilterPanelTagsDropdown:
     def test_checking_tag_adds_to_state(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[0].querySelector('input[value="tag-reviewed"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="tags"]').querySelector('input[value="tag-reviewed"]');
             cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             const s = panel.getState();
@@ -202,7 +201,7 @@ class TestFilterPanelTagsDropdown:
     def test_checking_tag_makes_not_default(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[0].querySelector('input[value="tag-reviewed"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="tags"]').querySelector('input[value="tag-reviewed"]');
             cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             {_TEARDOWN}
@@ -225,7 +224,7 @@ class TestFilterPanelTagsDropdown:
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             // Click the "All of" mode button
-            const allBtn = panel.toolbarControls[0].querySelector('.ms-mode-btn[data-mode="all"]');
+            const allBtn = panel.element.querySelector('.ms-dropdown[data-filter-key="tags"]').querySelector('.ms-mode-btn[data-mode="all"]');
             allBtn.click();
             const s = panel.getState();
             {_TEARDOWN}
@@ -241,7 +240,7 @@ class TestFilterPanelLabelsDropdown:
     def test_selecting_label_updates_state(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[1].querySelector('input[value="lbl-cat"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('input[value="lbl-cat"]');
             cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             const s = panel.getState();
@@ -253,7 +252,7 @@ class TestFilterPanelLabelsDropdown:
     def test_selecting_label_increments_count(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[1].querySelector('input[value="lbl-dog"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('input[value="lbl-dog"]');
             cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             {_TEARDOWN}
@@ -264,7 +263,7 @@ class TestFilterPanelLabelsDropdown:
     def test_deselecting_label_decrements_count(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[1].querySelector('input[value="lbl-cat"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('input[value="lbl-cat"]');
             cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             cb.checked = false;
@@ -277,7 +276,7 @@ class TestFilterPanelLabelsDropdown:
     def test_all_of_mode_updates_label_match_mode(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const allBtn = panel.toolbarControls[1].querySelector('.ms-mode-btn[data-mode="all"]');
+            const allBtn = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('.ms-mode-btn[data-mode="all"]');
             allBtn.click();
             const s = panel.getState();
             {_TEARDOWN}
@@ -288,7 +287,7 @@ class TestFilterPanelLabelsDropdown:
     def test_selecting_label_makes_not_default(self, shared_page: Page):
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
-            const cb = panel.toolbarControls[1].querySelector('input[value="lbl-cat"]');
+            const cb = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('input[value="lbl-cat"]');
             cb.checked = true;
             cb.dispatchEvent(new Event('change'));
             {_TEARDOWN}
@@ -305,7 +304,7 @@ class TestFilterPanelSetState:
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ tagUuids: ['tag-reviewed'] }});
-            const reviewedCb = panel.toolbarControls[0].querySelector('input[value="tag-reviewed"]');
+            const reviewedCb = panel.element.querySelector('.ms-dropdown[data-filter-key="tags"]').querySelector('input[value="tag-reviewed"]');
             {_TEARDOWN}
             return {{ reviewed: reviewedCb.checked }};
         }}""")
@@ -315,8 +314,8 @@ class TestFilterPanelSetState:
         result = shared_page.evaluate(f"""async () => {{
             {_SETUP}
             panel.setState({{ labelUuids: ['lbl-dog'] }});
-            const dogCb = panel.toolbarControls[1].querySelector('input[value="lbl-dog"]');
-            const catCb = panel.toolbarControls[1].querySelector('input[value="lbl-cat"]');
+            const dogCb = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('input[value="lbl-dog"]');
+            const catCb = panel.element.querySelector('.ms-dropdown[data-filter-key="labels-v2"]').querySelector('input[value="lbl-cat"]');
             {_TEARDOWN}
             return {{ dog: dogCb.checked, cat: catCb.checked }};
         }}""")

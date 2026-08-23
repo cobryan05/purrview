@@ -3,8 +3,7 @@
  *
  * createFilterPanel(labels, tags, onFilterChange)
  *   → {
- *       element,            // panel DOM node (Date + Filename + Verification row)
- *       toolbarControls,    // [tagsDropdown.element, labelsDropdown.element] — place in toolbar
+ *       element,            // panel DOM node — EVERY filter control lives in here
  *       getState, setState, isDefault, getActiveFilterCount,
  *       destroy,
  *     }
@@ -12,11 +11,12 @@
  * Calls onFilterChange(state) whenever any filter value changes.
  * The panel element starts visible; callers may toggle element.hidden as needed.
  *
- * Layout:
- *   Toolbar (toolbarControls):  [Tags ▾]  [Labels ▾]
- *   Filter panel (element):     Date: [from]–[to]  |  File: [____]
- *                               Verification: [<select>]  |  Box status: [<select>]
- *                               Confidence: [min%]–[max%]  |  Image Tag Filters: [condition list]
+ * Layout — one surface, no controls handed out to the caller's toolbar:
+ *   Labels & Tags row:  Bbox Tags [▾]  |  Bbox Labels [▾]
+ *                       Image Label Filters: [conditions]  |  Image Tag Filters: [conditions]
+ *   Primary row:        Date: [from]–[to]  |  File: [____]
+ *   Secondary row:      Source [▾]  |  Config Ready: [<select>]
+ *                       Box status: [<select>]  |  Confidence: [min%]–[max%]
  */
 import { VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { createMultiSelectDropdown, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
@@ -139,7 +139,8 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     });
   }
 
-  // Stable container so toolbarControls[0] reference stays valid across rebuilds.
+  // Stable container: the dropdown inside is destroyed and rebuilt (tag-kind
+  // visibility changes), so the panel must hold the wrapper, not the dropdown.
   const tagsContainer = document.createElement('div');
   if (inlineControls) tagsContainer.style.width = '100%';
   let tagsDropdown = _buildTagsDropdown();
@@ -588,9 +589,40 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
   secondaryRow.appendChild(verificationSection);
   secondaryRow.appendChild(bboxVerificationControl.element);
   secondaryRow.appendChild(confidenceControl.element);
-  secondaryRow.appendChild(imageLabelSection);
-  secondaryRow.appendChild(imageTagSection);
   panel.appendChild(secondaryRow);
+
+  // ── Labels & Tags row ─────────────────────────────────────────────────────
+  // All four label/tag dimensions live here, together, at the top of the panel.
+  // The bbox-scoped Tags and Labels dropdowns used to be handed to main.js as
+  // `toolbarControls` and mounted in the sticky toolbar instead, which split
+  // label/tag filtering across two surfaces: two of them a click away in the
+  // toolbar, the other two inside this popover. Nothing distinguished the two
+  // groups except history, so there was no rule for which you reached for.
+  //
+  // Bbox- vs image-scoped is the distinction that actually matters, so it is
+  // the one the section labels carry.
+  const labelTagRow = document.createElement('div');
+  labelTagRow.className = 'filter-row-secondary';
+
+  const makeFilterSection = (text, child, grow = false) => {
+    const section = document.createElement('div');
+    section.className = grow ? 'filter-section filter-section--grow' : 'filter-section';
+    const sectionLabel = document.createElement('div');
+    sectionLabel.className = 'filter-section-label';
+    sectionLabel.textContent = text;
+    section.appendChild(sectionLabel);
+    section.appendChild(child);
+    return section;
+  };
+
+  // Inline mode (the dataset form) renders these two as always-expanded boxes
+  // that fill their width, so they have to grow and wrap rather than sit at
+  // their content size the way the popover's collapsed triggers do.
+  labelTagRow.appendChild(makeFilterSection('Bbox Tags', tagsContainer, inlineControls));
+  labelTagRow.appendChild(makeFilterSection('Bbox Labels', labelsDropdownContainer, inlineControls));
+  labelTagRow.appendChild(imageLabelSection);
+  labelTagRow.appendChild(imageTagSection);
+  panel.insertBefore(labelTagRow, panel.firstChild);
 
   // ── Public API ────────────────────────────────────────────────────────────
   // The File list always carries at least one row, and a row the user hasn't
@@ -884,8 +916,6 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
 
   return {
     element: panel,
-    /** Dropdown elements to place in the sticky toolbar (Tags + Object Labels). */
-    toolbarControls: [tagsContainer, labelsDropdownContainer],
     getState: () => ({
       ..._state,
       // Blank rows are UI, not filter state — see _activeFilenameConditions.

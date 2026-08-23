@@ -2722,31 +2722,11 @@ button.filter-active {
   width: 100% !important;
 }
 
-/* Two-column layout for inline Tags + Labels on the dataset form */
-.ds-inline-controls {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-
-.ds-inline-control {
-  flex: 1 1 220px;   /* grow to fill, wrap below 220px */
-  min-width: 180px;
-  display: flex;
-  flex-direction: column;
-}
-
-.ds-inline-control__label {
-  font-size: 0.78em;
-  font-weight: 600;
-  color: var(--pico-muted-color, var(--text-muted));
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 4px;
-}
-
-.ds-inline-control .ms-dropdown--inline {
+/* Inline (always-expanded) dropdowns — the dataset form's Tags + Labels. These
+   used to be re-hosted by that form in its own .ds-inline-control boxes; they
+   now sit in the filter panel's own sections, which already supply the column
+   layout and the uppercase section heading those boxes provided. */
+.filter-section .ms-dropdown--inline {
   display: flex;
   flex-direction: column;
 }

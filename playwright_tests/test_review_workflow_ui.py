@@ -236,6 +236,9 @@ def _show_all_bboxes(page: Page):
     to clear all tag filters (including the hidden Unverified default), which
     triggers showAllBboxes=true on the backend.
     """
+    # The Tags dropdown lives in the filter popover — it used to sit in the
+    # always-visible toolbar, so reaching it now starts with opening that.
+    page.get_by_test_id("review-filter-toggle").click()
     # The tags dropdown is added asynchronously after the tags fetch — wait for it.
     trigger = page.locator("#review-root .ms-dropdown[data-filter-key='tags'] .ms-dropdown__trigger")
     trigger.wait_for(state="visible", timeout=5000)
@@ -248,6 +251,12 @@ def _show_all_bboxes(page: Page):
     # Click outside the dropdown to close it.
     page.mouse.click(0, 0)
     page.wait_for_timeout(300)
+    # That outside click usually dismisses the popover along with the dropdown.
+    # Close it explicitly if it survived: every caller goes on to interact with
+    # the grid, which the open popover overlaps.
+    if page.locator("#review-root .review-filter-panel").is_visible():
+        page.get_by_test_id("review-filter-toggle").click()
+        page.wait_for_timeout(150)
 
 
 def _switch_view(page: Page, key: str):
@@ -1308,7 +1317,8 @@ class TestFilterToggleButton:
         expect(toggle_btn).not_to_have_class(re.compile(r"\bfilter-active\b"))
         expect(chip_bar.locator(".review-filter-chip")).to_have_count(0)
 
-        # The Labels dropdown is in the toolbar — open it and check 'Cat'.
+        # The Labels dropdown is in the filter popover — open that, then it.
+        toggle_btn.click()
         labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
         labels_trigger.wait_for(state="visible", timeout=5000)
         labels_trigger.click()
@@ -1465,6 +1475,8 @@ class TestSavedViews:
         _navigate_to_review(page, base_url)
 
         # Select 'Cat' via the Labels dropdown so the saved View isn't empty.
+        # It lives in the filter popover, so that has to be open to reach it.
+        page.get_by_test_id("review-filter-toggle").click()
         labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
         labels_trigger.wait_for(state="visible", timeout=5000)
         labels_trigger.click()
