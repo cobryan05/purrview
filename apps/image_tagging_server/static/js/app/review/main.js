@@ -430,13 +430,13 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     refresh: () => render(),
   }));
 
-  // Refresh — lives in the action bar next to the page info, not up in the
-  // query bar. It acts on the page you are looking at, and the page counter is
-  // what tells you which page that is; parked among "Most Unique First" and
-  // "Open in Datasets Tab" it read as one more feature button and was hard to
-  // pick out.
+  // Refresh — in the action bar, immediately right of the status line ("N images
+  // on this page"). That line is what tells you the page is out of date, so the
+  // button that reloads it belongs against it rather than tucked behind Next.
+  // It carries the accent variant: every other button in these bars is a muted
+  // outline, and Refresh is the one you reach for repeatedly.
   const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'review-toolbar__btn';
+  refreshBtn.className = 'review-toolbar__btn review-toolbar__btn--accent';
   refreshBtn.dataset.testid = 'review-refresh';
   refreshBtn.textContent = '⟳ Refresh';
   refreshBtn.title = 'Reload the current page';
@@ -588,8 +588,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   actionBar.dataset.testid = 'review-action-bar';
   actionBar.append(
     makeToolbarGroup(selectAllLabel),
-    makeToolbarGroup(prevBtn, pageInfo, nextBtn, refreshBtn),
-    makeToolbarGroup(statusMsg),
+    makeToolbarGroup(prevBtn, pageInfo, nextBtn),
+    makeToolbarGroup(statusMsg, refreshBtn),
   );
 
   // ── Filter-scoped action bar (slice 3, PR 3.3) ─────────────────────
