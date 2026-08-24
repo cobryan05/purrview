@@ -274,10 +274,11 @@ class TestModelPickerKindAwareness:
 
         expect(dialog.locator(".run-model-on-results-crop-mode-select")).to_be_hidden()
         expect(dialog.locator("text=Min IoU:")).to_be_hidden()
-        expect(dialog.locator("text=Also add new boxes")).to_be_hidden()
+        expect(dialog.locator(".run-model-on-results-new-box-mode")).to_be_hidden()
 
         _check_model_in_dialog(dialog, "yolo9-detector")
         expect(dialog.locator(".run-model-on-results-crop-mode-select")).to_be_visible()
+        expect(dialog.locator(".run-model-on-results-new-box-mode")).to_be_visible()
 
 
 class TestClassifierRunFlow:

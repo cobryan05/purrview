@@ -400,8 +400,28 @@ class TestRunModelButton:
         expect(btn).to_be_enabled()
         expect(btn).to_have_text(original_text)
 
-    def test_no_candidates_toasts_and_skips_dialog(self, page: Page, base_url: str):
+    def test_boxless_images_open_the_dialog_on_image_scope(self, page: Page, base_url: str):
+        """An image with no bboxes is not an empty run — the detector can still
+        find objects on it. This used to toast "no candidates" and refuse to open
+        the dialog, so the one scope that could have worked was unreachable."""
         _mock_review_queue(page, [{"uuid": "img-9", "filename": "x.jpg", "bboxes": []}])
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+        _navigate_to_review(page, base_url)
+
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        expect(dialog.locator("input[name='run-model-on-results-scope'][value='images']")).to_be_checked()
+        # Bbox scope could only ever produce an empty run here, so it's closed off.
+        expect(dialog.locator("input[name='run-model-on-results-scope'][value='bboxes']")).to_be_disabled()
+        # ...and the only mode that can propose anything is pre-selected.
+        expect(dialog.locator(".run-model-on-results-new-box-mode")).to_have_value("also")
+
+    def test_no_images_at_all_toasts_and_skips_dialog(self, page: Page, base_url: str):
+        _mock_review_queue(page, [])
         _mock_labels(page, [LABEL_CAT, LABEL_DOG])
         _mock_tags(page, [UNVERIFIED_TAG])
         _navigate_to_review(page, base_url)
@@ -792,6 +812,37 @@ class TestRunModelFullFlow:
 
         # Run dialog closed after handoff (confirmation modal took over).
         expect(dialog).to_have_count(0)
+
+    @pytest.mark.parametrize(
+        "mode, add_new, relabel_existing",
+        [("none", False, True), ("also", True, True), ("only", True, False)],
+    )
+    def test_new_box_mode_maps_to_add_new_and_relabel_existing(
+        self, page: Page, base_url: str, mode: str, add_new: bool, relabel_existing: bool
+    ):
+        """The three-way "New boxes" picker is two independent booleans on the
+        wire — "only add" must not send a run that also relabels."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+        _mock_thumbnails(page)
+        fake_task = _FakeTask()
+        fake_task.install(page, CANDIDATES)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        dialog.locator(".run-model-on-results-new-box-mode").select_option(mode)
+        dialog.locator("button", has_text="Run").click()
+
+        expect(page.locator(".relabel-confirm-modal")).to_be_visible(timeout=5000)
+        params = fake_task.create_bodies[0]["params"]
+        assert params["add_new"] is add_new
+        assert params["relabel_existing"] is relabel_existing
 
     def test_bbox_crop_mode_sent_and_hides_iou_slider(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)

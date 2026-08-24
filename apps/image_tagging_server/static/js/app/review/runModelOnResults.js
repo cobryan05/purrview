@@ -1013,8 +1013,12 @@ export function confirmLargeRun(total, noun = 'candidate bbox(es)') {
  *   lazily on first toggle, or up front when images view makes it the default.
  * @param {Object} ctx - forwarded to `openRelabelConfirmationModal` (see its docs),
  *   plus the fields `resolveCandidateScope`/`resolveImageScope` need.
+ * @param {{bboxUuids: string[], imageUuids: string[], bboxImageUuids: string[]}|null} [preResolvedImageScope]
+ *   the "Filtered images" scope, when the caller already had to resolve it (it
+ *   does when the bbox scope came back empty). Saves a second enumeration and
+ *   lets the dialog start on that scope.
  */
-async function _showRunDialog(bboxScope, ctx) {
+async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   // Active candidate lists the Run button reads from — reassigned by the scope
   // toggle below.
   let bboxUuids = bboxScope.bboxUuids;
@@ -1024,12 +1028,15 @@ async function _showRunDialog(bboxScope, ctx) {
   let bboxImageUuids = bboxScope.bboxImageUuids ?? [];
   // Default to the view the user is already in: asking an image-view user
   // about bboxes (a unit they didn't choose) is the whole complaint the cap
-  // prompt used to embody. Anything that isn't images view keeps bbox scope.
-  let activeScopeKind = ctx.viewFilter === 'images' ? 'images' : 'bboxes';
+  // prompt used to embody. Anything that isn't images view keeps bbox scope —
+  // unless there are no candidate bboxes to relabel, in which case bbox scope
+  // is a dead end and image scope is the only one that can produce anything.
+  const noCandidateBboxes = bboxScope.bboxUuids.length === 0;
+  let activeScopeKind = (ctx.viewFilter === 'images' || noCandidateBboxes) ? 'images' : 'bboxes';
   // Resolved on first switch to 'images' — lazily when bbox scope is the
   // default (avoids the extra fetch for users who never touch the toggle), or
   // immediately below when images view makes it the starting scope.
-  let imageScope = null;
+  let imageScope = preResolvedImageScope;
 
   const { dialog, open, close } = createModalShell();
   dialog.style.cssText = 'max-width:520px;max-height:85vh;display:flex;flex-direction:column;overflow-y:auto;';
@@ -1074,6 +1081,13 @@ async function _showRunDialog(bboxScope, ctx) {
     'images',
     'Filtered images (…) — run on every matching image, including ones with no bboxes',
   );
+  // Nothing to relabel means bbox scope can only ever produce an empty run, so
+  // it isn't offered — the dialog opens on image scope instead of refusing to
+  // open at all, which is what used to happen.
+  if (noCandidateBboxes) {
+    bboxScopeRadio.radio.disabled = true;
+    bboxScopeRadio.text.textContent = 'Filtered bboxes (0) — no existing bboxes to relabel';
+  }
   dialog.appendChild(scopeRow);
 
   const countLine = document.createElement('div');
@@ -1133,22 +1147,16 @@ async function _showRunDialog(bboxScope, ctx) {
     bboxImageUuids = imageScope.bboxImageUuids ?? [];
     // Bbox-crop mode has nothing to crop on a boxless image — the whole point
     // of this scope — so it's not offered here; whole-image + IoU match is the
-    // only mode, and "Also add new boxes" is the only way a boxless image can
+    // only mode, and adding new boxes is the only way a boxless image can
     // produce anything.
     cropModeSelect.value = 'image';
     cropModeBboxOpt.hidden = true;
-    addNewCheckbox.checked = true;
+    if (newBoxModeSelect.value === 'none') newBoxModeSelect.value = 'also';
     _updateCountLine();
     _syncCropModeUI();
   }
   bboxScopeRadio.radio.addEventListener('change', () => { if (bboxScopeRadio.radio.checked) _onScopeChange('bboxes'); });
   imageScopeRadio.radio.addEventListener('change', () => { if (imageScopeRadio.radio.checked) _onScopeChange('images'); });
-
-  // Images view starts on the image scope, so resolve it now rather than
-  // waiting for a toggle the user has no reason to touch. Not awaited: the
-  // rest of the dialog (model list, sliders) should render immediately, and
-  // `_onScopeChange` owns its own loading label and error fallback.
-  if (activeScopeKind === 'images') _onScopeChange('images');
 
   // ── Model + inference-input pickers, side by side to keep this compact ──
   const pickerRow = document.createElement('div');
@@ -1405,17 +1413,35 @@ async function _showRunDialog(bboxScope, ctx) {
   const iouRow = makeSliderRow('Min IoU:', iouThresh, (v) => { iouThresh = v; });
   dialog.appendChild(iouRow);
 
-  // ── Add-new-boxes toggle (whole-image mode only) ─────────────────────
-  const addNewRow = document.createElement('label');
-  addNewRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;cursor:pointer;font-size:0.9em;';
-  const addNewCheckbox = document.createElement('input');
-  addNewCheckbox.type = 'checkbox';
-  addNewCheckbox.className = 'run-model-on-results-add-new';
-  addNewRow.append(
-    addNewCheckbox,
-    document.createTextNode('Also add new boxes (detections overlapping nothing)'),
-  );
+  // ── New-box mode (whole-image mode only) ─────────────────────────────
+  // Three-way rather than the old "also add new boxes" checkbox: relabelling
+  // and adding are independent decisions, and "only add" is the one a user
+  // wants when the existing boxes are already right (or there are none).
+  const NEW_BOX_MODES = [
+    ['none', 'Relabel existing boxes only'],
+    ['also', 'Also add new boxes (detections overlapping nothing)'],
+    ['only', 'Only add new boxes (leave existing boxes untouched)'],
+  ];
+  const addNewRow = document.createElement('div');
+  addNewRow.style.cssText = 'display:flex;align-items:center;gap:0.4em;font-size:0.9em;';
+  const addNewLabel = document.createElement('span');
+  addNewLabel.textContent = 'New boxes:';
+  addNewLabel.style.cssText = 'color:#aaa;white-space:nowrap;';
+  const newBoxModeSelect = document.createElement('select');
+  newBoxModeSelect.className = 'run-model-on-results-new-box-mode';
+  newBoxModeSelect.setAttribute('aria-label', 'New boxes');
+  newBoxModeSelect.style.cssText = 'flex:1;padding:0.1em 0.3em;font-size:0.9em;';
+  for (const [value, text] of NEW_BOX_MODES) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = text;
+    newBoxModeSelect.appendChild(opt);
+  }
+  addNewRow.append(addNewLabel, newBoxModeSelect);
   dialog.appendChild(addNewRow);
+
+  const _addNew = () => newBoxModeSelect.value !== 'none';
+  const _relabelExisting = () => newBoxModeSelect.value !== 'only';
 
   function _syncCropModeUI() {
     cropMode = cropModeSelect.value;
@@ -1424,14 +1450,23 @@ async function _showRunDialog(bboxScope, ctx) {
     // concepts (whole-image classification has no geometry to match/refine).
     cropModeRow.style.display = isClassifier ? 'none' : '';
     iouRow.style.display = (isClassifier || cropMode === 'bbox') ? 'none' : '';
-    // "Add new boxes" needs whole-image detections to reason about overlap, so
-    // it's only meaningful in image crop_mode.
+    // Adding new boxes needs whole-image detections to reason about overlap, so
+    // the mode picker is only meaningful in image crop_mode.
     addNewRow.style.display = (isClassifier || cropMode === 'bbox') ? 'none' : 'flex';
-    if (isClassifier || cropMode === 'bbox') addNewCheckbox.checked = false;
+    if (isClassifier || cropMode === 'bbox') newBoxModeSelect.value = 'none';
     _syncConflictRow();
   }
   cropModeSelect.addEventListener('change', _syncCropModeUI);
+  newBoxModeSelect.addEventListener('change', _syncCropModeUI);
   _syncCropModeUI();
+
+  // Images view (and an empty bbox scope) starts on the image scope, so apply
+  // it now rather than waiting for a toggle the user has no reason to touch.
+  // Runs down here, not at the scope row: `_onScopeChange` touches the crop
+  // mode and new-box controls, which are only constructed above this line. Not
+  // awaited — the rest of the dialog should render immediately, and
+  // `_onScopeChange` owns its own loading label and error fallback.
+  if (activeScopeKind === 'images') _onScopeChange('images');
 
   // ── Progress area (hidden until Run) ─────────────────────────────────
   const progressWrap = document.createElement('div');
@@ -1493,7 +1528,7 @@ async function _showRunDialog(bboxScope, ctx) {
     cancelBtn.disabled = false;
     _setModelListDisabled(false);
     cropModeSelect.disabled = false;
-    bboxScopeRadio.radio.disabled = false;
+    bboxScopeRadio.radio.disabled = noCandidateBboxes;
     imageScopeRadio.radio.disabled = false;
     progressWrap.style.display = 'none';
   }
@@ -1514,11 +1549,11 @@ async function _showRunDialog(bboxScope, ctx) {
     if (!isClassifier && bboxUuids.length === 0) {
       // Only a problem if there's also no way to produce a candidate without
       // an existing bbox — the image scope's add_new path is exactly that.
-      const canFindNew = activeScopeKind === 'images' && cropModeSelect.value === 'image' && addNewCheckbox.checked;
+      const canFindNew = activeScopeKind === 'images' && cropModeSelect.value === 'image' && _addNew();
       if (!canFindNew) {
         toast(
-          'No candidate bboxes in the current selection/filter. Switch to "Filtered images" scope with '
-            + '"Also add new boxes" checked to find objects on images with no bboxes.',
+          'No candidate bboxes in the current selection/filter. Switch to "Filtered images" scope and set '
+            + 'New boxes to "Also add" or "Only add" to find objects on images with no bboxes.',
           5000,
           'warning',
         );
@@ -1585,6 +1620,12 @@ async function _showRunDialog(bboxScope, ctx) {
     // sittings. Classifier runs still use the in-memory confirmation modal —
     // their "apply" is a free-form bulk *image* action chosen afterwards, which
     // has no representation in a candidate's persisted decision.
+    // The two halves of the new-box mode. `relabel_existing` is only allowed to
+    // be false when new boxes are actually being collected (the task rejects
+    // the combination that could propose nothing at all).
+    const runAddNew = cropMode === 'image' && _addNew();
+    const runRelabelExisting = runAddNew ? _relabelExisting() : true;
+
     let previewRun = null;
     if (!isClassifier) {
       try {
@@ -1593,7 +1634,8 @@ async function _showRunDialog(bboxScope, ctx) {
           taskTypename: 'PreviewModelRelabelTask',
           params: {
             crop_mode: cropMode,
-            add_new: cropMode === 'image' && addNewCheckbox.checked,
+            add_new: runAddNew,
+            relabel_existing: runRelabelExisting,
             conf_thresh: confThresh,
             iou_thresh: iouThresh,
             conflict_policy: conflictPolicy,
@@ -1630,7 +1672,8 @@ async function _showRunDialog(bboxScope, ctx) {
           : {
               model_name: modelName,
               crop_mode: cropMode,
-              add_new: cropMode === 'image' && addNewCheckbox.checked,
+              add_new: runAddNew,
+              relabel_existing: runRelabelExisting,
               conf_thresh: confThresh,
               iou_thresh: iouThresh,
               image_uuids: runImageUuids,
@@ -1815,14 +1858,28 @@ export async function runModelOnResultsFlow(ctx) {
     return;
   }
 
-  if (scope.bboxUuids.length === 0 && scope.imageUuids.length === 0) {
-    toast('No candidates in the current selection/filter.', 4000, 'warning');
-    return;
+  // An empty bbox scope is NOT an empty run: the image scope can still find
+  // objects on images that have no bboxes at all, which is exactly what a user
+  // whose filter matched only boxless images is asking for. Resolve it here so
+  // the dialog can open on it, and only refuse when there is no image either.
+  let imageScope = null;
+  if (scope.bboxUuids.length === 0) {
+    try {
+      imageScope = await resolveImageScope(ctx);
+    } catch (err) {
+      Logger.error('Failed to resolve image scope:', err);
+      toast(`Failed to resolve filtered images: ${err.message}`, 5000, 'error');
+      return;
+    }
+    if (imageScope.imageUuids.length === 0) {
+      toast('No candidates in the current selection/filter.', 4000, 'warning');
+      return;
+    }
   }
 
   // No cap prompt here: which scope is actually being run (bboxes vs images)
   // isn't decided until the run dialog's scope toggle, so asking "how many of
   // these N bboxes?" up front asks about a unit the user may never process.
   // The dialog raises it on Run, against whichever scope is selected.
-  await _showRunDialog(scope, ctx);
+  await _showRunDialog(scope, ctx, imageScope);
 }

@@ -351,6 +351,56 @@ class TestAddNewBoxes:
         assert task._candidates == []
 
 
+class TestOnlyAddNewBoxes:
+    """relabel_existing=False ("Only add new boxes"): existing bboxes are left
+    alone entirely, so a run proposes new boxes and nothing else."""
+
+    async def _run(self, task, detections, image_bboxes):
+        await task._init(task._params, None)
+        task._load_image_bytes = AsyncMock(return_value=b"fake-image-bytes")
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=_FakeBackend(detections),
+            img=_image(bboxes=image_bboxes),
+            label_names={"cat": "Cat", "dog": "Dog"},
+        )
+        return task._candidates
+
+    async def test_relabel_candidate_is_not_proposed(self):
+        # The same detection/bbox pair that TestAddNewBoxes'
+        # test_add_new_and_relabel_not_double_emitted turns into a relabel plus a
+        # new box must yield only the new box here.
+        task = _make_task(_base_params(add_new=True, relabel_existing=False))
+        detections = [
+            Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="dog"),  # overlaps candidate
+            Detection(x=0.8, y=0.8, width=0.1, height=0.1, confidence=0.7, label_uuid="dog"),  # new
+        ]
+        candidates = await self._run(task, detections, [_bbox(uuid="bbox-1", label_uuid="cat")])
+        assert [c.get("isNew") for c in candidates] == [True]
+        assert candidates[0]["geometry"]["x"] == 0.8
+
+    async def test_existing_boxes_still_block_new_box_overlap(self):
+        # Not relabelling an existing box is not the same as ignoring it: a
+        # detection sitting on one is still not "new".
+        task = _make_task(_base_params(add_new=True, relabel_existing=False))
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="dog")]
+        candidates = await self._run(task, detections, [_bbox(uuid="bbox-1", label_uuid="cat")])
+        assert candidates == []
+        assert task._new_boxes_found == 0
+
+    async def test_without_add_new_raises(self):
+        # Neither half enabled: the run could only ever complete empty.
+        task = _make_task(_base_params(crop_mode="image", add_new=False, relabel_existing=False))
+        with pytest.raises(ValueError, match="relabel_existing"):
+            await task._init(task._params, None)
+
+    async def test_bbox_crop_mode_raises(self):
+        # Bbox-crop mode has no whole-image detections to find new boxes with.
+        task = _make_task(_base_params(crop_mode="bbox", add_new=True, relabel_existing=False))
+        with pytest.raises(ValueError, match="relabel_existing"):
+            await task._init(task._params, None)
+
+
 class TestBboxCropMode:
     """Exercises `_process_image_bbox_crop`: crops each candidate bbox out of a
     real in-memory image and matches the crop's best detection directly, with

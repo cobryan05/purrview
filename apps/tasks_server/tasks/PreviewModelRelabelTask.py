@@ -20,6 +20,13 @@ Two crop modes (`crop_mode` param):
     the proposed label directly (no IoU matching — the crop *is* the object).
     Costs one inference call per candidate bbox instead of per image.
 
+Two independent switches decide what a whole-image run may propose:
+`add_new` collects detections that overlap no existing bbox as brand-new boxes,
+and `relabel_existing` (default True) proposes relabels for the candidate
+bboxes. Clearing the latter gives the "only add new boxes" run — existing boxes
+are never touched, so the candidate bbox list stops mattering entirely. Both
+off is rejected in `_init`: the run could only ever complete empty.
+
 Detections whose class isn't mapped to a label UUID (`det.label_uuid is None`)
 fall back to a name match against the project's label names (mirrors the
 manual single-image "Run Model" UI, which already tolerates unmapped classes
@@ -126,6 +133,17 @@ class PreviewModelRelabelTask(Task):
         # existing bbox on the image are also proposed as brand-new boxes — the
         # interactive counterpart to the filter-chain add_bbox action.
         self._add_new: bool = bool(params.get("add_new", False))
+
+        # The other half of the "new boxes" decision: with this cleared, existing
+        # bboxes are left alone entirely and the run proposes *only* new boxes.
+        # Defaults True so every params dict written before this existed (and
+        # every resumed run) behaves exactly as it did.
+        self._relabel_existing: bool = bool(params.get("relabel_existing", True))
+        if not self._relabel_existing and not (self._crop_mode == "image" and self._add_new):
+            raise ValueError(
+                "relabel_existing=False requires crop_mode 'image' with add_new set — "
+                "otherwise the run has nothing it is allowed to propose"
+            )
 
         self._image_uuids: List[str] = list(params.get("image_uuids") or [])
         if not self._image_uuids:
@@ -398,7 +416,14 @@ class PreviewModelRelabelTask(Task):
         # the expensive step. Exception: whole-image crop mode with add_new set
         # still needs to run — a boxless image can still yield new-box candidates
         # via _collect_new_boxes below, even with zero existing candidate bboxes.
-        image_bboxes = [b for b in (img.get("bboxes") or []) if b.get("uuid") in self._bbox_uuids]
+        # In only-add mode nothing is relabelled, so the candidate set is
+        # irrelevant to what this image can produce — treat every image as
+        # having no candidate bboxes and let the add_new path do all the work.
+        image_bboxes = (
+            [b for b in (img.get("bboxes") or []) if b.get("uuid") in self._bbox_uuids]
+            if self._relabel_existing
+            else []
+        )
         if not image_bboxes and not (self._crop_mode == "image" and self._add_new):
             return
         image_bytes = await self._load_image_bytes(filename, images_api)
@@ -648,6 +673,7 @@ class PreviewModelRelabelTask(Task):
                     "model_name",
                     "crop_mode",
                     "add_new",
+                    "relabel_existing",
                     "conf_thresh",
                     "iou_thresh",
                     "concurrency",
@@ -681,6 +707,15 @@ class PreviewModelRelabelTask(Task):
                 "description": (
                     "Also propose detections that overlap no existing bbox as brand-new boxes "
                     "(whole-image crop_mode only)."
+                ),
+            },
+            "relabel_existing": {
+                "type": "boolean",
+                "label": "Relabel Existing Boxes",
+                "default": True,
+                "description": (
+                    "Propose relabels for the candidate bboxes. Clear it (with add_new set, in "
+                    "whole-image crop_mode) to add new boxes only and leave existing boxes untouched."
                 ),
             },
             "conf_thresh": {
