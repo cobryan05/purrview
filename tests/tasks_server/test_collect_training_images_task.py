@@ -262,6 +262,33 @@ def _make_task(params=None, resume_data=None) -> CollectTrainingImagesTask:
     return task
 
 
+async def _await_task_done(task: CollectTrainingImagesTask, timeout: float = 60.0) -> None:
+    """Wait for a task to finish — and kill it if it doesn't.
+
+    `wait_for_task_done` raises on timeout but leaves the task *running*, and many
+    tests here drive `_InfiniteLiveProvider`, a source that never ends unless a stop
+    condition fires. A bare wait therefore leaked a live coroutine on every timeout:
+    the test failed, and then the xdist worker hung on a loop nobody would ever stop,
+    for eleven minutes, until it was finally reported as
+
+        worker 'gwN' crashed while running <whichever test timed out first>
+
+    That is the whole explanation for this file's load-dependent failures naming a
+    different, innocent test each time. The multi-source tests patch
+    `_SOURCE_RETRY_BACKOFF_S` to 0.0, so the leaked loop is a *hot* one that starves
+    the event loop it is waiting on.
+
+    The ceiling is generous for the same reason playwright_tests/conftest.py uses 60s:
+    a loaded box should not be mistaken for a broken stop condition. It still fails —
+    loudly and quickly enough to diagnose — rather than hanging the worker.
+    """
+    try:
+        await task.wait_for_task_done(timeout=timeout)
+    except asyncio.TimeoutError:
+        await task.kill()
+        raise
+
+
 async def _run_task(
     images: list,
     params=None,
@@ -306,7 +333,7 @@ async def _run_task(
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
-        await task.wait_for_task_done(timeout=10.0)
+        await _await_task_done(task)
         # Stashed so tests can assert on the mocked collaborators (e.g. that inference
         # was never called) after the patch context has exited.
         task._test_mocks = {
@@ -419,7 +446,7 @@ async def test_already_processed_images_are_skipped(tmp_path):
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
-        await task.wait_for_task_done(timeout=10.0)
+        await _await_task_done(task)
 
         # Inference must not have been called at all — images were skipped.
         mock_inf_cls.return_value.detect_batch.assert_not_called()
@@ -1034,7 +1061,7 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
-        await task.wait_for_task_done(timeout=10.0)
+        await _await_task_done(task)
 
     assert task._resume_data["images_saved"] == 0
     assert task._collector._filtered_discarded == 2
@@ -1098,7 +1125,7 @@ async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end
         mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
         await task.start()
-        await task.wait_for_task_done(timeout=10.0)
+        await _await_task_done(task)
 
     assert task._collector._filtered_stripped == 1
     assert task._resume_data["images_saved"] == 1
@@ -1148,7 +1175,7 @@ async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
         mock_img_cls.return_value.set_image_tag.return_value = MagicMock()
 
         await task.start()
-        await task.wait_for_task_done(timeout=10.0)
+        await _await_task_done(task)
 
     assert task._resume_data["images_saved"] == 1
     mock_img_cls.return_value.set_image_tag.assert_called_once()
@@ -1446,7 +1473,7 @@ class TestStopConditions:
             await task.start()
             # If the stop condition didn't work, the provider is infinite and this
             # would time out — the test fails loudly instead of passing vacuously.
-            await task.wait_for_task_done(timeout=10.0)
+            await _await_task_done(task)
 
             assert task.get_status() == TaskStatus.COMPLETED
             assert task._resume_data["images_saved"] >= 3
@@ -1476,7 +1503,7 @@ class TestStopConditions:
             mock_img_cls.return_value.update_image_metadata.return_value = MagicMock()
 
             await task.start()
-            await task.wait_for_task_done(timeout=10.0)
+            await _await_task_done(task)
 
             assert task.get_status() == TaskStatus.COMPLETED
             assert task._resume_data["elapsed_duration_s"] >= 0.1
