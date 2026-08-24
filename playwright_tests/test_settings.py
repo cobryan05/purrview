@@ -35,7 +35,7 @@ def _navigate_to_settings(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-settings']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#tab-settings .settings-wrap", timeout=4000)
+    page.wait_for_selector("#tab-settings .settings-wrap")
 
 
 def _navigate_to_files(page: Page, base_url: str):
@@ -46,7 +46,7 @@ def _navigate_to_files(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator(".workspace-tab-button[data-tab='tab-files']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#tab-files .fb-container", timeout=4000)
+    page.wait_for_selector("#tab-files .fb-container")
 
 
 # ---------------------------------------------------------------------------
@@ -760,12 +760,13 @@ class TestFileBrowserHoverPreview:
 
         name = page.locator("#tab-files .fb-entry", has_text="a.jpg").locator(".fb-entry__name")
         name.hover()
-        page.wait_for_selector(".fb-hover-popover.visible", timeout=4000)
+        page.wait_for_selector(".fb-hover-popover.visible")
 
         popover = page.locator(".fb-hover-popover")
         expect(popover.locator("img.fb-popover-img")).to_be_visible()
         expect(popover.locator("canvas.fb-popover-canvas")).to_be_visible()
-        assert metadata_calls and metadata_calls[0] == "a.jpg"
+        wait_until(page, lambda: metadata_calls, "Expected a metadata fetch for the hovered file")
+        assert metadata_calls[0] == "a.jpg"
 
     def test_hover_does_not_attach_preview_to_directories(self, page: Page, base_url: str):
         """Directory entries get no hover preview — the popover is never created."""

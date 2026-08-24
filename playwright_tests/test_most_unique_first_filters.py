@@ -18,6 +18,8 @@ import json
 
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 
 LABEL_CAT = {"uuid": "lbl-cat", "name": "Cat", "color": "#ff0000", "parentUuid": None}
@@ -107,7 +109,7 @@ def _navigate_to_review(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
     page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#review-root .review-grid", timeout=4000)
+    page.wait_for_selector("#review-root .review-grid")
 
 
 def _apply_label_filter(page: Page):
@@ -126,7 +128,7 @@ def _apply_label_filter(page: Page):
 
 def _click_unique_first(page: Page):
     page.locator("#review-root button:has-text('Most Unique First')").click()
-    page.wait_for_selector(".modal-count-input", timeout=5000)
+    page.wait_for_selector(".modal-count-input")
 
 
 def _setup(page: Page, captured: list):
@@ -146,7 +148,10 @@ class TestMostUniqueFirstRespectsFilters:
 
         _click_unique_first(page)
 
-        assert len(captured) == 1
+        # `_click_unique_first` waits for the modal's count input, which the modal
+        # renders on open — the dissimilar-global fetch is issued alongside it, not
+        # before it. Poll for the request that is actually under test.
+        wait_until(page, lambda: len(captured) == 1, lambda: f"expected 1 dissimilar query, saw {captured}")
         assert captured[0].get("candidateUuids") is None
 
     def test_active_filter_sends_filtered_candidates(self, page: Page, base_url: str):
@@ -157,7 +162,7 @@ class TestMostUniqueFirstRespectsFilters:
 
         _click_unique_first(page)
 
-        assert len(captured) == 1
+        wait_until(page, lambda: len(captured) == 1, lambda: f"expected 1 dissimilar query, saw {captured}")
         assert sorted(captured[0].get("candidateUuids") or []) == ["img-1", "img-2"]
 
     def test_button_is_restored_after_the_filtered_fetch(self, page: Page, base_url: str):

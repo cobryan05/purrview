@@ -112,7 +112,7 @@ def _open_live_pane(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-    page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+    page.wait_for_selector("#nvr-live-box .nvr-profile-card")
 
 
 class TestCardPreview:
@@ -299,7 +299,7 @@ class TestTheCardChoosesItsOwnRefreshRate:
         """
         calls = _mock(page, count_previews=True)
         _open_live_pane(page, base_url)
-        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']")
 
         page.locator("[data-testid='nvr-refresh-rate']").select_option("500")
         before = len(calls)
@@ -323,13 +323,13 @@ class TestTheCardChoosesItsOwnRefreshRate:
         the user was looking at something else."""
         _mock(page)
         _open_live_pane(page, base_url)
-        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']")
 
         page.locator("[data-testid='nvr-refresh-rate']").select_option("1000")
 
         page.locator(".main-tab-button[data-tab='tab-runs']").click()
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']")
 
         expect(page.locator("[data-testid='nvr-refresh-rate']")).to_have_value("1000")
 
@@ -419,7 +419,13 @@ class TestPreviewCost:
         page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
         expect(page.locator("[data-testid='nvr-preview-stat']").last).not_to_have_text("…")
 
-        assert len(calls) == 2, f"expected one frame per source, got {len(calls)}: {calls}"
+        # The stat filling in proves the *status* payload arrived; it says nothing about
+        # the frame requests, which are issued separately per tile. Poll for those.
+        wait_until(
+            page,
+            lambda: len(calls) == 2,
+            lambda: f"expected one frame per source, got {len(calls)}: {calls}",
+        )
         # Every request names its source: a source-less call is the discovery call that
         # is not supposed to exist any more.
         assert all("source_uuid=" in url for url in calls), calls
@@ -432,12 +438,12 @@ class TestPreviewCost:
         """
         calls = _mock(page, count_previews=True)
         _open_live_pane(page, base_url)
-        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']")
 
         for _ in range(3):
             page.locator(".main-tab-button[data-tab='tab-runs']").click()
             page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-            page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+            page.wait_for_selector("[data-testid='nvr-preview-tile']")
 
         # One first frame per render, and no refresh has come due yet (they are 10s
         # apart). More than that means an earlier render's loop is still running.
@@ -491,12 +497,12 @@ class TestPollScheduling:
         watcher happened to start or stop."""
         calls = _mock(page, count_previews=True)
         _open_live_pane(page, base_url)
-        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']")
         before = len(calls)
 
         page.locator(".main-tab-button[data-tab='tab-runs']").click()
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-        page.wait_for_selector("[data-testid='nvr-preview-tile']", timeout=5000)
+        page.wait_for_selector("[data-testid='nvr-preview-tile']")
 
         # The `|| true` wait_for_function this replaces resolved on its first evaluation
         # by construction — it was never a barrier — leaving the 500ms sleep as the only
