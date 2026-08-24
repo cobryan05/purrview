@@ -1480,6 +1480,9 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   const progressCancelBtn = document.createElement('button');
   progressCancelBtn.className = 'secondary';
   progressCancelBtn.textContent = 'Cancel';
+  // The footer has a second button reading "Cancel" (close-only), so this one is
+  // addressable on its own rather than as "the first Cancel in the dialog".
+  progressCancelBtn.dataset.testid = 'run-model-progress-cancel';
   progressWrap.append(progressLabel, progressBar, progressCancelBtn);
   dialog.appendChild(progressWrap);
 
@@ -1691,6 +1694,23 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
           isTemporary: true,
         });
         taskUuid = await startTask({ configUuid });
+
+        // The Cancel button goes live the moment the progress area is shown, which is
+        // synchronous on Run — but the run has no uuid until the line above resolves.
+        // A click in that window sets `cancelled` and finds `taskUuid` still null, so
+        // it cancels nothing; without this check the task started here would keep
+        // running server-side with the dialog already closed. Honour that earlier
+        // cancellation now that the run can finally be named.
+        if (cancelled) {
+          try {
+            await cancelTasks({ taskUuids: [taskUuid] });
+            await deleteTasks({ taskUuids: [taskUuid] });
+          } catch (err) {
+            Logger.error('Failed to cancel a run that was cancelled while starting:', err);
+          }
+          taskUuid = null;
+          break;
+        }
 
         const finalInfo = await _pollUntilDone(taskUuid, totalImages, (info) => {
           if (cancelled) return;

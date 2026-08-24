@@ -20,6 +20,8 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from playwright_tests.waits import wait_until
+
 UNVERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000001"
 VERIFIED_TAG_UUID = "00000000-0000-0000-0000-000000000005"
 
@@ -320,7 +322,7 @@ def _navigate_to_review(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
     page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#review-root .review-grid", timeout=4000)
+    page.wait_for_selector("#review-root .review-grid")
 
 
 def _run_model_btn(page: Page):
@@ -981,12 +983,133 @@ class TestRunModelFullFlow:
         _check_model_in_dialog(dialog, "yolo9-detector")
         dialog.locator("button", has_text="Run").click()
 
-        cancel_btn = dialog.locator("button", has_text="Cancel").first
+        # By testid, not "the first button that says Cancel": the footer has a second
+        # Cancel whose handler only closes the dialog, so `.first` was one DOM reorder
+        # away from silently testing nothing.
+        cancel_btn = dialog.get_by_test_id("run-model-progress-cancel")
         expect(cancel_btn).to_be_visible(timeout=5000)
+
+        # The button appearing is NOT the precondition this test's assertion needs. The
+        # progress area is shown synchronously on Run, so the button is clickable long
+        # before a task exists — and cancelling before the run started correctly sends
+        # nothing, because there is nothing to cancel. Demanding a cancel POST in that
+        # window is a *wrong* assertion, not a racy one, and on a loaded box that is the
+        # window the click lands in.
+        #
+        # Barrier on "Processing…", which the poll callback writes only after
+        # `startTask` resolved and `taskUuid` was assigned. Counting `instances/get`
+        # calls instead does NOT work: a background task poller hits that same endpoint
+        # continuously, so the count is already non-zero before this run exists — an
+        # already-satisfied wait, the very thing this suite keeps getting caught by.
+        expect(dialog).to_contain_text("Processing", timeout=10000)
         cancel_btn.click()
 
         expect(dialog).to_have_count(0, timeout=3000)
-        assert cancel_called["n"] >= 1
+        # The dialog closing is not a barrier for the cancel POST: the click
+        # tears down the dialog and issues the request independently, so under
+        # load the assertion can read the capture list before the request has
+        # reached the route handler. Poll the thing under test.
+        wait_until(page, lambda: cancel_called["n"] >= 1, "Expected a cancel/delete POST after clicking Cancel")
+
+    def test_cancel_before_the_task_uuid_arrives_still_cancels_the_run(self, page: Page, base_url: str):
+        """Cancelling during the start round-trip must not orphan the task.
+
+        The progress area — and its Cancel button — is shown synchronously on Run, but
+        `taskUuid` is only assigned after createPreviewRun/createTaskConfig/startTask
+        have all resolved. A click in that window used to hit `if (taskUuid)` with
+        `null`, so it closed the dialog and sent nothing while the in-flight startTask
+        went on to launch a run that nothing would ever stop: the GPU keeps working on
+        a preview the user explicitly cancelled and can no longer see.
+
+        This is also what made the sibling test above flaky — on a loaded box the
+        start round-trip is slow enough that the test's own Cancel click lands inside
+        the window. Here the window is made deterministic instead of hoped for.
+        """
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+
+        # Hold the start response open for 1.2s. This has to be done in-page: the sync
+        # API dispatches `page.route` handlers on the same thread that drives the
+        # click, so sleeping in a handler would freeze the very click we are timing.
+        page.add_init_script("""
+            const _fetch = window.fetch;
+            window.fetch = (input, init) => {
+                const url = typeof input === 'string' ? input : (input && input.url);
+                if (url && url.includes('/api/tasks/instances/start')) {
+                    return new Promise(resolve => {
+                        setTimeout(() => resolve(_fetch(input, init)), 1200);
+                    });
+                }
+                return _fetch(input, init);
+            };
+            """)
+
+        cancelled_uuids = []
+        created = {"n": 0}
+
+        def handle_create(route: Route):
+            created["n"] += 1
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "cfg-1"}),
+            )
+
+        def handle_start(route: Route):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+            )
+
+        def handle_cancel(route: Route):
+            body = route.request.post_data_json or {}
+            cancelled_uuids.extend(body.get("taskUuids") or [])
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route("**/api/tasks/configs/create", handle_create)
+        page.route("**/api/tasks/instances/start", handle_start)
+        page.route("**/api/tasks/instances/cancel", handle_cancel)
+        page.route("**/api/tasks/instances/delete", handle_cancel)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        dialog.locator("button", has_text="Run").click()
+
+        # Click Cancel while startTask is still in flight — the whole point of the test,
+        # so the button is addressed by its own testid rather than by "the first button
+        # that says Cancel" (the footer has one too, with a close-only handler).
+        cancel_btn = dialog.get_by_test_id("run-model-progress-cancel")
+        expect(cancel_btn).to_be_visible(timeout=5000)
+
+        # The button is visible from the instant Run is pressed, which is *too early*:
+        # cancelling before the loop reaches createTaskConfig makes it break with
+        # nothing started, and nothing to cancel. Wait for this run's own config-create
+        # (an endpoint the background poller never touches), which puts the click
+        # squarely inside the 1.2s the start response is held open.
+        wait_until(page, lambda: created["n"] >= 1, "the run never reached createTaskConfig")
+        cancel_btn.click()
+
+        # The uuid only exists after the delayed response lands, so the cancel cannot
+        # have been sent yet — it has to be issued once the run names itself.
+        #
+        # Two sequential requests, so two barriers: waiting for the list to be non-empty
+        # returns the instant the *cancel* lands, which is before the *delete* it
+        # triggers. Asserting the pair after a single wait fails most of the time under
+        # load — the mistake this file's own history is full of.
+        wait_until(
+            page,
+            lambda: len(cancelled_uuids) >= 2,
+            lambda: f"cancelling mid-start must cancel AND delete the run; saw {cancelled_uuids}",
+            timeout=8000,
+        )
+        assert cancelled_uuids == ["task-1", "task-1"], cancelled_uuids  # cancel, then delete
 
 
 # ---------------------------------------------------------------------------
@@ -1302,12 +1425,18 @@ class TestRelabelConfirmationModal:
         modal.locator("button", has_text="Apply to").click()
         expect(modal).to_have_count(0, timeout=3000)
 
-        assert len(calls) == 1
+        # The modal closing does not gate these requests — it is torn down on click
+        # while the fetches fly independently. Poll for the captures themselves.
+        wait_until(page, lambda: len(calls) == 1, lambda: f"expected 1 bulk-apply call, saw {calls}")
         assert calls[0]["action"] == "delete"
         assert sorted(calls[0]["bboxUuids"]) == ["bbox-1", "bbox-2", "bbox-3"]
-        assert len(invalidate_calls) == 1
+        wait_until(
+            page,
+            lambda: len(invalidate_calls) == 1,
+            lambda: f"expected 1 thumbnail invalidation, saw {invalidate_calls}",
+        )
         assert sorted(invalidate_calls[0]["bboxUuids"]) == ["bbox-1", "bbox-2", "bbox-3"]
-        assert page.evaluate("window.__refreshCount") == 1
+        wait_until(page, lambda: page.evaluate("window.__refreshCount") == 1, "expected exactly one refresh")
 
     def test_relabel_groups_by_proposed_label(self, page: Page, base_url: str):
         self._setup(page, base_url)
@@ -1321,7 +1450,7 @@ class TestRelabelConfirmationModal:
 
         # Two distinct proposed labels among the three checked candidates:
         # lbl-dog (bbox-1, bbox-3) and lbl-cat (bbox-2) -> one call each.
-        assert len(calls) == 2
+        wait_until(page, lambda: len(calls) == 2, lambda: f"expected 2 grouped relabel calls, saw {calls}")
         by_label = {c["labelUuid"]: sorted(c["bboxUuids"]) for c in calls}
         assert by_label == {
             "lbl-dog": ["bbox-1", "bbox-3"],
@@ -1348,7 +1477,7 @@ class TestRelabelConfirmationModal:
         modal.locator("button", has_text="Apply to").click()
         expect(modal).to_have_count(0, timeout=3000)
 
-        assert len(calls) == 2
+        wait_until(page, lambda: len(calls) == 2, lambda: f"expected 2 relabel calls, saw {calls}")
         for c in calls:
             assert c["action"] == "relabel"
             assert c["markVerified"] is False, c
@@ -1364,7 +1493,7 @@ class TestRelabelConfirmationModal:
         modal.locator("button", has_text="Apply to").click()
         expect(modal).to_have_count(0, timeout=3000)
 
-        assert len(calls) == 2
+        wait_until(page, lambda: len(calls) == 2, lambda: f"expected 2 relabel calls, saw {calls}")
         for c in calls:
             assert c["markVerified"] is True, c
 
@@ -1477,7 +1606,7 @@ class TestRelabelConfirmationModal:
         modal = page.locator(".relabel-confirm-modal")
         modal.locator("button", has_text="Apply to").click()
         expect(modal).to_have_count(0, timeout=3000)
-        assert len(calls) == 1
+        wait_until(page, lambda: len(calls) == 1, lambda: f"expected 1 add-bbox call, saw {calls}")
         assert calls[0]["tagUuids"] == [UNVERIFIED_TAG_UUID], calls[0]
 
         calls.clear()
@@ -1486,5 +1615,5 @@ class TestRelabelConfirmationModal:
         modal.locator("input.relabel-modal-mark-verified").check()
         modal.locator("button", has_text="Apply to").click()
         expect(modal).to_have_count(0, timeout=3000)
-        assert len(calls) == 1
+        wait_until(page, lambda: len(calls) == 1, lambda: f"expected 1 add-bbox call, saw {calls}")
         assert calls[0]["tagUuids"] == [VERIFIED_TAG_UUID], calls[0]
