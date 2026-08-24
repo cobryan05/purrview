@@ -2486,6 +2486,81 @@ class Manager:
         logger.info("delete_images_by_directory: deleted %d images under %s", deleted, norm_dirs)
         return deleted
 
+    async def list_images_by_directory(self, directories: List[str]) -> List[Dict[str, str]]:
+        """Every image record whose file lives under one of *directories*.
+
+        Scoped exactly like `delete_images_by_directory` — same resolution, same prefix
+        rule — because the two are asked the same question from opposite ends: "what
+        would this directory take with it?". A relocation that saw a different set than
+        the deletion would move some records and orphan others.
+
+        Paths come back FILES_ROOT-relative, which is the spelling every caller of this
+        API already speaks (the directory picker, the task's params). The DB's absolute
+        form is an internal detail and stays one.
+        """
+        if not directories:
+            return []
+        norm_dirs = [str(p).rstrip("/") for d in directories if (p := get_safe_path(self._files_root, d))]
+        if not norm_dirs:
+            return []
+        rows = await self._db_client.get_images_by_prefixes(norm_dirs)
+        return [{"uuid": uuid, "path": self._image_rel_path(filename)} for uuid, filename in rows]
+
+    async def relocate_images(self, moves: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Re-point image records at new paths. Moving the *files* is the caller's job.
+
+        Deliberately DB-only. The caller has already copied the bytes and knows whether
+        that succeeded; doing the file I/O here as well would mean a second service
+        walking FILES_ROOT, and db_server is the one process whose thread pool the whole
+        UI queues behind. It updates records and reports what it could not update.
+
+        Two things are rejected rather than attempted, both because `images.filename` is
+        UNIQUE and a mid-batch IntegrityError would leave the caller unable to say which
+        half landed:
+
+        * a destination outside FILES_ROOT, and
+        * a destination already held by a *different* image record.
+
+        A destination already held by the *same* record is a no-op success, so re-running
+        an interrupted relocation is safe.
+
+        Returns ``{"updated": int, "errors": [{"uuid", "reason"}]}``.
+        """
+        if not moves:
+            return {"updated": 0, "errors": []}
+
+        resolved: List[Tuple[str, str]] = []
+        errors: List[Dict[str, str]] = []
+        for move in moves:
+            uuid = str(move.get("uuid") or "")
+            new_path = str(move.get("new_path") or move.get("newPath") or "")
+            if not uuid or not new_path:
+                errors.append({"uuid": uuid, "reason": "missing uuid or new_path"})
+                continue
+            target = get_safe_path(self._files_root, new_path)
+            if target is None:
+                errors.append({"uuid": uuid, "reason": f"path outside FILES_ROOT: {new_path!r}"})
+                continue
+            resolved.append((uuid, str(target)))
+
+        # One lookup for the whole batch — a per-record existence check would be N
+        # queries against the table the relocation is about to write to.
+        owners = await self._db_client.get_image_uuids_by_filenames([t for _u, t in resolved])
+
+        updated = 0
+        for uuid, target in resolved:
+            holder = owners.get(target)
+            if holder is not None and holder != uuid:
+                errors.append({"uuid": uuid, "reason": f"destination already used by image {holder}"})
+                continue
+            if await self._db_client.update_image_filename(uuid, target):
+                updated += 1
+            else:
+                errors.append({"uuid": uuid, "reason": "image not found"})
+
+        logger.info("relocate_images: updated %d record(s), %d error(s)", updated, len(errors))
+        return {"updated": updated, "errors": errors}
+
     def _resolve_image_path(self, filename: str) -> Optional[Path]:
         """Resolve a filename (possibly absolute or relative) to a Path.
 

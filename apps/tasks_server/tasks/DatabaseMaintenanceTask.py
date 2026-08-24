@@ -4,7 +4,8 @@ and optionally recompute perceptual hashes for all images using the global hash-
 
 import asyncio
 import logging
-from pathlib import Path
+import shutil
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 import db_client
@@ -15,13 +16,18 @@ from db_client.api.tags_api import TagsApi
 from db_client.models.delete_images_by_directory_payload import (
     DeleteImagesByDirectoryPayload,
 )
+from db_client.models.image_relocation import ImageRelocation
 from db_client.models.image_stubs_needing_phash_payload import (
     ImageStubsNeedingPhashPayload,
+)
+from db_client.models.list_images_by_directory_payload import (
+    ListImagesByDirectoryPayload,
 )
 from db_client.models.prune_images_payload import PruneImagesPayload
 from db_client.models.rebuild_hash_index_response import RebuildHashIndexResponse
 from db_client.models.recompute_phash_payload import RecomputePhashPayload
 from db_client.models.reconcile_image_payload import ReconcileImagePayload
+from db_client.models.relocate_images_payload import RelocateImagesPayload
 
 from apps import FILES_ROOT
 from apps.helpers.consts import TaskAccent, TaskStatus
@@ -43,12 +49,22 @@ _VALID_SYNC_MODES = {
     "keep_newer",
 }
 
+_VALID_RELOCATE_MODES = {"move", "copy"}
+
+#: How many records to re-point per call to the DB. Small enough that a cancel lands
+#: promptly and an interrupted run leaves most of its work already committed, large
+#: enough that a few thousand images is not a few thousand round trips.
+_RELOCATE_BATCH = 200
+
 
 @register_task()
 class DatabaseMaintenanceTask(Task):
     """Modular DB maintenance: each option is independent and skips unnecessary work.
 
     Phases (each independently toggleable):
+      relocate        — Copy/move recorded images (and sidecars) out of one directory
+                        into another and re-point their DB records. Runs first, so
+                        every later phase sees final paths.
       sync_jsons      — Walk disk, sync each file's JSON sidecar with the DB.
                         Also the only phase that detects moved files.
       remove_deleted  — Delete DB records whose image file is gone.
@@ -69,6 +85,7 @@ class DatabaseMaintenanceTask(Task):
 
     # Approximate relative cost of each phase — used to portion the progress bar.
     _PHASE_WEIGHTS: dict[str, float] = {
+        "relocate": 25,
         "reconcile": 50,
         "remove_dirs": 15,
         "prune": 10,
@@ -88,9 +105,19 @@ class DatabaseMaintenanceTask(Task):
         self._phash_concurrency: int = max(1, int(params.get("phash_concurrency", 4)))
         self._remove_directories: list[str] = list(params.get("remove_directories") or [])
         self._remove_directories_delete_sidecars: bool = bool(params.get("remove_directories_delete_sidecars", True))
+        self._relocate_sources: list[str] = [s for s in (params.get("relocate_sources") or []) if str(s).strip()]
+        self._relocate_destination: str = str(params.get("relocate_destination") or "").strip()
+        self._relocate_mode: str = str(params.get("relocate_mode") or "copy")
 
         if self._sync_mode not in _VALID_SYNC_MODES:
             raise ValueError(f"Invalid sync_mode: {self._sync_mode!r}. Must be one of {_VALID_SYNC_MODES}")
+        if self._relocate_mode not in _VALID_RELOCATE_MODES:
+            raise ValueError(f"Invalid relocate_mode: {self._relocate_mode!r}. Must be one of {_VALID_RELOCATE_MODES}")
+        # Checked here rather than skipped silently in _run: a relocation configured with
+        # sources but no destination is someone half-filling the form, and quietly doing
+        # nothing looks identical to "there was nothing to move".
+        if self._relocate_sources and not self._relocate_destination:
+            raise ValueError("relocate_sources given without a relocate_destination")
 
     # ── Orchestrator ───────────────────────────────────────────────────────────
 
@@ -103,6 +130,11 @@ class DatabaseMaintenanceTask(Task):
 
         # Build a dynamic progress budget: only allocate space to active phases.
         active = []
+        # First, so every later phase sees final paths. Reconcile in particular walks the
+        # disk and re-points records by sidecar uuid; running it against a half-relocated
+        # tree would have it "detect" the very moves this phase is making.
+        if self._relocate_sources:
+            active.append("relocate")
         if self._sync_jsons:
             active.append("reconcile")
         if self._remove_directories:
@@ -123,10 +155,15 @@ class DatabaseMaintenanceTask(Task):
 
         summary: dict[str, Any] = {}
 
+        # ── 0. Relocate (move/copy files, re-point records) ───────────────────
+        if self._relocate_sources and not self._cancel_flag.is_set():
+            r = await self._step_relocate(images_api, 0.0, ends["relocate"])
+            summary.update(r)
+
         # ── 1. Reconcile (disk scan + sidecar sync) ───────────────────────────
         known_disk_uuids: list[str] = []
         if self._sync_jsons and not self._cancel_flag.is_set():
-            r = await self._step_reconcile(images_api, 0.0, ends["reconcile"])
+            r = await self._step_reconcile(images_api, ends.get("relocate", 0.0), ends["reconcile"])
             known_disk_uuids = r.pop("known_disk_uuids")
             summary.update(r)
 
@@ -161,6 +198,10 @@ class DatabaseMaintenanceTask(Task):
         self._status_msg = "Done"
 
         log_parts: list[str] = []
+        if "relocated" in summary:
+            log_parts.append(f"{summary['relocated']} {'moved' if self._relocate_mode == 'move' else 'copied'}")
+        if summary.get("relocate_errors"):
+            log_parts.append(f"{summary['relocate_errors']} relocate skipped/failed")
         if "files_found" in summary:
             log_parts.append(f"{summary['files_found']} files on disk")
         if "reconciled" in summary:
@@ -184,6 +225,156 @@ class DatabaseMaintenanceTask(Task):
         return summary
 
     # ── Phase helpers ──────────────────────────────────────────────────────────
+
+    def _relocation_target(self, rel_path: str) -> Optional[str]:
+        """Where *rel_path* lands under the destination, or None if no source covers it.
+
+        The subpath below the matching source directory is preserved, so
+        ``timelapse/aliceOffice/2024-12-05/x.png`` with source ``timelapse`` and
+        destination ``archive`` becomes ``archive/aliceOffice/2024-12-05/x.png``.
+        Flattening instead would collide the moment two day folders held a frame with
+        the same name, which is the normal case for date-stamped captures.
+
+        The longest matching source wins, so nesting one configured source inside
+        another re-roots at the more specific of the two rather than by list order.
+        """
+        rel = PurePosixPath(rel_path.strip("/"))
+        best: Optional[PurePosixPath] = None
+        for source in self._relocate_sources:
+            src = PurePosixPath(source.strip("/"))
+            if rel == src or src in rel.parents:
+                if best is None or len(src.parts) > len(best.parts):
+                    best = src
+        if best is None:
+            return None
+        return str(PurePosixPath(self._relocate_destination.strip("/")) / rel.relative_to(best))
+
+    def _copy_one_sync(self, src_rel: str, dst_rel: str) -> tuple[bool, str]:
+        """Copy an image and its sidecar. Blocking — call via to_thread.
+
+        Returns ``(ok, detail)``. Refuses to overwrite: a destination that already exists
+        is reported, not clobbered. This runs against a tree the user has spent months
+        annotating, and "the copy silently won" is not a recoverable outcome.
+        """
+        src = get_safe_path(FILES_ROOT, src_rel)
+        dst = get_safe_path(FILES_ROOT, dst_rel)
+        if src is None or dst is None:
+            return False, "path outside FILES_ROOT"
+        if not src.exists():
+            return False, "source file missing"
+        if dst.exists():
+            return False, "destination already exists"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # copy2 to keep mtime: the capture time is the only record of when a frame was
+        # filmed once it leaves its date folder.
+        shutil.copy2(src, dst)
+        sidecar = src.with_suffix(".json")
+        if sidecar.exists():
+            shutil.copy2(sidecar, dst.with_suffix(".json"))
+        return True, ""
+
+    def _delete_one_sync(self, rel_path: str) -> None:
+        """Remove an image and its sidecar. Blocking — call via to_thread."""
+        path = get_safe_path(FILES_ROOT, rel_path)
+        if path is None:
+            return
+        path.unlink(missing_ok=True)
+        path.with_suffix(".json").unlink(missing_ok=True)
+
+    async def _step_relocate(self, images_api, start_pct: float, end_pct: float) -> dict:
+        """Copy or move every *recorded* image under the source directories.
+
+        Only DB-tracked images are touched. That is the whole point of doing this from
+        the database rather than with `cp -r`: a capture directory can hold a million
+        frames of which a handful were ever annotated, and those few are the only ones
+        whose loss would matter.
+
+        Order is copy → update DB → (move only) delete the original. Never the reverse:
+        an interruption then leaves the bytes present in at least one place with the
+        record pointing at a file that exists, which is a state the app can open. The
+        opposite order can produce a record pointing at nothing.
+        """
+        mode = self._relocate_mode
+        verb = "Moving" if mode == "move" else "Copying"
+        self._status_msg = "Finding recorded images…"
+        self.log(f"{verb} recorded images from {self._relocate_sources} → {self._relocate_destination!r}")
+        await self.heartbeat(force=True)
+
+        listed = await asyncio.to_thread(
+            images_api.list_images_by_directory,
+            ListImagesByDirectoryPayload(directories=self._relocate_sources),
+        )
+        entries = list(listed.images or [])
+        total = len(entries)
+        self.log(
+            f"{total} recorded image(s) under the source director{'y' if len(self._relocate_sources) == 1 else 'ies'}"
+        )
+        if not total:
+            self._update_progress(end_pct)
+            return {"relocated": 0, "relocate_errors": 0}
+
+        relocated = 0
+        errors = 0
+        pending: list[tuple[str, str, str]] = []  # (uuid, src_rel, dst_rel)
+
+        async def flush() -> None:
+            """Re-point the copied batch, then drop originals if this is a move."""
+            nonlocal relocated, errors
+            if not pending:
+                return
+            resp = await asyncio.to_thread(
+                images_api.relocate_images,
+                RelocateImagesPayload(
+                    moves=[ImageRelocation(uuid=u, new_path=d) for u, _s, d in pending],
+                ),
+            )
+            failed = {e.uuid for e in (resp.errors or [])}
+            for err in resp.errors or []:
+                self.log(f"Could not re-point {err.uuid}: {err.reason}")
+            errors += len(failed)
+            relocated += getattr(resp, "updated", 0)
+
+            if mode == "move":
+                for uuid, src_rel, _dst in pending:
+                    # A record that failed to move keeps pointing at the original, so
+                    # deleting it here would be deleting the only copy the DB knows.
+                    if uuid in failed:
+                        continue
+                    await asyncio.to_thread(self._delete_one_sync, src_rel)
+            pending.clear()
+
+        for i, entry in enumerate(entries):
+            if self._cancel_flag.is_set():
+                self.log("Cancelled during relocate")
+                break
+            await self._check_pause()
+
+            src_rel = entry.path
+            dst_rel = self._relocation_target(src_rel)
+            if dst_rel is None:
+                self.log(f"Skipping {src_rel}: no configured source directory covers it")
+                errors += 1
+            elif dst_rel == src_rel:
+                # Destination equals source — nothing to do, and copying would trip the
+                # "already exists" guard and read as a failure.
+                pass
+            else:
+                ok, detail = await asyncio.to_thread(self._copy_one_sync, src_rel, dst_rel)
+                if ok:
+                    pending.append((entry.uuid, src_rel, dst_rel))
+                else:
+                    self.log(f"Skipping {src_rel}: {detail}")
+                    errors += 1
+
+            if len(pending) >= _RELOCATE_BATCH:
+                await flush()
+
+            self._update_progress(start_pct + (i + 1) / total * (end_pct - start_pct))
+            self._status_msg = f"{verb} {i + 1} / {total}"
+
+        await flush()
+        self._update_progress(end_pct)
+        return {"relocated": relocated, "relocate_errors": errors}
 
     async def _step_reconcile(self, images_api, start_pct: float, end_pct: float) -> dict:
         """Walk disk, sync each file's JSON sidecar with the DB, collect sidecar UUIDs."""
@@ -448,10 +639,63 @@ class DatabaseMaintenanceTask(Task):
             "meta": {
                 "order": [
                     "sidecar_sync",
+                    "relocate",
                     "remove_records",
                     "tag_cleanup",
                     "perceptual_hashes",
                 ]
+            },
+            "relocate": {
+                "type": "group",
+                "label": "Relocate Images",
+                "collapsed": True,
+                "fields": {
+                    "relocate_sources": {
+                        "type": "array",
+                        "label": "Move images out of these directories",
+                        "description": (
+                            "Only images the database knows about are touched — untracked files "
+                            "in the same folders are left alone. Runs before every other phase."
+                        ),
+                        "default": [],
+                        "items": {
+                            "type": "directory",
+                            "label": "Source directory",
+                            "description": "Directory path relative to the image dataset root",
+                            "required": True,
+                        },
+                    },
+                    "relocate_destination": {
+                        "type": "directory",
+                        "label": "Destination directory",
+                        "description": (
+                            "Where they land, relative to the image dataset root. The folder "
+                            "structure below each source directory is preserved."
+                        ),
+                        "default": "",
+                    },
+                    "relocate_mode": {
+                        "type": "select",
+                        "label": "Mode",
+                        "description": (
+                            "Copy leaves the original image and sidecar on disk and points the "
+                            "database at the new copy — use this to empty a directory you are "
+                            "about to unmount. Move deletes the original once the copy is "
+                            "recorded."
+                        ),
+                        "options": [
+                            {
+                                "value": "copy",
+                                "label": "Copy (leave originals on disk, DB points at the copy)",
+                            },
+                            {
+                                "value": "move",
+                                "label": "Move (delete originals once re-pointed)",
+                            },
+                        ],
+                        "default": "copy",
+                    },
+                },
             },
             "sidecar_sync": {
                 "type": "group",

@@ -351,6 +351,38 @@ class DeleteImagesByDirectoryResponse(StatusResponse):
     deleted_count: int = 0
 
 
+class ListImagesByDirectoryPayload(ApiPayload):
+    directories: List[str] = Field(default_factory=list)
+
+
+class ImageLocationRead(ApiPayload):
+    uuid: str
+    path: str
+
+
+class ListImagesByDirectoryResponse(StatusResponse):
+    images: List[ImageLocationRead] = Field(default_factory=list)
+
+
+class ImageRelocation(ApiPayload):
+    uuid: str
+    new_path: str
+
+
+class RelocateImagesPayload(ApiPayload):
+    moves: List[ImageRelocation] = Field(default_factory=list)
+
+
+class RelocateImageError(ApiPayload):
+    uuid: str
+    reason: str
+
+
+class RelocateImagesResponse(StatusResponse):
+    updated: int = 0
+    errors: List[RelocateImageError] = Field(default_factory=list)
+
+
 ########
 # Image Providers
 ########
@@ -2606,6 +2638,56 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DeleteImagesByDirectoryResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/list-by-directory",
+            response_model=ListImagesByDirectoryResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="list_images_by_directory",
+        )
+        async def list_images_by_directory(
+            payload: ListImagesByDirectoryPayload,
+        ) -> ListImagesByDirectoryResponse:
+            """Image records (uuid + FILES_ROOT-relative path) under the given directories.
+
+            Reads the DB only — unlike `/api/images/list`, which walks the disk. That is
+            the point: a directory holding a million untracked frames costs the same here
+            as an empty one, because only records are counted.
+            """
+            try:
+                images = await self._manager.list_images_by_directory(payload.directories)
+                return ListImagesByDirectoryResponse(
+                    status=JsonValues.SUCCESS,
+                    images=[ImageLocationRead(**img) for img in images],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListImagesByDirectoryResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/images/relocate",
+            response_model=RelocateImagesResponse,
+            tags=[ApiTags.IMAGES],
+            operation_id="relocate_images",
+        )
+        async def relocate_images(payload: RelocateImagesPayload) -> RelocateImagesResponse:
+            """Re-point image records at new paths. Does NOT move or copy any file.
+
+            The caller writes the bytes and then tells the DB where they went, so a
+            failed copy never produces a record pointing at a file that was never made.
+            """
+            try:
+                result = await self._manager.relocate_images(
+                    [{"uuid": m.uuid, "new_path": m.new_path} for m in payload.moves]
+                )
+                return RelocateImagesResponse(
+                    status=JsonValues.SUCCESS,
+                    updated=result["updated"],
+                    errors=[RelocateImageError(**e) for e in result["errors"]],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RelocateImagesResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.delete(
             "/api/images/{image_uuid}",

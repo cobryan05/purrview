@@ -2156,6 +2156,51 @@ class DbClient:
 
         return image_rows, bbox_rows
 
+    async def get_images_by_prefixes(self, prefixes: List[str]) -> List[Tuple[str, str]]:
+        """Return ``(uuid, filename)`` for every image whose filename falls under a prefix.
+
+        Same matching rule as ``get_image_hash_data_by_prefixes`` — equal to a prefix, or
+        starting with ``prefix + "/"`` — so a relocation sees exactly the set a
+        delete-by-directory would have removed. Sorted by filename to give the caller a
+        stable order: a relocation that is interrupted and re-run then resumes over the
+        same sequence rather than a fresh arbitrary one.
+        """
+        if not prefixes:
+            return []
+        async with self._async_session_maker() as session:
+            conditions = or_(
+                *[
+                    or_(
+                        ImageRecord.filename == p,
+                        ImageRecord.filename.like(p + "/%"),
+                    )
+                    for p in prefixes
+                ]
+            )
+            result = await session.exec(
+                select(ImageRecord.uuid, ImageRecord.filename).where(conditions).order_by(ImageRecord.filename)
+            )
+            return list(result.all())
+
+    async def get_image_uuids_by_filenames(self, filenames: List[str]) -> Dict[str, str]:
+        """Map absolute filename → image uuid for the given filenames.
+
+        Used to detect collisions before a relocation writes: ``images.filename`` is
+        UNIQUE, so a destination already held by another record must be rejected up
+        front rather than surfacing as an IntegrityError halfway through a batch.
+        """
+        if not filenames:
+            return {}
+        out: Dict[str, str] = {}
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(filenames):
+                result = await session.exec(
+                    select(ImageRecord.filename, ImageRecord.uuid).where(ImageRecord.filename.in_(chunk))
+                )
+                for fname, uuid in result.all():
+                    out[fname] = uuid
+        return out
+
     async def delete_images_bulk(self, uuids: List[str]) -> int:
         """Delete image records in bulk.  BBoxes cascade-delete automatically.
 
