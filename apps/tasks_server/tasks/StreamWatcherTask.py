@@ -1047,7 +1047,13 @@ class StreamWatcherTask(Task):
             return False
 
         if not pipeline.provider.is_ready():
-            self._record_source_failure(pipeline, now, "source has not come back yet")
+            # Coming up, not broken — and the difference is the whole recovery path.
+            # `astart()` returns as soon as ffmpeg is spawned; geometry arrives later off
+            # the stderr pump, so a rebuild is *always* not-ready on the pass that does
+            # it. Counting that as a failure widened the backoff for doing exactly what a
+            # rebuild does every time, and pushed the next look-in out to BACKOFF_MAX_S
+            # when what is wanted is a glance a couple of seconds later.
+            pipeline.health.record_connecting(now)
             return False
         # The last frame before the outage and the first one after it can be minutes
         # apart. Differencing them reports the whole scene as having moved at the exact
@@ -1100,11 +1106,25 @@ class StreamWatcherTask(Task):
                 pipeline.health.record_connecting(now)
                 return
 
+            # A reader rebuilt on an earlier pass, which has since reported geometry and
+            # has never once been read from. It must be given that read before anything
+            # rebuilds it again.
+            #
+            # Skipping this is what made recovery impossible. `healthy` is cleared only
+            # by `record_success()`, and `record_success()` needs a frame — so a source
+            # that recorded a single failure arrived here on every retry, tore down the
+            # perfectly good reader it had just built, and started over. The fetch that
+            # would have cleared the failure never happened. Observed as four cameras
+            # rebuilding on a 300 s cycle for nine hours, geometry parsing cleanly every
+            # time, not one frame read, and only a manual restart of the task breaking
+            # the loop — a fresh `start()` being the sole path back to healthy.
+            awaiting_first_read = pipeline.health.connecting and provider.is_ready()
+
             # Out of its connect window and still silent: genuinely broken, so rebuild
             # it. Without this the retry was theatre — the provider gives up on its own
             # stream after a few frameless reads and returns None from then on, so the
             # backoff was re-asking a reader that had permanently stopped trying.
-            if not await self._reconnect_source(pipeline, now):
+            if not awaiting_first_read and not await self._reconnect_source(pipeline, now):
                 return
 
         try:

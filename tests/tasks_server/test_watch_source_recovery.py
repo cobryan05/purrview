@@ -43,6 +43,7 @@ class _FakeProvider:
         self.reconnect_calls = 0
         self.stop_calls = 0
         self.start_calls = 0
+        self.fetch_calls = 0
         self.frames: list = []
 
     async def reconnect(self) -> None:
@@ -57,6 +58,7 @@ class _FakeProvider:
         return self.connecting
 
     async def getNextImage(self):
+        self.fetch_calls += 1
         return self.frames.pop(0) if self.frames else None
 
     async def stop(self) -> None:
@@ -194,7 +196,12 @@ class TestReconnectDrive:
         ok = await task._reconnect_source(pipeline, now=200.0)
 
         assert ok is False
-        assert pipeline.health.consecutive_failures == 2, "the attempt counts as a failure"
+        # Not read, but not penalised either: a rebuilt reader is never ready on the pass
+        # that rebuilds it, so charging that as a failure widened the backoff for normal
+        # behaviour and deferred the look-in that would have found it up.
+        assert pipeline.health.consecutive_failures == 1, "a rebuild in progress must not widen the backoff"
+        assert pipeline.health.connecting is True
+        assert pipeline.health.next_attempt_at == pytest.approx(200.0 + SourceHealth.CONNECT_POLL_S)
 
     async def test_a_raising_reconnect_is_one_more_failed_attempt_not_a_crash(self):
         task = _task()
@@ -292,6 +299,77 @@ class TestASilentButReadySourceIsRebuilt:
 
         assert provider.reconnect_calls == 0
         assert pipeline.health.connecting is True
+
+
+class _AsyncGeometry(_FakeProvider):
+    """The real provider's timing: a rebuilt reader is not ready on the pass that built it.
+
+    `FFmpegStreamerIn.astart()` returns as soon as ffmpeg is spawned. The banner
+    carrying width/height/fps is parsed afterwards, off the stderr pump, so
+    `is_ready()` is False for a moment after every rebuild and True by the next pass.
+    """
+
+    async def reconnect(self) -> None:
+        self.reconnect_calls += 1
+        self.ready = False
+
+
+class TestASourceRecoversWithoutARestart:
+    """A source that fails once must be able to come back on its own.
+
+    It could not. `health.healthy` is cleared only by `record_success()`, and that
+    needs a frame — so a source with one failure against it reached the rebuild gate on
+    every retry, tore down the reader it had built on the previous retry, and never got
+    as far as the read that would have cleared the failure. The backoff saturated at
+    `BACKOFF_MAX_S` and the source rebuilt on that cycle indefinitely.
+
+    Seen in production as four cameras cycling every 300 s for nine hours, ffmpeg
+    reporting `1280x720@25.0fps` cleanly on all 108 attempts per camera, zero frames
+    read, nothing recorded, and the run ending only because the task was restarted by
+    hand — a fresh `start()` being the one path back to healthy.
+    """
+
+    async def test_a_rebuilt_reader_is_read_from_before_it_is_rebuilt_again(self):
+        task = _task()
+        provider = _AsyncGeometry(ready=True)
+        pipeline = _pipeline(provider)
+        task._pipelines = [pipeline]
+
+        # One failed read is the whole entry price into the trap.
+        await task._service_source(pipeline, inference_api=None)
+        assert not pipeline.health.healthy
+        assert provider.fetch_calls == 1
+
+        # The rebuild. Geometry has not arrived yet, so there is nothing to read.
+        await task._service_source(pipeline, inference_api=None)
+        assert provider.reconnect_calls == 1
+        assert provider.fetch_calls == 1, "the pass that rebuilds cannot also read"
+
+        # The stderr pump parses the banner between passes, as it does in the field.
+        provider.ready = True
+        await task._service_source(pipeline, inference_api=None)
+
+        assert provider.reconnect_calls == 1, "the reader it just built must not be torn down unread"
+        assert provider.fetch_calls == 2, "the rebuilt reader has to be given its read"
+
+    async def test_a_long_outage_keeps_both_rebuilding_and_reading(self):
+        """Retrying means alternating the two, not repeating one of them.
+
+        Rebuild-only was the bug and read-only was the bug before it (a reader that
+        has given up answers every read with None). Neither alone recovers anything.
+        """
+        task = _task()
+        provider = _AsyncGeometry(ready=True)
+        pipeline = _pipeline(provider)
+        task._pipelines = [pipeline]
+
+        for _ in range(20):
+            await task._service_source(pipeline, inference_api=None)
+            # Geometry always lands between passes; the camera is simply sending nothing.
+            provider.ready = True
+
+        assert provider.reconnect_calls >= 8, "a silent source keeps being rebuilt"
+        assert provider.fetch_calls >= 8, "and keeps being read — otherwise it can never come back"
 
 
 class TestFailureReporting:
