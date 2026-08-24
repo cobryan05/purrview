@@ -47,7 +47,21 @@ from apps.helpers.imageProviders.imageProvider import (
 )
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.logUtils import LOG_LEVEL
-from apps.helpers.training.collectorSpec import collector_params_schema
+from apps.helpers.training.collectorSpec import (
+    AMBIGUITY_KIND_CROSS_MODEL,
+    AMBIGUITY_KIND_SAME_MODEL,
+    AMBIGUITY_METRIC_MARGIN,
+    AMBIGUITY_METRIC_RATIO,
+    SAME_BBOX_IOU_THRESHOLD,
+    AmbiguityInfo,
+    CollectorSpec,
+    ConfidenceBand,
+    TargetLabel,
+    ambiguity_fires,
+    ambiguity_value,
+    collector_params_schema,
+    parse_confidence_band,
+)
 
 from ._filter_chain_runner import FilterChainRunner
 from .ApplyFilterChainTask import (
@@ -65,193 +79,25 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(LOG_LEVEL)
 
-# Two detections from different models are treated as the same physical object when
-# their boxes overlap at or above this IoU; the higher-priority (earlier-configured)
-# model's detection is kept. Kept as a module constant for now — may later be routed
-# to the task-config UI.
-SAME_BBOX_IOU_THRESHOLD = 0.65
+# The configuration half of collection — confidence bands, ambiguity metrics, the
+# same-bbox IoU threshold — now lives in apps.helpers.training.collectorSpec, so a
+# watcher-driven collector and this task are configured by one code path. The names
+# are re-exported above (and via __all__ below) because they were public here first.
+_parse_confidence_band = parse_confidence_band
+_ambiguity_value = ambiguity_value
+_ambiguity_fires = ambiguity_fires
 
-
-# _compute_jpeg_phashes has moved to apps.helpers.hashUtils as
-# compute_phashes_with_jpeg_roundtrip, so the JPEG quality constant and the
-# hash algorithm are shared with the DB server's phash pipeline.
-
-
-@dataclass
-class ConfidenceBand:
-    """A `[min, max]` confidence range for a target label (Phase 5B of
-    LIVE_COLLECTION_PLAN.md). Both bounds are INCLUSIVE:
-    `min_confidence <= confidence <= max_confidence` is "in band".
-
-    The wire format's bare scalar (`labelValues: {labelUuid: 0.25}`, every
-    already-saved task config) means `{min: 0.25, max: 1.0}` — today's
-    floor-only behaviour, unchanged. See `_parse_confidence_band`.
-
-    `review_disabled` is the mirror image of "min <= 0 disables the label":
-    an explicit `max` of 0 means "still tag this label, but never let it be
-    the reason a frame gets saved for review" — set when the UI's 'Review
-    up to' field is 0. `contains()` always returns False in that state,
-    regardless of `max_confidence` (which is otherwise unused/meaningless).
-    """
-
-    min_confidence: float
-    max_confidence: float = 1.0
-    review_disabled: bool = False
-
-    def contains(self, confidence: float) -> bool:
-        if self.review_disabled:
-            return False
-        return self.min_confidence <= confidence <= self.max_confidence
-
-
-@dataclass
-class TargetLabel:
-    label_uuid: str
-    band: ConfidenceBand
-
-
-# Ambiguity metrics over the top-2 class scores (p1 >= p2) of one detection.
-#
-# RATIO is the default because YOLO v8+ class scores are independent sigmoids,
-# not a softmax: they don't sum to 1 and their absolute scale drifts with a
-# label's training-set frequency, so a fixed margin means different things at
-# 0.9/0.75 than at 0.3/0.15. The ratio (0.83 vs 0.5) separates those correctly.
-# MARGIN is kept for softmax classifiers, where the classes genuinely compete.
-AMBIGUITY_METRIC_RATIO = "ratio"
-AMBIGUITY_METRIC_MARGIN = "margin"
-
-
-AMBIGUITY_KIND_SAME_MODEL = "same_model"
-AMBIGUITY_KIND_CROSS_MODEL = "cross_model"
-
-
-@dataclass
-class AmbiguityInfo:
-    """Why one detection was judged confusable, and by which model.
-
-    Attribution is the whole point (AMBIGUITY_REVIEW_PLAN.md §1): the question
-    being answered is "is *this* model confused, and with what?", so `model` and
-    `rival_*` are not optional colour — they are the payload.
-
-    Two kinds, and the distinction matters when reading the results:
-      - SAME_MODEL: one model scored two classes almost equally on one box. This
-        is a statement about that model's own decision boundary.
-      - CROSS_MODEL: two different models put incompatible labels on the same
-        object. A statement about the two models disagreeing, not about either
-        one's internal uncertainty — `rival_model` names the other.
-    """
-
-    metric: str
-    value: float
-    model: str
-    rival_label_uuid: Optional[str]
-    rival_class_str: Optional[str]
-    rival_confidence: float
-    kind: str = AMBIGUITY_KIND_SAME_MODEL
-    rival_model: Optional[str] = None
-
-    def as_metadata(self) -> dict[str, str]:
-        """Flat, string-valued metadata_json keys.
-
-        ⚠️ Flat and stringly-typed on purpose, not for lack of ambition:
-        `metadata_json` is typed `RawJsonDict = Dict[str, str]` (helpers/types.py)
-        end to end — server model, generated client, and every existing reader.
-        A nested dict is rejected outright by the client's validation, and
-        widening the type would change the contract for every bbox-metadata
-        consumer in the app to serve one feature. So this follows the convention
-        the existing keys already use (`confidence`, `source_model`,
-        `source_confidence`): flat keys, string values.
-        """
-        meta = {
-            "ambiguity_kind": self.kind,
-            "ambiguity_metric": self.metric,
-            "ambiguity_value": str(round(self.value, 4)),
-            "ambiguity_model": self.model,
-            "ambiguity_rival_label_uuid": self.rival_label_uuid or "",
-            "ambiguity_rival_class_str": self.rival_class_str or "",
-            "ambiguity_rival_confidence": str(round(self.rival_confidence, 4)),
-        }
-        if self.rival_model:
-            meta["ambiguity_rival_model"] = self.rival_model
-        return meta
-
-
-def _ambiguity_value(metric: str, top: float, rival: float) -> float:
-    """The chosen metric's value for one (winner, runner-up) pair.
-
-    Guards `top == 0`: a zero-confidence winner can't be meaningfully "close to"
-    anything, and dividing by it would produce inf/NaN that then compares True
-    against every threshold.
-    """
-    if metric == AMBIGUITY_METRIC_MARGIN:
-        return top - rival
-    if top <= 0:
-        return 0.0
-    return rival / top
-
-
-def _ambiguity_fires(metric: str, value: float, threshold: float) -> bool:
-    """Threshold direction differs by metric — a HIGH ratio and a LOW margin both
-    mean "the runner-up is close". Both bounds inclusive, matching
-    ConfidenceBand.contains."""
-    if metric == AMBIGUITY_METRIC_MARGIN:
-        return value <= threshold
-    return value >= threshold
-
-
-def _parse_confidence_band(raw: Any) -> Optional[ConfidenceBand]:
-    """Parses one `labelValues` entry into a `ConfidenceBand`.
-
-    `_init` params are unvalidated raw JSON (CLAUDE.md) — this must not raise
-    on garbage input. Accepts either:
-      - the legacy scalar floor, e.g. `0.25`               -> {min: 0.25, max: 1.0}
-      - the Phase 5B band dict, e.g. `{"min": 0.2, "max": 0.6}`
-
-    Returns None (label disabled — matches the pre-Phase-5B "skip
-    zero-confidence" convention, where the UI writes 0 to mean "not
-    collecting this label") when the parsed floor is <= 0 or the value can't
-    be parsed as a number at all.
-
-    An explicit `max` of 0 in the band dict means "review disabled" — the
-    label still gets tagged (min still applies in `_annotatable`), but it
-    can never itself trigger a frame save (see `ConfidenceBand.contains`).
-    """
-    if isinstance(raw, dict):
-        try:
-            min_f = float(raw.get("min", 0.0))
-        except (TypeError, ValueError):
-            return None
-        try:
-            max_f = float(raw.get("max", 1.0))
-        except (TypeError, ValueError):
-            max_f = 1.0
-    else:
-        try:
-            min_f = float(raw)
-        except (TypeError, ValueError):
-            return None
-        max_f = 1.0
-
-    if min_f <= 0:
-        return None
-
-    min_f = max(0.0, min(1.0, min_f))
-
-    review_disabled = max_f <= 0
-    if review_disabled:
-        # max_confidence is meaningless while review is disabled (contains()
-        # short-circuits on the flag); keep it valid for the merge-union math
-        # in _init.
-        max_f = 1.0
-    else:
-        # Defensive clamps: keep both bounds in [0, 1] and max >= min, so a
-        # malformed/inverted band (e.g. {"min": 0.6, "max": 0.2}) degrades to
-        # a single-point band rather than silently never matching or
-        # matching everything.
-        max_f = max(0.0, min(1.0, max_f))
-        if max_f < min_f:
-            max_f = min_f
-    return ConfidenceBand(min_confidence=min_f, max_confidence=max_f, review_disabled=review_disabled)
+__all__ = [
+    "AMBIGUITY_KIND_CROSS_MODEL",
+    "AMBIGUITY_KIND_SAME_MODEL",
+    "AMBIGUITY_METRIC_MARGIN",
+    "AMBIGUITY_METRIC_RATIO",
+    "SAME_BBOX_IOU_THRESHOLD",
+    "AmbiguityInfo",
+    "CollectTrainingImagesTask",
+    "ConfidenceBand",
+    "TargetLabel",
+]
 
 
 @register_task()
@@ -355,73 +201,23 @@ class CollectTrainingImagesTask(Task):
         self._status_msg: str = "Initializing"
         self.log("Initializing task parameters")
         self._source_uuids: list[str] = params["source_uuids"]
-        self._output_dir: str = params["output_dir"]
-        # output_dir is joined onto files_root when writing collected images.
-        # Reject absolute paths and '..' traversal so a task can't write outside
-        # the dataset root (raw params are untrusted — validate here per CLAUDE.md).
-        _out = Path(self._output_dir)
-        if _out.is_absolute() or ".." in _out.parts:
-            raise ValueError(
-                f"Invalid output_dir {self._output_dir!r}: must be a relative path within the dataset root"
-            )
-
-        # model_label_config: [{modelName, labelValues: {labelUuid: confidence | {min, max}}}]
-        # (Phase 5B: labelValues entries are either the legacy scalar floor or a
-        # {min, max} confidence band — see _parse_confidence_band.)
-        model_label_config: list[dict] = params.get("model_label_config", [])
-        # Preserve config order: it doubles as model priority — earlier-configured
-        # models win when two models produce overlapping (same-bbox) detections.
-        ordered_model_names: list[str] = []
-        # Flatten to label_uuid → ConfidenceBand; skip disabled (parsed as None,
-        # e.g. zero-confidence, matching the pre-band "disabled in UI" convention).
-        label_bands: dict[str, ConfidenceBand] = {}
-        for item in model_label_config:
-            name = item.get("modelName")
-            if name and name not in ordered_model_names:
-                ordered_model_names.append(name)
-            for label_uuid, raw_band in item.get("labelValues", {}).items():
-                band = _parse_confidence_band(raw_band)
-                if band is None:
-                    continue
-                existing = label_bands.get(label_uuid)
-                if existing is not None:
-                    # Two model configs target the same label: widen to the union
-                    # (loosest min, loosest max) so a detection in-band for either
-                    # config's range still counts. For the all-scalar case (max
-                    # always 1.0) this reduces to the pre-Phase-5B behaviour of
-                    # taking the min of the two floors. Review is only disabled
-                    # for the merged label if BOTH configs disabled it — one
-                    # config still wanting review for this label should win.
-                    band = ConfidenceBand(
-                        min_confidence=min(existing.min_confidence, band.min_confidence),
-                        max_confidence=max(existing.max_confidence, band.max_confidence),
-                        review_disabled=existing.review_disabled and band.review_disabled,
-                    )
-                label_bands[label_uuid] = band
-        self._model_names: list[str] = ordered_model_names
+        # Everything about *what to keep and how to annotate it* is parsed once, into
+        # the spec a watcher-driven collector will be built from too (collectorSpec.py).
+        # Only the loop's own params — sources and pacing — are read directly here.
+        # from_params raises for a traversing output_dir and degrades everything else
+        # to a documented default; see its docstring for why the asymmetry.
+        self._spec: CollectorSpec = CollectorSpec.from_params(params)
+        self._output_dir: str = self._spec.output_dir
+        self._model_names: list[str] = self._spec.model_names
         # No models configured at all → collect-everything mode: no inference runs and
         # every fetched frame is saved unannotated, after the filter chain and dedup
-        # have still had their say. Deliberately keyed on "no models", not "no target
-        # labels": a model whose labels are all at zero confidence is an explicitly
-        # disabled model, and keeps its existing behaviour of collecting nothing.
-        self._collect_all: bool = not self._model_names
-        self._overlap_iou_threshold: float = float(params.get("overlap_iou_threshold", SAME_BBOX_IOU_THRESHOLD))
-        # Cross-model merge policy for same-label collisions (Phase 5A). Default preserves
-        # today's behaviour: earlier-configured (higher priority) models win.
-        _merge_policy_raw = params.get("merge_policy", MergePolicy.FIRST_WINS.value)
-        try:
-            self._merge_policy = MergePolicy(_merge_policy_raw)
-        except ValueError:
-            self._merge_policy = MergePolicy.FIRST_WINS
-
-        self._target_labels: list[TargetLabel] = [TargetLabel(label_uuid=u, band=b) for u, b in label_bands.items()]
-        self._target_label_bands: dict[str, ConfidenceBand] = {t.label_uuid: t.band for t in self._target_labels}
-        # Network-level floor sent as the inference call's conf_thresh — the loosest
-        # (lowest) min across all configured bands, so no in-band detection for ANY
-        # target label is ever filtered out before it even reaches this task. This is
-        # a coarse pre-merge floor only, never a substitute for the per-label band
-        # check, which happens post-merge (see _run_inference / _frame_triggers_save).
-        self._min_all_conf: float = min((b.min_confidence for b in self._target_label_bands.values()), default=0.5)
+        # have still had their say.
+        self._collect_all: bool = self._spec.collect_all
+        self._overlap_iou_threshold: float = self._spec.overlap_iou_threshold
+        self._merge_policy = self._spec.merge_policy
+        self._target_labels: list[TargetLabel] = self._spec.target_labels
+        self._target_label_bands: dict[str, ConfidenceBand] = self._spec.target_label_bands
+        self._min_all_conf: float = self._spec.min_all_conf
 
         # Intervals for rate-limited provider types
         self._snapshot_interval: float = float(params.get("snapshot_interval", 15))
@@ -430,10 +226,8 @@ class CollectTrainingImagesTask(Task):
         # Stop conditions — both default to unlimited (None). Live sources otherwise
         # never complete on their own, and these also give the progress bar something
         # to measure against when no FIXED provider is present (see _run()).
-        _max_images_raw = params.get("max_images")
-        self._max_images: Optional[int] = int(_max_images_raw) if _max_images_raw else None
-        _max_duration_raw = params.get("max_duration")
-        self._max_duration_s: Optional[float] = float(_max_duration_raw) if _max_duration_raw else None
+        self._max_images: Optional[int] = self._spec.max_images
+        self._max_duration_s: Optional[float] = self._spec.max_duration_s
         # Total elapsed run time in seconds, accumulated across restarts (persisted in
         # resume_data) plus whatever this process instance has been running — so
         # max_duration and duration-based progress are correct even after a checkpoint
@@ -456,9 +250,9 @@ class CollectTrainingImagesTask(Task):
             self.log(f"Resuming: {len(self._processed_ids)} images already processed")
 
         # Tag params — resolved to UUIDs in _run() once API clients are available.
-        self._apply_tag_uuids: list[str] = list(params.get("apply_tags", []))
-        self._generate_task_tag: bool = bool(params.get("generate_task_tag", False))
-        self._task_tag_name_override: str = params.get("task_tag_name", "") or ""
+        self._apply_tag_uuids: list[str] = self._spec.apply_tag_uuids
+        self._generate_task_tag: bool = self._spec.generate_task_tag
+        self._task_tag_name_override: str = self._spec.task_tag_name_override
         # _config_name is injected by the manager (reserved key, not user-facing).
         self._config_name: str = params.get("_config_name", "")
         # Set in _run() when a TASK_GENERATED tag is created or found; used in result actions.
@@ -470,7 +264,7 @@ class CollectTrainingImagesTask(Task):
 
         # Optional pre-save filter chain (WORKFLOW_FILTERCHAIN_PLAN.md Phase 4):
         # applied to each frame's in-memory detections before they're saved.
-        self._filter_chain_uuid: Optional[str] = params.get("filter_chain_uuid") or None
+        self._filter_chain_uuid: Optional[str] = self._spec.filter_chain_uuid
         self._filter_chain_runner = None  # built in _run() once the chain is resolved
         self._filtered_discarded: int = resume_data.get("filtered_discarded", 0) if resume_data else 0
         self._filtered_relabeled: int = resume_data.get("filtered_relabeled", 0) if resume_data else 0
@@ -481,31 +275,13 @@ class CollectTrainingImagesTask(Task):
         # A second, independent save trigger: a detection the model is confident
         # about but can't separate from its runner-up teaches more at review time
         # than a merely weak one, and the confidence band can't see it.
-        self._enable_ambiguity: bool = bool(params.get("enable_ambiguity", False))
-        _metric_raw = str(params.get("ambiguity_metric", AMBIGUITY_METRIC_RATIO) or AMBIGUITY_METRIC_RATIO)
-        self._ambiguity_metric: str = (
-            _metric_raw if _metric_raw in (AMBIGUITY_METRIC_RATIO, AMBIGUITY_METRIC_MARGIN) else AMBIGUITY_METRIC_RATIO
-        )
-        try:
-            self._ambiguity_threshold: float = float(params.get("ambiguity_threshold", 0.7))
-        except (TypeError, ValueError):
-            self._ambiguity_threshold = 0.7
-        try:
-            # top_k counts the winner, so k=1 would leave no runner-up at all;
-            # floor at 2 whenever the feature is on.
-            self._ambiguity_top_k: int = max(2, int(params.get("ambiguity_top_k", 3)))
-        except (TypeError, ValueError):
-            self._ambiguity_top_k = 3
-        _scope_raw = str(params.get("ambiguity_scope", "configured") or "configured")
-        self._ambiguity_scope: str = _scope_raw if _scope_raw in ("configured", "any") else "configured"
-        # Cross-model disagreement needs no runner-up scores, so it is the only
-        # confusion signal available for NMS-free/E2E models. Defaults on: with a
-        # single model configured it is inert anyway.
-        self._ambiguity_cross_model: bool = bool(params.get("ambiguity_cross_model", True))
-        try:
-            self._ambiguity_min_confidence: float = float(params.get("ambiguity_min_confidence", 0.0))
-        except (TypeError, ValueError):
-            self._ambiguity_min_confidence = 0.0
+        self._enable_ambiguity: bool = self._spec.enable_ambiguity
+        self._ambiguity_metric: str = self._spec.ambiguity_metric
+        self._ambiguity_threshold: float = self._spec.ambiguity_threshold
+        self._ambiguity_top_k: int = self._spec.ambiguity_top_k
+        self._ambiguity_scope: str = self._spec.ambiguity_scope
+        self._ambiguity_cross_model: bool = self._spec.ambiguity_cross_model
+        self._ambiguity_min_confidence: float = self._spec.ambiguity_min_confidence
         # Counters + a rolling, threshold-INDEPENDENT sample of observed metric
         # values per model. Independence is what makes the sample honest: it
         # records what the stream is doing, not what the current threshold caught,
@@ -522,10 +298,10 @@ class CollectTrainingImagesTask(Task):
         self._ambiguity_unavailable_models: set[str] = set()
 
         # Deduplication params
-        self._enable_dedup: bool = bool(params.get("enable_dedup", False))
-        self._image_dup_threshold: int = int(params.get("image_dup_threshold", 5))
-        self._bbox_dup_threshold: int = int(params.get("bbox_dup_threshold", 8))
-        self._duplicate_action: str = params.get("duplicate_action", "discard")
+        self._enable_dedup: bool = self._spec.enable_dedup
+        self._image_dup_threshold: int = self._spec.image_dup_threshold
+        self._bbox_dup_threshold: int = self._spec.bbox_dup_threshold
+        self._duplicate_action: str = self._spec.duplicate_action
         # Dedup outcome stats — persisted across pause/resume so totals are cumulative.
         self._dup_frames_discarded: int = resume_data.get("dup_frames_discarded", 0) if resume_data else 0
         # Finer-grained dedup counters: frames checked, and raw hit counts from the index
