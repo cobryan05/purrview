@@ -15,6 +15,7 @@ condition holds, fail with a useful message if it never does. Passing quickly on
 the fast path is a bonus; not failing on the slow path is the point.
 """
 
+import os
 from contextlib import contextmanager
 from typing import Callable, TypeVar, Union
 
@@ -24,6 +25,29 @@ T = TypeVar("T")
 
 DEFAULT_TIMEOUT_MS = 5000
 POLL_INTERVAL_MS = 50
+
+# Near-miss tracing. A `wait_until` that succeeds at 4.9s of a 5s ceiling *passed*, but
+# it was one scheduling hiccup away from failing — it is a flake that has not happened
+# yet, and it is invisible in a green run. Set FLAKE_TRACE to a file path to record
+# every wait that consumed more than FLAKE_TRACE_RATIO of its timeout:
+#
+#   docker exec -e FLAKE_TRACE=/project/near-misses.txt -w /project … pytest playwright_tests/
+#
+# Off unless the env var is set, so it costs one `os.environ` lookup per wait otherwise.
+_TRACE_PATH = os.environ.get("FLAKE_TRACE")
+_TRACE_RATIO = float(os.environ.get("FLAKE_TRACE_RATIO", "0.5"))
+
+
+def _record_near_miss(waited: int, timeout: int) -> None:
+    """Append a line for any wait that ate a significant fraction of its budget."""
+    if not _TRACE_PATH or waited < timeout * _TRACE_RATIO:
+        return
+    test_id = os.environ.get("PYTEST_CURRENT_TEST", "<unknown>").split(" (")[0]
+    try:
+        with open(_TRACE_PATH, "a") as fh:
+            fh.write(f"{waited}\t{timeout}\t{test_id}\n")
+    except OSError:
+        pass  # tracing must never fail a run
 
 
 def wait_until(
@@ -46,6 +70,7 @@ def wait_until(
     while True:
         value = condition()
         if value:
+            _record_near_miss(waited, timeout)
             return value
         if waited >= timeout:
             text = message() if callable(message) else message

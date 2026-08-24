@@ -32,9 +32,21 @@ CONTAINER=whiskerwatcher_mono_dev
 # Lowering priority never needs privileges; raising it would.
 PRIORITY=(nice -n 19 ionice -c3)
 
+# Near-miss tracing (playwright_tests/waits.py). Exported here rather than left to the
+# caller because `docker exec` does not inherit the host environment — a bare
+# `FLAKE_TRACE=… scripts/test.sh` would silently trace nothing.
+#
+#   FLAKE_TRACE=/project/near-misses.txt scripts/test.sh playwright
+#
+# records every `wait_until` that burned more than FLAKE_TRACE_RATIO (default 0.5) of
+# its timeout. Those waits passed — they are the flakes that have not happened yet.
+TRACE_ENV=()
+[ -n "${FLAKE_TRACE:-}" ] && TRACE_ENV+=(-e "FLAKE_TRACE=$FLAKE_TRACE")
+[ -n "${FLAKE_TRACE_RATIO:-}" ] && TRACE_ENV+=(-e "FLAKE_TRACE_RATIO=$FLAKE_TRACE_RATIO")
+
 run() {
   echo "==> pytest $*"
-  docker exec -w /project "$CONTAINER" "${PRIORITY[@]}" pytest "$@"
+  docker exec "${TRACE_ENV[@]+"${TRACE_ENV[@]}"}" -w /project "$CONTAINER" "${PRIORITY[@]}" pytest "$@"
 }
 
 # True when the args contain a test path rather than only flags.
