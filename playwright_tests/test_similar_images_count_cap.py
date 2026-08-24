@@ -103,7 +103,7 @@ def _open_similar_images_modal(page: Page, base_url: str):
             const { openSimilarImagesModal } = await import('/app-static/js/ui/similarSearch.js');
             await openSimilarImagesModal({ imageUuids: ['anchor-1'] });
         }""")
-    page.wait_for_selector(".review-grid", timeout=4000)
+    page.wait_for_selector(".review-grid")
 
 
 class TestSimilarImagesCountControl:

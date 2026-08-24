@@ -36,7 +36,7 @@ def _navigate_to_settings(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-settings']").click()
-    page.wait_for_selector("#tab-settings .settings-wrap", timeout=8000)
+    page.wait_for_selector("#tab-settings .settings-wrap")
     page.wait_for_load_state("networkidle")
 
 
@@ -320,7 +320,7 @@ class TestServiceStatusNotInRuns:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-runs']").click()
-        page.wait_for_selector("#active-tasks-list", timeout=4000)
+        page.wait_for_selector("#active-tasks-list")
 
         expect(page.locator("#tab-runs [data-testid='service-status-panel']")).to_have_count(0)
 

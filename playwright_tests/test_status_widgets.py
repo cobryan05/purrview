@@ -175,7 +175,7 @@ class TestStatusDataFetchGating:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
         wait_until(page, lambda: calls, "Expected a POST to /api/tasks/instances/status-data after expanding the card")
         assert task_id in calls[0].get("taskUuids", [])
@@ -191,7 +191,7 @@ class TestStatusDataFetchGating:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.wait_for_timeout(800)
 
         assert not calls, f"Collapsed card must not fetch status-data; got calls: {calls}"
@@ -205,7 +205,7 @@ class TestStatusDataFetchGating:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         summary = page.locator(f"[data-task-uuid='{task_id}'] summary")
         summary.click()  # open
         wait_until(page, lambda: calls, "Expected at least one fetch while expanded")
@@ -237,7 +237,7 @@ class TestStatGridWidget:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         # Retrying assertions instead of an 800ms bet on the widget having mounted.
@@ -265,7 +265,7 @@ class TestAnnotatedImageWidget:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         # The widget wraps createCanvasInstance() — a Konva stage renders a <canvas>.
@@ -311,7 +311,7 @@ class TestAnnotatedImageWidget:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         canvas = page.locator(f"[data-task-uuid='{task_id}'] canvas").first
@@ -356,7 +356,7 @@ class TestSummarySourceWidgetMount:
         )
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
 
         # `count()` does not retry, so the 500ms sleep was the whole barrier. `expect`
         # polls until mount() has run.
@@ -387,7 +387,7 @@ class TestStatusWidgetPollDiffing:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         canvas = page.locator(f"[data-task-uuid='{task_id}'] canvas").first
@@ -424,7 +424,7 @@ class TestUnknownWidgetType:
         page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         card = page.locator(f"[data-task-uuid='{task_id}']")
@@ -450,7 +450,7 @@ class TestDefaultSchemaRegression:
         _setup_base_mocks(page, {task_id: _make_task(task_id, progress=None)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
@@ -497,7 +497,7 @@ class TestTaskCommandAction:
         page.route("**/api/tasks/instances/command", handle_command)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         btn = page.locator(f"[data-task-uuid='{task_id}'] button", has_text="Capture now")
@@ -527,7 +527,7 @@ class TestHistogramWidget:
         _mock_status_data(page, {task_id: data})
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
     def test_renders_one_row_per_bin_with_counts(self, page: Page, base_url: str):
@@ -611,7 +611,7 @@ class TestStatusWidgetContrast:
         _mock_status_data(page, {task_id: {"stats": {"saved": 42}}})
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         card = page.locator(f"[data-task-uuid='{task_id}']")
@@ -707,7 +707,7 @@ class TestScrollPreservedAcrossRerender:
             """)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-task-uuid='task-scroll-0'] summary", timeout=5000)
+        page.wait_for_selector("[data-task-uuid='task-scroll-0'] summary")
         page.locator("[data-task-uuid='task-scroll-0'] summary").click()
         # Let the first status-data fetch land so the card reaches full height.
         wait_until(
@@ -787,7 +787,7 @@ class TestScrollPreservedAcrossRerender:
             """)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-task-uuid='task-scroll-0'] summary", timeout=5000)
+        page.wait_for_selector("[data-task-uuid='task-scroll-0'] summary")
         page.locator("[data-task-uuid='task-scroll-0'] summary").click()
         card = page.locator("[data-task-uuid='task-scroll-0']")
         expect(card).to_contain_text("4242")
@@ -853,7 +853,7 @@ class TestStatusWidgetGroups:
         calls = _mock_status_data(page, {task_id: self._DATA})
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
         return calls
 
@@ -936,7 +936,7 @@ class TestStatusWidgetGroups:
             """)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
         self._group(page, task_id, "calibration").locator("> summary").click()
         card = page.locator(f"[data-task-uuid='{task_id}']")
@@ -981,7 +981,7 @@ class TestStatusWidgetGroups:
         calls = _mock_status_data(page, {task_id: {"phase": "capturing"}})
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
         wait_until(page, lambda: calls, "Expected status-data polling even with every widget grouped")
 
@@ -1055,7 +1055,7 @@ class TestExpandedCardFitsItsBox:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
         card = page.locator(f"[data-task-uuid='{task_id}']")
         expect(card).to_contain_text("sample(s)")
@@ -1073,7 +1073,7 @@ class TestExpandedCardFitsItsBox:
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").first.click()
         card = page.locator(f"[data-task-uuid='{task_id}']")
         expect(card).to_contain_text("sample(s)")
@@ -1115,7 +1115,7 @@ class TestLineChartWidget:
         _mock_status_data(page, {task_id: data})
         _setup_base_mocks(page, {task_id: _make_task(task_id)})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
         return page.locator(f"[data-task-uuid='{task_id}']")
 

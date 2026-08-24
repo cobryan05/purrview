@@ -339,7 +339,7 @@ class TestImageLabelChipsBatch:
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
         page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
-        page.wait_for_selector("#review-root .review-grid", timeout=5000)
+        page.wait_for_selector("#review-root .review-grid")
         wait_until(
             page, lambda: len(batch_calls) >= 1, lambda: f"expected exactly one batch call, got {len(batch_calls)}"
         )
@@ -376,7 +376,7 @@ class TestViewToggleSubscriptionLeak:
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
         page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
-        page.wait_for_selector("#review-root .review-grid", timeout=5000)
+        page.wait_for_selector("#review-root .review-grid")
         page.wait_for_timeout(500)
 
         baseline = _listener_count(page)

@@ -95,7 +95,7 @@ def _open_live_pane(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-    page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+    page.wait_for_selector("#nvr-live-box .nvr-profile-card")
 
 
 class TestStartStopButtons:

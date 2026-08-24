@@ -185,9 +185,9 @@ def _open_live_view(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-    page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+    page.wait_for_selector("#nvr-live-box .nvr-profile-card")
     page.locator("[data-testid='nvr-live-view']").first.click()
-    page.wait_for_selector("[data-testid='watch-live-dialog']", timeout=5000)
+    page.wait_for_selector("[data-testid='watch-live-dialog']")
 
 
 class TestLiveViewButton:
@@ -196,7 +196,7 @@ class TestLiveViewButton:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-        page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+        page.wait_for_selector("#nvr-live-box .nvr-profile-card")
 
         expect(page.locator("[data-testid='nvr-live-view']")).to_be_visible()
         expect(page.locator(".nvr-state-pill").first).to_have_text("running")
@@ -207,7 +207,7 @@ class TestLiveViewButton:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-        page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+        page.wait_for_selector("#nvr-live-box .nvr-profile-card")
 
         expect(page.locator(".nvr-state-pill").first).to_have_text("stopped")
         expect(page.locator("[data-testid='nvr-live-view']")).to_have_count(0)

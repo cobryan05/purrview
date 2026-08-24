@@ -93,7 +93,7 @@ def _name_input(page: Page):
 
 def _open_source(page: Page, name: str = FAKE_SOURCE["name"]):
     """Click a source row in the list to load it into the editor."""
-    page.wait_for_selector("#source-management-box .le-list-item", timeout=5000)
+    page.wait_for_selector("#source-management-box .le-list-item")
     page.locator("#source-management-box .le-list-item", has_text=name).first.click()
     page.wait_for_timeout(700)
 
@@ -190,7 +190,7 @@ class TestSourceListLoading:
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("#source-management-box .le-list-item", timeout=5000)
+        page.wait_for_selector("#source-management-box .le-list-item")
         content = page.locator("#source-management-box .le-list-panel").inner_text()
         assert FAKE_SOURCE["name"] in content, f"Source name not found in: {content!r}"
 
@@ -200,7 +200,7 @@ class TestSourceListLoading:
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("#source-management-box .le-list-item", timeout=5000)
+        page.wait_for_selector("#source-management-box .le-list-item")
         expect(page.locator("#source-management-box .le-list-item").first).to_contain_text("UrlImageProvider")
 
     def test_selecting_source_loads_it_into_editor(self, page: Page, base_url: str):
@@ -220,7 +220,7 @@ class TestSourceListLoading:
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("#source-management-box .le-list-item", timeout=5000)
+        page.wait_for_selector("#source-management-box .le-list-item")
         expect(page.locator("#source-management-box .le-list-item:visible")).to_have_count(2)
 
         page.locator("#source-management-box .le-list-search input").fill("Back")
@@ -233,7 +233,7 @@ class TestSourceListLoading:
         _mock_providers(page, ["UrlImageProvider"])
         _mock_provider_schema(page)
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("#source-management-box .le-list-empty", timeout=5000)
+        page.wait_for_selector("#source-management-box .le-list-empty")
 
         page.locator("#source-management-box .le-list-search input").fill("anything")
         page.wait_for_timeout(200)
@@ -253,7 +253,7 @@ class TestProviderDropdown:
         _mock_sources(page, {})
         _navigate_to_sources(page, base_url)
 
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
         options = _provider_select(page).locator("option").all_text_contents()
         for provider in providers:
             assert provider in options, f"Provider '{provider}' not in dropdown options {options}"
@@ -276,7 +276,7 @@ class TestProviderDropdown:
         page.route("**/api/sources/image-providers/schema", handle_schema)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
 
         _provider_select(page).select_option("UrlImageProvider")
         wait_until(page, lambda: schema_calls, "Expected /api/sources/image-providers/schema to be called")
@@ -289,7 +289,7 @@ class TestProviderDropdown:
         _mock_provider_schema(page, URL_PROVIDER_SCHEMA)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
 
         _provider_select(page).select_option("UrlImageProvider")
 
@@ -305,9 +305,9 @@ class TestProviderDropdown:
         _mock_provider_schema(page, URL_PROVIDER_SCHEMA)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
         _provider_select(page).select_option("UrlImageProvider")
-        page.wait_for_selector("#source-management-box .schema-form", timeout=5000)
+        page.wait_for_selector("#source-management-box .schema-form")
 
         # url + user, both narrow string fields → ordinary grid cells, not full-width.
         fields = page.locator("#source-management-box .schema-form > .schema-field")
@@ -339,10 +339,10 @@ class TestCreateSource:
         page.route("**/api/sources/create", handle_create)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
 
         _provider_select(page).select_option("UrlImageProvider")
-        page.wait_for_selector("#source-management-box .schema-form input", timeout=5000)
+        page.wait_for_selector("#source-management-box .schema-form input")
 
         _name_input(page).fill("My New Camera")
         _fill_url_field(page, "http://camera.example.com/snap.jpg")
@@ -372,9 +372,9 @@ class TestCreateSource:
         _mock_provider_schema(page, URL_PROVIDER_SCHEMA)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
         _provider_select(page).select_option("UrlImageProvider")
-        page.wait_for_selector("#source-management-box .schema-form input", timeout=5000)
+        page.wait_for_selector("#source-management-box .schema-form input")
 
         create_btn = _editor_bar(page).locator("button", has_text="Create")
         if create_btn.is_enabled():
@@ -417,9 +417,9 @@ class TestNumericSchemaFieldCoercion:
         page.route("**/api/sources/create", handle_create)
 
         _navigate_to_sources(page, base_url)
-        page.wait_for_selector("[data-testid='source-provider-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='source-provider-select']")
         _provider_select(page).select_option("UrlImageProvider")
-        page.wait_for_selector("#source-management-box .schema-form input[type='number']", timeout=5000)
+        page.wait_for_selector("#source-management-box .schema-form input[type='number']")
 
         _name_input(page).fill("My New Camera")
         _fill_url_field(page, "http://camera.example.com/snap.jpg")

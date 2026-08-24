@@ -85,7 +85,7 @@ class TestShowReviewModalFocusTrap:
             }""",
             {"images": [IMAGE_1]},
         )
-        page.wait_for_selector(".review-grid", timeout=4000)
+        page.wait_for_selector(".review-grid")
 
         focus_is_in_decoy = page.evaluate(
             "() => document.activeElement && document.activeElement.id === '__decoy_search_input'"
@@ -120,7 +120,7 @@ class TestShowReviewModalFocusTrap:
             }""",
             {"images": [IMAGE_1]},
         )
-        page.wait_for_selector(".review-grid", timeout=4000)
+        page.wait_for_selector(".review-grid")
 
         page.keyboard.press("Escape")
         page.wait_for_selector(".compare-modal-dialog", state="detached", timeout=4000)

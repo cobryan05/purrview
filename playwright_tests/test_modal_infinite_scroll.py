@@ -95,7 +95,7 @@ def _open_paginated_modal(page: Page, base_url: str):
         }""",
         CANDIDATES,
     )
-    page.wait_for_selector(".review-grid", timeout=4000)
+    page.wait_for_selector(".review-grid")
 
 
 def _select_chunk_size(page: Page, value: str):

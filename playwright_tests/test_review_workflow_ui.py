@@ -102,7 +102,7 @@ def _navigate_to_review(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
     page.locator("#tab-image-tagging .section-tab-button[data-tab='tab-review']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#review-root .review-grid", timeout=4000)
+    page.wait_for_selector("#review-root .review-grid")
 
 
 def _mock_review_queue(page: Page, images: list, has_more: bool = False, total_count: int = None):

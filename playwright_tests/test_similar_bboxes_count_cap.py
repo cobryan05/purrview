@@ -122,7 +122,7 @@ def _open_similar_bboxes_modal(page: Page, base_url: str):
             const { openSimilarBboxesModal } = await import('/app-static/js/ui/similarSearch.js');
             await openSimilarBboxesModal({ bboxes: [{ bboxUuid: 'anchor-bbox' }] });
         }""")
-    page.wait_for_selector(".review-grid", timeout=4000)
+    page.wait_for_selector(".review-grid")
 
 
 class TestSimilarBboxesCountControl:

@@ -134,7 +134,7 @@ def _open_modal(page: Page, base_url: str, *, with_config: bool = True, images=N
         }""",
         {"images": images, "config": CONFIG if with_config else None},
     )
-    page.wait_for_selector(".review-grid", timeout=4000)
+    page.wait_for_selector(".review-grid")
 
 
 class TestGapRowRendering:

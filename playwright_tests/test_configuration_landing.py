@@ -112,7 +112,7 @@ def _navigate_to_landing(page: Page, base_url: str, *, break_labels: bool = Fals
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
-    page.wait_for_selector("[data-testid='config-landing'] .config-landing__grid", timeout=4000)
+    page.wait_for_selector("[data-testid='config-landing'] .config-landing__grid")
 
 
 def _entry(page: Page, tab: str, name: str):

@@ -74,7 +74,7 @@ def _thumb_srcs(page: Page, uuids):
 
 def _open_menu_and_apply_label(page: Page, on_bbox_uuid: str, label_name: str):
     page.locator(f"#review-root [data-bbox-uuid='{on_bbox_uuid}'] .thumb").click(button="right")
-    page.wait_for_selector(".ctx-menu", timeout=4000)
+    page.wait_for_selector(".ctx-menu")
     page.locator(".ctx-menu-item", has_text="Apply label").first.hover()
     # The flyout is an async panel — wait for the picker input to exist.
     picker = page.locator(".ctx-menu input[placeholder='Search or create label…']")

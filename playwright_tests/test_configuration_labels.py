@@ -92,14 +92,14 @@ class TestLabelPaneStructure:
         _navigate_to_labels(page, base_url)
         expect(page.locator("#labels-list")).to_be_visible()
         # Each section has its own Add label button → expect exactly 2.
-        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
+        page.wait_for_selector("#labels-list button[title='Add label']")
         expect(page.locator("#labels-list button[title='Add label']")).to_have_count(2)
 
     def test_two_section_headers_visible(self, page: Page, base_url: str):
         """Object Labels and Image Labels section headers are both rendered."""
         _mock_labels(page, [])
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
+        page.wait_for_selector("#labels-list button[title='Add label']")
         # Section headers are plain divs with all-caps text rendered from JS.
         labels_list = page.locator("#labels-list")
         expect(labels_list).to_contain_text("Object Labels")
@@ -192,7 +192,7 @@ class TestCreateRootLabel:
         )
 
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Object Label']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Object Label']")
 
         add_row = _obj_add_row(page)
         add_row.locator("input[placeholder='New Object Label']").fill("Dog")
@@ -222,7 +222,7 @@ class TestCreateRootLabel:
         page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle_create)
 
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Object Label']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Object Label']")
 
         # Click Add label without filling in a name
         _obj_add_row(page).locator("button[title='Add label']").click()
@@ -247,7 +247,7 @@ class TestAddChildLabel:
         row.locator("button[title='Add Child']").click()
         page.wait_for_timeout(400)
 
-        page.wait_for_selector("#labels-list input[placeholder='New Label Name']", timeout=3000)
+        page.wait_for_selector("#labels-list input[placeholder='New Label Name']")
         expect(page.locator("#labels-list input[placeholder='New Label Name']")).to_be_visible()
 
     def test_create_child_label_sends_parent_uuid(self, page: Page, base_url: str):
@@ -277,7 +277,7 @@ class TestAddChildLabel:
         expect(row).to_be_visible()
 
         row.locator("button[title='Add Child']").click()
-        page.wait_for_selector("#labels-list input[placeholder='New Label Name']", timeout=3000)
+        page.wait_for_selector("#labels-list input[placeholder='New Label Name']")
         page.locator("#labels-list input[placeholder='New Label Name']").fill("Kitten")
         page.locator("#labels-list button[title='Save']").first.click()
         wait_until(page, lambda: calls, "Expected POST to /api/labels")
@@ -388,7 +388,7 @@ class TestLabelScopeEditMode:
         """Both 'Object Labels' and 'Image Labels' sections are rendered."""
         _mock_labels(page, [])
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list button[title='Add label']", timeout=4000)
+        page.wait_for_selector("#labels-list button[title='Add label']")
         expect(page.locator("#labels-list")).to_contain_text("Object Labels")
         expect(page.locator("#labels-list")).to_contain_text("Image Labels")
         # One Add label button per section
@@ -416,7 +416,7 @@ class TestLabelScopeEditMode:
         _mock_labels(page, [])
         page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Object Label']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Object Label']")
 
         add_row = _obj_add_row(page)
         add_row.locator("input[placeholder='New Object Label']").fill("Cat")
@@ -446,7 +446,7 @@ class TestLabelScopeEditMode:
         _mock_labels(page, [])
         page.route(lambda url: url.split("?")[0].endswith("/api/labels"), handle)
         _navigate_to_labels(page, base_url)
-        page.wait_for_selector("#labels-list input[placeholder='New Image Label']", timeout=4000)
+        page.wait_for_selector("#labels-list input[placeholder='New Image Label']")
 
         add_row = _img_add_row(page)
         add_row.locator("input[placeholder='New Image Label']").fill("Corrupt")

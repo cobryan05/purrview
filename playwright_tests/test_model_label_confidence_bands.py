@@ -102,7 +102,7 @@ def _open_edit(page: Page):
     Task configs moved to a list-beside-editor screen: selecting the row *is*
     opening it for editing, so there is no longer a per-row Edit button.
     """
-    page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+    page.wait_for_selector("#task-config-list .le-list-item")
     page.locator("#task-config-list .le-list-item").first.click()
     page.wait_for_timeout(700)
 
@@ -207,7 +207,7 @@ class TestLegacyScalarLoadsAsBand:
         _open_edit(page)
         # Model is pre-selected from the saved config, so label rows render
         # immediately without further interaction.
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -222,7 +222,7 @@ class TestLegacyScalarLoadsAsBand:
         _navigate_to_tasks(page, base_url)
 
         _open_edit(page)
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -252,7 +252,7 @@ class TestEditingBandWritesToConfig:
 
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -282,7 +282,7 @@ class TestEditingBandWritesToConfig:
         page.route("**/api/tasks/configs/create", handle_create)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
 
         page.get_by_test_id("task-type-select").select_option(TASK_TYPE)
         page.wait_for_timeout(800)
@@ -290,7 +290,7 @@ class TestEditingBandWritesToConfig:
         # The model picker inside ModelLabelSelectField is the first <select>
         # in the schema form (the task-type one sits above it, outside the form).
         page.locator("#task-config-list .schema-form select").first.select_option(MODEL_NAME)
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -332,7 +332,7 @@ class TestBandNormalizationMatchesBackend:
 
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -398,7 +398,7 @@ class TestBandNormalizationMatchesBackend:
         _navigate_to_tasks(page, base_url)
 
         _open_edit(page)
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -415,7 +415,7 @@ class TestBandNormalizationMatchesBackend:
         _navigate_to_tasks(page, base_url)
 
         _open_edit(page)
-        page.wait_for_selector("#task-config-list input[type='number']", timeout=5000)
+        page.wait_for_selector("#task-config-list input[type='number']")
 
         number_inputs = page.locator("#task-config-list input[type='number']")
         expect(number_inputs).to_have_count(2)
@@ -454,7 +454,7 @@ class _BandGridBase:
         )
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
-        page.wait_for_selector("#task-config-list .mlsf-band-row", timeout=5000)
+        page.wait_for_selector("#task-config-list .mlsf-band-row")
         expect(page.locator("#task-config-list .mlsf-band-row")).to_have_count(len(self.LABELS))
 
     def _rows(self, page: Page):
@@ -629,7 +629,7 @@ class TestBandGridInsideArrayField(_BandGridBase):
         )
         _navigate_to_tasks(page, base_url)
         _open_edit(page)
-        page.wait_for_selector("#task-config-list .mlsf-band-row", timeout=8000)
+        page.wait_for_selector("#task-config-list .mlsf-band-row")
         expect(page.locator("#task-config-list .mlsf-band-row")).to_have_count(len(self.LABELS))
 
     def test_widget_fills_its_array_row_instead_of_collapsing(self, page: Page, base_url: str):

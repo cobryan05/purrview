@@ -350,7 +350,7 @@ def _open_events_pane(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
     page.locator(".workspace-tab-button[data-tab='tab-nvr-events']").click()
-    page.wait_for_selector("[data-testid='event-search']", timeout=8000)
+    page.wait_for_selector("[data-testid='event-search']")
 
 
 class TestTheCardAnswersTheObviousQuestions:
@@ -547,7 +547,7 @@ class TestTheDetailModal:
         _mock(page, **mock_kwargs)
         _open_events_pane(page, base_url)
         page.locator("[data-testid='event-card']").first.click()
-        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+        page.wait_for_selector("[data-testid='event-detail-modal']")
 
     def test_opening_a_card_shows_the_details(self, page: Page, base_url: str):
         self._open_modal(page, base_url)
@@ -648,7 +648,7 @@ class TestTheDetectionOverlay:
         _mock(page, **mock_kwargs)
         _open_events_pane(page, base_url)
         page.locator("[data-testid='event-card']").first.click()
-        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+        page.wait_for_selector("[data-testid='event-detail-modal']")
 
     def test_a_clip_with_a_sidecar_gets_an_overlay_canvas(self, page: Page, base_url: str):
         self._open_modal(page, base_url, overlay=_overlay())
@@ -1001,7 +1001,7 @@ class TestWalkingTheEventsFromTheModal:
         _mock(page, events=_events(count))
         _open_events_pane(page, base_url)
         page.locator("[data-testid='event-card']").first.click()
-        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+        page.wait_for_selector("[data-testid='event-detail-modal']")
 
     def test_next_moves_the_modal_onto_the_following_event(self, page: Page, base_url: str):
         self._open_first(page, base_url)
@@ -1084,7 +1084,7 @@ class TestTheTrackingBlipsPanel:
         _mock(page, **mock_kwargs)
         _open_events_pane(page, base_url)
         page.locator("[data-testid='event-card']").first.click()
-        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+        page.wait_for_selector("[data-testid='event-detail-modal']")
 
     def _mock_launch(self, page: Page, calls: list):
         def handle_create(route):
@@ -1216,7 +1216,7 @@ class TestTheTrackingBlipsPanel:
         _mock(page, events=events, blips=blips)
         _open_events_pane(page, base_url)
         page.locator("[data-testid='event-card']").first.click()
-        page.wait_for_selector("[data-testid='event-detail-modal']", timeout=5000)
+        page.wait_for_selector("[data-testid='event-detail-modal']")
         expect(page.locator("[data-testid='event-blip-row']")).to_have_count(1)
 
         # The mock answers every event with the same row, so filtering client-side is

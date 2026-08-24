@@ -78,7 +78,7 @@ class TestTagPaneStructure:
         errors: list[str] = []
         page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
         _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list button[title='Add tag']", timeout=4000)
+        page.wait_for_selector("#tags-list button[title='Add tag']")
         assert errors == [], f"Console errors: {errors}"
 
 
@@ -169,7 +169,7 @@ class TestTagCreate:
         page.route("**/api/tags/add", handle_add)
 
         _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list input[placeholder='New Tag Name']", timeout=4000)
+        page.wait_for_selector("#tags-list input[placeholder='New Tag Name']")
 
         page.locator("#tags-list input[placeholder='New Tag Name']").fill("Whiskers")
         page.locator("#tags-list button[title='Add tag']").click()
@@ -193,7 +193,7 @@ class TestTagCreate:
         _mock_tags(page, [])
 
         _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list button[title='Add tag']", timeout=4000)
+        page.wait_for_selector("#tags-list button[title='Add tag']")
 
         # Leave the name field empty and click Add tag
         page.locator("#tags-list button[title='Add tag']").click()
@@ -218,7 +218,7 @@ class TestTagCreate:
         page.route("**/api/tags/add", handle_add)
 
         _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list input[placeholder='New Tag Name']", timeout=4000)
+        page.wait_for_selector("#tags-list input[placeholder='New Tag Name']")
         page.locator("#tags-list input[placeholder='New Tag Name']").fill("Mittens")
         page.locator("#tags-list button[title='Add tag']").click()
         wait_until(page, lambda: calls, "Expected POST to /api/tags/add")
@@ -238,7 +238,7 @@ class TestTagCreate:
 
         page.route("**/api/tags/list", handle_list)
         _navigate_to_tags(page, base_url)
-        page.wait_for_selector("#tags-list button[title='Refresh']", timeout=4000)
+        page.wait_for_selector("#tags-list button[title='Refresh']")
 
         calls_before = call_count[0]
         page.locator("#tags-list button[title='Refresh']").click()

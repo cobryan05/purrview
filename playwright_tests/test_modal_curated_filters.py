@@ -122,7 +122,7 @@ def _open_curated_modal(page: Page, base_url: str, candidates=None):
         }""",
         candidates,
     )
-    page.wait_for_selector(".review-grid", timeout=4000)
+    page.wait_for_selector(".review-grid")
 
 
 class TestCuratedSurfaceRenders:

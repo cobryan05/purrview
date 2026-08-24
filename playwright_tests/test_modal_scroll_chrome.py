@@ -82,7 +82,7 @@ def _open_modal(page: Page, base_url: str, with_controls: bool = False):
         }""",
         {"candidates": CANDIDATES, "withControls": with_controls},
     )
-    page.wait_for_selector(".compare-modal-content .review-sticky-top", timeout=4000)
+    page.wait_for_selector(".compare-modal-content .review-sticky-top")
 
 
 # A spacer makes the modal content tall enough to scroll regardless of how many

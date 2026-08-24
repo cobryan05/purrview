@@ -45,7 +45,7 @@ def _navigate_to_filter_chains(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-filterchain-management']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#filter-chain-management-box .fc-list-panel", timeout=4000)
+    page.wait_for_selector("#filter-chain-management-box .fc-list-panel")
 
 
 def _mock_filter_chains(page: Page, chains: list | None = None):

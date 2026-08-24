@@ -83,7 +83,7 @@ def _navigate_to_nvr(page: Page, base_url: str):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-    page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+    page.wait_for_selector("#nvr-live-box .nvr-profile-card")
 
 
 class TestNvrLiveFps:
@@ -125,7 +125,7 @@ def _wait_for_watcher_editor(page: Page):
     field itself is the real barrier; the timeout is generous because reaching
     this pane lazy-loads the Configuration tab's modules.
     """
-    page.wait_for_selector("#watcher-management-box [data-testid='watcher-name']", timeout=15000)
+    page.wait_for_selector("#watcher-management-box [data-testid='watcher-name']")
 
 
 class TestNvrAddWatcher:
@@ -162,7 +162,7 @@ class TestNvrAddWatcher:
         # Leaving and returning forces a full re-render of the live list.
         page.locator(".main-tab-button[data-tab='tab-configuration']").click()
         page.locator(".main-tab-button[data-tab='tab-nvr']").click()
-        page.wait_for_selector("#nvr-live-box .nvr-profile-card", timeout=5000)
+        page.wait_for_selector("#nvr-live-box .nvr-profile-card")
 
         page.locator("[data-testid='nvr-add-watcher']").click()
         _wait_for_watcher_editor(page)

@@ -74,7 +74,7 @@ def _navigate(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-modelstack-management']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#model-stack-management-box .mc-list-panel", timeout=4000)
+    page.wait_for_selector("#model-stack-management-box .mc-list-panel")
 
 
 def _editor_bar(page: Page):

@@ -179,7 +179,7 @@ def _select_type(page: Page, typename: str = TASK_TYPE):
 
 def _open_config(page: Page, name: str = FAKE_CONFIG["name"]):
     """Click a config row in the list to load it into the editor."""
-    page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+    page.wait_for_selector("#task-config-list .le-list-item")
     page.locator("#task-config-list .le-list-item", has_text=name).first.click()
     expect(page.locator("#task-config-list .le-editor")).to_be_visible()
 
@@ -292,7 +292,7 @@ class TestTaskConfigList:
         """Configs returned from /api/tasks/configs/get appear as list rows."""
         _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+        page.wait_for_selector("#task-config-list .le-list-item")
         content = page.locator("#task-config-list .le-list-panel").inner_text()
         assert FAKE_CONFIG["name"] in content, f"Config name not found in: {content!r}"
 
@@ -300,7 +300,7 @@ class TestTaskConfigList:
         """A row's meta line names the task type, so the list is scannable."""
         _setup_full_task_mocks(page, configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+        page.wait_for_selector("#task-config-list .le-list-item")
         expect(page.locator("#task-config-list .le-list-item").first).to_contain_text(TASK_TYPE)
 
     def test_selecting_config_loads_it_into_editor(self, page: Page, base_url: str):
@@ -326,7 +326,7 @@ class TestTaskConfigList:
             configs={FAKE_CONFIG["uuid"]: FAKE_CONFIG, other["uuid"]: other},
         )
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+        page.wait_for_selector("#task-config-list .le-list-item")
         expect(page.locator("#task-config-list .le-list-item:visible")).to_have_count(2)
 
         page.locator("#task-config-list .le-list-search input").fill("Weekly")
@@ -349,7 +349,7 @@ class TestTaskTypeDropdown:
         _mock_active_tasks(page, {})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
 
         options = _type_select(page).locator("option").all_text_contents()
         for t in types:
@@ -369,7 +369,7 @@ class TestTaskTypeDropdown:
         _mock_active_tasks(page, {})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
 
         options = _type_select(page).locator("option").all_text_contents()
         assert "DatabaseMaintenanceTask" in options, options
@@ -432,7 +432,7 @@ class TestTaskTypeDropdown:
         _mock_active_tasks(page, {})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _type_select(page).select_option(TASK_TYPE)
         wait_until(page, lambda: schema_calls, "Expected /api/tasks/types/schema to be called after type selection")
         assert TASK_TYPE in schema_calls[0]
@@ -441,7 +441,7 @@ class TestTaskTypeDropdown:
         """After selecting a task type, schema-driven fields appear in the editor."""
         _setup_full_task_mocks(page, configs={}, tasks={})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
 
         _type_select(page).select_option(TASK_TYPE)
 
@@ -461,7 +461,7 @@ class TestTaskTypeDropdown:
         """
         _setup_full_task_mocks(page, configs={}, tasks={})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
 
         editor = page.locator("#task-config-list .le-editor")
@@ -479,7 +479,7 @@ class TestTaskTypeDropdown:
         """
         _setup_full_task_mocks(page, configs={}, tasks={})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _type_select(page).select_option(TASK_TYPE)
 
         box = page.locator("#task-config-list .le-editor .schema-form input[type='checkbox']").first
@@ -516,7 +516,7 @@ class TestCreateTaskConfig:
         page.route("**/api/tasks/configs/create", handle_create)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
 
         _select_type(page)
         _name_input(page).fill("My Refresh Job")
@@ -544,7 +544,7 @@ class TestCreateTaskConfig:
         _setup_full_task_mocks(page, configs={}, tasks={})
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
 
         create_btn = _editor_bar(page).locator("button", has_text="Create")
@@ -572,7 +572,7 @@ class TestCreateTaskConfig:
         page.route("**/api/tasks/configs/create", handle_create)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
 
         _name_input(page).fill("Refresh Job")
@@ -594,7 +594,7 @@ class TestPersistentFlag:
         """The config form offers a persistent checkbox, defaulting unchecked."""
         _setup_full_task_mocks(page, configs={}, tasks={})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
 
         chk = page.locator("#task-config-list").get_by_label("Restart automatically after a server restart")
@@ -617,7 +617,7 @@ class TestPersistentFlag:
         page.route("**/api/tasks/configs/create", handle_create)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
         _name_input(page).fill("Persist Test")
         _editor_bar(page).locator("button", has_text="Create").click()
@@ -642,7 +642,7 @@ class TestPersistentFlag:
         page.route("**/api/tasks/configs/create", handle_create)
 
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
         _name_input(page).fill("Persist Test")
         page.locator("#task-config-list").get_by_label("Restart automatically after a server restart").check()
@@ -660,7 +660,7 @@ class TestPersistentFlag:
         }
         _setup_full_task_mocks(page, configs={persistent["uuid"]: persistent}, tasks={})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+        page.wait_for_selector("#task-config-list .le-list-item")
         expect(page.locator("#task-config-list .le-list-item .le-chip")).to_have_text("persistent")
 
 
@@ -715,7 +715,7 @@ class TestActiveTaskProgressBar:
         _setup_full_task_mocks(page, configs={}, tasks={task_id: INDETERMINATE_TASK})
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
@@ -732,7 +732,7 @@ class TestActiveTaskProgressBar:
         _setup_full_task_mocks(page, configs={}, tasks={task_id: ZERO_PROGRESS_TASK})
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
@@ -747,7 +747,7 @@ class TestActiveTaskProgressBar:
         _setup_full_task_mocks(page, configs={}, tasks={task_id: RUNNING_TASK})
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary", timeout=5000)
+        page.wait_for_selector(f"[data-task-uuid='{task_id}'] summary")
         page.locator(f"[data-task-uuid='{task_id}'] summary").click()
 
         bar = page.locator(f"[data-task-uuid='{task_id}'] progress")
@@ -825,7 +825,7 @@ class TestTaskLifecycleButtons:
         page.route("**/api/tasks/instances/cancel", handle_cancel)
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button[title='Stop']", timeout=5000)
+        page.wait_for_selector("#active-tasks-list button[title='Stop']")
         page.locator("#active-tasks-list button[title='Stop']").first.click()
         wait_until(page, lambda: cancel_calls, "Expected POST to /api/tasks/instances/cancel")
         assert task_id in cancel_calls[0].get("taskUuids", [])
@@ -836,7 +836,7 @@ class TestTaskLifecycleButtons:
         _setup_full_task_mocks(page, configs={}, tasks={task_id: COMPLETED_TASK})
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button[title='Delete']", timeout=5000)
+        page.wait_for_selector("#active-tasks-list button[title='Delete']")
 
         dialogs: list[str] = []
         page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
@@ -860,7 +860,7 @@ class TestTaskLifecycleButtons:
         page.route("**/api/tasks/instances/delete", handle_delete)
 
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list button[title='Delete']", timeout=5000)
+        page.wait_for_selector("#active-tasks-list button[title='Delete']")
 
         page.on("dialog", lambda d: d.accept())
         page.locator("#active-tasks-list button[title='Delete']").first.click()
@@ -1076,7 +1076,7 @@ class TestSchemaFieldHelpText:
         _mock_task_configs(page, {})
         _mock_active_tasks(page, {})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
         return page.locator("#task-config-list .le-editor")
 
@@ -1154,7 +1154,7 @@ class TestErroredTaskShowsWhyItFailed:
             ),
         )
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list summary", timeout=5000)
+        page.wait_for_selector("#active-tasks-list summary")
         page.locator("#active-tasks-list summary").first.click()
 
     def test_error_message_is_shown_on_the_card(self, page: Page, base_url: str):
@@ -1176,7 +1176,7 @@ class TestErroredTaskShowsWhyItFailed:
         task_id = COMPLETED_TASK["instance"]["uuid"]
         _setup_full_task_mocks(page, configs={}, tasks={task_id: COMPLETED_TASK})
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list summary", timeout=5000)
+        page.wait_for_selector("#active-tasks-list summary")
         page.locator("#active-tasks-list summary").first.click()
         expect(page.get_by_test_id("task-error-message")).to_have_count(0)
 
@@ -1226,7 +1226,7 @@ class TestCompletedTaskKeepsItsStatusWidgets:
 
         page.route("**/api/tasks/instances/status-data", handle_status_data)
         _navigate_to_activity(page, base_url)
-        page.wait_for_selector("#active-tasks-list summary", timeout=5000)
+        page.wait_for_selector("#active-tasks-list summary")
         page.locator("#active-tasks-list summary").first.click()
 
     def test_persisted_stats_and_histogram_render(self, page: Page, base_url: str):
@@ -1291,7 +1291,7 @@ class TestTagsSchemaField:
         _mock_task_configs(page, {})
         _mock_active_tasks(page, {})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
         return page.locator("#task-config-list .le-editor")
 
@@ -1374,7 +1374,7 @@ class TestPythonSpelledSchemaTypes:
         _mock_task_configs(page, {})
         _mock_active_tasks(page, {})
         _navigate_to_tasks(page, base_url)
-        page.wait_for_selector("[data-testid='task-type-select']", timeout=5000)
+        page.wait_for_selector("[data-testid='task-type-select']")
         _select_type(page)
         return page.locator("#task-config-list .le-editor")
 

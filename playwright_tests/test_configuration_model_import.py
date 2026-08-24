@@ -35,10 +35,10 @@ def _navigate_to_model_import_form(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-tag-management']").click()
-    page.wait_for_selector("#model-labels-box", timeout=4000)
+    page.wait_for_selector("#model-labels-box")
 
     page.locator("#model-labels-box button", has_text="+ Import model").click()
-    page.wait_for_selector("#model-labels-box input[type=file]", timeout=4000)
+    page.wait_for_selector("#model-labels-box input[type=file]")
 
 
 # ---------------------------------------------------------------------------

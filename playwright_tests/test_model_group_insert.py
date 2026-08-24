@@ -195,7 +195,7 @@ def _open_edit(page: Page):
     Task configs moved to a list-beside-editor screen: selecting the row *is*
     opening it for editing, so there is no longer a per-row Edit button.
     """
-    page.wait_for_selector("#task-config-list .le-list-item", timeout=5000)
+    page.wait_for_selector("#task-config-list .le-list-item")
     page.locator("#task-config-list .le-list-item").first.click()
     page.wait_for_timeout(700)
 

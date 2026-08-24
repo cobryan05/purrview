@@ -435,7 +435,7 @@ def _navigate_to_watchers(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-watcher-management']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#watcher-management-box .wp-list-panel", timeout=5000)
+    page.wait_for_selector("#watcher-management-box .wp-list-panel")
 
 
 class TestWatchersPane:

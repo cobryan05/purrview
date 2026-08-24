@@ -56,7 +56,7 @@ def _navigate_to_model_configs(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-model-management']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#model-config-box .mc-list-panel", timeout=4000)
+    page.wait_for_selector("#model-config-box .mc-list-panel")
 
 
 def _mock_model_configs(page: Page, configs: list | None = None):

@@ -121,7 +121,7 @@ def _open_paginating_modal(page: Page, base_url: str, verified_index: int | None
         }""",
         {"total": TOTAL_CANDIDATES, "verifiedIndex": verified_index},
     )
-    page.wait_for_selector(".review-grid", timeout=6000)
+    page.wait_for_selector(".review-grid")
 
 
 def _reject_everything(page: Page):

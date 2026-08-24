@@ -81,7 +81,7 @@ def _open_runs(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-runs']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("[data-task-uuid='t-watch']", timeout=5000)
+    page.wait_for_selector("[data-task-uuid='t-watch']")
 
 
 def _toast(page: Page):

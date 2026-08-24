@@ -176,7 +176,7 @@ def _navigate_to_training_configs(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
     page.wait_for_load_state("networkidle")
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-training-management']").click()
-    page.wait_for_selector("#training-config-box .panel-box", timeout=4000)
+    page.wait_for_selector("#training-config-box .panel-box")
 
 
 def _box(page: Page):
@@ -629,7 +629,7 @@ class TestReadinessPanel:
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
 
-        page.wait_for_selector("#training-config-box div:has-text('Training readiness')", timeout=3000)
+        page.wait_for_selector("#training-config-box div:has-text('Training readiness')")
         needs_review_span = _box(page).get_by_test_id("training-readiness-needs-review-count")
         expect(needs_review_span).to_contain_text("0 need review")
         style = needs_review_span.get_attribute("style") or ""
@@ -857,8 +857,8 @@ class TestLabelStatsPanelBboxColumns:
         _navigate_to_training_configs(page, base_url)
         _list_item(page, "tc-1").click()
         # Wait for the label stats table to appear
-        page.wait_for_selector("text=Dataset coverage by label", timeout=5000)
-        page.wait_for_selector("thead th[title^='Verified boxes']", timeout=3000)
+        page.wait_for_selector("text=Dataset coverage by label")
+        page.wait_for_selector("thead th[title^='Verified boxes']")
 
     def test_verified_boxes_click_calls_has_verified_bbox_status(self, page: Page, base_url: str):
         """Clicking the Verified boxes count calls images-by-label-status with status=has_verified_bbox."""

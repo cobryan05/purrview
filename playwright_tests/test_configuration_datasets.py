@@ -64,7 +64,7 @@ def _navigate_to_datasets(page: Page, base_url: str):
     page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-dataset-management']").click()
     page.wait_for_load_state("networkidle")
     # New DOM: panel-box structure
-    page.wait_for_selector("#dataset-management-box .ds-list-panel", timeout=4000)
+    page.wait_for_selector("#dataset-management-box .ds-list-panel")
 
 
 def _mock_datasets(page: Page, datasets: list | None = None):
