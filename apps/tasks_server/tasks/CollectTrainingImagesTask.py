@@ -47,6 +47,7 @@ from apps.helpers.imageProviders.imageProvider import (
 )
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.training.collectorSpec import collector_params_schema
 
 from ._filter_chain_runner import FilterChainRunner
 from .ApplyFilterChainTask import (
@@ -2934,26 +2935,18 @@ class CollectTrainingImagesTask(Task):
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
-        return {
-            "meta": {
-                "order": [
-                    "output_dir",
-                    "snapshot_interval",
-                    "stream_interval",
-                    "source_uuids",
-                    "model_label_config",
-                    "overlap_iou_threshold",
-                    "merge_policy",
-                    "apply_tags",
-                    "generate_task_tag",
-                    "task_tag_name",
-                    "filter_chain_uuid",
-                    "max_images",
-                    "max_duration",
-                    "ambiguity_group",
-                    "dedup_group",
-                ]
-            },
+        """The collector's knobs plus the three params that belong to this loop.
+
+        The bulk of the form lives in `collector_params_schema()` so the collector
+        editor and this task render one definition (see collectorSpec.py); only
+        `source_uuids` / `snapshot_interval` / `stream_interval` are ours, because
+        only a driver that rotates providers has sources or a pacing interval.
+        """
+        collector = collector_params_schema()
+        order = list(collector["meta"]["order"])
+        # Straight after output_dir, which is where they have always rendered.
+        order[1:1] = ["snapshot_interval", "stream_interval", "source_uuids"]
+        loop_params = {
             "snapshot_interval": {
                 "type": "int",
                 "label": "Snapshot Interval (s)",
@@ -2977,300 +2970,9 @@ class CollectTrainingImagesTask(Task):
                     "description": "Pre-configured source to pull images from",
                 },
             },
-            "output_dir": {
-                "type": "directory",
-                "label": "Output Directory",
-                "required": True,
-                "description": "Directory relative to image dataset root where images will be saved",
-            },
-            "model_label_config": {
-                "type": "array",
-                "required": False,
-                "label": "Model/Label Configuration",
-                "description": (
-                    "Models to run on each frame, and the per-label confidence range that decides what "
-                    "gets tagged and what gets collected. The two bounds do different jobs:\n\n"
-                    "• Tag from — detections at or above this get an unverified box on any frame that "
-                    "is saved, no matter how confident they are. Set to 0 to disable the label.\n"
-                    "• Review up to — a frame is only collected when some detection falls at or below "
-                    "this. Detections above it are still boxed on frames saved for something else; "
-                    "they just aren't a reason to save a frame on their own. Set to 0 to tag the label "
-                    "without ever letting it trigger a review on its own — it'll still be boxed on any "
-                    "frame saved for another reason.\n\n"
-                    "That split is the point: a detection your model is already certain about "
-                    "(say a cat at 0.95) teaches you nothing at review time, while the 0.4 guesses are "
-                    "where your labelling actually adds signal. Lower 'Review up to' to collect only "
-                    "the uncertain cases; leave it at 1 to collect everything above the floor.\n\n"
-                    "Leave the whole list empty to collect every frame unannotated (the filter chain "
-                    "and deduplication settings below still apply)."
-                ),
-                "allow_group_insert": True,
-                "items": {
-                    "type": "model_label",
-                    "label": "Model/Label selection",
-                    "required": True,
-                    "description": "Labels to collect",
-                    "min_label": "Tag from",
-                    "max_label": "Review up to",
-                    "band_help": (
-                        "Select a model, then set each label's range: tag anything at or above "
-                        "'Tag from' (0 disables the label), but only save the frame for review when a "
-                        "detection is also at or below 'Review up to' (0 disables review for this label "
-                        "without disabling tagging)."
-                    ),
-                },
-            },
-            "overlap_iou_threshold": {
-                "type": "float",
-                "label": "Multi-Model Overlap IoU Threshold",
-                "description": (
-                    "When multiple models detect the same region, boxes from later-configured models are discarded "
-                    "if they overlap a higher-priority model's box at or above this IoU value (0–1). "
-                    "Lower values discard more aggressively; higher values allow more overlap before deduplication."
-                ),
-                "default": SAME_BBOX_IOU_THRESHOLD,
-                "min": 0.0,
-                "max": 1.0,
-                "step": 0.05,
-            },
-            "merge_policy": {
-                "type": "select",
-                "label": "Multi-Model Merge Policy",
-                "description": (
-                    "When two models produce a same-label, overlapping detection, which one wins: "
-                    "the higher-priority (earlier-configured) model, or the lower-priority (later-configured) one. "
-                    "Hierarchy supersede (a more specific label beats a coarser ancestor label) applies either way."
-                ),
-                "default": MergePolicy.FIRST_WINS.value,
-                "options": [
-                    {"value": MergePolicy.FIRST_WINS.value, "label": "First model wins (priority order)"},
-                    {"value": MergePolicy.LAST_WINS.value, "label": "Last model wins (reverse priority order)"},
-                ],
-            },
-            "apply_tags": {
-                "type": "tags",
-                "label": "Apply Tags",
-                "description": "Tags to apply to every bounding box in each saved image.",
-                "default": [],
-                "allow_add_tag": True,
-            },
-            "generate_task_tag": {
-                "type": "boolean",
-                "label": "Tag images with a tag unique to this task",
-                "description": "Creates a dedicated tag for this task config and applies it to all saved images. Useful for reviewing just this task's output.",
-                "default": False,
-            },
-            "task_tag_name": {
-                "type": "string",
-                "label": "Generated tag name (optional)",
-                "description": "Custom name for the per-task generated tag. Defaults to the config name if left blank.",
-                "default": "",
-            },
-            "filter_chain_uuid": {
-                "type": "filter_chain_uuid",
-                "label": "Filter Chain (optional)",
-                "required": False,
-                "description": (
-                    "Run this chain against each frame's detections before saving — "
-                    "discard corrupt frames, relabel known false-positives, or strip/tag "
-                    "matches before they ever land in the dataset."
-                ),
-            },
-            "max_images": {
-                "type": "int",
-                "label": "Max Images to Save",
-                "description": (
-                    "Stop the task once this many images have been saved. "
-                    "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
-                ),
-                "default": 0,
-            },
-            "max_duration": {
-                "type": "float",
-                "label": "Max Duration (s)",
-                "description": (
-                    "Stop the task after this many seconds of run time have elapsed. "
-                    "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
-                ),
-                "default": 0,
-            },
-            "ambiguity_group": {
-                "type": "group",
-                "label": "Confusable Detections",
-                "collapsed": True,
-                "fields": {
-                    "enable_ambiguity": {
-                        "type": "boolean",
-                        "label": "Collect confusable detections",
-                        "description": (
-                            "Also save a frame when a model is confident but can't decide *what* it saw — "
-                            "its runner-up class scored almost as high as the winner (e.g. cat 0.91, "
-                            "dog 0.88).\n\n"
-                            "This is a separate trigger from the confidence range above, and it catches "
-                            "the opposite failure. The range finds detections the model is unsure "
-                            "about; this finds detections it is sure about but confused by. A confident "
-                            "confusion usually means the model learned a feature that fires for two "
-                            "classes at once, so one correction here fixes a systematic error rather "
-                            "than a single hard frame.\n\n"
-                            "Boxes that trigger it are tagged 'Confusable' — filter on that tag in "
-                            "Review, or use the task's 'Browse confusable' button."
-                        ),
-                        "default": False,
-                    },
-                    "ambiguity_metric": {
-                        "type": "select",
-                        "label": "Closeness Measure",
-                        "description": (
-                            "How 'close' the runner-up has to be. Ratio compares it as a fraction of the "
-                            "winner (0.88/0.91 = 0.97); margin is the absolute gap (0.03).\n\n"
-                            "Prefer ratio for detection models (YOLO): their class scores are independent "
-                            "and don't sum to 1, so a fixed margin means very different things at high and "
-                            "low confidence. Margin suits classifiers, where the classes compete directly."
-                        ),
-                        "options": [
-                            {"value": AMBIGUITY_METRIC_RATIO, "label": "Ratio — runner-up ÷ winner (recommended)"},
-                            {"value": AMBIGUITY_METRIC_MARGIN, "label": "Margin — winner − runner-up"},
-                        ],
-                        "default": AMBIGUITY_METRIC_RATIO,
-                    },
-                    "ambiguity_threshold": {
-                        "type": "float",
-                        "label": "Closeness Threshold",
-                        "description": (
-                            "Flag the detection when the ratio is at or ABOVE this (0.7 = runner-up scored "
-                            "at least 70% of the winner), or when the margin is at or BELOW it.\n\n"
-                            "Not sure what to use? Turn this on with a high ratio (0.9) for a short run and "
-                            "watch 'Confusable' in the task's live status — it reports how many detections "
-                            "were measured, how many were flagged, and the median closeness actually seen, "
-                            "so you can set this from your own footage instead of guessing."
-                        ),
-                        "default": 0.7,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.05,
-                    },
-                    "ambiguity_scope": {
-                        "type": "select",
-                        "label": "Which Runner-up Classes Count",
-                        "description": (
-                            "Whether the runner-up has to be a label you configured above. Restricting it "
-                            "keeps a long run focused on confusions you can act on; 'any class' also "
-                            "reports being confused with something you aren't collecting, which is a real "
-                            "finding but much noisier."
-                        ),
-                        "options": [
-                            {"value": "configured", "label": "Only labels configured above (recommended)"},
-                            {"value": "any", "label": "Any class the model knows"},
-                        ],
-                        "default": "configured",
-                    },
-                    "ambiguity_min_confidence": {
-                        "type": "float",
-                        "label": "Minimum Winner Confidence",
-                        "description": (
-                            "Ignore confusion below this confidence. Weak detections are already collected "
-                            "by the confidence range above, so this stops the same frames being flagged "
-                            "twice for two different reasons. 0 = no floor."
-                        ),
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.05,
-                    },
-                    "ambiguity_cross_model": {
-                        "type": "boolean",
-                        "label": "Also flag disagreements between models",
-                        "description": (
-                            "When two of the models above put incompatible labels on the same object "
-                            "(one says cat, the other says dog), flag it — two independently trained "
-                            "models disagreeing is a strong signal, and both boxes get marked with the "
-                            "other model named.\n\n"
-                            "A parent/child pair (Animal vs Cat) is not a disagreement and is never "
-                            "flagged. Has no effect with only one model configured, and unlike the "
-                            "check above it works with every model type — including end-to-end exports "
-                            "that cannot report runner-up classes at all."
-                        ),
-                        "default": True,
-                    },
-                    "ambiguity_top_k": {
-                        "type": "int",
-                        "label": "Classes to Compare",
-                        "description": (
-                            "How many of the model's best guesses to look at per detection, including the "
-                            "winner. 3 is plenty — only the best in-scope runner-up is ever used. Costs "
-                            "nothing extra to compute; the model already scores every class."
-                        ),
-                        "default": 3,
-                    },
-                },
-            },
-            "dedup_group": {
-                "type": "group",
-                "label": "Deduplication",
-                "collapsed": True,
-                "fields": {
-                    "enable_dedup": {
-                        "type": "boolean",
-                        "label": "Enable Deduplication",
-                        "description": "Check each frame against the perceptual hash index and handle duplicate detections.",
-                        "default": False,
-                    },
-                    "duplicate_action": {
-                        "type": "select",
-                        "label": "Action on Duplicate",
-                        "description": "What to do when a detection matches an existing entry in the perceptual hash index.",
-                        "options": [
-                            {
-                                "value": "discard",
-                                "label": "Keep if any unique — discard the frame only when all detections are duplicates",
-                            },
-                            {
-                                "value": "discard_image",
-                                "label": "Discard if image matches — skip the frame when the whole scene is a perceptual duplicate",
-                            },
-                            {
-                                "value": "ignore",
-                                "label": "Ignore — save normally without any duplicate marking",
-                            },
-                            {
-                                "value": "measure",
-                                "label": "Measure only (calibration) — keep every frame, but measure how duplicate it was",
-                            },
-                        ],
-                        "default": "discard",
-                        "help": (
-                            "Not sure what to set the thresholds below to? Run the task once with "
-                            "'Measure only (calibration)'. It discards nothing — every frame is saved as if "
-                            "deduplication were off — but it measures how close each frame was to what you "
-                            "already have, and the task's live status panel then shows a distance histogram "
-                            "plus a sweep table telling you how many frames each candidate threshold would "
-                            "have discarded. Let it run over a representative stretch of footage, read the "
-                            "threshold off the table, set it here, then switch back to a discard action.\n\n"
-                            "Calibrating this way matters because once frames are being discarded the "
-                            "measurement is biased: discarded frames never enter the index, so the remaining "
-                            "frames look more unique than they are. Calibration mode keeps the sample honest."
-                        ),
-                    },
-                    "image_dup_threshold": {
-                        "type": "int",
-                        "label": "Image Duplicate Threshold",
-                        "description": (
-                            "Max Hamming distance for two whole-image phashes to be considered the same scene. "
-                            "0 = only near-identical frames; larger = more aggressive discarding. "
-                            "Run in 'Measure only (calibration)' mode to see what value suits your cameras."
-                        ),
-                        "default": 5,
-                    },
-                    "bbox_dup_threshold": {
-                        "type": "int",
-                        "label": "BBox Duplicate Threshold",
-                        "description": (
-                            "Max Hamming distance for two bbox crop phashes to be considered the same object "
-                            "appearance. Crop hashes are wider than image hashes, so this scale runs higher — "
-                            "don't copy the image threshold across. Calibrate it the same way."
-                        ),
-                        "default": 8,
-                    },
-                },
-            },
+        }
+        return {
+            "meta": {**collector["meta"], "order": order},
+            **loop_params,
+            **{k: v for k, v in collector.items() if k != "meta"},
         }
