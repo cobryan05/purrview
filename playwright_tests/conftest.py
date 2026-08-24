@@ -21,12 +21,6 @@ from fastapi.responses import JSONResponse
 # ---------------------------------------------------------------------------
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 def _make_label_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "labels": []})
@@ -293,11 +287,24 @@ def live_server() -> Generator[str, None, None]:
     web_app = WebApp(app_name="test", manager=manager)
     asgi_app = web_app.app()
 
-    port = _free_port()
+    # Hand uvicorn the *bound socket*, not a port number. Binding port 0 and then
+    # closing the socket to keep the number (the previous `_free_port()`) leaves the
+    # port free to anyone between that close and uvicorn's bind, and
+    # free for anyone — and every xdist worker starts its own server at roughly the
+    # same moment. Two workers drawing the same number is rare enough to look like a
+    # random infrastructure failure and presents as an unrelated-looking
+    # "address already in use" in whichever file lost, or worse, one worker's browser
+    # talking to another worker's app. Holding the socket open makes the port
+    # unavailable to any other bind for the whole session.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+
     config = uvicorn.Config(app=asgi_app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
 
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
     thread.start()
 
     # wait until the server is accepting connections
@@ -310,6 +317,7 @@ def live_server() -> Generator[str, None, None]:
     # --- teardown ---
     server.should_exit = True
     thread.join(timeout=5)
+    sock.close()  # idempotent; uvicorn closes it too, but not if the thread hung
 
     for proxy_obj, original_fn in originals:
         proxy_obj.handle_request = original_fn
