@@ -80,7 +80,12 @@ let _stats = null;
 let _readiness = null;
 /** True if the most recent readiness fetch attempt failed (distinct from "not yet fetched"). */
 let _readinessFailed = false;
-let _statsFetching = false;
+/**
+ * The in-flight stats fetch, or null. Callers *join* this promise rather than being
+ * turned away: a plain `if (fetching) return` boolean sends the second caller onward
+ * with the cache still empty, which is indistinguishable from "the fetch failed".
+ */
+let _statsPromise = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -109,25 +114,39 @@ async function _computeLabelUuids(tc) {
 }
 
 async function _doFetchStats() {
-  if (!_config || _statsFetching) return;
-  _statsFetching = true;
-  // Fetched independently: a readiness failure shouldn't blank out label
-  // stats that loaded fine, or vice versa.
-  const [statsResult, readinessResult] = await Promise.allSettled([
-    fetchTrainingConfigLabelStats(_config.uuid),
-    fetchTrainingConfigReadiness(_config.uuid),
-  ]);
-  if (statsResult.status === 'fulfilled') _stats = statsResult.value;
-  else console.warn('[activeTrainingConfig] Failed to fetch label stats:', statsResult.reason);
-  if (readinessResult.status === 'fulfilled') {
-    _readiness = readinessResult.value;
-    _readinessFailed = false;
-  } else {
-    console.warn('[activeTrainingConfig] Failed to fetch readiness:', readinessResult.reason);
-    _readinessFailed = true;
+  if (!_config) return;
+  // Join an in-flight fetch instead of returning empty-handed. The old guard was a
+  // bare boolean with an early `return`, so a second caller — typically the coverage
+  // popup opening while setActive()'s own fetch was still running — resumed with the
+  // cache untouched and reported "Could not load stats" for a fetch that was about to
+  // succeed. `refreshStats()` nulls the cache before calling here, so that second
+  // caller also destroyed stats that had loaded fine.
+  if (_statsPromise) return _statsPromise;
+
+  _statsPromise = (async () => {
+    // Fetched independently: a readiness failure shouldn't blank out label
+    // stats that loaded fine, or vice versa.
+    const [statsResult, readinessResult] = await Promise.allSettled([
+      fetchTrainingConfigLabelStats(_config.uuid),
+      fetchTrainingConfigReadiness(_config.uuid),
+    ]);
+    if (statsResult.status === 'fulfilled') _stats = statsResult.value;
+    else console.warn('[activeTrainingConfig] Failed to fetch label stats:', statsResult.reason);
+    if (readinessResult.status === 'fulfilled') {
+      _readiness = readinessResult.value;
+      _readinessFailed = false;
+    } else {
+      console.warn('[activeTrainingConfig] Failed to fetch readiness:', readinessResult.reason);
+      _readinessFailed = true;
+    }
+    _publish({ statsUpdated: true });
+  })();
+
+  try {
+    await _statsPromise;
+  } finally {
+    _statsPromise = null;
   }
-  _statsFetching = false;
-  _publish({ statsUpdated: true });
 }
 
 function _publish({ statsUpdated = false } = {}) {

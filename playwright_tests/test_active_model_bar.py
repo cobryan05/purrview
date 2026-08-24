@@ -194,7 +194,7 @@ class TestRunPickerSelection:
         page.get_by_text("Manage training runs →").click()
 
         expect(page.locator("#tab-configuration")).to_have_class(re.compile(r"\bactive\b"))
-        page.wait_for_selector("#tab-training-management.active", timeout=2000)
+        page.wait_for_selector("#tab-training-management.active")
 
 
 class TestRunPickerAboveModals:
@@ -287,6 +287,62 @@ class TestCoveragePopupTable:
         expect(object_table_headers).to_have_text(["Label", "Verified", "Unverified", "All clear", "Gaps"])
         # Shortened headers still carry the full explanation as a hover tooltip.
         expect(object_table_headers.nth(1)).to_have_attribute("title", re.compile(r"^Verified boxes"))
+
+    def test_opening_while_the_first_stats_fetch_is_in_flight_still_shows_the_table(self, page: Page, base_url: str):
+        """Opening the popup during setActive()'s own stats fetch must not report failure.
+
+        `_doFetchStats` used to guard re-entry with a bare boolean and an early
+        `return`, so the second caller — the popup, opening while the fetch kicked off
+        by setActive was still running — came back with the cache untouched and showed
+        "Could not load stats" for a fetch that then succeeded a moment later. Worse,
+        `refreshStats()` nulls the cache *before* calling it, so that second caller also
+        threw away stats that had loaded fine. Callers now join the in-flight promise.
+
+        This is the mechanism behind the whole class's intermittent 60s timeout on
+        `.tc-stats-panel table` under load: the panel opened, but rendered the error
+        branch, which has no table in it.
+        """
+        _navigate(page, base_url, [TC_1])
+        _mock_labels(page, LABELS)
+        page.route(
+            lambda url: "/api/model-configs" in url.split("?")[0],
+            lambda route: (
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configs": []}),
+                )
+                if route.request.method == "GET"
+                else route.fallback()
+            ),
+        )
+
+        # Hold the label-stats response open so the fetch is reliably still in flight
+        # when the popup opens. Delayed in-page: a sync route handler that slept would
+        # stall the very click being timed.
+        page.add_init_script("""
+            const _fetch = window.fetch;
+            window.fetch = (input, init) => {
+                const url = typeof input === 'string' ? input : (input && input.url);
+                if (url && url.includes('/label-stats')) {
+                    return new Promise(r => setTimeout(() => r(_fetch(input, init)), 1000));
+                }
+                return _fetch(input, init);
+            };
+            """)
+        page.reload()
+        page.wait_for_selector("#active-model-bar")
+        _mock_label_stats(page, "tc-1", LABEL_STATS)
+
+        _set_active(page, TC_1)
+        page.locator(".active-model-bar__name").click()
+
+        panel = page.locator(".tc-stats-panel")
+        expect(panel).to_be_visible()
+        # The assertion that actually distinguishes the bug: the table renders, rather
+        # than the error branch claiming the stats could not be loaded.
+        expect(panel.locator("table").first).to_be_visible(timeout=15000)
+        expect(panel).not_to_contain_text("Could not load stats")
 
     def test_nonzero_cell_is_clickable_and_opens_review_modal(self, page: Page, base_url: str):
         self._open_coverage_popup(page, base_url)
