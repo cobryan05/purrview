@@ -244,7 +244,7 @@ def _as_wh(box: Dict[str, Any]) -> Dict[str, float]:
     """Overlay boxes are `x/y/w/h`; `iou_xywh` reads `x/y/width/height`.
 
     An adapter rather than a second IoU implementation: a divergent copy of this
-    arithmetic is exactly the kind of silent drift `_detection_merger` warns about.
+    arithmetic is exactly the kind of silent drift `detectionMerger` warns about.
     """
     return {
         "x": float(box.get("x", 0.0)),

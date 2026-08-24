@@ -47,6 +47,7 @@ from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
 from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
 from apps.helpers.actions.Registry import create_action
 from apps.helpers.consts import JsonValues, TaskAccent, TaskStatus
+from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
@@ -59,7 +60,6 @@ from apps.helpers.watch.motion import MotionDetector
 from apps.helpers.watch.rules import RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
 
-from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._watch_event_recorder import NullWatchEventRecorder, WatchEventRecorder
 from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifetimes, resolve_model_names
 from .Registry import register_task

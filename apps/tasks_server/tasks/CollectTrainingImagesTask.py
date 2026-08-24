@@ -33,6 +33,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskAccent, TaskStatus
 from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
+from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from apps.helpers.hashUtils import (
     DEFAULT_BBOX_HASH_SIZE,
     DEFAULT_IMAGE_HASH_SIZE,
@@ -47,7 +48,6 @@ from apps.helpers.imageProviders.imageProvider import (
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.logUtils import LOG_LEVEL
 
-from ._detection_merger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from ._filter_chain_runner import FilterChainRunner
 from .ApplyFilterChainTask import (
     _CLASSIFIER_KINDS,
