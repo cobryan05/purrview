@@ -20,6 +20,9 @@ models/
 *.md
 !README.md
 !README.MD
+# The flake log is the exception: its whole value is accumulating sightings across
+# sessions and machines, which an ignored file cannot do.
+!FLAKY_TESTS.md
 
 static/js/htmx
 static/css/pico.min.css
