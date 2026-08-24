@@ -654,7 +654,17 @@ class TestMidEventPreview:
         await _feed(action, context, [100.0, 110.0, 120.0, 130.0])
 
         session = action._sessions[("src-1", "rule-1", "", "")]
+
+        # Scoped to the directories *this* preview creates. The bare
+        # `glob("wwtl-preview-*")` this used to assert on is process-global: it fails
+        # whenever any other run has a scratch dir in flight — a second xdist worker,
+        # a concurrently running suite, or another agent testing in the same worktree,
+        # all of which happen here. It failed exactly that way under two concurrent
+        # unit suites while it was busy passing about its own cleanup.
+        tmp_root = Path(tempfile.gettempdir())
+        before = set(tmp_root.glob("wwtl-preview-*"))
         await action.preview(("src-1", "rule-1", "", ""))
+        leaked = set(tmp_root.glob("wwtl-preview-*")) - before
 
         assert not (session.directory / "preview.txt").exists()
-        assert not list(Path(tempfile.gettempdir()).glob("wwtl-preview-*"))
+        assert not leaked, f"preview left scratch directories behind: {sorted(leaked)}"
