@@ -38,6 +38,8 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageProviderType,
     ImageWithProviderMetadata,
 )
+from apps.helpers.training.collector import CollectorHost, FrameOffer, TrainingCollector
+from apps.helpers.training.collectorSpec import CollectorSpec
 from apps.tasks_server.tasks._detection_merger import MergePolicy
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     SAME_BBOX_IOU_THRESHOLD,
@@ -53,6 +55,35 @@ from apps.tasks_server.tasks.utils.labelHelper import (
 from tests.waits import await_condition
 
 # ─── Shared constants ─────────────────────────────────────────────────────────
+
+
+def _detached_collector(params: Optional[dict] = None) -> TrainingCollector:
+    """A collector wired to a host that does no I/O.
+
+    Enough for the pure paths — review actions, the calibration sweep, seed
+    bboxes — which is exactly what the tasks built with `__new__` exercise. A
+    host whose factories return None fails loudly rather than quietly reaching a
+    real client if one of those paths ever starts doing I/O.
+    """
+    return TrainingCollector(
+        CollectorSpec.from_params(params or {"output_dir": "out"}),
+        CollectorHost(
+            log=lambda _message: None,
+            db_api_client=lambda: None,
+            inference_api_client=lambda: None,
+            stop_event=asyncio.Event(),
+        ),
+        files_root=Path("/tmp"),
+    )
+
+
+def _detached_task(params: Optional[dict] = None) -> CollectTrainingImagesTask:
+    """A task built the way the status-poll paths see it in the PENDING window:
+    constructed but never `_init`ed, with only a collector attached."""
+    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
+    task._collector = _detached_collector(params)
+    return task
+
 
 _LABEL_UUID = "label-test-uuid"
 _MODEL_NAME = "test-model"
@@ -218,6 +249,14 @@ def _make_task(params=None, resume_data=None) -> CollectTrainingImagesTask:
     manager.get_db_api_client.return_value = MagicMock()
     manager.get_inference_api_client.return_value = MagicMock()
     task = CollectTrainingImagesTask("cfg-uuid", params or _PARAMS, manager)
+    # A no-I/O collector so tests that poke collector state without running _init
+    # have something to poke. _init builds the real one and replaces this. Params
+    # the spec rejects (the output_dir traversal cases) fall back to a default —
+    # the rejection is _init's job to demonstrate, not this helper's.
+    try:
+        task._collector = _detached_collector(params or _PARAMS)
+    except ValueError:
+        task._collector = _detached_collector()
     if resume_data:
         task.set_resume_data(resume_data)
     return task
@@ -253,9 +292,9 @@ async def _run_task(
 
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+        patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+        patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": files_root}),
     ):
         if providers is not None:
@@ -286,14 +325,14 @@ async def test_init_empty_processed_ids_for_fresh_run():
     task = _make_task()
     await task._init(_PARAMS, resume_data=None)
     assert task._processed_ids == set()
-    assert task._images_saved == 0
+    assert task._collector._images_saved == 0
 
 
 async def test_init_loads_processed_ids_from_resume_data():
     ids = [f"{_SOURCE}:{i}" for i in range(5)]
     task = _make_task()
     await task._init(_PARAMS, resume_data={"images_saved": 5, "processed_ids": ids})
-    assert task._images_saved == 5
+    assert task._collector._images_saved == 5
     assert task._processed_ids == set(ids)
 
 
@@ -301,7 +340,7 @@ async def test_init_empty_resume_data_gives_empty_ids():
     task = _make_task()
     await task._init(_PARAMS, resume_data={})
     assert task._processed_ids == set()
-    assert task._images_saved == 0
+    assert task._collector._images_saved == 0
 
 
 @pytest.mark.parametrize("bad_dir", ["../../data/db", "/etc", "foo/../../bar", ".."])
@@ -319,7 +358,7 @@ async def test_init_accepts_nested_relative_output_dir():
     params = {**_PARAMS, "output_dir": "collected/run1"}
     task = _make_task(params)
     await task._init(params, resume_data=None)
-    assert task._output_dir == "collected/run1"
+    assert task._spec.output_dir == "collected/run1"
 
 
 # ─── Full-run integration tests ───────────────────────────────────────────────
@@ -367,9 +406,9 @@ async def test_already_processed_images_are_skipped(tmp_path):
 
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+        patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+        patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
         patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
     ):
         mock_sh.return_value.get_image_provider.return_value = provider
@@ -436,7 +475,7 @@ async def test_init_preserves_model_priority_order():
     }
     task = _make_task(params=params)
     await task._init(params, resume_data=None)
-    assert task._model_names == ["model-a", "model-b"]
+    assert task._spec.model_names == ["model-a", "model-b"]
 
 
 async def test_run_inference_dedups_overlapping_boxes_keeping_priority():
@@ -463,7 +502,7 @@ async def test_run_inference_dedups_overlapping_boxes_keeping_priority():
     inference_api = MagicMock(spec=InferenceApi)
     inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-    matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+    matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [high_priority]
 
 
@@ -490,7 +529,7 @@ async def test_run_inference_keeps_non_overlapping_boxes():
     inference_api = MagicMock(spec=InferenceApi)
     inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-    matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+    matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
     assert matching == [box_a, box_b]
 
 
@@ -562,7 +601,7 @@ async def test_run_inference_single_model_multiple_boxes_all_kept():
     result.result.detections = [box1, box2, box3]
     inference_api.detect_batch.side_effect = _batch_of(result.result)
 
-    matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+    matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
     assert matching == [box1, box2, box3]
 
 
@@ -571,8 +610,8 @@ async def test_run_inference_single_model_multiple_boxes_all_kept():
 
 def test_get_status_actions_no_tag_uuid():
     """get_status_actions returns [] when no task-tag UUID has been assigned."""
-    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
-    task._task_tag_uuid = None
+    task = _detached_task()
+    task._collector._task_tag_uuid = None
     assert task.get_status_actions() == []
 
 
@@ -583,9 +622,9 @@ def test_get_status_actions_offers_all_and_unverified():
     UNVERIFIED, so after a long run "what did I collect" and "what still needs
     me" are different questions, and usually very different counts.
     """
-    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
-    task._task_tag_uuid = "some-tag-uuid"
-    task._collect_all = False
+    task = _detached_task()
+    task._collector._task_tag_uuid = "some-tag-uuid"
+    task._collector._spec.collect_all = False
 
     actions = task.get_status_actions()
 
@@ -607,9 +646,9 @@ def test_browse_all_states_its_filter_rather_than_omitting_it():
     """ "Any" is sent explicitly so it *clears* the unverified filter left behind
     by the button beside it. Omitting it would leave Review still narrowed, and
     "Browse all results" would silently show a subset."""
-    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
-    task._task_tag_uuid = "some-tag-uuid"
-    task._collect_all = False
+    task = _detached_task()
+    task._collector._task_tag_uuid = "some-tag-uuid"
+    task._collector._spec.collect_all = False
 
     assert task.get_status_actions()[0]["payload"]["bbox_verification"] == "any"
 
@@ -617,9 +656,9 @@ def test_browse_all_states_its_filter_rather_than_omitting_it():
 def test_status_and_result_actions_do_not_drift():
     """The live card and the completion result offer the same two entry points,
     from one definition."""
-    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
-    task._task_tag_uuid = "some-tag-uuid"
-    task._collect_all = False
+    task = _detached_task()
+    task._collector._task_tag_uuid = "some-tag-uuid"
+    task._collector._spec.collect_all = False
 
     assert task.get_status_actions() == task._review_actions()
 
@@ -627,9 +666,9 @@ def test_status_and_result_actions_do_not_drift():
 def test_get_status_actions_in_collect_all_mode_filters_on_the_image_tag_only():
     """Collect-everything runs save unannotated frames, so a bbox-tag filter would
     match nothing and would exclude every frame the button is meant to show."""
-    task = CollectTrainingImagesTask.__new__(CollectTrainingImagesTask)
-    task._task_tag_uuid = "some-tag-uuid"
-    task._collect_all = True
+    task = _detached_task()
+    task._collector._task_tag_uuid = "some-tag-uuid"
+    task._collector._spec.collect_all = True
 
     for action in task.get_status_actions():
         assert action["payload"]["tag_uuids"] == []
@@ -664,7 +703,7 @@ async def test_run_inference_runs_all_models_even_when_first_has_no_detections()
     inference_api = MagicMock(spec=InferenceApi)
     inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-    matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+    matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
     assert "model-a" in called
     assert "model-b" in called
@@ -747,7 +786,7 @@ async def _task_with_chain_runner(steps, backend) -> CollectTrainingImagesTask:
 
     task = _make_task()
     await task._init(_PARAMS, resume_data=None)
-    task._filter_chain_runner = FilterChainRunner(steps, backend)
+    task._collector._filter_chain_runner = FilterChainRunner(steps, backend)
     return task
 
 
@@ -771,7 +810,9 @@ class TestApplyFilterChainToFrame:
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
         matching = [_fc_detection()]
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(
+            _fc_provided(), "aGVsbG8=", matching
+        )
         assert result is matching
         assert discard is False
         assert force_save is False
@@ -779,8 +820,8 @@ class TestApplyFilterChainToFrame:
     async def test_empty_matching_short_circuits_without_evaluating(self):
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
-        task._filter_chain_runner = object()  # would blow up if actually invoked
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", [])
+        task._collector._filter_chain_runner = object()  # would blow up if actually invoked
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", [])
         assert result == []
         assert discard is False
         assert force_save is False
@@ -809,7 +850,7 @@ class TestApplyFilterChainToFrame:
 
         raw_bytes = b"fake-jpeg-bytes"
         matching = [_fc_detection()]
-        await task._apply_filter_chain_to_frame(_fc_provided(), _fc_packet(raw_bytes), matching)
+        await task._collector._apply_filter_chain_to_frame(_fc_provided(), _fc_packet(raw_bytes), matching)
 
         assert captured["image_bytes"] == raw_bytes
 
@@ -833,7 +874,7 @@ class TestApplyFilterChainToFrame:
 
         bare_b64 = "12345678"  # digit-only: valid base64 AND valid JSON (parses as an int)
         matching = [_fc_detection()]
-        await task._apply_filter_chain_to_frame(_fc_provided(), bare_b64, matching)
+        await task._collector._apply_filter_chain_to_frame(_fc_provided(), bare_b64, matching)
 
         assert captured["image_bytes"] == base64.b64decode(bare_b64)
 
@@ -843,11 +884,13 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [_fc_detection()]
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(
+            _fc_provided(), "aGVsbG8=", matching
+        )
         assert discard is True
         assert result == []
         assert force_save is False
-        assert task._filtered_discarded == 1
+        assert task._collector._filtered_discarded == 1
 
     async def test_strip_unverified_bboxes_empties_matching_but_forces_save(self):
         """Per plan 2.1 (never delete images), stripping all detections must still
@@ -857,11 +900,13 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [_fc_detection(), _fc_detection()]
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(
+            _fc_provided(), "aGVsbG8=", matching
+        )
         assert discard is False
         assert result == []
         assert force_save is True
-        assert task._filtered_stripped == 2
+        assert task._collector._filtered_stripped == 2
 
     async def test_tag_image_stashes_image_level_tag_not_per_bbox(self):
         """tag_image is an image-level tag — it must NOT land on every bbox's
@@ -874,13 +919,13 @@ class TestApplyFilterChainToFrame:
 
         provided = _fc_provided()
         matching = [_fc_detection(), _fc_detection()]
-        result, discard, force_save = await task._apply_filter_chain_to_frame(provided, "aGVsbG8=", matching)
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(provided, "aGVsbG8=", matching)
         assert discard is False
         assert force_save is False
         assert result is matching
         assert all(det.bbox.tag_uuids == [] for det in matching)
         assert provided._filter_chain_image_tags == {"tag-x"}
-        assert task._filtered_tagged == 1
+        assert task._collector._filtered_tagged == 1
 
     async def test_relabel_bbox_mutates_only_overlapping_detection(self):
         from apps.tasks_server.tasks._filter_chain_runner import Detection
@@ -899,12 +944,14 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [det_a, det_b]
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(
+            _fc_provided(), "aGVsbG8=", matching
+        )
         assert discard is False
         assert force_save is False
         assert det_a.bbox.label_uuid == "water_valve"
         assert det_b.bbox.label_uuid == "dog"  # untouched
-        assert task._filtered_relabeled == 1
+        assert task._collector._filtered_relabeled == 1
 
     async def test_tag_bbox_adds_tag_only_to_overlapping_detection(self):
         from apps.tasks_server.tasks._filter_chain_runner import Detection
@@ -923,12 +970,14 @@ class TestApplyFilterChainToFrame:
         task = await _task_with_chain_runner([step], backend)
 
         matching = [det_a, det_b]
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), "aGVsbG8=", matching)
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(
+            _fc_provided(), "aGVsbG8=", matching
+        )
         assert discard is False
         assert force_save is False
         assert "tag-y" in det_a.bbox.tag_uuids
         assert "tag-y" not in det_b.bbox.tag_uuids
-        assert task._filtered_tagged == 1
+        assert task._collector._filtered_tagged == 1
 
 
 async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
@@ -965,11 +1014,11 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
 
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+        patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+        patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
         patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
+            "apps.helpers.training.collector.FilterChainsApi",
             return_value=mock_filter_chains_api,
         ),
         patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
@@ -988,7 +1037,7 @@ async def test_filter_chain_discard_prevents_save_end_to_end(tmp_path):
         await task.wait_for_task_done(timeout=10.0)
 
     assert task._resume_data["images_saved"] == 0
-    assert task._filtered_discarded == 2
+    assert task._collector._filtered_discarded == 2
     mock_img_cls.return_value.update_image_metadata.assert_not_called()
 
 
@@ -1029,11 +1078,11 @@ async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end
 
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+        patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+        patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
         patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
+            "apps.helpers.training.collector.FilterChainsApi",
             return_value=mock_filter_chains_api,
         ),
         patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
@@ -1051,7 +1100,7 @@ async def test_filter_chain_strip_unverified_bboxes_still_saves_image_end_to_end
         await task.start()
         await task.wait_for_task_done(timeout=10.0)
 
-    assert task._filtered_stripped == 1
+    assert task._collector._filtered_stripped == 1
     assert task._resume_data["images_saved"] == 1
     mock_img_cls.return_value.update_image_metadata.assert_called_once()
     payload = mock_img_cls.return_value.update_image_metadata.call_args.args[0]
@@ -1078,11 +1127,11 @@ async def test_filter_chain_tag_image_calls_set_image_tag_end_to_end(tmp_path):
 
     with (
         patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-        patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+        patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+        patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+        patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
         patch(
-            "apps.tasks_server.tasks.CollectTrainingImagesTask.FilterChainsApi",
+            "apps.helpers.training.collector.FilterChainsApi",
             return_value=mock_filter_chains_api,
         ),
         patch("apps.tasks_server.tasks.ApplyFilterChainTask._read_model_kind", return_value="image_classifier"),
@@ -1136,7 +1185,7 @@ class TestLiveFilenameUniqueness:
         images = [_tracked_image(0), _tracked_image(1)]
         provider = _LiveProvider(images)
         fixed_now = datetime(2024, 6, 1, 12, 30, 45, tzinfo=timezone.utc)
-        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.datetime") as mock_dt:
+        with patch("apps.helpers.training.collector.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             await _run_task(images, params=_NO_RATE_LIMIT_PARAMS, detect=True, tmp_path=tmp_path, provider=provider)
         saved = sorted(p.name for p in tmp_path.rglob("*.jpg"))
@@ -1152,7 +1201,7 @@ class TestLiveFilenameUniqueness:
         first_images = [_tracked_image(0)]
         second_images = [_tracked_image(0)]  # frame_idx reset, as after a restart
 
-        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.datetime") as mock_dt:
+        with patch("apps.helpers.training.collector.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
             await _run_task(
                 first_images,
@@ -1212,7 +1261,7 @@ class TestUndecodableFrameSkipped:
         task = await _run_task(images, params=_NO_RATE_LIMIT_PARAMS, detect=True, tmp_path=tmp_path, provider=provider)
 
         assert task.get_status() == TaskStatus.COMPLETED
-        assert task._images_saved == 1
+        assert task._collector._images_saved == 1
 
 
 class TestUndecodableFrameRateLimit:
@@ -1337,9 +1386,9 @@ class TestCheckpointRequestHoist:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": files_root}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1384,9 +1433,9 @@ class TestStopConditions:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1416,9 +1465,9 @@ class TestStopConditions:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1439,14 +1488,14 @@ class TestStopConditions:
         the defaults must remain unlimited (live sources are normally user-stopped)."""
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
-        assert task._max_images is None
-        assert task._max_duration_s is None
+        assert task._spec.max_images is None
+        assert task._spec.max_duration_s is None
 
         params = {**_PARAMS, "max_images": 0, "max_duration": 0}
         task2 = _make_task(params=params)
         await task2._init(params, resume_data=None)
-        assert task2._max_images is None
-        assert task2._max_duration_s is None
+        assert task2._spec.max_images is None
+        assert task2._spec.max_duration_s is None
 
 
 # ─── Long-run hygiene: progress for live tasks ─────────────────────────────────
@@ -1468,9 +1517,9 @@ class TestLiveProgress:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1506,9 +1555,9 @@ class TestLiveProgress:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1521,13 +1570,13 @@ class TestLiveProgress:
             # progress value has diverged from the (also non-None) base default —
             # otherwise this assertion would pass vacuously even without the fix.
             deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and getattr(task, "_images_saved", 0) == 0:
+            while time.monotonic() < deadline and task._collector.images_saved == 0:
                 await asyncio.sleep(0.05)
-            assert getattr(task, "_images_saved", 0) > 0, "test setup: no images were saved to measure progress"
+            assert task._collector.images_saved > 0, "test setup: no images were saved to measure progress"
 
             progress = task.get_progress()
             assert progress is not None
-            expected = min(100.0, task._images_saved / params["max_images"] * 100.0)
+            expected = min(100.0, task._collector._images_saved / params["max_images"] * 100.0)
             assert progress == pytest.approx(expected)
             assert 0.0 < progress < 100.0
 
@@ -1560,10 +1609,10 @@ class TestPinRenewal:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
-            patch.object(CollectTrainingImagesTask, "_PIN_RENEWAL_INTERVAL_S", 0.05),
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
+            patch.object(TrainingCollector, "PIN_RENEWAL_INTERVAL_S", 0.05),
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1584,9 +1633,9 @@ class TestPinRenewal:
             # released, so wait for exactly that. Exits in ~one 0.05s interval normally;
             # the deadline only bites if renewal is genuinely broken.
             def _renewal_complete() -> bool:
-                # _combined_pin_ids is only created once _run() has finished pinning, so
-                # it may not exist yet on the first poll — hence getattr, not direct access.
-                swapped = getattr(task, "_combined_pin_ids", {}).get(_MODEL_NAME) not in (None, "pin-1")
+                # _combined_pin_ids is only populated once the collector has finished
+                # pinning, so it may still be empty on the first poll.
+                swapped = task._collector._combined_pin_ids.get(_MODEL_NAME) not in (None, "pin-1")
                 unpinned = (_MODEL_NAME, "pin-1") in [
                     c.args for c in mock_models_cls.return_value.unpin_model.call_args_list
                 ]
@@ -1598,7 +1647,7 @@ class TestPinRenewal:
 
             await asyncio.wait_for(_await_renewal(), timeout=30.0)
 
-            assert task._combined_pin_ids[_MODEL_NAME] != "pin-1", "pin_id must have been swapped by renewal"
+            assert task._collector._combined_pin_ids[_MODEL_NAME] != "pin-1", "pin_id must have been swapped by renewal"
             assert mock_models_cls.return_value.pin_model_api_api_models_model_name_pin_post.call_count >= 2
             unpin_calls = [c.args for c in mock_models_cls.return_value.unpin_model.call_args_list]
             assert (_MODEL_NAME, "pin-1") in unpin_calls, "the stale pin_id must be released after renewal"
@@ -1619,10 +1668,10 @@ class TestPinRenewal:
 
         with (
             patch("apps.tasks_server.tasks.CollectTrainingImagesTask.SourceHelper") as mock_sh,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ModelsApi") as mock_models_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.InferenceApi", autospec=True) as mock_inf_cls,
-            patch("apps.tasks_server.tasks.CollectTrainingImagesTask.ImagesApi") as mock_img_cls,
-            patch.object(CollectTrainingImagesTask, "_PIN_RENEWAL_INTERVAL_S", 0.05),
+            patch("apps.helpers.training.collector.ModelsApi") as mock_models_cls,
+            patch("apps.helpers.training.collector.InferenceApi", autospec=True) as mock_inf_cls,
+            patch("apps.helpers.training.collector.ImagesApi") as mock_img_cls,
+            patch.object(TrainingCollector, "PIN_RENEWAL_INTERVAL_S", 0.05),
             patch.dict(os.environ, {"FILES_ROOT": str(tmp_path)}),
         ):
             mock_sh.return_value.get_image_provider.return_value = provider
@@ -1643,7 +1692,9 @@ class TestPinRenewal:
             )
 
             assert task.get_status() == TaskStatus.RUNNING, "renewal failures must not crash the task"
-            assert task._combined_pin_ids[_MODEL_NAME] == "pin-1", "failed renewal must leave the old pin in place"
+            assert (
+                task._collector._combined_pin_ids[_MODEL_NAME] == "pin-1"
+            ), "failed renewal must leave the old pin in place"
 
             task.cancel_task()
             await task.wait_for_task_done(timeout=5.0)
@@ -1757,7 +1808,7 @@ class TestMaxDurationExcludesPausedTime:
 
 # ─── Characterization tests: inference merge/dedup parity (Phase 5 prep) ──────
 #
-# CollectTrainingImagesTask._run_inference() ends with a merge block (search for
+# TrainingCollector._run_inference() ends with a merge block (search for
 # "Flatten in priority order then apply cross-model hierarchy-aware IoU dedup")
 # that Phase 5 of LIVE_COLLECTION_PLAN.md will extract into a shared, policy-
 # parameterized helper. These tests pin *exactly* what that block does today —
@@ -1782,7 +1833,7 @@ class TestMaxDurationExcludesPausedTime:
 
 
 class TestInferenceMergeParity:
-    """Characterization (parity) tests pinning CollectTrainingImagesTask._run_inference's
+    """Characterization (parity) tests pinning TrainingCollector._run_inference's
     current merge/dedup behaviour ahead of the Phase 5 extraction into a shared,
     first-wins/last-wins-parameterized helper (see LIVE_COLLECTION_PLAN.md).
 
@@ -1825,7 +1876,7 @@ class TestInferenceMergeParity:
             params["overlap_iou_threshold"] = overlap_iou_threshold
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._label_ancestry = self._ancestry()
+        task._collector._label_ancestry = self._ancestry()
         return task
 
     @staticmethod
@@ -1847,7 +1898,7 @@ class TestInferenceMergeParity:
         low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
 
         inference_api = self._inference_api({"model-a": [high_priority], "model-b": [low_priority]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         # Identity check, not just count/label: the surviving object must be
         # model-a's detection even though model-b's has higher confidence.
@@ -1865,7 +1916,7 @@ class TestInferenceMergeParity:
         descendant_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [ancestor_det], "model-b": [descendant_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is descendant_det
@@ -1878,7 +1929,7 @@ class TestInferenceMergeParity:
         ancestor_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [descendant_det], "model-b": [ancestor_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is descendant_det
@@ -1891,7 +1942,7 @@ class TestInferenceMergeParity:
         det_b = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._UNRELATED, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [det_a], "model-b": [det_b]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 2
         assert det_a in matching and det_b in matching
@@ -1913,7 +1964,7 @@ class TestInferenceMergeParity:
 
         task = await self._task_with_models("model-a", "model-b", overlap_iou_threshold=threshold)
         inference_api = self._inference_api({"model-a": [boundary_a], "model-b": [boundary_b]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is boundary_a
@@ -1930,7 +1981,7 @@ class TestInferenceMergeParity:
 
         task = await self._task_with_models("model-a", "model-b", overlap_iou_threshold=threshold)
         inference_api = self._inference_api({"model-a": [below_a], "model-b": [below_b]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 2
 
@@ -1946,7 +1997,7 @@ class TestInferenceMergeParity:
 
         task = await self._task_with_models("model-a", "model-b", overlap_iou_threshold=threshold)
         inference_api = self._inference_api({"model-a": [above_a], "model-b": [above_b]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is above_a
@@ -1971,9 +2022,11 @@ class TestInferenceMergeParity:
         assert iou_xywh(leaf_det.bbox, root_det.bbox) == pytest.approx(0.3)
         assert iou_xywh(leaf_det.bbox, mid_det.bbox) == pytest.approx(0.3)
 
-        task._overlap_iou_threshold = 0.25
+        task._spec.overlap_iou_threshold = 0.25
         inference_api = self._inference_api({"model-a": [root_det], "model-b": [mid_det], "model-c": [leaf_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None, "model-c": None})
+        matching = await task._collector._run_inference(
+            inference_api, "b64", {"model-a": None, "model-b": None, "model-c": None}
+        )
 
         assert len(matching) == 1
         assert matching[0] is leaf_det
@@ -1989,7 +2042,7 @@ class TestInferenceMergeParity:
         leaf_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [root_det], "model-b": [leaf_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is leaf_det
@@ -2002,7 +2055,7 @@ class TestInferenceMergeParity:
         root_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [leaf_det], "model-b": [root_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is leaf_det
@@ -2016,7 +2069,7 @@ class TestInferenceMergeParity:
         must still line up with self._model_names — model-a's detection must win
         the same-label dedup even though model-b's HTTP call actually returns first."""
         task = await self._task_with_models("model-a", "model-b")
-        assert task._model_names == ["model-a", "model-b"]
+        assert task._spec.model_names == ["model-a", "model-b"]
 
         high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.1)
         low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
@@ -2033,7 +2086,7 @@ class TestInferenceMergeParity:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is high_priority
@@ -2075,7 +2128,7 @@ class TestMergePolicyLastWins:
         params = {**_PARAMS, "model_label_config": model_label_config, "merge_policy": merge_policy}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._label_ancestry = self._ancestry()
+        task._collector._label_ancestry = self._ancestry()
         return task
 
     @staticmethod
@@ -2086,7 +2139,7 @@ class TestMergePolicyLastWins:
         """Sanity check: omitting merge_policy from params keeps today's default."""
         task = _make_task(params=_PARAMS)
         await task._init(_PARAMS, resume_data=None)
-        assert task._merge_policy is MergePolicy.FIRST_WINS
+        assert task._spec.merge_policy is MergePolicy.FIRST_WINS
 
     async def test_unknown_policy_value_falls_back_to_first_wins(self):
         """Unvalidated task params (CLAUDE.md: '_init params are unvalidated —
@@ -2095,7 +2148,7 @@ class TestMergePolicyLastWins:
         params = {**_PARAMS, "merge_policy": "not-a-real-policy"}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        assert task._merge_policy is MergePolicy.FIRST_WINS
+        assert task._spec.merge_policy is MergePolicy.FIRST_WINS
 
     async def test_same_label_lower_priority_model_survives_under_last_wins(self):
         """Mirror of TestInferenceMergeParity.test_same_label_higher_priority_model_survives_by_identity:
@@ -2106,7 +2159,7 @@ class TestMergePolicyLastWins:
         low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
 
         inference_api = self._inference_api({"model-a": [high_priority], "model-b": [low_priority]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is low_priority
@@ -2119,7 +2172,7 @@ class TestMergePolicyLastWins:
         descendant_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [ancestor_det], "model-b": [descendant_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is descendant_det
@@ -2130,7 +2183,7 @@ class TestMergePolicyLastWins:
         ancestor_det = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._ROOT, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [descendant_det], "model-b": [ancestor_det]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is descendant_det
@@ -2141,7 +2194,7 @@ class TestMergePolicyLastWins:
         det_b = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._UNRELATED, confidence=0.5)
 
         inference_api = self._inference_api({"model-a": [det_a], "model-b": [det_b]})
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 2
         assert det_a in matching and det_b in matching
@@ -2152,7 +2205,7 @@ class TestMergePolicyLastWins:
         policy's own reversal is applied — otherwise the "last model" the
         policy picks wouldn't be the actually-lowest-priority-configured one."""
         task = await self._task_with_models("model-a", "model-b")
-        assert task._model_names == ["model-a", "model-b"]
+        assert task._spec.model_names == ["model-a", "model-b"]
 
         high_priority = _detection_at(0.0, 0.0, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.1)
         low_priority = _detection_at(0.01, 0.01, 0.5, 0.5, label_uuid=self._LEAF, confidence=0.99)
@@ -2167,7 +2220,7 @@ class TestMergePolicyLastWins:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert len(matching) == 1
         assert matching[0] is low_priority
@@ -2175,7 +2228,7 @@ class TestMergePolicyLastWins:
 
 class TestBuildLabelAncestryMap:
     """Characterization tests for build_label_ancestry_map (tasks/utils/labelHelper.py),
-    the map CollectTrainingImagesTask._run_inference consults (via self._label_ancestry)
+    the map TrainingCollector._run_inference consults (via self._label_ancestry)
     for the ancestor/descendant dedup rules pinned in TestInferenceMergeParity above."""
 
     @staticmethod
@@ -2375,7 +2428,7 @@ class TestLastCaptureStatusData:
 
         last_capture = task.get_status_data()["last_capture"]
         assert last_capture is not None
-        assert last_capture is task._last_capture
+        assert last_capture is task._collector._last_capture
 
     async def test_last_capture_is_path_and_bboxes_never_image_bytes(self, tmp_path):
         images = [_tracked_image(0)]
@@ -2405,9 +2458,9 @@ class TestLastCaptureStatusData:
 
     def test_build_seed_bbox_resolves_label_text_and_color(self):
         task = _make_task()
-        task._label_meta = {_LABEL_UUID: {"text": "Cat", "color": "#ff0000"}}
+        task._collector._label_meta = {_LABEL_UUID: {"text": "Cat", "color": "#ff0000"}}
         det = _detection()
-        seed = task._build_seed_bbox(det, "bbox-uuid-1")
+        seed = task._collector._build_seed_bbox(det, "bbox-uuid-1")
         assert seed == {
             "uuid": "bbox-uuid-1",
             "label": {"uuid": _LABEL_UUID, "text": "Cat", "color": "#ff0000"},
@@ -2419,16 +2472,16 @@ class TestLastCaptureStatusData:
 
     def test_build_seed_bbox_falls_back_to_uuid_when_no_meta(self):
         task = _make_task()
-        task._label_meta = {}
+        task._collector._label_meta = {}
         det = _detection()
-        seed = task._build_seed_bbox(det, "bbox-uuid-2")
+        seed = task._collector._build_seed_bbox(det, "bbox-uuid-2")
         assert seed["label"] == {"uuid": _LABEL_UUID, "text": _LABEL_UUID, "color": None}
 
     def test_build_seed_bbox_no_label_is_none(self):
         task = _make_task()
-        task._label_meta = {}
+        task._collector._label_meta = {}
         det = _detection(label_uuid=None)
-        seed = task._build_seed_bbox(det, "bbox-uuid-3")
+        seed = task._collector._build_seed_bbox(det, "bbox-uuid-3")
         assert seed["label"] is None
 
 
@@ -2463,7 +2516,7 @@ class TestStatGridDedupAndFilterChainToggle:
         # _filter_chain_runner is only built for real inside _run() once a chain
         # resolves with enabled steps; simulate "active" the same way the sources
         # table's own health check treats it (getattr(..., None) is not None).
-        task._filter_chain_runner = MagicMock()
+        task._collector._filter_chain_runner = MagicMock()
         stats = task.get_status_data()["stats"]
         assert self._FILTER_KEYS <= stats.keys()
         assert not (self._DEDUP_KEYS & stats.keys())
@@ -2546,7 +2599,7 @@ class TestUptimeAndCapturesPerMinuteExcludePausedTime:
         await task._init(_PARAMS, resume_data=None)
         start = time.perf_counter()
         task._run_started_at = start
-        task._images_saved = 10
+        task._collector._images_saved = 10
 
         with patch(
             "apps.tasks_server.tasks.CollectTrainingImagesTask.time.perf_counter",
@@ -2566,7 +2619,7 @@ class TestUptimeAndCapturesPerMinuteExcludePausedTime:
         await task._init(_PARAMS, resume_data=None)
         start = time.perf_counter()
         task._run_started_at = start
-        task._images_saved = 20
+        task._collector._images_saved = 20
         task._paused_duration_s = 60.0
 
         with patch(
@@ -2725,7 +2778,7 @@ class TestConfidenceBandScalarBackCompat:
         params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.25}}]}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        assert task._target_label_bands[_LABEL_UUID] == ConfidenceBand(min_confidence=0.25, max_confidence=1.0)
+        assert task._spec.target_label_bands[_LABEL_UUID] == ConfidenceBand(min_confidence=0.25, max_confidence=1.0)
 
     async def test_scalar_config_triggers_and_annotates_exactly_like_a_floor(self):
         """A detection at/above the scalar floor triggers a save; one below it
@@ -2737,7 +2790,7 @@ class TestConfidenceBandScalarBackCompat:
         at_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.5)
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([at_floor]))
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == [at_floor]
 
     async def test_scalar_config_below_floor_does_not_trigger(self):
@@ -2748,7 +2801,7 @@ class TestConfidenceBandScalarBackCompat:
         below_floor = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.49)
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([below_floor]))
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == []
 
     async def test_scalar_config_has_no_ceiling_very_high_confidence_still_triggers(self):
@@ -2761,7 +2814,7 @@ class TestConfidenceBandScalarBackCompat:
         very_confident = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=0.999)
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([very_confident]))
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == [very_confident]
 
 
@@ -2817,7 +2870,7 @@ class TestConfidenceBandPostMergeOrdering:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         # If band filtering had run BEFORE merge, model-a's 0.9 would already be
         # gone and model-b's 0.4 would survive alone -> matching == [in_band_duplicate].
@@ -2842,7 +2895,7 @@ class TestConfidenceBandPostMergeOrdering:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_per_model(lambda n: _inference(n, None).result)
 
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
+        matching = await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None})
 
         assert matching == [in_band_priority]
 
@@ -2892,7 +2945,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([in_band_det, above_max_det]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         # Trigger fired (in_band_det is in band) -> frame saved. The max is
         # review-only -> the above-max box is written too, not dropped.
@@ -2913,7 +2966,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([trigger_det, below_own_min_det]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert matching == [trigger_det]
 
@@ -2929,7 +2982,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([kept, dropped]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert kept in matching
         assert dropped not in matching
@@ -2942,7 +2995,7 @@ class TestConfidenceBandTriggerVsAnnotation:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([only_out_of_band]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert matching == []
 
 
@@ -2970,7 +3023,7 @@ class TestConfidenceBandReviewDisabled:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([det]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert matching == []
 
@@ -2996,7 +3049,7 @@ class TestConfidenceBandReviewDisabled:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([review_disabled_det, triggering_det]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert review_disabled_det in matching
         assert triggering_det in matching
@@ -3023,7 +3076,7 @@ class TestConfidenceBandReviewDisabled:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([below_min_det, triggering_det]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert matching == [triggering_det]
 
@@ -3044,7 +3097,7 @@ class TestConfidenceBandReviewDisabled:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([det]))
 
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
         assert matching == []
 
@@ -3068,7 +3121,7 @@ class TestConfidenceBandBoundaryInclusivity:
         det = _detection_at(0.0, 0.0, 0.2, 0.2, confidence=confidence)
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([det]))
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         return matching, det
 
     async def test_confidence_exactly_at_min_triggers(self):
@@ -3109,46 +3162,46 @@ class TestDedupThresholdCalibration:
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
         for sample in samples:
-            task._dedup_samples.append(sample)
+            task._collector._dedup_samples.append(sample)
         return task
 
     # ── _would_discard mirrors _dedup_worker ────────────────────────────────
 
     async def test_discard_image_action_uses_image_distance_only(self):
         task = await self._task(action="discard_image")
-        assert task._would_discard(3, [40, 40], image_t=5, bbox_t=8) is True
-        assert task._would_discard(9, [0, 0], image_t=5, bbox_t=8) is False
+        assert task._collector._would_discard(3, [40, 40], image_t=5, bbox_t=8) is True
+        assert task._collector._would_discard(9, [0, 0], image_t=5, bbox_t=8) is False
 
     async def test_discard_action_requires_image_dup_and_all_bboxes_dup(self):
         """_dedup_worker gates 'keep if any unique' on image_is_dup too."""
         task = await self._task(action="discard")
-        assert task._would_discard(3, [2, 4], image_t=5, bbox_t=8) is True
+        assert task._collector._would_discard(3, [2, 4], image_t=5, bbox_t=8) is True
         # One unique bbox keeps the frame.
-        assert task._would_discard(3, [2, 40], image_t=5, bbox_t=8) is False
+        assert task._collector._would_discard(3, [2, 40], image_t=5, bbox_t=8) is False
         # Every bbox duplicated but a different scene — kept, matching the worker.
-        assert task._would_discard(30, [2, 4], image_t=5, bbox_t=8) is False
+        assert task._collector._would_discard(30, [2, 4], image_t=5, bbox_t=8) is False
 
     async def test_measure_and_ignore_actions_never_discard(self):
         for action in ("measure", "ignore"):
             task = await self._task(action=action)
-            assert task._would_discard(0, [0], image_t=5, bbox_t=8) is False, action
+            assert task._collector._would_discard(0, [0], image_t=5, bbox_t=8) is False, action
 
     async def test_none_distance_is_not_a_duplicate(self):
         """None = nothing to compare against; it must not count as distance 0."""
         task = await self._task(action="discard_image")
-        assert task._would_discard(None, [], image_t=64, bbox_t=64) is False
+        assert task._collector._would_discard(None, [], image_t=64, bbox_t=64) is False
 
     # ── sweep ───────────────────────────────────────────────────────────────
 
     async def test_sweep_is_empty_without_samples(self):
         task = await self._task()
-        assert task._dedup_sweep_rows(task._IMAGE_SWEEP_THRESHOLDS, "image") == []
+        assert task._collector._dedup_sweep_rows(task._IMAGE_SWEEP_THRESHOLDS, "image") == []
 
     async def test_sweep_discard_count_is_monotonic_in_threshold(self):
         """A larger threshold can only ever discard more, never fewer."""
         samples = [(d, [d]) for d in (0, 1, 2, 4, 7, 11, 20, 33)]
         task = await self._task(action="discard_image", samples=samples)
-        rows = task._dedup_sweep_rows((0, 2, 5, 10, 20, 40), "image")
+        rows = task._collector._dedup_sweep_rows((0, 2, 5, 10, 20, 40), "image")
         counts = [int(r["discarded"].split(" ")[0]) for r in rows]
         assert counts == sorted(counts)
         assert counts[0] == 1  # only the distance-0 frame
@@ -3156,13 +3209,13 @@ class TestDedupThresholdCalibration:
 
     async def test_sweep_marks_the_configured_threshold(self):
         task = await self._task(image_t=5, samples=[(1, [1])])
-        rows = task._dedup_sweep_rows((4, 5, 6), "image")
+        rows = task._collector._dedup_sweep_rows((4, 5, 6), "image")
         assert [("←current" in r["threshold"]) for r in rows] == [False, True, False]
 
     async def test_sweep_kept_and_discarded_sum_to_the_sample(self):
         samples = [(d, [d]) for d in (0, 3, 9, 30)]
         task = await self._task(action="discard_image", samples=samples)
-        for row in task._dedup_sweep_rows((0, 5, 40), "image"):
+        for row in task._collector._dedup_sweep_rows((0, 5, 40), "image"):
             discarded = int(row["discarded"].split(" ")[0])
             kept = int(row["kept"].split(" ")[0])
             assert discarded + kept == len(samples)
@@ -3171,7 +3224,7 @@ class TestDedupThresholdCalibration:
         """Varying the bbox threshold must not silently move the image one."""
         samples = [(30, [0]), (0, [0])]
         task = await self._task(action="discard", image_t=5, samples=samples)
-        rows = task._dedup_sweep_rows((0, 40), "bbox")
+        rows = task._collector._dedup_sweep_rows((0, 40), "bbox")
         # The image-distance-30 frame is never discarded at image_t=5, whatever
         # the bbox threshold does.
         assert all(int(r["discarded"].split(" ")[0]) <= 1 for r in rows)
@@ -3179,24 +3232,24 @@ class TestDedupThresholdCalibration:
     async def test_sweep_ladders_run_past_any_plausible_threshold(self):
         """A sweep that stops at the current setting can't answer "what if I
         raised it?", which is the only question the table exists to answer."""
-        assert max(CollectTrainingImagesTask._BBOX_SWEEP_THRESHOLDS) >= 100
-        assert max(CollectTrainingImagesTask._IMAGE_SWEEP_THRESHOLDS) >= 64
+        assert max(TrainingCollector.BBOX_SWEEP_THRESHOLDS) >= 100
+        assert max(TrainingCollector.IMAGE_SWEEP_THRESHOLDS) >= 64
 
     async def test_sweep_includes_a_configured_threshold_off_the_ladder(self):
         task = await self._task(image_t=7, samples=[(1, [1])])
-        rows = task._dedup_sweep_rows((0, 5, 10), "image")
+        rows = task._collector._dedup_sweep_rows((0, 5, 10), "image")
         assert [r["threshold"] for r in rows] == ["0", "5", "7 ←current", "10"]
 
     async def test_off_ladder_bbox_threshold_is_inserted_in_order(self):
         task = await self._task(bbox_t=33, samples=[(1, [1])])
-        rows = task._dedup_sweep_rows((0, 32, 40), "bbox")
+        rows = task._collector._dedup_sweep_rows((0, 32, 40), "bbox")
         assert [r["threshold"] for r in rows] == ["0", "32", "33 ←current", "40"]
 
     # ── histogram ───────────────────────────────────────────────────────────
 
     async def test_histogram_counts_and_marks_threshold_bin(self):
         task = await self._task(image_t=2)
-        hist = task._dedup_histogram([0, 0, 1, 2, 5], marker=2)
+        hist = task._collector._dedup_histogram([0, 0, 1, 2, 5], marker=2)
         assert hist["total"] == 5
         assert sum(b["count"] for b in hist["bins"]) == 5
         marked = [b for b in hist["bins"] if b["marked"]]
@@ -3205,15 +3258,15 @@ class TestDedupThresholdCalibration:
     async def test_histogram_marks_threshold_even_beyond_observed_range(self):
         """A threshold set far above every measurement is exactly the case worth
         seeing — the marker must not fall off the end of the chart."""
-        hist = (await self._task())._dedup_histogram([0, 1], marker=12)
+        hist = (await self._task())._collector._dedup_histogram([0, 1], marker=12)
         assert any(b["marked"] for b in hist["bins"])
 
     async def test_empty_histogram_reports_no_bins(self):
-        hist = (await self._task())._dedup_histogram([], marker=5)
+        hist = (await self._task())._collector._dedup_histogram([], marker=5)
         assert hist == {"bins": [], "total": 0}
 
     async def test_histogram_buckets_wider_than_one(self):
-        hist = (await self._task())._dedup_histogram([0, 1, 2, 3], marker=0, bucket=2)
+        hist = (await self._task())._collector._dedup_histogram([0, 1, 2, 3], marker=0, bucket=2)
         assert hist["bins"][0] == {"label": "0–1", "count": 2, "marked": True}
         assert hist["bins"][1] == {"label": "2–3", "count": 2, "marked": False}
 
@@ -3258,18 +3311,18 @@ class TestDedupThresholdCalibration:
     async def test_sample_window_is_bounded(self):
         task = await self._task()
         for i in range(task._DEDUP_SAMPLE_SIZE + 50):
-            task._dedup_samples.append((i % 10, []))
-        assert len(task._dedup_samples) == task._DEDUP_SAMPLE_SIZE
+            task._collector._dedup_samples.append((i % 10, []))
+        assert len(task._collector._dedup_samples) == task._DEDUP_SAMPLE_SIZE
 
     # ── the hint explains the censoring caveat ──────────────────────────────
 
     async def test_hint_warns_about_bias_while_discarding(self):
         for action in ("discard", "discard_image"):
-            hint = (await self._task(action=action, samples=[(1, [1])]))._dedup_hint_text()
+            hint = (await self._task(action=action, samples=[(1, [1])]))._collector._dedup_hint_text()
             assert "Measure only (calibration)" in hint, action
 
     async def test_hint_confirms_unbiased_sample_in_calibration_mode(self):
-        hint = (await self._task(action="measure", samples=[(1, [1])]))._dedup_hint_text()
+        hint = (await self._task(action="measure", samples=[(1, [1])]))._collector._dedup_hint_text()
         assert "unbiased" in hint
         assert "drift upward" not in hint
 
@@ -3290,7 +3343,7 @@ class TestMeasureOnlyAction:
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
         for image_dist in (0, 1, 50):
-            assert task._would_discard(image_dist, [0], image_t=64, bbox_t=256) is False
+            assert task._collector._would_discard(image_dist, [0], image_t=64, bbox_t=256) is False
 
 
 class TestDedupWorkerRecordsDistances:
@@ -3310,10 +3363,10 @@ class TestDedupWorkerRecordsDistances:
         await task._init(params, resume_data=None)
         # _init() reads hash sizes through a mocked settings API; pin them to the
         # real defaults so the phash round-trip inside the worker actually runs.
-        task._image_hash_size = 8
-        task._bbox_hash_size = 16
-        task._dedup_queue = asyncio.Queue()
-        task._pending_saves = []
+        task._collector._image_hash_size = 8
+        task._collector._bbox_hash_size = 16
+        task._collector._dedup_queue = asyncio.Queue()
+        task._collector._pending_saves = []
 
         provided = MagicMock()
         provided.image = np.zeros((32, 32, 3), dtype=np.uint8)
@@ -3324,10 +3377,12 @@ class TestDedupWorkerRecordsDistances:
         images_api = MagicMock()
         images_api.check_dedup_bulk.return_value = response
 
-        await task._dedup_queue.put((provided, matching, ImageProviderType.LIVE_STREAM))
-        await task._dedup_queue.put(None)
-        with patch.object(task, "_save_image", new=AsyncMock(return_value=None)) as save:
-            await task._dedup_worker(images_api, Path("/tmp"))
+        await task._collector._dedup_queue.put(
+            (FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.LIVE_STREAM), matching)
+        )
+        await task._collector._dedup_queue.put(None)
+        with patch.object(task._collector, "_save_image", new=AsyncMock(return_value=None)) as save:
+            await task._collector._dedup_worker(images_api)
         return task, save
 
     @staticmethod
@@ -3341,12 +3396,12 @@ class TestDedupWorkerRecordsDistances:
 
     async def test_distances_are_recorded_in_the_sample(self):
         task, _ = await self._run_worker("measure", self._response(3, [7]))
-        assert list(task._dedup_samples) == [(3, [7])]
+        assert list(task._collector._dedup_samples) == [(3, [7])]
 
     async def test_none_distances_are_preserved_not_coerced(self):
         """An empty index must stay None all the way into the sample."""
         task, _ = await self._run_worker("measure", self._response(None, [None]))
-        assert list(task._dedup_samples) == [(None, [None])]
+        assert list(task._collector._dedup_samples) == [(None, [None])]
 
     async def test_measure_mode_saves_the_frame_despite_a_duplicate_hit(self):
         task, save = await self._run_worker(
@@ -3354,7 +3409,7 @@ class TestDedupWorkerRecordsDistances:
             self._response(0, [0], image_is_dup=True, bbox_flags=[True]),
         )
         assert save.await_count == 1
-        assert task._dup_frames_discarded == 0
+        assert task._collector._dup_frames_discarded == 0
 
     async def test_discard_image_mode_still_discards(self):
         """Calibration support must not have disarmed the real discard paths."""
@@ -3363,9 +3418,9 @@ class TestDedupWorkerRecordsDistances:
             self._response(0, [0], image_is_dup=True, bbox_flags=[True]),
         )
         assert save.await_count == 0
-        assert task._dup_frames_discarded == 1
+        assert task._collector._dup_frames_discarded == 1
         # ...and the discarded frame is still measured, so the sweep sees it.
-        assert list(task._dedup_samples) == [(0, [0])]
+        assert list(task._collector._dedup_samples) == [(0, [0])]
 
     async def test_ignore_mode_skips_measurement_entirely(self):
         """'Ignore' exists to be cheap — it must not start paying for hashing."""
@@ -3373,8 +3428,8 @@ class TestDedupWorkerRecordsDistances:
         # The ignore path dispatches the save without awaiting it (nothing depends
         # on the index being updated first), so assert dispatch rather than await.
         assert save.call_count == 1
-        assert list(task._dedup_samples) == []
-        assert task._dedup_frames_checked == 0
+        assert list(task._collector._dedup_samples) == []
+        assert task._collector._dedup_frames_checked == 0
 
 
 class TestSweepModelsADiscardAction:
@@ -3396,7 +3451,7 @@ class TestSweepModelsADiscardAction:
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
         for s in samples:
-            task._dedup_samples.append(s)
+            task._collector._dedup_samples.append(s)
         return task
 
     @staticmethod
@@ -3407,7 +3462,7 @@ class TestSweepModelsADiscardAction:
         """The reported regression: 25 frames match at threshold 0, 0 discarded."""
         samples = [(0, [0])] * 25 + [(30, [30])] * 7
         task = await self._task("measure", samples)
-        rows = task._dedup_sweep_rows((0, 40), "image")
+        rows = task._collector._dedup_sweep_rows((0, 40), "image")
         assert self._discarded(rows[0]) == 25, "matching frames must be counted as discards"
         # At image threshold 40 all 32 frames match on the image, but the modelled
         # rule is "keep if any unique": the 7 frames whose bbox distance is 30 sit
@@ -3417,13 +3472,13 @@ class TestSweepModelsADiscardAction:
 
     async def test_ignore_mode_also_reports_would_be_discards(self):
         task = await self._task("ignore", [(0, [0])] * 4)
-        assert self._discarded(task._dedup_sweep_rows((0,), "image")[0]) == 4
+        assert self._discarded(task._collector._dedup_sweep_rows((0,), "image")[0]) == 4
 
     async def test_discard_image_matched_equals_discarded(self):
         """Under discard_image the user's intuition holds exactly."""
         samples = [(0, [99])] * 5 + [(30, [0])] * 3
         task = await self._task("discard_image", samples)
-        for row in task._dedup_sweep_rows((0, 5, 40), "image"):
+        for row in task._collector._dedup_sweep_rows((0, 5, 40), "image"):
             assert row["matched"] == str(self._discarded(row))
 
     async def test_configured_discard_action_is_preserved(self):
@@ -3433,14 +3488,14 @@ class TestSweepModelsADiscardAction:
         samples = [(0, [0, 99])]
         keep = await self._task("discard", samples)
         drop = await self._task("discard_image", samples)
-        assert self._discarded(keep._dedup_sweep_rows((0,), "image")[0]) == 0
-        assert self._discarded(drop._dedup_sweep_rows((0,), "image")[0]) == 1
+        assert self._discarded(keep._collector._dedup_sweep_rows((0,), "image")[0]) == 0
+        assert self._discarded(drop._collector._dedup_sweep_rows((0,), "image")[0]) == 1
 
     async def test_hint_names_the_action_being_modelled(self):
         """Under 'discard', matched and discarded legitimately differ — the user
         must be told which rule the table is applying rather than left to guess."""
         task = await self._task("measure", [(0, [0])])
-        hint = task._dedup_hint_text()
+        hint = task._collector._dedup_hint_text()
         assert "keep if any unique" in hint.lower() or "discard" in hint.lower()
 
 
@@ -3453,8 +3508,8 @@ class TestHintDirectionIsUnambiguous:
         params = {**_PARAMS, "enable_dedup": True, "duplicate_action": action}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._dedup_samples.append((1, [1]))
-        return task._dedup_hint_text()
+        task._collector._dedup_samples.append((1, [1]))
+        return task._collector._dedup_hint_text()
 
     async def test_threshold_advice_avoids_directional_words(self):
         hint = await self._hint()
@@ -3529,7 +3584,7 @@ class TestOneFailingSourceDoesNotKillTheRun:
         assert task.get_error_message() is None
         # >= because saves are pipelined: the stop condition can be crossed while a
         # frame is already in flight (same reason the max_images test uses >=).
-        assert task._images_saved >= 3
+        assert task._collector._images_saved >= 3
         # The bad source was actually exercised, and is remembered as failing.
         assert bad.calls > 0
         assert "bad-cam" in task._source_failures
@@ -3623,7 +3678,7 @@ class TestAllSourcesFailingStopsTheRun:
             task = await _run_task([], params=params, detect=True, tmp_path=tmp_path, providers=[good, bad])
 
         assert task.get_status() == TaskStatus.COMPLETED
-        assert task._images_saved >= 3
+        assert task._collector._images_saved >= 3
 
 
 # ─── Collect-everything mode (no models configured) ───────────────────────────
@@ -3640,13 +3695,13 @@ class TestCollectAllWhenNoModelsConfigured:
     async def test_init_sets_collect_all_when_model_label_config_is_empty(self):
         task = _make_task(params=_NO_MODEL_PARAMS)
         await task._init(_NO_MODEL_PARAMS, resume_data=None)
-        assert task._collect_all is True
-        assert task._model_names == []
+        assert task._spec.collect_all is True
+        assert task._spec.model_names == []
 
     async def test_init_does_not_set_collect_all_when_a_model_is_configured(self):
         task = _make_task()
         await task._init(_PARAMS, resume_data=None)
-        assert task._collect_all is False
+        assert task._spec.collect_all is False
 
     async def test_a_model_with_only_disabled_labels_is_not_collect_all(self):
         """Zero confidence is the UI's "not collecting this label" convention. That's
@@ -3656,15 +3711,15 @@ class TestCollectAllWhenNoModelsConfigured:
         params = {**_PARAMS, "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0}}]}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        assert task._collect_all is False
-        assert task._target_labels == []
+        assert task._spec.collect_all is False
+        assert task._spec.target_labels == []
 
     async def test_every_frame_is_saved_without_running_inference(self, tmp_path):
         images = [_tracked_image(0), _tracked_image(1), _tracked_image(2)]
         task = await _run_task(images, params=_NO_MODEL_PARAMS, detect=False, tmp_path=tmp_path)
 
         assert task.get_status() == TaskStatus.COMPLETED
-        assert task._images_saved == 3
+        assert task._collector._images_saved == 3
         assert len(list(tmp_path.rglob("*.jpg"))) == 3
         task._test_mocks["inference_api"].detect_batch.assert_not_called()
 
@@ -3698,7 +3753,7 @@ class TestCollectAllStillRunsTheFilterChain:
 
         task = _make_task(params=_NO_MODEL_PARAMS)
         await task._init(_NO_MODEL_PARAMS, resume_data=None)
-        task._filter_chain_runner = FilterChainRunner(steps, backend)
+        task._collector._filter_chain_runner = FilterChainRunner(steps, backend)
         return task
 
     async def test_discard_image_still_discards_a_frame_with_no_detections(self):
@@ -3706,10 +3761,12 @@ class TestCollectAllStillRunsTheFilterChain:
         step = _fc_step(model_name="corrupt", action="discard_image", confidence=0.5)
         task = await self._collect_all_task_with_chain([step], backend)
 
-        result, discard, force_save = await task._apply_filter_chain_to_frame(_fc_provided(), _fc_packet(), [])
+        result, discard, force_save = await task._collector._apply_filter_chain_to_frame(
+            _fc_provided(), _fc_packet(), []
+        )
         assert discard is True
         assert result == []
-        assert task._filtered_discarded == 1
+        assert task._collector._filtered_discarded == 1
 
     async def test_tag_image_still_tags_a_frame_with_no_detections(self):
         backend = _FakeFilterChainBackend(kinds={"night": "image_classifier"}, classify_results={"night": 0.9})
@@ -3717,7 +3774,7 @@ class TestCollectAllStillRunsTheFilterChain:
         task = await self._collect_all_task_with_chain([step], backend)
 
         provided = _fc_provided()
-        _result, discard, _force_save = await task._apply_filter_chain_to_frame(provided, _fc_packet(), [])
+        _result, discard, _force_save = await task._collector._apply_filter_chain_to_frame(provided, _fc_packet(), [])
         assert discard is False
         assert provided._filter_chain_image_tags == {"tag-x"}
 
@@ -3729,14 +3786,14 @@ class TestCollectAllStillRunsTheFilterChain:
 
         async def _init_with_runner(self, params, resume_data):
             await original_init(self, params, resume_data)
-            self._filter_chain_runner = object()  # truthiness is all _run() checks
+            self._collector._filter_chain_runner = object()  # truthiness is all _run() checks
 
         async def _discard_everything(self, provided, base64_img, matching):
             return [], True, False
 
         with (
             patch.object(CollectTrainingImagesTask, "_init", _init_with_runner),
-            patch.object(CollectTrainingImagesTask, "_apply_filter_chain_to_frame", _discard_everything),
+            patch.object(TrainingCollector, "_apply_filter_chain_to_frame", _discard_everything),
         ):
             task = await _run_task(
                 [_tracked_image(0), _tracked_image(1)],
@@ -3745,7 +3802,7 @@ class TestCollectAllStillRunsTheFilterChain:
                 tmp_path=tmp_path,
             )
 
-        assert task._images_saved == 0
+        assert task._collector._images_saved == 0
         assert list(tmp_path.rglob("*.jpg")) == []
 
     async def test_a_kept_frame_is_still_saved(self, tmp_path):
@@ -3754,14 +3811,14 @@ class TestCollectAllStillRunsTheFilterChain:
 
         async def _init_with_runner(self, params, resume_data):
             await original_init(self, params, resume_data)
-            self._filter_chain_runner = object()
+            self._collector._filter_chain_runner = object()
 
         async def _keep_everything(self, provided, base64_img, matching):
             return matching, False, False
 
         with (
             patch.object(CollectTrainingImagesTask, "_init", _init_with_runner),
-            patch.object(CollectTrainingImagesTask, "_apply_filter_chain_to_frame", _keep_everything),
+            patch.object(TrainingCollector, "_apply_filter_chain_to_frame", _keep_everything),
         ):
             task = await _run_task(
                 [_tracked_image(0), _tracked_image(1)],
@@ -3770,7 +3827,7 @@ class TestCollectAllStillRunsTheFilterChain:
                 tmp_path=tmp_path,
             )
 
-        assert task._images_saved == 2
+        assert task._collector._images_saved == 2
 
 
 class TestCollectAllDedup:
@@ -3782,10 +3839,10 @@ class TestCollectAllDedup:
         params = {**_NO_MODEL_PARAMS, "enable_dedup": True, "duplicate_action": action}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._image_hash_size = 8
-        task._bbox_hash_size = 16
-        task._dedup_queue = asyncio.Queue()
-        task._pending_saves = []
+        task._collector._image_hash_size = 8
+        task._collector._bbox_hash_size = 16
+        task._collector._dedup_queue = asyncio.Queue()
+        task._collector._pending_saves = []
 
         provided = MagicMock()
         provided.image = np.zeros((32, 32, 3), dtype=np.uint8)
@@ -3795,10 +3852,12 @@ class TestCollectAllDedup:
         images_api = MagicMock()
         images_api.check_dedup_bulk.return_value = response
 
-        await task._dedup_queue.put((provided, [], ImageProviderType.LIVE_STREAM))
-        await task._dedup_queue.put(None)
-        with patch.object(task, "_save_image", new=AsyncMock(return_value="f.jpg")) as save:
-            await task._dedup_worker(images_api, Path("/tmp"))
+        await task._collector._dedup_queue.put(
+            (FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.LIVE_STREAM), [])
+        )
+        await task._collector._dedup_queue.put(None)
+        with patch.object(task._collector, "_save_image", new=AsyncMock(return_value="f.jpg")) as save:
+            await task._collector._dedup_worker(images_api)
         return task, save
 
     @staticmethod
@@ -3813,12 +3872,12 @@ class TestCollectAllDedup:
     async def test_duplicate_frame_is_discarded(self):
         task, save = await self._run_worker("discard", self._response(0, image_is_dup=True))
         save.assert_not_called()
-        assert task._dup_frames_discarded == 1
+        assert task._collector._dup_frames_discarded == 1
 
     async def test_novel_frame_is_saved(self):
         task, save = await self._run_worker("discard", self._response(30, image_is_dup=False))
         save.assert_called_once()
-        assert task._dup_frames_discarded == 0
+        assert task._collector._dup_frames_discarded == 0
 
 
 # ─── Task-level tags land on the image record, not only on bboxes ─────────────
@@ -3844,7 +3903,7 @@ class TestTaskTagsAreAppliedAtImageLevel:
         params = {**_PARAMS, "apply_tags": ["tag-a", "tag-b"]}
         task = await _run_task([_tracked_image(0)], params=params, detect=True, tmp_path=tmp_path)
 
-        assert task._images_saved == 1
+        assert task._collector._images_saved == 1
         assert self._image_tags(task) == ["tag-a", "tag-b"]
         assert all(c.args[0].action == "add" for c in task._test_mocks["images_api"].set_image_tag.call_args_list)
 
@@ -3862,7 +3921,7 @@ class TestTaskTagsAreAppliedAtImageLevel:
         params = {**_NO_MODEL_PARAMS, "apply_tags": ["tag-a"]}
         task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
 
-        assert task._images_saved == 1
+        assert task._collector._images_saved == 1
         assert self._bbox_tags(task) == []
         assert self._image_tags(task) == ["tag-a"]
 
@@ -3874,11 +3933,11 @@ class TestTaskTagsAreAppliedAtImageLevel:
         tags_api = MagicMock()
         tags_api.list_tags.return_value = MagicMock(tags=[])
 
-        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+        with patch("apps.helpers.training.collector.TagsApi", return_value=tags_api):
             task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
 
-        assert task._task_tag_uuid is not None
-        assert self._image_tags(task) == [task._task_tag_uuid]
+        assert task._collector._task_tag_uuid is not None
+        assert self._image_tags(task) == [task._collector._task_tag_uuid]
 
     async def test_filter_chain_image_tags_are_kept_alongside_task_tags(self, tmp_path):
         """The filter chain's own tag_image writes share this call site — neither set
@@ -3886,7 +3945,7 @@ class TestTaskTagsAreAppliedAtImageLevel:
         params = {**_NO_MODEL_PARAMS, "apply_tags": ["tag-a"]}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._meta_write_lock = asyncio.Lock()  # normally created by _run()
+        task._collector._meta_write_lock = asyncio.Lock()  # normally created by _run()
 
         provided = ImageWithProviderMetadata(
             image=np.zeros((8, 8, 3), dtype=np.uint8),
@@ -3895,7 +3954,8 @@ class TestTaskTagsAreAppliedAtImageLevel:
         provided._filter_chain_image_tags = {"tag-chain"}
         images_api = MagicMock()
 
-        await task._save_image(images_api, provided, [], tmp_path)
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(images_api, FrameOffer(provided=provided, base64="b64"), [])
 
         assert {c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list} == {"tag-a", "tag-chain"}
 
@@ -3917,17 +3977,17 @@ class TestTaskTagsAreAppliedAtImageLevel:
             tags=[TagRead(uuid=old_uuid, name="first_collect_run", kind="task_generated")]
         )
 
-        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+        with patch("apps.helpers.training.collector.TagsApi", return_value=tags_api):
             task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
 
         tags_api.update_tag.assert_not_called()
-        assert task._task_tag_uuid != old_uuid
+        assert task._collector._task_tag_uuid != old_uuid
         tags_api.add_tag.assert_called_once()
         created = tags_api.add_tag.call_args.args[0]
         assert created.name == "second_collect_run"
-        assert created.uuid == task._task_tag_uuid
+        assert created.uuid == task._collector._task_tag_uuid
         # The new tag — not the old one — is what this run's images get.
-        assert self._image_tags(task) == [task._task_tag_uuid]
+        assert self._image_tags(task) == [task._collector._task_tag_uuid]
 
     async def test_unchanged_task_tag_name_reuses_the_legacy_row(self, tmp_path):
         """Configs that predate the name-keyed UUID must keep their original tag row
@@ -3946,10 +4006,10 @@ class TestTaskTagsAreAppliedAtImageLevel:
             tags=[TagRead(uuid=legacy_uuid, name="first_collect_run", kind="task_generated")]
         )
 
-        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+        with patch("apps.helpers.training.collector.TagsApi", return_value=tags_api):
             task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
 
-        assert task._task_tag_uuid == legacy_uuid
+        assert task._collector._task_tag_uuid == legacy_uuid
         tags_api.add_tag.assert_not_called()
         tags_api.update_tag.assert_not_called()
 
@@ -3969,10 +4029,10 @@ class TestTaskTagsAreAppliedAtImageLevel:
             tags=[TagRead(uuid=second_uuid, name="second_collect_run", kind="task_generated")]
         )
 
-        with patch("apps.tasks_server.tasks.CollectTrainingImagesTask.TagsApi", return_value=tags_api):
+        with patch("apps.helpers.training.collector.TagsApi", return_value=tags_api):
             task = await _run_task([_tracked_image(0)], params=params, detect=False, tmp_path=tmp_path)
 
-        assert task._task_tag_uuid == second_uuid
+        assert task._collector._task_tag_uuid == second_uuid
         tags_api.add_tag.assert_not_called()
         tags_api.update_tag.assert_not_called()
 
@@ -3982,7 +4042,7 @@ class TestTaskTagsAreAppliedAtImageLevel:
         params = {**_NO_MODEL_PARAMS, "apply_tags": ["tag-a"]}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._meta_write_lock = asyncio.Lock()  # normally created by _run()
+        task._collector._meta_write_lock = asyncio.Lock()  # normally created by _run()
 
         provided = ImageWithProviderMetadata(
             image=np.zeros((8, 8, 3), dtype=np.uint8),
@@ -3991,7 +4051,8 @@ class TestTaskTagsAreAppliedAtImageLevel:
         provided._filter_chain_image_tags = {"tag-a"}
         images_api = MagicMock()
 
-        await task._save_image(images_api, provided, [], tmp_path)
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(images_api, FrameOffer(provided=provided, base64="b64"), [])
 
         assert [c.args[0].tag_uuid for c in images_api.set_image_tag.call_args_list] == ["tag-a"]
 
@@ -4103,7 +4164,7 @@ class TestAmbiguityDetection:
     async def test_close_runner_up_is_flagged(self):
         task = await self._task()
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
-        info = task._detect_ambiguity(det, _MODEL_NAME)
+        info = task._collector._detect_ambiguity(det, _MODEL_NAME)
         assert info is not None
         assert info.model == _MODEL_NAME
         assert info.rival_label_uuid == _RIVAL_UUID
@@ -4112,21 +4173,21 @@ class TestAmbiguityDetection:
     async def test_distant_runner_up_is_not_flagged(self):
         task = await self._task()
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.10)])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
 
     async def test_detection_with_no_alternates_is_never_flagged(self):
         """A model that returned no runners-up (or one that cannot produce them)
         must not be read as 'not confused' by accident — it simply yields None."""
         task = await self._task()
         det = _detection_with_alts(0.91, [])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
 
     async def test_disabled_by_default_flags_nothing(self):
         params = {**_PARAMS}
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
 
     async def test_margin_metric_uses_absolute_gap_and_inverted_direction(self):
         """Margin fires when the gap is at or BELOW the threshold — the opposite
@@ -4135,8 +4196,8 @@ class TestAmbiguityDetection:
         task = await self._task(ambiguity_metric="margin", ambiguity_threshold=0.05)
         close = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])  # gap 0.03
         far = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.50)])  # gap 0.41
-        assert task._detect_ambiguity(close, _MODEL_NAME) is not None
-        assert task._detect_ambiguity(far, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(close, _MODEL_NAME) is not None
+        assert task._collector._detect_ambiguity(far, _MODEL_NAME) is None
 
     async def test_review_disabled_label_never_triggers_ambiguity(self):
         """'Review up to = 0' means 'tag it, but never let it pull a frame into
@@ -4147,10 +4208,10 @@ class TestAmbiguityDetection:
         }
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        assert task._target_label_bands[_LABEL_UUID].review_disabled is True
+        assert task._spec.target_label_bands[_LABEL_UUID].review_disabled is True
 
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
 
     async def test_min_confidence_floor_skips_weak_detections(self):
         """Weak detections are already collected by the confidence band; the floor
@@ -4158,20 +4219,20 @@ class TestAmbiguityDetection:
         task = await self._task(ambiguity_min_confidence=0.6)
         weak = _detection_with_alts(0.4, [_alt(_RIVAL_UUID, 0.39)])
         strong = _detection_with_alts(0.9, [_alt(_RIVAL_UUID, 0.89)])
-        assert task._detect_ambiguity(weak, _MODEL_NAME) is None
-        assert task._detect_ambiguity(strong, _MODEL_NAME) is not None
+        assert task._collector._detect_ambiguity(weak, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(strong, _MODEL_NAME) is not None
 
     async def test_scope_configured_ignores_rival_outside_target_labels(self):
         task = await self._task(ambiguity_scope="configured")
         # _RIVAL_UUID is not in model_label_config, so under 'configured' it does
         # not count, however close it scored.
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
 
     async def test_scope_any_counts_rival_outside_target_labels(self):
         task = await self._task(ambiguity_scope="any")
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is not None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is not None
 
     async def test_scope_configured_accepts_a_configured_rival(self):
         params = {
@@ -4184,14 +4245,14 @@ class TestAmbiguityDetection:
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
-        assert task._detect_ambiguity(det, _MODEL_NAME) is not None
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is not None
 
     async def test_zero_confidence_winner_does_not_divide_by_zero(self):
         """A 0.0 winner would make ratio inf/NaN, which compares True against any
         threshold and would flag everything."""
         task = await self._task()
         det = _detection_with_alts(0.0, [_alt(_RIVAL_UUID, 0.0)])
-        info = task._detect_ambiguity(det, _MODEL_NAME)
+        info = task._collector._detect_ambiguity(det, _MODEL_NAME)
         assert info is None or info.value == 0.0
 
 
@@ -4214,10 +4275,10 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         inference_api.detect_batch.side_effect = _batch_of(_result_with([confident_and_confused]))
 
         frame = _untracked_image()
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
 
         # Band alone would have rejected it: 0.91 > max 0.6.
-        assert task._frame_triggers_save([confident_and_confused]) is False
+        assert task._collector._frame_triggers_save([confident_and_confused]) is False
         assert matching == [confident_and_confused]
         assert frame._det_meta[confident_and_confused.bbox.uuid]["ambiguity"] is not None
 
@@ -4235,7 +4296,7 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         inference_api.detect_batch.side_effect = _batch_of(_result_with([confident_and_sure]))
 
         frame = _untracked_image()
-        matching = await task._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
+        matching = await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None}, provided=frame)
         assert matching == []
 
     async def test_top_k_is_only_requested_when_the_feature_is_on(self):
@@ -4244,7 +4305,7 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         await task._init(_PARAMS, resume_data=None)
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([]))
-        await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert inference_api.detect_batch.call_args.args[0].top_k == 0
 
     async def test_top_k_is_requested_when_the_feature_is_on(self):
@@ -4252,7 +4313,7 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([]))
-        await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
         assert inference_api.detect_batch.call_args.args[0].top_k == 3
 
 
@@ -4289,7 +4350,9 @@ class TestAmbiguityAttributionSurvivesTheMerge:
         )
 
         frame = _untracked_image()
-        matching = await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
+        matching = await task._collector._run_inference(
+            inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame
+        )
 
         assert matching == [a_det]
         meta = frame._det_meta[a_det.bbox.uuid]
@@ -4313,7 +4376,7 @@ class TestAmbiguityAttributionSurvivesTheMerge:
         )
 
         frame = _untracked_image()
-        await task._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
+        await task._collector._run_inference(inference_api, "b64", {"model-a": None, "model-b": None}, provided=frame)
 
         assert frame._det_meta[a_det.bbox.uuid]["model"] == "model-a"
         assert frame._det_meta[b_det.bbox.uuid]["model"] == "model-b"
@@ -4330,9 +4393,9 @@ class TestAmbiguityUnsupportedModels:
 
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(MagicMock(detections=[], alternates_available=False))
-        await task._run_inference(inference_api, "b64", {_MODEL_NAME: None})
+        await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
 
-        assert _MODEL_NAME in task._ambiguity_unavailable_models
+        assert _MODEL_NAME in task._collector._ambiguity_unavailable_models
         task._status = TaskStatus.RUNNING
         messages = [n["message"] for n in task.get_notices()]
         assert any(_MODEL_NAME in m and "runner-up" in m for m in messages)
@@ -4349,20 +4412,23 @@ class TestAmbiguityPersistence:
         }
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+        task._collector._unverified_tag_uuid = UNVERIFIED_TAG_UUID
 
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
         frame = _untracked_image()
         frame._det_meta = {
             det.bbox.uuid: {
                 "model": _MODEL_NAME,
-                "ambiguity": task._detect_ambiguity(det, _MODEL_NAME),
+                "ambiguity": task._collector._detect_ambiguity(det, _MODEL_NAME),
             }
         }
 
         images_api = MagicMock()
-        task._meta_write_lock = asyncio.Lock()
-        await task._save_image(images_api, frame, [det], tmp_path, ImageProviderType.FIXED)
+        task._collector._meta_write_lock = asyncio.Lock()
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(
+            images_api, FrameOffer(provided=frame, base64="b64", provider_type=ImageProviderType.FIXED), [det]
+        )
 
         box = images_api.update_image_metadata.call_args.args[0].boxes[0]
         assert CONFUSABLE_TAG_UUID in box.tag_uuids
@@ -4379,15 +4445,20 @@ class TestAmbiguityPersistence:
         validation, so this pins the whole payload flat and stringly-typed."""
         task = _make_task(params=_AMBIGUITY_PARAMS)
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
-        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+        task._collector._unverified_tag_uuid = UNVERIFIED_TAG_UUID
 
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.88)])
         frame = _untracked_image()
-        frame._det_meta = {det.bbox.uuid: {"model": _MODEL_NAME, "ambiguity": task._detect_ambiguity(det, _MODEL_NAME)}}
+        frame._det_meta = {
+            det.bbox.uuid: {"model": _MODEL_NAME, "ambiguity": task._collector._detect_ambiguity(det, _MODEL_NAME)}
+        }
 
         images_api = MagicMock()
-        task._meta_write_lock = asyncio.Lock()
-        await task._save_image(images_api, frame, [det], tmp_path, ImageProviderType.FIXED)
+        task._collector._meta_write_lock = asyncio.Lock()
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(
+            images_api, FrameOffer(provided=frame, base64="b64", provider_type=ImageProviderType.FIXED), [det]
+        )
 
         box = images_api.update_image_metadata.call_args.args[0].boxes[0]
         assert all(isinstance(v, str) for v in box.bbox_meta.values())
@@ -4398,15 +4469,18 @@ class TestAmbiguityPersistence:
         payload are only for boxes that actually fired."""
         task = _make_task(params=_AMBIGUITY_PARAMS)
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
-        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+        task._collector._unverified_tag_uuid = UNVERIFIED_TAG_UUID
 
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.05)])
         frame = _untracked_image()
         frame._det_meta = {det.bbox.uuid: {"model": _MODEL_NAME, "ambiguity": None}}
 
         images_api = MagicMock()
-        task._meta_write_lock = asyncio.Lock()
-        await task._save_image(images_api, frame, [det], tmp_path, ImageProviderType.FIXED)
+        task._collector._meta_write_lock = asyncio.Lock()
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(
+            images_api, FrameOffer(provided=frame, base64="b64", provider_type=ImageProviderType.FIXED), [det]
+        )
 
         box = images_api.update_image_metadata.call_args.args[0].boxes[0]
         assert CONFUSABLE_TAG_UUID not in box.tag_uuids
@@ -4417,13 +4491,13 @@ class TestAmbiguityPersistence:
     async def test_browse_confusable_action_only_appears_when_enabled(self):
         task = _make_task(params=_AMBIGUITY_PARAMS)
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
-        task._task_tag_uuid = "task-tag"
+        task._collector._task_tag_uuid = "task-tag"
         labels = [a["label"] for a in task._review_actions()]
         assert "Browse confusable" in labels
 
         off = _make_task(params=_PARAMS)
         await off._init(_PARAMS, resume_data=None)
-        off._task_tag_uuid = "task-tag"
+        off._collector._task_tag_uuid = "task-tag"
         assert "Browse confusable" not in [a["label"] for a in off._review_actions()]
 
 
@@ -4446,7 +4520,7 @@ class TestCrossModelAmbiguity:
         }
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._label_ancestry = ancestry or {}
+        task._collector._label_ancestry = ancestry or {}
         return task
 
     def _api(self, a_dets, b_dets):
@@ -4458,7 +4532,9 @@ class TestCrossModelAmbiguity:
 
     async def _run(self, task, a_dets, b_dets):
         frame = _untracked_image()
-        await task._run_inference(self._api(a_dets, b_dets), "b64", {"model-a": None, "model-b": None}, provided=frame)
+        await task._collector._run_inference(
+            self._api(a_dets, b_dets), "b64", {"model-a": None, "model-b": None}, provided=frame
+        )
         return frame
 
     async def test_disagreeing_models_flag_both_boxes_naming_each_other(self):
@@ -4490,25 +4566,25 @@ class TestCrossModelAmbiguity:
 
         await self._run(task, [cat], [dog])
 
-        assert task._ambiguity_evaluated == 1
-        assert task._ambiguity_flagged == 1
-        assert sum(task._ambiguity_pairs.values()) == 1
+        assert task._collector._ambiguity_evaluated == 1
+        assert task._collector._ambiguity_flagged == 1
+        assert sum(task._collector._ambiguity_pairs.values()) == 1
         # Attributed to the higher-confidence side: model-a said cat, over model-b's dog.
-        assert list(task._ambiguity_pairs) == [("model-a", _LABEL_UUID, self._DOG_UUID)]
+        assert list(task._collector._ambiguity_pairs) == [("model-a", _LABEL_UUID, self._DOG_UUID)]
 
     async def test_a_pair_gated_out_on_both_sides_counts_as_measured_not_flagged(self):
         """`ambiguity_min_confidence` rejecting both boxes means the pair was looked
         at and found not worth reporting — it must not inflate the flagged tally."""
         task = await self._task()
-        task._ambiguity_min_confidence = 0.99
+        task._spec.ambiguity_min_confidence = 0.99
         cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
         dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
 
         await self._run(task, [cat], [dog])
 
-        assert task._ambiguity_evaluated == 1
-        assert task._ambiguity_flagged == 0
-        assert task._ambiguity_pairs == {}
+        assert task._collector._ambiguity_evaluated == 1
+        assert task._collector._ambiguity_flagged == 0
+        assert task._collector._ambiguity_pairs == {}
 
     async def test_agreeing_models_are_not_flagged(self):
         """Same label on the same object is agreement, not confusion."""
@@ -4575,14 +4651,17 @@ class TestCrossModelAmbiguity:
 
     async def test_cross_model_metadata_names_both_models_and_stays_stringly_typed(self, tmp_path):
         task = await self._task()
-        task._unverified_tag_uuid = UNVERIFIED_TAG_UUID
+        task._collector._unverified_tag_uuid = UNVERIFIED_TAG_UUID
         cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
         dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
         frame = await self._run(task, [cat], [dog])
 
         images_api = MagicMock()
-        task._meta_write_lock = asyncio.Lock()
-        await task._save_image(images_api, frame, [cat], tmp_path, ImageProviderType.FIXED)
+        task._collector._meta_write_lock = asyncio.Lock()
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(
+            images_api, FrameOffer(provided=frame, base64="b64", provider_type=ImageProviderType.FIXED), [cat]
+        )
 
         box = images_api.update_image_metadata.call_args.args[0].boxes[0]
         assert CONFUSABLE_TAG_UUID in box.tag_uuids
@@ -4612,7 +4691,7 @@ class TestCrossModelAmbiguity:
         }
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._label_ancestry = {}
+        task._collector._label_ancestry = {}
 
         # ratio 0.45/0.6 = 0.75, over the 0.7 threshold — it would fire on the
         # numbers alone, but the dog is below the dog label's own 0.5 floor.
@@ -4633,7 +4712,7 @@ class TestCrossModelAmbiguity:
         }
         task = _make_task(params=params)
         await task._init(params, resume_data=None)
-        task._label_ancestry = {}
+        task._collector._label_ancestry = {}
 
         cat = _detection_with_alts(0.6, [], label_uuid=_LABEL_UUID)
         dog = _detection_with_alts(0.5, [], label_uuid=self._DOG_UUID)  # exactly at floor
