@@ -70,18 +70,11 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
-      # them later. A clip is cut on the relay's record clock while the boxes are
-      # stamped on the watcher's fetch clock, and the two do not agree; this is the
-      # knob for the difference.
-      #
-      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
-      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
-      # a value of 1.0 was set on that basis, and direct observation then showed boxes
-      # running AHEAD of the picture — the opposite sign — with the correction having
-      # made it worse. Treat that script as a weak instrument (its peaks were barely
-      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
-      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # Corrects a timing offset between a recorded clip and its overlaid
+      # detection boxes: the clip is cut on the relay's record clock while
+      # boxes are stamped on the watcher's fetch clock, and the two drift
+      # apart. Shifts boxes EARLIER by this many seconds; negative shifts
+      # them later. Default 0 = no correction. Tune by eye against a clip:
       # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
       WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
@@ -169,18 +162,11 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
-      # them later. A clip is cut on the relay's record clock while the boxes are
-      # stamped on the watcher's fetch clock, and the two do not agree; this is the
-      # knob for the difference.
-      #
-      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
-      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
-      # a value of 1.0 was set on that basis, and direct observation then showed boxes
-      # running AHEAD of the picture — the opposite sign — with the correction having
-      # made it worse. Treat that script as a weak instrument (its peaks were barely
-      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
-      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # Corrects a timing offset between a recorded clip and its overlaid
+      # detection boxes: the clip is cut on the relay's record clock while
+      # boxes are stamped on the watcher's fetch clock, and the two drift
+      # apart. Shifts boxes EARLIER by this many seconds; negative shifts
+      # them later. Default 0 = no correction. Tune by eye against a clip:
       # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
       WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
@@ -231,18 +217,11 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
-      # them later. A clip is cut on the relay's record clock while the boxes are
-      # stamped on the watcher's fetch clock, and the two do not agree; this is the
-      # knob for the difference.
-      #
-      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
-      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
-      # a value of 1.0 was set on that basis, and direct observation then showed boxes
-      # running AHEAD of the picture — the opposite sign — with the correction having
-      # made it worse. Treat that script as a weak instrument (its peaks were barely
-      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
-      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # Corrects a timing offset between a recorded clip and its overlaid
+      # detection boxes: the clip is cut on the relay's record clock while
+      # boxes are stamped on the watcher's fetch clock, and the two drift
+      # apart. Shifts boxes EARLIER by this many seconds; negative shifts
+      # them later. Default 0 = no correction. Tune by eye against a clip:
       # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
       WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
@@ -311,35 +290,15 @@ services:
   mono-dev:
     container_name: whiskerwatcher_mono_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
-    # A ceiling, not a reservation — an idle container costs nothing.
+    # No per-container memory limit: this workspace runs training (torch +
+    # DataLoader workers) alongside the app and a full browser test suite, so
+    # a fixed ceiling is hard to size without killing legitimate jobs. Memory
+    # safety here relies on host-level OOM handling instead of a cgroup cap.
     #
-    # This exists because a test-suite leak took the whole machine down on
-    # 2026-08-24: a pytest-xdist worker in this container grew to 48 GB on a
-    # 78 GiB swapless host, and with no cgroup limit the kernel escalated to a
-    # *global* OOM. It then spent ten minutes harvesting Chromium renderers
-    # (which set oom_score_adj=300 on themselves, so they outscore a 20 GB
-    # Python process) while the actual hog kept growing, and logind/dbus were
-    # too starved to open a login session. The box had to be power-cycled.
-    #
-    # With a limit set, the same leak is confined: the kernel OOM-kills inside
-    # this cgroup, the offending worker dies, and the host stays interactive.
-    #
-    # The value has to cover a training run (torch + DataLoader workers) plus
-    # the app plus a full browser suite. 32g leaves ~45 GiB for the host's own
-    # services. Raise MONO_DEV_MEM_LIMIT if a legitimate training job is killed
-    # — but check `docker inspect --format '{{.State.OOMKilled}}'` first,
-    # because a leak looks exactly like a job that needs more headroom.
-    mem_limit: ${MONO_DEV_MEM_LIMIT:-32g}
-    # Equal to mem_limit = this cgroup may not swap. Without it the limit is a
-    # memory+swap budget and a leak drags the host's swap down with it.
-    memswap_limit: ${MONO_DEV_MEM_LIMIT:-32g}
-    # Docker's default soft limit is 1024, which the training server can reach
-    # on its own: every DataLoader worker costs descriptors, and this container
-    # runs training alongside the watcher, the collectors and the browser test
-    # suite. When it is hit, the failure surfaces as an unrelated-looking
-    # "[Errno 24] Too many open files" while opening a temp file, killing a
-    # training that was minutes from finishing. The trainers now reap their own
-    # workers; this is the headroom that keeps one leak from being fatal.
+    # Docker's default open-file soft limit (1024) is easy to exhaust in this
+    # workspace: every DataLoader worker holds descriptors on top of the app,
+    # the collectors, and the browser test suite. Trainers reap their own
+    # workers; this just raises the ceiling so that cleanup has room to work.
     ulimits:
       nofile:
         soft: 65536
@@ -352,18 +311,11 @@ services:
       args: *build-args
     environment:
       THUMB_CACHE_MAX_MB: ${THUMB_CACHE_MAX_MB:-100}
-      # Shifts a clip's detection boxes EARLIER by this many seconds. Negative shifts
-      # them later. A clip is cut on the relay's record clock while the boxes are
-      # stamped on the watcher's fetch clock, and the two do not agree; this is the
-      # knob for the difference.
-      #
-      # DEFAULT 0 = no correction. A non-zero value was tried and withdrawn: the
-      # cross-correlation in scripts/measure_overlay_lag.py said boxes lagged by ~1.2s,
-      # a value of 1.0 was set on that basis, and direct observation then showed boxes
-      # running AHEAD of the picture — the opposite sign — with the correction having
-      # made it worse. Treat that script as a weak instrument (its peaks were barely
-      # above baseline, and the sidecar samples at well under 1 Hz, so its resolution is
-      # no better than the effect it measures). Set this from what you SEE on a clip:
+      # Corrects a timing offset between a recorded clip and its overlaid
+      # detection boxes: the clip is cut on the relay's record clock while
+      # boxes are stamped on the watcher's fetch clock, and the two drift
+      # apart. Shifts boxes EARLIER by this many seconds; negative shifts
+      # them later. Default 0 = no correction. Tune by eye against a clip:
       # boxes behind the subject -> raise it; boxes ahead of it -> go negative.
       WATCH_OVERLAY_LAG_S: ${WATCH_OVERLAY_LAG_S:-0}
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
