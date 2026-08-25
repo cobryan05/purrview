@@ -960,6 +960,19 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: var(--text-sm);
 }
 
+/* Pico's `input:not([type=checkbox],[type=radio]){margin-bottom:var(--pico-spacing)}`
+   (specificity 0,1,1) beats the plain class selector above (0,1,0), so `<input
+   type="date">` keeps Pico's 1rem bottom margin even with `margin: 0` set above —
+   `<select>` isn't affected because it matches Pico's rule via the lower-specificity
+   `select` arm of that same selector list. That stray margin is what pushed From/To
+   noticeably above the other controls (their bottoms track the row's `align-items:
+   flex-end`, so a taller field wrapper reads as "aligned to the top"). Out-specificity
+   Pico here instead of adding `!important`.
+*/
+.event-filters__row .event-filters__date {
+  margin-bottom: 0;
+}
+
 .event-filters__clear {
   margin: 0;
 }
