@@ -117,6 +117,31 @@ async def _close(action, context, started_at=100.0, at=200.0, **overrides):
     return await action.run(_event_signal(EventPhase.END, started_at=started_at, at=at, **overrides), context)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_frame_buffers(tmp_path, monkeypatch):
+    """Keep every frame buffer this module opens inside the test's own `tmp_path`.
+
+    A session buffers frames into `tempfile.mkdtemp()`, and most tests here open one
+    *without* closing it — deliberately, because the open state is the thing under
+    test. Only `_on_end` discards, so every one of those left a directory behind in the
+    real temp directory, for as long as this file has existed. 113 of them were sitting
+    in the container's `/tmp` when this was noticed, every frame 320x240 solid grey:
+    `_frame()`, not a camera.
+
+    They were also mistaken for evidence of the leak the *watcher* has — they have the
+    same `wwtl-` prefix — which is worth knowing before reading a buffer count as a
+    production symptom again.
+
+    Isolating here rather than discarding in each test keeps the leak impossible rather
+    than merely tidied, and it is what lets the preview test below assert on a bare
+    glob instead of diffing a process-global directory.
+    """
+    buffers = tmp_path / "frame-buffers"
+    buffers.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(buffers))
+    return buffers
+
+
 @pytest.fixture
 def action(tmp_path):
     return RecordEventTimelapseAction(interval_s=10.0, min_frames=2, output_dir=str(tmp_path / "timelapses"))
@@ -678,19 +703,17 @@ class TestMidEventPreview:
 
         session = action._sessions[("src-1", "rule-1", "", "")]
 
-        # Scoped to the directories *this* preview creates. The bare
-        # `glob("wwtl-preview-*")` this used to assert on is process-global: it fails
-        # whenever any other run has a scratch dir in flight — a second xdist worker,
-        # a concurrently running suite, or another agent testing in the same worktree,
-        # all of which happen here. It failed exactly that way under two concurrent
-        # unit suites while it was busy passing about its own cleanup.
+        # A bare glob is safe again: `_isolate_frame_buffers` gives this test its own
+        # temp root, so nothing else can have a scratch dir in flight here. It used to
+        # have to diff before-and-after against the process-global directory, which
+        # failed whenever a second xdist worker, a concurrent suite or another agent in
+        # the same worktree had one open — and that is routine on this box.
         tmp_root = Path(tempfile.gettempdir())
-        before = set(tmp_root.glob("wwtl-preview-*"))
         await action.preview(("src-1", "rule-1", "", ""))
-        leaked = set(tmp_root.glob("wwtl-preview-*")) - before
 
         assert not (session.directory / "preview.txt").exists()
-        assert not leaked, f"preview left scratch directories behind: {sorted(leaked)}"
+        leaked = sorted(tmp_root.glob("wwtl-preview-*"))
+        assert not leaked, f"preview left scratch directories behind: {leaked}"
 
 
 class TestOrphanedFrameBuffersAreSwept:
@@ -762,28 +785,24 @@ class TestOrphanedFrameBuffersAreSwept:
     def test_a_missing_root_is_not_an_error(self, tmp_path):
         assert sweep_frame_buffers(tmp_path / "nope") == 0
 
-    async def test_a_live_session_marks_its_own_buffer(self, tmp_path, monkeypatch):
+    async def test_a_live_session_marks_its_own_buffer(self, _isolate_frame_buffers):
         """The sweep is only safe because `_on_start` stamps the buffer as it opens.
 
-        Rooted at a scratch dir rather than the real temp directory, so the sweep under
-        test cannot reach a buffer some other test — or the live watcher sharing this
-        container — is filling.
+        Runs against the module's isolated temp root, so the sweep under test cannot
+        reach a buffer another test — or the live watcher sharing this container — is
+        filling.
         """
         import os
 
-        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        root = _isolate_frame_buffers
         action = RecordEventTimelapseAction(interval_s=1.0)
         await action.run(_event_signal(EventPhase.START), _context())
         directory = next(iter(action._sessions.values())).directory
-        assert directory.parent == tmp_path, "the session must have landed in the scratch root"
+        assert directory.parent == root, "the session must have landed in the isolated root"
 
-        orphan = self._buffer(tmp_path, "wwtl-dead", owner=str(_unused_pid()))
-        try:
-            assert (directory / BUFFER_OWNER_FILENAME).read_text().strip() == str(os.getpid())
-            # The live one survives a sweep that removes the dead one beside it.
-            assert sweep_frame_buffers(tmp_path) == 1
-            assert directory.exists()
-            assert not orphan.exists()
-        finally:
-            for session in action._sessions.values():
-                session.discard()
+        orphan = self._buffer(root, "wwtl-dead", owner=str(_unused_pid()))
+        assert (directory / BUFFER_OWNER_FILENAME).read_text().strip() == str(os.getpid())
+        # The live one survives a sweep that removes the dead one beside it.
+        assert sweep_frame_buffers(root) == 1
+        assert directory.exists()
+        assert not orphan.exists()
