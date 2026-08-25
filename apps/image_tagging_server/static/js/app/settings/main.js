@@ -55,16 +55,16 @@ export async function init() {
   // and fills in when the measurement lands.
   const storagePanel = _buildStorageSection();
 
-  // Hotkeys lead: the panel is collapsed by default, so at the bottom of a tall
-  // grid it was effectively undiscoverable. It costs one row collapsed.
+  // Service status leads: it's the first thing worth checking on this tab, and
+  // sits directly above the Servers panel that configures those same services —
+  // "is the training server up" and "which URL is it" are the same question two
+  // minutes apart. It is a collapsed strip, so leading with it costs a row.
   //
-  // Service health sits directly above the Servers panel that configures those
-  // same services: "is the training server up" and "which URL is it" are the
-  // same question two minutes apart. It is a collapsed strip, so leading with it
-  // costs a row.
+  // Hotkeys is next: the panel is collapsed by default, so further down a tall
+  // grid it was effectively undiscoverable. It costs one row collapsed.
   wrap.append(
-    _buildHotkeySection(),
     _buildServiceStatusSection(),
+    _buildHotkeySection(),
     serverPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
   );
   container.appendChild(wrap);
