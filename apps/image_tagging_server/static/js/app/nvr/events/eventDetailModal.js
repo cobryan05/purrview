@@ -751,7 +751,14 @@ export function openEventDetailModal(
    * tab to Annotate: this modal sits on top of the event detail modal (which it
    * closes), and closing it drops the user straight back onto the Event Review
    * grid at whatever scroll position they left it — switching tabs used to lose
-   * that place entirely. */
+   * that place entirely.
+   *
+   * The event modal itself is torn down while the canvas is open (it owns a
+   * ResizeObserver / rVFC loop that can't sit paused underneath), so closing the
+   * canvas modal — save, cancel, or delete-image — reopens this same event via
+   * `navContext.onClose`, reseeked to the moment the user was watching. Without
+   * that, "annotate one frame" would silently strand the reviewer back on the
+   * grid instead of where the clip was playing. */
   async function offerToOpenOnCanvas(result) {
     if (!result?.path) return;
     const open = await showConfirmModal({
@@ -761,13 +768,19 @@ export function openEventDetailModal(
       cancelText: 'Keep reviewing',
     });
     if (!open) return;
+    const resumeAtS = video?.currentTime ?? null;
     shell.close();
     const [{ showCanvasModal }, labels] = await Promise.all([
       import('/app-static/js/app/review/main.js'),
       fetchLabels().catch(() => new Map()),
     ]);
     const img = { uuid: result.uuid, filename: result.path, bboxes: [] };
-    showCanvasModal(null, img, labels, async () => {}, null, { allowNavigation: false });
+    const navContext = {
+      items: [],
+      startIndex: 0,
+      onClose: () => openEventDetailModal(event, { sourceNames, onDeleted, siblings: walk, seekToS: resumeAtS }),
+    };
+    showCanvasModal(null, img, labels, async () => {}, navContext, { allowNavigation: false });
   }
 
   // ---------------------------------------------------------------- details
