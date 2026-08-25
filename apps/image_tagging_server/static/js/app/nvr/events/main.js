@@ -156,8 +156,10 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     syncSelectionUi();
   }, { testid: 'event-search-clear-selection' }));
 
+  const refreshBtn = button('Refresh', () => void search(), { testid: 'event-search-refresh' });
   toolbar.appendChild(selectAllLabel);
   toolbar.appendChild(summary);
+  toolbar.appendChild(refreshBtn);
   toolbar.appendChild(selectionActions);
 
   /** Push the selection into the DOM: card classes, checkboxes, and the action bar. */
