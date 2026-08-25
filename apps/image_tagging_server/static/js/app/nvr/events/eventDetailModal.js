@@ -27,7 +27,6 @@
 import { createModalShell, isTextEntryElement, Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { openDialogCount } from '/app-static/js/ui/utils/modalZIndex.js';
 import { actionForCombo, comboLabel, combosForAction, eventToCombo } from '/app-static/js/app/image-tagging/hotkeyBindings.js';
-import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import {
   deleteWatchEvent,
   fetchRecording,
@@ -746,7 +745,13 @@ export function openEventDetailModal(
   }
 
   /** Same offer the Live view makes — saving is nearly always the first half of
-   * "…so I can annotate it", and Files is several steps away from here. */
+   * "…so I can annotate it", and Files is several steps away from here.
+   *
+   * Opens a self-contained canvas modal in place, rather than switching the main
+   * tab to Annotate: this modal sits on top of the event detail modal (which it
+   * closes), and closing it drops the user straight back onto the Event Review
+   * grid at whatever scroll position they left it — switching tabs used to lose
+   * that place entirely. */
   async function offerToOpenOnCanvas(result) {
     if (!result?.path) return;
     const open = await showConfirmModal({
@@ -757,7 +762,12 @@ export function openEventDetailModal(
     });
     if (!open) return;
     shell.close();
-    events.publish(EventTypes.OPEN_IMAGE_ON_MAIN_CANVAS, { path: result.path });
+    const [{ showCanvasModal }, labels] = await Promise.all([
+      import('/app-static/js/app/review/main.js'),
+      fetchLabels().catch(() => new Map()),
+    ]);
+    const img = { uuid: result.uuid, filename: result.path, bboxes: [] };
+    showCanvasModal(null, img, labels, async () => {}, null, { allowNavigation: false });
   }
 
   // ---------------------------------------------------------------- details
