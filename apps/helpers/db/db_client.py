@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, TypeVar, Union
@@ -5211,13 +5212,67 @@ class DbClient:
         verified_bbox_sets: optional precomputed {label_uuid: verified-image-set} for
         object-scope labels, so a caller that already queried those sets (the stats
         aggregation, which needs them for other purposes too) doesn't re-query them.
-        """
 
-        async def _collect(build_stmt) -> set:
-            out: set[str] = set()
+        Batches its queries across all of top_level_uuids (grouped by what they
+        actually need — ABSENT-only ImageLabel rows for object-scope labels,
+        PRESENT-or-ABSENT rows for everything else, plus a verified-bbox query for
+        any object-scope label not already covered by verified_bbox_sets) instead of
+        querying once per label: with dozens of top-level labels, a per-label loop
+        turns into dozens of sequential round trips for no reason, since a single
+        query with label_uuid IN (...) returns exactly the same rows.
+        """
+        object_tls = [
+            tl
+            for tl in top_level_uuids
+            if tl_label_lookup.get(tl) is not None and tl_label_lookup[tl].scope == LabelScope.OBJECT
+        ]
+        other_tls = [tl for tl in top_level_uuids if tl_label_lookup.get(tl) is not None and tl not in object_tls]
+
+        # Raw label UUIDs needed per ImageLabel status: ABSENT-only backs the
+        # object-scope "accounted for" check, PRESENT-or-ABSENT backs everything else.
+        absent_only_raw = {u for tl in object_tls for u in effective_for_tl[tl]}
+        present_or_absent_raw = {u for tl in other_tls for u in effective_for_tl[tl]}
+        all_il_raw = absent_only_raw | present_or_absent_raw
+
+        raw_absent: dict[str, set] = defaultdict(set)
+        raw_present_or_absent: dict[str, set] = defaultdict(set)
+        if all_il_raw:
             for chunk in _chunked(all_image_uuids):
-                out.update((await session.exec(build_stmt(chunk))).all())
-            return out
+                rows = (
+                    await session.exec(
+                        select(ImageLabel.label_uuid, ImageLabel.image_uuid, ImageLabel.status).where(
+                            ImageLabel.image_uuid.in_(chunk),
+                            ImageLabel.label_uuid.in_(all_il_raw),
+                            ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                        )
+                    )
+                ).all()
+                for raw_lbl_uuid, img_uuid, status in rows:
+                    raw_present_or_absent[raw_lbl_uuid].add(img_uuid)
+                    if status == ImageItemStatus.ABSENT:
+                        raw_absent[raw_lbl_uuid].add(img_uuid)
+
+        # Verified-bbox rows for object-scope top-levels not already supplied.
+        need_bbox_query = [tl for tl in object_tls if not (verified_bbox_sets is not None and tl in verified_bbox_sets)]
+        raw_verified_bbox: dict[str, set] = defaultdict(set)
+        if need_bbox_query:
+            needed_raw = {u for tl in need_bbox_query for u in effective_for_tl[tl]}
+            for chunk in _chunked(all_image_uuids):
+                rows = (
+                    await session.exec(
+                        select(BBox.label_uuid, BBox.image_uuid)
+                        .distinct()
+                        .where(
+                            BBox.image_uuid.in_(chunk),
+                            BBox.label_uuid.in_(needed_raw),
+                            BBox.uuid.in_(
+                                select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
+                            ),
+                        )
+                    )
+                ).all()
+                for raw_lbl_uuid, img_uuid in rows:
+                    raw_verified_bbox[raw_lbl_uuid].add(img_uuid)
 
         accounted_for: dict[str, set] = {}
         for tl_uuid in top_level_uuids:
@@ -5230,33 +5285,11 @@ class DbClient:
                 if verified_bbox_sets is not None and tl_uuid in verified_bbox_sets:
                     verified_bboxes = verified_bbox_sets[tl_uuid]
                 else:
-                    verified_bboxes = await _collect(
-                        lambda chunk, eff=eff: select(BBox.image_uuid)
-                        .distinct()
-                        .where(
-                            BBox.image_uuid.in_(chunk),
-                            BBox.label_uuid.in_(eff),
-                            BBox.uuid.in_(
-                                select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
-                            ),
-                        )
-                    )
-                verified_absent = await _collect(
-                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
-                        ImageLabel.image_uuid.in_(chunk),
-                        ImageLabel.label_uuid.in_(eff),
-                        ImageLabel.status == ImageItemStatus.ABSENT,
-                    )
-                )
+                    verified_bboxes = set().union(*(raw_verified_bbox.get(u, set()) for u in eff))
+                verified_absent = set().union(*(raw_absent.get(u, set()) for u in eff))
                 accounted_for[tl_uuid] = verified_bboxes | verified_absent
             else:
-                accounted_for[tl_uuid] = await _collect(
-                    lambda chunk, eff=eff: select(ImageLabel.image_uuid).where(
-                        ImageLabel.image_uuid.in_(chunk),
-                        ImageLabel.label_uuid.in_(eff),
-                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                    )
-                )
+                accounted_for[tl_uuid] = set().union(*(raw_present_or_absent.get(u, set()) for u in eff))
         return accounted_for
 
     async def get_training_config_images_by_label_status(
@@ -6053,29 +6086,38 @@ class DbClient:
 
             async with self._async_session_maker() as session:
 
-                async def _uuid_set_chunked(build_stmt) -> set:
-                    """Union scalar results across image-uuid chunks (bind-variable cap)."""
-                    out: set[str] = set()
-                    for chunk in _chunked(all_image_uuids):
-                        out.update((await session.exec(build_stmt(chunk))).all())
-                    return out
-
-                # Verified bbox image sets for every object label.
+                # Verified bbox image sets for every object label, batched into one
+                # query per image-uuid chunk across *all* labels' raw UUIDs instead of
+                # one query per label — with dozens of object labels this was the
+                # dominant cost of this endpoint (one sequential round trip per label).
                 # Rollup parents use their full effective set; children and standalone use just themselves.
-                obj_verified_imgs: dict[str, set[str]] = {}
-                for lbl_uuid in object_label_uuids:
-                    eff = effective_for_tl.get(lbl_uuid, [lbl_uuid])
-                    obj_verified_imgs[lbl_uuid] = await _uuid_set_chunked(
-                        lambda chunk, eff=eff: select(BBox.image_uuid)
-                        .distinct()
-                        .where(
-                            BBox.image_uuid.in_(chunk),
-                            BBox.label_uuid.in_(eff),
-                            BBox.uuid.in_(
-                                select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
-                            ),
+                raw_needed = sorted(
+                    {u for lbl_uuid in object_label_uuids for u in effective_for_tl.get(lbl_uuid, [lbl_uuid])}
+                )
+                raw_verified_by_label: dict[str, set[str]] = defaultdict(set)
+                for chunk in _chunked(all_image_uuids):
+                    rows = (
+                        await session.exec(
+                            select(BBox.label_uuid, BBox.image_uuid)
+                            .distinct()
+                            .where(
+                                BBox.image_uuid.in_(chunk),
+                                BBox.label_uuid.in_(raw_needed),
+                                BBox.uuid.in_(
+                                    select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
+                                ),
+                            )
                         )
+                    ).all()
+                    for raw_lbl_uuid, img_uuid in rows:
+                        raw_verified_by_label[raw_lbl_uuid].add(img_uuid)
+
+                obj_verified_imgs: dict[str, set[str]] = {
+                    lbl_uuid: set().union(
+                        *(raw_verified_by_label.get(u, set()) for u in effective_for_tl.get(lbl_uuid, [lbl_uuid]))
                     )
+                    for lbl_uuid in object_label_uuids
+                }
 
                 # "Accounted for" image sets per top-level label.
                 accounted_for_tl = await self._co_label_accounted_for(
