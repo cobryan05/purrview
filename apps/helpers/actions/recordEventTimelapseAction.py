@@ -26,6 +26,7 @@ memory cost is one frame regardless of how long the cat stays.
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -47,6 +48,19 @@ logger = logging.getLogger(__name__)
 #: Shared with db_server's retention sweep, which has to find these files to delete
 #: them — see `apps/__init__.py`.
 DEFAULT_TIMELAPSE_ROOT = RECORDINGS_TIMELAPSE_DIR
+
+#: Prefix every frame buffer shares, so `sweep_frame_buffers` can find them and nothing
+#: else. The preview scratch dirs use a longer prefix starting with this one, so they
+#: are swept on the same terms — an abandoned preview encode is just as much a leak.
+BUFFER_PREFIX = "wwtl-"
+
+#: Written into every frame buffer as it is opened, naming the process that owns it.
+#: The sweep keys on this rather than on the directory's age because every watcher
+#: shares the tasks_server process: "left behind by the process an OOM killer took" and
+#: "being filled right now by another profile's watcher" are otherwise
+#: indistinguishable, and guessing wrong deletes a live event's frames. Not a `.jpg`,
+#: so `_buffered_frames` never sees it.
+BUFFER_OWNER_FILENAME = "owner.pid"
 
 #: Seconds between sampled frames. Ten is the interval that makes a cat's half-hour nap
 #: into about fifteen watchable seconds.
@@ -74,6 +88,76 @@ DEFAULT_MAX_WIDTH = 1280
 #: per matched pair. The subject/target refs are in it so that per-pair identity, when it
 #: lands, separates two cats into two timelapses with no change here.
 SessionKey = Tuple[str, str, str, str]
+
+
+def open_buffer_dir(prefix: str = BUFFER_PREFIX) -> Path:
+    """A fresh frame buffer, stamped with the pid that owns it.
+
+    The stamp is what makes `sweep_frame_buffers` safe, so it is written before the
+    caller gets a chance to put a frame in the directory. A failure to write it is
+    logged and swallowed: the buffer is still perfectly usable, and losing an event's
+    frames over a bookkeeping file would be much the worse trade.
+    """
+    directory = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        (directory / BUFFER_OWNER_FILENAME).write_text(str(os.getpid()))
+    except OSError as e:
+        logger.warning("Timelapse frame buffer %s could not be marked as owned: %s", directory, e)
+    return directory
+
+
+def _buffer_owner_is_alive(directory: Path) -> bool:
+    """Whether the process that opened this buffer is still running.
+
+    An absent or unreadable marker reads as *dead*: a live buffer is always stamped
+    before it is written to, so an unmarked one can only predate this mechanism, which
+    makes it a leftover by definition.
+
+    A pid that has since been recycled onto some unrelated program reads as alive, so
+    the ambiguous case errs towards a buffer that outlives its process by one restart
+    rather than one deleted out from under a running watcher.
+    """
+    try:
+        pid = int((directory / BUFFER_OWNER_FILENAME).read_text().strip())
+    except (OSError, ValueError):
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # It exists; it just belongs to another user.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def sweep_frame_buffers(root: Optional[Path] = None) -> int:
+    """Delete frame buffers whose owning process is gone. Returns how many were removed.
+
+    The ordinary paths already clean up after themselves — `_on_end` discards in a
+    `finally`, and a watcher that stops cleanly force-closes everything open on the way
+    out. This is for the case where no Python runs at all: an OOM kill, a `docker kill`,
+    a power cut. Clip chunks have had `sweep_chunk_root` for exactly this reason;
+    these had nothing, and sixteen orphaned buffers were sitting in the container's
+    temp directory against zero open events when this was written.
+
+    Called at watcher start, which is safe precisely because the test is ownership
+    rather than age: another watcher in this same process keeps its buffers.
+    """
+    base = Path(root) if root is not None else Path(tempfile.gettempdir())
+    if not base.is_dir():
+        return 0
+    removed = 0
+    for directory in base.glob(f"{BUFFER_PREFIX}*"):
+        if not directory.is_dir() or _buffer_owner_is_alive(directory):
+            continue
+        shutil.rmtree(directory, ignore_errors=True)
+        removed += 1
+    return removed
 
 
 def _session_key(signal: WatchEventSignal) -> SessionKey:
@@ -347,7 +431,7 @@ class RecordEventTimelapseAction(Action):
             # the stale one is discarded rather than continued.
             self._sessions.pop(key).discard()
         try:
-            directory = Path(tempfile.mkdtemp(prefix="wwtl-"))
+            directory = open_buffer_dir()
         except OSError as e:
             return ActionResult(ok=False, detail=f"Could not open a frame buffer: {e}")
         session = _Session(directory, signal.started_at)
@@ -581,7 +665,7 @@ class RecordEventTimelapseAction(Action):
             return None
         frames = frames[-self.PREVIEW_MAX_FRAMES :]
 
-        scratch = Path(tempfile.mkdtemp(prefix="wwtl-preview-"))
+        scratch = open_buffer_dir(f"{BUFFER_PREFIX}preview-")
         dest = scratch / "preview.mp4"
         try:
             await asyncio.to_thread(self._compile, session, dest, frames, "preview.txt")

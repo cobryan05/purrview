@@ -12,14 +12,35 @@ the same rule. A rule may also opt out of a source entirely (`RuleSpec.source_uu
 in which case this engine simply has no machine for it.
 """
 
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..tracking.tracker import Track
-from .events import WatchEventSignal
+from .events import EventCloseReason, WatchEventSignal
 from .geometry import Zone
 from .motion import MotionField
 from .rules import RuleMachine, RuleSpec, evaluate_predicate
 from .scoping import rule_applies_to_source
+
+#: Which machine a transition belongs to: the rule, plus the member of each subject slot
+#: it was narrowed to. `None` in either position means that slot had nothing to
+#: enumerate. Deliberately the same shape the recorder and the timelapse action key an
+#: event on — `(source, rule, subject_ref, target_ref)` — minus the source, which an
+#: engine already is.
+SlotKey = Tuple[str, Optional[str], Optional[str]]
+
+
+def _slot_refs(kind: str, refs: Sequence[str]) -> List[Optional[str]]:
+    """The members of one subject slot that each deserve their own machine.
+
+    A slot with nothing to enumerate yields a single `None`, which `narrowed` reads as
+    "leave this slot as it is". That covers `subject_b_kind="none"` (a `present` rule has
+    no target), `subject_a_kind="any"` (no ref list exists to split on, so it keeps the
+    one machine it has always had) and an empty list (a rule that matches nothing, which
+    must still hold a machine so it can be reported rather than vanishing).
+    """
+    if kind not in ("label", "zone") or not refs:
+        return [None]
+    return list(refs)
 
 
 class WatchEngine:
@@ -35,16 +56,30 @@ class WatchEngine:
     ) -> None:
         self.source_uuid = source_uuid
         self._zones: Dict[str, Zone] = {z.uuid: z for z in zones}
+        # One machine per *slot* — per member of each multi-ref subject — not per rule.
+        # "Any of these three cats" is three independent events with their own hysteresis
+        # and their own recordings; see `RuleSpec.narrowed` for why that line falls
+        # between labels rather than between tracks.
+        #
+        # Enumerated once, here, because the ref lists are known at load time (descendants
+        # were already widened by `expand_descendants` before the spec arrived). Nothing
+        # is ever allocated per frame, so there is no cardinality to cap and no eviction
+        # to get wrong: the table is exactly as big as the rules say it is.
+        #
         # A rule scoped to other sources gets no machine here at all, rather than a
         # machine that is asked never to fire. That is the difference between "this
         # camera does not run this rule" and "this rule happens to be false" — the
         # status panel, the tuning hints and `close_all` all read the machine map, and a
         # dormant machine would show up in every one of them.
-        self._machines: Dict[str, RuleMachine] = {
-            rule.uuid: RuleMachine(rule, source_uuid=source_uuid)
-            for rule in rules
-            if rule_applies_to_source(rule.source_uuids, source_uuid)
-        }
+        self._machines: Dict[SlotKey, RuleMachine] = {}
+        for rule in rules:
+            if not rule_applies_to_source(rule.source_uuids, source_uuid):
+                continue
+            for a_ref in _slot_refs(rule.subject_a_kind, rule.subject_a_refs):
+                for b_ref in _slot_refs(rule.subject_b_kind, rule.subject_b_refs):
+                    self._machines[(rule.uuid, a_ref, b_ref)] = RuleMachine(
+                        rule.narrowed(a_ref, b_ref), source_uuid=source_uuid
+                    )
         self.frame_width = frame_width
         self.frame_height = frame_height
 
@@ -66,8 +101,13 @@ class WatchEngine:
 
     @property
     def rule_uuids(self) -> List[str]:
-        """The rules this engine actually evaluates — the profile's, minus those scoped away."""
-        return list(self._machines)
+        """The rules this engine actually evaluates — the profile's, minus those scoped away.
+
+        De-duplicated: a multi-ref rule owns several machines, and callers here are
+        counting *rules* ("how many were scoped away?", "are they all motion rules?"),
+        not slots.
+        """
+        return list(dict.fromkeys(rule_uuid for rule_uuid, _a, _b in self._machines))
 
     # ------------------------------------------------------------------ step
 
@@ -106,11 +146,15 @@ class WatchEngine:
                 signals.append(signal)
         return signals
 
-    def close_all(self, now: float) -> List[WatchEventSignal]:
-        """Close every open event. Used on shutdown, pause and resume."""
+    def close_all(
+        self,
+        now: float,
+        reason: EventCloseReason = EventCloseReason.FORCED,
+    ) -> List[WatchEventSignal]:
+        """Close every open event. Used on shutdown, pause, resume and a lost source."""
         signals = []
         for machine in self._machines.values():
-            signal = machine.force_close(now)
+            signal = machine.force_close(now, reason)
             if signal is not None:
                 signals.append(signal)
         return signals
@@ -118,17 +162,24 @@ class WatchEngine:
     # ------------------------------------------------------------------ status
 
     def open_events(self) -> List[Dict[str, object]]:
-        """Open events, shaped for the status panel's "Open events" table."""
+        """Open events, shaped for the status panel's "Open events" table.
+
+        The slot refs are carried because one rule can now hold several events at once —
+        without them two of this rule's rows would be indistinguishable, and the panel
+        would look like it was double-reporting rather than showing two cats.
+        """
         return [
             {
                 "ruleUuid": machine.spec.uuid,
                 "ruleName": machine.spec.name,
                 "sourceUuid": self.source_uuid,
+                "subjectRef": subject_ref,
+                "targetRef": target_ref,
                 "state": machine.state.value,
                 "startedAt": machine._event_started_at,
                 "trackIds": list(machine._track_ids),
             }
-            for machine in self._machines.values()
+            for (_rule_uuid, subject_ref, target_ref), machine in self._machines.items()
             if machine.is_open
         ]
 
@@ -138,13 +189,24 @@ class WatchEngine:
         This feature is almost entirely threshold tuning, and a rule that repeatedly
         re-fires inside its rearm window is the clearest signal that its guards are too
         tight — but it is invisible unless something says so.
+
+        Totalled per rule rather than per machine: a multi-ref rule has one machine per
+        cat, and a threshold that is too tight flaps on all of them. Reporting each
+        separately would turn one piece of advice into three copies of itself, each with
+        a count too small to cross the bar on its own.
         """
-        hints = []
+        flaps: Dict[str, int] = {}
+        specs = {}
         for machine in self._machines.values():
-            if machine.flap_count >= min_flaps:
+            flaps[machine.spec.uuid] = flaps.get(machine.spec.uuid, 0) + machine.flap_count
+            specs.setdefault(machine.spec.uuid, machine.spec)
+        hints = []
+        for rule_uuid, count in flaps.items():
+            if count >= min_flaps:
+                spec = specs[rule_uuid]
                 hints.append(
-                    f"Rule {machine.spec.name!r} re-fired {machine.flap_count}× inside its "
-                    f"rearm window ({machine.spec.rearm_delay_s:g}s). Raising the rearm delay "
+                    f"Rule {spec.name!r} re-fired {count}× inside its "
+                    f"rearm window ({spec.rearm_delay_s:g}s). Raising the rearm delay "
                     "or lowering the threshold would make it steadier."
                 )
         return hints

@@ -45,6 +45,7 @@ from inference_client.models.pin_model_payload import PinModelPayload
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
 from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
+from apps.helpers.actions.recordEventTimelapseAction import sweep_frame_buffers
 from apps.helpers.actions.Registry import create_action
 from apps.helpers.consts import JsonValues, TaskAccent, TaskStatus
 from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_and_hierarchy
@@ -932,6 +933,15 @@ class StreamWatcherTask(Task):
         if swept:
             self.log(f"Swept {swept} clip chunk(s) left behind by a previous run")
 
+        # Same reasoning, different artifact: an event timelapse buffers JPEGs to a temp
+        # directory for the length of the event, and only the closing edge frees them.
+        # A watcher that was killed rather than stopped never gets to that edge, and
+        # nothing else has ever reclaimed them. Ownership-scoped, so a watcher starting
+        # here does not touch the buffers another profile's watcher is filling.
+        swept_buffers = await asyncio.to_thread(sweep_frame_buffers)
+        if swept_buffers:
+            self.log(f"Swept {swept_buffers} timelapse frame buffer(s) left behind by a previous run")
+
         self._status_msg = "Building pipelines"
         await self._build_pipelines(db_api_client)
 
@@ -962,6 +972,11 @@ class StreamWatcherTask(Task):
                 self._maybe_checkpoint()
 
                 now = time.monotonic()
+                # Before the due check, not inside it: a failed source backs off to
+                # BACKOFF_MAX_S between attempts and is not due for minutes at a time,
+                # and if every source is down nothing is due at all — which is exactly
+                # when this most needs to run.
+                await self._close_events_for_lost_sources(now)
                 due = [p for p in self._pipelines if p.due(now)]
                 if not due:
                     await asyncio.sleep(self._idle_sleep(now))
@@ -1061,6 +1076,42 @@ class StreamWatcherTask(Task):
         if pipeline.motion_detector is not None:
             pipeline.motion_detector.reset()
         return True
+
+    async def _close_events_for_lost_sources(self, now: float) -> None:
+        """End the open events of any source that has gone dark.
+
+        An unbounded event is a legitimate setting — `max_duration_s = 0` means "no
+        cap", and a cat asleep in a window for four hours is what an event timelapse is
+        for. An event *nothing can ever close* is not. The runaway cap cannot cover this
+        case even when it is enabled: it is evaluated inside `RuleMachine.step()`, and
+        `step()` only runs once a frame has been analysed, so it is a ceiling for as
+        long as frames arrive and silent for precisely the failure where it is needed.
+
+        Left alone, a camera that stops delivering strands every event it was holding:
+        the row sits "in progress" until something restarts the watcher, and the
+        timelapse behind it neither compiles nor releases the frames it buffered.
+
+        Hung off `is_failed` rather than the first missed frame, so a camera blinking
+        for ten seconds does not end a visit that is still happening; a source still
+        working through a slow connect is excluded outright by `record_connecting`.
+        Naturally idempotent — the machines are IDLE afterwards, so the next pass finds
+        nothing open and emits nothing.
+        """
+        for pipeline in self._pipelines:
+            if not pipeline.health.is_failed(now):
+                continue
+            signals = pipeline.close_open_events(now, EventCloseReason.SOURCE_LOST)
+            if not signals:
+                continue
+            self.log(
+                f"Source '{pipeline.source_name}' has been dark for "
+                f"{_format_duration(pipeline.health.downtime_s(now))} — closing "
+                f"{len(signals)} event(s) it was still holding open."
+            )
+            for signal in signals:
+                self._resolve_slot_names(signal, pipeline)
+                self._note_event(signal)
+                await self._dispatch(signal, pipeline)
 
     def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:
         """Record a failed attempt, and say so the first time it becomes a fault.
@@ -1649,7 +1700,11 @@ class StreamWatcherTask(Task):
         open_events = {}
         for pipeline in self._pipelines:
             for entry in pipeline.engine.open_events():
-                open_events[f"{pipeline.source_uuid}:{entry['ruleUuid']}"] = entry["startedAt"]
+                # Keyed on the slot, not just the rule: a multi-ref rule holds one event
+                # per label, and keying on the rule alone would silently report the last
+                # cat written rather than all of them.
+                slot = ":".join(str(entry.get(k) or "") for k in ("ruleUuid", "subjectRef", "targetRef"))
+                open_events[f"{pipeline.source_uuid}:{slot}"] = entry["startedAt"]
         return {
             "open_event_uuids": self._open_event_uuids,
             "open_events": open_events,

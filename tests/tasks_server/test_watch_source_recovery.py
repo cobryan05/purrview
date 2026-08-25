@@ -557,3 +557,114 @@ class TestConnectingIsNotFailing:
 
         assert "connecting" in label
         assert "failed" not in label
+
+
+class TestALostSourceDoesNotHoldItsEventsOpen:
+    """An unbounded event is a legitimate setting; an event nothing can ever close is not.
+
+    `max_duration_s = 0` means "no cap", and a cat asleep in a window for four hours is
+    exactly what an event timelapse exists to record. But the cap is evaluated inside
+    `RuleMachine.step()`, and `step()` only runs when a frame has been analysed — so it
+    is a ceiling only for as long as frames keep arriving, and it can never fire for the
+    one failure that most needs it. When the camera stops delivering, every event it had
+    open stays open: the row sits "in progress" until something restarts the watcher,
+    and the timelapse buffering behind it neither compiles nor releases its frames.
+
+    Closing is driven off `SourceHealth.is_failed`, which is deliberately not the first
+    dropped frame — a camera blinking for ten seconds is an ordinary event, and a source
+    still working through a slow connect is excluded outright.
+    """
+
+    def _armed_task(self):
+        """A watcher holding one open event on one source, ready to lose it."""
+        from apps.helpers.tracking.tracker import Track
+        from apps.helpers.watch.engine import WatchEngine
+        from apps.helpers.watch.rules import RuleSpec
+
+        spec = RuleSpec(
+            uuid="rule-1",
+            name="Cat Present",
+            subject_a_kind="label",
+            subject_a_refs=["label-cat"],
+            relation="present",
+            subject_b_kind="none",
+            subject_b_refs=[],
+            threshold=0.6,
+            min_duration_s=0.0,
+            rearm_delay_s=10.0,
+            max_duration_s=0.0,  # the unbounded case this is all about
+        )
+        engine = WatchEngine([spec], source_uuid="src-1")
+        cat = Track(track_id=1, bbox=(0, 0, 20, 20), label_uuid="label-cat", label_name="cat", confidence=0.9)
+        engine.step([cat], now=0.0)
+        engine.step([cat], now=0.5)
+        assert engine.open_signals(0.5), "the event should be open before the camera is lost"
+
+        task = _task()
+        pipeline = _pipeline()
+        pipeline.engine = engine
+        pipeline.close_open_events = lambda now, reason=None: engine.close_all(now, reason=reason)
+        task._pipelines = [pipeline]
+
+        dispatched = []
+        task._resolve_slot_names = lambda signal, pipeline=None: None
+        task._note_event = lambda signal: None
+
+        async def _dispatch(signal, pipeline=None):
+            dispatched.append(signal)
+
+        task._dispatch = _dispatch
+        return task, pipeline, engine, dispatched
+
+    async def test_a_blink_does_not_close_anything(self):
+        """The negative half, and the reason this hangs off `is_failed` at all."""
+        task, pipeline, engine, dispatched = self._armed_task()
+        pipeline.health.record_failure(100.0, "no frame")
+
+        await task._close_events_for_lost_sources(110.0)
+
+        assert dispatched == []
+        assert engine.open_signals(110.0), "a ten-second drop must not end the event"
+
+    async def test_a_source_down_past_the_threshold_closes_its_events(self):
+        from apps.helpers.watch.events import EventCloseReason, EventPhase
+
+        task, pipeline, engine, dispatched = self._armed_task()
+        pipeline.health.record_failure(100.0, "no frame")
+
+        await task._close_events_for_lost_sources(100.0 + SourceHealth.FAILED_AFTER_S)
+
+        assert len(dispatched) == 1
+        assert dispatched[0].phase is EventPhase.END
+        assert dispatched[0].close_reason is EventCloseReason.SOURCE_LOST
+        assert dispatched[0].truncated, "the subject may well still have been there"
+        assert not engine.open_signals(1000.0), "the event must actually be closed"
+
+    async def test_a_source_still_connecting_keeps_its_events(self):
+        """Coming up slowly is not the same as being gone — see `record_connecting`."""
+        task, pipeline, engine, dispatched = self._armed_task()
+        pipeline.health.record_connecting(100.0)
+
+        await task._close_events_for_lost_sources(100.0 + SourceHealth.FAILED_AFTER_S * 3)
+
+        assert dispatched == []
+        assert engine.open_signals(1000.0)
+
+    async def test_it_does_not_close_the_same_event_twice(self):
+        """The loop calls this every pass; a second close would double every artifact."""
+        task, pipeline, engine, dispatched = self._armed_task()
+        pipeline.health.record_failure(100.0, "no frame")
+        failed_at = 100.0 + SourceHealth.FAILED_AFTER_S
+
+        await task._close_events_for_lost_sources(failed_at)
+        await task._close_events_for_lost_sources(failed_at + 60.0)
+
+        assert len(dispatched) == 1
+
+    async def test_a_healthy_source_is_left_alone(self):
+        task, pipeline, engine, dispatched = self._armed_task()
+
+        await task._close_events_for_lost_sources(500.0)
+
+        assert dispatched == []
+        assert engine.open_signals(500.0)

@@ -702,6 +702,334 @@ class TestReportedSlotValues:
         assert [s.subject_ref for s in signals if s.phase is EventPhase.START] == [CAT_A]
 
 
+class TestSlotIdentityIsStableWhileAnEventIsOpen:
+    """The slot refs are an open event's identity, so they must not move under it.
+
+    Four separate consumers hash an event on `(source, rule, subject, target)`: the
+    recorder's `_event_key`, the timelapse action's `_session_key`, the in-progress
+    preview endpoint, and the MQTT template. The row itself records the slots once, at
+    the opening edge, and never revises them — so relatching mid-event could never
+    change anything that was stored, and could only cost the closing edge its key.
+
+    That is exactly what it cost. A `present` rule spanning three cats opened on one of
+    them, a second more confident cat appeared, and END hashed to a tuple nothing had
+    been filed under: the row never received `ended_at` and sat "in progress" until a
+    restart swept it, while the timelapse action never found its buffer, so it neither
+    compiled the video nor released the frames — it went on sampling into a directory
+    no closing edge could ever reach.
+    """
+
+    def _spec(self, **overrides):
+        kwargs = dict(
+            relation="present",
+            subject_a_refs=[CAT_A, CAT_B],
+            subject_b_kind="none",
+            subject_b_refs=[],
+            threshold=0.6,
+            min_duration_s=1.0,
+            rearm_delay_s=1.0,
+        )
+        kwargs.update(overrides)
+        return _rule(**kwargs)
+
+    def _drive(self, spec, frames):
+        machine = RuleMachine(spec, source_uuid="src-1")
+        emitted = []
+        for now, tracks in frames:
+            emitted.extend(machine.step(evaluate_predicate(spec, tracks, ALL_ZONES, FRAME_W, FRAME_H), now))
+        return machine, emitted
+
+    def test_a_more_confident_second_subject_does_not_rekey_the_close(self):
+        spec = self._spec()
+        weak_a = _track(track_id=1, label=CAT_A, conf=0.7)
+        strong_b = _track(track_id=2, label=CAT_B, conf=0.98)
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [weak_a]),  # PENDING
+                (1.5, [weak_a]),  # START, on CAT_A
+                (2.0, [strong_b]),  # a *different* cat, seen more clearly
+                (3.0, []),  # CLOSING
+                (4.5, []),  # END
+            ],
+        )
+        start = [s for s in emitted if s.phase is EventPhase.START]
+        end = [s for s in emitted if s.phase is EventPhase.END]
+        assert len(start) == 1 and len(end) == 1
+        assert start[0].subject_ref == CAT_A
+        # The whole point: the tuple END hashes to is the one START was filed under.
+        assert end[0].subject_ref == start[0].subject_ref
+
+    def test_the_in_progress_signal_keeps_the_opening_identity(self):
+        """`open_signal` is how a running event's row and frame buffer are found."""
+        spec = self._spec()
+        weak_a = _track(track_id=1, label=CAT_A, conf=0.7)
+        strong_b = _track(track_id=2, label=CAT_B, conf=0.98)
+        machine, _ = self._drive(spec, [(0.0, [weak_a]), (1.5, [weak_a]), (2.0, [strong_b])])
+        assert machine.open_signal(2.5).subject_ref == CAT_A
+
+    def test_the_peak_confidence_still_follows_the_strongest_observation(self):
+        """Only the *refs* are pinned — freezing the confidence too would be a regression."""
+        spec = self._spec()
+        weak_a = _track(track_id=1, label=CAT_A, conf=0.7)
+        strong_b = _track(track_id=2, label=CAT_B, conf=0.98)
+        _machine, emitted = self._drive(
+            spec,
+            [(0.0, [weak_a]), (1.5, [weak_a]), (2.0, [strong_b]), (3.0, []), (4.5, [])],
+        )
+        end = [s for s in emitted if s.phase is EventPhase.END][0]
+        assert end.peak_confidence == pytest.approx(0.98)
+
+    def test_the_strongest_subject_before_the_event_opens_still_wins(self):
+        """Pinning happens at the opening edge, so the lead-in still picks the best one."""
+        spec = self._spec(min_duration_s=2.0)
+        weak_a = _track(track_id=1, label=CAT_A, conf=0.7)
+        strong_b = _track(track_id=2, label=CAT_B, conf=0.98)
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [weak_a]),  # PENDING, on CAT_A
+                (1.0, [strong_b]),  # still PENDING — the event has not opened yet
+                (2.5, [strong_b]),  # START
+            ],
+        )
+        start = [s for s in emitted if s.phase is EventPhase.START]
+        assert len(start) == 1
+        assert start[0].subject_ref == CAT_B
+
+    def test_a_flap_back_open_does_not_rekey_the_event(self):
+        """Re-firing inside the rearm window rejoins the event, so it keeps its key."""
+        spec = self._spec()
+        weak_a = _track(track_id=1, label=CAT_A, conf=0.7)
+        strong_b = _track(track_id=2, label=CAT_B, conf=0.98)
+        _machine, emitted = self._drive(
+            spec,
+            [
+                (0.0, [weak_a]),
+                (1.5, [weak_a]),  # START, on CAT_A
+                (2.0, []),  # CLOSING
+                (2.5, [strong_b]),  # back inside the rearm window — same event
+                (3.5, []),  # CLOSING again
+                (5.0, []),  # END
+            ],
+        )
+        start = [s for s in emitted if s.phase is EventPhase.START]
+        end = [s for s in emitted if s.phase is EventPhase.END]
+        assert len(start) == 1 and len(end) == 1
+        assert end[0].subject_ref == CAT_A
+
+
+class TestOneEventPerLabel:
+    """A multi-ref rule fires per checked label, in parallel — and never per track.
+
+    "Any of these three cats" is a convenience for whoever wrote the rule, not a claim
+    that the three share one event. Two different cats are two visits with their own
+    spans, their own cards and their own recordings, and the old `max(subjects_a)`
+    silently dropped whichever was seen less clearly.
+
+    The line falls between *labels*, not tracks, and that is deliberate on both sides:
+
+    * The recording is the whole frame, so three tracks sharing a label would produce
+      three near-identical videos of one scene. "Any Cat is present" is one event
+      however many cats are in shot.
+    * Matching on `label_uuid` and never on track identity is also what makes a brief
+      relabel harmless, with no bookkeeping of its own — see the flicker tests below.
+    """
+
+    def _present(self, refs, **overrides):
+        kwargs = dict(
+            relation="present",
+            subject_a_refs=list(refs),
+            subject_b_kind="none",
+            subject_b_refs=[],
+            threshold=0.6,
+            min_duration_s=1.0,
+            rearm_delay_s=10.0,
+            max_duration_s=0.0,
+        )
+        kwargs.update(overrides)
+        return _rule(**kwargs)
+
+    def _drive(self, engine, frames):
+        emitted = []
+        for now, tracks in frames:
+            emitted.extend(engine.step(tracks, now))
+        return emitted
+
+    @staticmethod
+    def _phases(emitted, phase):
+        return [s for s in emitted if s.phase is phase]
+
+    def test_two_different_cats_open_two_independent_events(self):
+        spec = self._present([CAT_A, CAT_B])
+        engine = WatchEngine([spec], source_uuid="src-1")
+        cat_a = _track(track_id=1, label=CAT_A, conf=0.9)
+        cat_b = _track(track_id=2, label=CAT_B, conf=0.9)
+
+        emitted = self._drive(engine, [(0.0, [cat_a, cat_b]), (1.5, [cat_a, cat_b])])
+
+        starts = self._phases(emitted, EventPhase.START)
+        assert len(starts) == 2, "one event per cat, not one event naming the best cat"
+        assert sorted(s.subject_ref for s in starts) == sorted([CAT_A, CAT_B])
+
+    def test_two_tracks_of_the_same_label_are_one_event(self):
+        """Three unidentified cats must not become three videos of the same scene."""
+        spec = self._present([CAT_A])
+        engine = WatchEngine([spec], source_uuid="src-1")
+        one = _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)
+        two = _track(track_id=2, bbox=(100, 100, 120, 120), label=CAT_A, conf=0.9)
+
+        emitted = self._drive(engine, [(0.0, [one, two]), (1.5, [one, two])])
+
+        assert len(self._phases(emitted, EventPhase.START)) == 1
+
+    def test_the_event_holds_while_any_track_of_its_label_remains(self):
+        """The headline case: one clip for as long as *a* cat is there, whoever it is."""
+        spec = self._present([CAT_A])
+        engine = WatchEngine([spec], source_uuid="src-1")
+        one = _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)
+        two = _track(track_id=2, bbox=(100, 100, 120, 120), label=CAT_A, conf=0.9)
+        three = _track(track_id=3, bbox=(200, 200, 220, 220), label=CAT_A, conf=0.9)
+
+        emitted = self._drive(
+            engine,
+            [
+                (0.0, [one, two]),
+                (1.5, [one, two]),  # START
+                (2.0, [two]),  # one leaves — still a cat present
+                (3.0, [three]),  # a different cat entirely, new track id
+                (4.0, [two, three]),
+                (5.0, []),  # now none — CLOSING begins
+                (16.0, []),  # rearm elapsed — END
+            ],
+        )
+
+        assert len(self._phases(emitted, EventPhase.START)) == 1
+        assert len(self._phases(emitted, EventPhase.END)) == 1
+
+    def test_a_brief_relabel_does_not_open_an_event_for_the_borrowed_label(self):
+        """`min_duration_s` is what makes a flicker free — no extra bookkeeping needed."""
+        spec = self._present([CAT_A, CAT_B], min_duration_s=2.0)
+        engine = WatchEngine([spec], source_uuid="src-1")
+        as_a = _track(track_id=1, label=CAT_A, conf=0.9)
+        as_b = _track(track_id=1, label=CAT_B, conf=0.9)  # same track, other label
+
+        emitted = self._drive(
+            engine,
+            [
+                (0.0, [as_a]),
+                (3.0, [as_a]),  # START on CAT_A
+                (4.0, [as_b]),  # flickers to CAT_B for well under min_duration_s
+                (4.5, [as_a]),  # and back
+                (6.0, [as_a]),
+            ],
+        )
+
+        starts = self._phases(emitted, EventPhase.START)
+        assert [s.subject_ref for s in starts] == [CAT_A], "the borrowed label must open nothing"
+
+    def test_a_brief_relabel_does_not_close_the_original_event(self):
+        """The other half: `rearm_delay_s` carries the original across the gap."""
+        spec = self._present([CAT_A, CAT_B], min_duration_s=2.0, rearm_delay_s=10.0)
+        engine = WatchEngine([spec], source_uuid="src-1")
+        as_a = _track(track_id=1, label=CAT_A, conf=0.9)
+        as_b = _track(track_id=1, label=CAT_B, conf=0.9)
+
+        emitted = self._drive(
+            engine,
+            [(0.0, [as_a]), (3.0, [as_a]), (4.0, [as_b]), (4.5, [as_a]), (6.0, [as_a])],
+        )
+
+        assert self._phases(emitted, EventPhase.END) == []
+
+    def test_a_label_reappearing_on_a_new_track_rejoins_its_open_event(self):
+        """Left the frame and came back inside the rearm window — one event, not two."""
+        spec = self._present([CAT_A])
+        engine = WatchEngine([spec], source_uuid="src-1")
+        first = _track(track_id=1, label=CAT_A, conf=0.9)
+        # A genuinely new track: re-detection after an occlusion never reuses the id.
+        second = _track(track_id=99, bbox=(300, 300, 320, 320), label=CAT_A, conf=0.9)
+
+        emitted = self._drive(
+            engine,
+            [
+                (0.0, [first]),
+                (1.5, [first]),  # START
+                (2.0, []),  # gone — CLOSING
+                (5.0, [second]),  # back inside the 10s rearm window
+                (7.0, [second]),
+            ],
+        )
+
+        assert len(self._phases(emitted, EventPhase.START)) == 1
+        assert self._phases(emitted, EventPhase.END) == []
+
+    def test_each_label_keeps_its_own_hysteresis(self):
+        """Two cats arriving at different times get their own clocks, not a shared one."""
+        spec = self._present([CAT_A, CAT_B], min_duration_s=2.0)
+        engine = WatchEngine([spec], source_uuid="src-1")
+        cat_a = _track(track_id=1, label=CAT_A, conf=0.9)
+        cat_b = _track(track_id=2, label=CAT_B, conf=0.9)
+
+        emitted = self._drive(
+            engine,
+            [
+                (0.0, [cat_a]),
+                (3.0, [cat_a]),  # CAT_A opens
+                (3.5, [cat_a, cat_b]),  # CAT_B only just arrived
+                (4.0, [cat_a, cat_b]),  # still inside its own min_duration
+                (6.0, [cat_a, cat_b]),  # now CAT_B opens too
+            ],
+        )
+
+        starts = self._phases(emitted, EventPhase.START)
+        assert [s.subject_ref for s in starts] == [CAT_A, CAT_B]
+        assert starts[0].started_at < starts[1].started_at
+
+    def test_a_single_ref_rule_is_unchanged(self):
+        spec = self._present([CAT_A])
+        engine = WatchEngine([spec], source_uuid="src-1")
+        assert len(engine._machines) == 1
+
+    def test_a_subjectless_or_unrestricted_rule_keeps_one_machine(self):
+        """`any` has no ref list to split on, so it must not lose its machine."""
+        anything = _rule(relation="present", subject_a_kind="any", subject_a_refs=[], subject_b_kind="none")
+        engine = WatchEngine([anything], source_uuid="src-1")
+        assert len(engine._machines) == 1
+
+    def test_a_two_subject_rule_slots_on_both_sides(self):
+        """Two cats and two litter boxes is four independent pairings."""
+        spec = _rule(subject_a_refs=[CAT_A, CAT_B], subject_b_refs=[ZONE_UUID, ZONE_B_UUID])
+        engine = WatchEngine([spec], zones=list(ALL_ZONES.values()), source_uuid="src-1")
+        assert len(engine._machines) == 4
+
+    def test_the_rule_list_still_counts_rules_not_slots(self):
+        """`rule_uuids` answers "which rules run here", and callers count it."""
+        spec = self._present([CAT_A, CAT_B])
+        engine = WatchEngine([spec], source_uuid="src-1")
+        assert len(engine._machines) == 2
+        assert engine.rule_uuids == [spec.uuid]
+
+    def test_one_flapping_rule_gives_one_hint_however_many_slots_it_has(self):
+        spec = self._present([CAT_A, CAT_B], min_duration_s=0.0, rearm_delay_s=5.0)
+        engine = WatchEngine([spec], source_uuid="src-1")
+        cat_a = _track(track_id=1, label=CAT_A, conf=0.9)
+        cat_b = _track(track_id=2, label=CAT_B, conf=0.9)
+        now = 0.0
+        # Two holding frames to get past PENDING and actually open the events.
+        for _ in range(2):
+            engine.step([cat_a, cat_b], now)
+            now += 0.1
+        for _ in range(8):
+            engine.step([], now)  # drop out, but stay inside the rearm window
+            now += 0.1
+            engine.step([cat_a, cat_b], now)  # ...and back: CLOSING -> ACTIVE is a flap
+            now += 0.1
+
+        hints = engine.tuning_hints()
+        assert len(hints) == 1, "one rule, one piece of advice — not one per cat"
+
+
 class TestMasking:
     """Masks suppress by centroid — see `is_masked` for why not by overlap."""
 

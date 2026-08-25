@@ -29,6 +29,12 @@ class EventCloseReason(str, Enum):
     #: The watcher stopped, paused or restarted with the event open. Says nothing about
     #: the subject: it may well still have been there.
     FORCED = "forced"
+    #: The camera stopped delivering frames for long enough to be called failed, so the
+    #: event was closed because nothing could observe it any more. Distinct from the cap
+    #: because the cap cannot cover this at all — it is evaluated inside `step()`, which
+    #: only runs on an analysed frame, making it a ceiling only while frames arrive.
+    #: Like FORCED it says nothing about the subject, which may still have been there.
+    SOURCE_LOST = "source_lost"
 
 
 @dataclass

@@ -19,7 +19,7 @@ import numpy as np
 from apps.helpers.imageProviders.imageProvider import ImageProvider
 from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, Tracker
 from apps.helpers.watch.engine import WatchEngine
-from apps.helpers.watch.events import WatchEventSignal
+from apps.helpers.watch.events import EventCloseReason, WatchEventSignal
 from apps.helpers.watch.geometry import Zone, is_masked
 from apps.helpers.watch.motion import DEFAULT_SENSITIVITY as MOTION_DEFAULT_SENSITIVITY
 from apps.helpers.watch.motion import NO_MOTION, MotionDetector, MotionField
@@ -326,8 +326,12 @@ class WatchPipeline:
         self._last_tracks = self.tracker.update(list(surviving), now)
         return self.engine.step(self._last_tracks, now, motion=self._last_motion)
 
-    def close_open_events(self, now: float) -> List[WatchEventSignal]:
-        return self.engine.close_all(now)
+    def close_open_events(
+        self,
+        now: float,
+        reason: EventCloseReason = EventCloseReason.FORCED,
+    ) -> List[WatchEventSignal]:
+        return self.engine.close_all(now, reason)
 
     def open_event_signals(self, now: float) -> List[WatchEventSignal]:
         return self.engine.open_signals(now)

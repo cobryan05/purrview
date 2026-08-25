@@ -65,7 +65,7 @@ export function formatDuration(startedAt, endedAt) {
  * Rows written before `closeReason` existed get the neutral wording: they genuinely do
  * not record which of the two it was, and guessing is the bug this replaced.
  *
- * @param {?string} closeReason 'cap' | 'forced' | 'predicate' | null
+ * @param {?string} closeReason 'cap' | 'forced' | 'source_lost' | 'predicate' | null
  * @returns {{label: string, title: string}}
  */
 export function describeCloseReason(closeReason) {
@@ -80,6 +80,13 @@ export function describeCloseReason(closeReason) {
       label: 'interrupted',
       title: 'The watcher was stopped, paused or restarted while this event was open — '
         + 'the subject may well have still been there.',
+    };
+  }
+  if (closeReason === 'source_lost') {
+    return {
+      label: 'camera lost',
+      title: 'The camera stopped sending frames while this event was open, so it was '
+        + 'closed because nothing could still observe it — not because the subject left.',
     };
   }
   return {

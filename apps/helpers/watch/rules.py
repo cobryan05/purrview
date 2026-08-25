@@ -114,6 +114,38 @@ class RuleSpec:
             source_uuids=[str(s) for s in (get("source_uuids_json") or [])],
         )
 
+    def narrowed(self, subject_a_ref: Optional[str], subject_b_ref: Optional[str]) -> "RuleSpec":
+        """This rule restricted to one member of each slot — the unit an event is per.
+
+        A multi-ref rule is a convenience for the person writing it ("any of these three
+        cats"), not a statement that the three should share one event. They should not:
+        Two different cats are two visits, with their own spans, their own cards and
+        their own recordings, and collapsing them into whichever was seen most clearly
+        silently drops the other.
+
+        So the engine gives every member its own machine, built from a spec narrowed to
+        that member, and `evaluate_predicate` needs no knowledge of any of this — it is
+        simply asked about one cat at a time.
+
+        What it deliberately does *not* do is split by track. "Any Cat is present" stays
+        one event however many cats are in shot and however often each comes and goes,
+        because the recording is the whole frame either way: three tracks sharing a label
+        would mean three near-identical videos of one scene. One event per *label* is the
+        line, and it is also what makes a brief relabel harmless — the machine matches on
+        `label_uuid` and never on track identity, so a box that flickers to another label
+        and back rejoins its own event inside `rearm_delay_s`, while the label it briefly
+        borrowed never clears `min_duration_s` and so never opens anything.
+
+        `None` leaves a slot alone, which is how a rule with nothing to enumerate — a
+        subject-less `present`, an `any` subject, a `motion` rule with no zones — keeps
+        the single machine it has always had.
+        """
+        return replace(
+            self,
+            subject_a_refs=[subject_a_ref] if subject_a_ref is not None else list(self.subject_a_refs),
+            subject_b_refs=[subject_b_ref] if subject_b_ref is not None else list(self.subject_b_refs),
+        )
+
 
 def descendants_of(label_uuid: str, ancestry: Dict[str, Sequence[str]]) -> List[str]:
     """Every label under `label_uuid`, from an {uuid: ancestors} map.
@@ -353,10 +385,13 @@ class RuleMachine:
         self._event_started_at: Optional[float] = None
         self._track_ids: List[int] = []
         self._peak_confidence: float = 0.0
-        #: Slot values from the strongest observation seen while this event was open.
-        #: Latched alongside `_peak_confidence` rather than taken from the first or last
-        #: frame: a rule spanning several cats should name the one it saw most clearly,
-        #: not whichever happened to be in the frame when hysteresis expired.
+        #: Slot values from the strongest observation seen *before* this event opened,
+        #: and fixed from that moment on. Latched against `_peak_confidence` rather than
+        #: taken from the first frame, so a rule spanning several cats still names the
+        #: one it saw most clearly during the lead-in rather than whichever tripped
+        #: `min_duration_s` — but pinned at the opening edge, because from there on
+        #: these two values are the event's identity. See `step` for what relatching
+        #: them mid-event cost.
         self._subject_ref: Optional[str] = None
         self._target_ref: Optional[str] = None
         #: How many times the predicate flapped while an event was open. Surfaced as a
@@ -414,13 +449,33 @@ class RuleMachine:
 
         if result.holds:
             self._track_ids = sorted(set(self._track_ids) | set(result.track_ids))
-            # Slot values move with the peak, so they always describe the same
-            # observation the reported confidence came from.
-            if result.confidence >= self._peak_confidence or self._subject_ref is None:
+            # Slot values follow the peak only until the event opens. Once it is open
+            # they are its *identity* and must not move under it: the recorder's
+            # `_event_key`, the timelapse action's `_session_key`, the in-progress
+            # preview endpoint and the MQTT template all hash an event on
+            # (source, rule, subject, target).
+            #
+            # Nothing is lost by pinning them. The row records the slots once, at the
+            # opening edge, and no later write revises them — so relatching mid-event
+            # could never change what was stored, and only ever cost the closing edge
+            # its key. A `present` rule spanning several cats would open on one of
+            # them, meet a second more confident cat, and emit an END that hashed to a
+            # tuple nothing had been filed under: the row never received `ended_at`
+            # and sat "in progress" until a restart swept it, while the timelapse
+            # action never found its buffer, so it neither compiled the video nor
+            # released the frames — it kept sampling into a directory no closing edge
+            # could reach.
+            #
+            # `is_open` covers CLOSING as well as ACTIVE, which is what keeps a flap
+            # back inside the rearm window rejoining the same event rather than
+            # quietly renaming it.
+            if not self.is_open and (result.confidence >= self._peak_confidence or self._subject_ref is None):
                 if result.subject_ref is not None:
                     self._subject_ref = result.subject_ref
                 if result.target_ref is not None:
                     self._target_ref = result.target_ref
+            # Not pinned: the reported confidence is a measurement of the event, not a
+            # key into it, and it should still report the best look it ever got.
             self._peak_confidence = max(self._peak_confidence, result.confidence)
             self._false_since = None
 
@@ -486,14 +541,23 @@ class RuleMachine:
             return None
         return self._signal(EventPhase.UPDATE, now)
 
-    def force_close(self, now: float) -> Optional[WatchEventSignal]:
+    def force_close(
+        self,
+        now: float,
+        reason: EventCloseReason = EventCloseReason.FORCED,
+    ) -> Optional[WatchEventSignal]:
         """Close an open event without waiting for hysteresis.
 
         Used on shutdown and on resume: an event that was open when the task stopped
         must be closed and its clip enqueued, not left dangling.
+
+        `reason` is the caller's, because the machine cannot tell the difference. The
+        state it sees is identical whether the watcher is stopping or the camera has
+        gone dark, and those read very differently on an event card — see
+        `EventCloseReason`.
         """
         if self.state in (RuleState.ACTIVE, RuleState.CLOSING):
-            signal = self._signal(EventPhase.END, now, EventCloseReason.FORCED)
+            signal = self._signal(EventPhase.END, now, reason)
             self._reset()
             return signal
         self._reset()

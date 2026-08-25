@@ -26,7 +26,12 @@ import numpy as np
 import pytest
 
 from apps.helpers.actions.action import ActionContext
-from apps.helpers.actions.recordEventTimelapseAction import DEFAULT_TIMELAPSE_ROOT, RecordEventTimelapseAction
+from apps.helpers.actions.recordEventTimelapseAction import (
+    BUFFER_OWNER_FILENAME,
+    DEFAULT_TIMELAPSE_ROOT,
+    RecordEventTimelapseAction,
+    sweep_frame_buffers,
+)
 from apps.helpers.actions.Registry import action_registry, create_action
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 from apps.helpers.watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED, action_applies
@@ -34,6 +39,24 @@ from apps.helpers.watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSE
 
 def _frame(width=320, height=240, value=40):
     return np.full((height, width, 3), value, dtype=np.uint8)
+
+
+def _unused_pid() -> int:
+    """A pid that is certainly not a live user process.
+
+    0 is not usable — `os.kill(0, 0)` signals the whole process group — so this walks
+    up from a high number until it finds one nothing is using.
+    """
+    import os
+
+    for pid in range(4_194_303, 4_190_000, -1):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except OSError:
+            continue
+    raise RuntimeError("no free pid to test with")
 
 
 def _context(**overrides) -> ActionContext:
@@ -668,3 +691,99 @@ class TestMidEventPreview:
 
         assert not (session.directory / "preview.txt").exists()
         assert not leaked, f"preview left scratch directories behind: {sorted(leaked)}"
+
+
+class TestOrphanedFrameBuffersAreSwept:
+    """A killed watcher leaves its frame buffers behind, and nothing ever reclaimed them.
+
+    The ordinary paths are covered: `_on_end` discards in a `finally`, and a watcher
+    that stops cleanly force-closes everything open on the way out. What was missing is
+    the case where no Python runs at all — an OOM kill, `docker kill`, a power cut.
+    Clip chunks already get `sweep_chunk_root()` at watcher start; these got nothing, and
+    sixteen orphaned buffers were sitting in the container's temp directory against zero
+    open events when this was written.
+
+    The sweep keys on the pid that opened each buffer rather than on its age, because
+    every watcher shares the tasks_server process: "left behind by the process the OOM
+    killer took" and "being filled right now by the other profile's watcher" are
+    otherwise indistinguishable, and guessing wrong deletes a live event's frames.
+    """
+
+    def _buffer(self, root: Path, name: str, owner: str | None) -> Path:
+        directory = root / name
+        directory.mkdir()
+        (directory / "000000.jpg").write_bytes(b"not really a jpeg")
+        if owner is not None:
+            (directory / BUFFER_OWNER_FILENAME).write_text(owner)
+        return directory
+
+    def test_a_buffer_from_a_dead_process_is_removed(self, tmp_path):
+        # A pid that cannot be running: 0 is never a live user process.
+        orphan = self._buffer(tmp_path, "wwtl-dead", owner=str(_unused_pid()))
+
+        assert sweep_frame_buffers(tmp_path) == 1
+        assert not orphan.exists()
+
+    def test_a_buffer_this_process_still_owns_is_left_alone(self):
+        """The one that matters: a second watcher starting must not rob the first."""
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            live = self._buffer(root, "wwtl-live", owner=str(os.getpid()))
+            dead = self._buffer(root, "wwtl-dead", owner=str(_unused_pid()))
+
+            assert sweep_frame_buffers(root) == 1
+            assert live.exists(), "a buffer owned by this very process is in use"
+            assert not dead.exists()
+
+    def test_an_unmarked_buffer_is_treated_as_an_orphan(self):
+        """Buffers written before the marker existed can only be from an earlier run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = self._buffer(root, "wwtl-legacy", owner=None)
+
+            assert sweep_frame_buffers(root) == 1
+            assert not legacy.exists()
+
+    def test_it_touches_nothing_that_is_not_a_frame_buffer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            innocent = root / "someone-elses-tempdir"
+            innocent.mkdir()
+            (innocent / "important.txt").write_text("keep me")
+            loose = root / "wwtl-not-a-directory"
+            loose.write_text("a file, not a buffer")
+
+            assert sweep_frame_buffers(root) == 0
+            assert (innocent / "important.txt").read_text() == "keep me"
+            assert loose.exists()
+
+    def test_a_missing_root_is_not_an_error(self, tmp_path):
+        assert sweep_frame_buffers(tmp_path / "nope") == 0
+
+    async def test_a_live_session_marks_its_own_buffer(self, tmp_path, monkeypatch):
+        """The sweep is only safe because `_on_start` stamps the buffer as it opens.
+
+        Rooted at a scratch dir rather than the real temp directory, so the sweep under
+        test cannot reach a buffer some other test — or the live watcher sharing this
+        container — is filling.
+        """
+        import os
+
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        action = RecordEventTimelapseAction(interval_s=1.0)
+        await action.run(_event_signal(EventPhase.START), _context())
+        directory = next(iter(action._sessions.values())).directory
+        assert directory.parent == tmp_path, "the session must have landed in the scratch root"
+
+        orphan = self._buffer(tmp_path, "wwtl-dead", owner=str(_unused_pid()))
+        try:
+            assert (directory / BUFFER_OWNER_FILENAME).read_text().strip() == str(os.getpid())
+            # The live one survives a sweep that removes the dead one beside it.
+            assert sweep_frame_buffers(tmp_path) == 1
+            assert directory.exists()
+            assert not orphan.exists()
+        finally:
+            for session in action._sessions.values():
+                session.discard()
