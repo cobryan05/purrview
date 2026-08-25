@@ -311,6 +311,28 @@ services:
   mono-dev:
     container_name: whiskerwatcher_mono_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
+    # A ceiling, not a reservation — an idle container costs nothing.
+    #
+    # This exists because a test-suite leak took the whole machine down on
+    # 2026-08-24: a pytest-xdist worker in this container grew to 48 GB on a
+    # 78 GiB swapless host, and with no cgroup limit the kernel escalated to a
+    # *global* OOM. It then spent ten minutes harvesting Chromium renderers
+    # (which set oom_score_adj=300 on themselves, so they outscore a 20 GB
+    # Python process) while the actual hog kept growing, and logind/dbus were
+    # too starved to open a login session. The box had to be power-cycled.
+    #
+    # With a limit set, the same leak is confined: the kernel OOM-kills inside
+    # this cgroup, the offending worker dies, and the host stays interactive.
+    #
+    # The value has to cover a training run (torch + DataLoader workers) plus
+    # the app plus a full browser suite. 32g leaves ~45 GiB for the host's own
+    # services. Raise MONO_DEV_MEM_LIMIT if a legitimate training job is killed
+    # — but check `docker inspect --format '{{.State.OOMKilled}}'` first,
+    # because a leak looks exactly like a job that needs more headroom.
+    mem_limit: ${MONO_DEV_MEM_LIMIT:-32g}
+    # Equal to mem_limit = this cgroup may not swap. Without it the limit is a
+    # memory+swap budget and a leak drags the host's swap down with it.
+    memswap_limit: ${MONO_DEV_MEM_LIMIT:-32g}
     # Docker's default soft limit is 1024, which the training server can reach
     # on its own: every DataLoader worker costs descriptors, and this container
     # runs training alongside the watcher, the collectors and the browser test
