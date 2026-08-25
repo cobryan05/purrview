@@ -987,7 +987,15 @@ class CollectTrainingImagesTask(Task):
         """
         entry = self._source_failures.get(source_name)
         consecutive = (entry["consecutive"] + 1) if entry else 1
-        backoff = min(self._SOURCE_RETRY_BACKOFF_S * (2 ** (consecutive - 1)), self._SOURCE_RETRY_BACKOFF_MAX_S)
+        # The exponent is clamped before it is used, not after. `2 ** (consecutive - 1)`
+        # is an arbitrary-precision int evaluated before the multiply, so it keeps
+        # doubling long after min() has pinned the backoff at the ceiling — and at 1024
+        # consecutive failures the product leaves float range and raises
+        # `OverflowError: int too large to convert to float`, ending the whole run over
+        # one dead camera. 32 doublings is already ~4 billion times the base delay, so
+        # nothing below the clamp is reachable before the ceiling wins.
+        doublings = min(consecutive - 1, 32)
+        backoff = min(self._SOURCE_RETRY_BACKOFF_S * (2**doublings), self._SOURCE_RETRY_BACKOFF_MAX_S)
         self._source_failures[source_name] = {
             "consecutive": consecutive,
             "error": error,

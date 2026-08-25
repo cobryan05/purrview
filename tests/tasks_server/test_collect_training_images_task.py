@@ -3591,6 +3591,41 @@ class _FailingProvider(ImageProvider):
         raise self._exc
 
 
+class TestLongDownSourceDoesNotOverflowTheBackoff:
+    """A camera that stays down must not eventually kill the whole run.
+
+    `2 ** (consecutive - 1)` is an arbitrary-precision int, and it is evaluated
+    *before* the multiply — so it keeps doubling long after `min()` has pinned the
+    backoff itself at `_SOURCE_RETRY_BACKOFF_MAX_S`. At 1024 consecutive failures
+    the product no longer fits in a float and `_record_source_failure` raises
+
+        OverflowError: int too large to convert to float
+
+    which escapes the fetch loop, propagates to Task._execute and ends the
+    collection — discarding every healthy source's frames. That is precisely the
+    outcome TestOneFailingSourceDoesNotKillTheRun exists to prevent; the retry
+    logic added to prevent it reintroduces it on a longer timescale.
+
+    With the backoff capped at 300s, 1024 consecutive failures is a little over
+    three days of one dead camera on an otherwise healthy multi-day run — well
+    inside what this task is built for (the give-up timer only fires when *every*
+    source is failing, so one dead camera never ends the run on its own).
+    """
+
+    async def test_a_source_down_for_days_keeps_a_finite_backoff(self):
+        task = _make_task()
+        await task._init(_PARAMS, resume_data=None)
+
+        # Comfortably past 1024, the point where 2**(n-1) leaves float range.
+        for _ in range(1200):
+            task._record_source_failure("dead-cam", "handshake timed out", 0.0)
+
+        entry = task._source_failures["dead-cam"]
+        assert entry["consecutive"] == 1200
+        # Still pinned at the ceiling, and still a real number.
+        assert entry["retry_at"] == pytest.approx(CollectTrainingImagesTask._SOURCE_RETRY_BACKOFF_MAX_S)
+
+
 class TestOneFailingSourceDoesNotKillTheRun:
     """A raising provider used to escape the fetch loop entirely (only
     asyncio.TimeoutError was caught), propagate to Task._execute and end the whole
