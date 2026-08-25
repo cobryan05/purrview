@@ -149,7 +149,8 @@ export async function prev_image(runtime) {
 
 /**
  * Permanently delete the currently loaded image (DB record + file + sidecar),
- * navigate away, and refresh the file browser.
+ * navigate away, and refresh the file browser. If there is no adjacent image to
+ * navigate to, the canvas is cleared rather than left showing the deleted image.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function deleteCurrentImage(runtime) {
@@ -186,6 +187,11 @@ export async function deleteCurrentImage(runtime) {
 
   if (nextPath) {
     events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, { path: nextPath, showCanvas: true, runtimeId: runtime.id });
+  } else {
+    // Nothing left to navigate to — leaving the just-deleted image on screen would look
+    // editable (and its bboxes un-savable against a record that no longer exists), so
+    // wipe the canvas back to its empty state to make the loss obvious.
+    runtime.clearImage();
   }
 
   // Refresh the file browser so the deleted entry disappears.

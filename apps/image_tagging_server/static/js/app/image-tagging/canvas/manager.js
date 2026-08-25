@@ -44,6 +44,26 @@ export async function setCanvasImage(canvas, uiImage) {
 }
 
 /**
+ * Wipe the background image, its border, and every bbox view — leaving the same
+ * blank stage the canvas shows before any image has ever been loaded. Used when
+ * the loaded image is deleted and there is nothing to navigate to in its place,
+ * so a stale image (whose bboxes could no longer be saved against anything) is
+ * never left on screen looking editable.
+ * @param {import('@image_tagging_types').CanvasState} canvas
+ */
+export function clearCanvasImage(canvas) {
+  const { layer, transformer } = canvas;
+  clearSelectionState(canvas);
+  transformer?.nodes([]);
+  layer.find('.bbox').forEach(n => n.destroy());
+  layer.find('.background-image').forEach(n => n.destroy());
+  layer.find('.image-border').forEach(n => n.destroy());
+  canvas.backgroundImage = null;
+  canvas.sourceImage = null;
+  layer.batchDraw();
+}
+
+/**
 * @param {import('@image_tagging_types').CanvasState} canvas
 * @param {import('@image_tagging_types').ViewportTransform} viewport
 * @param { { width: number; height: number } } size

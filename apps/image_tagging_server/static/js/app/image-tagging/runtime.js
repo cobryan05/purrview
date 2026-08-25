@@ -1,4 +1,4 @@
-import { setCanvasImage, rerenderBboxViews } from './canvas/manager.js';
+import { setCanvasImage, rerenderBboxViews, clearCanvasImage } from './canvas/manager.js';
 import { syncBboxDraggable } from './canvas/tools.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { createCanvasState } from './canvas/state.js';
@@ -272,6 +272,22 @@ export function createImageTaggingRuntime() {
     _imgTaggingState?.image?.bboxes.clear();
   }
 
+  /**
+   * Wipe the canvas back to its no-image state (used after deleting the loaded
+   * image when there is nothing left to navigate to). Unlike `setImage`, this
+   * leaves `_cleanSignature` null — the same "no image loaded" state a fresh
+   * runtime starts in — so `isDirty` reads false rather than comparing a
+   * deleted image's annotations against nothing.
+   */
+  function clearImage() {
+    if (_canvasState) clearCanvasImage(_canvasState);
+    if (_imgTaggingState) _imgTaggingState.image = null;
+    clearHistory();
+    _cleanSignature = null;
+    _forcedDirty = false;
+    events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: _id });
+  }
+
   /** @param {string|null} uuid */
   function setLabelUuid(uuid) {
     _currentLabelUuid = uuid;
@@ -311,6 +327,7 @@ export function createImageTaggingRuntime() {
     setLabelUuid,
     setImage,
     clearBboxes,
+    clearImage,
     pushState,
     undo,
     redo,
