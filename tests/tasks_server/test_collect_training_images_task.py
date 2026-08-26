@@ -25,6 +25,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.error import URLError
 
+import db_client
 import numpy as np
 import pytest
 from inference_client.api.inference_api import InferenceApi
@@ -39,7 +40,7 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageWithProviderMetadata,
 )
 from apps.helpers.training.collector import CollectorHost, FrameOffer, TrainingCollector
-from apps.helpers.training.collectorSpec import CollectorSpec
+from apps.helpers.training.collectorSpec import CollectorSpec, collector_params_schema
 from apps.tasks_server.tasks._detection_merger import MergePolicy
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
     SAME_BBOX_IOU_THRESHOLD,
@@ -97,6 +98,23 @@ _PARAMS = {
     "output_dir": "test_collected",
     "model_label_config": [{"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: 0.5}}],
 }
+
+
+@pytest.fixture(autouse=True)
+def _collector_params_from_the_params_dict(request):
+    """`_init` reads the collect knobs off a `training_collectors` row, not the
+    params it is handed. These tests are about what the collector does with those
+    knobs, not about the DB round trip, so the fetch resolves to the params dict
+    under test. `TestCollectorResolution` opts out and covers the round trip."""
+    if request.node.get_closest_marker("real_collector_fetch"):
+        yield
+        return
+    with patch.object(
+        CollectTrainingImagesTask,
+        "_fetch_collector_params",
+        new=AsyncMock(side_effect=lambda params: dict(params)),
+    ):
+        yield
 
 
 # ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -3354,11 +3372,53 @@ class TestDedupThresholdCalibration:
         assert "drift upward" not in hint
 
 
+@pytest.mark.real_collector_fetch
+class TestCollectorResolution:
+    """`_init` gets its knobs from the named `training_collectors` row.
+
+    The autouse fixture stubs this out for every other test here, so these are the
+    only ones exercising the round trip.
+    """
+
+    def _task_with_collector_api(self, params, api):
+        task = _make_task(params=params)
+        return task, patch.object(db_client, "TrainingCollectorsApi", return_value=api)
+
+    async def test_stored_params_win_over_anything_inline(self):
+        """A config that still carries stale inline knobs must not use them —
+        that is the two-shapes fork the migration exists to close."""
+        api = MagicMock()
+        api.get_training_collector.return_value = MagicMock(
+            collector=MagicMock(params={"output_dir": "from_collector"}),
+        )
+        params = {"source_uuids": ["src-uuid"], "collector_uuid": "col-1", "output_dir": "stale_inline"}
+        task, patcher = self._task_with_collector_api(params, api)
+        with patcher:
+            await task._init(params, resume_data=None)
+        assert task._spec.output_dir == "from_collector"
+
+    async def test_missing_collector_fails_the_run(self):
+        """Falling back to defaults would collect into some other directory with
+        no models configured, and look like a working run while doing it."""
+        api = MagicMock()
+        api.get_training_collector.return_value = MagicMock(collector=None, message="gone")
+        params = {"source_uuids": ["src-uuid"], "collector_uuid": "col-missing"}
+        task, patcher = self._task_with_collector_api(params, api)
+        with patcher, pytest.raises(ValueError, match="col-missing"):
+            await task._init(params, resume_data=None)
+
+    async def test_no_collector_selected_fails_the_run(self):
+        params = {"source_uuids": ["src-uuid"]}
+        task = _make_task(params=params)
+        with pytest.raises(ValueError, match="No collector selected"):
+            await task._init(params, resume_data=None)
+
+
 class TestMeasureOnlyAction:
     """'Measure only' must be offered in the schema and must never discard."""
 
     async def test_measure_option_is_offered_with_an_explanation(self):
-        group = CollectTrainingImagesTask.params_schema()["dedup_group"]["fields"]
+        group = collector_params_schema()["dedup_group"]["fields"]
         action = group["duplicate_action"]
         assert "measure" in [o["value"] for o in action["options"]]
         # The user has to be told what calibration mode is for, visibly — a

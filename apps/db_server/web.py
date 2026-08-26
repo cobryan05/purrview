@@ -76,6 +76,9 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
+    TrainingCollectorCreate,
+    TrainingCollectorRead,
+    TrainingCollectorUpdate,
     TrainingConfigCreate,
     TrainingConfigRead,
     TrainingConfigUpdate,
@@ -86,6 +89,7 @@ from apps.helpers.db.types import (
     WatchProfileUpdate,
 )
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.training.collectorSpec import collector_params_schema
 from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,
@@ -871,6 +875,20 @@ class FilterChainResponse(StatusResponse):
     chain: Optional[FilterChainRead] = None
 
 
+class ListTrainingCollectorsResponse(StatusResponse):
+    collectors: List[TrainingCollectorRead] = Field(default_factory=list)
+
+
+class TrainingCollectorResponse(StatusResponse):
+    collector: Optional[TrainingCollectorRead] = None
+
+
+class TrainingCollectorSchemaResponse(StatusResponse):
+    #: `collector_params_schema()` verbatim — field shapes vary per knob, so this
+    #: stays an untyped dict rather than a model that would have to restate them.
+    params_schema: Dict[str, Any] = Field(default_factory=dict)
+
+
 class AddPreviewCandidatesPayload(ApiPayload):
     candidates: List[PreviewCandidateCreate] = Field(default_factory=list)
     # Which model wins when two of them propose on the same bbox. `last` is
@@ -1374,6 +1392,7 @@ class WebApp:
         self._register_routes()
         self._register_model_config_routes()
         self._register_filter_chain_routes()
+        self._register_training_collector_routes()
         self._register_preview_run_routes()
         self._register_watch_profile_routes()
         self._register_recording_routes()
@@ -4126,6 +4145,108 @@ class WebApp:
                 ok = await self._manager.delete_filter_chain(uuid)
                 if not ok:
                     return StatusResponse(status=JsonValues.FAILURE, message="Filter chain not found")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+    def _register_training_collector_routes(self) -> None:
+        @self._app.get(
+            "/api/training-collectors",
+            response_model=ListTrainingCollectorsResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="list_training_collectors",
+        )
+        async def list_training_collectors() -> ListTrainingCollectorsResponse:
+            try:
+                collectors = await self._manager.list_training_collectors()
+                return ListTrainingCollectorsResponse(status=JsonValues.SUCCESS, collectors=collectors)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListTrainingCollectorsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/training-collectors",
+            response_model=TrainingCollectorResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="create_training_collector",
+        )
+        async def create_training_collector(payload: TrainingCollectorCreate) -> TrainingCollectorResponse:
+            try:
+                collector = await self._manager.create_training_collector(payload)
+                return TrainingCollectorResponse(status=JsonValues.SUCCESS, collector=collector)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return TrainingCollectorResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "collector"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingCollectorResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # Before /{uuid}: FastAPI matches in registration order, and "schema" would
+        # otherwise be read as a collector uuid.
+        @self._app.get(
+            "/api/training-collectors/schema",
+            response_model=TrainingCollectorSchemaResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="get_training_collector_schema",
+        )
+        async def get_training_collector_schema() -> TrainingCollectorSchemaResponse:
+            # The one definition of the collect knobs (collectorSpec.py), served so
+            # the editor renders it rather than restating it in JS.
+            return TrainingCollectorSchemaResponse(status=JsonValues.SUCCESS, params_schema=collector_params_schema())
+
+        @self._app.get(
+            "/api/training-collectors/{uuid}",
+            response_model=TrainingCollectorResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="get_training_collector",
+        )
+        async def get_training_collector(uuid: str) -> TrainingCollectorResponse:
+            try:
+                collector = await self._manager.get_training_collector(uuid)
+                if collector is None:
+                    return TrainingCollectorResponse(status=JsonValues.FAILURE, message="Collector not found")
+                return TrainingCollectorResponse(status=JsonValues.SUCCESS, collector=collector)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingCollectorResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.patch(
+            "/api/training-collectors/{uuid}",
+            response_model=TrainingCollectorResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="update_training_collector",
+        )
+        async def update_training_collector(uuid: str, payload: TrainingCollectorUpdate) -> TrainingCollectorResponse:
+            try:
+                collector = await self._manager.update_training_collector(uuid, payload)
+                if collector is None:
+                    return TrainingCollectorResponse(status=JsonValues.FAILURE, message="Collector not found")
+                return TrainingCollectorResponse(status=JsonValues.SUCCESS, collector=collector)
+            except IntegrityError as e:
+                logger.error(e, exc_info=True)
+                return TrainingCollectorResponse(
+                    status=JsonValues.FAILURE,
+                    message=self._unique_constraint_msg(e, "collector"),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingCollectorResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/training-collectors/{uuid}",
+            response_model=StatusResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="delete_training_collector",
+        )
+        async def delete_training_collector(uuid: str) -> StatusResponse:
+            try:
+                ok = await self._manager.delete_training_collector(uuid)
+                if not ok:
+                    return StatusResponse(status=JsonValues.FAILURE, message="Collector not found")
                 return StatusResponse(status=JsonValues.SUCCESS)
             except Exception as e:
                 logger.error(e, exc_info=True)

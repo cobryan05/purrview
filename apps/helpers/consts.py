@@ -31,6 +31,7 @@ class ApiTags(str, Enum):
     MODEL_CONFIGS = "model_configs"
     TRAINING_CONFIGS = "training_configs"
     FILTER_CHAINS = "filter_chains"
+    TRAINING_COLLECTORS = "training_collectors"
     PREVIEW_RUNS = "preview_runs"
     MODEL_GROUPS = "model_groups"
     SETTINGS = "settings"

@@ -179,9 +179,9 @@ def test_sources_and_tasks_are_in_configuration(page: Page, base_url: str):
 
     They were under Operations, which put two config editors on a surface named
     for running things — the mirror of Training's Start button living in
-    Configuration. Ten rail destinations: Overview, Labels & Tags, Datasets,
-    Sources, Model Shapes, Model Stacks, Training, Filter Chains, Tasks,
-    Watch Rules.
+    Configuration. Eleven rail destinations: Overview, Labels & Tags, Datasets,
+    Sources, Model Shapes, Model Stacks, Training, Filter Chains, Collectors,
+    Tasks, Watch Rules.
     """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
@@ -189,7 +189,7 @@ def test_sources_and_tasks_are_in_configuration(page: Page, base_url: str):
     page.locator(".main-tab-button[data-tab='tab-configuration']").click()
 
     rail = page.locator("#tab-configuration .config-rail")
-    expect(rail.locator(".workspace-tab-button")).to_have_count(10)
+    expect(rail.locator(".workspace-tab-button")).to_have_count(11)
     for tab in ["tab-source-management", "tab-task-management"]:
         expect(rail.locator(f".workspace-tab-button[data-tab='{tab}']")).to_have_count(1)
 

@@ -122,6 +122,10 @@ from .types import (
     TagKind,
     TaskConfig,
     TaskInstance,
+    TrainingCollectorCreate,
+    TrainingCollectorRead,
+    TrainingCollectorRow,
+    TrainingCollectorUpdate,
     TrainingConfig,
     TrainingConfigCreate,
     TrainingConfigDatasetLink,
@@ -6563,6 +6567,58 @@ class DbClient:
             if fc is None:
                 return False
             await session.delete(fc)
+            await session.commit()
+        return True
+
+    # ─── Training Collectors ──────────────────────────────────────────────────
+
+    async def list_training_collectors(self) -> List[TrainingCollectorRead]:
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(TrainingCollectorRow).order_by(TrainingCollectorRow.name))
+            return [TrainingCollectorRead.model_validate(row) for row in result.all()]
+
+    async def get_training_collector(self, uuid: str) -> Optional[TrainingCollectorRead]:
+        async with self._async_session_maker() as session:
+            row = await session.get(TrainingCollectorRow, uuid)
+            return None if row is None else TrainingCollectorRead.model_validate(row)
+
+    async def create_training_collector(self, data: TrainingCollectorCreate) -> TrainingCollectorRead:
+        async with self._async_session_maker() as session:
+            row = TrainingCollectorRow(
+                name=data.name,
+                description=data.description,
+                enabled=data.enabled,
+                params_json=data.params,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return TrainingCollectorRead.model_validate(row)
+
+    async def update_training_collector(
+        self, uuid: str, data: TrainingCollectorUpdate
+    ) -> Optional[TrainingCollectorRead]:
+        async with self._async_session_maker() as session:
+            row = await session.get(TrainingCollectorRow, uuid)
+            if row is None:
+                return None
+            changes = data.model_dump(exclude_unset=True, mode="json")
+            if "params" in changes:
+                row.params_json = changes.pop("params")
+            for key, value in changes.items():
+                setattr(row, key, value)
+            row.updated_at = datetime.now(timezone.utc)
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return TrainingCollectorRead.model_validate(row)
+
+    async def delete_training_collector(self, uuid: str) -> bool:
+        async with self._async_session_maker() as session:
+            row = await session.get(TrainingCollectorRow, uuid)
+            if row is None:
+                return False
+            await session.delete(row)
             await session.commit()
         return True
 

@@ -32,20 +32,12 @@ class TestCollectorParamsSchema:
         assert DRIVER_PARAMS.isdisjoint(schema)
         assert DRIVER_PARAMS.isdisjoint(schema["meta"]["order"])
 
-    def test_task_schema_is_the_collectors_plus_its_loop_params(self):
+    def test_task_names_a_collector_instead_of_carrying_its_knobs(self):
+        """The knobs live on the collector row now. A task form that still rendered
+        them would let a run's settings diverge from the collector it names."""
         task = CollectTrainingImagesTask.params_schema()
-        collector = collector_params_schema()
-        assert set(task) - {"meta"} == (set(collector) - {"meta"}) | DRIVER_PARAMS
-        for key, defn in collector.items():
-            if key != "meta":
-                assert task[key] == defn, f"{key} drifted between the two renderers"
-
-    def test_task_keeps_the_collectors_relative_ordering(self):
-        """Splicing the loop params in must not reshuffle the rest of the form."""
-        task_order = CollectTrainingImagesTask.params_schema()["meta"]["order"]
-        collector_order = collector_params_schema()["meta"]["order"]
-        assert [k for k in task_order if k not in DRIVER_PARAMS] == collector_order
-        assert DRIVER_PARAMS.issubset(task_order)
+        assert set(task) - {"meta"} == DRIVER_PARAMS | {"collector_uuid"}
+        assert set(collector_params_schema()).isdisjoint(set(task) - {"meta"})
 
 
 class TestParseConfidenceBand:

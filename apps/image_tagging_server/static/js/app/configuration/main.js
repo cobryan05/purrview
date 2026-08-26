@@ -8,6 +8,7 @@ import { renderTagList } from '/app-static/js/ui/tags.js';
 import { renderDatasetManager } from '/app-static/js/ui/datasets.js';
 import { renderTrainingConfigManager } from '/app-static/js/ui/trainingConfigs.js';
 import { renderFilterChainManager } from '/app-static/js/ui/filterChains.js';
+import { renderTrainingCollectorManager } from '/app-static/js/ui/trainingCollectors.js';
 import { renderWatchProfileManager } from '/app-static/js/ui/watchers.js';
 import { renderSourceManager } from '/app-static/js/ui/sources.js';
 import { renderTaskConfigs } from '/app-static/js/ui/tasks.js';
@@ -39,6 +40,8 @@ export async function init() {
       await renderTrainingConfigManager({ target: 'training-config-box' });
     } else if (tabName === 'tab-filterchain-management') {
       await renderFilterChainManager({ target: 'filter-chain-management-box' });
+    } else if (tabName === 'tab-collector-management') {
+      await renderTrainingCollectorManager({ target: 'collector-management-box' });
     } else if (tabName === 'tab-watcher-management') {
       await renderWatchProfileManager({ target: 'watcher-management-box' });
     } else if (tabName === 'tab-source-management') {

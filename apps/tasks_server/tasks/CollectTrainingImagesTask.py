@@ -149,12 +149,13 @@ class CollectTrainingImagesTask(Task):
         self._status_msg: str = "Initializing"
         self.log("Initializing task parameters")
         self._source_uuids: list[str] = params["source_uuids"]
-        # Everything about *what to keep and how to annotate it* is parsed once, into
-        # the spec a watcher-driven collector will be built from too (collectorSpec.py).
-        # Only the loop's own params — sources and pacing — are read directly here.
-        # from_params raises for a traversing output_dir and degrades everything else
-        # to a documented default; see its docstring for why the asymmetry.
-        self._spec: CollectorSpec = CollectorSpec.from_params(params)
+        # Everything about *what to keep and how to annotate it* lives in a
+        # `training_collectors` row, so a watcher-driven collector and this task
+        # configure one entity. This loop owns only its sources and pacing.
+        # from_params raises for a traversing output_dir and degrades everything
+        # else to a documented default; see its docstring for why the asymmetry.
+        collector_params = await self._fetch_collector_params(params)
+        self._spec: CollectorSpec = CollectorSpec.from_params(collector_params)
         # _config_name is injected by the manager (reserved key, not user-facing).
         self._config_name: str = params.get("_config_name", "")
         # The collector owns everything downstream of (frame, detections): bands,
@@ -201,6 +202,22 @@ class CollectTrainingImagesTask(Task):
         # _source_names/_types/_intervals and _last_fetch_by_source already have
         # safe pre-run defaults from __init__; populated for real once _run()
         # starts and providers are known.
+
+    async def _fetch_collector_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve `collector_uuid` to the stored collector params.
+
+        Raises rather than falling back to the raw params: a missing collector
+        means the run would silently collect with defaults into whatever
+        `output_dir` defaults to, which is the failure mode worth being loud about.
+        """
+        collector_uuid = params.get("collector_uuid")
+        if not collector_uuid:
+            raise ValueError("No collector selected — pick one in Configuration → Collectors")
+        api = db_client.TrainingCollectorsApi(self._manager.get_db_api_client())
+        response = await asyncio.to_thread(api.get_training_collector, collector_uuid)
+        if response.collector is None:
+            raise ValueError(f"Collector {collector_uuid} not found: {response.message or 'unknown error'}")
+        return dict(response.collector.params or {})
 
     def _build_collector_host(self) -> CollectorHost:
         """The narrow seam the collector reaches the outside world through.
@@ -1090,18 +1107,24 @@ class CollectTrainingImagesTask(Task):
 
     @classmethod
     def params_schema(cls) -> dict[str, dict[str, Any]]:
-        """The collector's knobs plus the three params that belong to this loop.
+        """A collector to run, plus the three params that belong to this loop.
 
-        The bulk of the form lives in `collector_params_schema()` so the collector
-        editor and this task render one definition (see collectorSpec.py); only
-        `source_uuids` / `snapshot_interval` / `stream_interval` are ours, because
-        only a driver that rotates providers has sources or a pacing interval.
+        The ~30 knobs live on the collector row and are edited in Configuration →
+        Collectors; only `source_uuids` / `snapshot_interval` / `stream_interval`
+        are ours, because only a driver that rotates providers has sources or a
+        pacing interval.
         """
-        collector = collector_params_schema()
-        order = list(collector["meta"]["order"])
-        # Straight after output_dir, which is where they have always rendered.
-        order[1:1] = ["snapshot_interval", "stream_interval", "source_uuids"]
-        loop_params = {
+        return {
+            "meta": {"order": ["collector_uuid", "snapshot_interval", "stream_interval", "source_uuids"]},
+            "collector_uuid": {
+                "type": "training_collector_uuid",
+                "required": True,
+                "label": "Collector",
+                "description": (
+                    "Which stored collector decides what to keep and how to annotate it. "
+                    "Edit collectors in Configuration → Collectors."
+                ),
+            },
             "snapshot_interval": {
                 "type": "int",
                 "label": "Snapshot Interval (s)",
@@ -1125,9 +1148,4 @@ class CollectTrainingImagesTask(Task):
                     "description": "Pre-configured source to pull images from",
                 },
             },
-        }
-        return {
-            "meta": {**collector["meta"], "order": order},
-            **loop_params,
-            **{k: v for k, v in collector.items() if k != "meta"},
         }

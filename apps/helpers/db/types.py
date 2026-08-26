@@ -1503,6 +1503,53 @@ class FilterChainUpdate(ApiModel):
     steps: Optional[List[FilterChainStepWrite]] = None  # None=no change; []=remove all
 
 
+# ─── Training collectors ─────────────────────────────────────────────────────
+
+
+class TrainingCollectorRow(TimestampModel, table=True):
+    """The collect-training-images parameter set, stored as a reusable entity.
+
+    Deliberately not a `task_configs` row: a task config is *runnable*, and a
+    collector has no sources of its own by construction, so it would appear in
+    Jobs offering a start button that cannot work.
+
+    `params_json` holds exactly what `collector_params_schema()` describes —
+    never the loop params (`source_uuids`, `snapshot_interval`,
+    `stream_interval`), which belong to whoever drives the frames.
+    """
+
+    __tablename__ = "training_collectors"
+    uuid: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    enabled: bool = Field(default=True)
+    params_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class TrainingCollectorRead(OrmModel):
+    uuid: str
+    name: str
+    description: Optional[str] = None
+    enabled: bool = True
+    params: Dict[str, Any] = Field(default_factory=dict, validation_alias="params_json")
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class TrainingCollectorCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    enabled: bool = True
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingCollectorUpdate(ApiModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    params: Optional[Dict[str, Any]] = None  # None = no change
+
+
 # ─── Model Groups ────────────────────────────────────────────────────────────
 
 

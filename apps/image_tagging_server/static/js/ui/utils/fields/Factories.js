@@ -3,6 +3,7 @@ import { ArrayField } from './ArrayField.js'
 import { BboxInfoField } from './BboxInfoField.js';
 import { DirBrowserField } from './DirBrowserField.js';
 import { FilterChainSelectField } from './FilterChainSelectField.js';
+import { TrainingCollectorSelectField } from './TrainingCollectorSelectField.js';
 import { WatchProfileSelectField } from './WatchProfileSelectField.js';
 import { SourceConfigField } from './SourceConfigField.js';
 import { SourceSelectField } from './SourceSelectField.js';
@@ -181,6 +182,18 @@ export const fieldFactories = {
       value: values[fieldName],
       // An optional chain must be un-selectable again; a required one must not be.
       allowNone: !required,
+      onChange: (val) => {
+        onChange?.(val);
+      },
+      ...rest
+    });
+  },
+
+  async training_collector_uuid(fieldName, fieldMeta, values, onChange) {
+    const { type, required, description, ...rest } = fieldMeta;
+
+    return await TrainingCollectorSelectField.create({
+      value: values[fieldName],
       onChange: (val) => {
         onChange?.(val);
       },

@@ -16,6 +16,8 @@ import pytest
 import uvicorn
 from fastapi.responses import JSONResponse
 
+from apps.helpers.training.collectorSpec import collector_params_schema
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -112,6 +114,19 @@ def _make_model_groups_mock():
 def _make_filter_chains_mock():
     async def handle(path: str, request):
         return JSONResponse(content={"status": "success", "chains": []})
+
+    return handle
+
+
+def _make_training_collectors_mock():
+    """The Configuration landing counts collectors, and the Collectors pane fetches
+    both the list and the params schema. Unmocked this proxy makes a REAL connection
+    to db_server — the trap FILTER_CHAINS_PROXY fell into."""
+
+    async def handle(path: str, request):
+        if "schema" in path:
+            return JSONResponse(content={"status": "success", "paramsSchema": collector_params_schema()})
+        return JSONResponse(content={"status": "success", "collectors": []})
 
     return handle
 
@@ -259,6 +274,7 @@ def live_server() -> Generator[str, None, None]:
         # passed only while a live stack happened to be running and failed with
         # httpx.ConnectError otherwise.
         ("FILTER_CHAINS_PROXY", _make_filter_chains_mock()),
+        ("TRAINING_COLLECTORS_PROXY", _make_training_collectors_mock()),
         ("PREVIEW_RUNS_PROXY", _make_preview_runs_mock()),
         ("WATCH_EVENTS_PROXY", _make_watch_events_mock()),
         ("EVENT_BLIPS_PROXY", _make_event_blips_mock()),

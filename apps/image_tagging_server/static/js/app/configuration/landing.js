@@ -22,6 +22,7 @@ import { fetchModelGroups } from '/app-static/js/shared/api/modelGroups.js';
 import { fetchModelsList } from '/app-static/js/shared/api/models.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { fetchTags } from '/app-static/js/shared/api/tags.js';
+import { fetchTrainingCollectors } from '/app-static/js/shared/api/trainingCollectors.js';
 import { fetchTaskConfigs } from '/app-static/js/shared/api/tasks.js';
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
 import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
@@ -52,7 +53,7 @@ async function fetchCounts() {
 
   const [
     labels, tags, models, rows, sources,
-    modelShapes, modelStacks, trainingRuns, filterChains, taskConfigs, watchRules,
+    modelShapes, modelStacks, trainingRuns, filterChains, collectors, taskConfigs, watchRules,
   ] = await Promise.all([
     settle(fetchLabels),
     settle(fetchTags),
@@ -65,6 +66,7 @@ async function fetchCounts() {
     settle(fetchModelGroups),
     settle(fetchTrainingConfigs),
     settle(fetchFilterChains),
+    settle(fetchTrainingCollectors),
     // Temporary configs are throwaway scaffolding created by ad-hoc runs; the
     // Tasks pane hides them by default, so counting them here would disagree
     // with what the destination shows.
@@ -83,6 +85,7 @@ async function fetchCounts() {
     modelStacks,
     trainingRuns,
     filterChains,
+    collectors,
     taskConfigs,
     watchRules,
   };
@@ -151,6 +154,10 @@ function buildGroups(counts) {
         {
           name: 'Filter Chains', count: counts.filterChains, tab: 'tab-filterchain-management',
           hint: 'Ordered filter steps runnable over search results',
+        },
+        {
+          name: 'Collectors', count: counts.collectors, tab: 'tab-collector-management',
+          hint: 'What a collect run keeps, and how it annotates it',
         },
         {
           name: 'Tasks', count: counts.taskConfigs, tab: 'tab-task-management',

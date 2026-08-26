@@ -98,6 +98,9 @@ from apps.helpers.db.types import (
     TaskParams,
     TaskResultData,
     TaskResumeData,
+    TrainingCollectorCreate,
+    TrainingCollectorRead,
+    TrainingCollectorUpdate,
     WatchEvent,
     WatchEventRead,
     WatchProfileCreate,
@@ -3860,6 +3863,25 @@ class Manager:
 
     async def delete_filter_chain(self, uuid: str) -> bool:
         return await self._db_client.delete_filter_chain(uuid)
+
+    # ── Training collectors ────────────────────────────────────────────────────
+
+    async def list_training_collectors(self) -> List[TrainingCollectorRead]:
+        return await self._db_client.list_training_collectors()
+
+    async def get_training_collector(self, uuid: str) -> Optional[TrainingCollectorRead]:
+        return await self._db_client.get_training_collector(uuid)
+
+    async def create_training_collector(self, data: TrainingCollectorCreate) -> TrainingCollectorRead:
+        return await self._db_client.create_training_collector(data)
+
+    async def update_training_collector(
+        self, uuid: str, data: TrainingCollectorUpdate
+    ) -> Optional[TrainingCollectorRead]:
+        return await self._db_client.update_training_collector(uuid, data)
+
+    async def delete_training_collector(self, uuid: str) -> bool:
+        return await self._db_client.delete_training_collector(uuid)
 
     # ── Watch profiles (StreamWatcher / NVR) ───────────────────────────────────
 

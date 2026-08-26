@@ -32,6 +32,10 @@ _PRE_REDESIGN_REV = "307a345162a9"
 # any.
 _PRE_REGIONS_REV = "293b86a081d3"
 
+# Revision just before the collect params moved out of task_configs into
+# training_collectors.
+_PRE_COLLECTORS_REV = "c31a70f4be82"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -155,6 +159,22 @@ def pre_regions_copy(_pre_regions_engine):
     """Per-test in-memory copy of the pre-source_regions schema."""
     engine = _make_engine()
     _backup(_pre_regions_engine, engine)
+    return engine
+
+
+@pytest.fixture(scope="session")
+def _pre_collectors_engine():
+    """Schema at c31a70f4be82 — the last revision where collect params are inline."""
+    engine = _make_engine()
+    _run_migrations(engine, _PRE_COLLECTORS_REV)
+    return engine
+
+
+@pytest.fixture
+def pre_collectors_copy(_pre_collectors_engine):
+    """Per-test in-memory copy of the pre-training_collectors schema."""
+    engine = _make_engine()
+    _backup(_pre_collectors_engine, engine)
     return engine
 
 
@@ -816,3 +836,110 @@ class TestWatchZonesBecomeSourceRegions:
 
         assert self._regions(pre_regions_copy) == {}
         assert "watch_zones" not in _tables(pre_regions_copy)
+
+
+class TestCollectParamsMoveToCollectors:
+    """fd74a3b899ec must carry a job's collect settings across, not strand them.
+
+    The knobs are real configuration work — model/label bands, an output directory,
+    dedup thresholds — and after this revision the task reads them from the
+    collector row and nowhere else. So a knob left behind on the config is a knob
+    that silently reverts to its default on the next run, which looks like a
+    working run collecting the wrong thing.
+
+    The reserved `_`-prefixed keys are the other half: the manager still reads
+    `_persistent` and `_restart_info` off the config, so moving them would break
+    resume for a reason nothing would point at.
+    """
+
+    _TS = "2026-01-01 00:00:00"
+    _INLINE = {
+        "source_uuids": ["src-a"],
+        "snapshot_interval": 30,
+        "stream_interval": 2,
+        "output_dir": "collected/run1",
+        "model_label_config": [{"modelName": "yolo", "labelValues": {"label-cat": 0.4}}],
+        "enable_dedup": True,
+        "image_dup_threshold": 7,
+        "_persistent": True,
+    }
+
+    def _seed(self, engine, configs) -> None:
+        with engine.connect() as conn:
+            for uuid, name, typename, params in configs:
+                conn.exec_driver_sql(
+                    "INSERT INTO task_configs (uuid, name, typename, params_json, is_temporary,"
+                    " marked_for_delete, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0, ?, ?)",
+                    (uuid, name, typename, json.dumps(params), self._TS, self._TS),
+                )
+            conn.commit()
+
+    def _config_params(self, engine, uuid) -> dict:
+        with engine.connect() as conn:
+            row = conn.exec_driver_sql("SELECT params_json FROM task_configs WHERE uuid = ?", (uuid,)).fetchone()
+        return json.loads(row[0])
+
+    def _collectors(self, engine) -> dict:
+        with engine.connect() as conn:
+            rows = conn.exec_driver_sql("SELECT uuid, name, params_json FROM training_collectors").fetchall()
+        return {r[0]: (r[1], json.loads(r[2])) for r in rows}
+
+    def test_every_collect_knob_lands_on_the_collector(self, pre_collectors_copy):
+        self._seed(pre_collectors_copy, [("cfg-1", "Gather", "CollectTrainingImagesTask", self._INLINE)])
+        _run_migrations(pre_collectors_copy)
+
+        params = self._config_params(pre_collectors_copy, "cfg-1")
+        name, collector_params = self._collectors(pre_collectors_copy)[params["collector_uuid"]]
+        assert name == "Gather"
+        assert collector_params == {
+            "output_dir": "collected/run1",
+            "model_label_config": [{"modelName": "yolo", "labelValues": {"label-cat": 0.4}}],
+            "enable_dedup": True,
+            "image_dup_threshold": 7,
+        }
+
+    def test_the_config_keeps_only_its_loop_params_and_reserved_keys(self, pre_collectors_copy):
+        self._seed(pre_collectors_copy, [("cfg-1", "Gather", "CollectTrainingImagesTask", self._INLINE)])
+        _run_migrations(pre_collectors_copy)
+
+        assert self._config_params(pre_collectors_copy, "cfg-1") == {
+            "source_uuids": ["src-a"],
+            "snapshot_interval": 30,
+            "stream_interval": 2,
+            "_persistent": True,
+            "collector_uuid": self._config_params(pre_collectors_copy, "cfg-1")["collector_uuid"],
+        }
+
+    def test_two_configs_of_the_same_name_do_not_collide(self, pre_collectors_copy):
+        """`name` is unique on training_collectors, and task config names are not —
+        an IntegrityError here would abort the whole upgrade."""
+        self._seed(
+            pre_collectors_copy,
+            [
+                ("cfg-1", "Gather", "CollectTrainingImagesTask", self._INLINE),
+                ("cfg-2", "Gather", "CollectTrainingImagesTask", self._INLINE),
+            ],
+        )
+        _run_migrations(pre_collectors_copy)
+
+        names = sorted(n for n, _ in self._collectors(pre_collectors_copy).values())
+        assert names == ["Gather", "Gather (2)"]
+        first = self._config_params(pre_collectors_copy, "cfg-1")["collector_uuid"]
+        second = self._config_params(pre_collectors_copy, "cfg-2")["collector_uuid"]
+        assert first != second
+
+    def test_other_task_types_are_left_alone(self, pre_collectors_copy):
+        other = {"source_uuids": ["src-a"], "output_dir": "somewhere"}
+        self._seed(pre_collectors_copy, [("cfg-x", "Timelapse", "TimelapseTask", other)])
+        _run_migrations(pre_collectors_copy)
+
+        assert self._config_params(pre_collectors_copy, "cfg-x") == other
+        assert self._collectors(pre_collectors_copy) == {}
+
+    def test_downgrade_puts_the_knobs_back(self, pre_collectors_copy):
+        self._seed(pre_collectors_copy, [("cfg-1", "Gather", "CollectTrainingImagesTask", self._INLINE)])
+        _run_migrations(pre_collectors_copy)
+        _run_downgrade(pre_collectors_copy, _PRE_COLLECTORS_REV)
+
+        assert self._config_params(pre_collectors_copy, "cfg-1") == self._INLINE
+        assert "training_collectors" not in _tables(pre_collectors_copy)
