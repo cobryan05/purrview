@@ -8,6 +8,7 @@ an exception on the frame loop.
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import cv2
@@ -1053,12 +1054,21 @@ class TestTimelapseDirectoryTemplates:
         assert Path(a.data["path"]).parent != Path(b.data["path"]).parent
 
 
+def _frame_signal(**overrides) -> WatchEventSignal:
+    """A `frame_analysed` dispatch, as `_dispatch_frame` actually builds one:
+    empty rule, phase UPDATE. `rule_uuid=""` is what `CollectTrainingImagesAction.run()`
+    (and RecordEventTimelapseAction's, which this mirrors) uses to tell a frame
+    apart from a real event transition — see StreamWatcherTask._dispatch_frame."""
+    return _signal(rule_uuid="", rule_name="", phase=EventPhase.UPDATE, track_ids=[], peak_confidence=0.0, **overrides)
+
+
 class TestCollectTrainingImagesAction:
-    """The watcher-side half of collector attachment (phase 4,
+    """The watcher-side half of collector attachment (phases 4-5,
     COLLECTOR_UNIFICATION_PLAN.md). The collector runtime itself
     (`TrainingCollector`) is exercised elsewhere — this only covers what the
-    action owns: resolving the collector, the per-source interval gate, and
-    building a correct `FrameOffer` out of an `ActionContext`.
+    action owns: resolving the collector, continuous vs event-scoped mode,
+    the per-source interval gate, provenance, and building a correct
+    `FrameOffer` out of an `ActionContext`.
     """
 
     def _action(self, collector=None, **overrides):
@@ -1081,13 +1091,13 @@ class TestCollectTrainingImagesAction:
 
     async def test_unresolvable_collector_fails_without_raising(self):
         action = self._action(collector=None, collector_uuid="missing")
-        result = await action.run(_signal(), self._full_frame_context())
+        result = await action.run(_frame_signal(), self._full_frame_context())
         assert result.ok is False
 
     async def test_no_frame_available_fails_without_raising(self):
         collector = AsyncMock()
         action = self._action(collector=collector, collector_uuid="c1")
-        result = await action.run(_signal(), _context(full_frame=None, analysis_base64=None))
+        result = await action.run(_frame_signal(), _context(full_frame=None, analysis_base64=None))
         assert result.ok is False
         collector.offer.assert_not_called()
 
@@ -1096,7 +1106,7 @@ class TestCollectTrainingImagesAction:
         collector.offer = AsyncMock()
         action = self._action(collector=collector, collector_uuid="c1", min_interval_s=10.0)
 
-        result = await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
+        result = await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1"))
 
         assert result.ok is True
         collector.offer.assert_awaited_once()
@@ -1106,8 +1116,8 @@ class TestCollectTrainingImagesAction:
         collector.offer = AsyncMock()
         action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1000.0)
 
-        await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
-        await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1"))
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1"))
 
         collector.offer.assert_awaited_once()
 
@@ -1118,8 +1128,8 @@ class TestCollectTrainingImagesAction:
         collector.offer = AsyncMock()
         action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1000.0)
 
-        await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
-        await action.run(_signal(), self._full_frame_context(source_uuid="s2"))
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1"))
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s2"))
 
         assert collector.offer.await_count == 2
 
@@ -1135,7 +1145,7 @@ class TestCollectTrainingImagesAction:
         action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
         context = self._full_frame_context(source_uuid="s1", source_name="Back room")
 
-        await action.run(_signal(), context)
+        await action.run(_frame_signal(), context)
 
         offered = collector.offer.await_args.args[0]
         assert offered.provided.image is context.full_frame
@@ -1152,6 +1162,159 @@ class TestCollectTrainingImagesAction:
         collector.offer = AsyncMock(side_effect=RuntimeError("disk full"))
         action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
 
-        result = await action.run(_signal(), self._full_frame_context())
+        result = await action.run(_frame_signal(), self._full_frame_context())
 
         assert result.ok is False
+
+
+class TestCollectTrainingImagesActionTriggers:
+    """`triggers()` decides continuous vs event-scoped mode from the row's own
+    configured trigger — see the module docstring's "Two modes" section."""
+
+    def _row(self, trigger):
+        return SimpleNamespace(trigger=trigger)
+
+    def test_frame_analysed_trigger_stays_frame_only(self):
+        assert CollectTrainingImagesAction.triggers(self._row("frame_analysed")) == {"frame_analysed"}
+
+    def test_event_started_trigger_adds_frame_analysed(self):
+        assert CollectTrainingImagesAction.triggers(self._row("event_started")) == {
+            "event_started",
+            "frame_analysed",
+            "event_ended",
+        }
+
+    def test_event_ended_trigger_adds_frame_analysed(self):
+        assert CollectTrainingImagesAction.triggers(self._row("event_ended")) == {
+            "event_started",
+            "frame_analysed",
+            "event_ended",
+        }
+
+
+class TestCollectTrainingImagesActionEventScoped:
+    """Rule-scoped collection (phase 5): 'collect training data only while
+    this rule's event is open' — the capability plan §2.4 calls out as
+    impossible to express by co-running the standalone task."""
+
+    def _action(self, collector=None, **overrides):
+        overrides.setdefault("trigger", "event_started")
+        return CollectTrainingImagesAction(collector_for=lambda uuid: collector, **overrides)
+
+    def _full_frame_context(self, **overrides):
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        return _context(
+            full_frame=frame,
+            analysis_base64='{"format": "jpg", "data": "AA==", "metadata": {}}',
+            frame_seq=7,
+            **overrides,
+        )
+
+    async def test_a_frame_before_any_event_is_a_noop(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        result = await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        assert result.ok is True
+        collector.offer.assert_not_called()
+
+    async def test_a_frame_while_the_event_is_open_is_offered(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(_signal(phase=EventPhase.START, source_uuid="s1"), _context(source_uuid="s1"))
+        result = await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        assert result.ok is True
+        collector.offer.assert_awaited_once()
+
+    async def test_a_frame_after_the_event_ends_is_a_noop_again(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(_signal(phase=EventPhase.START, source_uuid="s1"), _context(source_uuid="s1"))
+        await action.run(_signal(phase=EventPhase.END, source_uuid="s1"), _context(source_uuid="s1"))
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        collector.offer.assert_not_called()
+
+    async def test_two_overlapping_rules_on_one_source_need_both_to_end(self):
+        """A refcount, not a boolean — two in-scope rules opening near-simultaneously
+        on one camera must not let the first one's END switch collection off
+        while the second is still open."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-a", source_uuid="s1"), _context(source_uuid="s1")
+        )
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-b", source_uuid="s1"), _context(source_uuid="s1")
+        )
+        await action.run(
+            _signal(phase=EventPhase.END, rule_uuid="rule-a", source_uuid="s1"), _context(source_uuid="s1")
+        )
+
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+        collector.offer.assert_awaited_once()  # rule-b is still open
+
+        await action.run(
+            _signal(phase=EventPhase.END, rule_uuid="rule-b", source_uuid="s1"), _context(source_uuid="s1")
+        )
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+        collector.offer.assert_awaited_once()  # still just the one — both rules now closed
+
+    async def test_sessions_are_tracked_per_source(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(_signal(phase=EventPhase.START, source_uuid="s1"), _context(source_uuid="s1"))
+        result = await action.run(_frame_signal(source_uuid="s2"), self._full_frame_context(source_uuid="s2"))
+
+        assert result.ok is True
+        collector.offer.assert_not_called()  # s2 has no open session of its own
+
+    async def test_provenance_is_stamped_while_a_session_is_open(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-a", started_at=123.0, source_uuid="s1"),
+            _context(source_uuid="s1"),
+        )
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        offered = collector.offer.await_args.args[0]
+        assert offered.provided.metadata.additional_info == {
+            "watch_rule_uuid": "rule-a",
+            "watch_event_started_at": "123.0",
+        }
+
+    async def test_continuous_mode_carries_no_provenance(self):
+        """Regression guard: continuous mode (phase 4) has no session to
+        describe, and must not stamp stale/empty provenance."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = CollectTrainingImagesAction(
+            collector_for=lambda uuid: collector, collector_uuid="c1", min_interval_s=1.0, trigger="frame_analysed"
+        )
+
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        await action.run(
+            _frame_signal(source_uuid="s1"),
+            _context(
+                source_uuid="s1",
+                full_frame=frame,
+                analysis_base64='{"format": "jpg", "data": "AA==", "metadata": {}}',
+            ),
+        )
+
+        offered = collector.offer.await_args.args[0]
+        assert offered.provided.metadata.additional_info == {}

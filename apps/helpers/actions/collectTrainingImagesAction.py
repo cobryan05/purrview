@@ -1,6 +1,6 @@
 """Feed a watcher's own frames into a `TrainingCollector`.
 
-Phase 4 of COLLECTOR_UNIFICATION_PLAN.md (repo root). The collector is
+Phases 4-5 of COLLECTOR_UNIFICATION_PLAN.md (repo root). The collector is
 driver-agnostic by construction (`CollectorHost` — see
 `apps.helpers.training.collector`), so attaching it here needs no change to
 the collector itself: this action just calls `offer()` at watcher cadence
@@ -16,14 +16,48 @@ collector is meant to sample every 5-10s, not see every analysed frame. The
 floor is enforced here (clamped to 1.0), not merely defaulted — an unbounded
 watcher offering every frame would spend its own CPU on phashes and JPEG
 writes for training data that is ~95% near-duplicate anyway.
+
+## Two modes, one action kind
+
+**Continuous** (row's own trigger is `frame_analysed`): offers whenever the
+interval has elapsed, unconditionally — phase 4's behaviour, unchanged.
+
+**Event-scoped** (row's trigger is `event_started`/`event_ended`): "collect
+training data only while this rule's event is open" — impossible to express
+by running the standalone task alongside the watcher, and the strongest
+argument for attaching rather than co-running (plan §2.4). Mirrors
+`RecordEventTimelapseAction`'s shape (an action whose configured trigger is
+one event edge but which also needs every analysed frame while a session is
+open): `triggers()` adds `frame_analysed` on top of the row's own edge, and
+`run()` branches on whether the dispatched signal carries a rule at all.
+
+A **refcount**, not a boolean, tracks "is a session open" per source: a
+source can have more than one in-scope rule open at once (the row's own
+`rule_uuids_json` already filters which `event_started`/`event_ended`
+transitions reach this action), and collection must continue until every
+one of them has closed, not just the first.
+
+## Provenance
+
+An event-scoped offer stamps `watch_rule_uuid` / `watch_event_started_at`
+into `ImageProviderMetadata.additional_info` — an existing pass-through
+field `TrainingCollector._save_image` folds into every saved box's
+`bbox_meta`. This is deliberately NOT the real `watch_events.uuid`: that row
+(if one ever gets written at all — this action doesn't `logs_event()`) isn't
+resolved until after every action for a transition has run
+(`StreamWatcherTask._dispatch`), so it can't be known at collection time.
+Rule + start time is what's actually reachable, and is enough to correlate
+a collected image back to the window it came from in review.
 """
 
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
 from ..training.collector import FrameOffer, TrainingCollector
+from ..watch.events import EventPhase, WatchEventSignal
+from ..watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED
 from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
 
@@ -45,16 +79,39 @@ class CollectTrainingImagesAction(Action):
         collector_for: Callable[[str], Optional[TrainingCollector]],
         collector_uuid: str = "",
         min_interval_s: float = 10.0,
+        trigger: str = FRAME_ANALYSED,
         **params: Any,
     ) -> None:
         super().__init__(**params)
         self._collector_for = collector_for
         self._collector_uuid = collector_uuid
         self._min_interval_s = max(float(min_interval_s), self.MIN_INTERVAL_FLOOR_S)
+        # Decided once, from the row's own configured trigger, rather than asked
+        # per frame — see the module docstring's "Two modes" section.
+        self._continuous = trigger == FRAME_ANALYSED
         #: source_uuid -> monotonic time of the last offer, so the interval is
         #: per camera — a doorbell and a litter-box camera on the same watcher
         #: must not share one clock.
         self._last_offered: Dict[str, float] = {}
+        #: source_uuid -> count of currently-open in-scope rule events. A count,
+        #: not a bool: two in-scope rules opening close together on one source
+        #: must not let the first one's END switch collection off while the
+        #: second is still open.
+        self._open_sessions: Dict[str, int] = {}
+        #: source_uuid -> (rule_uuid, event started_at) of the most recently
+        #: opened in-scope session, for provenance metadata. Last-opened wins if
+        #: two rules overlap — an approximation, not a precise per-rule
+        #: attribution, which the refcount above doesn't track separately.
+        self._session_provenance: Dict[str, Tuple[str, float]] = {}
+
+    @classmethod
+    def triggers(cls, row: Any) -> Set[str]:
+        if getattr(row, "trigger", None) == FRAME_ANALYSED:
+            return {FRAME_ANALYSED}
+        # Event-scoped: the row's own edge is when the Watchers pane says this
+        # action "runs", but frame_analysed is how it actually samples while
+        # that edge's session stays open.
+        return {EVENT_STARTED, FRAME_ANALYSED, EVENT_ENDED}
 
     @classmethod
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
@@ -72,7 +129,36 @@ class CollectTrainingImagesAction(Action):
             },
         }
 
-    async def run(self, signal, context: ActionContext) -> ActionResult:
+    async def run(self, signal: WatchEventSignal, context: ActionContext) -> ActionResult:
+        # A frame_analysed dispatch carries no rule — see _dispatch_frame's own
+        # docstring for why an empty rule_uuid is how a frame signal is told
+        # apart from a real event transition.
+        if not signal.rule_uuid:
+            return await self._on_frame(context)
+        if signal.phase is EventPhase.START:
+            return self._on_event_start(signal)
+        if signal.phase is EventPhase.END:
+            return self._on_event_end(signal)
+        # UPDATE on a real rule re-fires event_started for actions that want a
+        # repeated nudge; there is nothing to reopen, the session already is.
+        return ActionResult(ok=True, detail="already collecting")
+
+    def _on_event_start(self, signal: WatchEventSignal) -> ActionResult:
+        key = signal.source_uuid or ""
+        self._open_sessions[key] = self._open_sessions.get(key, 0) + 1
+        self._session_provenance[key] = (signal.rule_uuid, signal.started_at)
+        return ActionResult(ok=True)
+
+    def _on_event_end(self, signal: WatchEventSignal) -> ActionResult:
+        key = signal.source_uuid or ""
+        self._open_sessions[key] = max(0, self._open_sessions.get(key, 0) - 1)
+        return ActionResult(ok=True)
+
+    async def _on_frame(self, context: ActionContext) -> ActionResult:
+        key = context.source_uuid or ""
+        if not self._continuous and self._open_sessions.get(key, 0) <= 0:
+            return ActionResult(ok=True, detail="no session open")
+
         collector = self._collector_for(self._collector_uuid)
         if collector is None:
             return ActionResult(ok=False, detail=f"Collector {self._collector_uuid!r} is not attached")
@@ -80,10 +166,15 @@ class CollectTrainingImagesAction(Action):
             return ActionResult(ok=False, detail="No frame available")
 
         now = time.monotonic()
-        key = context.source_uuid or ""
         if now - self._last_offered.get(key, 0.0) < self._min_interval_s:
             return ActionResult(ok=True, detail="waiting for interval")
         self._last_offered[key] = now
+
+        additional_info: Dict[str, Any] = {}
+        provenance = self._session_provenance.get(key)
+        if not self._continuous and provenance is not None:
+            rule_uuid, started_at = provenance
+            additional_info = {"watch_rule_uuid": rule_uuid, "watch_event_started_at": str(started_at)}
 
         frame = FrameOffer(
             provided=ImageWithProviderMetadata(
@@ -92,6 +183,7 @@ class CollectTrainingImagesAction(Action):
                     source=context.source_name,
                     source_uuid=context.source_uuid,
                     frame_idx=context.frame_seq,
+                    additional_info=additional_info,
                 ),
             ),
             base64=context.analysis_base64,

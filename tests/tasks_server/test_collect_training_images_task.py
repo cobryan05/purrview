@@ -4565,6 +4565,57 @@ class TestAmbiguityPersistence:
         # The confidence key every reader already depends on must be untouched.
         assert box.bbox_meta["confidence"] == "0.91"
 
+
+class TestFrameProvenance:
+    """Phase 5, COLLECTOR_UNIFICATION_PLAN.md: a watcher's event-scoped
+    collect_training_images action stashes which rule/event produced a frame
+    in `ImageProviderMetadata.additional_info` — _save_image must fold it
+    into every box's bbox_meta, the same way source_model already is, so the
+    question survives even on a frame with no ambiguity info."""
+
+    async def test_frame_provenance_lands_on_every_box(self, tmp_path):
+        task = _make_task(params=_PARAMS)
+        await task._init(_PARAMS, resume_data=None)
+
+        det = _detection()
+        provided = ImageWithProviderMetadata(
+            image=np.zeros((8, 8, 3), dtype=np.uint8),
+            metadata=ImageProviderMetadata(
+                additional_info={"watch_rule_uuid": "rule-a", "watch_event_started_at": "123.0"}
+            ),
+        )
+
+        images_api = MagicMock()
+        task._collector._meta_write_lock = asyncio.Lock()
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(
+            images_api, FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.FIXED), [det]
+        )
+
+        box = images_api.update_image_metadata.call_args.args[0].boxes[0]
+        assert box.bbox_meta["watch_rule_uuid"] == "rule-a"
+        assert box.bbox_meta["watch_event_started_at"] == "123.0"
+
+    async def test_no_additional_info_means_no_provenance_keys(self, tmp_path):
+        """Continuous-mode frames (and the standalone task, which never sets
+        additional_info) must not gain empty/spurious keys."""
+        task = _make_task(params=_PARAMS)
+        await task._init(_PARAMS, resume_data=None)
+
+        det = _detection()
+        images_api = MagicMock()
+        task._collector._meta_write_lock = asyncio.Lock()
+        task._collector._files_root = tmp_path
+        await task._collector._save_image(
+            images_api,
+            FrameOffer(provided=_untracked_image(), base64="b64", provider_type=ImageProviderType.FIXED),
+            [det],
+        )
+
+        box = images_api.update_image_metadata.call_args.args[0].boxes[0]
+        assert "watch_rule_uuid" not in box.bbox_meta
+        assert "watch_event_started_at" not in box.bbox_meta
+
     async def test_metadata_values_are_all_strings(self, tmp_path):
         """metadata_json is typed Dict[str, str] end to end (RawJsonDict). A
         nested dict or a bare float is rejected by the generated client's

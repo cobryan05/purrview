@@ -181,6 +181,10 @@ class StreamWatcherTask(Task):
         # deduplicating against nothing. Built in _build_actions, torn down in
         # _deinit.
         self._collectors: Dict[str, TrainingCollector] = {}
+        #: collector_uuid → the collector row's own name, for the status card —
+        #: kept apart from `_collectors` so the status method never has to poke a
+        #: live collector instance just to label its row.
+        self._collector_names: Dict[str, str] = {}
         self._actions: List[tuple] = []
         # The `frame_analysed` subset, kept apart so the per-frame path can skip its
         # whole dispatch with one truth test. Every watcher pays that test 5x a second
@@ -536,8 +540,9 @@ class StreamWatcherTask(Task):
                 elif row.kind == COLLECT_TRAINING_IMAGES_ACTION_KIND:
                     # A memoising lookup, not the collector itself: two rows can name the
                     # same collector_uuid (different source scopes), and must share one
-                    # instance — see _build_collectors.
-                    action = create_action(row.kind, collector_for=self._collector_for, **params)
+                    # instance — see _build_collectors. The row's own trigger decides
+                    # continuous vs event-scoped mode (CollectTrainingImagesAction.triggers()).
+                    action = create_action(row.kind, collector_for=self._collector_for, trigger=row.trigger, **params)
                 else:
                     action = create_action(row.kind, **params)
             except Exception as e:
@@ -603,6 +608,7 @@ class StreamWatcherTask(Task):
                 await collector.prepare(resume_data=None)
                 await collector.start()
                 self._collectors[collector_uuid] = collector
+                self._collector_names[collector_uuid] = response.collector.name
             except Exception as e:
                 logger.exception("Could not attach collector %s", collector_uuid)
                 self.log(f"Skipping collector {collector_uuid}: {e}")
@@ -1861,6 +1867,26 @@ class StreamWatcherTask(Task):
             open_rows.extend(pipeline.engine.open_events())
             hints.extend(pipeline.engine.tuning_hints())
 
+        # One row per attached training collector. status_stats() is synchronous
+        # in-memory counters (no I/O), same contract this whole method already
+        # runs under — see TrainingCollector.status_stats()'s own docstring.
+        # Backend-only for now: nothing in the Watchers pane renders this table
+        # yet (phase 5, COLLECTOR_UNIFICATION_PLAN.md) — a documented follow-up,
+        # not an oversight.
+        collectors_table = []
+        for collector_uuid, collector in self._collectors.items():
+            stats, _calibration = collector.status_stats()
+            collectors_table.append(
+                {
+                    "name": self._collector_names.get(collector_uuid, collector_uuid),
+                    "offered": stats.get("offered", 0),
+                    "saved": stats.get("saved", 0),
+                    "droppedBehind": stats.get("dropped_behind", 0),
+                    "dedupHits": stats.get("dedup_image_hits", 0) + stats.get("dedup_bbox_hits", 0),
+                    "filterDiscarded": stats.get("filter_discarded", 0),
+                }
+            )
+
         return {
             "stats": {
                 "framesAnalysed": self._frames_analysed,
@@ -1887,6 +1913,7 @@ class StreamWatcherTask(Task):
             "sources": [p.status_row(now) for p in self._pipelines],
             "activeTracksTable": tracks_rows,
             "openEventsTable": open_rows,
+            "collectorsTable": collectors_table,
             "recentEvents": list(reversed(self._recent_events[-15:])),
             "tuningHints": "\n".join(hints) if hints else "No tuning suggestions yet.",
         }

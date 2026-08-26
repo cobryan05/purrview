@@ -82,6 +82,7 @@ def _task(actions, collectors_table, monkeypatch) -> StreamWatcherTask:
 
     task = StreamWatcherTask.__new__(StreamWatcherTask)
     task._collectors = {}
+    task._collector_names = {}
     task._profile = SimpleNamespace(actions=actions)
     task._manager = SimpleNamespace(
         get_db_api_client=lambda: object(),
@@ -104,6 +105,15 @@ class TestBuildCollectors:
         assert set(task._collectors) == {"c1"}
         collector = task._collectors["c1"]
         assert collector.prepared and collector.started
+
+    async def test_collector_name_is_recorded_for_the_status_card(self, monkeypatch):
+        table = {"c1": _row("c1", "Litter box collector")}
+        actions = [_action_row("collect_training_images", "c1")]
+        task = _task(actions, table, monkeypatch)
+
+        await task._build_collectors(object())
+
+        assert task._collector_names["c1"] == "Litter box collector"
 
     async def test_two_rows_naming_the_same_collector_share_one_instance(self, monkeypatch):
         table = {"c1": _row("c1", "Collector One")}
@@ -201,3 +211,108 @@ class TestDeinitShutsDownCollectors:
         await task._deinit()  # must not raise
 
         assert healthy.shutdown_called
+
+
+class TestBuildActionsPassesTrigger:
+    """`_build_actions` must hand the row's own trigger to
+    `collect_training_images`, so `CollectTrainingImagesAction.triggers()` can
+    decide continuous vs event-scoped mode (phase 5)."""
+
+    async def _task_for_build_actions(self, actions, collectors_table, monkeypatch):
+        task = _task(actions, collectors_table, monkeypatch)
+        monkeypatch.setattr(StreamWatcherTask, "_load_mqtt_settings", AsyncMock(return_value=None))
+        task._actions = []
+        task._frame_actions = []
+        task._mqtt = None
+        return task
+
+    async def test_frame_analysed_row_builds_a_continuous_action(self, monkeypatch):
+        table = {"c1": _row("c1", "One")}
+        actions = [_action_row("collect_training_images", "c1")]
+        actions[0].trigger = "frame_analysed"
+        task = await self._task_for_build_actions(actions, table, monkeypatch)
+
+        await task._build_actions(object())
+
+        assert len(task._actions) == 1
+        _row_built, action = task._actions[0]
+        assert action._continuous is True
+
+    async def test_event_started_row_builds_an_event_scoped_action(self, monkeypatch):
+        table = {"c1": _row("c1", "One")}
+        actions = [_action_row("collect_training_images", "c1")]
+        actions[0].trigger = "event_started"
+        task = await self._task_for_build_actions(actions, table, monkeypatch)
+
+        await task._build_actions(object())
+
+        assert len(task._actions) == 1
+        _row_built, action = task._actions[0]
+        assert action._continuous is False
+
+
+class TestStatusDataCollectorsTable:
+    """`get_status_data()` gains one row per attached collector (phase 5) —
+    backend-only, see the handoff doc for why the Watchers pane doesn't
+    render it yet."""
+
+    def _task_for_status(self):
+        task = StreamWatcherTask.__new__(StreamWatcherTask)
+        task._pipelines = []
+        task._recent_events = []
+        task._inference_ms = []
+        task._frames_analysed = 0
+        task._events_started = 0
+        task._events_ended = 0
+        task._action_successes = 0
+        task._action_failures = 0
+        task._mqtt = None
+        task._collectors = {}
+        task._collector_names = {}
+        return task
+
+    def test_one_row_per_attached_collector(self):
+        task = self._task_for_status()
+
+        def _stats(offered, saved, dropped, image_hits, bbox_hits, filter_discarded):
+            return (
+                {
+                    "offered": offered,
+                    "saved": saved,
+                    "dropped_behind": dropped,
+                    "dedup_image_hits": image_hits,
+                    "dedup_bbox_hits": bbox_hits,
+                    "filter_discarded": filter_discarded,
+                },
+                {},
+            )
+
+        c1 = SimpleNamespace(status_stats=lambda: _stats(40, 12, 1, 3, 2, 7))
+        task._collectors = {"c1": c1}
+        task._collector_names = {"c1": "Litter box collector"}
+
+        data = task.get_status_data()
+
+        assert data["collectorsTable"] == [
+            {
+                "name": "Litter box collector",
+                "offered": 40,
+                "saved": 12,
+                "droppedBehind": 1,
+                "dedupHits": 5,  # image_hits(3) + bbox_hits(2)
+                "filterDiscarded": 7,
+            }
+        ]
+
+    def test_no_attached_collectors_is_an_empty_table(self):
+        task = self._task_for_status()
+        assert task.get_status_data()["collectorsTable"] == []
+
+    def test_falls_back_to_the_uuid_when_no_name_was_recorded(self):
+        task = self._task_for_status()
+        task._collectors = {"c1": SimpleNamespace(status_stats=lambda: ({}, {}))}
+        # _collector_names deliberately left empty.
+
+        data = task.get_status_data()
+
+        assert data["collectorsTable"][0]["name"] == "c1"

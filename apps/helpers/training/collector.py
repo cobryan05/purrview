@@ -227,6 +227,11 @@ class TrainingCollector:
         #: a non-blocking (watcher-attached) collector; surfaced in status because
         #: silent dropping is indistinguishable from "the config collects nothing".
         self._frames_dropped_behind: int = 0
+        #: Total calls to `offer()`, before any filtering — the denominator that
+        #: makes "saved" and "dropped_behind" readable as rates rather than bare
+        #: counts. Every other counter here is post-some-filter; this is the one
+        #: that answers "is the driver even calling offer() at all".
+        self._frames_offered: int = 0
 
         self._last_capture: Optional[dict[str, Any]] = None
         self._filter_chain_runner: Any = None
@@ -520,6 +525,7 @@ class TrainingCollector:
         Blocks on a full dedup queue only when `blocking_offer` is set; otherwise
         the frame is dropped and counted. See the module docstring.
         """
+        self._frames_offered += 1
         # Collect-everything mode skips inference entirely — there is no model to
         # run and nothing to match against, so the frame is saved unannotated
         # unless the filter chain or dedup drops it. _run_inference stashes
@@ -1233,6 +1239,14 @@ class TrainingCollector:
         boxes = []
         seed_bboxes: list[dict[str, Any]] = []
         det_meta: dict[str, dict[str, Any]] = getattr(provided, "_det_meta", None) or {}
+        # Provenance a driver stashed on the frame (e.g. a watcher's event-scoped
+        # collect_training_images action: which rule, when the event opened —
+        # see apps.helpers.actions.collectTrainingImagesAction). Stringified like
+        # every other bbox_meta value (metadata_json values are typed str) and
+        # merged into EVERY box for the same reason source_model is: the frame
+        # this ends up on may carry no ambiguity info, but the question "which
+        # rule collected this?" is still answerable from any of its boxes.
+        provenance_meta: dict[str, str] = {str(k): str(v) for k, v in (provided.metadata.additional_info or {}).items()}
         for det in matching:
             extra_tags = list(self._extra_tag_uuids)
             this_meta = det_meta.get(det.bbox.uuid) or {}
@@ -1252,6 +1266,8 @@ class TrainingCollector:
             source_model = this_meta.get("model")
             if source_model:
                 bbox_meta["source_model"] = source_model
+            if provenance_meta:
+                bbox_meta.update(provenance_meta)
             ambiguity_tags: list[str] = []
             if ambiguity is not None:
                 bbox_meta.update(ambiguity.as_metadata())
@@ -1733,7 +1749,7 @@ class TrainingCollector:
         calls this synchronously from a poll handler.
         """
         spec = self._spec
-        stats: dict[str, Any] = {"saved": self._images_saved}
+        stats: dict[str, Any] = {"offered": self._frames_offered, "saved": self._images_saved}
         calibration: dict[str, Any] = {}
         if spec.enable_dedup:
             stats["dedup_checked"] = self._dedup_frames_checked
