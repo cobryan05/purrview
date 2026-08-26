@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.curatedModels import CURATED_BASE_MODELS
@@ -190,6 +190,17 @@ class BatchInferencePayload(Payload):
         ),
     )
     image_base64: str
+
+    @field_validator("top_k")
+    @classmethod
+    def _bound_top_k(cls, value: Union[int, Dict[str, int]]) -> Union[int, Dict[str, int]]:
+        # Field(ge=..., le=...) can't reach inside the dict form, so enforce
+        # InferencePayload.top_k's [0, 32] range by hand on both shapes.
+        asks = value.values() if isinstance(value, dict) else [value]
+        for ask in asks:
+            if not 0 <= ask <= 32:
+                raise ValueError("top_k must be between 0 and 32")
+        return value
 
 
 class BatchInferenceResponse(StatusResponse):

@@ -1297,6 +1297,57 @@ class TestCollectTrainingImagesActionEventScoped:
             "watch_event_started_at": "123.0",
         }
 
+    async def test_a_closed_rule_stops_claiming_frames_of_a_still_open_one(self):
+        """Ending rule-b must hand provenance back to rule-a, which is still open.
+
+        Provenance used to be a single last-opened-wins slot that END only
+        decremented a count against, never restored — so every frame for the
+        rest of rule-a's session was stamped with rule-b's uuid and rule-b's
+        start time, pointing at an event that had already closed.
+        """
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=0.0)
+
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-a", started_at=100.0, source_uuid="s1"),
+            _context(source_uuid="s1"),
+        )
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-b", started_at=200.0, source_uuid="s1"),
+            _context(source_uuid="s1"),
+        )
+        await action.run(
+            _signal(phase=EventPhase.END, rule_uuid="rule-b", source_uuid="s1"), _context(source_uuid="s1")
+        )
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        offered = collector.offer.await_args.args[0]
+        assert offered.provided.metadata.additional_info == {
+            "watch_rule_uuid": "rule-a",
+            "watch_event_started_at": "100.0",
+        }
+
+    async def test_the_newest_open_rule_wins_while_two_overlap(self):
+        """The flip side of the above: while both are genuinely open, the
+        most-recently-opened rule supplies provenance."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=0.0)
+
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-a", started_at=100.0, source_uuid="s1"),
+            _context(source_uuid="s1"),
+        )
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-b", started_at=200.0, source_uuid="s1"),
+            _context(source_uuid="s1"),
+        )
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        offered = collector.offer.await_args.args[0]
+        assert offered.provided.metadata.additional_info["watch_rule_uuid"] == "rule-b"
+
     async def test_continuous_mode_carries_no_provenance(self):
         """Regression guard: continuous mode (phase 4) has no session to
         describe, and must not stamp stale/empty provenance."""

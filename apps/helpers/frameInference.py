@@ -4,8 +4,16 @@ Phase 3 of COLLECTOR_UNIFICATION_PLAN.md (repo root). Both `StreamWatcherTask`
 and `TrainingCollector` used to hand-roll their own `BatchInferencePayload` +
 retry/timeout loop against the same endpoint. This extracts that into one
 call so a future consumer sharing a frame with another (a training collector
-attached to a watcher, phase 4) gets a real union — one `detect_batch`, one
+attached to a watcher) gets a real union — one `detect_batch`, one
 server-side decode+letterbox — instead of two round trips over the same JPEG.
+
+Phase 4 landed that attachment but **deliberately kept the two calls
+separate**: an attached collector still makes its own single-request
+`run_frame_inference` call rather than joining the watcher's. That deferral
+is intentional, not an oversight — see COLLECTOR_UNIFICATION_PLAN.md and
+`.claude/claude_docs/HANDOFF-collector-unification.md` for why. So the
+multi-request union path below is built and tested but not yet exercised in
+production; do not "clean it up" as dead code.
 
 `run_frame_inference` takes a *list* of requests and resolves them into one
 payload:
@@ -25,9 +33,9 @@ consumer's own per-label floor, so a consumer must prefilter the detections
 `for_models()` hands back to its OWN per-label floors before any O(n²) stage
 (the hierarchy merge, a cross-model ambiguity scan) — never run that work
 over the raw union-floor list. See NOTES.md §9: measured 63ms vs 18ms/7.6ms
-for exactly this prefilter on a 3-model stack. Phase 3 has only ever one
-requester per call, so this doesn't yet change any behaviour — it matters
-starting phase 4.
+for exactly this prefilter on a 3-model stack. Every call today still has
+exactly one requester (see above), so this doesn't yet change any behaviour —
+it matters as soon as a call carries two.
 """
 
 from __future__ import annotations

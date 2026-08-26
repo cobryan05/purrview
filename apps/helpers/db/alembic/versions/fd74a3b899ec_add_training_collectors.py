@@ -78,10 +78,11 @@ def upgrade() -> None:
         params = json.loads(raw_params) if isinstance(raw_params, str) else (raw_params or {})
         collector_params, loop_params = _split_params(params)
 
-        name = config_name or "Collector"
+        base_name = config_name or "Collector"
+        name = base_name
         suffix = 2
         while name in taken:
-            name = f"{config_name} ({suffix})"
+            name = f"{base_name} ({suffix})"
             suffix += 1
         taken.add(name)
 

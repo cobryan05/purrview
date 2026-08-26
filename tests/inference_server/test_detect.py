@@ -125,6 +125,41 @@ async def test_detect_batch_rejects_an_empty_model_list(http_client):
     assert resp.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "top_k",
+    [-5, 100000, {"yolo_test": -1}, {"yolo_test": 33}],
+    ids=["negative-scalar", "huge-scalar", "negative-in-dict", "over-limit-in-dict"],
+)
+async def test_detect_batch_rejects_an_out_of_range_top_k(http_client, top_k):
+    """The [0, 32] bound the single-image endpoint enforces applies to both
+    shapes of the batch endpoint's top_k. Widening the field to a union dropped
+    the Field(ge/le) bounds, which Pydantic cannot apply inside a dict anyway —
+    an unbounded ask reached the ONNX top-k/NMS selection unchecked."""
+    resp = await http_client.post(
+        "/api/models/detect-batch",
+        json={
+            "confThresh": 0.5,
+            "imageBase64": make_png_b64(),
+            "modelNames": ["yolo_test"],
+            "topK": top_k,
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_detect_batch_accepts_a_top_k_at_the_limit(http_client):
+    resp = await http_client.post(
+        "/api/models/detect-batch",
+        json={
+            "confThresh": 0.5,
+            "imageBase64": make_png_b64(),
+            "modelNames": ["yolo_test"],
+            "topK": {"yolo_test": 32},
+        },
+    )
+    assert resp.status_code == 200
+
+
 async def test_detect_batch_per_model_top_k_dict(manager, monkeypatch):
     """A dict top_k gives each model its own ask; a model missing from the
     dict gets 0 — today's scalar default — rather than inheriting a sibling's

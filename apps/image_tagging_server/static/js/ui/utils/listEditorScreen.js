@@ -3,6 +3,23 @@ import { initSplitResize } from '/app-static/js/ui/utils/splitResize.js';
 import { installUnsavedNavGuard } from '/app-static/js/ui/utils/unsavedNavGuard.js';
 
 /**
+ * Run a list/editor callback from a DOM listener.
+ *
+ * Every screen passes an `async` `_showForm` as `onNew`/`onClick`, and a DOM
+ * event listener cannot await its handler — so a rejection inside one (a params
+ * shape the schema doesn't cover, a failed fetch) became an unobserved promise
+ * and the editor pane just stayed blank with nothing in the console. Observe it
+ * here, once, instead of asking each caller to remember a `.catch`.
+ */
+function _invoke(fn) {
+  try {
+    Promise.resolve(fn()).catch((err) => console.error('List editor callback failed:', err));
+  } catch (err) {
+    console.error('List editor callback failed:', err);
+  }
+}
+
+/**
  * Assemble the list-beside-editor screen shared by Datasets, Model Shapes,
  * Training Runs, Filter Chains, Sources and Task Configs.
  *
@@ -110,7 +127,7 @@ export function createListEditorScreen({
   newBtn.type = 'button';
   newBtn.textContent = newLabel;
   newBtn.className = 'panel-btn panel-btn--block';
-  newBtn.addEventListener('click', () => onNew());
+  newBtn.addEventListener('click', () => _invoke(onNew));
   listFooter.appendChild(newBtn);
 
   // ── Drag handle ─────────────────────────────────────────────────────────
@@ -204,7 +221,7 @@ export function createListEditorScreen({
       item.appendChild(metaLine);
     }
 
-    if (onClick) item.addEventListener('click', () => onClick());
+    if (onClick) item.addEventListener('click', () => _invoke(onClick));
     return item;
   }
 

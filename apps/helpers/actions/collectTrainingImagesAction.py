@@ -52,7 +52,7 @@ a collected image back to the window it came from in review.
 
 import logging
 import time
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
 from ..training.collector import FrameOffer, TrainingCollector
@@ -93,16 +93,15 @@ class CollectTrainingImagesAction(Action):
         #: per camera — a doorbell and a litter-box camera on the same watcher
         #: must not share one clock.
         self._last_offered: Dict[str, float] = {}
-        #: source_uuid -> count of currently-open in-scope rule events. A count,
-        #: not a bool: two in-scope rules opening close together on one source
-        #: must not let the first one's END switch collection off while the
-        #: second is still open.
-        self._open_sessions: Dict[str, int] = {}
-        #: source_uuid -> (rule_uuid, event started_at) of the most recently
-        #: opened in-scope session, for provenance metadata. Last-opened wins if
-        #: two rules overlap — an approximation, not a precise per-rule
-        #: attribution, which the refcount above doesn't track separately.
-        self._session_provenance: Dict[str, Tuple[str, float]] = {}
+        #: source_uuid -> stack of (rule_uuid, event started_at) for the
+        #: currently-open in-scope rule events, oldest first. A stack, not a
+        #: bool: two in-scope rules opening close together on one source must
+        #: not let the first one's END switch collection off while the second
+        #: is still open. The top of the stack supplies provenance metadata —
+        #: last-opened wins while several overlap, but popping the ended rule
+        #: (rather than only decrementing a count) means a closed event never
+        #: keeps stamping its uuid onto a still-open one's frames.
+        self._open_sessions: Dict[str, List[Tuple[str, float]]] = {}
 
     @classmethod
     def triggers(cls, row: Any) -> Set[str]:
@@ -145,18 +144,26 @@ class CollectTrainingImagesAction(Action):
 
     def _on_event_start(self, signal: WatchEventSignal) -> ActionResult:
         key = signal.source_uuid or ""
-        self._open_sessions[key] = self._open_sessions.get(key, 0) + 1
-        self._session_provenance[key] = (signal.rule_uuid, signal.started_at)
+        self._open_sessions.setdefault(key, []).append((signal.rule_uuid, signal.started_at))
         return ActionResult(ok=True)
 
     def _on_event_end(self, signal: WatchEventSignal) -> ActionResult:
         key = signal.source_uuid or ""
-        self._open_sessions[key] = max(0, self._open_sessions.get(key, 0) - 1)
+        stack = self._open_sessions.get(key) or []
+        # Pop the entry this END belongs to, not simply the top: rule B can end
+        # while rule A is still open, and A's frames must keep A's provenance.
+        for idx in range(len(stack) - 1, -1, -1):
+            if stack[idx][0] == signal.rule_uuid:
+                stack.pop(idx)
+                break
+        else:
+            if stack:
+                stack.pop()
         return ActionResult(ok=True)
 
     async def _on_frame(self, context: ActionContext) -> ActionResult:
         key = context.source_uuid or ""
-        if not self._continuous and self._open_sessions.get(key, 0) <= 0:
+        if not self._continuous and not self._open_sessions.get(key):
             return ActionResult(ok=True, detail="no session open")
 
         collector = self._collector_for(self._collector_uuid)
@@ -171,9 +178,9 @@ class CollectTrainingImagesAction(Action):
         self._last_offered[key] = now
 
         additional_info: Dict[str, Any] = {}
-        provenance = self._session_provenance.get(key)
-        if not self._continuous and provenance is not None:
-            rule_uuid, started_at = provenance
+        stack = self._open_sessions.get(key) or []
+        if not self._continuous and stack:
+            rule_uuid, started_at = stack[-1]
             additional_info = {"watch_rule_uuid": rule_uuid, "watch_event_started_at": str(started_at)}
 
         frame = FrameOffer(
