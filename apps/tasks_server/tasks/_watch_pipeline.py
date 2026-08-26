@@ -256,6 +256,13 @@ class WatchPipeline:
     #: caller both ask "is this the frame I already have?" without comparing pixels —
     #: which is what keeps a 5 Hz poll of a 1 fps camera free.
     frame_seq: int = 0
+    #: The base64 JSON packet (`{"format","data","metadata"}`) actually sent to
+    #: inference for `last_frame` this pass. Not set by `prepare_frame` — it's
+    #: only known once `_service_source` has decided whether to reuse the
+    #: provider's own encoding or re-encode the analysis frame — so the task
+    #: assigns it directly. A `frame_analysed` action that wants to run its own
+    #: inference reuses this instead of re-encoding `last_full_frame`.
+    last_analysis_base64: Optional[str] = None
 
     @property
     def frame_interval_s(self) -> float:

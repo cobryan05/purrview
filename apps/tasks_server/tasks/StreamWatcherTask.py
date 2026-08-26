@@ -26,8 +26,10 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import db_client
@@ -54,6 +56,8 @@ from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
 from apps.helpers.tracking.Registry import create_tracker
 from apps.helpers.tracking.tracker import Detection
+from apps.helpers.training.collector import CollectorHost, TrainingCollector
+from apps.helpers.training.collectorSpec import CollectorSpec
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
@@ -61,8 +65,10 @@ from apps.helpers.watch.motion import MotionDetector
 from apps.helpers.watch.rules import RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
 
+from ._filter_chain_runner import FilterChainRunner
 from ._watch_event_recorder import NullWatchEventRecorder, WatchEventRecorder
 from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifetimes, resolve_model_names
+from .ApplyFilterChainTask import _CLASSIFIER_KINDS, _HttpInferenceBackend, _read_model_kind
 from .Registry import register_task
 from .Task import Task
 from .utils.labelHelper import build_label_ancestry_map, build_label_metadata_map
@@ -77,6 +83,10 @@ MQTT_ACTION_KINDS = frozenset({"publish_mqtt", "publish_mqtt_image"})
 #: The one action kind whose output is a playable clip, and so the only one that needs
 #: the rolling buffer, the drain and a detection overlay.
 CLIP_ACTION_KIND = "record_clip"
+#: The one action kind that owns a long-lived TrainingCollector rather than being
+#: stateless — see _build_actions' collector-construction pass, just before the
+#: per-row loop it also participates in.
+COLLECT_TRAINING_IMAGES_ACTION_KIND = "collect_training_images"
 #: Action kind → the `recordings.kind` its result becomes. Membership is what decides
 #: whether a result's `path` may become a `recordings` row at all: `save_snapshot` and
 #: `save_timelapse` both report a `path` too, and treating either as an event's video
@@ -164,6 +174,13 @@ class StreamWatcherTask(Task):
         # label_uuid, so without this every detection, track and live-view box would
         # be captioned with a raw UUID (or nothing at all).
         self._label_meta: Dict[str, Dict[str, Optional[str]]] = {}
+        # collector_uuid → TrainingCollector, for every `collect_training_images`
+        # action row this watcher has attached. Keyed on the collector, not the
+        # action row, so two rows naming the same collector (different source
+        # scopes) share one dedup index and one output directory instead of
+        # deduplicating against nothing. Built in _build_actions, torn down in
+        # _deinit.
+        self._collectors: Dict[str, TrainingCollector] = {}
         self._actions: List[tuple] = []
         # The `frame_analysed` subset, kept apart so the per-frame path can skip its
         # whole dispatch with one truth test. Every watcher pays that test 5x a second
@@ -501,6 +518,8 @@ class StreamWatcherTask(Task):
         elif needs_mqtt:
             self.log("An MQTT action is configured but no broker is set in Settings — publishes will be skipped")
 
+        await self._build_collectors(db_api_client)
+
         for row in sorted(self._profile.actions, key=lambda a: a.order):
             if not row.enabled:
                 continue
@@ -514,6 +533,11 @@ class StreamWatcherTask(Task):
                     # snapshot poller. Resolved at event time because a source's buffered
                     # flag isn't known until its provider has started, which is after this.
                     action = create_action(row.kind, backend_for=self._clip_backend_for, **params)
+                elif row.kind == COLLECT_TRAINING_IMAGES_ACTION_KIND:
+                    # A memoising lookup, not the collector itself: two rows can name the
+                    # same collector_uuid (different source scopes), and must share one
+                    # instance — see _build_collectors.
+                    action = create_action(row.kind, collector_for=self._collector_for, **params)
                 else:
                     action = create_action(row.kind, **params)
             except Exception as e:
@@ -534,6 +558,83 @@ class StreamWatcherTask(Task):
             self.log(f"Loaded {len(self._actions)} action(s)")
         if self._frame_actions:
             self.log(f"{len(self._frame_actions)} action(s) will run on every analysed frame")
+
+    async def _build_collectors(self, db_api_client: db_client.ApiClient) -> None:
+        """Build one `TrainingCollector` per distinct `collector_uuid` an enabled
+        `collect_training_images` row names.
+
+        Runs before the per-row action loop so `_collector_for` (handed to those
+        rows below) already has every collector this watcher needs. A collector
+        that's missing, disabled, or fails to build is logged and skipped — same
+        as an unknown action kind — because one bad attachment must not stop the
+        watcher's actual job (watching) from starting.
+        """
+        collector_uuids = {
+            row.params_json.get("collector_uuid")
+            for row in self._profile.actions
+            if row.enabled and row.kind == COLLECT_TRAINING_IMAGES_ACTION_KIND and row.params_json.get("collector_uuid")
+        }
+        if not collector_uuids:
+            return
+
+        api = db_client.TrainingCollectorsApi(db_api_client)
+        for collector_uuid in sorted(collector_uuids):
+            try:
+                response = await asyncio.to_thread(api.get_training_collector, collector_uuid)
+                if response.collector is None:
+                    raise ValueError(response.message or "not found")
+                if not response.collector.enabled:
+                    raise ValueError(f'collector "{response.collector.name}" is disabled')
+                spec = CollectorSpec.from_params(dict(response.collector.params or {}))
+                collector = TrainingCollector(
+                    spec,
+                    self._build_collector_host(),
+                    files_root=Path(os.environ.get("FILES_ROOT", "/app/image_datasets")),
+                    tag_scope_uuid=collector_uuid,
+                    tag_scope_name=response.collector.name,
+                    # The collector's queue must never back-pressure the watcher's
+                    # own frame loop — a stalled DB or slow disk must not be able to
+                    # make a watcher miss an event. See collector.py's module
+                    # docstring, "Backpressure".
+                    blocking_offer=False,
+                )
+                # Watcher-attached collectors have no resume/checkpoint concept of
+                # their own — a watcher restart starts every collector fresh.
+                await collector.prepare(resume_data=None)
+                await collector.start()
+                self._collectors[collector_uuid] = collector
+            except Exception as e:
+                logger.exception("Could not attach collector %s", collector_uuid)
+                self.log(f"Skipping collector {collector_uuid}: {e}")
+
+        if self._collectors:
+            self.log(f"Attached {len(self._collectors)} training collector(s)")
+
+    def _collector_for(self, collector_uuid: str) -> Optional[TrainingCollector]:
+        """The collector a `collect_training_images` row named, or None if it
+        failed to attach. A sync lookup, like `_clip_backend_for` — the collector
+        was already built (and started) in `_build_collectors`."""
+        return self._collectors.get(collector_uuid)
+
+    def _build_collector_host(self) -> CollectorHost:
+        """The narrow seam a TrainingCollector reaches the outside world through.
+
+        Identical in shape to `CollectTrainingImagesTask._build_collector_host` —
+        the collector is driver-agnostic by design, so a watcher supplies the same
+        pieces a task does. `helpers/` cannot import `tasks_server/`, so the
+        filter-chain pieces arrive as factories built from tasks_server-local
+        imports here, same as the task's own host.
+        """
+        return CollectorHost(
+            log=self.log,
+            db_api_client=self._manager.get_db_api_client,
+            inference_api_client=self._manager.get_inference_api_client,
+            stop_event=self._cancel_flag,
+            model_kind_reader=lambda name: _read_model_kind(name),
+            classifier_kinds=frozenset(_CLASSIFIER_KINDS),
+            build_inference_backend=lambda provider, pin_ids: _HttpInferenceBackend(provider, pin_ids),
+            build_filter_chain_runner=lambda steps, backend: FilterChainRunner(steps, backend),
+        )
 
     def _clip_backend_for(self, context: ActionContext):
         """Pick the clip backend for the source an event fired on.
@@ -1182,6 +1283,9 @@ class StreamWatcherTask(Task):
             base64_img = provided.encoded_b64
         else:
             base64_img = await asyncio.to_thread(base64_encode_jpg, analysed)
+        # A frame_analysed action (e.g. an attached training collector) that wants
+        # its own inference reuses this rather than re-encoding last_full_frame.
+        pipeline.last_analysis_base64 = base64_img
 
         # A fresh reading, not the `now` from before the fetch: a slow camera can make
         # that stale by seconds, and these timestamps are what the clip window indexes.
@@ -1625,6 +1729,8 @@ class StreamWatcherTask(Task):
             # outlived it. Empty for every event that closed inside the window, which is
             # what keeps the ordinary case on the ordinary single-cut path.
             clip_chunks=self._chunks_for_signal(signal),
+            frame_seq=pipeline.frame_seq if pipeline else None,
+            analysis_base64=pipeline.last_analysis_base64 if pipeline else None,
         )
 
     def _chunks_for_signal(self, signal) -> List[Any]:
@@ -1704,6 +1810,13 @@ class StreamWatcherTask(Task):
                 await action.close()
             except Exception:
                 logger.debug("Error closing action", exc_info=True)
+
+        for collector_uuid, collector in self._collectors.items():
+            try:
+                await collector.shutdown()
+            except Exception:
+                logger.debug("Error shutting down collector %s", collector_uuid, exc_info=True)
+
         if self._mqtt is not None:
             # Explicit lifecycle rather than __del__: a destructor-time disconnect
             # fires at GC's whim, which for a network client is unpredictable.

@@ -68,6 +68,16 @@ class ActionContext:
     #: of the clip. Supplied by the task, which owns the drain — see
     #: `apps.helpers.recordings.clipDrain`.
     clip_chunks: List[Any] = field(default_factory=list)
+    #: This frame's ordinal in the pipeline's own counter
+    #: (`WatchPipeline.frame_seq`). A training-collector action drives this into
+    #: its saved image's provenance instead of a collector-local counter, so a
+    #: watcher restart can't collide with a previous run's filenames.
+    frame_seq: Optional[int] = None
+    #: The exact base64 JSON packet (`{"format","data","metadata"}`) already sent
+    #: to inference for this frame — what a `frame_analysed` action's own
+    #: inference call, if it makes one, should reuse rather than re-encoding
+    #: `full_frame` from scratch.
+    analysis_base64: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 

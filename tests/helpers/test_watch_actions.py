@@ -8,7 +8,7 @@ an exception on the frame loop.
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import cv2
 import numpy as np
@@ -16,6 +16,7 @@ import pytest
 
 from apps.helpers.actions import outputDir, saveTimelapseAction
 from apps.helpers.actions.action import ActionContext, ActionResult
+from apps.helpers.actions.collectTrainingImagesAction import CollectTrainingImagesAction
 from apps.helpers.actions.mqttPublishAction import MqttPublishAction, slugify_topic
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
 from apps.helpers.actions.mqttPublishImageAction import MqttPublishImageAction
@@ -1050,3 +1051,107 @@ class TestTimelapseDirectoryTemplates:
         b = await action.run(_signal(), _context(frame=frame, source_uuid="s2", source_name="Front door"))
         assert Path(a.data["path"]).exists() and Path(b.data["path"]).exists()
         assert Path(a.data["path"]).parent != Path(b.data["path"]).parent
+
+
+class TestCollectTrainingImagesAction:
+    """The watcher-side half of collector attachment (phase 4,
+    COLLECTOR_UNIFICATION_PLAN.md). The collector runtime itself
+    (`TrainingCollector`) is exercised elsewhere — this only covers what the
+    action owns: resolving the collector, the per-source interval gate, and
+    building a correct `FrameOffer` out of an `ActionContext`.
+    """
+
+    def _action(self, collector=None, **overrides):
+        return CollectTrainingImagesAction(collector_for=lambda uuid: collector, **overrides)
+
+    def _full_frame_context(self, **overrides):
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        return _context(
+            full_frame=frame,
+            analysis_base64='{"format": "jpg", "data": "AA==", "metadata": {}}',
+            frame_seq=7,
+            **overrides,
+        )
+
+    async def test_registered_kind(self):
+        assert "collect_training_images" in action_registry
+        assert isinstance(
+            create_action("collect_training_images", collector_for=lambda uuid: None), CollectTrainingImagesAction
+        )
+
+    async def test_unresolvable_collector_fails_without_raising(self):
+        action = self._action(collector=None, collector_uuid="missing")
+        result = await action.run(_signal(), self._full_frame_context())
+        assert result.ok is False
+
+    async def test_no_frame_available_fails_without_raising(self):
+        collector = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1")
+        result = await action.run(_signal(), _context(full_frame=None, analysis_base64=None))
+        assert result.ok is False
+        collector.offer.assert_not_called()
+
+    async def test_first_offer_on_a_source_always_goes_through(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=10.0)
+
+        result = await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
+
+        assert result.ok is True
+        collector.offer.assert_awaited_once()
+
+    async def test_a_second_offer_inside_the_interval_is_skipped(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1000.0)
+
+        await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
+        await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
+
+        collector.offer.assert_awaited_once()
+
+    async def test_the_interval_is_tracked_per_source(self):
+        """A doorbell camera and a litter-box camera on the same watcher must not
+        share one clock — one being due must not suppress the other."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1000.0)
+
+        await action.run(_signal(), self._full_frame_context(source_uuid="s1"))
+        await action.run(_signal(), self._full_frame_context(source_uuid="s2"))
+
+        assert collector.offer.await_count == 2
+
+    async def test_min_interval_is_floored_not_merely_defaulted(self):
+        """plan §2.4: a collector offered every analysed frame would spend the
+        watcher's CPU on phashes and JPEG writes for ~95% near-duplicate data."""
+        action = self._action(collector=None, collector_uuid="c1", min_interval_s=0.0)
+        assert action._min_interval_s >= CollectTrainingImagesAction.MIN_INTERVAL_FLOOR_S
+
+    async def test_offer_carries_the_full_resolution_frame_and_provenance(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+        context = self._full_frame_context(source_uuid="s1", source_name="Back room")
+
+        await action.run(_signal(), context)
+
+        offered = collector.offer.await_args.args[0]
+        assert offered.provided.image is context.full_frame
+        assert offered.provided.metadata.source == "Back room"
+        assert offered.provided.metadata.source_uuid == "s1"
+        assert offered.provided.metadata.frame_idx == 7
+        assert offered.base64 == context.analysis_base64
+
+    async def test_a_raising_collector_fails_without_propagating(self):
+        """Action.run() must never raise — a broken collector is a reported
+        failure, not a reason to kill the frame loop (test_watch_actions.py's
+        own module docstring states this rule for every action)."""
+        collector = MagicMock()
+        collector.offer = AsyncMock(side_effect=RuntimeError("disk full"))
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        result = await action.run(_signal(), self._full_frame_context())
+
+        assert result.ok is False
