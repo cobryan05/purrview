@@ -30,6 +30,30 @@ _TINY_PNG = (
     b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
+# Stubs the notices stream so a test can expand #notices-bar on demand — mirrors
+# the fixture in test_notices_bar.py, duplicated here rather than imported so
+# this file stays runnable on its own.
+_FAKE_EVENT_SOURCE_SCRIPT = """
+  class FakeEventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+    static notices = null;
+
+    constructor(url) {
+      this.url = url;
+      this.readyState = FakeEventSource.OPEN;
+      this.onmessage = null;
+      this.onerror = null;
+      if (String(url).includes('/api/notices/stream')) FakeEventSource.notices = this;
+    }
+    close() { this.readyState = FakeEventSource.CLOSED; }
+    send(payload) { this.onmessage?.({ data: JSON.stringify(payload) }); }
+  }
+  window.FakeEventSource = FakeEventSource;
+  window.EventSource = FakeEventSource;
+"""
+
 
 # ---------------------------------------------------------------------------
 # Mocking helpers (mirrors the conventions in test_run_model_on_results.py)
@@ -907,6 +931,53 @@ class TestClosePanel:
         assert len(api.patch_bodies) == 1, api.patch_bodies
         _, body = api.patch_bodies[0]
         assert body["decision"] == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# 8b. Notices bar must not bury the footer
+# ---------------------------------------------------------------------------
+
+
+class TestModalNotClippedByNoticesBar:
+    """Regression: #notices-bar is fixed above the modal layer's z-index, and the
+    full-screen dialog used to size itself against the raw viewport — so once
+    the notices bar grew (several services unreachable at once), it hung over
+    the bottom of the panel and buried the accept/reject row where nothing
+    could click it."""
+
+    def test_accept_button_stays_above_an_expanded_notices_bar(self, page: Page, base_url: str):
+        page.add_init_script(_FAKE_EVENT_SOURCE_SCRIPT)
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        api.add_run(_make_run(), [_make_candidate("c1")])
+        api.install(page)
+        _open_panel(page, "run-1")
+
+        page.evaluate(
+            "(n) => FakeEventSource.notices.send(n)",
+            [
+                {"key": f"{name}_unreachable", "level": "warning", "message": f"{name} is not responding"}
+                for name in ["db_server", "inference_server", "tasks_server", "training_server", "stream_server"]
+            ],
+        )
+        expect(page.locator("#notices-bar")).to_be_visible()
+
+        # --bottom-bars-h (and the dialog height/overlay inset derived from it)
+        # is recomputed by a ResizeObserver callback on #bottom-bars, which fires
+        # a frame after the bar's own layout settles — not synchronously with the
+        # message above. Poll rather than read the boxes once.
+        accept_box, bar_box = None, None
+        for _ in range(40):
+            accept_box = page.get_by_test_id("preview-accept").bounding_box()
+            bar_box = page.locator("#notices-bar").bounding_box()
+            if accept_box["y"] + accept_box["height"] <= bar_box["y"] + 1:
+                break
+            page.wait_for_timeout(50)
+
+        accept_bottom = accept_box["y"] + accept_box["height"]
+        assert (
+            accept_bottom <= bar_box["y"] + 1
+        ), f"accept button bottom ({accept_bottom}) overlaps the notices bar top ({bar_box['y']})"
 
 
 # ---------------------------------------------------------------------------

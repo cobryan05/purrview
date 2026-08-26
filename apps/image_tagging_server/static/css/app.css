@@ -3929,6 +3929,11 @@ button.filter-active {
 .app-modal-overlay {
   position: fixed;
   inset: 0;
+  /* Reserve the fixed bottom bars' current height (--bottom-bars-h, kept live
+     by listEditorHeight.js) so centering happens within the space actually
+     free above them — otherwise a modal centered in the full viewport hangs
+     its bottom half under the bars, which sit at a higher z-index. */
+  bottom: var(--bottom-bars-h, 0px);
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
@@ -3960,10 +3965,15 @@ button.filter-active {
   max-height: 85vh;
 }
 
-/* Matches .compare-modal-dialog: a full working surface, not a dialog box. */
+/* Matches .compare-modal-dialog: a full working surface, not a dialog box.
+   Height is capped below --modal-h-full by the overlay's own (now-shrunk,
+   see .app-modal-overlay) height, not the raw viewport — otherwise a
+   90vh-tall dialog can still overshoot the space reserved above the fixed
+   bottom bars and hang its footer (e.g. the preview panel's accept/reject
+   row) underneath them. */
 .app-modal-dialog--full {
   width: var(--modal-w-full);
-  height: var(--modal-h-full);
+  height: min(var(--modal-h-full), calc(100% - 2rem));
   max-width: none;
   overflow: hidden;
 }
