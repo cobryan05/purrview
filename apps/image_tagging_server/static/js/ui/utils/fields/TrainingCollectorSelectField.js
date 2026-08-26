@@ -9,8 +9,13 @@ export class TrainingCollectorSelectField extends Field {
   static async create({ ...rest } = {}) {
     const instance = new TrainingCollectorSelectField({ ...rest });
     const collectorsMap = await fetchTrainingCollectors();
+    // Disabled collectors are hidden from new picks, but a task already pointing at one
+    // keeps showing it (labeled) rather than silently losing its selection.
+    const options = [...collectorsMap.values()]
+      .filter(c => c.enabled !== false || c.uuid === instance._value)
+      .map(c => ({ text: c.enabled === false ? `${c.name} (disabled)` : c.name, key: c.uuid }));
     instance._dropDownField = new DropDownField({
-      options: [...collectorsMap.values()].map(c => ({ text: c.name, key: c.uuid })),
+      options,
       value: instance._value,
       onChange: (val) => {
         instance._value = val;

@@ -742,7 +742,7 @@ export function openEventDetailModal(
       });
       savedHint.textContent = `Saved ${result.path}`;
       if (openCanvas) {
-        openOnCanvas(result);
+        await openOnCanvas(result);
       } else {
         toast('Frame saved for annotation', 4000);
         saveBtn.disabled = false;

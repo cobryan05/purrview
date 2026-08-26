@@ -6603,8 +6603,10 @@ class DbClient:
             if row is None:
                 return None
             changes = data.model_dump(exclude_unset=True, mode="json")
-            if "params" in changes:
-                row.params_json = changes.pop("params")
+            # params: None means "no change" (see TrainingCollectorUpdate) — an explicit
+            # null must not clear a non-nullable column, so only apply it when non-null.
+            if changes.pop("params", None) is not None:
+                row.params_json = data.params
             for key, value in changes.items():
                 setattr(row, key, value)
             row.updated_at = datetime.now(timezone.utc)

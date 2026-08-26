@@ -49,6 +49,11 @@ async function buildCollectorForm(container, collector, schema, { onAnyChange })
   descInput.placeholder = 'Optional';
   container.appendChild(makeFieldRow('Description', descInput));
 
+  const enabledCheckbox = document.createElement('input');
+  enabledCheckbox.type = 'checkbox';
+  enabledCheckbox.checked = collector?.enabled !== false;
+  container.appendChild(makeFieldRow('Enabled', enabledCheckbox));
+
   const schemaField = await SchemaField.create({
     schema,
     values: collector?.params ?? {},
@@ -63,6 +68,7 @@ async function buildCollectorForm(container, collector, schema, { onAnyChange })
   return {
     getName: () => nameInput.value.trim(),
     getDescription: () => descInput.value.trim(),
+    getEnabled: () => enabledCheckbox.checked,
     getParams: () => schemaField.getValue(),
   };
 }
@@ -143,6 +149,7 @@ export async function renderTrainingCollectorManager({ target = 'collector-manag
             const payload = {
               name,
               description: formHandle.getDescription(),
+              enabled: formHandle.getEnabled(),
               params: formHandle.getParams(),
             };
             if (collector) {

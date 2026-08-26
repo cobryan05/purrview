@@ -217,6 +217,8 @@ class CollectTrainingImagesTask(Task):
         response = await asyncio.to_thread(api.get_training_collector, collector_uuid)
         if response.collector is None:
             raise ValueError(f"Collector {collector_uuid} not found: {response.message or 'unknown error'}")
+        if not response.collector.enabled:
+            raise ValueError(f'Collector "{response.collector.name}" is disabled — enable it to run this task')
         return dict(response.collector.params or {})
 
     def _build_collector_host(self) -> CollectorHost:
