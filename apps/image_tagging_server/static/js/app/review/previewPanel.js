@@ -39,6 +39,7 @@ import {
   PreviewDecisionAction,
 } from '/app-static/js/shared/api/previewRuns.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { deleteImage as apiDeleteImage } from '/app-static/js/shared/api/images.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { expandLabelFilterSet } from '/app-static/js/app/review/filterPredicate.js';
@@ -441,6 +442,41 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   const resetBtn = _decisionButton('Unreview', 'preview-reset',
     'Put the selected candidates back to unreviewed', () =>
       _setDecision(_targets(), PreviewDecision.PENDING));
+  const deleteImageBtn = _decisionButton('Delete image', 'preview-delete-image',
+    'Permanently delete the image(s) behind the selected candidates — the whole file and every '
+    + 'annotation on it, not just this candidate', () => _deleteSelectedImages());
+  deleteImageBtn.classList.add('preview-panel__danger-btn');
+
+  /**
+   * Deletes the underlying image(s) for the current selection, not just the
+   * candidate — a candidate can only be rejected, but a harvested frame that
+   * turned out worthless (blur, empty, duplicate scenery) needs to be gone
+   * from the dataset entirely, and there was previously no way to do that
+   * without leaving the preview run for the Review tab and re-finding it there.
+   */
+  async function _deleteSelectedImages() {
+    const targets = _targets();
+    if (!targets.length) return;
+    const imageUuids = [...new Set(targets.map(c => c.imageUuid).filter(Boolean))];
+    if (!imageUuids.length) return;
+    const confirmed = await showConfirmModal({
+      title: imageUuids.length > 1 ? 'Delete images' : 'Delete image',
+      message: `Permanently delete ${imageUuids.length > 1 ? `${imageUuids.length} images` : 'this image'} `
+        + 'and every annotation on it? This cannot be undone.',
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await Promise.all(imageUuids.map(uuid => apiDeleteImage(uuid)));
+      toast(`Deleted ${imageUuids.length.toLocaleString()} image(s)`, 4000);
+      cardGrid.clearSelection();
+      await _reload(page);
+    } catch (err) {
+      Logger.error(err);
+      toast(`Failed to delete: ${err.message}`, 5000, 'error');
+    }
+  }
 
   // Bulk over the *filter*, not the page: "accept everything above 90%" should
   // not require paging through 40 pages checking boxes.
@@ -639,7 +675,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     const n = cardGrid.selected.size;
     selCount.textContent = n > 0 ? `${n.toLocaleString()} selected` : 'none selected';
     selCount.classList.toggle('preview-panel__selcount--active', n > 0);
-    for (const btn of [acceptBtn, acceptDeleteBtn, rejectBtn, resetBtn]) btn.disabled = n === 0;
+    for (const btn of [acceptBtn, acceptDeleteBtn, rejectBtn, resetBtn, deleteImageBtn]) btn.disabled = n === 0;
     bulkBtn.textContent = `Accept all (${totalCount.toLocaleString()})`;
     bulkBtn.disabled = totalCount === 0;
     const accepted = run?.decisionCounts?.[PreviewDecision.ACCEPTED] ?? 0;

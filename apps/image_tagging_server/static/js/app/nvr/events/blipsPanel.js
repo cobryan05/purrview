@@ -25,6 +25,8 @@ import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { fetchEventBlips, setEventBlipStates } from '/app-static/js/shared/api/eventBlips.js';
 import { blipKindText, describeBlip, harvestBlocker } from '/app-static/js/shared/domain/blips.js';
+import { TaskStatus } from '/app-static/js/shared/api/tasks.js';
+import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 
 const HARVEST_TYPENAME = 'HarvestBlipFramesTask';
 
@@ -238,24 +240,20 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
     if (!uuids.length) return;
     harvestBtn.disabled = true;
     try {
-      await launchRun({
+      const taskUuid = await launchRun({
         typename: HARVEST_TYPENAME,
         name: `Blip frames · ${event?.ruleName || 'event'}`,
         params: { blip_uuids: uuids },
       });
-      // Says where the result goes, because it does not appear here: the run writes a
-      // preview run, and the frames are triaged in Review. A toast that only said
-      // "started" would leave the user watching this panel for something that is never
-      // going to happen in it.
-      //
-      // It names Jobs rather than Review because that is the screen with the button:
-      // the finished run's card carries "Review harvested frames", which opens the run
-      // directly. "They will appear in Review" was true and still left people hunting.
+      // Says where the result goes even though the panel also auto-opens it: the
+      // watch below only fires while this page stays open, so a person who
+      // navigates away still needs a way to find the run later.
       toast(
-        `Harvesting frames from ${uuids.length} incident(s) — open the finished job in Jobs to review them, `
+        `Harvesting frames from ${uuids.length} incident(s) — the review panel will open when it's done, `
         + 'or find them any time under the "Harvested" image tag',
         7000,
       );
+      watchHarvest(taskUuid);
       // Not marked harvested here. The task sets that itself once frames have actually
       // landed, so a run that fails does not leave behind a record claiming otherwise.
       // Re-reading now shows the truth at this instant, which is still `new`.
@@ -265,6 +263,42 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
       toast('Could not start the harvest', 5000, 'error');
       harvestBtn.disabled = false;
     }
+  }
+
+  /**
+   * Opens the preview-triage modal itself the moment the harvest finishes, instead
+   * of leaving the user to notice a Jobs card and click "Review harvested frames".
+   * Best-effort only: this is a live SSE subscription tied to the current page, not
+   * a durable wait — if the tab is closed the harvest still finishes, it just has to
+   * be found via the toast's fallback routes instead.
+   */
+  function watchHarvest(taskUuid) {
+    const unsubscribe = subscribeTaskStream({
+      onMessage: async (data) => {
+        const taskInfo = data.tasks?.[taskUuid];
+        if (!taskInfo) return;
+        const status = taskInfo.instance?.status;
+        if (status !== TaskStatus.COMPLETED && status !== TaskStatus.ERROR) return;
+        unsubscribe();
+
+        if (status === TaskStatus.ERROR) {
+          toast(`Harvest failed: ${taskInfo.instance?.errorMessage || 'unknown error'}`, 6000, 'error');
+          return;
+        }
+        const runUuid = taskInfo.instance?.result?.previewRunUuid;
+        if (!runUuid) {
+          toast('Harvest finished — no frames to review', 5000);
+          return;
+        }
+        try {
+          const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
+          await openPreviewRunModal({ runUuid });
+        } catch (err) {
+          Logger.error(err);
+        }
+      },
+      onError: (err) => Logger.error(err),
+    });
   }
 
   async function dismiss() {

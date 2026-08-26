@@ -3453,6 +3453,11 @@ button.filter-active {
   margin-bottom: 0;
 }
 
+.preview-panel__danger-btn:not(:disabled) {
+  border-color: var(--color-danger, #f87171);
+  color: var(--color-danger, #f87171);
+}
+
 .preview-panel__conf {
   display: flex;
   align-items: center;
