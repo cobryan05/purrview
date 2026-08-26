@@ -283,6 +283,7 @@ export function openEventDetailModal(
   //: media pane wholesale, so nothing calls a per-button destroy.
   let _fullscreenSyncs = [];
   let saveBtn = null;
+  let annotateBtn = null;
   let mediaSwitcher = null;
   //: Object URL of a mid-event timelapse preview, held so it can be revoked. The
   //: browser keeps a blob alive until it is, and these are whole videos.
@@ -571,8 +572,10 @@ export function openEventDetailModal(
         mediaPane.appendChild(line);
       }
       const tools = el('div', 'event-detail__tools');
-      saveBtn = button('Save frame for annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
+      saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
+      annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
       tools.appendChild(saveBtn);
+      tools.appendChild(annotateBtn);
       tools.appendChild(savedHint);
       mediaPane.appendChild(tools);
       void attachOverlay(recording, tools);
@@ -602,8 +605,10 @@ export function openEventDetailModal(
     }
 
     const tools = el('div', 'event-detail__tools');
-    saveBtn = button('Save frame for annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
+    saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
+    annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
     tools.appendChild(saveBtn);
+    tools.appendChild(annotateBtn);
     tools.appendChild(savedHint);
     mediaPane.appendChild(tools);
 
@@ -704,7 +709,7 @@ export function openEventDetailModal(
     return { boxes, frameWidth: frame.width, frameHeight: frame.height };
   }
 
-  async function saveFrame() {
+  async function saveFrame({ openCanvas = false } = {}) {
     if (!video) return;
     // Captured off the `<video>`, which is the raw clip — the boxes live on a canvas
     // above it and are never composited in. That is what makes this safe to feed
@@ -716,6 +721,7 @@ export function openEventDetailModal(
       return;
     }
     saveBtn.disabled = true;
+    annotateBtn.disabled = true;
     try {
       const camera = sourceNames.get(event.sourceUuid) || 'camera';
       const result = await saveFrameForAnnotation({
@@ -735,19 +741,21 @@ export function openEventDetailModal(
         },
       });
       savedHint.textContent = `Saved ${result.path}`;
-      toast('Frame saved for annotation', 4000);
-      await offerToOpenOnCanvas(result);
+      if (openCanvas) {
+        openOnCanvas(result);
+      } else {
+        toast('Frame saved for annotation', 4000);
+        saveBtn.disabled = false;
+        annotateBtn.disabled = false;
+      }
     } catch (err) {
       Logger.error(err);
-    } finally {
       saveBtn.disabled = false;
+      annotateBtn.disabled = false;
     }
   }
 
-  /** Same offer the Live view makes — saving is nearly always the first half of
-   * "…so I can annotate it", and Files is several steps away from here.
-   *
-   * Opens a self-contained canvas modal in place, rather than switching the main
+  /** Opens a self-contained canvas modal in place, rather than switching the main
    * tab to Annotate: this modal sits on top of the event detail modal (which it
    * closes), and closing it drops the user straight back onto the Event Review
    * grid at whatever scroll position they left it — switching tabs used to lose
@@ -758,16 +766,13 @@ export function openEventDetailModal(
    * canvas modal — save, cancel, or delete-image — reopens this same event via
    * `navContext.onClose`, reseeked to the moment the user was watching. Without
    * that, "annotate one frame" would silently strand the reviewer back on the
-   * grid instead of where the clip was playing. */
-  async function offerToOpenOnCanvas(result) {
+   * grid instead of where the clip was playing.
+   *
+   * Boxes are not passed in directly — `showCanvasModal` loads the image by
+   * filename and reads back whatever was just persisted by `saveFrameForAnnotation`,
+   * so the detections saved above (tagged unverified) show up pre-placed. */
+  async function openOnCanvas(result) {
     if (!result?.path) return;
-    const open = await showConfirmModal({
-      title: 'Open this frame?',
-      message: `Saved ${result.path}. Open it on the annotation canvas now?`,
-      confirmText: 'Open on canvas',
-      cancelText: 'Keep reviewing',
-    });
-    if (!open) return;
     const resumeAtS = video?.currentTime ?? null;
     shell.close();
     const [{ showCanvasModal }, labels] = await Promise.all([

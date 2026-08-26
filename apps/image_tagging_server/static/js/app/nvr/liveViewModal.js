@@ -21,10 +21,10 @@
  *  - `sinceSeq` means a poll faster than the camera transfers no image bytes;
  *  - polling stops entirely while the tab is hidden or the view is paused.
  */
-import { createModalShell, Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
+import { createModalShell, Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { fetchTaskLivePreview } from '/app-static/js/shared/api/tasks.js';
-import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 // Shared with the Live card thumbnails: the same box must mean the same thing in the
 // overview and in this drill-down. See overlay.js.
 import {
@@ -291,8 +291,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   shell.dialog.appendChild(footer);
 
   footer.appendChild(checkbox('with detected boxes', true, v => { state.saveWithBoxes = v; }, 'watch-live-save-boxes'));
-  const saveBtn = button('Save frame for annotation', () => void saveFrame(), { testid: 'watch-live-save' });
+  const saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'watch-live-save' });
   footer.appendChild(saveBtn);
+  const annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'watch-live-annotate' });
+  footer.appendChild(annotateBtn);
   const savedHint = el('span', 'panel-hint');
   savedHint.dataset.testid = 'watch-live-saved-hint';
   footer.appendChild(savedHint);
@@ -594,7 +596,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
 
   // ---------------------------------------------------------------- save
 
-  async function saveFrame() {
+  async function saveFrame({ openCanvas = false } = {}) {
     if (!state.frameBlob) {
       toast('No frame to save yet', 3000, 'error');
       return;
@@ -605,6 +607,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     // or a frame saved in full res gets its annotations in the top-left quarter.
     const k = overlayScale(preview);
     saveBtn.disabled = true;
+    annotateBtn.disabled = true;
     try {
       const result = await saveFrameForAnnotation({
         blob: state.frameBlob,
@@ -628,40 +631,43 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
         },
       });
       savedHint.textContent = `Saved ${result.path}${result.boxesSaved ? ` (${result.boxesSaved} boxes)` : ''}`;
-      toast(`Frame saved for annotation${result.boxesSaved ? ` with ${result.boxesSaved} boxes` : ''}`, 4000);
-      await offerToOpenOnCanvas(result);
+      if (openCanvas) {
+        await openOnCanvas(result);
+      } else {
+        toast(`Frame saved for annotation${result.boxesSaved ? ` with ${result.boxesSaved} boxes` : ''}`, 4000);
+        saveBtn.disabled = false;
+        annotateBtn.disabled = false;
+      }
     } catch (err) {
       Logger.error(err);
-    } finally {
       saveBtn.disabled = false;
+      annotateBtn.disabled = false;
     }
   }
 
   /**
-   * Saving a frame is nearly always the first half of "…so I can annotate it", but the
-   * other half — find it in Files, load it — is several steps away from a modal that is
-   * showing live video. Asking here closes that gap without deciding for the user: some
-   * captures are grabbed in a burst while watching, and being yanked off the camera
-   * after each one would be worse than the walk to Files.
+   * Opens a self-contained canvas modal in place, on top of the live view (which it
+   * closes) — mirrors the event-detail drill-down's "Annotate Image" so a captured
+   * frame is indistinguishable from one captured there.
    *
-   * @param {{path: string, boxesSaved: number}} result
+   * Boxes are not passed in directly — `showCanvasModal` loads the image by filename
+   * and reads back whatever `saveFrameForAnnotation` just persisted, so the detections
+   * saved above (tagged unverified) show up pre-placed, ready to confirm or correct.
+   *
+   * @param {{path: string, uuid: string, boxesSaved: number}} result
    */
-  async function offerToOpenOnCanvas(result) {
+  async function openOnCanvas(result) {
     if (!result?.path) return;
-    const open = await showConfirmModal({
-      title: 'Open this frame?',
-      message: `Saved ${result.path}${result.boxesSaved ? ` with ${result.boxesSaved} detected box${result.boxesSaved === 1 ? '' : 'es'}` : ''}. Open it on the annotation canvas now?`,
-      confirmText: 'Open on canvas',
-      cancelText: 'Keep watching',
-    });
-    if (!open) return;
-    // Closed first: the canvas is behind this dialog, and the live view keeps polling
+    // Closed first: the canvas is behind this modal, and the live view keeps polling
     // frames the user is no longer looking at until it is.
     shell.close();
-    // Not LOAD_IMAGE_ONTO_CANVAS directly: that subscription belongs to Annotate's lazy
-    // init, and from the NVR tab Annotate may never have been opened. app/main.js
-    // focuses it and forwards once the canvas exists.
-    events.publish(EventTypes.OPEN_IMAGE_ON_MAIN_CANVAS, { path: result.path });
+    const [{ showCanvasModal }, labels] = await Promise.all([
+      import('/app-static/js/app/review/main.js'),
+      fetchLabels().catch(() => new Map()),
+    ]);
+    const img = { uuid: result.uuid, filename: result.path, bboxes: [] };
+    const navContext = { items: [], startIndex: 0 };
+    showCanvasModal(null, img, labels, async () => {}, navContext, { allowNavigation: false });
   }
 
   // ---------------------------------------------------------------- lifecycle

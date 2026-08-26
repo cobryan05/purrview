@@ -17,7 +17,6 @@ Run with:
 """
 
 import json
-import re
 
 from playwright.sync_api import Page, expect
 
@@ -503,39 +502,53 @@ class TestSaveFrameForAnnotation:
         # with an empty list — which on this endpoint means "delete every box".
         assert "metadata" not in captured
 
-    def test_offers_to_open_the_saved_frame_on_the_canvas(self, page: Page, base_url: str):
-        """Saving is nearly always the first half of "…so I can annotate it".
-
-        Accepting has to work from the NVR tab with Annotate never opened, which is the
-        case that a bare LOAD_IMAGE_ONTO_CANVAS publish silently loses (its subscriber
-        belongs to Annotate's lazy init).
-        """
+    def test_annotate_image_opens_the_saved_frame_on_the_canvas(self, page: Page, base_url: str):
+        """ "Annotate Image" saves the frame and immediately opens it for editing —
+        no confirmation step, and no tab switch: the canvas modal opens in place
+        over the live view."""
         captured: dict = {}
         _mock_nvr(page)
         self._mock_save_endpoints(page, captured)
+        # The canvas modal loads the just-saved image by path via /api/images/*/file
+        # before it will render — without this it fails closed with a load error.
+        page.route(
+            "**/api/images/*/file",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "imageBase64": FRAME_B64,
+                        "mimeType": "image/jpeg",
+                        "image": {"uuid": "frame-uuid-1", "filename": "watch_captures/frame.jpg", "bboxes": []},
+                    }
+                ),
+            ),
+        )
         _open_live_view(page, base_url)
 
-        page.locator("[data-testid='watch-live-save']").click()
-        page.get_by_role("button", name="Open on canvas").click()
+        page.locator("[data-testid='watch-live-annotate']").click()
 
         # The live view closes: the canvas is behind it, and a hidden view that keeps
         # polling frames is bytes nobody is looking at.
         expect(page.locator("[data-testid='watch-live-dialog']")).to_have_count(0, timeout=5000)
-        expect(page.locator(".main-tab-button[data-tab='tab-image-tagging']")).to_have_class(
-            re.compile(r"\bactive\b"), timeout=5000
-        )
-        expect(page.locator("#tab-image-tagging .canvas-container")).to_be_visible(timeout=5000)
+        expect(page.locator("[data-testid='canvas-edit-modal-dialog']")).to_be_visible(timeout=5000)
 
-    def test_declining_leaves_the_live_view_watching(self, page: Page, base_url: str):
-        """Captures are often grabbed in a burst; being yanked off the camera each
-        time would be worse than the walk to Files."""
+    def test_save_for_annotation_does_not_open_the_canvas(self, page: Page, base_url: str):
+        """ "Save For Annotation" is the quiet path: captures are often grabbed in a
+        burst while watching, and being yanked off the camera each time would be
+        worse than the walk to Files later."""
         captured: dict = {}
         _mock_nvr(page)
         self._mock_save_endpoints(page, captured)
         _open_live_view(page, base_url)
 
         page.locator("[data-testid='watch-live-save']").click()
-        page.get_by_role("button", name="Keep watching").click()
+        expect(page.locator("[data-testid='watch-live-saved-hint']")).to_contain_text(
+            "watch_captures/frame.jpg", timeout=5000
+        )
 
         expect(page.locator("[data-testid='watch-live-dialog']")).to_be_visible()
         expect(page.locator("[data-testid='watch-live-canvas']")).to_be_visible()
+        expect(page.locator("[data-testid='canvas-edit-modal-dialog']")).to_have_count(0)
