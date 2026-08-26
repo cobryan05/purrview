@@ -34,7 +34,7 @@ from apps.helpers.modelFormat import (
 )
 from apps.helpers.modelStaging import STAGING_SUBDIR
 from apps.helpers.serviceStatus import fmt_bytes, fmt_duration, row, section
-from apps.helpers.yoloUtils import load_yolo_onnx
+from apps.helpers.yoloUtils import get_input_shape_from_file, load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)
@@ -147,6 +147,10 @@ class Manager:
         # model_path -> (sidecar mtime_ns, class name -> label_uuid). See
         # get_models_classes(); keyed on mtime so it self-invalidates on edit.
         self._class_map_cache: Dict[str, Tuple[int, Dict[str, Optional[str]]]] = {}
+        # model_path -> (weights mtime_ns, (height, width) | None). Keyed on the
+        # .onnx itself, not its sidecar — the shape lives in the graph, not the
+        # JSON — and self-invalidates the same way _class_map_cache does on retrain.
+        self._input_shape_cache: Dict[str, Tuple[int, Optional[Tuple[int, int]]]] = {}
         self._config = {"service": APPS.INFERENCE_SERVER, "models_path": models_path}
         self._started_at = time.time()
 
@@ -246,6 +250,28 @@ class Manager:
             except FileNotFoundError:
                 continue
         return ret
+
+    async def get_model_input_shape(self, model_name: str) -> Optional[Tuple[int, int]]:
+        """(height, width) the model's ONNX graph declares, without pinning it.
+
+        Reads the graph directly (apps.helpers.yoloUtils.get_input_shape_from_file)
+        rather than loading a session — callers use this to size what they send
+        BEFORE deciding whether an inference is even worth running. None means
+        either the model isn't available or its graph declares a dynamic shape.
+        """
+        model_path = self._avail_models.get(model_name)
+        if model_path is None:
+            return None
+
+        cached = self._input_shape_cache.get(model_path)
+        weights_mtime = await self._weights_mtime_ns(model_path)
+        if cached is not None and weights_mtime is not None and cached[0] == weights_mtime:
+            return cached[1]
+
+        shape = await asyncio.to_thread(get_input_shape_from_file, model_path)
+        if weights_mtime is not None:
+            self._input_shape_cache[model_path] = (weights_mtime, shape)
+        return shape
 
     @staticmethod
     async def _sidecar_mtime_ns(model_path: str) -> Optional[int]:
@@ -725,6 +751,7 @@ class Manager:
         image: np.ndarray,
         conf_thresh: float,
         pin_ids: Optional[Dict[str, str]] = None,
+        top_k: Union[int, Dict[str, int]] = 0,
         **kwargs,
     ) -> Dict[str, Union[InferenceResult, str]]:
         """Run several models over ONE image, doing the shared work once.
@@ -764,6 +791,7 @@ class Manager:
                     conf_thresh=conf_thresh,
                     pin_id=pin_ids.get(name),
                     shared_pre=shared_pre,
+                    top_k=top_k.get(name, 0) if isinstance(top_k, dict) else top_k,
                     **kwargs,
                 )
             except Exception as e:

@@ -39,7 +39,6 @@ from db_client.api.watch_profiles_api import WatchProfilesApi
 from db_client.models.get_source_regions_payload import GetSourceRegionsPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.batch_inference_payload import BatchInferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.actions.action import ActionContext
@@ -49,6 +48,7 @@ from apps.helpers.actions.recordEventTimelapseAction import sweep_frame_buffers
 from apps.helpers.actions.Registry import create_action
 from apps.helpers.consts import JsonValues, TaskAccent, TaskStatus
 from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_and_hierarchy
+from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.imageUtils import base64_encode_jpg
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
@@ -808,46 +808,27 @@ class StreamWatcherTask(Task):
         if not model_names:
             return []
 
-        async def _run_stack() -> List[list]:
-            # ONE request for the whole stack. Built once, outside the retry loop
-            # and outside the try. A malformed payload is a programming error, not
-            # a transient inference failure, and building it inside the
-            # `except Exception` below is exactly how this call spent its first
-            # week returning zero detections on every frame.
-            payload = BatchInferencePayload(
-                image_base64=base64_img,
-                model_names=list(model_names),
-                pin_ids={n: p for n in model_names if (p := self._pin_ids.get(n))},
-                conf_thresh=self._INFERENCE_CONF_FLOOR,
-            )
-            for attempt in range(self._MAX_RETRIES):
-                try:
-                    resp = await asyncio.wait_for(
-                        asyncio.to_thread(inference_api.detect_batch, payload),
-                        timeout=self._INFERENCE_TIMEOUT_S,
-                    )
-                    results = resp.results or {}
-                    for name, message in (resp.errors or {}).items():
-                        logger.error("Inference error on model %s: %s", name, message)
-                    # Rebuilt from model_names, NOT by iterating the response: the
-                    # merge below is FIRST_WINS, so the order of this list decides
-                    # which model's label survives an overlap. Taking it from the
-                    # response would make that depend on mapping order across two
-                    # serializers rather than on the stack's configured priority.
-                    # A model that failed contributes an empty list, keeping the
-                    # positions of the ones that succeeded intact.
-                    return [list(getattr(results.get(n), "detections", None) or []) for n in model_names]
-                except asyncio.TimeoutError:
-                    if attempt == self._MAX_RETRIES - 1:
-                        self.log("Inference timed out — skipping frame")
-                except Exception:
-                    logger.exception("Inference error on model stack %s", list(model_names))
-                    break
-            return [[] for _ in model_names]
+        request = FrameInferenceRequest(
+            model_names=list(model_names),
+            conf_floor=self._INFERENCE_CONF_FLOOR,
+            pin_ids={n: p for n in model_names if (p := self._pin_ids.get(n))},
+        )
 
         started = time.perf_counter()
-        results_per_model = await _run_stack()
+        result = await run_frame_inference(
+            inference_api,
+            base64_img,
+            [request],
+            timeout_s=self._INFERENCE_TIMEOUT_S,
+            max_retries=self._MAX_RETRIES,
+            log=self.log,
+        )
         self._record_inference_time((time.perf_counter() - started) * 1000.0)
+        # Rebuilt from model_names, NOT by iterating the response: the merge
+        # below is FIRST_WINS, so the order of this list decides which model's
+        # label survives an overlap — this is the watcher's own stack priority,
+        # never the union's (see frameInference.py's for_models() docstring).
+        results_per_model = result.for_models(model_names)
 
         merged = merge_detections_by_iou_and_hierarchy(
             results_per_model,

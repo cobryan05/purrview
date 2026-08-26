@@ -64,12 +64,12 @@ from db_client.models.tag_kind import TagKind as ApiTagKind
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
-from inference_client.models.batch_inference_payload import BatchInferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.detectionMerger import merge_detections_by_iou_and_hierarchy
+from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.hashUtils import (
     DEFAULT_BBOX_HASH_SIZE,
     DEFAULT_IMAGE_HASH_SIZE,
@@ -677,12 +677,10 @@ class TrainingCollector:
         async def _fetch_batch() -> dict:
             """One request for the whole model set; returns name -> result (or None).
 
-            Every model here runs over the SAME frame. Sent as one request per
-            model, the server base64-decoded and letterboxed that identical
-            image once per model — ~3.6 ms of decode each for a byte-identical
-            array, plus a full copy of the image on the wire per model. One
-            request lets it decode once and share the letterboxing across models
-            that agree on input size and anchor.
+            Every model here runs over the SAME frame. Sent through
+            `run_frame_inference` (apps/helpers/frameInference.py) so the server
+            decodes and letterboxes it once and shares that across models that
+            agree on input size and anchor, rather than once per model.
 
             Retries are per-batch rather than per-model: a timeout here means
             the inference server is not keeping up with the frame, which is not
@@ -690,52 +688,33 @@ class TrainingCollector:
             model that fails *individually* still comes back in `errors` and
             only costs its own detections.
             """
-            payload = BatchInferencePayload(
-                image_base64=base64_img,
+            request = FrameInferenceRequest(
                 model_names=list(spec.model_names),
-                conf_thresh=spec.min_all_conf,
+                conf_floor=spec.min_all_conf,
                 pin_ids={n: p for n in spec.model_names if (p := pin_ids.get(n))},
                 # Runner-up classes, asked for only when the confusable-detection
                 # feature is on so every other run keeps today's response size.
                 top_k=spec.ambiguity_top_k if spec.enable_ambiguity else 0,
             )
-            for _attempt in range(self.MAX_RETRIES):
-                try:
-                    t_start = time.perf_counter()  # PERF
-                    resp = await asyncio.wait_for(
-                        asyncio.to_thread(inference_api.detect_batch, payload),
-                        timeout=self.INFERENCE_TIMEOUT_S,
-                    )
-                    results = resp.results or {}
-                    # PERF BEGIN
-                    logger.debug(
-                        "Inference HTTP round-trip (batch of %d): %.1fms (%d detections total) "
-                        "[compare to processImage total= in inference_server log for HTTP overhead]",
-                        len(spec.model_names),
-                        1000 * (time.perf_counter() - t_start),
-                        sum(len(getattr(r, "detections", None) or []) for r in results.values()),
-                    )
-                    # PERF END
-                    for name, message in (resp.errors or {}).items():
-                        logger.error("Inference error on model %s: %s", name, message)
-                    return results
-                except asyncio.TimeoutError:
-                    if _attempt < self.MAX_RETRIES - 1:
-                        logger.warning(
-                            "Inference timeout on model batch (attempt %d/%d), retrying",
-                            _attempt + 1,
-                            self.MAX_RETRIES,
-                        )
-                    else:
-                        logger.warning(
-                            "Inference timed out %d times for the model batch, skipping frame",
-                            self.MAX_RETRIES,
-                        )
-                        self._log(f"Inference timeout after {self.MAX_RETRIES} retries — skipping frame")
-                except Exception:
-                    logger.exception("Inference error on model batch")
-                    break  # don't retry on non-timeout exceptions
-            return {}
+            t_start = time.perf_counter()  # PERF
+            result = await run_frame_inference(
+                inference_api,
+                base64_img,
+                [request],
+                timeout_s=self.INFERENCE_TIMEOUT_S,
+                max_retries=self.MAX_RETRIES,
+                log=self._log,
+            )
+            # PERF BEGIN
+            logger.debug(
+                "Inference HTTP round-trip (batch of %d): %.1fms (%d detections total) "
+                "[compare to processImage total= in inference_server log for HTTP overhead]",
+                len(spec.model_names),
+                1000 * (time.perf_counter() - t_start),
+                sum(len(getattr(r, "detections", None) or []) for r in result.results.values()),
+            )
+            # PERF END
+            return result.results
 
         def _filter_model(name: str, result) -> list:
             """Per-model post-processing of one model's own detections.

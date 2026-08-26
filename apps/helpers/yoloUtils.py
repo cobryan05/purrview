@@ -3,12 +3,13 @@
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 if TYPE_CHECKING:
     import onnxruntime as ort
 
 import numpy as np
+import onnx
 
 import apps.helpers.metadataUtils as metadataUtils
 from apps.helpers.inferenceProviders.inferenceProvider import InferenceProvider
@@ -31,6 +32,36 @@ def sigmoid(x):
 def get_input_shape(session: "ort.InferenceSession") -> Tuple[int, int]:
     input_shape = session.get_inputs()[0].shape  # e.g. [1, 3, 640, 640]
     return int(input_shape[2]), int(input_shape[3])  # height, width
+
+
+def get_input_shape_from_file(model_path: str) -> Optional[Tuple[int, int]]:
+    """(height, width) read from the ONNX graph, without loading a session.
+
+    Mirrors get_input_shape() but works on a model that isn't pinned — no GPU
+    context, no provider load. Returns None rather than guessing if the graph
+    declares a dynamic height/width (no static dim_value on those axes).
+
+    Blocking (onnx.load reads the whole file); call under asyncio.to_thread
+    from async code, per apps.helpers.metadataUtils.get_onnx_metadata.
+
+    Never raises: a model file that's missing, unreadable, or not valid ONNX
+    (a test fixture's placeholder bytes, a mid-write file caught by a stat
+    race) is not a reason to fail a model-info request that also carries
+    device/label metadata that IS available — same "degrade to None, don't
+    guess" contract as the dynamic-shape case.
+    """
+    try:
+        model = onnx.load(model_path)
+        dims = model.graph.input[0].type.tensor_type.shape.dim
+        if len(dims) < 4:
+            return None
+        h_dim, w_dim = dims[2], dims[3]
+        if not h_dim.HasField("dim_value") or not w_dim.HasField("dim_value"):
+            return None
+        return int(h_dim.dim_value), int(w_dim.dim_value)
+    except Exception:
+        logger.debug("Could not read input_shape from %s", model_path, exc_info=True)
+        return None
 
 
 def load_yolo_onnx(model_path: str) -> InferenceProvider:

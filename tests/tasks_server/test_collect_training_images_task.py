@@ -4428,7 +4428,11 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([]))
         await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
-        assert inference_api.detect_batch.call_args.args[0].top_k == 0
+        # No requester asked for top_k > 0 on any model, so the union carries
+        # none — same "don't ask" contract as the old scalar 0, expressed as
+        # an empty per-model dict now that top_k is unioned across requesters
+        # (apps/helpers/frameInference.py).
+        assert inference_api.detect_batch.call_args.args[0].top_k.actual_instance == {}
 
     async def test_top_k_is_requested_when_the_feature_is_on(self):
         task = _make_task(params=_AMBIGUITY_PARAMS)
@@ -4436,7 +4440,7 @@ class TestAmbiguityAsAnIndependentSaveTrigger:
         inference_api = MagicMock(spec=InferenceApi)
         inference_api.detect_batch.side_effect = _batch_of(_result_with([]))
         await task._collector._run_inference(inference_api, "b64", {_MODEL_NAME: None})
-        assert inference_api.detect_batch.call_args.args[0].top_k == 3
+        assert inference_api.detect_batch.call_args.args[0].top_k.actual_instance == {_MODEL_NAME: 3}
 
 
 class TestAmbiguityAttributionSurvivesTheMerge:

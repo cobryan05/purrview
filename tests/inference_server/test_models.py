@@ -2,6 +2,8 @@ import json
 import os
 import time
 
+import onnx
+import onnx.helper as onnx_helper
 import pytest
 
 import apps.inference_server.manager as manager_module
@@ -145,6 +147,56 @@ async def test_get_model_meta_defaults_device_to_auto(http_client):
     data = resp.json()
     assert data["status"] == "success"
     assert data["device"] == "auto"
+
+
+def _write_onnx_with_static_shape(path, height: int, width: int) -> None:
+    inp = onnx_helper.make_tensor_value_info("images", onnx.TensorProto.FLOAT, [1, 3, height, width])
+    out = onnx_helper.make_tensor_value_info("out", onnx.TensorProto.FLOAT, [1, 84, 8400])
+    node = onnx_helper.make_node("Identity", ["images"], ["out"])
+    graph = onnx_helper.make_graph([node], "g", [inp], [out])
+    onnx.save(onnx_helper.make_model(graph), str(path))
+
+
+async def test_get_model_meta_input_shape_none_for_unparseable_onnx(http_client):
+    """`models_dir`'s fixtures are placeholder bytes, not real ONNX — the meta
+    endpoint must degrade to None rather than fail the whole response over a
+    field that's a bonus, not the reason for the call."""
+    resp = await http_client.get("/api/models/yolo_test/meta")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["inputShape"] is None
+
+
+async def test_get_model_meta_input_shape_from_real_onnx_graph(models_dir, mock_provider, monkeypatch):
+    _write_onnx_with_static_shape(models_dir / "yolo_test.onnx", 640, 480)
+    monkeypatch.setattr("apps.inference_server.manager.load_yolo_onnx", lambda path: mock_provider)
+    mgr = Manager(models_path=str(models_dir))
+    await mgr.list_models()
+
+    shape = await mgr.get_model_input_shape("yolo_test")
+
+    assert shape == (640, 480)
+
+
+async def test_get_model_input_shape_invalidates_on_retrain(models_dir, mock_provider, monkeypatch):
+    """A retrain replaces the .onnx with a new architecture; a stale cached
+    shape would silently mis-size everything downstream that trusts it."""
+    _write_onnx_with_static_shape(models_dir / "yolo_test.onnx", 640, 640)
+    monkeypatch.setattr("apps.inference_server.manager.load_yolo_onnx", lambda path: mock_provider)
+    mgr = Manager(models_path=str(models_dir))
+    await mgr.list_models()
+
+    assert await mgr.get_model_input_shape("yolo_test") == (640, 640)
+
+    time.sleep(0.01)  # ensure a distinct mtime_ns on filesystems with coarse resolution
+    _write_onnx_with_static_shape(models_dir / "yolo_test.onnx", 1280, 1280)
+
+    assert await mgr.get_model_input_shape("yolo_test") == (1280, 1280)
+
+
+async def test_get_model_input_shape_unknown_model_returns_none(manager):
+    assert await manager.get_model_input_shape("nonexistent") is None
 
 
 async def test_set_model_device(http_client, models_dir):

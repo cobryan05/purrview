@@ -1,5 +1,7 @@
+import numpy as np
 import pytest
 
+from apps.helpers.types import InferenceResult
 from tests.inference_server.conftest import make_png_b64
 
 
@@ -121,6 +123,48 @@ async def test_detect_batch_rejects_an_empty_model_list(http_client):
         json={"confThresh": 0.5, "imageBase64": make_png_b64(), "modelNames": []},
     )
     assert resp.status_code == 422
+
+
+async def test_detect_batch_per_model_top_k_dict(manager, monkeypatch):
+    """A dict top_k gives each model its own ask; a model missing from the
+    dict gets 0 — today's scalar default — rather than inheriting a sibling's
+    value or raising."""
+    captured: dict = {}
+
+    async def fake_recognize(model_name, image, conf_thresh, return_annotated_img=False, pin_id=None, **kwargs):
+        captured[model_name] = kwargs.get("top_k")
+        return InferenceResult(source_width=1, source_height=1, detections=[], inference_time=0.0)
+
+    monkeypatch.setattr(manager, "recognize", fake_recognize)
+
+    await manager.recognize_many(
+        model_names=["yolo_test", "yolo_test2"],
+        image=np.zeros((4, 4, 3), dtype=np.uint8),
+        conf_thresh=0.5,
+        top_k={"yolo_test": 3},
+    )
+
+    assert captured == {"yolo_test": 3, "yolo_test2": 0}
+
+
+async def test_detect_batch_scalar_top_k_applies_to_every_model(manager, monkeypatch):
+    """The plain-int form is unchanged: every model in the stack gets it."""
+    captured: dict = {}
+
+    async def fake_recognize(model_name, image, conf_thresh, return_annotated_img=False, pin_id=None, **kwargs):
+        captured[model_name] = kwargs.get("top_k")
+        return InferenceResult(source_width=1, source_height=1, detections=[], inference_time=0.0)
+
+    monkeypatch.setattr(manager, "recognize", fake_recognize)
+
+    await manager.recognize_many(
+        model_names=["yolo_test", "yolo_test2"],
+        image=np.zeros((4, 4, 3), dtype=np.uint8),
+        conf_thresh=0.5,
+        top_k=5,
+    )
+
+    assert captured == {"yolo_test": 5, "yolo_test2": 5}
 
 
 async def test_detect_batch_route_is_not_shadowed_by_the_model_name_route(http_client):

@@ -5,7 +5,7 @@ import base64
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -95,6 +95,11 @@ class ModelMetaResponse(StatusResponse):
     label_uuid: Optional[str] = None
     label_uuids: Optional[List[str]] = None
     device: str = "auto"
+    # (height, width) the model's ONNX graph declares; None if the model isn't
+    # found or its graph declares a dynamic shape. Lets a caller compute
+    # send_width = min(source_native_width, model_input_width) instead of
+    # guessing at a fixed downscale.
+    input_shape: Optional[Tuple[int, int]] = None
 
 
 class SetModelDevicePayload(Payload):
@@ -176,7 +181,14 @@ class BatchInferencePayload(Payload):
     # model name -> that caller's pin id. Per-model because pins are issued per
     # model, and a stack typically holds one for each.
     pin_ids: Dict[str, str] = Field(default_factory=dict)
-    top_k: int = Field(default=0, ge=0, le=32, description="See InferencePayload.top_k")
+    top_k: Union[int, Dict[str, int]] = Field(
+        default=0,
+        description=(
+            "See InferencePayload.top_k. A plain int applies to every model in "
+            "model_names, exactly as before. A dict gives each model its own ask; "
+            "a model name missing from the dict gets 0 (today's default)."
+        ),
+    )
     image_base64: str
 
 
@@ -425,12 +437,14 @@ class WebApp:
                 if config is None:
                     return ModelMetaResponse(status=JsonValues.FAILURE, message=f"Model '{model_name}' not found")
                 model_kind = config.get("model_kind", "detector")
+                input_shape = await self._manager.get_model_input_shape(model_name)
                 return ModelMetaResponse(
                     status=JsonValues.SUCCESS,
                     model_kind=model_kind,
                     label_uuid=config.get("label_uuid"),
                     label_uuids=config.get("label_uuids"),
                     device=config.get("device", "auto"),
+                    input_shape=input_shape,
                 )
             except Exception as e:
                 return ModelMetaResponse(status=JsonValues.FAILURE, message=str(e))
