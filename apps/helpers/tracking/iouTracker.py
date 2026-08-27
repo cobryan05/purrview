@@ -240,6 +240,13 @@ class IouTracker(Tracker):
         detections = [d for d in detections if d.confidence >= self._min_confidence]
         pairs, _, unmatched_dets = self._match(detections)
 
+        # Reset before the match loop: a track not in `pairs` below is exactly a
+        # track this call did not match — it survives on its TTL, coasting on
+        # the box/confidence it already had.
+        matched_t_idx = {t_idx for t_idx, _ in pairs}
+        for idx, track in enumerate(self._tracks):
+            track.matched_this_update = idx in matched_t_idx
+
         for t_idx, d_idx in pairs:
             track = self._tracks[t_idx]
             det = detections[d_idx]

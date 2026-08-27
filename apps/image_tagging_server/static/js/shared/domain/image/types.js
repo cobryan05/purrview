@@ -26,6 +26,7 @@
  * @property {boolean} selected
  * @property {boolean} dirty
  * @property {number} [confidence] - Inference confidence (0-1), shown on the label until the bbox is verified.
+ * @property {boolean} [flaggedForReview] - Detector-miss box whose interpolated position was ambiguous (another track was close); gates the second Verify-all press. Meaningful only while unverified.
  * @property {Object<string, any>} [metadataJson] - Raw bbox metadata, round-tripped on save so keys this client doesn't understand survive.
  */
 

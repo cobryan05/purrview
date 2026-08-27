@@ -38,6 +38,15 @@ CONFUSABLE_TAG_UUID = "00000000-0000-0000-0000-000000000006"
 # the "I harvest frames and then lose them" complaint. This tag survives all of
 # that, so "show me everything I have ever harvested" stays answerable.
 HARVESTED_TAG_UUID = "00000000-0000-0000-0000-000000000007"
+# Marks a bbox whose position came from the tracker, not the detector — a
+# confirmed track coasted for a frame or two, the detector missed it, and the
+# collector seeded the tracker's interpolated box instead of dropping the
+# frame (COLLECTOR_UNIFICATION_PLAN.md §4A). Bbox-scope like Confusable, and
+# for the same reason: it is a statement about one box, and NOT in the
+# "verification" group — a detector-miss box is unverified like any other
+# fresh detection, this tag only marks *why* it exists so it can be found and
+# prioritised in review.
+DETECTOR_MISS_TAG_UUID = "00000000-0000-0000-0000-000000000008"
 
 # System tags that used to exist and must never come back. A tags.json dumped
 # before the removing migration ran still lists them, and sync_tags_from_json()

@@ -291,6 +291,38 @@ class TestTrackModel:
         assert "labelUuid" in payload and "isAnchor" in payload
 
 
+class TestMatchedThisUpdate:
+    """`Track.matched_this_update` is the only reliable "did the detector miss
+    this specific track just now" signal — `last_seen` alone can't answer that
+    without the caller separately tracking `now` (COLLECTOR_UNIFICATION_PLAN.md
+    §4A, detector-miss collection)."""
+
+    def test_a_freshly_created_track_is_matched(self):
+        tracker = IouTracker(min_hits=1)
+        (track,) = tracker.update([_det(0, 0, 10, 10)], now=0.0)
+        assert track.matched_this_update is True
+
+    def test_a_track_re_matched_next_frame_stays_matched(self):
+        tracker = IouTracker(min_hits=1)
+        tracker.update([_det(0, 0, 10, 10)], now=0.0)
+        (track,) = tracker.update([_det(1, 1, 11, 11)], now=0.2)
+        assert track.matched_this_update is True
+
+    def test_a_coasting_track_is_reported_unmatched(self):
+        tracker = IouTracker(min_hits=1, max_age_s=5.0)
+        tracker.update([_det(0, 0, 10, 10)], now=0.0)
+        (track,) = tracker.update([], now=0.2)
+        assert track.matched_this_update is False
+
+    def test_re_acquisition_flips_it_back_to_matched(self):
+        tracker = IouTracker(min_hits=1, max_age_s=5.0)
+        tracker.update([_det(0, 0, 10, 10)], now=0.0)
+        (track,) = tracker.update([], now=0.2)
+        assert track.matched_this_update is False
+        (track,) = tracker.update([_det(1, 1, 11, 11)], now=0.4)
+        assert track.matched_this_update is True
+
+
 class TestRecoveryMargin:
     """The second, forgiving association pass.
 

@@ -67,7 +67,7 @@ from inference_client.api.models_api import ModelsApi
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.bboxUtils import iou_xywh
-from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
+from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, DETECTOR_MISS_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.detectionMerger import merge_detections_by_iou_and_hierarchy
 from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.hashUtils import (
@@ -136,6 +136,12 @@ class TrackedCrop:
     y: float
     width: float
     height: float
+    label_uuid: Optional[str] = None
+    #: Whether the tracker matched a real detection to this track on the frame
+    #: it was captured from — `False` means this is the frame of a detector-miss
+    #: gap (plan §4A). Defaults `True` so phase 6's per-track novelty callers
+    #: (which don't care about this) don't have to set it.
+    matched_this_update: bool = True
 
 
 @dataclass
@@ -278,6 +284,11 @@ class TrainingCollector:
         self._track_novelty_kept: int = 0
         self._track_novelty_dropped: int = 0
         self._track_worst_committed: int = 0
+        #: Detector-miss boxes saved via `offer_detector_miss` (plan §4A). Only
+        #: ever incremented by a watcher-attached collector with
+        #: `enable_detector_miss` on — the standalone task never calls this
+        #: method, having no tracker to supply a gap in the first place.
+        self._detector_miss_saved: int = 0
 
         self._last_capture: Optional[dict[str, Any]] = None
         self._filter_chain_runner: Any = None
@@ -704,6 +715,29 @@ class TrainingCollector:
                 await self._enqueue_for_dedup(held_frame, [held_det])
             else:
                 self._dispatch_save(held_frame, [held_det])
+
+    async def offer_detector_miss(self, frame: FrameOffer, det: Any) -> None:
+        """Save a tracker-supplied box on a detector-miss frame (plan §4A).
+
+        `det` is a synthetic detection built by the driver (the watch action) —
+        the tracker's box interpolated between the two real detections
+        bracketing the gap, confidence `None`. Bypasses inference (there is
+        nothing to run: the driver already decided this frame is worth
+        keeping) and per-track novelty (that prefilter reasons about repeated
+        *poses* of the same object; a detector-miss box is a one-off event, not
+        a pose sample). Still respects the collector's own dedup setting, the
+        same as `_commit_dead_track_worst` — "always keep" is about not losing
+        it to the novelty filter, not about exempting it from dedup policy.
+
+        Never called by the standalone task: it has no tracker, so it can never
+        observe a gap to seed a box for in the first place (plan §4A: "impossible
+        without temporal context").
+        """
+        self._detector_miss_saved += 1
+        if self._spec.enable_dedup:
+            await self._enqueue_for_dedup(frame, [det])
+        else:
+            self._dispatch_save(frame, [det])
 
     async def _enqueue_for_dedup(self, frame: FrameOffer, matching: list) -> None:
         assert self._dedup_queue is not None
@@ -1403,7 +1437,12 @@ class TrainingCollector:
             # metadata_json is a raw JSON blob whose inner keys are NOT run
             # through the camelCase alias generator — these stay snake_case on
             # both sides (see shared/domain/image/confidence.js).
-            bbox_meta: dict[str, Any] = {"confidence": str(det.confidence)}
+            # A detector-miss box (plan §4A) has no model score behind it — a
+            # synthetic confidence would let it sort/filter alongside real
+            # detections while lying about where it came from. `None` is
+            # already a first-class state (`confidence_in_band`'s
+            # `include_missing`), so neither metadata key is written at all.
+            bbox_meta: dict[str, Any] = {} if det.confidence is None else {"confidence": str(det.confidence)}
             # Written on EVERY box, not just confusable ones: a multi-model run
             # was previously an untraceable mix, and "which model produced this?"
             # is a precondition for answering "which model is confused?".
@@ -1902,6 +1941,8 @@ class TrainingCollector:
             stats["track_novelty_kept"] = self._track_novelty_kept
             stats["track_novelty_dropped"] = self._track_novelty_dropped
             stats["track_worst_committed"] = self._track_worst_committed
+        if self._detector_miss_saved:
+            stats["detector_miss_saved"] = self._detector_miss_saved
         if spec.enable_dedup:
             stats["dedup_checked"] = self._dedup_frames_checked
             stats["dedup_image_hits"] = self._dedup_image_hits
@@ -2031,6 +2072,22 @@ class TrainingCollector:
                         **scope,
                         "tag_uuids": [*(scope["tag_uuids"] or []), CONFUSABLE_TAG_UUID],
                         "bbox_verification": "any",
+                    },
+                }
+            )
+        if self._spec.enable_detector_miss:
+            # Always unverified — a detector-miss box is a fresh seed, never a
+            # confirmed one (plan §5: "unverified": narrower than confusable's
+            # "any", since a verified detector-miss box has already had its
+            # one human look).
+            actions.append(
+                {
+                    "type": "open_review",
+                    "label": "Browse detector misses",
+                    "payload": {
+                        **scope,
+                        "tag_uuids": [*(scope["tag_uuids"] or []), DETECTOR_MISS_TAG_UUID],
+                        "bbox_verification": "unverified",
                     },
                 }
             )

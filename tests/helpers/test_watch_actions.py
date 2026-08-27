@@ -29,7 +29,9 @@ from apps.helpers.actions.recordClipAction import (
 from apps.helpers.actions.Registry import action_registry, create_action
 from apps.helpers.actions.saveSnapshotAction import SaveSnapshotAction
 from apps.helpers.actions.saveTimelapseAction import SaveTimelapseAction
+from apps.helpers.db.db_client import DETECTOR_MISS_TAG_UUID
 from apps.helpers.tracking.tracker import Detection, Track
+from apps.helpers.training.collector import TrackedCrop
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
 
@@ -1412,3 +1414,144 @@ class TestCollectTrainingImagesActionEventScoped:
 
         offered = collector.offer.await_args.args[0]
         assert offered.provided.metadata.additional_info == {}
+
+
+def _detector_miss_collector(target_label="cat"):
+    collector = MagicMock()
+    collector.spec.enable_detector_miss = True
+    collector.spec.target_label_bands = {target_label: object()}
+    collector.offer_detector_miss = AsyncMock()
+    return collector
+
+
+def _track(track_id, bbox, label_uuid="cat", matched=True):
+    return Track(track_id=track_id, bbox=bbox, label_uuid=label_uuid, matched_this_update=matched)
+
+
+class TestDetectorMissGapTracking:
+    """Plan §4A: a confirmed track the detector missed for a frame or two is a
+    candidate for collection, if it re-acquires within a few frames. This
+    exercises `CollectTrainingImagesAction._process_track_gaps` directly —
+    the state machine that opens/extends/resolves/abandons a gap per track,
+    independent of the periodic offer's own interval gate.
+    """
+
+    _FRAME = np.zeros((100, 100, 3), dtype=np.uint8)  # 100x100, so pixel/100 = normalized
+
+    def _action(self):
+        return CollectTrainingImagesAction(collector_for=lambda uuid: None, collector_uuid="c1")
+
+    def _ctx(self, tracks, dead_track_ids=()):
+        return _context(source_uuid="s1", frame=self._FRAME, tracks=list(tracks), dead_track_ids=list(dead_track_ids))
+
+    async def test_a_coasting_track_opens_a_gap_without_offering(self):
+        action = self._action()
+        collector = _detector_miss_collector()
+        track = _track(1, (10, 10, 30, 30), matched=False)
+
+        await action._process_track_gaps("s1", collector, self._ctx([track]))
+
+        assert 1 in action._track_gaps["s1"]
+        collector.offer_detector_miss.assert_not_called()
+
+    async def test_reacquisition_commits_an_interpolated_box(self):
+        action = self._action()
+        collector = _detector_miss_collector()
+        before = _track(1, (10, 10, 30, 30), matched=False)
+        after = _track(1, (20, 20, 40, 40), matched=True)
+
+        await action._process_track_gaps("s1", collector, self._ctx([before]))
+        await action._process_track_gaps("s1", collector, self._ctx([after]))
+
+        collector.offer_detector_miss.assert_awaited_once()
+        frame, det = collector.offer_detector_miss.await_args.args
+        assert det.confidence is None
+        assert det.bbox.label_uuid == "cat"
+        assert DETECTOR_MISS_TAG_UUID in det.bbox.tag_uuids
+        # frame_count=1 (one coasting step) -> fraction 1/2 -> midpoint.
+        assert det.bbox.x == pytest.approx(0.15)
+        assert det.bbox.y == pytest.approx(0.15)
+        assert det.bbox.width == pytest.approx(0.2)
+        assert det.bbox.height == pytest.approx(0.2)
+        # The gap is fully forgotten once resolved.
+        assert "s1" not in action._track_gaps or 1 not in action._track_gaps["s1"]
+
+    async def test_a_gap_past_the_frame_cap_is_abandoned(self):
+        action = self._action()
+        collector = _detector_miss_collector()
+        coasting = _track(1, (10, 10, 30, 30), matched=False)
+
+        # One more coasting frame than MAX_GAP_FRAMES tolerates.
+        for _ in range(action.MAX_GAP_FRAMES + 1):
+            await action._process_track_gaps("s1", collector, self._ctx([coasting]))
+        await action._process_track_gaps("s1", collector, self._ctx([_track(1, (20, 20, 40, 40), matched=True)]))
+
+        collector.offer_detector_miss.assert_not_called()
+
+    async def test_track_death_drops_the_gap_without_committing(self):
+        action = self._action()
+        collector = _detector_miss_collector()
+        coasting = _track(1, (10, 10, 30, 30), matched=False)
+
+        await action._process_track_gaps("s1", collector, self._ctx([coasting]))
+        # The track is gone next frame — it left, it didn't blink.
+        await action._process_track_gaps("s1", collector, self._ctx([], dead_track_ids=[1]))
+
+        collector.offer_detector_miss.assert_not_called()
+        assert "s1" not in action._track_gaps or 1 not in action._track_gaps.get("s1", {})
+
+    async def test_a_track_outside_the_collectors_target_labels_is_ignored(self):
+        action = self._action()
+        collector = _detector_miss_collector(target_label="dog")
+        coasting = _track(1, (10, 10, 30, 30), label_uuid="cat", matched=False)
+
+        await action._process_track_gaps("s1", collector, self._ctx([coasting]))
+
+        assert not action._track_gaps.get("s1")
+
+    async def test_track_ids_are_scoped_per_source(self):
+        """Two cameras' trackers both mint track_id=1 independently — a gap on
+        one source must not resolve or interfere with the other's."""
+        action = self._action()
+        collector = _detector_miss_collector()
+        coasting = _track(1, (10, 10, 30, 30), matched=False)
+
+        await action._process_track_gaps("cam-a", collector, self._ctx([coasting]))
+
+        assert 1 in action._track_gaps["cam-a"]
+        assert "cam-b" not in action._track_gaps
+
+
+class TestAssociationAmbiguity:
+    """Plan §5's 'cheap and nearly-sufficient first cut': another live track
+    within ~2 box-widths of the coasting one's centre."""
+
+    def test_no_other_tracks_is_unambiguous(self):
+        action = CollectTrainingImagesAction(collector_for=lambda uuid: None, collector_uuid="c1")
+        crop = TrackedCrop(track_id=1, x=0.1, y=0.1, width=0.1, height=0.1)
+        assert action._is_association_ambiguous(crop, [crop]) is False
+
+    def test_a_nearby_track_is_ambiguous(self):
+        action = CollectTrainingImagesAction(collector_for=lambda uuid: None, collector_uuid="c1")
+        a = TrackedCrop(track_id=1, x=0.1, y=0.1, width=0.1, height=0.1)
+        b = TrackedCrop(track_id=2, x=0.15, y=0.1, width=0.1, height=0.1)  # centres 0.05 apart, threshold 0.2
+        assert action._is_association_ambiguous(a, [a, b]) is True
+
+    def test_a_distant_track_is_unambiguous(self):
+        action = CollectTrainingImagesAction(collector_for=lambda uuid: None, collector_uuid="c1")
+        a = TrackedCrop(track_id=1, x=0.1, y=0.1, width=0.1, height=0.1)
+        b = TrackedCrop(track_id=2, x=0.9, y=0.9, width=0.1, height=0.1)
+        assert action._is_association_ambiguous(a, [a, b]) is False
+
+    async def test_ambiguity_rides_onto_the_held_frames_provenance(self):
+        action = CollectTrainingImagesAction(collector_for=lambda uuid: None, collector_uuid="c1")
+        collector = _detector_miss_collector()
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        near = _track(1, (10, 10, 30, 30), matched=False)
+        other = _track(2, (12, 10, 32, 30), matched=True)  # nearly on top of track 1
+
+        ctx = _context(source_uuid="s1", frame=frame, tracks=[near, other])
+        await action._process_track_gaps("s1", collector, ctx)
+
+        held = action._track_gaps["s1"][1].held_frame
+        assert held.provided.metadata.additional_info["detector_miss_ambiguous"] is True

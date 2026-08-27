@@ -54,6 +54,14 @@ class Track:
     confirmed: bool = False
     #: True when this track's label is configured as an anchor and its box is latched.
     is_anchor: bool = False
+    #: Whether THIS `update()` call matched a real detection to this track, as
+    #: opposed to the track merely surviving its TTL while coasting. Not
+    #: recoverable from `last_seen` alone (that's the wallclock of the last
+    #: match, not a fact about the current call) — a caller that needs "did the
+    #: detector miss this track just now" (e.g. detector-miss collection,
+    #: COLLECTOR_UNIFICATION_PLAN.md §4A) needs this flag, not a `last_seen`
+    #: comparison against a float `now` it may not have to hand.
+    matched_this_update: bool = True
 
     def age_s(self, now: float) -> float:
         """Seconds since this track last matched a detection."""

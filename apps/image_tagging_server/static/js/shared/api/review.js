@@ -11,6 +11,9 @@ export const CONFUSABLE_TAG_UUID = '00000000-0000-0000-0000-000000000006';
 // belongs in an `imageTagUuids` filter, never a `tagUuids` (bbox) one — a
 // harvested frame has no bbox until its preview run is applied.
 export const HARVESTED_TAG_UUID = '00000000-0000-0000-0000-000000000007';
+// A bbox seeded from the tracker's interpolated position on a detector-miss
+// frame, not from a model detection. Bbox-scope, not a verification state.
+export const DETECTOR_MISS_TAG_UUID = '00000000-0000-0000-0000-000000000008';
 
 // Both are in the verification exclusive group — mutually exclusive per bbox
 export const VERIFICATION_TAG_UUIDS = new Set([UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID]);

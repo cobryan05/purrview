@@ -38,6 +38,7 @@ from apps.helpers.watch.events import EventCloseReason
 from .types import (
     BBOX_CONFIDENCE_METADATA_KEYS,
     CONFUSABLE_TAG_UUID,
+    DETECTOR_MISS_TAG_UUID,
     HARVESTED_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
     REJECTION_TAG_UUID,
@@ -196,6 +197,15 @@ _SYSTEM_TAGS = [
         # No icon: this one is applied to the *image*, and the canvas icon
         # renderer draws bbox tags. An icon here would never be seen.
         icon=None,
+    ),
+    Tag(
+        uuid=DETECTOR_MISS_TAG_UUID,
+        name="Detector Miss",
+        color="#d4a017",
+        kind=TagKind.SYSTEM,
+        exclusive_group=None,
+        protected=True,
+        icon="~",
     ),
 ]
 

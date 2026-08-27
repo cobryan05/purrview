@@ -4,6 +4,7 @@ import { BboxView } from '/app-static/js/app/image-tagging/canvas/views/bboxView
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { UNVERIFIED_TAG_UUID, VERIFIED_TAG_UUID, VERIFICATION_TAG_UUIDS } from '/app-static/js/shared/api/review.js';
 import { readConfidence } from '/app-static/js/shared/domain/image/confidence.js';
+import { readDetectorMissAmbiguous } from '/app-static/js/shared/domain/image/detectorMiss.js';
 
 /**
  * @typedef {import('./types.js').UIImage} UIImage
@@ -98,6 +99,12 @@ export function bboxReadToUI(bboxData) {
   const isUnverified = tags.some(t => t.uuid === UNVERIFIED_TAG_UUID);
   const confidence = isUnverified ? readConfidence(bboxData.metadataJson) : undefined;
 
+  // Same carve-out as confidence: only meaningful pre-verification (verifyAll
+  // is the only reader, and it only ever looks at unverified boxes), and only
+  // this one boolean survives the reload — not the raw metadataJson (see the
+  // comment on the `extra` omission below).
+  const flaggedForReview = isUnverified && readDetectorMissAmbiguous(bboxData.metadataJson);
+
   /** @type {import('./types.js').UIBbox} */
   const uiBbox = createUIBBbox({
     uuid: bboxData.uuid,
@@ -110,6 +117,7 @@ export function bboxReadToUI(bboxData) {
     selected: false,
     dirty: false,
     confidence,
+    flaggedForReview,
     // Deliberately NOT carried onto the UI model. The save payload's `extra` is
     // typed Dict[str, str] server-side, so echoing real metadata back (which
     // holds booleans and floats — run_model_added, source_confidence) would

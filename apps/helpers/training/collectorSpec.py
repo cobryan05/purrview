@@ -286,6 +286,12 @@ class CollectorSpec:
     bbox_dup_threshold: int = 8
     duplicate_action: str = "discard"
 
+    # ── detector-miss collection (plan §4A, watcher-only) ─────────────────────
+    #: Off by default: only meaningful for a watcher-attached collector (needs a
+    #: tracker), and even there it changes what gets saved, so it's opt-in
+    #: rather than a silent behaviour change for existing configs.
+    enable_detector_miss: bool = False
+
     @property
     def target_label_bands(self) -> Dict[str, ConfidenceBand]:
         return {t.label_uuid: t.band for t in self.target_labels}
@@ -389,6 +395,7 @@ class CollectorSpec:
             image_dup_threshold=_as_int(params.get("image_dup_threshold"), 5),
             bbox_dup_threshold=_as_int(params.get("bbox_dup_threshold"), 8),
             duplicate_action=params.get("duplicate_action", "discard") or "discard",
+            enable_detector_miss=bool(params.get("enable_detector_miss", False)),
         )
 
 
@@ -419,6 +426,7 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                 "max_duration",
                 "ambiguity_group",
                 "dedup_group",
+                "enable_detector_miss",
             ]
         },
         "output_dir": {
@@ -716,6 +724,17 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                     "default": 8,
                 },
             },
+        },
+        "enable_detector_miss": {
+            "type": "boolean",
+            "label": "Collect Detector Misses",
+            "description": (
+                "Watcher-attached collectors only: when a confirmed track has no supporting "
+                "detection for a frame (a short gap), save the tracker's interpolated box as an "
+                "unverified 'Detector Miss' box if the track re-acquires within a few frames. "
+                "No effect on the standalone task, which has no tracker."
+            ),
+            "default": False,
         },
     }
 

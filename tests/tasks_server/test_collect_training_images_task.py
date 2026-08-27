@@ -30,9 +30,10 @@ import numpy as np
 import pytest
 from inference_client.api.inference_api import InferenceApi
 
+from apps.helpers.actions.collectTrainingImagesAction import _DetectorMissBBox, _DetectorMissDetection
 from apps.helpers.bboxUtils import iou_xywh
 from apps.helpers.consts import TaskStatus
-from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
+from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, DETECTOR_MISS_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.imageProviders.imageProvider import (
     ImageProvider,
     ImageProviderMetadata,
@@ -3376,7 +3377,13 @@ def _frame_offer_with(image: np.ndarray, tracks=(), dead_track_ids=()) -> FrameO
     provided = MagicMock()
     provided.image = image
     provided.metadata.source = "src"
+    provided.metadata.source_uuid = None
     provided.metadata.frame_idx = None
+    provided.metadata.additional_info = {}
+    # A MagicMock auto-vivifies every attribute, so `getattr(provided,
+    # "_det_meta", None)` in `_save_image` never sees the default — it must be
+    # set explicitly to the "nothing stashed" value real code produces.
+    provided._det_meta = None
     return FrameOffer(
         provided=provided,
         base64="b64",
@@ -3514,6 +3521,94 @@ class TestTrackDeathCommitsTheWorstHeldCrop:
             await collector._commit_dead_track_worst((999,))
         dispatch.assert_not_called()
         assert collector._track_worst_committed == 0
+
+
+def _detector_miss_det(label_uuid=_LABEL_UUID) -> _DetectorMissDetection:
+    return _DetectorMissDetection(
+        bbox=_DetectorMissBBox(
+            x=0.1, y=0.1, width=0.2, height=0.2, label_uuid=label_uuid, tag_uuids=[DETECTOR_MISS_TAG_UUID]
+        )
+    )
+
+
+class TestOfferDetectorMiss:
+    """Plan §4A: a tracker-supplied box on a detector-miss frame. `offer_detector_miss`
+    is the collector's side of it — the watch action decides WHEN a gap resolves;
+    this is what happens once it calls in.
+    """
+
+    async def test_dispatches_a_save_directly_when_dedup_is_off(self):
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": False})
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        det = _detector_miss_det()
+
+        with patch.object(collector, "_dispatch_save") as dispatch:
+            await collector.offer_detector_miss(frame, det)
+
+        dispatch.assert_called_once_with(frame, [det])
+        assert collector._detector_miss_saved == 1
+
+    async def test_routes_through_dedup_when_enabled(self):
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": True})
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        det = _detector_miss_det()
+
+        with patch.object(collector, "_enqueue_for_dedup", new=AsyncMock()) as enqueue:
+            await collector.offer_detector_miss(frame, det)
+
+        enqueue.assert_awaited_once_with(frame, [det])
+
+    async def test_bypasses_per_track_novelty_and_the_filter_chain(self):
+        """Neither reasons about model-derived detections; this box is neither."""
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": False})
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        det = _detector_miss_det()
+
+        with (
+            patch.object(collector, "_dispatch_save") as dispatch,
+            patch.object(collector, "_apply_track_novelty") as novelty,
+        ):
+            await collector.offer_detector_miss(frame, det)
+
+        novelty.assert_not_called()
+        dispatch.assert_called_once()
+
+
+class TestDetectorMissBboxMetadata:
+    """A detector-miss box has no model score behind it — `_save_image` must
+    write neither confidence metadata key (plan §5), unlike every other saved
+    box, which always gets `confidence`."""
+
+    async def test_no_confidence_keys_are_written(self, tmp_path):
+        task = _detached_task({"output_dir": "out"})
+        task._collector._files_root = tmp_path
+        task._collector._meta_write_lock = asyncio.Lock()
+        images_api = MagicMock()
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        det = _detector_miss_det()
+
+        await task._collector._save_image(images_api, frame, [det])
+
+        payload = images_api.update_image_metadata.call_args.args[0]
+        (box,) = payload.boxes
+        assert "confidence" not in box.bbox_meta
+        assert "source_confidence" not in box.bbox_meta
+        assert DETECTOR_MISS_TAG_UUID in box.tag_uuids
+
+    async def test_a_real_detection_still_gets_a_confidence_key(self, tmp_path):
+        """Guards against the None-guard swallowing the ordinary case too."""
+        task = _detached_task({"output_dir": "out"})
+        task._collector._files_root = tmp_path
+        task._collector._meta_write_lock = asyncio.Lock()
+        images_api = MagicMock()
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        det = _detection_at(0.1, 0.1, 0.2, 0.2, confidence=0.77)
+
+        await task._collector._save_image(images_api, frame, [det])
+
+        payload = images_api.update_image_metadata.call_args.args[0]
+        (box,) = payload.boxes
+        assert box.bbox_meta["confidence"] == "0.77"
 
 
 @pytest.mark.real_collector_fetch
@@ -4820,6 +4915,23 @@ class TestFrameProvenance:
         await off._init(_PARAMS, resume_data=None)
         off._collector._task_tag_uuid = "task-tag"
         assert "Browse confusable" not in [a["label"] for a in off._review_actions()]
+
+    async def test_browse_detector_misses_action_only_appears_when_enabled(self):
+        params = {**_PARAMS, "enable_detector_miss": True}
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+        task._collector._task_tag_uuid = "task-tag"
+        actions = task._review_actions()
+        labels = [a["label"] for a in actions]
+        assert "Browse detector misses" in labels
+        action = next(a for a in actions if a["label"] == "Browse detector misses")
+        assert action["payload"]["tag_uuids"] == [task._collector._task_tag_uuid, DETECTOR_MISS_TAG_UUID]
+        assert action["payload"]["bbox_verification"] == "unverified"
+
+        off = _make_task(params=_PARAMS)
+        await off._init(_PARAMS, resume_data=None)
+        off._collector._task_tag_uuid = "task-tag"
+        assert "Browse detector misses" not in [a["label"] for a in off._review_actions()]
 
 
 class TestCrossModelAmbiguity:

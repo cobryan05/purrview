@@ -51,9 +51,12 @@ a collected image back to the window it came from in review.
 """
 
 import logging
+import math
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from ..db.db_client import DETECTOR_MISS_TAG_UUID
 from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
 from ..training.collector import FrameOffer, TrackedCrop, TrainingCollector
 from ..watch.events import EventPhase, WatchEventSignal
@@ -62,6 +65,50 @@ from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
 
 logger = logging.getLogger(__file__)
+
+
+@dataclass
+class _GapState:
+    """One track's currently-open detector-miss gap (plan §4A).
+
+    `held_frame` is the frame from the FIRST coasting step of the gap — the
+    plan's "cap at one candidate per gap episode" — kept in memory only until
+    the gap resolves (a few frames, at most `MAX_GAP_FRAMES`). `before` is that
+    same step's `TrackedCrop`, i.e. the track's last real position, which is
+    one endpoint of the eventual interpolation.
+    """
+
+    held_frame: FrameOffer
+    before: TrackedCrop
+    frame_count: int = 1
+    ambiguous: bool = False
+
+
+@dataclass
+class _DetectorMissBBox:
+    """Duck-types the `.bbox` shape `TrainingCollector._save_image` reads off a
+    real detection (`x/y/width/height/label_uuid/class_str/tag_uuids/uuid`) —
+    see `_run_inference`'s detections for the real thing this stands in for."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+    label_uuid: Optional[str]
+    class_str: Optional[str] = None
+    tag_uuids: List[str] = field(default_factory=list)
+    uuid: str = ""
+
+
+@dataclass
+class _DetectorMissDetection:
+    """Duck-types a real detection well enough for `_save_image`: `.bbox` plus
+    `.confidence` (deliberately `None` — plan §5: no model score backs this
+    box, and a synthetic one would let it sort/filter alongside real
+    detections while lying about where it came from)."""
+
+    bbox: _DetectorMissBBox
+    confidence: Optional[float] = None
 
 
 @register_action("collect_training_images")
@@ -73,6 +120,15 @@ class CollectTrainingImagesAction(Action):
     #: sampling out of a live feed, not a second collection loop running at
     #: analysis fps.
     MIN_INTERVAL_FLOOR_S: float = 1.0
+
+    #: Past this many consecutive coasting frames, the tracker's box has
+    #: drifted too far from the truth to be worth a human's time (plan §4A) —
+    #: the gap is abandoned rather than committed on eventual re-acquisition.
+    MAX_GAP_FRAMES: int = 3
+    #: "Another live track within ~2 box-widths" — the plan's own "cheap and
+    #: nearly-sufficient first cut" for association ambiguity (§5). Widths, not
+    #: an absolute distance, so it scales with the object's own size in frame.
+    ASSOCIATION_AMBIGUITY_BOX_WIDTHS: float = 2.0
 
     def __init__(
         self,
@@ -102,6 +158,10 @@ class CollectTrainingImagesAction(Action):
         #: (rather than only decrementing a count) means a closed event never
         #: keeps stamping its uuid onto a still-open one's frames.
         self._open_sessions: Dict[str, List[Tuple[str, float]]] = {}
+        #: source_uuid -> track_id -> currently-open detector-miss gap (plan
+        #: §4A). Keyed per source because track_ids are only unique within one
+        #: source's own tracker instance, not across a multi-camera watcher.
+        self._track_gaps: Dict[str, Dict[int, _GapState]] = {}
 
     @classmethod
     def triggers(cls, row: Any) -> Set[str]:
@@ -166,6 +226,8 @@ class CollectTrainingImagesAction(Action):
                     y=max(0.0, y1 / height),
                     width=max(0.0, (x2 - x1) / width),
                     height=max(0.0, (y2 - y1) / height),
+                    label_uuid=t.label_uuid,
+                    matched_this_update=t.matched_this_update,
                 )
             )
         return out
@@ -200,18 +262,39 @@ class CollectTrainingImagesAction(Action):
         if context.full_frame is None or context.analysis_base64 is None:
             return ActionResult(ok=False, detail="No frame available")
 
+        # Gap tracking runs on EVERY in-scope frame, unlike the periodic offer
+        # below — a gap can open and resolve entirely between two throttled
+        # samples, and missing it is exactly what this feature exists to catch
+        # (plan §4A). Never raises past this call: a broken gap-tracking pass
+        # must not cost the watcher its ordinary periodic sampling.
+        if collector.spec.enable_detector_miss:
+            try:
+                await self._process_track_gaps(key, collector, context)
+            except Exception:
+                logger.exception(
+                    "collect_training_images detector-miss gap tracking failed for %s", self._collector_uuid
+                )
+
         now = time.monotonic()
         if now - self._last_offered.get(key, 0.0) < self._min_interval_s:
             return ActionResult(ok=True, detail="waiting for interval")
         self._last_offered[key] = now
 
+        frame = self._build_frame_offer(context, key)
+        try:
+            await collector.offer(frame)
+        except Exception as e:
+            logger.exception("collect_training_images offer failed for collector %s", self._collector_uuid)
+            return ActionResult(ok=False, detail=f"Offer failed: {e}")
+        return ActionResult(ok=True)
+
+    def _build_frame_offer(self, context: ActionContext, key: str) -> FrameOffer:
         additional_info: Dict[str, Any] = {}
         stack = self._open_sessions.get(key) or []
         if not self._continuous and stack:
             rule_uuid, started_at = stack[-1]
             additional_info = {"watch_rule_uuid": rule_uuid, "watch_event_started_at": str(started_at)}
-
-        frame = FrameOffer(
+        return FrameOffer(
             provided=ImageWithProviderMetadata(
                 image=context.full_frame,
                 metadata=ImageProviderMetadata(
@@ -225,9 +308,100 @@ class CollectTrainingImagesAction(Action):
             tracks=tuple(self._normalize_tracks(context.tracks, context.frame)),
             dead_track_ids=tuple(context.dead_track_ids),
         )
+
+    async def _process_track_gaps(self, key: str, collector: TrainingCollector, context: ActionContext) -> None:
+        """Open, extend, resolve or abandon detector-miss gaps for every live
+        track on this source (plan §4A) — called every analysed frame,
+        independent of the periodic offer's own interval gate.
+        """
+        live = self._normalize_tracks(context.tracks, context.frame)
+        target_labels = collector.spec.target_label_bands
+        gaps = self._track_gaps.setdefault(key, {})
+
+        for track in live:
+            # Only for labels the collector is actually configured to collect —
+            # mirrors `_filter_model`'s own target-label restriction, so this
+            # never seeds a box for a label nobody asked for.
+            if track.label_uuid not in target_labels:
+                continue
+            pending = gaps.get(track.track_id)
+            if track.matched_this_update:
+                if pending is not None:
+                    del gaps[track.track_id]
+                    await self._commit_gap(collector, pending, track)
+                continue
+            # Coasting this frame — the detector missed it.
+            if pending is None:
+                ambiguous = self._is_association_ambiguous(track, live)
+                held_frame = self._build_frame_offer(context, key)
+                # Computed at collection time, not recoverable later — the
+                # same provenance pass-through event-scoped offers already
+                # use, read by the canvas for the two-press Verify-all warning
+                # (plan §5).
+                held_frame.provided.metadata.additional_info["detector_miss_ambiguous"] = ambiguous
+                gaps[track.track_id] = _GapState(held_frame=held_frame, before=track, ambiguous=ambiguous)
+            else:
+                pending.frame_count += 1
+                if pending.frame_count > self.MAX_GAP_FRAMES:
+                    # Past this many frames the tracker's box has drifted too
+                    # far from the truth to be worth a human's time — drop it
+                    # silently rather than committing a stale interpolation.
+                    del gaps[track.track_id]
+
+        for track_id in context.dead_track_ids:
+            # The object left; it did not merely blink. A gap that never
+            # re-acquires must never be committed (plan §4A: "a coasting track
+            # is a prediction, not ground truth").
+            gaps.pop(track_id, None)
+
+        if not gaps:
+            self._track_gaps.pop(key, None)
+
+    @classmethod
+    def _is_association_ambiguous(cls, track: TrackedCrop, live: List[TrackedCrop]) -> bool:
+        """ "Is there another live track close enough to this one that the
+        interpolated box's identity could be wrong" (plan §5) — the cheap,
+        nearly-sufficient first cut: distance between box centres against a
+        multiple of the track's own box width. Hierarchy-aware weighting
+        (favour flagging two overlapping animals over an animal and a parked
+        car) is a documented future refinement, not implemented here.
+        """
+        if track.width <= 0:
+            return False
+        cx, cy = track.x + track.width / 2, track.y + track.height / 2
+        threshold = cls.ASSOCIATION_AMBIGUITY_BOX_WIDTHS * track.width
+        for other in live:
+            if other.track_id == track.track_id:
+                continue
+            ocx, ocy = other.x + other.width / 2, other.y + other.height / 2
+            if math.hypot(cx - ocx, cy - ocy) <= threshold:
+                return True
+        return False
+
+    async def _commit_gap(self, collector: TrainingCollector, pending: _GapState, reacquired: TrackedCrop) -> None:
+        """A gap resolved by re-acquisition — seed the interpolated box onto
+        the held (first-coasting-frame) image and save it.
+
+        Interpolate, don't extrapolate (plan §5): both real detections
+        bracketing the gap are in hand, so the seeded box is the position
+        between them, not the tracker's forward-only live prediction.
+        `frame_count` is how many coasting steps the gap actually lasted, so
+        the held frame sits at fraction `1 / (frame_count + 1)` of the way from
+        `before` to `reacquired`.
+        """
+        before = pending.before
+        frac = 1.0 / (pending.frame_count + 1)
+        det = _DetectorMissDetection(
+            bbox=_DetectorMissBBox(
+                x=before.x + frac * (reacquired.x - before.x),
+                y=before.y + frac * (reacquired.y - before.y),
+                width=before.width + frac * (reacquired.width - before.width),
+                height=before.height + frac * (reacquired.height - before.height),
+                label_uuid=before.label_uuid,
+                tag_uuids=[DETECTOR_MISS_TAG_UUID],
+            ),
+        )
         try:
-            await collector.offer(frame)
-        except Exception as e:
-            logger.exception("collect_training_images offer failed for collector %s", self._collector_uuid)
-            return ActionResult(ok=False, detail=f"Offer failed: {e}")
-        return ActionResult(ok=True)
+            await collector.offer_detector_miss(pending.held_frame, det)
+        except Exception:
+            logger.exception("collect_training_images detector-miss commit failed for %s", self._collector_uuid)
