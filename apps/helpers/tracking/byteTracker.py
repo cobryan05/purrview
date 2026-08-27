@@ -208,6 +208,7 @@ class ByteTracker(Tracker):
         track.label_name = det.label_name or track.label_name
         track.last_seen = now
         track.hits += 1
+        track.matched_this_update = True
         if track.hits >= self._min_hits:
             track.confirmed = True
         if spec.is_anchor and det.confidence >= self._anchor_confidence:
@@ -216,6 +217,14 @@ class ByteTracker(Tracker):
     # ------------------------------------------------------------------ API
 
     def update(self, detections: List[Detection], now: float) -> List[Track]:
+        # Cleared before either association pass, and set again by `_absorb` for
+        # whichever tracks a pass explains. A track still False afterwards is
+        # exactly one that survived on its TTL while coasting, which is what
+        # detector-miss collection reads (see Track.matched_this_update). Tracks
+        # created below default to True — a brand-new track did match a detection.
+        for track in self._tracks:
+            track.matched_this_update = False
+
         high_idxs = [i for i, d in enumerate(detections) if d.confidence >= self._track_thresh]
         low_idxs = [i for i, d in enumerate(detections) if self._low_thresh <= d.confidence < self._track_thresh]
 

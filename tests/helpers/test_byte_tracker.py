@@ -217,3 +217,49 @@ class TestRegistry:
         # Ids restart: they are per-session and must not pretend to survive.
         tracker.update([_det(0, 0, 0.9)], now=1.0)
         assert tracker.active_tracks()[0].track_id == 1
+
+
+class TestMatchedThisUpdate:
+    """Detector-miss collection (COLLECTOR_UNIFICATION_PLAN.md §4A) asks each
+    track "did the detector explain you on THIS call, or are you coasting?".
+    `IouTracker` answers it; this tracker used to leave the field at its `True`
+    default forever, which silently turned the whole feature off for the tracker
+    most likely to be chosen for it — no gap ever opened, and nothing said why.
+    """
+
+    def test_a_coasting_track_is_reported_unmatched(self):
+        tracker = _tracker()
+        tracker.update([_det(0, 0, 0.9)], now=0.0)
+
+        (track,) = tracker.update([], now=0.5)
+
+        assert track.matched_this_update is False
+
+    def test_a_weak_second_stage_match_still_counts_as_matched(self):
+        """Stage 2 is this tracker's whole point: a low-confidence box IS the
+        detector explaining the track, so it must not read as a miss."""
+        tracker = _tracker()
+        tracker.update([_det(0, 0, 0.9)], now=0.0)
+
+        (track,) = tracker.update([_det(1, 1, 0.3)], now=0.5)
+
+        assert track.matched_this_update is True
+
+    def test_re_acquisition_flips_it_back(self):
+        tracker = _tracker()
+        tracker.update([_det(0, 0, 0.9)], now=0.0)
+        assert tracker.update([], now=0.5)[0].matched_this_update is False
+
+        (track,) = tracker.update([_det(1, 1, 0.9)], now=1.0)
+
+        assert track.matched_this_update is True
+
+    def test_only_the_missed_track_is_marked(self):
+        """Two tracks, one detection — the flag is per track, not per call."""
+        tracker = _tracker()
+        tracker.update([_det(0, 0, 0.9), _det(100, 100, 0.9)], now=0.0)
+
+        tracks = {t.track_id: t for t in tracker.update([_det(0, 0, 0.9)], now=0.5)}
+
+        assert tracks[1].matched_this_update is True
+        assert tracks[2].matched_this_update is False
