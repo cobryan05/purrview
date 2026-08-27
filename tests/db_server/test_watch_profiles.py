@@ -1626,7 +1626,7 @@ class TestActionListing:
         `ui/utils/schemaParamsForm.js`. Adding a type to an action means teaching the
         renderer about it first.
         """
-        renderable = {"int", "float", "bool", "str", "directory"}
+        renderable = {"int", "float", "bool", "str", "directory", "training_collector_uuid"}
         body = (await http_client.get("/api/watch-profiles/actions")).json()
 
         for action in body["actions"]:

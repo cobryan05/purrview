@@ -185,6 +185,10 @@ class StreamWatcherTask(Task):
         #: kept apart from `_collectors` so the status method never has to poke a
         #: live collector instance just to label its row.
         self._collector_names: Dict[str, str] = {}
+        #: Startup findings from `_check_analysis_width`, replayed into every status
+        #: poll's tuning hints — computed once (model shapes don't change under a
+        #: running watcher) but only useful where the user actually looks.
+        self._analysis_width_hints: list[str] = []
         self._actions: List[tuple] = []
         # The `frame_analysed` subset, kept apart so the per-frame path can skip its
         # whole dispatch with one truth test. Every watcher pays that test 5x a second
@@ -311,6 +315,26 @@ class StreamWatcherTask(Task):
                     {"id": "sourceUuid", "label": "Source"},
                     {"id": "state", "label": "State"},
                     {"id": "startedAt", "label": "Started"},
+                ],
+            },
+            {
+                "id": "collectorsTable",
+                "type": "table",
+                # "Collected", deliberately not "ready to train": readiness needs an
+                # explicit PRESENT/ABSENT row for every in-scope label, which only
+                # the review pass supplies. Conflating the two overstates a run.
+                "label": "Training collectors (collected ≠ ready to train)",
+                "columns": [
+                    {"id": "name", "label": "Collector"},
+                    {"id": "offered", "label": "Offered"},
+                    {"id": "saved", "label": "Collected"},
+                    {"id": "savedBand", "label": "From bands"},
+                    {"id": "savedDetectorMiss", "label": "Detector miss"},
+                    {"id": "savedTrackWorst", "label": "Track worst"},
+                    {"id": "noveltyDropped", "label": "Novelty dropped"},
+                    {"id": "droppedBehind", "label": "Dropped behind"},
+                    {"id": "dedupHits", "label": "Dedup hits"},
+                    {"id": "filterDiscarded", "label": "Filter discarded"},
                 ],
             },
             {
@@ -863,6 +887,41 @@ class StreamWatcherTask(Task):
             except Exception:
                 logger.exception("Failed to pin model %s", name)
                 self._pin_ids[name] = None
+        await self._check_analysis_width(models_api, names)
+
+    async def _check_analysis_width(self, models_api: ModelsApi, names: set) -> None:
+        """Warn when a source is analysed below what its own models could use.
+
+        The §2.3b freebie off the exposed `input_shape`: `analysis_width` exists to
+        bound the inference payload, and at or above the model's input it costs
+        nothing in accuracy — the server resizes to the graph's shape either way.
+        *Below* it, every frame throws away detail the model was trained to use,
+        and nothing anywhere says so. One read per distinct model at startup.
+
+        Best-effort: `input_shape` is None for any model whose graph could not be
+        read, and a watcher must never fail to start over a tuning hint.
+        """
+        widths: dict[str, int] = {}
+        for name in sorted(names):
+            try:
+                meta = await asyncio.to_thread(models_api.get_model_meta, name)
+                shape = getattr(meta, "input_shape", None)
+                if shape and len(shape) == 2 and shape[1]:
+                    widths[name] = int(shape[1])  # (height, width)
+            except Exception:
+                logger.debug("Could not read input_shape for model %s", name, exc_info=True)
+
+        self._analysis_width_hints = []
+        for pipeline in self._pipelines:
+            wanted = max((widths.get(n, 0) for n in pipeline.model_names), default=0)
+            if wanted > pipeline.analysis_width:
+                hint = (
+                    f"Source '{pipeline.source_name}' is analysed at {pipeline.analysis_width}px but its "
+                    f"widest model takes {wanted}px — every frame is downscaled below what the model can "
+                    f"use. Raising Analysis Width to {wanted} costs a larger inference payload."
+                )
+                self._analysis_width_hints.append(hint)
+                self.log(hint)
 
     async def _renew_pins_periodically(self) -> None:
         """Re-pin on a timer so a run longer than the pin duration never lapses."""
@@ -1853,7 +1912,9 @@ class StreamWatcherTask(Task):
         now = time.monotonic()
         tracks_rows = []
         open_rows = []
-        hints: List[str] = []
+        # Startup findings first: they describe a misconfiguration that holds for the
+        # whole run, unlike the per-rule hints below which react to live traffic.
+        hints: List[str] = list(getattr(self, "_analysis_width_hints", None) or [])
         for pipeline in self._pipelines:
             for track in pipeline.tracks:
                 tracks_rows.append(
@@ -1869,25 +1930,44 @@ class StreamWatcherTask(Task):
             open_rows.extend(pipeline.engine.open_events())
             hints.extend(pipeline.engine.tuning_hints())
 
-        # One row per attached training collector. status_stats() is synchronous
-        # in-memory counters (no I/O), same contract this whole method already
-        # runs under — see TrainingCollector.status_stats()'s own docstring.
-        # Backend-only for now: nothing in the Watchers pane renders this table
-        # yet (phase 5, COLLECTOR_UNIFICATION_PLAN.md) — a documented follow-up,
-        # not an oversight.
+        # One row per attached training collector, rendered by status_schema()'s
+        # "collectorsTable" widget. status_stats() is synchronous in-memory
+        # counters (no I/O), same contract this whole method already runs under —
+        # see TrainingCollector.status_stats()'s own docstring.
         collectors_table = []
         for collector_uuid, collector in self._collectors.items():
             stats, _calibration = collector.status_stats()
+            name = self._collector_names.get(collector_uuid, collector_uuid)
+            dropped_behind = stats.get("dropped_behind", 0)
             collectors_table.append(
                 {
-                    "name": self._collector_names.get(collector_uuid, collector_uuid),
+                    "name": name,
                     "offered": stats.get("offered", 0),
+                    # "Collected", not "ready to train": an image becomes trainable
+                    # only once every in-scope label has an explicit PRESENT/ABSENT
+                    # row, which the review pass supplies. See status_schema().
                     "saved": stats.get("saved", 0),
-                    "droppedBehind": stats.get("dropped_behind", 0),
+                    # Absent until a non-band reason has produced something — the
+                    # table shows a blank rather than three zeroes for a collector
+                    # with neither novelty nor detector-miss collection in play.
+                    "savedBand": stats.get("saved_band", ""),
+                    "savedDetectorMiss": stats.get("saved_detector_miss", ""),
+                    "savedTrackWorst": stats.get("saved_track_worst", ""),
+                    "noveltyDropped": stats.get("track_novelty_dropped", ""),
+                    "droppedBehind": dropped_behind,
                     "dedupHits": stats.get("dedup_image_hits", 0) + stats.get("dedup_bbox_hits", 0),
                     "filterDiscarded": stats.get("filter_discarded", 0),
                 }
             )
+            if dropped_behind:
+                # A non-blocking offer() sheds frames rather than stalling the
+                # analysis loop (plan §7.1) — correct, but silent, and silence here
+                # is indistinguishable from "the collector's config keeps nothing".
+                hints.append(
+                    f"Collector '{name}' has dropped {dropped_behind} offered frame(s) because its save "
+                    f"pipeline was busy. Raise the action's Min Interval, or turn off dedup if the phash "
+                    f"round-trip is the bottleneck."
+                )
 
         return {
             "stats": {
@@ -1919,6 +1999,36 @@ class StreamWatcherTask(Task):
             "recentEvents": list(reversed(self._recent_events[-15:])),
             "tuningHints": "\n".join(hints) if hints else "No tuning suggestions yet.",
         }
+
+    def get_status_actions(self) -> list[dict]:
+        """Ways into Review over what the attached collectors have collected.
+
+        The collector builds these itself (`TrainingCollector.review_actions()`),
+        so a watcher-attached collector offers exactly the same set the standalone
+        task's Jobs card does — including "Browse detector misses", which only a
+        watcher can ever populate in the first place (there is no tracker without
+        one). Without this the entire detector-miss feature has no route into the
+        UI from the only driver that produces it.
+
+        Labels are prefixed with the collector's name because two attached
+        collectors would otherwise render four identically-labelled buttons whose
+        payloads differ only in a tag uuid.
+
+        getattr, not attribute access: reachable through the task's PENDING window
+        before `_init()` has run, and tests build this class with `__new__`.
+        """
+        collectors: dict[str, Any] = getattr(self, "_collectors", None) or {}
+        names: dict[str, str] = getattr(self, "_collector_names", None) or {}
+        multiple = len(collectors) > 1
+        actions: list[dict] = []
+        for collector_uuid, collector in collectors.items():
+            name = names.get(collector_uuid, collector_uuid)
+            for action in collector.review_actions():
+                # Only disambiguate when there is something to disambiguate from —
+                # a single collector's buttons read better unprefixed.
+                label = f"{name} — {action['label']}" if multiple else action["label"]
+                actions.append({**action, "label": label})
+        return actions
 
     # ------------------------------------------------------------------ live view
 

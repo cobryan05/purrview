@@ -292,6 +292,13 @@ class CollectorSpec:
     #: rather than a silent behaviour change for existing configs.
     enable_detector_miss: bool = False
 
+    # ── per-track novelty sampling (plan §4B, watcher-only) ───────────────────
+    #: Safety valve, NOT the rule: appearance novelty decides what to keep, and
+    #: this only bounds the pathological case of an animal in constant motion for
+    #: an hour. The plan is explicit that it belongs around 20–30, not 5 — a low
+    #: cap throws away the pose variation that is the whole point of the feature.
+    max_frames_per_track: int = 25
+
     @property
     def target_label_bands(self) -> Dict[str, ConfidenceBand]:
         return {t.label_uuid: t.band for t in self.target_labels}
@@ -396,6 +403,10 @@ class CollectorSpec:
             bbox_dup_threshold=_as_int(params.get("bbox_dup_threshold"), 8),
             duplicate_action=params.get("duplicate_action", "discard") or "discard",
             enable_detector_miss=bool(params.get("enable_detector_miss", False)),
+            # Floored at 1: a 0 would make every track's kept-hash deque
+            # zero-length, so nothing would ever compare as non-novel and the
+            # prefilter would silently become a no-op.
+            max_frames_per_track=max(1, _as_int(params.get("max_frames_per_track"), 25)),
         )
 
 
@@ -427,6 +438,7 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                 "ambiguity_group",
                 "dedup_group",
                 "enable_detector_miss",
+                "max_frames_per_track",
             ]
         },
         "output_dir": {
@@ -735,6 +747,17 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                 "No effect on the standalone task, which has no tracker."
             ),
             "default": False,
+        },
+        "max_frames_per_track": {
+            "type": "int",
+            "label": "Max Frames Per Track",
+            "description": (
+                "Watcher-attached collectors only: hard cap on how many distinct crops one track "
+                "can contribute during a single visit. A safety valve for an animal that never "
+                "stops moving — appearance novelty, not this number, is what normally decides. "
+                "Keep it around 20-30; a low cap discards the pose variation the detector needs."
+            ),
+            "default": 25,
         },
     }
 

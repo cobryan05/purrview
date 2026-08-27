@@ -150,6 +150,16 @@ class TrackedCrop:
     confirmed: bool = True
 
 
+#: Why a frame was kept. Carried from the decision point through the dedup queue
+#: to the completed save, so the status card can answer "is this knob producing
+#: anything" (plan §6) — a single `saved` total cannot, because the interesting
+#: reasons are the rare ones.
+SAVE_REASON_BAND = "band"
+SAVE_REASON_DETECTOR_MISS = "detector_miss"
+SAVE_REASON_TRACK_WORST = "track_worst"
+SAVE_REASONS: Tuple[str, ...] = (SAVE_REASON_BAND, SAVE_REASON_DETECTOR_MISS, SAVE_REASON_TRACK_WORST)
+
+
 @dataclass
 class FrameOffer:
     """One frame handed to the collector.
@@ -221,10 +231,12 @@ class TrainingCollector:
     # Actions that actually drop frames. "ignore" and "measure" are pass-through.
     _DISCARD_ACTIONS: tuple[str, ...] = ("discard", "discard_image")
 
-    # Safety valve for per-track novelty sampling (plan §4B): a track that never
-    # stops moving would otherwise keep adding distinct-enough crops forever. This
-    # is NOT the rule — appearance novelty is — it only bounds the pathological
-    # case. Kept well above a normal visit's pose count.
+    # Default safety valve for per-track novelty sampling (plan §4B): a track that
+    # never stops moving would otherwise keep adding distinct-enough crops forever.
+    # This is NOT the rule — appearance novelty is — it only bounds the
+    # pathological case. Kept well above a normal visit's pose count. Overridable
+    # per collector via `spec.max_frames_per_track`; this constant is the fallback
+    # for a spec built before the knob existed.
     MAX_FRAMES_PER_TRACK: int = 25
 
     def __init__(
@@ -281,6 +293,9 @@ class TrainingCollector:
         #: global phash's cross-visit dedup, not a replacement for it). Bounded by
         #: `MAX_FRAMES_PER_TRACK`; forgotten once the track dies.
         self._track_hashes: Dict[int, deque] = {}
+        #: Resolved once: a spec built before the knob existed leaves it None, and
+        #: reading it per frame would re-do that fallback on the hot path.
+        self._max_frames_per_track: int = getattr(spec, "max_frames_per_track", None) or self.MAX_FRAMES_PER_TRACK
         #: track_id -> (confidence, frame, detection) for the lowest-confidence
         #: crop offered for that track that the novelty check above has NOT
         #: already let through naturally. Committed on track death so the
@@ -290,11 +305,19 @@ class TrainingCollector:
         self._track_novelty_kept: int = 0
         self._track_novelty_dropped: int = 0
         self._track_worst_committed: int = 0
-        #: Detector-miss boxes saved via `offer_detector_miss` (plan §4A). Only
+        #: Detector-miss boxes handed to `offer_detector_miss` (plan §4A). Only
         #: ever incremented by a watcher-attached collector with
         #: `enable_detector_miss` on — the standalone task never calls this
         #: method, having no tracker to supply a gap in the first place.
-        self._detector_miss_saved: int = 0
+        #: Counts OFFERS, not saves: dedup still gets a veto downstream, so the
+        #: matching saved subtotal is `_saved_by_reason[SAVE_REASON_DETECTOR_MISS]`.
+        self._detector_miss_offered: int = 0
+        #: Saves that actually landed, split by why the frame was kept (plan §6:
+        #: "break saves down by why they were collected ... that is what tells you
+        #: whether a knob is producing anything"). Attributed where the save
+        #: completes, not where it is dispatched, so the subtotals always sum to
+        #: `_images_saved` rather than counting frames dedup later discarded.
+        self._saved_by_reason: Dict[str, int] = {r: 0 for r in SAVE_REASONS}
 
         self._last_capture: Optional[dict[str, Any]] = None
         self._filter_chain_runner: Any = None
@@ -307,11 +330,16 @@ class TrainingCollector:
         self._image_hash_size: int = DEFAULT_IMAGE_HASH_SIZE
         self._bbox_hash_size: int = DEFAULT_BBOX_HASH_SIZE
 
+        #: Widest model input across this collector's stack, read once in `start()`.
+        #: None until then, and None for a stack whose shapes could not be read —
+        #: both mean "the driver should not change what it already sends".
+        self._model_input_width: Optional[int] = None
+
         self._pin_ids: dict[str, Optional[str]] = {}
         self._chain_pin_ids: dict[str, str] = {}
         self._combined_pin_ids: dict[str, str] = {}
 
-        self._pending_saves: list[tuple[asyncio.Task, Optional[str]]] = []
+        self._pending_saves: list[tuple[asyncio.Task, Optional[str], str]] = []
         self._dedup_queue: Optional[asyncio.Queue] = None
         self._dedup_task: Optional[asyncio.Task] = None
         self._renew_pins_task: Optional[asyncio.Task] = None
@@ -329,8 +357,20 @@ class TrainingCollector:
     def images_saved(self) -> int:
         return self._images_saved
 
+    def send_width(self, native_width: int) -> Optional[int]:
+        """Width the driver should encode this frame at, or None for "unchanged".
+
+        Plan §2.3b's arithmetic, and deliberately arithmetic rather than a user
+        toggle: `min(source_native_width, model_input_width)`. Returns None when
+        the model width is unknown, so an unreadable ONNX graph can never make a
+        working collector start re-encoding frames at a guessed size.
+        """
+        if not self._model_input_width or native_width <= 0:
+            return None
+        return min(native_width, self._model_input_width)
+
     @property
-    def pending_saves(self) -> list[tuple[asyncio.Task, Optional[str]]]:
+    def pending_saves(self) -> list[tuple[asyncio.Task, Optional[str], str]]:
         """In-flight save tasks. Exposed so a driver can tell whether an offer
         dispatched a save without waiting for it to finish."""
         return self._pending_saves
@@ -400,6 +440,7 @@ class TrainingCollector:
         await self._resolve_tags(db_api_client)
         models_api = ModelsApi(inference_api_client)
         await self._pin_models(models_api)
+        await self._read_model_input_width(models_api)
         await self._build_filter_chain(db_api_client, models_api)
 
         if self._spec.enable_dedup:
@@ -524,6 +565,33 @@ class TrainingCollector:
         # loop, so a renewal's new pin_id is visible everywhere without rebuilding
         # the backend.
         self._combined_pin_ids = {k: v for k, v in self._pin_ids.items() if v}
+
+    async def _read_model_input_width(self, models_api: ModelsApi) -> None:
+        """Widest input this collector's models can actually use (plan §2.3b).
+
+        `send_width = min(source_native_width, model_input_width)`: below the
+        model's input you throw away detail it could have used; above it you pay to
+        ship pixels the server resizes away. A watcher drives inference at its own
+        `analysis_width` (640 by default), which is already the optimum for a
+        640-input model — the common case, where this reads back 640 and the driver
+        changes nothing. It only earns its keep for a larger-input model.
+
+        Best-effort by construction: `input_shape` is `None` for any model the
+        inference server could not read a graph for, and a missing number must
+        leave today's behaviour alone rather than guess a width.
+        """
+        widths = []
+        for name in self._spec.model_names:
+            try:
+                meta = await asyncio.to_thread(models_api.get_model_meta, name)
+            except Exception:
+                logger.debug("Could not read input_shape for model '%s'", name, exc_info=True)
+                continue
+            shape = getattr(meta, "input_shape", None)
+            # (height, width) — see ModelMetaResponse.
+            if shape and len(shape) == 2 and shape[1]:
+                widths.append(int(shape[1]))
+        self._model_input_width = max(widths) if widths else None
 
     async def _build_filter_chain(self, db_api_client, models_api: ModelsApi) -> None:
         if not self._spec.filter_chain_uuid:
@@ -680,7 +748,7 @@ class TrainingCollector:
             kept.append(det)
             self._track_novelty_kept += 1
             self._update_track_worst(track_id, det, frame, is_being_saved=True)
-            bucket = self._track_hashes.setdefault(track_id, deque(maxlen=self.MAX_FRAMES_PER_TRACK))
+            bucket = self._track_hashes.setdefault(track_id, deque(maxlen=self._max_frames_per_track))
             bucket.append(crop_hash)
         return kept
 
@@ -718,9 +786,9 @@ class TrainingCollector:
             _, held_frame, held_det = worst
             self._track_worst_committed += 1
             if self._spec.enable_dedup:
-                await self._enqueue_for_dedup(held_frame, [held_det])
+                await self._enqueue_for_dedup(held_frame, [held_det], SAVE_REASON_TRACK_WORST)
             else:
-                self._dispatch_save(held_frame, [held_det])
+                self._dispatch_save(held_frame, [held_det], SAVE_REASON_TRACK_WORST)
 
     async def offer_detector_miss(self, frame: FrameOffer, det: Any) -> None:
         """Save a tracker-supplied box on a detector-miss frame (plan §4A).
@@ -739,29 +807,29 @@ class TrainingCollector:
         observe a gap to seed a box for in the first place (plan §4A: "impossible
         without temporal context").
         """
-        self._detector_miss_saved += 1
+        self._detector_miss_offered += 1
         if self._spec.enable_dedup:
-            await self._enqueue_for_dedup(frame, [det])
+            await self._enqueue_for_dedup(frame, [det], SAVE_REASON_DETECTOR_MISS)
         else:
-            self._dispatch_save(frame, [det])
+            self._dispatch_save(frame, [det], SAVE_REASON_DETECTOR_MISS)
 
-    async def _enqueue_for_dedup(self, frame: FrameOffer, matching: list) -> None:
+    async def _enqueue_for_dedup(self, frame: FrameOffer, matching: list, reason: str = SAVE_REASON_BAND) -> None:
         assert self._dedup_queue is not None
         if self._blocking_offer:
             # Deliberate backpressure: while the collector IS the loop, slowing the
             # fetch is better than dropping a frame nothing else will see.
-            await self._dedup_queue.put((frame, matching))
+            await self._dedup_queue.put((frame, matching, reason))
             return
         try:
-            self._dedup_queue.put_nowait((frame, matching))
+            self._dedup_queue.put_nowait((frame, matching, reason))
         except asyncio.QueueFull:
             self._frames_dropped_behind += 1
             if self._frames_dropped_behind == 1:
                 self._log("Collector is behind — dropping offered frames rather than stalling the caller")
 
-    def _dispatch_save(self, frame: FrameOffer, matching: list) -> asyncio.Task:
+    def _dispatch_save(self, frame: FrameOffer, matching: list, reason: str = SAVE_REASON_BAND) -> asyncio.Task:
         save_task = asyncio.create_task(self._save_image(ImagesApi(self._host.db_api_client()), frame, matching))
-        self._pending_saves.append((save_task, frame.unique_id))
+        self._pending_saves.append((save_task, frame.unique_id, reason))
         return save_task
 
     def collect_saves(self) -> list[str]:
@@ -773,7 +841,7 @@ class TrainingCollector:
         """
         completed: list[str] = []
         still_pending = []
-        for task, uid in self._pending_saves:
+        for task, uid, reason in self._pending_saves:
             if task.done():
                 try:
                     filename = task.result()
@@ -785,9 +853,10 @@ class TrainingCollector:
                 if uid:
                     completed.append(uid)
                 self._images_saved += 1
+                self._saved_by_reason[reason] = self._saved_by_reason.get(reason, 0) + 1
                 self._log(f"Saved {filename} ({self._images_saved} total)")
             else:
-                still_pending.append((task, uid))
+                still_pending.append((task, uid, reason))
         self._pending_saves.clear()
         self._pending_saves.extend(still_pending)
         return completed
@@ -795,7 +864,7 @@ class TrainingCollector:
     async def drain_saves(self) -> list[str]:
         """Wait for every in-flight save, then collect the results."""
         if self._pending_saves:
-            await asyncio.gather(*(t for t, _ in self._pending_saves), return_exceptions=True)
+            await asyncio.gather(*(t for t, _, _ in self._pending_saves), return_exceptions=True)
         return self.collect_saves()
 
     async def flush(self) -> list[str]:
@@ -1576,12 +1645,12 @@ class TrainingCollector:
                 if item is None:
                     break  # sentinel — the driver is done
 
-                frame, matching = item
+                frame, matching, reason = item
                 provided = frame.provided
 
                 # When action is 'ignore', skip dedup entirely and save without any tagging.
                 if spec.duplicate_action == "ignore":
-                    self._dispatch_save(frame, matching)
+                    self._dispatch_save(frame, matching, reason)
                     continue
 
                 # Compute image and bbox phashes via JPEG round-trip so they match the
@@ -1678,7 +1747,7 @@ class TrainingCollector:
                     self._record_discard("all-duplicate", provided)
                     continue
 
-                save_task = self._dispatch_save(frame, matching)
+                save_task = self._dispatch_save(frame, matching, reason)
                 # Must wait for the save to complete before checking the next frame:
                 # update_image_metadata adds the phash to the in-memory BK-tree index, and
                 # check_dedup_bulk reads from that same index — if we move on before the save
@@ -1940,6 +2009,16 @@ class TrainingCollector:
         spec = self._spec
         stats: dict[str, Any] = {"offered": self._frames_offered, "saved": self._images_saved}
         calibration: dict[str, Any] = {}
+        # Saved-by-reason subtotals (plan §6). Only shown once a non-band reason has
+        # actually produced something: for the standalone task every save is a band
+        # save, so the split would be three rows restating `saved`.
+        special = self._saved_by_reason.get(SAVE_REASON_DETECTOR_MISS, 0) + self._saved_by_reason.get(
+            SAVE_REASON_TRACK_WORST, 0
+        )
+        if special:
+            stats["saved_band"] = self._saved_by_reason.get(SAVE_REASON_BAND, 0)
+            stats["saved_detector_miss"] = self._saved_by_reason.get(SAVE_REASON_DETECTOR_MISS, 0)
+            stats["saved_track_worst"] = self._saved_by_reason.get(SAVE_REASON_TRACK_WORST, 0)
         # Only present for a watcher-attached collector — the standalone task never
         # populates `frame.tracks`, so these would otherwise be permanent zeros
         # cluttering the panel of the thing this feature doesn't apply to.
@@ -1947,8 +2026,8 @@ class TrainingCollector:
             stats["track_novelty_kept"] = self._track_novelty_kept
             stats["track_novelty_dropped"] = self._track_novelty_dropped
             stats["track_worst_committed"] = self._track_worst_committed
-        if self._detector_miss_saved:
-            stats["detector_miss_saved"] = self._detector_miss_saved
+        if self._detector_miss_offered:
+            stats["detector_miss_offered"] = self._detector_miss_offered
         if spec.enable_dedup:
             stats["dedup_checked"] = self._dedup_frames_checked
             stats["dedup_image_hits"] = self._dedup_image_hits

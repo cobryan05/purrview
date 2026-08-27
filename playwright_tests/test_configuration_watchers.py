@@ -2764,3 +2764,95 @@ class TestTheTrackingMistakesToggle:
 
         wait_until(page, lambda: "blipThresholdsJson" in saved, "the save never reached the API")
         assert saved["blipThresholdsJson"] == {"minFlipSamples": 5}, saved
+
+
+class TestCollectorPicker:
+    """`collect_training_images` picks its collector from a list, not a pasted uuid.
+
+    The action declares `collector_uuid` as its own schema type so the generic
+    renderer routes it to a picker. Before that it was `str`, which fell through to
+    a plain text box: a uuid typed wrong is accepted by the form and only fails
+    when the WATCHER builds, with nothing on screen connecting the two.
+    """
+
+    def _route_collectors(self, page: Page, collectors: list):
+        page.route(
+            "**/api/training-collectors",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "collectors": collectors}),
+            ),
+        )
+
+    def _open(self, page: Page, base_url: str, collectors: list):
+        self._route_collectors(page, collectors)
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+        page.locator("[data-testid='watch-action-kind']").first.select_option("collect_training_images")
+        return page.locator("[data-testid='watch-action-collector']").first
+
+    def test_the_collectors_that_exist_are_offered_as_options(self, page: Page, base_url: str):
+        picker = self._open(
+            page,
+            base_url,
+            [
+                {"uuid": "c1", "name": "Doorway", "enabled": True, "params": {}},
+                {"uuid": "c2", "name": "Litter box", "enabled": True, "params": {}},
+            ],
+        )
+
+        expect(picker).to_be_visible()
+        wait_until(
+            page,
+            lambda: picker.locator("option[value='c1']").count() == 1,
+            "the collector list never populated the picker",
+        )
+        expect(picker.locator("option[value='c2']")).to_have_count(1)
+
+    def test_a_disabled_collector_is_not_offered(self, page: Page, base_url: str):
+        """Picking one would save an attachment the watcher refuses to build."""
+        picker = self._open(
+            page,
+            base_url,
+            [
+                {"uuid": "c1", "name": "Doorway", "enabled": True, "params": {}},
+                {"uuid": "c2", "name": "Retired", "enabled": False, "params": {}},
+            ],
+        )
+
+        wait_until(page, lambda: picker.locator("option[value='c1']").count() == 1, "the picker never populated")
+        expect(picker.locator("option[value='c2']")).to_have_count(0)
+
+    def test_with_no_collectors_the_picker_says_so_rather_than_sitting_empty(self, page: Page, base_url: str):
+        picker = self._open(page, base_url, [])
+
+        wait_until(
+            page,
+            lambda: "Collectors" in (picker.locator("option").first.text_content() or ""),
+            "an empty list left the picker showing nothing actionable",
+        )
+
+
+class TestEveryRegisteredActionKindIsOffered:
+    """The kind dropdown is a hand-written list in `watchers.js`; the registry is the
+    real one. Nothing compared them, and `collect_training_images` was registered,
+    schema'd, tested and completely unreachable from the UI for four phases because
+    of it — the exact failure mode the schema-driven params form was built to end.
+    """
+
+    def test_the_dropdown_offers_every_kind_the_registry_declares(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+        offered = {
+            option.get_attribute("value")
+            for option in page.locator("[data-testid='watch-action-kind']").first.locator("option").all()
+        }
+        registered = {schema["kind"] for schema in ACTION_SCHEMAS}
+
+        assert registered <= offered, f"registered but not offered: {sorted(registered - offered)}"

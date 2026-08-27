@@ -40,7 +40,15 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageProviderType,
     ImageWithProviderMetadata,
 )
-from apps.helpers.training.collector import CollectorHost, FrameOffer, TrackedCrop, TrainingCollector
+from apps.helpers.training.collector import (
+    SAVE_REASON_BAND,
+    SAVE_REASON_DETECTOR_MISS,
+    SAVE_REASON_TRACK_WORST,
+    CollectorHost,
+    FrameOffer,
+    TrackedCrop,
+    TrainingCollector,
+)
 from apps.helpers.training.collectorSpec import CollectorSpec, collector_params_schema
 from apps.tasks_server.tasks._detection_merger import MergePolicy
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
@@ -3466,6 +3474,36 @@ class TestPerTrackNoveltySampling:
             assert kept == [det]
         assert collector._track_novelty_kept == 5
 
+    def test_the_cap_is_configurable_per_collector(self):
+        """A collector whose scene genuinely produces more distinct poses than the
+        default allows must be tunable without a code change — plan §4B keeps the
+        cap as a knob precisely because the right value is scene-dependent."""
+        collector = _detached_collector({"output_dir": "out", "max_frames_per_track": 3})
+
+        for seed in range(5):
+            collector._apply_track_novelty(
+                _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)]
+            )
+
+        # Only the most recent 3 poses are still compared against — the deque is
+        # bounded by the configured value, not by MAX_FRAMES_PER_TRACK.
+        assert len(collector._track_hashes[self._TRACK.track_id]) == 3
+
+    def test_a_zero_cap_cannot_silently_disable_the_prefilter(self):
+        """maxlen=0 would keep no history at all, so every crop would compare as
+        novel and per-track sampling would quietly stop happening."""
+        collector = _detached_collector({"output_dir": "out", "max_frames_per_track": 0})
+        image = self._solid_image(128)
+
+        collector._apply_track_novelty(
+            _frame_offer_with(image, tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)]
+        )
+        kept = collector._apply_track_novelty(
+            _frame_offer_with(image, tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)]
+        )
+
+        assert kept == []
+
 
 class TestTrackDeathCommitsTheWorstHeldCrop:
     """Plan §4B: 'always keep the track's lowest-confidence frame ... commit at
@@ -3494,8 +3532,11 @@ class TestTrackDeathCommitsTheWorstHeldCrop:
             await collector._commit_dead_track_worst((5,))
 
         dispatch.assert_called_once()
-        saved_frame, saved_matching = dispatch.call_args.args
+        saved_frame, saved_matching, reason = dispatch.call_args.args
         assert saved_matching == [det_low]
+        # Attributed to the track-worst commit, not to the ordinary band path, so
+        # the status card can say whether this rule is producing anything.
+        assert reason == SAVE_REASON_TRACK_WORST
         assert collector._track_worst_committed == 1
         # The track is fully forgotten — nothing left to double-commit later.
         assert 5 not in collector._track_worst
@@ -3545,8 +3586,8 @@ class TestOfferDetectorMiss:
         with patch.object(collector, "_dispatch_save") as dispatch:
             await collector.offer_detector_miss(frame, det)
 
-        dispatch.assert_called_once_with(frame, [det])
-        assert collector._detector_miss_saved == 1
+        dispatch.assert_called_once_with(frame, [det], SAVE_REASON_DETECTOR_MISS)
+        assert collector._detector_miss_offered == 1
 
     async def test_routes_through_dedup_when_enabled(self):
         collector = _detached_collector({"output_dir": "out", "enable_dedup": True})
@@ -3556,7 +3597,7 @@ class TestOfferDetectorMiss:
         with patch.object(collector, "_enqueue_for_dedup", new=AsyncMock()) as enqueue:
             await collector.offer_detector_miss(frame, det)
 
-        enqueue.assert_awaited_once_with(frame, [det])
+        enqueue.assert_awaited_once_with(frame, [det], SAVE_REASON_DETECTOR_MISS)
 
     async def test_bypasses_per_track_novelty_and_the_filter_chain(self):
         """Neither reasons about model-derived detections; this box is neither."""
@@ -3704,7 +3745,11 @@ class TestDedupWorkerRecordsDistances:
         images_api.check_dedup_bulk.return_value = response
 
         await task._collector._dedup_queue.put(
-            (FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.LIVE_STREAM), matching)
+            (
+                FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.LIVE_STREAM),
+                matching,
+                SAVE_REASON_BAND,
+            )
         )
         await task._collector._dedup_queue.put(None)
         with patch.object(task._collector, "_save_image", new=AsyncMock(return_value=None)) as save:
@@ -4214,7 +4259,11 @@ class TestCollectAllDedup:
         images_api.check_dedup_bulk.return_value = response
 
         await task._collector._dedup_queue.put(
-            (FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.LIVE_STREAM), [])
+            (
+                FrameOffer(provided=provided, base64="b64", provider_type=ImageProviderType.LIVE_STREAM),
+                [],
+                SAVE_REASON_BAND,
+            )
         )
         await task._collector._dedup_queue.put(None)
         with patch.object(task._collector, "_save_image", new=AsyncMock(return_value="f.jpg")) as save:
@@ -5224,3 +5273,91 @@ class TestConcurrentFetch:
 
         assert provided is None
         assert error is not None and "timed out" in error
+
+
+class TestSaveReasonAttribution:
+    """Saves are split by *why* the frame was kept (plan §6).
+
+    A single `saved` total cannot answer "is this knob producing anything",
+    because the interesting reasons are the rare ones. Attribution happens where
+    the save COMPLETES, not where it is dispatched, so the subtotals always sum
+    to `saved` rather than counting frames dedup went on to discard.
+    """
+
+    @staticmethod
+    def _collector():
+        collector = _detached_collector({"output_dir": "out"})
+        collector._save_image = AsyncMock(return_value="f.jpg")
+        return collector
+
+    @staticmethod
+    def _offer():
+        provided = MagicMock()
+        provided.metadata.source = "src"
+        return FrameOffer(provided=provided, base64="b64", unique_id=None)
+
+    async def test_each_reason_lands_in_its_own_subtotal(self):
+        collector = self._collector()
+
+        collector._dispatch_save(self._offer(), [], SAVE_REASON_BAND)
+        collector._dispatch_save(self._offer(), [], SAVE_REASON_DETECTOR_MISS)
+        collector._dispatch_save(self._offer(), [], SAVE_REASON_TRACK_WORST)
+        await collector.drain_saves()
+
+        stats, _ = collector.status_stats()
+        assert (stats["saved_band"], stats["saved_detector_miss"], stats["saved_track_worst"]) == (1, 1, 1)
+
+    async def test_subtotals_sum_to_the_saved_total(self):
+        collector = self._collector()
+        for reason in (SAVE_REASON_BAND, SAVE_REASON_BAND, SAVE_REASON_DETECTOR_MISS):
+            collector._dispatch_save(self._offer(), [], reason)
+        await collector.drain_saves()
+
+        stats, _ = collector.status_stats()
+        assert stats["saved_band"] + stats["saved_detector_miss"] + stats["saved_track_worst"] == stats["saved"]
+
+    async def test_a_save_that_returns_nothing_is_not_attributed(self):
+        """`_save_image` returning None means the write did not happen — counting it
+        would make the subtotals overstate what is on disk."""
+        collector = self._collector()
+        collector._save_image = AsyncMock(return_value=None)
+
+        collector._dispatch_save(self._offer(), [], SAVE_REASON_DETECTOR_MISS)
+        await collector.drain_saves()
+
+        stats, _ = collector.status_stats()
+        assert stats["saved"] == 0 and "saved_detector_miss" not in stats
+
+    async def test_band_only_runs_do_not_show_the_split(self):
+        """The standalone task saves for one reason only; three rows restating the
+        same number is noise on its status panel."""
+        collector = self._collector()
+        collector._dispatch_save(self._offer(), [], SAVE_REASON_BAND)
+        await collector.drain_saves()
+
+        stats, _ = collector.status_stats()
+        assert stats["saved"] == 1 and "saved_band" not in stats
+
+
+class TestSendWidth:
+    """`send_width = min(source_native_width, model_input_width)` (plan §2.3b) —
+    arithmetic the system does itself rather than a user-facing toggle."""
+
+    @staticmethod
+    def _collector(model_input_width):
+        collector = _detached_collector({"output_dir": "out"})
+        collector._model_input_width = model_input_width
+        return collector
+
+    def test_capped_at_the_models_own_input(self):
+        """Above the model's input you pay to ship pixels the server resizes away —
+        the mistake the deleted full-res inference mode would have made every frame."""
+        assert self._collector(640).send_width(1920) == 640
+
+    def test_a_source_narrower_than_the_model_is_sent_as_is(self):
+        assert self._collector(1280).send_width(704) == 704
+
+    def test_unknown_model_width_means_change_nothing(self):
+        """An unreadable ONNX graph must never make a working collector start
+        re-encoding frames at a guessed size."""
+        assert self._collector(None).send_width(1920) is None

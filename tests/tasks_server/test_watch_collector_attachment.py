@@ -252,9 +252,8 @@ class TestBuildActionsPassesTrigger:
 
 
 class TestStatusDataCollectorsTable:
-    """`get_status_data()` gains one row per attached collector (phase 5) —
-    backend-only, see the handoff doc for why the Watchers pane doesn't
-    render it yet."""
+    """`get_status_data()` gains one row per attached collector, rendered by
+    `status_schema()`'s "collectorsTable" widget."""
 
     def _task_for_status(self):
         task = StreamWatcherTask.__new__(StreamWatcherTask)
@@ -298,11 +297,52 @@ class TestStatusDataCollectorsTable:
                 "name": "Litter box collector",
                 "offered": 40,
                 "saved": 12,
+                # Blank, not 0: this collector has never saved for a non-band
+                # reason, so a zero would read as "the knob ran and found nothing"
+                # rather than "the knob isn't on".
+                "savedBand": "",
+                "savedDetectorMiss": "",
+                "savedTrackWorst": "",
+                "noveltyDropped": "",
                 "droppedBehind": 1,
                 "dedupHits": 5,  # image_hits(3) + bbox_hits(2)
                 "filterDiscarded": 7,
             }
         ]
+
+    def test_dropped_frames_raise_a_tuning_hint_naming_the_collector(self):
+        """A non-blocking offer sheds frames silently by design (plan §7.1), and
+        silence there is indistinguishable from "this config collects nothing"."""
+        task = self._task_for_status()
+        task._collectors = {"c1": SimpleNamespace(status_stats=lambda: ({"dropped_behind": 4}, {}))}
+        task._collector_names = {"c1": "Doorway"}
+
+        hints = task.get_status_data()["tuningHints"]
+
+        assert "Doorway" in hints and "4" in hints
+
+    def test_no_hint_while_nothing_is_being_dropped(self):
+        task = self._task_for_status()
+        task._collectors = {"c1": SimpleNamespace(status_stats=lambda: ({"dropped_behind": 0}, {}))}
+        task._collector_names = {"c1": "Doorway"}
+
+        assert "Doorway" not in task.get_status_data()["tuningHints"]
+
+    def test_save_reason_subtotals_reach_the_table(self):
+        task = self._task_for_status()
+        task._collectors = {
+            "c1": SimpleNamespace(
+                status_stats=lambda: (
+                    {"saved": 10, "saved_band": 7, "saved_detector_miss": 2, "saved_track_worst": 1},
+                    {},
+                )
+            )
+        }
+        task._collector_names = {"c1": "Doorway"}
+
+        row = task.get_status_data()["collectorsTable"][0]
+
+        assert (row["savedBand"], row["savedDetectorMiss"], row["savedTrackWorst"]) == (7, 2, 1)
 
     def test_no_attached_collectors_is_an_empty_table(self):
         task = self._task_for_status()
@@ -316,3 +356,75 @@ class TestStatusDataCollectorsTable:
         data = task.get_status_data()
 
         assert data["collectorsTable"][0]["name"] == "c1"
+
+
+class TestStatusSchemaCoversStatusData:
+    """Every key `get_status_data()` returns must have a widget declaring it.
+
+    The frontend renders `statusData[widget.id]` per declared widget, so a key
+    with no widget is computed and thrown away with nothing raising anywhere —
+    which is exactly what happened to `collectorsTable` for three phases.
+    """
+
+    def test_every_status_data_key_is_declared_by_a_widget(self):
+        task = TestStatusDataCollectorsTable()._task_for_status()
+
+        declared = {w["id"] for w in StreamWatcherTask.status_schema()}
+        # `source="summary"` widgets read the task's summary text, not status data.
+        produced = set(task.get_status_data())
+
+        assert produced <= declared, f"computed but never rendered: {sorted(produced - declared)}"
+
+
+class TestReviewActions:
+    """A watcher-attached collector's ways into Review.
+
+    Without these the whole detector-miss feature is unreachable from the UI:
+    only a watcher can produce a detector miss (it needs a tracker), and only
+    the standalone task's Jobs card rendered `review_actions()` before.
+    """
+
+    @staticmethod
+    def _task(collectors, names):
+        task = StreamWatcherTask.__new__(StreamWatcherTask)
+        task._collectors = collectors
+        task._collector_names = names
+        return task
+
+    @staticmethod
+    def _collector(*labels):
+        return SimpleNamespace(
+            review_actions=lambda: [{"type": "open_review", "label": lbl, "payload": {}} for lbl in labels]
+        )
+
+    def test_a_single_collectors_labels_are_not_prefixed(self):
+        task = self._task({"c1": self._collector("Browse detector misses")}, {"c1": "Doorway"})
+
+        actions = task.get_status_actions()
+
+        assert [a["label"] for a in actions] == ["Browse detector misses"]
+
+    def test_two_collectors_are_disambiguated_by_name(self):
+        task = self._task(
+            {"c1": self._collector("Browse unverified"), "c2": self._collector("Browse unverified")},
+            {"c1": "Doorway", "c2": "Litter box"},
+        )
+
+        assert [a["label"] for a in task.get_status_actions()] == [
+            "Doorway — Browse unverified",
+            "Litter box — Browse unverified",
+        ]
+
+    def test_payloads_are_carried_through_untouched(self):
+        payload = {"tag_uuids": ["t"], "bbox_verification": "unverified"}
+        collector = SimpleNamespace(review_actions=lambda: [{"type": "open_review", "label": "x", "payload": payload}])
+        task = self._task({"c1": collector}, {"c1": "Doorway"})
+
+        assert task.get_status_actions()[0]["payload"] is payload
+
+    def test_a_task_built_before_init_has_no_actions_rather_than_raising(self):
+        """Reachable through the PENDING window, and tests build this class with
+        `__new__` — an attribute read here would AttributeError far from the change."""
+        task = StreamWatcherTask.__new__(StreamWatcherTask)
+
+        assert task.get_status_actions() == []

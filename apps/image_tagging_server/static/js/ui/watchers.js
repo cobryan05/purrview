@@ -16,7 +16,8 @@ import { openFileBrowserModal } from '/app-static/js/ui/utils/openFileBrowserMod
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { openOverlapPreviewModal } from '/app-static/js/ui/utils/overlapPreviewModal.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
-import { NEW_ITEM_SELECTION, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { NEW_ITEM_SELECTION, navigateTabs, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { fetchTrainingCollectors } from '/app-static/js/shared/api/trainingCollectors.js';
 import { buildSchemaParams } from '/app-static/js/ui/utils/schemaParamsForm.js';
 
 let _rendering = false;
@@ -121,6 +122,9 @@ const ACTION_KINDS = [
   { key: 'save_snapshot', text: 'Save snapshot' },
   { key: 'save_timelapse', text: 'Save timelapse' },
   { key: 'save_event', text: 'Save event' },
+  // "Collect training", not "Collect training images": the dropdown sizes itself to its
+  // widest option, the same reason "Event timelapse" is shortened above.
+  { key: 'collect_training_images', text: 'Collect training' },
 ];
 
 const TRIGGERS = [
@@ -483,6 +487,81 @@ function dirPickerField(value, onAnyChange, { placeholder = 'dataset root' } = {
     getValue: () => input.value,
     onChange: (fn) => listeners.push(fn),
   };
+}
+
+/**
+ * Picks the training collector a `collect_training_images` action feeds.
+ *
+ * The action declares `collector_uuid` as its own schema type rather than `str`, so a
+ * uuid is chosen from the collectors that exist instead of pasted — a pasted uuid that
+ * names nothing makes the *watcher* fail at build time, far from the form that accepted
+ * it. Mirrors `TrainingCollectorSelectField`'s rules (disabled collectors hidden unless
+ * already selected) without reusing it: that class is an async `Field` for the stacked
+ * task-config form, and this row is a synchronous flex line.
+ *
+ * The list arrives after the widget does. The stored uuid is therefore rendered as its
+ * own option immediately, so a save made before the fetch lands keeps the selection
+ * rather than reading back an empty select.
+ */
+function collectorPickerWidget(value, onChange) {
+  const wrap = el('div', 'watch-collector-picker');
+  const control = document.createElement('select');
+  control.dataset.testid = 'watch-action-collector';
+  const stored = value ?? '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = stored;
+  placeholder.textContent = stored ? 'Loading…' : 'Select a collector…';
+  control.appendChild(placeholder);
+  control.value = stored;
+  control.addEventListener('change', onChange);
+
+  fetchTrainingCollectors().then((collectorsMap) => {
+    const options = [...(collectorsMap?.values?.() || [])]
+      .filter(c => c.enabled !== false || c.uuid === stored);
+    if (!options.length) {
+      placeholder.textContent = 'No collectors — create one in Configuration → Collectors';
+      return;
+    }
+    control.replaceChildren();
+    if (!stored) {
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = 'Select a collector…';
+      control.appendChild(none);
+    }
+    for (const c of options) {
+      const option = document.createElement('option');
+      option.value = c.uuid;
+      option.textContent = c.enabled === false ? `${c.name} (disabled)` : c.name;
+      control.appendChild(option);
+    }
+    // A stored uuid whose collector has since been deleted would otherwise silently
+    // select the first option and rewrite the action on the next save.
+    if (stored && !options.some(c => c.uuid === stored)) {
+      const missing = document.createElement('option');
+      missing.value = stored;
+      missing.textContent = `${stored} (missing)`;
+      control.appendChild(missing);
+    }
+    control.value = stored;
+  }).catch(() => {
+    placeholder.textContent = stored || 'Could not load collectors';
+  });
+
+  const link = document.createElement('a');
+  link.href = '#';
+  link.className = 'watch-hint';
+  link.textContent = 'Edit…';
+  link.title = 'Open Configuration → Collectors, where a collector’s ~30 knobs live.';
+  link.dataset.testid = 'watch-action-collector-edit';
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    navigateTabs('tab-configuration', 'tab-collector-management', { selectUuid: control.value || null });
+  });
+
+  wrap.append(control, link);
+  return { element: wrap, control, read: () => control.value.trim() };
 }
 
 /**
@@ -2050,6 +2129,7 @@ function buildActionRow(action, ctx) {
         fieldWrapper: wfield, numberInput, el, num,
         container: params,
         makeWidget: (type, field, value, onChange) => {
+          if (type === 'training_collector_uuid') return collectorPickerWidget(value, onChange);
           if (type !== 'directory') return null;
           dirPicker = dirPickerField(value ?? DEFAULT_SNAPSHOT_DIR, onChange, { placeholder: DEFAULT_SNAPSHOT_DIR });
           return {
@@ -2059,8 +2139,8 @@ function buildActionRow(action, ctx) {
           };
         },
         decorator: {
-          labels: { output_dir: 'Output dir' },
-          testids: { output_dir: 'watch-action-dir' },
+          labels: { output_dir: 'Output dir', collector_uuid: 'Collector' },
+          testids: { output_dir: 'watch-action-dir', collector_uuid: 'watch-action-collector' },
           widths: { output_dir: '15rem', quality: '4.5rem' },
           steps: { quality: '5' },
           mins: { quality: 1 },

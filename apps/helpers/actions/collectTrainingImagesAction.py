@@ -52,6 +52,7 @@ a collected image back to the window it came from in review.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -60,6 +61,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tupl
 
 from ..db.db_client import DETECTOR_MISS_TAG_UUID
 from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
+from ..imageUtils import base64_encode_jpg, downscale_to_width
 from ..watch.events import EventPhase, WatchEventSignal
 from ..watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED
 from .action import Action, ActionContext, ActionResult
@@ -198,9 +200,12 @@ class CollectTrainingImagesAction(Action):
     def params_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {
             "collector_uuid": {
-                "type": "str",
+                # Its own type, not `str`: the watchers form renders a picker for it
+                # (`collectorPickerWidget`). A pasted uuid naming nothing fails when the
+                # WATCHER builds, far from the form that accepted it.
+                "type": "training_collector_uuid",
                 "required": True,
-                "help": "Collector to feed — see Configuration → Collectors for the uuid.",
+                "help": "Collector to feed. Edit collectors in Configuration → Collectors.",
             },
             "min_interval_s": {
                 "type": "float",
@@ -319,7 +324,12 @@ class CollectTrainingImagesAction(Action):
         # The offer actually going out discharges every death accumulated since
         # the last one — see `_pending_dead_track_ids`.
         dead_track_ids = self._pending_dead_track_ids.pop(key, None)
-        frame = self._build_frame_offer(context, key, dead_track_ids=dead_track_ids)
+        frame = self._build_frame_offer(
+            context,
+            key,
+            dead_track_ids=dead_track_ids,
+            base64_override=await self._wider_inference_base64(collector, context),
+        )
         try:
             await collector.offer(frame)
         except Exception as e:
@@ -327,8 +337,51 @@ class CollectTrainingImagesAction(Action):
             return ActionResult(ok=False, detail=f"Offer failed: {e}")
         return ActionResult(ok=True)
 
+    async def _wider_inference_base64(self, collector: TrainingCollector, context: ActionContext) -> Optional[str]:
+        """Re-encode the full-res frame when the collector's models can use more
+        pixels than the watcher's analysis frame carries (plan §2.3b).
+
+        `None` means "reuse `context.analysis_base64`", and that is the common
+        case by a wide margin: for a 640-input model the watcher's own
+        `analysis_width=640` is *already* `min(native, model_input)`, so its boxes
+        are not a degraded approximation of a full-res pass — they are the same
+        boxes, and sharing them is free. This only spends an encode where 640
+        genuinely throws away detail the model could have used.
+
+        Never sends MORE than the model's input either: above it you pay to ship
+        pixels the server resizes away, which is the mistake the deleted
+        "full_res inference mode" would have made on every frame.
+
+        Only the periodic offer takes this path. A detector-miss commit
+        (`_commit_gap`) bypasses inference entirely, so re-encoding for it would
+        be pure waste.
+        """
+        full = getattr(context, "full_frame", None)
+        analysis = getattr(context, "frame", None)
+        if full is None or analysis is None:
+            return None
+        try:
+            native_width = int(full.shape[1])
+            analysis_width = int(analysis.shape[1])
+            send_width = collector.send_width(native_width)
+            # isinstance, not truthiness: only a real width is actionable, and a
+            # test double's auto-vivified attribute is truthy but not comparable.
+            if not isinstance(send_width, int) or send_width <= analysis_width:
+                return None
+            resized = downscale_to_width(full, send_width)
+            return await asyncio.to_thread(base64_encode_jpg, resized)
+        except Exception:
+            # The analysis frame is always a valid input — losing the offer over a
+            # resolution optimisation would trade a collected frame for nothing.
+            logger.exception("collect_training_images could not re-encode at send_width; using the analysis frame")
+            return None
+
     def _build_frame_offer(
-        self, context: ActionContext, key: str, dead_track_ids: Optional[List[int]] = None
+        self,
+        context: ActionContext,
+        key: str,
+        dead_track_ids: Optional[List[int]] = None,
+        base64_override: Optional[str] = None,
     ) -> FrameOffer:
         additional_info: Dict[str, Any] = {}
         stack = self._open_sessions.get(key) or []
@@ -351,7 +404,7 @@ class CollectTrainingImagesAction(Action):
                     additional_info=additional_info,
                 ),
             ),
-            base64=context.analysis_base64,
+            base64=base64_override or context.analysis_base64,
             tracks=tuple(self._normalize_tracks(context.tracks, context.frame)),
             dead_track_ids=tuple(resolved_dead_ids),
         )

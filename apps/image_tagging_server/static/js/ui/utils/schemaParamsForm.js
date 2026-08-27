@@ -31,8 +31,13 @@
  */
 
 /** Widget per declared `type`. Keep in step with the renderable set asserted in
- *  `tests/db_server/test_watch_profiles.py::TestActionListing`. */
-const KNOWN_TYPES = new Set(['bool', 'int', 'float', 'str', 'directory']);
+ *  `tests/db_server/test_watch_profiles.py::TestActionListing`.
+ *
+ *  `directory` and `training_collector_uuid` are listed but not built here — this
+ *  module has no file browser and does no fetching. They reach the caller's
+ *  `makeWidget`, which is the only reason they must NOT fall through to the `str`
+ *  default: an unlisted type is coerced to `str` before `makeWidget` is consulted. */
+const KNOWN_TYPES = new Set(['bool', 'int', 'float', 'str', 'directory', 'training_collector_uuid']);
 
 /**
  * @param {object} schema The plugin's `paramsSchema`, keyed by snake_case param name.

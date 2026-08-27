@@ -6,6 +6,8 @@ on a 24/7 run, and every one of them has to degrade to a reported failure rather
 an exception on the frame loop.
 """
 
+import base64
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1616,3 +1618,74 @@ class TestAssociationAmbiguity:
 
         held = action._track_gaps["s1"][1].held_frame
         assert held.provided.metadata.additional_info["detector_miss_ambiguous"] is True
+
+
+class TestCollectorSendWidth:
+    """Which pixels the collector's own inference call gets (plan §2.3b).
+
+    The saved image is always the full-res frame — that is `_save_image`'s
+    contract and is never in tension with this. Only the INFERENCE input is at
+    stake here: at or above the model's input width, the watcher's analysis frame
+    already gives the same boxes a full-res pass would, so reusing it is free.
+    """
+
+    def _action(self, collector, **overrides):
+        return CollectTrainingImagesAction(collector_for=lambda uuid: collector, collector_uuid="c1", **overrides)
+
+    def _context(self, native_width=1920, analysis_width=640):
+        return _context(
+            full_frame=np.zeros((native_width // 2, native_width, 3), dtype=np.uint8),
+            frame=np.zeros((analysis_width // 2, analysis_width, 3), dtype=np.uint8),
+            analysis_base64='{"format": "jpg", "data": "AA==", "metadata": {}}',
+            frame_seq=7,
+        )
+
+    @staticmethod
+    def _collector(send_width):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        collector.spec.enable_detector_miss = False
+        collector.send_width = lambda native: send_width
+        return collector
+
+    async def test_a_640_model_reuses_the_watchers_own_analysis_frame(self):
+        """The common case, and the whole reason sharing is free: the watcher's
+        640px frame IS min(native, model_input), so a re-encode would recompute
+        boxes it already has at full cost."""
+        context = self._context()
+        collector = self._collector(640)
+
+        await self._action(collector).run(_frame_signal(), context)
+
+        offer = collector.offer.await_args.args[0]
+        assert offer.base64 == context.analysis_base64
+
+    async def test_a_wider_model_gets_a_re_encoded_frame(self):
+        context = self._context(native_width=1920, analysis_width=640)
+        collector = self._collector(1280)
+
+        await self._action(collector).run(_frame_signal(), context)
+
+        offer = collector.offer.await_args.args[0]
+        assert offer.base64 != context.analysis_base64
+        packet = json.loads(offer.base64)
+        decoded = cv2.imdecode(np.frombuffer(base64.b64decode(packet["data"]), np.uint8), cv2.IMREAD_COLOR)
+        # min(native=1920, model_input=1280) — not the native width, and not 640.
+        assert decoded.shape[1] == 1280
+
+    async def test_the_saved_image_stays_full_resolution_either_way(self):
+        context = self._context(native_width=1920, analysis_width=640)
+        collector = self._collector(1280)
+
+        await self._action(collector).run(_frame_signal(), context)
+
+        offer = collector.offer.await_args.args[0]
+        assert offer.provided.image.shape[1] == 1920
+
+    async def test_an_unknown_model_width_changes_nothing(self):
+        context = self._context()
+        collector = self._collector(None)
+
+        await self._action(collector).run(_frame_signal(), context)
+
+        assert collector.offer.await_args.args[0].base64 == context.analysis_base64
