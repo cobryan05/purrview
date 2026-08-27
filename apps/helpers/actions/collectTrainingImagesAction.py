@@ -162,6 +162,18 @@ class CollectTrainingImagesAction(Action):
         #: §4A). Keyed per source because track_ids are only unique within one
         #: source's own tracker instance, not across a multi-camera watcher.
         self._track_gaps: Dict[str, Dict[int, _GapState]] = {}
+        #: source_uuid -> track_ids that died since the last offer actually went
+        #: out. `context.dead_track_ids` is only valid for the single step it's
+        #: read on (WatchPipeline reports each death exactly once), but offers to
+        #: the collector are throttled by `_min_interval_s` — far coarser than the
+        #: tracker's own cadence. Without accumulating here, a track that dies
+        #: between two throttled offers is never reported to the collector at
+        #: all, silently breaking `TrainingCollector`'s "commit the track's worst
+        #: crop at track end" guarantee (plan §4B) for the common case.
+        #: A list, not a set: `dead_track_ids`' consumers (and the tests
+        #: exercising them) treat it as ordered, and a set's iteration order is
+        #: not something to rely on even for ints.
+        self._pending_dead_track_ids: Dict[str, List[int]] = {}
 
     @classmethod
     def triggers(cls, row: Any) -> Set[str]:
@@ -228,6 +240,7 @@ class CollectTrainingImagesAction(Action):
                     height=max(0.0, (y2 - y1) / height),
                     label_uuid=t.label_uuid,
                     matched_this_update=t.matched_this_update,
+                    confirmed=t.confirmed,
                 )
             )
         return out
@@ -246,9 +259,10 @@ class CollectTrainingImagesAction(Action):
             if stack[idx][0] == signal.rule_uuid:
                 stack.pop(idx)
                 break
-        else:
-            if stack:
-                stack.pop()
+        # No matching entry — e.g. this action's in-memory state was reset (task
+        # restart) after the matching START had already landed. There is nothing
+        # of ours to close, and popping an unrelated-but-still-open rule's entry
+        # would end that rule's session early; leave the stack untouched instead.
         return ActionResult(ok=True)
 
     async def _on_frame(self, context: ActionContext) -> ActionResult:
@@ -261,6 +275,16 @@ class CollectTrainingImagesAction(Action):
             return ActionResult(ok=False, detail=f"Collector {self._collector_uuid!r} is not attached")
         if context.full_frame is None or context.analysis_base64 is None:
             return ActionResult(ok=False, detail="No frame available")
+
+        # Accumulated every in-scope frame, not just the ones that end up
+        # offered — see `_pending_dead_track_ids`'s own docstring for why a
+        # per-frame read here (rather than reading `context.dead_track_ids`
+        # only inside the throttled offer below) is required.
+        if context.dead_track_ids:
+            bucket = self._pending_dead_track_ids.setdefault(key, [])
+            for track_id in context.dead_track_ids:
+                if track_id not in bucket:
+                    bucket.append(track_id)
 
         # Gap tracking runs on EVERY in-scope frame, unlike the periodic offer
         # below — a gap can open and resolve entirely between two throttled
@@ -280,7 +304,10 @@ class CollectTrainingImagesAction(Action):
             return ActionResult(ok=True, detail="waiting for interval")
         self._last_offered[key] = now
 
-        frame = self._build_frame_offer(context, key)
+        # The offer actually going out discharges every death accumulated since
+        # the last one — see `_pending_dead_track_ids`.
+        dead_track_ids = self._pending_dead_track_ids.pop(key, None)
+        frame = self._build_frame_offer(context, key, dead_track_ids=dead_track_ids)
         try:
             await collector.offer(frame)
         except Exception as e:
@@ -288,12 +315,18 @@ class CollectTrainingImagesAction(Action):
             return ActionResult(ok=False, detail=f"Offer failed: {e}")
         return ActionResult(ok=True)
 
-    def _build_frame_offer(self, context: ActionContext, key: str) -> FrameOffer:
+    def _build_frame_offer(
+        self, context: ActionContext, key: str, dead_track_ids: Optional[List[int]] = None
+    ) -> FrameOffer:
         additional_info: Dict[str, Any] = {}
         stack = self._open_sessions.get(key) or []
         if not self._continuous and stack:
             rule_uuid, started_at = stack[-1]
             additional_info = {"watch_rule_uuid": rule_uuid, "watch_event_started_at": str(started_at)}
+        # `dead_track_ids=None` means "caller doesn't care" (e.g. the gap-tracking
+        # snapshot below, which never reads this field) — fall back to the raw,
+        # single-step context value rather than silently swallowing it.
+        resolved_dead_ids = context.dead_track_ids if dead_track_ids is None else dead_track_ids
         return FrameOffer(
             provided=ImageWithProviderMetadata(
                 image=context.full_frame,
@@ -306,7 +339,7 @@ class CollectTrainingImagesAction(Action):
             ),
             base64=context.analysis_base64,
             tracks=tuple(self._normalize_tracks(context.tracks, context.frame)),
-            dead_track_ids=tuple(context.dead_track_ids),
+            dead_track_ids=tuple(resolved_dead_ids),
         )
 
     async def _process_track_gaps(self, key: str, collector: TrainingCollector, context: ActionContext) -> None:
@@ -323,6 +356,12 @@ class CollectTrainingImagesAction(Action):
             # mirrors `_filter_model`'s own target-label restriction, so this
             # never seeds a box for a label nobody asked for.
             if track.label_uuid not in target_labels:
+                continue
+            # Only a CONFIRMED track (plan §4A) — a still-provisional, single-hit
+            # track is exactly as likely to be tracker noise as a real object, and
+            # seeding a "detector miss" box for one would put unverified noise
+            # into the training set under the same tag real gaps use.
+            if not track.confirmed:
                 continue
             pending = gaps.get(track.track_id)
             if track.matched_this_update:

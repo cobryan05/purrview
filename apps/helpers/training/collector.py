@@ -142,6 +142,12 @@ class TrackedCrop:
     #: gap (plan §4A). Defaults `True` so phase 6's per-track novelty callers
     #: (which don't care about this) don't have to set it.
     matched_this_update: bool = True
+    #: Mirrors `Track.confirmed` — plan §4A is explicit that only a *confirmed*
+    #: track's gaps are worth collecting; a still-provisional (single-hit) track
+    #: is exactly as likely to be tracker noise as a real object. Defaults `True`
+    #: for the same reason as `matched_this_update`: callers that don't care
+    #: about detector-miss gating shouldn't have to set it.
+    confirmed: bool = True
 
 
 @dataclass

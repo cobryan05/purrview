@@ -1211,6 +1211,30 @@ class TestCollectTrainingImagesAction:
 
         assert collector.offer.await_args.args[0].dead_track_ids == (7, 9)
 
+    async def test_a_death_between_two_throttled_offers_is_not_lost(self):
+        """`dead_track_ids` is only valid for the single step it's read on, but
+        offers are throttled far coarser than the tracker's own cadence — a
+        death on a skipped-over frame must still reach the collector on the
+        next offer that actually goes out, not vanish."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1000.0)
+
+        # First call passes the interval gate (no prior offer) and reports no
+        # deaths yet.
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1", dead_track_ids=[]))
+        # A track dies on a frame that the interval gate throttles away —
+        # collector.offer is not called for this one.
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1", dead_track_ids=[3]))
+        collector.offer.assert_called_once()
+
+        # Force the next call through the gate; it must still carry the death
+        # from the skipped frame above.
+        action._last_offered["s1"] = 0.0
+        await action.run(_frame_signal(), self._full_frame_context(source_uuid="s1", dead_track_ids=[]))
+
+        assert collector.offer.await_args.args[0].dead_track_ids == (3,)
+
 
 class TestCollectTrainingImagesActionTriggers:
     """`triggers()` decides continuous vs event-scoped mode from the row's own
@@ -1373,6 +1397,30 @@ class TestCollectTrainingImagesActionEventScoped:
             "watch_event_started_at": "100.0",
         }
 
+    async def test_an_orphan_end_does_not_close_an_unrelated_open_session(self):
+        """An END for a rule this action never saw START for (e.g. its
+        in-memory state was reset by a restart after that START had already
+        landed) must not be treated as 'close whatever is on top of the
+        stack' — that would end a genuinely-still-open, unrelated rule's
+        session early."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=0.0)
+
+        await action.run(
+            _signal(phase=EventPhase.START, rule_uuid="rule-a", started_at=100.0, source_uuid="s1"),
+            _context(source_uuid="s1"),
+        )
+        # An END for a rule that never opened a session here.
+        await action.run(
+            _signal(phase=EventPhase.END, rule_uuid="rule-unrelated", source_uuid="s1"), _context(source_uuid="s1")
+        )
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        collector.offer.assert_awaited_once()  # rule-a's session must still be open
+        offered = collector.offer.await_args.args[0]
+        assert offered.provided.metadata.additional_info["watch_rule_uuid"] == "rule-a"
+
     async def test_the_newest_open_rule_wins_while_two_overlap(self):
         """The flip side of the above: while both are genuinely open, the
         most-recently-opened rule supplies provenance."""
@@ -1424,8 +1472,8 @@ def _detector_miss_collector(target_label="cat"):
     return collector
 
 
-def _track(track_id, bbox, label_uuid="cat", matched=True):
-    return Track(track_id=track_id, bbox=bbox, label_uuid=label_uuid, matched_this_update=matched)
+def _track(track_id, bbox, label_uuid="cat", matched=True, confirmed=True):
+    return Track(track_id=track_id, bbox=bbox, label_uuid=label_uuid, matched_this_update=matched, confirmed=confirmed)
 
 
 class TestDetectorMissGapTracking:
@@ -1508,6 +1556,19 @@ class TestDetectorMissGapTracking:
         await action._process_track_gaps("s1", collector, self._ctx([coasting]))
 
         assert not action._track_gaps.get("s1")
+
+    async def test_an_unconfirmed_track_never_opens_a_gap(self):
+        """Plan §4A calls for a CONFIRMED track's gaps specifically — a
+        still-provisional, single-hit track is exactly as likely to be tracker
+        noise as a real object, and must not seed a 'detector miss' box."""
+        action = self._action()
+        collector = _detector_miss_collector()
+        coasting = _track(1, (10, 10, 30, 30), matched=False, confirmed=False)
+
+        await action._process_track_gaps("s1", collector, self._ctx([coasting]))
+
+        assert not action._track_gaps.get("s1")
+        collector.offer_detector_miss.assert_not_called()
 
     async def test_track_ids_are_scoped_per_source(self):
         """Two cameras' trackers both mint track_id=1 independently — a gap on
