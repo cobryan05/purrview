@@ -50,19 +50,29 @@ Rule + start time is what's actually reachable, and is enough to correlate
 a collected image back to the window it came from in review.
 """
 
+from __future__ import annotations
+
 import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..db.db_client import DETECTOR_MISS_TAG_UUID
 from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
-from ..training.collector import FrameOffer, TrackedCrop, TrainingCollector
 from ..watch.events import EventPhase, WatchEventSignal
 from ..watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED
 from .action import Action, ActionContext, ActionResult
 from .Registry import register_action
+
+if TYPE_CHECKING:
+    # Deferred: `db_server` eagerly imports every `*Action.py` (see
+    # `actions/__init__.py`), and `..training.collector` imports the generated
+    # `db_client`/`inference_client` packages at module scope — which don't
+    # exist yet while those very clients are being generated from db_server's
+    # own OpenAPI spec (`generate_openapi_modules.sh`). Real imports happen
+    # lazily, at the two call sites that actually construct these types.
+    from ..training.collector import FrameOffer, TrackedCrop, TrainingCollector
 
 logger = logging.getLogger(__file__)
 
@@ -228,6 +238,8 @@ class CollectTrainingImagesAction(Action):
         height, width = frame.shape[:2]
         if not width or not height:
             return []
+        from ..training.collector import TrackedCrop
+
         out: List[TrackedCrop] = []
         for t in tracks:
             x1, y1, x2, y2 = t.bbox
@@ -327,6 +339,8 @@ class CollectTrainingImagesAction(Action):
         # snapshot below, which never reads this field) — fall back to the raw,
         # single-step context value rather than silently swallowing it.
         resolved_dead_ids = context.dead_track_ids if dead_track_ids is None else dead_track_ids
+        from ..training.collector import FrameOffer
+
         return FrameOffer(
             provided=ImageWithProviderMetadata(
                 image=context.full_frame,
