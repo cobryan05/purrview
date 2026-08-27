@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..db.db_client import DETECTOR_MISS_TAG_UUID
-from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
+from ..imageProviders.imageProvider import ImageProviderMetadata, ImageProviderType, ImageWithProviderMetadata
 from ..imageUtils import base64_encode_jpg, downscale_to_width
 from ..watch.events import EventPhase, WatchEventSignal
 from ..watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED
@@ -284,14 +284,7 @@ class CollectTrainingImagesAction(Action):
 
     async def _on_frame(self, context: ActionContext) -> ActionResult:
         key = context.source_uuid or ""
-        if not self._continuous and not self._open_sessions.get(key):
-            return ActionResult(ok=True, detail="no session open")
-
         collector = self._collector_for(self._collector_uuid)
-        if collector is None:
-            return ActionResult(ok=False, detail=f"Collector {self._collector_uuid!r} is not attached")
-        if context.full_frame is None or context.analysis_base64 is None:
-            return ActionResult(ok=False, detail="No frame available")
 
         # Accumulated every in-scope frame, not just the ones that end up
         # offered — see `_pending_dead_track_ids`'s own docstring for why a
@@ -302,6 +295,28 @@ class CollectTrainingImagesAction(Action):
             for track_id in context.dead_track_ids:
                 if track_id not in bucket:
                     bucket.append(track_id)
+
+        # Every early return below means "this frame will not be collected", and
+        # each of them used to be taken BEFORE the accumulation above — so in
+        # event-scoped mode a track that died after its event closed was never
+        # observed at all. Its `_GapState` (which pins a full-resolution numpy
+        # frame) and the collector's own `_track_worst` entry (another whole
+        # frame) then lived as long as the watcher did. Nothing further can be
+        # offered from here, so discharge both now rather than waiting for an
+        # offer that may be hours away or may never come.
+        if not self._continuous and not self._open_sessions.get(key):
+            # Gaps are dropped wholesale, not just for the dead: a gap can only
+            # be extended or resolved by `_process_track_gaps`, which no longer
+            # runs for this source, and committing a stale interpolation later
+            # would be worse than dropping it (plan §4A).
+            self._track_gaps.pop(key, None)
+            await self._discharge_dead_tracks(collector, key)
+            return ActionResult(ok=True, detail="no session open")
+        if collector is None:
+            return ActionResult(ok=False, detail=f"Collector {self._collector_uuid!r} is not attached")
+        if context.full_frame is None or context.analysis_base64 is None:
+            await self._discharge_dead_tracks(collector, key)
+            return ActionResult(ok=False, detail="No frame available")
 
         # Gap tracking runs on EVERY in-scope frame, unlike the periodic offer
         # below — a gap can open and resolve entirely between two throttled
@@ -336,6 +351,18 @@ class CollectTrainingImagesAction(Action):
             logger.exception("collect_training_images offer failed for collector %s", self._collector_uuid)
             return ActionResult(ok=False, detail=f"Offer failed: {e}")
         return ActionResult(ok=True)
+
+    async def _discharge_dead_tracks(self, collector: Optional[TrainingCollector], key: str) -> None:
+        """Hand every accumulated death straight to the collector, for the frames
+        that will never carry one on an offer. Never raises: a failure here must
+        not cost the watcher its frame handling."""
+        pending = self._pending_dead_track_ids.pop(key, None)
+        if not pending or collector is None:
+            return
+        try:
+            await collector.commit_dead_tracks(tuple(pending))
+        except Exception:
+            logger.exception("collect_training_images dead-track discharge failed for %s", self._collector_uuid)
 
     async def _wider_inference_base64(self, collector: TrainingCollector, context: ActionContext) -> Optional[str]:
         """Re-encode the full-res frame when the collector's models can use more
@@ -395,6 +422,12 @@ class CollectTrainingImagesAction(Action):
         from ..training.collector import FrameOffer
 
         return FrameOffer(
+            # A watcher's frames are a live stream, and saying so is what picks
+            # the timestamped filename scheme in `_save_image`. The default
+            # (FIXED) names files `{source}_{frame_idx}.jpg`, and `frame_seq` is
+            # a per-run counter that restarts at 0 — so a watcher restart would
+            # overwrite the previous run's collected images one for one.
+            provider_type=ImageProviderType.LIVE_STREAM,
             provided=ImageWithProviderMetadata(
                 image=context.full_frame,
                 metadata=ImageProviderMetadata(

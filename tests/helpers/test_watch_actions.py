@@ -1158,6 +1158,22 @@ class TestCollectTrainingImagesAction:
         assert offered.provided.metadata.frame_idx == 7
         assert offered.base64 == context.analysis_base64
 
+    async def test_the_offer_declares_itself_a_live_stream(self):
+        """`frame_seq` is a per-run counter that restarts at 0, and the default
+        (FIXED) provider type names files `{source}_{frame_idx}.jpg` — so a
+        watcher restart would overwrite the previous run's collected images one
+        for one. The live schemes in `_save_image` are timestamped; declaring
+        the type is what selects one."""
+        from apps.helpers.imageProviders.imageProvider import ImageProviderType
+
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(_frame_signal(), self._full_frame_context())
+
+        assert collector.offer.await_args.args[0].provider_type is not ImageProviderType.FIXED
+
     async def test_a_raising_collector_fails_without_propagating(self):
         """Action.run() must never raise — a broken collector is a reported
         failure, not a reason to kill the frame loop (test_watch_actions.py's
@@ -1312,6 +1328,39 @@ class TestCollectTrainingImagesActionEventScoped:
         await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
 
         collector.offer.assert_not_called()
+
+    async def test_a_track_dying_after_the_event_closed_is_still_discharged(self):
+        """`context.dead_track_ids` is valid for exactly one frame, and out of
+        session there will be no offer to carry it. The collector holds a whole
+        full-resolution frame per track in `_track_worst`, so a death observed
+        and then dropped strands that frame for the life of the watcher — days,
+        on a watcher that never opens another event."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        collector.commit_dead_tracks = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+
+        await action.run(_signal(phase=EventPhase.START, source_uuid="s1"), _context(source_uuid="s1"))
+        await action.run(_signal(phase=EventPhase.END, source_uuid="s1"), _context(source_uuid="s1"))
+        await action.run(
+            _frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1", dead_track_ids=[4])
+        )
+
+        collector.offer.assert_not_called()
+        collector.commit_dead_tracks.assert_awaited_once_with((4,))
+
+    async def test_held_gaps_are_dropped_when_the_event_closes(self):
+        """A gap can only be extended or resolved while frames are in scope, and
+        each one pins the full-resolution frame it is holding."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        collector.commit_dead_tracks = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+        action._track_gaps["s1"] = {4: object()}
+
+        await action.run(_frame_signal(source_uuid="s1"), self._full_frame_context(source_uuid="s1"))
+
+        assert "s1" not in action._track_gaps
 
     async def test_two_overlapping_rules_on_one_source_need_both_to_end(self):
         """A refcount, not a boolean — two in-scope rules opening near-simultaneously

@@ -1243,10 +1243,31 @@ class TestLiveFilenameUniqueness:
             mock_dt.now.return_value = fixed_now
             await _run_task(images, params=_NO_RATE_LIMIT_PARAMS, detect=True, tmp_path=tmp_path, provider=provider)
         saved = sorted(p.name for p in tmp_path.rglob("*.jpg"))
+        # The trailing counter is the within-run uniqueness guarantee; frame_idx
+        # beside it is provenance. See _save_image.
         assert saved == [
-            f"{_SOURCE_FILE}_20240601T123045_0.jpg",
-            f"{_SOURCE_FILE}_20240601T123045_1.jpg",
+            f"{_SOURCE_FILE}_20240601T123045_0_1.jpg",
+            f"{_SOURCE_FILE}_20240601T123045_1_2.jpg",
         ]
+
+    async def test_two_saves_of_one_frame_do_not_collide(self, tmp_path):
+        """A watcher can save the same analysed frame twice — once from the
+        periodic offer and again when a detector-miss gap commits the frame it
+        was holding. Both carry the same frame_idx, and the UTC stamp is only
+        second-resolution, so frame_idx + timestamp alone would put them on one
+        path and let one set of boxes overwrite the other."""
+        collector = _detached_collector({"output_dir": "out"})
+        collector._files_root = tmp_path
+        collector._meta_write_lock = asyncio.Lock()
+        images_api = MagicMock()
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        frame.provided.metadata.frame_idx = 7
+
+        first = await collector._save_image(images_api, frame, [])
+        second = await collector._save_image(images_api, frame, [])
+
+        assert first != second
+        assert len(list(tmp_path.rglob("*.jpg"))) == 2
 
     async def test_live_provider_filenames_unique_across_simulated_restart(self, tmp_path):
         """Simulate a task restart: frame_idx resets to 0 on the second run, but
@@ -3401,6 +3422,18 @@ def _frame_offer_with(image: np.ndarray, tracks=(), dead_track_ids=()) -> FrameO
     )
 
 
+def _novelty(collector, frame, dets, *, saved: bool = True) -> list:
+    """The prefilter as `offer()` actually drives it: decide, then record the
+    poses kept — but only once the frame has really been dispatched or queued.
+    Pass `saved=False` for the shed-frame case (a full dedup queue), where
+    nothing about this frame may enter the track's pose history.
+    """
+    kept, pending = collector._apply_track_novelty(frame, dets)
+    if saved:
+        collector._commit_track_novelty(pending, frame)
+    return kept
+
+
 class TestPerTrackNoveltySampling:
     """Plan §4B: within one track's visit, keep a crop only if it's a
     meaningfully different pose than what's already been kept for that SAME
@@ -3422,7 +3455,7 @@ class TestPerTrackNoveltySampling:
     def test_a_detection_matching_no_live_track_is_left_untouched(self):
         collector = _detached_collector()
         det = _detection_at(0.1, 0.1, 0.3, 0.3)
-        kept = collector._apply_track_novelty(_frame_offer_with(self._solid_image(0), tracks=[self._TRACK]), [det])
+        kept = _novelty(collector, _frame_offer_with(self._solid_image(0), tracks=[self._TRACK]), [det])
         # No track overlaps this bbox (the fixture track is at a different
         # location), so novelty sampling has nothing to say about it.
         assert kept == [det]
@@ -3430,7 +3463,7 @@ class TestPerTrackNoveltySampling:
     def test_the_first_crop_offered_for_a_track_is_always_kept(self):
         collector = _detached_collector()
         det = _detection_at(0.1, 0.1, 0.3, 0.3)
-        kept = collector._apply_track_novelty(_frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]), [det])
+        kept = _novelty(collector, _frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]), [det])
         assert kept == [det]
         assert collector._track_novelty_kept == 1
         assert collector._track_novelty_dropped == 0
@@ -3441,8 +3474,8 @@ class TestPerTrackNoveltySampling:
         det_a = _detection_at(0.1, 0.1, 0.3, 0.3)
         det_b = _detection_at(0.1, 0.1, 0.3, 0.3)
 
-        collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_a])
-        kept = collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_b])
+        _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [det_a])
+        kept = _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [det_b])
 
         assert kept == []
         assert collector._track_novelty_dropped == 1
@@ -3455,8 +3488,8 @@ class TestPerTrackNoveltySampling:
         det_a = _detection_at(0.1, 0.1, 0.3, 0.3)
         det_b = _detection_at(0.1, 0.1, 0.3, 0.3)
 
-        collector._apply_track_novelty(_frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]), [det_a])
-        kept = collector._apply_track_novelty(_frame_offer_with(self._noisy_image(2), tracks=[self._TRACK]), [det_b])
+        _novelty(collector, _frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]), [det_a])
+        kept = _novelty(collector, _frame_offer_with(self._noisy_image(2), tracks=[self._TRACK]), [det_b])
 
         assert kept == [det_b]
         assert collector._track_novelty_kept == 2
@@ -3468,9 +3501,7 @@ class TestPerTrackNoveltySampling:
         assert collector.MAX_FRAMES_PER_TRACK > 5
         for seed in range(5):
             det = _detection_at(0.1, 0.1, 0.3, 0.3)
-            kept = collector._apply_track_novelty(
-                _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]), [det]
-            )
+            kept = _novelty(collector, _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]), [det])
             assert kept == [det]
         assert collector._track_novelty_kept == 5
 
@@ -3481,13 +3512,58 @@ class TestPerTrackNoveltySampling:
         collector = _detached_collector({"output_dir": "out", "max_frames_per_track": 3})
 
         for seed in range(5):
-            collector._apply_track_novelty(
-                _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)]
+            _novelty(
+                collector,
+                _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]),
+                [_detection_at(0.1, 0.1, 0.3, 0.3)],
             )
 
         # Only the most recent 3 poses are still compared against — the deque is
         # bounded by the configured value, not by MAX_FRAMES_PER_TRACK.
         assert len(collector._track_hashes[self._TRACK.track_id]) == 3
+
+    def test_the_cap_actually_stops_a_track_that_keeps_looking_new(self):
+        """The case the knob's help text promises to bound: an animal that never
+        stops moving, so every crop is genuinely novel. The pose history alone
+        cannot do this — it EVICTS at its maxlen, which frees an early pose to
+        read as novel again and lets the track contribute forever.
+        """
+        collector = _detached_collector({"output_dir": "out", "max_frames_per_track": 3})
+        kept_total = 0
+
+        for seed in range(12):
+            kept_total += len(
+                _novelty(
+                    collector,
+                    _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]),
+                    [_detection_at(0.1, 0.1, 0.3, 0.3)],
+                )
+            )
+
+        assert kept_total == 3
+        assert collector._track_novelty_dropped == 9
+
+    async def test_a_shed_frame_contributes_nothing_to_the_pose_history(self):
+        """A full dedup queue drops the frame outright (the watcher's
+        non-blocking offer). Recording its pose anyway would measure every later
+        crop of that track against an image that reached no disk, so a collector
+        that is shedding frames would progressively stop collecting novel ones.
+        """
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": True})
+        collector._blocking_offer = False
+        collector._dedup_queue = asyncio.Queue(maxsize=1)
+        collector._dedup_queue.put_nowait(("already full", [], SAVE_REASON_BAND))
+        det = _detection_at(0.1, 0.1, 0.3, 0.3)
+
+        with (
+            patch("apps.helpers.training.collector.InferenceApi"),
+            patch.object(collector, "_run_inference", new=AsyncMock(return_value=[det])),
+        ):
+            await collector.offer(_frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]))
+
+        assert collector._frames_dropped_behind == 1
+        assert self._TRACK.track_id not in collector._track_hashes
+        assert collector._track_novelty_kept == 0
 
     def test_a_zero_cap_cannot_silently_disable_the_prefilter(self):
         """maxlen=0 would keep no history at all, so every crop would compare as
@@ -3495,12 +3571,8 @@ class TestPerTrackNoveltySampling:
         collector = _detached_collector({"output_dir": "out", "max_frames_per_track": 0})
         image = self._solid_image(128)
 
-        collector._apply_track_novelty(
-            _frame_offer_with(image, tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)]
-        )
-        kept = collector._apply_track_novelty(
-            _frame_offer_with(image, tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)]
-        )
+        _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)])
+        kept = _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [_detection_at(0.1, 0.1, 0.3, 0.3)])
 
         assert kept == []
 
@@ -3524,8 +3596,8 @@ class TestTrackDeathCommitsTheWorstHeldCrop:
         det_high = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.9)
         det_low = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.2)
 
-        collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_high])
-        kept = collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_low])
+        _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [det_high])
+        kept = _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [det_low])
         assert kept == []  # near-duplicate pose, correctly dropped
 
         with patch.object(collector, "_dispatch_save") as dispatch:
@@ -3542,13 +3614,38 @@ class TestTrackDeathCommitsTheWorstHeldCrop:
         assert 5 not in collector._track_worst
         assert 5 not in collector._track_hashes
 
+    async def test_the_held_crop_bypasses_dedup_entirely(self):
+        """The one save that must not be routed through dedup. This crop was
+        held BECAUSE its bbox phash sat within `bbox_dup_threshold` of crops
+        already saved for the track, and the dedup worker queries the same index
+        at the same threshold — so under duplicate_action="discard" the commit
+        would be thrown away nearly every time while `_track_worst_committed`
+        went on counting it as a success.
+        """
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": True})
+        image = np.full((64, 64, 3), 200, dtype=np.uint8)
+        det_high = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.9)
+        det_low = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.2)
+
+        _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [det_high])
+        assert _novelty(collector, _frame_offer_with(image, tracks=[self._TRACK]), [det_low]) == []
+
+        with (
+            patch.object(collector, "_dispatch_save") as dispatch,
+            patch.object(collector, "_enqueue_for_dedup", new=AsyncMock()) as enqueue,
+        ):
+            await collector._commit_dead_track_worst((5,))
+
+        enqueue.assert_not_awaited()
+        assert dispatch.call_args.args[1] == [det_low]
+
     async def test_a_naturally_saved_crop_needs_no_extra_commit(self):
         """When the lowest-confidence pose was novel and already went through the
         ordinary save path, track death must not re-save anything."""
         collector = _detached_collector({"output_dir": "out", "enable_dedup": False})
         det = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.2)
 
-        kept = collector._apply_track_novelty(_frame_offer_with(self._noisy_image(3), tracks=[self._TRACK]), [det])
+        kept = _novelty(collector, _frame_offer_with(self._noisy_image(3), tracks=[self._TRACK]), [det])
         assert kept == [det]
 
         with patch.object(collector, "_dispatch_save") as dispatch:

@@ -1118,6 +1118,17 @@ class StreamWatcherTask(Task):
                 # Mid-run persistence takes priority over cancel, per the Task contract.
                 self._maybe_checkpoint()
 
+                # Harvest finished saves for every attached collector. Nothing else
+                # in a watcher ever drains `_pending_saves` (the standalone task does
+                # it in its own fetch loop), and the collector's saved counters — the
+                # ones the collectorsTable renders — only advance in here. Without
+                # this call the table reports 0 for the life of the run, the pending
+                # list grows without bound, and a failed save's exception is never
+                # retrieved. The returned resume ids mean nothing to a watcher.
+                # Placed above the due check so an idle pass still collects.
+                for collector in self._collectors.values():
+                    collector.collect_saves()
+
                 now = time.monotonic()
                 # Before the due check, not inside it: a failed source backs off to
                 # BACKOFF_MAX_S between attempts and is not due for minutes at a time,

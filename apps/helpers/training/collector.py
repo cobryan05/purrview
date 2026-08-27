@@ -296,6 +296,13 @@ class TrainingCollector:
         #: Resolved once: a spec built before the knob existed leaves it None, and
         #: reading it per frame would re-do that fallback on the hot path.
         self._max_frames_per_track: int = getattr(spec, "max_frames_per_track", None) or self.MAX_FRAMES_PER_TRACK
+        #: track_id -> how many crops this track has actually contributed. The
+        #: deque above cannot be the cap: it EVICTS its oldest hash at the limit,
+        #: so a pose from earlier in the visit reads as novel again and the track
+        #: keeps contributing forever — the "animal that never stops moving" the
+        #: knob's own help text promises to bound. Counted here instead, and
+        #: forgotten with the rest of the track's state when it dies.
+        self._track_kept: Dict[int, int] = {}
         #: track_id -> (confidence, frame, detection) for the lowest-confidence
         #: crop offered for that track that the novelty check above has NOT
         #: already let through naturally. Committed on track death so the
@@ -340,6 +347,10 @@ class TrainingCollector:
         self._combined_pin_ids: dict[str, str] = {}
 
         self._pending_saves: list[tuple[asyncio.Task, Optional[str], str]] = []
+        #: Monotonic per-run save counter, used only to make live-source filenames
+        #: unique — see `_save_image`. Not persisted: it exists to separate two
+        #: saves within ONE run, and the UTC stamp beside it separates runs.
+        self._save_seq: int = 0
         self._dedup_queue: Optional[asyncio.Queue] = None
         self._dedup_task: Optional[asyncio.Task] = None
         self._renew_pins_task: Optional[asyncio.Task] = None
@@ -680,8 +691,9 @@ class TrainingCollector:
         # dedup's network round-trip rather than after it. `frame.tracks` is empty
         # for the standalone task (no tracker), which makes this a no-op for it by
         # construction rather than by branching on which driver is calling.
+        novelty_pending: list = []
         if frame.tracks and matching:
-            matching = self._apply_track_novelty(frame, matching)
+            matching, novelty_pending = self._apply_track_novelty(frame, matching)
         if frame.dead_track_ids:
             await self._commit_dead_track_worst(frame.dead_track_ids)
 
@@ -690,9 +702,11 @@ class TrainingCollector:
         # unless the filter chain discarded it (or dedup, below, calls it a dup).
         if matching or (self._spec.collect_all and not discarded):
             if self._spec.enable_dedup:
-                await self._enqueue_for_dedup(frame, matching)
+                if await self._enqueue_for_dedup(frame, matching):
+                    self._commit_track_novelty(novelty_pending, frame)
             else:
                 self._dispatch_save(frame, matching)
+                self._commit_track_novelty(novelty_pending, frame)
         elif force_save and not self._spec.enable_dedup:
             # strip_unverified_bboxes emptied `matching`, but per plan 2.1 the image
             # itself must still be saved (never delete images). Skipped when dedup
@@ -717,7 +731,7 @@ class TrainingCollector:
                 best_id = t.track_id
         return best_id if best_iou >= SAME_BBOX_IOU_THRESHOLD else None
 
-    def _apply_track_novelty(self, frame: FrameOffer, matching: list) -> list:
+    def _apply_track_novelty(self, frame: FrameOffer, matching: list) -> Tuple[list, list]:
         """Keep a crop only if it's a meaningfully different pose than what's
         already been kept for the SAME track this visit (plan §4B).
 
@@ -728,29 +742,53 @@ class TrainingCollector:
         Tuesday"). A detection matching no live track (nothing close enough by
         IoU) is left untouched: novelty sampling has nothing to say about an
         object the tracker isn't following.
+
+        Returns `(kept, pending)`. Nothing is written to this track's pose
+        history here — `pending` is handed back to `offer`, which commits it via
+        `_commit_track_novelty` only once the frame has actually been dispatched
+        or queued. Recording a pose the frame never reached disk with (a full
+        dedup queue drops it outright) would measure every later crop against a
+        reference image that exists nowhere, so a collector that is shedding
+        frames would progressively stop collecting novel ones too.
         """
         image = frame.provided.image
         kept: list = []
+        pending: list = []
         for det in matching:
             track_id = self._match_track(det, frame.tracks)
             if track_id is None:
                 kept.append(det)
                 continue
+            self._update_track_worst(track_id, det, frame, is_being_saved=False)
+            if self._track_kept.get(track_id, 0) >= self._max_frames_per_track:
+                # The visit's hard cap. The crop is still offered to
+                # `_update_track_worst` above, so a track that hits the cap can
+                # still commit its hardest example when it dies.
+                self._track_novelty_dropped += 1
+                continue
             crop_hash = phash_from_numpy_crop(
                 image, det.bbox.x, det.bbox.y, det.bbox.width, det.bbox.height, self._bbox_hash_size
             )
-            self._update_track_worst(track_id, det, frame, is_being_saved=False)
             history = self._track_hashes.get(track_id)
             novel = not history or all(hamming(crop_hash, h) > self._spec.bbox_dup_threshold for h in history)
             if not novel:
                 self._track_novelty_dropped += 1
                 continue
             kept.append(det)
-            self._track_novelty_kept += 1
-            self._update_track_worst(track_id, det, frame, is_being_saved=True)
+            pending.append((track_id, crop_hash, det))
+        return kept, pending
+
+    def _commit_track_novelty(self, pending: list, frame: FrameOffer) -> None:
+        """This frame is going to disk (or into the dedup queue, which will save
+        it unless it is a duplicate of something already collected) — record the
+        poses it contributes. See `_apply_track_novelty` for why this is separate.
+        """
+        for track_id, crop_hash, det in pending:
             bucket = self._track_hashes.setdefault(track_id, deque(maxlen=self._max_frames_per_track))
             bucket.append(crop_hash)
-        return kept
+            self._track_kept[track_id] = self._track_kept.get(track_id, 0) + 1
+            self._track_novelty_kept += 1
+            self._update_track_worst(track_id, det, frame, is_being_saved=True)
 
     def _update_track_worst(self, track_id: int, det: Any, frame: FrameOffer, *, is_being_saved: bool) -> None:
         """Track the lowest-confidence crop seen for `track_id` that has not
@@ -780,15 +818,31 @@ class TrainingCollector:
         """
         for track_id in dead_track_ids:
             self._track_hashes.pop(track_id, None)
+            self._track_kept.pop(track_id, None)
             worst = self._track_worst.pop(track_id, None)
             if worst is None:
                 continue
             _, held_frame, held_det = worst
             self._track_worst_committed += 1
-            if self._spec.enable_dedup:
-                await self._enqueue_for_dedup(held_frame, [held_det], SAVE_REASON_TRACK_WORST)
-            else:
-                self._dispatch_save(held_frame, [held_det], SAVE_REASON_TRACK_WORST)
+            # Deliberately NOT routed through dedup, unlike every other save.
+            # This crop is held precisely BECAUSE its bbox phash was within
+            # `bbox_dup_threshold` of crops already saved for this track, and the
+            # dedup worker compares against the very same index at the very same
+            # threshold — so under the default duplicate_action="discard" it
+            # would discard essentially every commit, and the plan's "always keep
+            # the track's lowest-confidence frame" (§4B) would never once hold
+            # while `_track_worst_committed` happily counted the commits.
+            self._dispatch_save(held_frame, [held_det], SAVE_REASON_TRACK_WORST)
+
+    async def commit_dead_tracks(self, dead_track_ids: "Tuple[int, ...]") -> None:
+        """Public entry point for a driver that observes track deaths outside an
+        offer — e.g. an event-scoped watcher action seeing a track die after its
+        event closed, when there will be no further offer to carry the ids. The
+        held state is per-track and full-resolution, so it has to be dischargeable
+        without a frame to attach it to.
+        """
+        if dead_track_ids:
+            await self._commit_dead_track_worst(tuple(dead_track_ids))
 
     async def offer_detector_miss(self, frame: FrameOffer, det: Any) -> None:
         """Save a tracker-supplied box on a detector-miss frame (plan §4A).
@@ -799,9 +853,11 @@ class TrainingCollector:
         nothing to run: the driver already decided this frame is worth
         keeping) and per-track novelty (that prefilter reasons about repeated
         *poses* of the same object; a detector-miss box is a one-off event, not
-        a pose sample). Still respects the collector's own dedup setting, the
-        same as `_commit_dead_track_worst` — "always keep" is about not losing
-        it to the novelty filter, not about exempting it from dedup policy.
+        a pose sample). Still respects the collector's own dedup setting —
+        "always keep" is about not losing it to the novelty filter, not about
+        exempting it from dedup policy, and unlike `_commit_dead_track_worst`'s
+        crop this frame was never withheld for looking like something already
+        saved, so dedup is not structurally guaranteed to reject it.
 
         Never called by the standalone task: it has no tracker, so it can never
         observe a gap to seed a box for in the first place (plan §4A: "impossible
@@ -813,19 +869,24 @@ class TrainingCollector:
         else:
             self._dispatch_save(frame, [det], SAVE_REASON_DETECTOR_MISS)
 
-    async def _enqueue_for_dedup(self, frame: FrameOffer, matching: list, reason: str = SAVE_REASON_BAND) -> None:
+    async def _enqueue_for_dedup(self, frame: FrameOffer, matching: list, reason: str = SAVE_REASON_BAND) -> bool:
+        """True when the frame is on the queue, False when it was shed — the
+        caller uses that to decide whether bookkeeping about this frame (the
+        per-track pose history) describes something real."""
         assert self._dedup_queue is not None
         if self._blocking_offer:
             # Deliberate backpressure: while the collector IS the loop, slowing the
             # fetch is better than dropping a frame nothing else will see.
             await self._dedup_queue.put((frame, matching, reason))
-            return
+            return True
         try:
             self._dedup_queue.put_nowait((frame, matching, reason))
         except asyncio.QueueFull:
             self._frames_dropped_behind += 1
             if self._frames_dropped_behind == 1:
                 self._log("Collector is behind — dropping offered frames rather than stalling the caller")
+            return False
+        return True
 
     def _dispatch_save(self, frame: FrameOffer, matching: list, reason: str = SAVE_REASON_BAND) -> asyncio.Task:
         save_task = asyncio.create_task(self._save_image(ImagesApi(self._host.db_api_client()), frame, matching))
@@ -1466,9 +1527,15 @@ class TrainingCollector:
             # Live providers (LIVE_SNAPSHOT / LIVE_STREAM) reset frame_idx to 0 on every
             # restart, so frame_idx alone would overwrite earlier files across restarts.
             # A UTC timestamp (second resolution) makes the filename unique across
-            # restarts; frame_idx already guarantees uniqueness within a run.
+            # restarts. Within a run frame_idx is NOT enough either: one frame can be
+            # saved twice — once by the periodic offer and again when a detector-miss
+            # gap commits the frame it was holding — and both carry the same frame_idx,
+            # so the two writes would race for one path and one set of boxes would win.
+            # The save counter is what actually guarantees uniqueness; frame_idx stays
+            # for provenance (which analysed frame this came from).
+            self._save_seq += 1
             utc_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-            filename = f"{source_name}_{utc_stamp}_{frame_idx}.jpg"
+            filename = f"{source_name}_{utc_stamp}_{frame_idx}_{self._save_seq}.jpg"
         rel_path = str(Path(self._spec.output_dir) / filename)
         abs_path = self._files_root / self._spec.output_dir / filename
         await asyncio.to_thread(abs_path.parent.mkdir, parents=True, exist_ok=True)
