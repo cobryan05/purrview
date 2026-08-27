@@ -7399,7 +7399,8 @@ progress.progress-indeterminate:indeterminate {
    the action rows onto a second line and pushed a one-source/one-rule/one-action
    profile into a scrollbar — the exact density the tests in TestWatcherEditorDensity
    exist to hold. A filled heading strip plus a spine down the left of the list reads as
-   a container for about 10px of width and none of height. */
+   a container for about 10px of width and none of height.
+
    Second pass, same constraint. The strip and spine marked the boundaries but every
    section still sat on the pane's own background, so a section read as a decoration
    on a flat list rather than as a container. The additions below are all things that
