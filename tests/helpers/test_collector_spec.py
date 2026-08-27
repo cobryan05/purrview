@@ -134,3 +134,49 @@ class TestCollectorSpecFromParams:
         assert spec.ambiguity_metric == AMBIGUITY_METRIC_RATIO
         spec = CollectorSpec.from_params({"output_dir": "out", "ambiguity_metric": AMBIGUITY_METRIC_MARGIN})
         assert spec.ambiguity_metric == AMBIGUITY_METRIC_MARGIN
+
+
+class TestSchemaGrouping:
+    """The form is grouped (plan: the flat run of a dozen fields had no shape), and a
+    `group` is value-transparent — GroupField merges its fields into the parent, so
+    `from_params` still reads every key flat. That transparency is the thing that can
+    silently break.
+    """
+
+    @staticmethod
+    def _knobs(schema: dict) -> list[str]:
+        """Every field a user can set, flattened across groups — in declaration order,
+        so duplicates survive to be counted rather than collapsing into a set."""
+        found = []
+        for key, meta in schema.items():
+            if key == "meta":
+                continue
+            if meta.get("type") == "group":
+                found.extend(meta.get("fields", {}))
+            else:
+                found.append(key)
+        return found
+
+    def test_no_knob_is_declared_in_two_places(self):
+        """Two widgets bound to one key both write it, and which one wins depends on
+        render order — the saved value would then depend on which group you opened."""
+        knobs = self._knobs(collector_params_schema())
+        duplicated = {k for k in knobs if knobs.count(k) > 1}
+        assert not duplicated, f"declared more than once: {sorted(duplicated)}"
+
+    def test_every_group_actually_contains_something(self):
+        """An empty group renders as a collapsible that opens onto nothing — the
+        shape a moved-out-but-not-deleted field leaves behind."""
+        schema = collector_params_schema()
+        empty = [k for k, m in schema.items() if m.get("type") == "group" and not m.get("fields")]
+        assert not empty, f"groups with no fields: {empty}"
+
+    def test_grouping_does_not_nest_the_stored_params(self):
+        """The whole reason grouping was safe. A spec built from flat params must still
+        read a knob that now lives inside a group — if this fails, every existing
+        collector row silently reverts that knob to its default."""
+        spec = CollectorSpec.from_params(
+            {"output_dir": "out", "max_images": 12, "overlap_iou_threshold": 0.8, "max_frames_per_track": 7}
+        )
+
+        assert (spec.max_images, spec.overlap_iou_threshold, spec.max_frames_per_track) == (12, 0.8, 7)

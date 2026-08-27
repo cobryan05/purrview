@@ -424,21 +424,25 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
     """
     return {
         "meta": {
+            # Two answers everyone has to give, then six groups nobody has to open.
+            # Flat, this was a run of a dozen stacked fields with no shape: "max
+            # duration" sat between the filter chain and the confusable settings for
+            # no reason beyond the order someone thought of them, and the two
+            # watcher-only knobs ended up at the bottom, apart, with nothing saying
+            # they were related or that neither does anything for a standalone job.
+            #
+            # A `group` is value-transparent — GroupField merges its fields' values
+            # into the parent — so `from_params` still reads every key flat and
+            # nothing about the stored shape changes.
             "order": [
                 "output_dir",
                 "model_label_config",
-                "overlap_iou_threshold",
-                "merge_policy",
-                "apply_tags",
-                "generate_task_tag",
-                "task_tag_name",
-                "filter_chain_uuid",
-                "max_images",
-                "max_duration",
+                "merge_group",
+                "tagging_group",
+                "limits_group",
                 "ambiguity_group",
                 "dedup_group",
-                "enable_detector_miss",
-                "max_frames_per_track",
+                "detector_miss_group",
             ]
         },
         "output_dir": {
@@ -484,79 +488,110 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                 ),
             },
         },
-        "overlap_iou_threshold": {
-            "type": "float",
-            "label": "Multi-Model Overlap IoU Threshold",
-            "description": (
-                "When multiple models detect the same region, boxes from later-configured models are discarded "
-                "if they overlap a higher-priority model's box at or above this IoU value (0–1). "
-                "Lower values discard more aggressively; higher values allow more overlap before deduplication."
-            ),
-            "default": SAME_BBOX_IOU_THRESHOLD,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.05,
+        "merge_group": {
+            "type": "group",
+            "label": "Multi-model merge",
+            # Inert with one model configured, which is the common case — so it starts
+            # closed rather than showing two controls that cannot do anything yet.
+            "collapsed": True,
+            "fields": {
+                "overlap_iou_threshold": {
+                    "type": "float",
+                    "label": "Multi-Model Overlap IoU Threshold",
+                    "description": (
+                        "When multiple models detect the same region, boxes from later-configured models are "
+                        "discarded if they overlap a higher-priority model's box at or above this IoU value "
+                        "(0–1). Lower values discard more aggressively; higher values allow more overlap "
+                        "before deduplication."
+                    ),
+                    "default": SAME_BBOX_IOU_THRESHOLD,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.05,
+                },
+                "merge_policy": {
+                    "type": "select",
+                    "label": "Multi-Model Merge Policy",
+                    "description": (
+                        "When two models produce a same-label, overlapping detection, which one wins: "
+                        "the higher-priority (earlier-configured) model, or the lower-priority "
+                        "(later-configured) one. Hierarchy supersede (a more specific label beats a coarser "
+                        "ancestor label) applies either way."
+                    ),
+                    "default": MergePolicy.FIRST_WINS.value,
+                    "options": [
+                        {"value": MergePolicy.FIRST_WINS.value, "label": "First model wins (priority order)"},
+                        {"value": MergePolicy.LAST_WINS.value, "label": "Last model wins (reverse priority order)"},
+                    ],
+                },
+            },
         },
-        "merge_policy": {
-            "type": "select",
-            "label": "Multi-Model Merge Policy",
-            "description": (
-                "When two models produce a same-label, overlapping detection, which one wins: "
-                "the higher-priority (earlier-configured) model, or the lower-priority (later-configured) one. "
-                "Hierarchy supersede (a more specific label beats a coarser ancestor label) applies either way."
-            ),
-            "default": MergePolicy.FIRST_WINS.value,
-            "options": [
-                {"value": MergePolicy.FIRST_WINS.value, "label": "First model wins (priority order)"},
-                {"value": MergePolicy.LAST_WINS.value, "label": "Last model wins (reverse priority order)"},
-            ],
+        "tagging_group": {
+            "type": "group",
+            "label": "Tagging & filtering",
+            "collapsed": True,
+            "fields": {
+                "apply_tags": {
+                    "type": "tags",
+                    "label": "Apply Tags",
+                    "description": "Tags to apply to every bounding box in each saved image.",
+                    "default": [],
+                    "allow_add_tag": True,
+                },
+                "generate_task_tag": {
+                    "type": "boolean",
+                    "label": "Tag images with a tag unique to this task",
+                    "description": (
+                        "Creates a dedicated tag for this task config and applies it to all saved images. "
+                        "Useful for reviewing just this task's output — and required for the 'Browse in "
+                        "review' buttons on the status card, which have nothing to filter by without it."
+                    ),
+                    "default": False,
+                },
+                "task_tag_name": {
+                    "type": "string",
+                    "label": "Generated tag name (optional)",
+                    "description": (
+                        "Custom name for the per-task generated tag. Defaults to the config name if left blank."
+                    ),
+                    "default": "",
+                },
+                "filter_chain_uuid": {
+                    "type": "filter_chain_uuid",
+                    "label": "Filter Chain (optional)",
+                    "required": False,
+                    "description": (
+                        "Run this chain against each frame's detections before saving — "
+                        "discard corrupt frames, relabel known false-positives, or strip/tag "
+                        "matches before they ever land in the dataset."
+                    ),
+                },
+            },
         },
-        "apply_tags": {
-            "type": "tags",
-            "label": "Apply Tags",
-            "description": "Tags to apply to every bounding box in each saved image.",
-            "default": [],
-            "allow_add_tag": True,
-        },
-        "generate_task_tag": {
-            "type": "boolean",
-            "label": "Tag images with a tag unique to this task",
-            "description": "Creates a dedicated tag for this task config and applies it to all saved images. Useful for reviewing just this task's output.",
-            "default": False,
-        },
-        "task_tag_name": {
-            "type": "string",
-            "label": "Generated tag name (optional)",
-            "description": "Custom name for the per-task generated tag. Defaults to the config name if left blank.",
-            "default": "",
-        },
-        "filter_chain_uuid": {
-            "type": "filter_chain_uuid",
-            "label": "Filter Chain (optional)",
-            "required": False,
-            "description": (
-                "Run this chain against each frame's detections before saving — "
-                "discard corrupt frames, relabel known false-positives, or strip/tag "
-                "matches before they ever land in the dataset."
-            ),
-        },
-        "max_images": {
-            "type": "int",
-            "label": "Max Images to Save",
-            "description": (
-                "Stop the task once this many images have been saved. "
-                "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
-            ),
-            "default": 0,
-        },
-        "max_duration": {
-            "type": "float",
-            "label": "Max Duration (s)",
-            "description": (
-                "Stop the task after this many seconds of run time have elapsed. "
-                "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
-            ),
-            "default": 0,
+        "limits_group": {
+            "type": "group",
+            "label": "Run limits",
+            "collapsed": True,
+            "fields": {
+                "max_images": {
+                    "type": "int",
+                    "label": "Max Images to Save",
+                    "description": (
+                        "Stop the task once this many images have been saved. "
+                        "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
+                    ),
+                    "default": 0,
+                },
+                "max_duration": {
+                    "type": "float",
+                    "label": "Max Duration (s)",
+                    "description": (
+                        "Stop the task after this many seconds of run time have elapsed. "
+                        "Leave blank / 0 for unlimited (the default — live sources are normally user-stopped)."
+                    ),
+                    "default": 0,
+                },
+            },
         },
         "ambiguity_group": {
             "type": "group",
@@ -737,27 +772,37 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                 },
             },
         },
-        "enable_detector_miss": {
-            "type": "boolean",
-            "label": "Collect Detector Misses",
-            "description": (
-                "Watcher-attached collectors only: when a confirmed track has no supporting "
-                "detection for a frame (a short gap), save the tracker's interpolated box as an "
-                "unverified 'Detector Miss' box if the track re-acquires within a few frames. "
-                "No effect on the standalone task, which has no tracker."
-            ),
-            "default": False,
-        },
-        "max_frames_per_track": {
-            "type": "int",
-            "label": "Max Frames Per Track",
-            "description": (
-                "Watcher-attached collectors only: hard cap on how many distinct crops one track "
-                "can contribute during a single visit. A safety valve for an animal that never "
-                "stops moving — appearance novelty, not this number, is what normally decides. "
-                "Keep it around 20-30; a low cap discards the pose variation the detector needs."
-            ),
-            "default": 25,
+        "detector_miss_group": {
+            "type": "group",
+            # Named for what the two settings have in common, which is the thing that
+            # was invisible while they sat loose at the bottom of a flat form: neither
+            # does anything at all for a standalone job, because both need a tracker.
+            "label": "Watcher-only collection (needs a tracker)",
+            "collapsed": True,
+            "fields": {
+                "enable_detector_miss": {
+                    "type": "boolean",
+                    "label": "Collect Detector Misses",
+                    "description": (
+                        "When a confirmed track has no supporting detection for a frame (a short gap), "
+                        "save the tracker's interpolated box as an unverified 'Detector Miss' box — but "
+                        "only if the track re-acquires within a few frames, so a box is never seeded onto "
+                        "empty background. No effect on the standalone task, which has no tracker."
+                    ),
+                    "default": False,
+                },
+                "max_frames_per_track": {
+                    "type": "int",
+                    "label": "Max Frames Per Track",
+                    "description": (
+                        "Hard cap on how many distinct crops one track can contribute during a single "
+                        "visit. A safety valve for an animal that never stops moving — appearance novelty, "
+                        "not this number, is what normally decides. Keep it around 20-30; a low cap "
+                        "discards the pose variation the detector needs."
+                    ),
+                    "default": 25,
+                },
+            },
         },
     }
 

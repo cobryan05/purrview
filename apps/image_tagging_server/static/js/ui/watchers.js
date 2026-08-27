@@ -127,6 +127,28 @@ const ACTION_KINDS = [
   { key: 'collect_training_images', text: 'Collect training' },
 ];
 
+/**
+ * What each section of the editor is for, shown on hover of its heading.
+ *
+ * The individual controls all explain themselves, but nothing said what the four
+ * groups *are* or how they relate — and the relationship is the part you cannot infer
+ * from any one field: sources are watched, tracking turns detections into objects that
+ * persist between frames, rules ask questions about those objects, and actions are what
+ * happens when a rule's answer changes. Read in that order the pane is a pipeline;
+ * read as four lists of rows it is not.
+ */
+const SECTION_HELP = {
+  sources: 'The cameras this watcher pulls frames from, and how fast. Everything below applies to '
+    + 'all of them unless a rule or action is scoped to particular ones.',
+  tracking: 'How detections on consecutive frames are joined into one object that persists. This is '
+    + 'what lets a rule say "for 2 seconds" or "has left" — without it every frame is unrelated to '
+    + 'the last.',
+  rules: 'The questions asked of each frame: which labels, in what relation to which zone, for how '
+    + 'long. A rule going true opens an event and going false closes it.',
+  actions: 'What happens when a rule opens or closes an event — publish, record, collect training '
+    + 'data. Each one can be scoped to particular rules and sources.',
+};
+
 const TRIGGERS = [
   { key: 'event_started', text: 'event start' },
   { key: 'event_ended', text: 'event end' },
@@ -509,6 +531,9 @@ function collectorPickerWidget(value, onChange) {
   control.dataset.testid = 'watch-action-collector';
   const stored = value ?? '';
 
+  control.title = 'Which collector decides what to keep and how to annotate it. Its own settings — '
+    + 'models, confidence bands, dedup, output folder — live in Configuration → Collectors.';
+
   const placeholder = document.createElement('option');
   placeholder.value = stored;
   placeholder.textContent = stored ? 'Loading…' : 'Select a collector…';
@@ -520,7 +545,10 @@ function collectorPickerWidget(value, onChange) {
     const options = [...(collectorsMap?.values?.() || [])]
       .filter(c => c.enabled !== false || c.uuid === stored);
     if (!options.length) {
-      placeholder.textContent = 'No collectors — create one in Configuration → Collectors';
+      // Short: the option's own text sizes the <select>, and the full sentence made it
+      // three times the width of every other control in the row. The where-to-fix-it
+      // half lives in the title and in the Edit… link beside it, which goes there.
+      placeholder.textContent = 'No collectors yet';
       return;
     }
     control.replaceChildren();
@@ -551,7 +579,9 @@ function collectorPickerWidget(value, onChange) {
 
   const link = document.createElement('a');
   link.href = '#';
-  link.className = 'watch-hint';
+  // NOT `.watch-hint`: that class is dotted-underlined with `cursor: help`, which says
+  // "hover me for an explanation" — the opposite of what a navigation link does.
+  link.className = 'watch-inline-link';
   link.textContent = 'Edit…';
   link.title = 'Open Configuration → Collectors, where a collector’s ~30 knobs live.';
   link.dataset.testid = 'watch-action-collector-edit';
@@ -755,9 +785,14 @@ function removeButton(onDelete, title) {
  * The add button used to sit on its own line below the list, so every section spent
  * two lines on chrome before showing any content.
  */
-function sectionHeader(text, addButton) {
+function sectionHeader(text, addButton, help = null) {
   const head = el('div', 'watch-section-head');
-  head.appendChild(el('span', 'panel-section-label', text));
+  const label = el('span', 'panel-section-label', text);
+  // On the label, not the strip: a title on the strip also fires over the "+ Add"
+  // button inside it, replacing that button's own more specific tooltip with the
+  // section's general one.
+  if (help) label.title = help;
+  head.appendChild(label);
   if (addButton) head.appendChild(addButton);
   return head;
 }
@@ -2141,7 +2176,11 @@ function buildActionRow(action, ctx) {
         decorator: {
           labels: { output_dir: 'Output dir', collector_uuid: 'Collector' },
           testids: { output_dir: 'watch-action-dir', collector_uuid: 'watch-action-collector' },
-          widths: { output_dir: '15rem', quality: '4.5rem' },
+          // The collector picker is a select plus a link, so it is sized as a unit here
+          // and the select flexes inside it (see `.watch-collector-picker`). Without a
+          // width the longest collector name sets it, and one long name pushed the row
+          // onto a second line.
+          widths: { output_dir: '15rem', quality: '4.5rem', collector_uuid: '15rem', min_interval_s: '4.5rem' },
           steps: { quality: '5' },
           mins: { quality: 1 },
           after: {
@@ -2401,7 +2440,7 @@ export async function renderWatchProfileManager({ target }) {
         + 'applies to all of them unless you scope it to some.';
       const sourcesBox = el('div', 'watch-rows');
       sourcesBox.dataset.testid = 'watch-sources-box';
-      screen.editorBody.appendChild(sectionPanel(sectionHeader('Sources', addSourceBtn), sourcesBox));
+      screen.editorBody.appendChild(sectionPanel(sectionHeader('Sources', addSourceBtn, SECTION_HELP.sources), sourcesBox));
 
       function addSource(src) {
         const entry = buildSourceRow(src, {
@@ -2477,7 +2516,7 @@ export async function renderWatchProfileManager({ target }) {
         + 'saved beside the clip. Findings show on the event, and the frames can be sent to '
         + 'training.';
 
-      const trackingHead = sectionHeader('Tracking', addLifetimeBtn);
+      const trackingHead = sectionHeader('Tracking', addLifetimeBtn, SECTION_HELP.tracking);
       trackingHead.insertBefore(wfield('Tracker', trackerSel, { help: trackerSel.title }), addLifetimeBtn);
       trackingHead.insertBefore(
         wfield('Find tracking mistakes', analyseBlips, { help: analyseBlips.title }),
@@ -2540,7 +2579,7 @@ export async function renderWatchProfileManager({ target }) {
         + 'something happened; the actions below decide what is done about it.';
       const rulesBox = el('div', 'watch-rows');
       rulesBox.dataset.testid = 'watch-rules-box';
-      screen.editorBody.appendChild(sectionPanel(sectionHeader('Rules', addRuleBtn), rulesBox));
+      screen.editorBody.appendChild(sectionPanel(sectionHeader('Rules', addRuleBtn, SECTION_HELP.rules), rulesBox));
 
       // Zones on offer come from the sources this watcher actually uses, so a rule can
       // only ever reference a zone the watcher will have loaded at runtime. Prefixed
@@ -2651,7 +2690,7 @@ export async function renderWatchProfileManager({ target }) {
         'None of these actions records the event, so these rules will not appear in Events. '
         + 'They still publish, and still show in the watcher’s log — only the Events list is '
         + 'empty. Add a Save event action to list them there.';
-      const actionsHead = sectionHeader('Actions', addActionBtn);
+      const actionsHead = sectionHeader('Actions', addActionBtn, SECTION_HELP.actions);
       actionsHead.appendChild(eventHint);
       screen.editorBody.appendChild(sectionPanel(actionsHead, actionsBox));
 

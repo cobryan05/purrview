@@ -2831,9 +2831,14 @@ class TestCollectorPicker:
 
         wait_until(
             page,
-            lambda: "Collectors" in (picker.locator("option").first.text_content() or ""),
+            lambda: "No collectors yet" in (picker.locator("option").first.text_content() or ""),
             "an empty list left the picker showing nothing actionable",
         )
+        # Where to fix it lives in the tooltip and the Edit… link rather than in the
+        # option text, which sizes the <select> and made it three times the width of
+        # every other control in the row.
+        expect(page.locator("[data-testid='watch-action-collector-edit']").first).to_be_visible()
+        assert "Collectors" in (picker.get_attribute("title") or "")
 
 
 class TestEveryRegisteredActionKindIsOffered:

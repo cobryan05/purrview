@@ -7352,6 +7352,34 @@ progress.progress-indeterminate:indeterminate {
   cursor: help;
 }
 
+/* A link inside a dense row — "Edit…" beside the collector picker. Deliberately not
+   `.watch-hint`: that class means "hover this for an explanation" and says so with a
+   dotted underline and `cursor: help`, which on something clickable reads as a typo
+   underline rather than a link. */
+.watch-inline-link {
+  font-size: 0.8em;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* The collector picker is one field made of two controls, so it is sized as a unit
+   (`widths.collector_uuid`) and the select takes the slack. `min-width: 0` is what
+   actually stops it: a <select> sizes to its longest option by default, so one long
+   collector name would otherwise widen the field past its declared width and wrap the
+   action row onto a second line. */
+.watch-collector-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.watch-collector-picker select {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
 .watch-validation {
   margin-top: var(--space-3, 0.75rem);
   display: flex;
@@ -7372,8 +7400,24 @@ progress.progress-indeterminate:indeterminate {
    profile into a scrollbar — the exact density the tests in TestWatcherEditorDensity
    exist to hold. A filled heading strip plus a spine down the left of the list reads as
    a container for about 10px of width and none of height. */
+   Second pass, same constraint. The strip and spine marked the boundaries but every
+   section still sat on the pane's own background, so a section read as a decoration
+   on a flat list rather than as a container. The additions below are all things that
+   change colour without changing layout — a surface tint, an inset hairline (a
+   box-shadow, which occupies no space where a border would), and a heavier heading —
+   because the height budget is genuinely spent: at 1280x720 the editor body already
+   runs ~38px past its pane against the 50px this pane's density test allows. Anything
+   costing vertical space here has to buy it back somewhere first. */
 .watch-section {
   margin-bottom: var(--space-2, 0.5rem);
+  /* A surface of its own. 0.02 is deliberately near-invisible in isolation: it reads
+     as a container only by contrast with the pane behind it and the rows in front,
+     which is all it has to do. */
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-sm, 4px);
+  /* Inset, so the outline costs no height. A real border would add 2px per section,
+     and there are four of them. */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 .watch-section > .watch-section-head {
@@ -7385,20 +7429,38 @@ progress.progress-indeterminate:indeterminate {
   background: var(--pico-card-sectioning-background-color, rgba(255, 255, 255, 0.05));
   border-left: 3px solid var(--pico-primary, #4b9fff);
   border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
+  /* Hairline under the strip, as a shadow rather than a border so it costs no height.
+     Without it the strip's fill and the first row's fill meet with nothing between
+     them, and the heading reads as the row's own top edge. */
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .watch-section > .watch-section-head .panel-section-label {
   font-size: 0.85em;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--pico-muted-color, #999);
+  /* Was muted, which put the section name at the same weight as every field label in
+     the rows beneath it — so the one word that says where you are competed with thirty
+     that say what a control does. Brighter and heavier is free vertically. */
+  color: var(--pico-color, #e8e8e8);
+  font-weight: 600;
 }
 
 /* The spine: it ties the rows to the heading above them, which is what a run of
    near-identical bordered rows was missing. */
 .watch-section > .watch-rows {
+  /* Same 3px width as the heading strip's accent and directly below it, so the two
+     read as one continuous left edge — the strip states the section, the spine holds
+     its rows. Muted rather than the accent colour: four full-height accent bars
+     compete with the rules' own red label chips for attention. */
   border-left: 3px solid var(--pico-muted-border-color, #444);
   padding-left: var(--space-1, 0.25rem);
+  padding-right: var(--space-1, 0.25rem);
+  /* 3px, and measured rather than chosen: the surface tint above put the last row
+     flush against the section's own bottom edge, and the changes in this pass gave
+     back ~24px of the height budget, so four sections' worth of it (12px) is
+     affordable where the ~30px/section of a padded card was not. */
+  padding-bottom: 3px;
   margin-bottom: 0;
 }
 
