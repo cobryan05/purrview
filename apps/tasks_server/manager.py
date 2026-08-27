@@ -20,6 +20,7 @@ from apps import APPS, APPS_CONFIG, TASK_RETENTION_DAYS, TASK_RETENTION_MAX_COMP
 from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
 from apps.helpers.consts import TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.mqtt.bridge import MqttBridge
 from apps.helpers.recordings.streamClipClient import StreamClipClient
 from apps.helpers.serverUrls import read_url_overrides
 from apps.helpers.serviceStatus import row, section
@@ -123,9 +124,15 @@ class Manager:
             max_workers=self._BOOKKEEPING_THREADS,
             thread_name_prefix="tasks-bookkeeping",
         )
+        # One connection, independent of any watcher — see MqttBridge's docstring for
+        # why this can't just be another per-watcher AsyncMqttPublisher.
+        self._mqtt_bridge = MqttBridge(self._db_api_client)
 
     def get_db_api_client(self) -> db_client.ApiClient:
         return self._db_api_client
+
+    def get_mqtt_bridge(self) -> MqttBridge:
+        return self._mqtt_bridge
 
     def get_inference_api_client(self) -> inference_client.ApiClient:
         """The inference client to use *right now*.
@@ -278,6 +285,7 @@ class Manager:
                 pass
             except Exception as e:
                 logger.warning(f"Worker task raised during shutdown: {e}")
+        await self._mqtt_bridge.stop()
         await self._url_settings_client.aclose()
         self._release_api_client(self._inference_api_client)
         # cancel_futures so a queued write cannot hold shutdown open; anything already
@@ -291,6 +299,18 @@ class Manager:
             await self.reload_url_overrides()
         except Exception as e:
             logger.warning(f"Could not refresh server URL overrides: {e}")
+
+    async def _reconcile_mqtt_bridge_safe(self) -> None:
+        """MqttBridge.reconcile() wrapped for the worker loop, same reasoning as
+        _reload_url_overrides_safe. Runs every pass rather than once: this is how a
+        profile edit in db_server (which cannot notify this process directly — no
+        websocket or SSE anywhere in the backend) eventually reaches HA's discovery,
+        and how a broker configured after boot gets picked up without a restart.
+        """
+        try:
+            await self._mqtt_bridge.reconcile()
+        except Exception:
+            logger.warning("MQTT bridge reconcile failed", exc_info=True)
 
     async def get_server_config(self) -> Dict[str, Any]:
         return {
@@ -1559,10 +1579,12 @@ class Manager:
             # any time from Settings → Servers.
             await self._reload_url_overrides_safe()
             await self._run_startup_recovery()
+            await self._reconcile_mqtt_bridge_safe()
             while True:
                 await asyncio.sleep(60)
                 await self._reload_url_overrides_safe()
                 await self._run_startup_recovery()
+                await self._reconcile_mqtt_bridge_safe()
                 await self._check_stale_tasks()
                 await self._checkpoint_running_tasks()
                 await self._prune_finished_task_instances()

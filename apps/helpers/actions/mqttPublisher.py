@@ -31,6 +31,32 @@ from typing import Any, Deque, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+
+async def load_mqtt_broker_settings(db_api_client: Any) -> Optional["MqttSettings"]:
+    """Read the one broker config every MQTT publisher in the app shares.
+
+    Not duplicated into every action or connection: there is one broker per
+    deployment, referenced by whoever needs it rather than restated by each of them.
+    Returns None on any failure (unset, unreachable db_server, bad JSON) — callers
+    treat "no MQTT" as a normal, silent state, not an error to surface.
+    """
+    try:
+        from db_client.api.settings_api import SettingsApi
+
+        resp = await asyncio.to_thread(SettingsApi(db_api_client).get_setting, "mqtt_broker")
+        value = getattr(resp, "value", None)
+        if not value:
+            return None
+        if isinstance(value, str):
+            value = json.loads(value)
+        if not isinstance(value, dict) or not value.get("host"):
+            return None
+        return MqttSettings.from_dict(value)
+    except Exception:
+        logger.warning("Could not read MQTT broker settings", exc_info=True)
+        return None
+
+
 # ~1000 messages is minutes of event traffic at any sane rate; past that, the broker is
 # gone rather than slow and the oldest messages have no value.
 DEFAULT_QUEUE_SIZE = 1000
@@ -79,6 +105,7 @@ class _Pending:
     retain: bool
     qos: int
     size: int
+    absolute: bool = False
     #: Set once the message has left the queue, so a coalescing publish that still
     #: holds a reference to it appends a fresh entry instead of mutating a sent one.
     gone: bool = False
@@ -92,10 +119,15 @@ class AsyncMqttPublisher:
         settings: MqttSettings,
         queue_size: int = DEFAULT_QUEUE_SIZE,
         queue_bytes: int = DEFAULT_QUEUE_BYTES,
+        availability_topic: Optional[str] = None,
     ) -> None:
         self._settings = settings
         self._max_messages = max(1, int(queue_size))
         self._max_bytes = max(1, int(queue_bytes))
+        # Callers sharing one broker (a watcher's publisher and the app-level bridge,
+        # say) must not fight over the same LWT topic — see MqttBridge, which is the
+        # reason this became a parameter instead of the hard-coded `<prefix>/state`.
+        self._availability_topic = availability_topic or f"{settings.prefix}/state"
         # A deque rather than an asyncio.Queue: coalescing needs to reach into the
         # backlog and replace an entry, which a Queue deliberately does not allow.
         self._pending: Deque[_Pending] = deque()
@@ -133,7 +165,7 @@ class AsyncMqttPublisher:
 
         # Last Will: the broker publishes "offline" for us if we vanish, which is what
         # makes the state topic trustworthy to a Home Assistant user.
-        client.will_set(f"{self._settings.prefix}/state", payload="offline", retain=True)
+        client.will_set(self._availability_topic, payload="offline", retain=True)
         client.on_connect = lambda *_: self._connected.set()
         client.on_disconnect = lambda *_: self._connected.clear()
 
@@ -142,7 +174,7 @@ class AsyncMqttPublisher:
             # loop_start owns reconnection from here; the caller never waits on it.
             client.loop_start()
             self._client = client
-            client.publish(f"{self._settings.prefix}/state", "online", retain=True)
+            client.publish(self._availability_topic, "online", retain=True)
         except Exception as e:
             # A down broker must not prevent the watcher from starting. Queued messages
             # are dropped until paho's own reconnect succeeds.
@@ -171,7 +203,7 @@ class AsyncMqttPublisher:
             self._worker = None
         if self._client is not None:
             try:
-                self._client.publish(f"{self._settings.prefix}/state", "offline", retain=True)
+                self._client.publish(self._availability_topic, "offline", retain=True)
                 self._client.loop_stop()
                 self._client.disconnect()
             except Exception:
@@ -180,7 +212,15 @@ class AsyncMqttPublisher:
 
     # ------------------------------------------------------------------ publish
 
-    def publish(self, topic: str, payload: Any, retain: bool = False, qos: int = 0, coalesce: bool = False) -> None:
+    def publish(
+        self,
+        topic: str,
+        payload: Any,
+        retain: bool = False,
+        qos: int = 0,
+        coalesce: bool = False,
+        absolute: bool = False,
+    ) -> None:
         """Enqueue a message. Never blocks and never raises.
 
         Called from the frame loop, so both properties matter: this must be the
@@ -192,6 +232,10 @@ class AsyncMqttPublisher:
         frame before last, and queueing both is how a slow broker turns into a memory
         problem. Wrong for event edges, where every transition is its own fact and
         dropping one loses information.
+
+        `absolute` skips the `<prefix>/` prepend. Home Assistant MQTT discovery lives
+        under its own fixed `homeassistant/` tree regardless of our prefix — prepending
+        it there would publish a config message nothing subscribes to.
         """
         if not isinstance(payload, (str, bytes)):
             payload = json.dumps(payload, default=str)
@@ -210,7 +254,7 @@ class AsyncMqttPublisher:
                 self._ready.set()
                 return
 
-        message = _Pending(topic=topic, payload=payload, retain=retain, qos=qos, size=size)
+        message = _Pending(topic=topic, payload=payload, retain=retain, qos=qos, size=size, absolute=absolute)
         self._pending.append(message)
         self._queued_bytes += size
         if coalesce:
@@ -257,7 +301,7 @@ class AsyncMqttPublisher:
             self._forget(message)
             topic, payload, retain, qos = message.topic, message.payload, message.retain, message.qos
             try:
-                full_topic = f"{self._settings.prefix}/{topic.lstrip('/')}"
+                full_topic = topic if message.absolute else f"{self._settings.prefix}/{topic.lstrip('/')}"
                 if self._client is None:
                     self.dropped += 1
                     continue

@@ -83,10 +83,11 @@ def _task(actions, collectors_table, monkeypatch) -> StreamWatcherTask:
     task = StreamWatcherTask.__new__(StreamWatcherTask)
     task._collectors = {}
     task._collector_names = {}
-    task._profile = SimpleNamespace(actions=actions)
+    task._profile = SimpleNamespace(actions=actions, name="test profile")
     task._manager = SimpleNamespace(
         get_db_api_client=lambda: object(),
         get_inference_api_client=lambda: object(),
+        get_mqtt_bridge=lambda: SimpleNamespace(set_watcher_availability=lambda *a, **k: None),
     )
     task._cancel_flag = asyncio.Event()
     task._logs: list = []

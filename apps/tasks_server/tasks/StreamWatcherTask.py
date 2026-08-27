@@ -44,7 +44,7 @@ from inference_client.api.models_api import ModelsApi
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.actions.action import ActionContext
-from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
+from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings, load_mqtt_broker_settings
 from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
 from apps.helpers.actions.recordEventTimelapseAction import sweep_frame_buffers
 from apps.helpers.actions.Registry import create_action
@@ -384,6 +384,17 @@ class StreamWatcherTask(Task):
         self.log(f"Loaded watch profile {self._profile.name!r} with {len(self._profile.sources)} source(s)")
         if self._dry_run:
             self.log("DRY RUN — events will be raised but no actions performed")
+
+        # Watcher start/stop is one of the discovery-refresh triggers WP-2 calls for —
+        # a profile edited while its watcher was stopped only reaches HA via the
+        # periodic reconcile otherwise. Never fatal to the watcher: a broker problem
+        # here must not stop the watcher itself from starting.
+        bridge = self._manager.get_mqtt_bridge()
+        bridge.set_watcher_availability(self._profile.name, online=True)
+        try:
+            await bridge.reconcile()
+        except Exception:
+            logger.warning("MQTT discovery refresh on watcher start failed", exc_info=True)
 
     # ------------------------------------------------------------------ setup
 
@@ -842,29 +853,9 @@ class StreamWatcherTask(Task):
         return ring
 
     async def _load_mqtt_settings(self, db_api_client: db_client.ApiClient) -> Optional[MqttSettings]:
-        """Read broker config from global Settings.
-
-        Deliberately not duplicated into every action's params: one broker per
-        deployment, referenced by actions rather than restated by them.
-        """
-        try:
-            from db_client.api.settings_api import SettingsApi
-
-            resp = await asyncio.to_thread(SettingsApi(db_api_client).get_setting, "mqtt_broker")
-            value = getattr(resp, "value", None)
-            if not value:
-                return None
-            # The settings table stores strings, so the Settings UI writes this key as
-            # JSON. Accepting a dict too keeps a caller that hands us an already-decoded
-            # value working, rather than silently falling back to localhost defaults.
-            if isinstance(value, str):
-                value = json.loads(value)
-            if not isinstance(value, dict) or not value.get("host"):
-                return None
-            return MqttSettings.from_dict(value)
-        except Exception:
-            logger.warning("Could not read MQTT broker settings; MQTT actions will not publish", exc_info=True)
-            return None
+        """Read broker config from global Settings — shared with `MqttBridge`, which
+        reads the same one broker every MQTT publisher in the app uses."""
+        return await load_mqtt_broker_settings(db_api_client)
 
     async def _pin_models(self) -> None:
         """Hold a pin on every model for the task's lifetime.
@@ -1878,6 +1869,11 @@ class StreamWatcherTask(Task):
         }
 
     async def _deinit(self) -> None:
+        # Mark unavailable before anything else — a watcher that dies mid-cleanup
+        # should still stop looking "online" in HA, not freeze at its last value.
+        if self._profile is not None:
+            self._manager.get_mqtt_bridge().set_watcher_availability(self._profile.name, online=False)
+
         # After the run loop's `finally`, which has already emitted a closing signal for
         # everything still open. Anything left in the map failed to persist and has no
         # row to patch, so this forgets rather than closes.

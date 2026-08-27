@@ -119,6 +119,39 @@ class TestWatchEventCrud:
         assert (await _list(http_client, profile_uuid=profile_uuid))["total"] == 0
 
 
+class TestReviewStateFlagging:
+    """`review_state` writability, added for the Home Assistant "labels are wrong"
+    action (WP-1). The conditional is the point: flagging has to both show up under
+    its own filter and disappear from the old one, not just "save".
+    """
+
+    async def test_flagging_is_filterable_and_excludes_the_old_state(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        flagged = await _make_event(http_client, profile_uuid, ruleName="flagged one")
+        await _make_event(http_client, profile_uuid, ruleName="left alone")
+
+        r = await http_client.patch(f"/api/watch-events/{flagged['uuid']}", json={"reviewState": "flagged"})
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["event"]["reviewState"] == "flagged"
+
+        flagged_list = await _list(http_client, review_state="flagged")
+        assert {e["uuid"] for e in flagged_list["events"]} == {flagged["uuid"]}
+
+        unreviewed_list = await _list(http_client, review_state="unreviewed")
+        assert flagged["uuid"] not in {e["uuid"] for e in unreviewed_list["events"]}
+
+    async def test_unknown_review_state_is_rejected_and_leaves_value_unchanged(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+
+        r = await http_client.patch(f"/api/watch-events/{event['uuid']}", json={"reviewState": "bogus"})
+        assert r.status_code == 422
+
+        r = await http_client.get(f"/api/watch-events/{event['uuid']}")
+        assert r.json()["event"]["reviewState"] == "unreviewed"
+
+
 class TestBulkDelete:
     """The selection delete behind the event grid's "Delete N events".
 
@@ -461,6 +494,40 @@ class TestWatchEventFacets:
         body = await self._facets(http_client, profile_uuid=profile_uuid)
         assert body["subjects"] == []
         assert body["sources"] == []
+
+
+class TestWatchEventCounts:
+    """Lifetime (source, rule) counts — MQTT bridge counter seeding (WP-2)."""
+
+    async def _counts(self, http_client) -> list:
+        r = await http_client.get("/api/watch-events/counts")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "success", body
+        return body["counts"]
+
+    async def test_counts_group_by_source_and_rule_not_just_source(self, http_client):
+        """Two rules on the same camera must not be summed into one count — a bridge
+        seeding per-rule sensors from a source-only total would overstate every rule."""
+        profile_uuid = await _make_profile(http_client)
+        cam = await _make_source(http_client)
+        rule_a, rule_b = "rule-a", "rule-b"
+        for _ in range(3):
+            await _make_event(http_client, profile_uuid, sourceUuid=cam, ruleUuid=rule_a)
+        await _make_event(http_client, profile_uuid, sourceUuid=cam, ruleUuid=rule_b)
+
+        counts = {(c["sourceUuid"], c["ruleUuid"]): c["count"] for c in await self._counts(http_client)}
+        assert counts[(cam, rule_a)] == 3
+        assert counts[(cam, rule_b)] == 1
+
+    async def test_events_missing_a_rule_uuid_are_not_counted(self, http_client):
+        """An event with no rule (nothing to attribute the count to) must not show up as
+        a phantom `null`-keyed group."""
+        profile_uuid = await _make_profile(http_client)
+        cam = await _make_source(http_client)
+        await _make_event(http_client, profile_uuid, sourceUuid=cam)
+
+        assert await self._counts(http_client) == []
 
 
 class TestHistorySurvivesConfigEdits:

@@ -7244,6 +7244,26 @@ class DbClient:
                 "sources": await _sources(),
             }
 
+    async def watch_event_counts(self) -> List[Dict[str, Any]]:
+        """Lifetime event counts grouped by (source, rule).
+
+        For MQTT bridge counter seeding — a bridge that just (re)connected needs each
+        rule's lifetime total, not zero, so its first published count doesn't read as
+        a reset. No counter table: this is cheap enough to compute on demand and a
+        second source of truth would just be one more thing to keep in sync.
+        """
+        async with self._async_session_maker() as session:
+            stmt = (
+                select(WatchEvent.source_uuid, WatchEvent.rule_uuid, func.count())
+                .where(WatchEvent.source_uuid != None, WatchEvent.rule_uuid != None)  # noqa: E711
+                .group_by(WatchEvent.source_uuid, WatchEvent.rule_uuid)
+            )
+            rows = (await session.exec(stmt)).all()
+            return [
+                {"source_uuid": source_uuid, "rule_uuid": rule_uuid, "count": count}
+                for source_uuid, rule_uuid, count in rows
+            ]
+
     async def get_watch_event(self, uuid: str) -> Optional[WatchEventRead]:
         async with self._async_session_maker() as session:
             event = await session.get(WatchEvent, uuid)

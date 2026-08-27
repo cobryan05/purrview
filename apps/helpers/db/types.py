@@ -2105,6 +2105,10 @@ class WatchEventReviewState(str, Enum):
     CONFIRMED = "confirmed"
     #: Looked at and deliberately set aside — the blips were not worth acting on.
     DISMISSED = "dismissed"
+    #: Someone outside the app (Home Assistant) says the labels on this event are
+    #: wrong. Orthogonal to blip triage — a labelling fault, not a tracking one; see
+    #: `EventBlip` for the latter.
+    FLAGGED = "flagged"
 
 
 class BlipState(str, Enum):

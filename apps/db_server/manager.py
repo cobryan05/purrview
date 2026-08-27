@@ -4217,6 +4217,9 @@ class Manager:
     async def watch_event_facets(self, profile_uuid: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
         return await self._db_client.watch_event_facets(profile_uuid=profile_uuid)
 
+    async def watch_event_counts(self) -> List[Dict[str, Any]]:
+        return await self._db_client.watch_event_counts()
+
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
         return await self._db_client.create_watch_event(event)
 

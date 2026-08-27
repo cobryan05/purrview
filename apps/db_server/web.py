@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 from sqlalchemy.exc import IntegrityError
 
@@ -84,6 +84,7 @@ from apps.helpers.db.types import (
     TrainingConfigUpdate,
     WatchEvent,
     WatchEventRead,
+    WatchEventReviewState,
     WatchProfileCreate,
     WatchProfileRead,
     WatchProfileUpdate,
@@ -1061,6 +1062,16 @@ class WatchEventFacetsResponse(StatusResponse):
     sources: List[WatchEventFacet] = Field(default_factory=list)
 
 
+class WatchEventCount(ApiModel):
+    source_uuid: str
+    rule_uuid: str
+    count: int
+
+
+class WatchEventCountsResponse(StatusResponse):
+    counts: List[WatchEventCount] = Field(default_factory=list)
+
+
 class WatchEventCreate(Payload):
     profile_uuid: str
     source_uuid: Optional[str] = None
@@ -1092,8 +1103,16 @@ class WatchEventUpdate(Payload):
     peak_confidence: Optional[float] = None
     truncated: Optional[bool] = None
     close_reason: Optional[str] = None
+    review_state: Optional[str] = None
     snapshot_path: Optional[str] = None
     metadata_json: Optional[Dict[str, Any]] = None
+
+    @field_validator("review_state")
+    @classmethod
+    def _known_review_state(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in {s.value for s in WatchEventReviewState}:
+            raise ValueError(f"unknown review_state {v!r}")
+        return v
 
 
 class StorageBucketRead(BaseModel):
@@ -4617,6 +4636,22 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return WatchEventFacetsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Same ordering reason as `facets` above — must precede `/{uuid}`.
+        @self._app.get(
+            "/api/watch-events/counts",
+            response_model=WatchEventCountsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event_counts",
+        )
+        async def get_watch_event_counts() -> WatchEventCountsResponse:
+            """Lifetime event counts grouped by (source, rule) — MQTT bridge counter seeding."""
+            try:
+                counts = await self._manager.watch_event_counts()
+                return WatchEventCountsResponse(status=JsonValues.SUCCESS, counts=counts)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventCountsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/watch-events/{uuid}",
