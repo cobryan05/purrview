@@ -195,6 +195,47 @@ class TestPipelineStep:
         assert [s.phase for s in signals] == [EventPhase.END]
 
 
+class TestDeadTrackIds:
+    """A vanished track_id is the only "this track just ended" signal the tracker
+    exposes — the training-collector's per-track novelty sampling (§4B of
+    COLLECTOR_UNIFICATION_PLAN.md) commits its held worst-case crop on this signal."""
+
+    def _pipeline_with_tracker(self, **tracker_overrides) -> WatchPipeline:
+        tracker = IouTracker(min_hits=1, max_age_s=0.5, **tracker_overrides)
+        return _pipeline(analysis_width=640, tracker=tracker)
+
+    def test_no_deaths_on_the_first_frame(self):
+        pipeline = self._pipeline_with_tracker()
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        det = Detection(bbox=(300, 300, 400, 400), label_uuid=CAT, confidence=0.9)
+        pipeline.step([det], now=0.0)
+        assert pipeline.dead_track_ids == []
+
+    def test_a_track_that_ages_out_is_reported_dead_exactly_once(self):
+        pipeline = self._pipeline_with_tracker()
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        det = Detection(bbox=(300, 300, 400, 400), label_uuid=CAT, confidence=0.9)
+        pipeline.step([det], now=0.0)
+        (track,) = pipeline.tracks
+        track_id = track.track_id
+
+        # No detection this frame, and the tracker's max_age_s=0.5 has elapsed.
+        pipeline.step([], now=1.0)
+        assert pipeline.dead_track_ids == [track_id]
+
+        # Reading it again without another step must not repeat the death.
+        pipeline.step([], now=1.1)
+        assert pipeline.dead_track_ids == []
+
+    def test_a_still_live_track_is_never_reported_dead(self):
+        pipeline = self._pipeline_with_tracker()
+        pipeline.prepare_frame(np.zeros((640, 640, 3), dtype=np.uint8))
+        det = Detection(bbox=(300, 300, 400, 400), label_uuid=CAT, confidence=0.9)
+        pipeline.step([det], now=0.0)
+        pipeline.step([det], now=0.2)
+        assert pipeline.dead_track_ids == []
+
+
 class TestStatusRow:
     def test_reports_the_fields_the_ui_table_needs(self):
         pipeline = _pipeline()

@@ -29,7 +29,7 @@ from apps.helpers.actions.recordClipAction import (
 from apps.helpers.actions.Registry import action_registry, create_action
 from apps.helpers.actions.saveSnapshotAction import SaveSnapshotAction
 from apps.helpers.actions.saveTimelapseAction import SaveTimelapseAction
-from apps.helpers.tracking.tracker import Detection
+from apps.helpers.tracking.tracker import Detection, Track
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
 
@@ -1165,6 +1165,49 @@ class TestCollectTrainingImagesAction:
         result = await action.run(_frame_signal(), self._full_frame_context())
 
         assert result.ok is False
+
+    async def test_tracks_are_normalized_to_the_analysis_frame(self):
+        """`Track.bbox` is pixel coords in `context.frame`'s space; `TrackedCrop`
+        on the FrameOffer must be normalized so the collector can compare it
+        against detections, which it always sees normalized (plan §4B)."""
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+        analysis_frame = np.zeros((100, 200, 3), dtype=np.uint8)  # height=100, width=200
+        track = Track(track_id=42, bbox=(20.0, 10.0, 60.0, 40.0), confidence=0.8)
+        context = self._full_frame_context(frame=analysis_frame, tracks=[track])
+
+        await action.run(_frame_signal(), context)
+
+        offered = collector.offer.await_args.args[0]
+        assert len(offered.tracks) == 1
+        crop = offered.tracks[0]
+        assert crop.track_id == 42
+        assert crop.x == pytest.approx(20.0 / 200)
+        assert crop.y == pytest.approx(10.0 / 100)
+        assert crop.width == pytest.approx(40.0 / 200)
+        assert crop.height == pytest.approx(30.0 / 100)
+
+    async def test_no_tracks_without_an_analysis_frame(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+        track = Track(track_id=1, bbox=(0.0, 0.0, 10.0, 10.0), confidence=0.5)
+        context = self._full_frame_context(frame=None, tracks=[track])
+
+        await action.run(_frame_signal(), context)
+
+        assert collector.offer.await_args.args[0].tracks == ()
+
+    async def test_dead_track_ids_pass_through_onto_the_offer(self):
+        collector = MagicMock()
+        collector.offer = AsyncMock()
+        action = self._action(collector=collector, collector_uuid="c1", min_interval_s=1.0)
+        context = self._full_frame_context(dead_track_ids=[7, 9])
+
+        await action.run(_frame_signal(), context)
+
+        assert collector.offer.await_args.args[0].dead_track_ids == (7, 9)
 
 
 class TestCollectTrainingImagesActionTriggers:

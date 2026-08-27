@@ -48,7 +48,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import cv2
@@ -75,6 +75,8 @@ from apps.helpers.hashUtils import (
     DEFAULT_IMAGE_HASH_SIZE,
     PHASH_JPEG_QUALITY,
     compute_phashes_with_jpeg_roundtrip,
+    hamming,
+    phash_from_numpy_crop,
 )
 from apps.helpers.imageHelper import ImageHelper
 from apps.helpers.imageProviders.imageProvider import ImageProviderType, ImageWithProviderMetadata
@@ -83,6 +85,7 @@ from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.training.collectorSpec import (
     AMBIGUITY_KIND_CROSS_MODEL,
     AMBIGUITY_METRIC_RATIO,
+    SAME_BBOX_IOU_THRESHOLD,
     AmbiguityInfo,
     CollectorSpec,
     ambiguity_fires,
@@ -121,6 +124,20 @@ class CollectorHost:
     build_filter_chain_runner: Optional[Callable[[list, Any], Any]] = None
 
 
+@dataclass(frozen=True)
+class TrackedCrop:
+    """One live track's box, normalized to the same frame `matching` detections are
+    in — built by the driver, which is the only side that knows `Track.bbox`'s
+    pixel space and how to normalize it. The collector never sees a raw `Track`.
+    """
+
+    track_id: int
+    x: float
+    y: float
+    width: float
+    height: float
+
+
 @dataclass
 class FrameOffer:
     """One frame handed to the collector.
@@ -141,6 +158,14 @@ class FrameOffer:
     #: `source:frame_idx` for FIXED sources, so a resume can skip it. None means
     #: "don't record this frame as processed" (live sources reset frame_idx).
     unique_id: Optional[str] = None
+    #: Live tracks as of this frame. Empty for the standalone task (no tracker) —
+    #: per-track novelty sampling is watcher-only by construction, not by a flag:
+    #: an empty list here simply never matches any detection, so `offer()` falls
+    #: through to today's behaviour unchanged.
+    tracks: Tuple[TrackedCrop, ...] = ()
+    #: track_ids that vanished between the previous offer and this one — see
+    #: `WatchPipeline.dead_track_ids`.
+    dead_track_ids: Tuple[int, ...] = ()
 
 
 class TrainingCollector:
@@ -183,6 +208,12 @@ class TrainingCollector:
 
     # Actions that actually drop frames. "ignore" and "measure" are pass-through.
     _DISCARD_ACTIONS: tuple[str, ...] = ("discard", "discard_image")
+
+    # Safety valve for per-track novelty sampling (plan §4B): a track that never
+    # stops moving would otherwise keep adding distinct-enough crops forever. This
+    # is NOT the rule — appearance novelty is — it only bounds the pathological
+    # case. Kept well above a normal visit's pose count.
+    MAX_FRAMES_PER_TRACK: int = 25
 
     def __init__(
         self,
@@ -232,6 +263,21 @@ class TrainingCollector:
         #: counts. Every other counter here is post-some-filter; this is the one
         #: that answers "is the driver even calling offer() at all".
         self._frames_offered: int = 0
+        #: track_id -> hex phashes of crops already kept for that track this run
+        #: (plan §4B: "is this pose meaningfully different from what's already
+        #: kept for THIS track" — intra-visit decimation, complementary to the
+        #: global phash's cross-visit dedup, not a replacement for it). Bounded by
+        #: `MAX_FRAMES_PER_TRACK`; forgotten once the track dies.
+        self._track_hashes: Dict[int, deque] = {}
+        #: track_id -> (confidence, frame, detection) for the lowest-confidence
+        #: crop offered for that track that the novelty check above has NOT
+        #: already let through naturally. Committed on track death so the
+        #: hardest example of a visit is never lost to "it looked like an
+        #: earlier pose" — see `_handle_dead_tracks`.
+        self._track_worst: Dict[int, Tuple[float, "FrameOffer", Any]] = {}
+        self._track_novelty_kept: int = 0
+        self._track_novelty_dropped: int = 0
+        self._track_worst_committed: int = 0
 
         self._last_capture: Optional[dict[str, Any]] = None
         self._filter_chain_runner: Any = None
@@ -544,6 +590,16 @@ class TrainingCollector:
                 frame.provided, frame.base64, matching
             )
 
+        # Per-track novelty prefilter (plan §4B) — cheap (a handful of Hamming
+        # distances against hashes already in hand) and local, so it runs before
+        # dedup's network round-trip rather than after it. `frame.tracks` is empty
+        # for the standalone task (no tracker), which makes this a no-op for it by
+        # construction rather than by branching on which driver is calling.
+        if frame.tracks and matching:
+            matching = self._apply_track_novelty(frame, matching)
+        if frame.dead_track_ids:
+            await self._commit_dead_track_worst(frame.dead_track_ids)
+
         # In collect-everything mode `matching` is always empty, so the save is
         # driven by the frame itself: everything the driver hands over is collected
         # unless the filter chain discarded it (or dedup, below, calls it a dup).
@@ -560,6 +616,94 @@ class TrainingCollector:
             # frame under duplicate_action="discard" — a narrow edge case, not worth
             # special-casing dedup for an empty bbox set.
             self._dispatch_save(frame, [])
+
+    def _match_track(self, det: Any, tracks: "Tuple[TrackedCrop, ...]") -> Optional[int]:
+        """Best-IoU track for one detection, or None if nothing overlaps enough.
+
+        Reuses `SAME_BBOX_IOU_THRESHOLD` — the same "is this the same object"
+        bar the cross-model merge uses — rather than inventing a second one.
+        """
+        best_iou = 0.0
+        best_id: Optional[int] = None
+        for t in tracks:
+            i = iou_xywh(det.bbox, t)
+            if i > best_iou:
+                best_iou = i
+                best_id = t.track_id
+        return best_id if best_iou >= SAME_BBOX_IOU_THRESHOLD else None
+
+    def _apply_track_novelty(self, frame: FrameOffer, matching: list) -> list:
+        """Keep a crop only if it's a meaningfully different pose than what's
+        already been kept for the SAME track this visit (plan §4B).
+
+        This is intra-visit decimation — a loitering animal's stillness produces
+        near-identical crops that add volume without information — and it is
+        complementary to, not a replacement for, the global phash dedup below,
+        which answers a different question ("have I already got this from last
+        Tuesday"). A detection matching no live track (nothing close enough by
+        IoU) is left untouched: novelty sampling has nothing to say about an
+        object the tracker isn't following.
+        """
+        image = frame.provided.image
+        kept: list = []
+        for det in matching:
+            track_id = self._match_track(det, frame.tracks)
+            if track_id is None:
+                kept.append(det)
+                continue
+            crop_hash = phash_from_numpy_crop(
+                image, det.bbox.x, det.bbox.y, det.bbox.width, det.bbox.height, self._bbox_hash_size
+            )
+            self._update_track_worst(track_id, det, frame, is_being_saved=False)
+            history = self._track_hashes.get(track_id)
+            novel = not history or all(hamming(crop_hash, h) > self._spec.bbox_dup_threshold for h in history)
+            if not novel:
+                self._track_novelty_dropped += 1
+                continue
+            kept.append(det)
+            self._track_novelty_kept += 1
+            self._update_track_worst(track_id, det, frame, is_being_saved=True)
+            bucket = self._track_hashes.setdefault(track_id, deque(maxlen=self.MAX_FRAMES_PER_TRACK))
+            bucket.append(crop_hash)
+        return kept
+
+    def _update_track_worst(self, track_id: int, det: Any, frame: FrameOffer, *, is_being_saved: bool) -> None:
+        """Track the lowest-confidence crop seen for `track_id` that has not
+        already been (or is not about to be) saved through the ordinary path —
+        so `_commit_dead_track_worst` never re-saves a crop the driver already
+        has on disk, and never loses the hardest example of a visit to a novelty
+        filter that (correctly) called it a redundant pose.
+        """
+        current = self._track_worst.get(track_id)
+        if is_being_saved:
+            # This confidence is being saved normally this frame. It only
+            # discharges the pending "must commit at death" obligation if it's at
+            # least as hard as what's pending — a harder crop offered later still
+            # needs to be remembered.
+            if current is not None and det.confidence <= current[0]:
+                self._track_worst.pop(track_id, None)
+            return
+        if current is None or det.confidence < current[0]:
+            self._track_worst[track_id] = (det.confidence, frame, det)
+
+    async def _commit_dead_track_worst(self, dead_track_ids: "Tuple[int, ...]") -> None:
+        """A track just ended — save its held hardest example if the novelty
+        filter ever withheld one, then forget the track entirely (plan §4B:
+        "always keep the track's lowest-confidence frame ... commit at track
+        end"). `track_id`s don't survive a tracker restart, so nothing here needs
+        to persist past this run.
+        """
+        for track_id in dead_track_ids:
+            self._track_hashes.pop(track_id, None)
+            worst = self._track_worst.pop(track_id, None)
+            if worst is None:
+                continue
+            _, held_frame, held_det = worst
+            self._track_worst_committed += 1
+            if self._spec.enable_dedup:
+                await self._enqueue_for_dedup(held_frame, [held_det])
+            else:
+                self._dispatch_save(held_frame, [held_det])
 
     async def _enqueue_for_dedup(self, frame: FrameOffer, matching: list) -> None:
         assert self._dedup_queue is not None
@@ -1751,6 +1895,13 @@ class TrainingCollector:
         spec = self._spec
         stats: dict[str, Any] = {"offered": self._frames_offered, "saved": self._images_saved}
         calibration: dict[str, Any] = {}
+        # Only present for a watcher-attached collector — the standalone task never
+        # populates `frame.tracks`, so these would otherwise be permanent zeros
+        # cluttering the panel of the thing this feature doesn't apply to.
+        if self._track_novelty_kept or self._track_novelty_dropped or self._track_worst_committed:
+            stats["track_novelty_kept"] = self._track_novelty_kept
+            stats["track_novelty_dropped"] = self._track_novelty_dropped
+            stats["track_worst_committed"] = self._track_worst_committed
         if spec.enable_dedup:
             stats["dedup_checked"] = self._dedup_frames_checked
             stats["dedup_image_hits"] = self._dedup_image_hits

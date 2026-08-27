@@ -39,7 +39,7 @@ from apps.helpers.imageProviders.imageProvider import (
     ImageProviderType,
     ImageWithProviderMetadata,
 )
-from apps.helpers.training.collector import CollectorHost, FrameOffer, TrainingCollector
+from apps.helpers.training.collector import CollectorHost, FrameOffer, TrackedCrop, TrainingCollector
 from apps.helpers.training.collectorSpec import CollectorSpec, collector_params_schema
 from apps.tasks_server.tasks._detection_merger import MergePolicy
 from apps.tasks_server.tasks.CollectTrainingImagesTask import (
@@ -3370,6 +3370,150 @@ class TestDedupThresholdCalibration:
         hint = (await self._task(action="measure", samples=[(1, [1])]))._collector._dedup_hint_text()
         assert "unbiased" in hint
         assert "drift upward" not in hint
+
+
+def _frame_offer_with(image: np.ndarray, tracks=(), dead_track_ids=()) -> FrameOffer:
+    provided = MagicMock()
+    provided.image = image
+    provided.metadata.source = "src"
+    provided.metadata.frame_idx = None
+    return FrameOffer(
+        provided=provided,
+        base64="b64",
+        provider_type=ImageProviderType.LIVE_STREAM,
+        tracks=tuple(tracks),
+        dead_track_ids=tuple(dead_track_ids),
+    )
+
+
+class TestPerTrackNoveltySampling:
+    """Plan §4B: within one track's visit, keep a crop only if it's a
+    meaningfully different pose than what's already been kept for that SAME
+    track — complementary to (not a replacement for) the global phash dedup,
+    which asks a different question (cross-visit duplication).
+    """
+
+    _TRACK = TrackedCrop(track_id=5, x=0.1, y=0.1, width=0.3, height=0.3)
+
+    @staticmethod
+    def _solid_image(value: int) -> np.ndarray:
+        return np.full((64, 64, 3), value, dtype=np.uint8)
+
+    @staticmethod
+    def _noisy_image(seed: int) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        return rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+
+    def test_a_detection_matching_no_live_track_is_left_untouched(self):
+        collector = _detached_collector()
+        det = _detection_at(0.1, 0.1, 0.3, 0.3)
+        kept = collector._apply_track_novelty(_frame_offer_with(self._solid_image(0), tracks=[self._TRACK]), [det])
+        # No track overlaps this bbox (the fixture track is at a different
+        # location), so novelty sampling has nothing to say about it.
+        assert kept == [det]
+
+    def test_the_first_crop_offered_for_a_track_is_always_kept(self):
+        collector = _detached_collector()
+        det = _detection_at(0.1, 0.1, 0.3, 0.3)
+        kept = collector._apply_track_novelty(_frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]), [det])
+        assert kept == [det]
+        assert collector._track_novelty_kept == 1
+        assert collector._track_novelty_dropped == 0
+
+    def test_a_near_identical_second_pose_is_dropped(self):
+        collector = _detached_collector()
+        image = self._solid_image(128)
+        det_a = _detection_at(0.1, 0.1, 0.3, 0.3)
+        det_b = _detection_at(0.1, 0.1, 0.3, 0.3)
+
+        collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_a])
+        kept = collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_b])
+
+        assert kept == []
+        assert collector._track_novelty_dropped == 1
+
+    def test_a_visually_distinct_second_pose_is_kept(self):
+        """A cat that shifts pose/orientation must not be discarded — only the
+        stillness in between should be. Distinct random crops stand in for
+        'the animal moved enough to look different'."""
+        collector = _detached_collector()
+        det_a = _detection_at(0.1, 0.1, 0.3, 0.3)
+        det_b = _detection_at(0.1, 0.1, 0.3, 0.3)
+
+        collector._apply_track_novelty(_frame_offer_with(self._noisy_image(1), tracks=[self._TRACK]), [det_a])
+        kept = collector._apply_track_novelty(_frame_offer_with(self._noisy_image(2), tracks=[self._TRACK]), [det_b])
+
+        assert kept == [det_b]
+        assert collector._track_novelty_kept == 2
+
+    def test_max_frames_per_track_is_a_safety_valve_not_the_rule(self):
+        """The bound exists for a pathologically ever-moving object; it must not
+        fire on an ordinary distinct-pose sequence well under it."""
+        collector = _detached_collector()
+        assert collector.MAX_FRAMES_PER_TRACK > 5
+        for seed in range(5):
+            det = _detection_at(0.1, 0.1, 0.3, 0.3)
+            kept = collector._apply_track_novelty(
+                _frame_offer_with(self._noisy_image(seed), tracks=[self._TRACK]), [det]
+            )
+            assert kept == [det]
+        assert collector._track_novelty_kept == 5
+
+
+class TestTrackDeathCommitsTheWorstHeldCrop:
+    """Plan §4B: 'always keep the track's lowest-confidence frame ... commit at
+    track end.' A crop the novelty filter dropped as a redundant pose must not
+    be lost forever if it also happened to be the hardest example of the visit.
+    """
+
+    _TRACK = TrackedCrop(track_id=5, x=0.1, y=0.1, width=0.3, height=0.3)
+
+    @staticmethod
+    def _noisy_image(seed: int) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        return rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+
+    async def test_a_dropped_low_confidence_pose_is_saved_on_track_death(self):
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": False})
+        image = np.full((64, 64, 3), 200, dtype=np.uint8)
+        det_high = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.9)
+        det_low = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.2)
+
+        collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_high])
+        kept = collector._apply_track_novelty(_frame_offer_with(image, tracks=[self._TRACK]), [det_low])
+        assert kept == []  # near-duplicate pose, correctly dropped
+
+        with patch.object(collector, "_dispatch_save") as dispatch:
+            await collector._commit_dead_track_worst((5,))
+
+        dispatch.assert_called_once()
+        saved_frame, saved_matching = dispatch.call_args.args
+        assert saved_matching == [det_low]
+        assert collector._track_worst_committed == 1
+        # The track is fully forgotten — nothing left to double-commit later.
+        assert 5 not in collector._track_worst
+        assert 5 not in collector._track_hashes
+
+    async def test_a_naturally_saved_crop_needs_no_extra_commit(self):
+        """When the lowest-confidence pose was novel and already went through the
+        ordinary save path, track death must not re-save anything."""
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": False})
+        det = _detection_at(0.1, 0.1, 0.3, 0.3, confidence=0.2)
+
+        kept = collector._apply_track_novelty(_frame_offer_with(self._noisy_image(3), tracks=[self._TRACK]), [det])
+        assert kept == [det]
+
+        with patch.object(collector, "_dispatch_save") as dispatch:
+            await collector._commit_dead_track_worst((5,))
+
+        dispatch.assert_not_called()
+
+    async def test_death_of_an_untouched_track_is_a_no_op(self):
+        collector = _detached_collector({"output_dir": "out", "enable_dedup": False})
+        with patch.object(collector, "_dispatch_save") as dispatch:
+            await collector._commit_dead_track_worst((999,))
+        dispatch.assert_not_called()
+        assert collector._track_worst_committed == 0
 
 
 @pytest.mark.real_collector_fetch

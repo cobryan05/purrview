@@ -78,6 +78,15 @@ class ActionContext:
     #: inference call, if it makes one, should reuse rather than re-encoding
     #: `full_frame` from scratch.
     analysis_base64: Optional[str] = None
+    #: Live tracks as of this frame (`WatchPipeline.tracks`) — raw `Track` objects,
+    #: in `frame`'s pixel space. Carried so a `frame_analysed` action can key
+    #: per-object state (e.g. training-collector novelty sampling) off track
+    #: identity rather than re-deriving it from `detections` alone.
+    tracks: List[Any] = field(default_factory=list)
+    #: track_ids that vanished between the previous analysed frame and this one
+    #: (`WatchPipeline.dead_track_ids`) — the only "this track just ended" signal
+    #: the tracker exposes.
+    dead_track_ids: List[int] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 
 

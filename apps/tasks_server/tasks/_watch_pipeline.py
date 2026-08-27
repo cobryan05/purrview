@@ -12,7 +12,7 @@ the pipeline testable against a fake provider and a stub inference callable.
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 import numpy as np
 
@@ -220,6 +220,15 @@ class WatchPipeline:
     health: SourceHealth = field(default_factory=SourceHealth)
     _next_frame_at: float = 0.0
     _last_tracks: List[Track] = field(default_factory=list)
+    #: track_ids live as of the previous `step()`, so the next call can tell which
+    #: ones vanished. A vanished id is the only reliable "this track just died"
+    #: signal the tracker exposes — it never fires a callback, and a track simply
+    #: stops appearing in `update()`'s return value once it ages out.
+    _prior_track_ids: Set[int] = field(default_factory=set)
+    #: track_ids present in `_prior_track_ids` but absent from this step's tracks.
+    #: Exposed via `dead_track_ids` for exactly one step — a consumer that reads it
+    #: once per frame (as `_dispatch_frame` does) sees each death exactly once.
+    _dead_track_ids: List[int] = field(default_factory=list)
     #: Detections from the last analysed frame, *before* the tracker saw them. Kept
     #: only for the live view, and kept separately from tracks on purpose: "inference
     #: returned nothing" and "the tracker discarded everything inference returned" look
@@ -331,6 +340,9 @@ class WatchPipeline:
         # same picture the rules are reasoning about.
         self._last_detections = list(surviving)
         self._last_tracks = self.tracker.update(list(surviving), now)
+        current_ids = {t.track_id for t in self._last_tracks}
+        self._dead_track_ids = [tid for tid in self._prior_track_ids if tid not in current_ids]
+        self._prior_track_ids = current_ids
         return self.engine.step(self._last_tracks, now, motion=self._last_motion)
 
     def close_open_events(
@@ -346,6 +358,11 @@ class WatchPipeline:
     @property
     def tracks(self) -> List[Track]:
         return list(self._last_tracks)
+
+    @property
+    def dead_track_ids(self) -> List[int]:
+        """track_ids that vanished between the previous `step()` and this one."""
+        return list(self._dead_track_ids)
 
     @property
     def detections(self) -> List[Detection]:

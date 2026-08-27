@@ -55,7 +55,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..imageProviders.imageProvider import ImageProviderMetadata, ImageWithProviderMetadata
-from ..training.collector import FrameOffer, TrainingCollector
+from ..training.collector import FrameOffer, TrackedCrop, TrainingCollector
 from ..watch.events import EventPhase, WatchEventSignal
 from ..watch.scoping import EVENT_ENDED, EVENT_STARTED, FRAME_ANALYSED
 from .action import Action, ActionContext, ActionResult
@@ -142,6 +142,34 @@ class CollectTrainingImagesAction(Action):
         # repeated nudge; there is nothing to reopen, the session already is.
         return ActionResult(ok=True, detail="already collecting")
 
+    @staticmethod
+    def _normalize_tracks(tracks: List[Any], frame: Any) -> List[TrackedCrop]:
+        """`Track.bbox` is pixel coordinates in `frame`'s space (the analysed,
+        downscaled frame — never `full_frame`); `TrackedCrop` is normalized so the
+        collector can compare it against detections, which it always sees in
+        normalized form regardless of which resolution inference actually ran at.
+        Only the driver knows which frame `Track.bbox` is relative to, so this
+        conversion happens here rather than inside the collector.
+        """
+        if frame is None:
+            return []
+        height, width = frame.shape[:2]
+        if not width or not height:
+            return []
+        out: List[TrackedCrop] = []
+        for t in tracks:
+            x1, y1, x2, y2 = t.bbox
+            out.append(
+                TrackedCrop(
+                    track_id=t.track_id,
+                    x=max(0.0, x1 / width),
+                    y=max(0.0, y1 / height),
+                    width=max(0.0, (x2 - x1) / width),
+                    height=max(0.0, (y2 - y1) / height),
+                )
+            )
+        return out
+
     def _on_event_start(self, signal: WatchEventSignal) -> ActionResult:
         key = signal.source_uuid or ""
         self._open_sessions.setdefault(key, []).append((signal.rule_uuid, signal.started_at))
@@ -194,6 +222,8 @@ class CollectTrainingImagesAction(Action):
                 ),
             ),
             base64=context.analysis_base64,
+            tracks=tuple(self._normalize_tracks(context.tracks, context.frame)),
+            dead_track_ids=tuple(context.dead_track_ids),
         )
         try:
             await collector.offer(frame)

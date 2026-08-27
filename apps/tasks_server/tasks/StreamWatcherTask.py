@@ -1737,6 +1737,8 @@ class StreamWatcherTask(Task):
             clip_chunks=self._chunks_for_signal(signal),
             frame_seq=pipeline.frame_seq if pipeline else None,
             analysis_base64=pipeline.last_analysis_base64 if pipeline else None,
+            tracks=pipeline.tracks if pipeline else [],
+            dead_track_ids=pipeline.dead_track_ids if pipeline else [],
         )
 
     def _chunks_for_signal(self, signal) -> List[Any]:
