@@ -146,6 +146,33 @@ def _topic_rule(rule: RuleView) -> str:
     return slugify(rule.name)
 
 
+def entity_name(device_name: str, name: str) -> str:
+    """An entity's name with its device's name stripped off the front.
+
+    HA composes both the friendly name and the entity_id as `<device> <entity>`, so a
+    name that repeats the device stutters: rule "Maple Present" on subject device
+    "Maple" becomes `sensor.maple_maple_present`.
+
+    This is not only our own doing. Naming a rule after the subject it watches is the
+    natural thing to do, so the collision arrives with the *config* and would come back
+    with the next rule however carefully the literals here are written — which is why
+    it is stripped at render time rather than fixed one entity at a time.
+
+    Matched on a whole-word boundary so "Cat" does not maul "Catcher", and case
+    -insensitively because the device name comes from user config. If nothing would be
+    left, the original is kept: an empty name means "this entity *is* the device" to HA,
+    which is right for a camera and wrong for a rule that happens to share its name.
+    """
+    device_words = slugify(device_name).split("-")
+    name_words = slugify(name).split("-")
+    if len(name_words) <= len(device_words) or name_words[: len(device_words)] != device_words:
+        return name
+    # Take the remainder from the original string rather than the slug, so casing and
+    # punctuation survive: "Cat Drinking Water" → "Drinking Water", not "drinking-water".
+    remainder = name.split(None, len(device_words))[len(device_words) :]
+    return remainder[0] if remainder else name
+
+
 # ── Topic construction ───────────────────────────────────────────────────────────────
 #
 # Discovery advertises these and the live publishes write to them, so they are built
@@ -195,6 +222,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         if rule.source_uuids and source.uuid not in rule.source_uuids:
             continue
         topic_rule = _topic_rule(rule)
+        rule_label = entity_name(source.name, rule.name)
         rule_base = f"{prefix}/{rule_base_topic(topic_profile, topic_source, topic_rule)}"
         # The existing, documented scheme (mqttPublishAction.py) — profile-scoped,
         # unchanged by this bridge. Built off the same `base` as the bridge's own
@@ -214,7 +242,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[f"{rule.uuid}_state"] = {
             "p": "binary_sensor",
             "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_state",
-            "name": rule.name,
+            "name": rule_label,
             "device_class": "occupancy",
             "state_topic": f"{rule_base}/state",
             "payload_on": "ON",
@@ -224,7 +252,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_count",
-            "name": f"{rule.name} count",
+            "name": f"{rule_label} count",
             # The single most important setting here: HA purges raw history after
             # ~10 days but keeps long-term statistics forever for a sensor that
             # declares a state_class. Without it, "events per day last year" is gone.
@@ -234,7 +262,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_last_seen",
-            "name": f"{rule.name} last seen",
+            "name": f"{rule_label} last seen",
             "device_class": "timestamp",
             "state_topic": f"{rule_base}/attributes",
             "value_template": "{{ value_json.lastSeen }}",
@@ -242,7 +270,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[f"{rule.uuid}_last_duration"] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_last_duration",
-            "name": f"{rule.name} last duration",
+            "name": f"{rule_label} last duration",
             "state_class": "measurement",
             "device_class": "duration",
             "unit_of_measurement": "s",
@@ -252,7 +280,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[f"{rule.uuid}_peak_confidence"] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_peak_confidence",
-            "name": f"{rule.name} peak confidence",
+            "name": f"{rule_label} peak confidence",
             "state_class": "measurement",
             "state_topic": f"{rule_base}/attributes",
             "value_template": "{{ value_json.peakConfidence }}",
@@ -260,7 +288,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[f"{rule.uuid}_event"] = {
             "p": "event",
             "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_event",
-            "name": rule.name,
+            "name": rule_label,
             "event_types": [rule.name],
             "state_topic": event_topic,
         }
@@ -268,13 +296,15 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     cmps["camera"] = {
         "p": "camera",
         "unique_id": f"encounterwatch_{source.uuid}_camera",
-        "name": source.name,
+        # No name: HA treats an unnamed component as the device's primary entity, so this
+        # is `camera.<source>` rather than `camera.<source>_<source>`.
+        "name": None,
         "topic": f"{base}/image",
     }
     cmps["tracked_count"] = {
         "p": "sensor",
         "unique_id": f"encounterwatch_{source.uuid}_tracked_count",
-        "name": f"{source.name} tracked objects",
+        "name": "tracked objects",
         "state_class": "measurement",
         "state_topic": telemetry_state_topic,
         "value_template": "{{ value_json.trackedCount }}",
@@ -282,7 +312,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     cmps["health"] = {
         "p": "binary_sensor",
         "unique_id": f"encounterwatch_{source.uuid}_health",
-        "name": f"{source.name} problem",
+        "name": "problem",
         "device_class": "problem",
         "entity_category": "diagnostic",
         "state_topic": telemetry_state_topic,
@@ -299,7 +329,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         entry: Dict[str, Any] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_{source.uuid}_{key}",
-            "name": f"{source.name} {key.replace('_', ' ')}",
+            "name": key.replace("_", " "),
             "entity_category": "diagnostic",
             "state_class": "measurement",
             "state_topic": telemetry_state_topic,
@@ -401,19 +431,20 @@ def build_subject_discovery(
 
     for rule, sources in rules:
         rule_slug = slugify(rule.name)
+        rule_label = entity_name(subject.name, rule.name)
         # Tier 2 — "when is this subject doing X on *any* camera", the question most
         # worth asking and the one a per-camera breakdown alone cannot answer.
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_count",
-            "name": rule.name,
+            "name": rule_label,
             "state_class": "total_increasing",
             "state_topic": f"{base}/rule/{rule_slug}/count",
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
             "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_last_seen",
-            "name": f"{rule.name} last seen",
+            "name": f"{rule_label} last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/rule/{rule_slug}/attributes",
             "value_template": "{{ value_json.lastSeen }}",
@@ -426,7 +457,7 @@ def build_subject_discovery(
             cmps[f"{rule.uuid}_{source.uuid}_count"] = {
                 "p": "sensor",
                 "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
-                "name": f"{rule.name} · {source.name}",
+                "name": f"{rule_label} · {source.name}",
                 "state_class": "total_increasing",
                 "enabled_by_default": False,
                 "state_topic": f"{base}/rule/{rule_slug}/{source_slug}/count",

@@ -23,6 +23,7 @@ from apps.helpers.mqtt.bridge import (
     build_seed_publishes,
     build_slug_index,
     build_source_discovery,
+    build_subject_discovery,
     build_subject_seed,
     reconcile_discovery,
     source_config_topic,
@@ -31,6 +32,7 @@ from apps.helpers.mqtt.bridge import (
     subject_config_topic,
     subjects_in_scope,
 )
+from apps.helpers.watch.templating import slugify
 
 PREFIX = "encounterwatch"
 
@@ -939,3 +941,68 @@ class TestWatcherAvailabilitySurvivesALateConnect:
         bridge._publish_watcher_availability()
 
         assert [c["payload"] for c in fake.calls] == ["offline"]
+
+
+class TestEntityNamesDoNotStutter:
+    """HA builds both the friendly name and the entity_id as `<device> <entity>`.
+
+    An entity name that repeats its device stutters — `sensor.maple_maple_present`,
+    `sensor.catroomrtsp_catroomrtsp_fps`. Renaming after the fact is expensive because
+    entity_ids are sticky and carry history, so the interesting property is that new
+    config cannot reintroduce it: a rule named after the cat it watches is the natural
+    thing for a user to write, and it must come out clean without anyone noticing.
+    """
+
+    @staticmethod
+    def _names(cmps):
+        return [c.get("name") for c in cmps.values()]
+
+    def test_source_entities_do_not_repeat_the_camera_name(self):
+        profile = _profile(sources=(SourceView(uuid="src-1", name="CatRoomRTSP"),))
+
+        cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+        assert not [n for n in self._names(cmps) if n and "catroomrtsp" in slugify(n)]
+
+    def test_the_camera_itself_is_the_devices_primary_entity(self):
+        """`name: None` is how HA is told "this entity *is* the device" — it yields
+        `camera.catroomrtsp`, not `camera.catroomrtsp_catroomrtsp`."""
+        profile = _profile(sources=(SourceView(uuid="src-1", name="CatRoomRTSP"),))
+
+        assert build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]["camera"]["name"] is None
+
+    def test_a_rule_named_after_its_subject_is_stripped_on_the_subject_device(self):
+        """The recurring case: device "Maple", rule "Maple Present" → "Present"."""
+        subject = SubjectView(uuid="cat-1", name="Maple")
+        rule = RuleView(uuid="rule-1", name="Maple Present", subject_uuids=("cat-1",))
+
+        cmps = build_subject_discovery(subject, [(rule, ())], PREFIX)["cmps"]
+
+        assert cmps["rule-1_count"]["name"] == "Present"
+
+    def test_a_rule_not_named_after_its_subject_is_left_alone(self):
+        """Stripping must key off an actual prefix match, not chop the first word."""
+        subject = SubjectView(uuid="cat-1", name="Maple")
+        rule = RuleView(uuid="rule-1", name="Drinking Water", subject_uuids=("cat-1",))
+
+        cmps = build_subject_discovery(subject, [(rule, ())], PREFIX)["cmps"]
+
+        assert cmps["rule-1_count"]["name"] == "Drinking Water"
+
+    def test_a_word_that_merely_starts_with_the_device_name_is_not_chopped(self):
+        subject = SubjectView(uuid="cat-1", name="Cat")
+        rule = RuleView(uuid="rule-1", name="Catcher Active", subject_uuids=("cat-1",))
+
+        cmps = build_subject_discovery(subject, [(rule, ())], PREFIX)["cmps"]
+
+        assert cmps["rule-1_count"]["name"] == "Catcher Active"
+
+    def test_a_rule_named_exactly_as_its_subject_keeps_its_name(self):
+        """Stripping to empty would make the rule the device's primary entity and
+        collide with it. Keeping the stutter is the lesser evil."""
+        subject = SubjectView(uuid="cat-1", name="Maple")
+        rule = RuleView(uuid="rule-1", name="Maple", subject_uuids=("cat-1",))
+
+        cmps = build_subject_discovery(subject, [(rule, ())], PREFIX)["cmps"]
+
+        assert cmps["rule-1_count"]["name"] == "Maple"
