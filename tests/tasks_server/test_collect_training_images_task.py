@@ -3577,6 +3577,48 @@ class TestPerTrackNoveltySampling:
         assert kept == []
 
 
+class TestTrackDeathAndAKeptCropInOneOffer:
+    """A track can contribute a kept crop *and* die within the same `offer()`.
+
+    The death cleanup pops the track's per-track state; committing novelty writes it
+    back. Run in the wrong order — cleanup first, novelty second — the entries are
+    resurrected for a track_id that is already gone, and a track only ever dies once, so
+    nothing will ever pop them again. That is an unbounded leak on a long-running
+    watcher, and it is silent: every count stays right and every crop still saves.
+    """
+
+    _TRACK = TrackedCrop(track_id=11, x=0.1, y=0.1, width=0.3, height=0.3)
+
+    @staticmethod
+    def _noisy_image(seed: int) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        return rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+
+    async def test_state_for_a_track_that_dies_in_the_same_offer_is_not_left_behind(self):
+        # Needs a model configured: with none, the spec is `collect_all`, `offer()`
+        # skips inference entirely and the novelty prefilter never runs.
+        collector = _detached_collector(_PARAMS)
+        det = _detection_at(0.1, 0.1, 0.3, 0.3)
+        frame = _frame_offer_with(
+            self._noisy_image(1),
+            tracks=[self._TRACK],
+            dead_track_ids=[self._TRACK.track_id],
+        )
+
+        with (
+            patch("apps.helpers.training.collector.InferenceApi"),
+            patch.object(collector, "_run_inference", new=AsyncMock(return_value=[det])),
+        ):
+            await collector.offer(frame)
+
+        # The crop was kept — this is not the "nothing happened" case.
+        assert collector._track_novelty_kept == 1
+        # …and none of the track's per-track state outlived its death.
+        assert self._TRACK.track_id not in collector._track_hashes
+        assert self._TRACK.track_id not in collector._track_kept
+        assert self._TRACK.track_id not in collector._track_worst
+
+
 class TestTrackDeathCommitsTheWorstHeldCrop:
     """Plan §4B: 'always keep the track's lowest-confidence frame ... commit at
     track end.' A crop the novelty filter dropped as a redundant pose must not

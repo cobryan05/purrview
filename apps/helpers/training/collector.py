@@ -694,8 +694,6 @@ class TrainingCollector:
         novelty_pending: list = []
         if frame.tracks and matching:
             matching, novelty_pending = self._apply_track_novelty(frame, matching)
-        if frame.dead_track_ids:
-            await self._commit_dead_track_worst(frame.dead_track_ids)
 
         # In collect-everything mode `matching` is always empty, so the save is
         # driven by the frame itself: everything the driver hands over is collected
@@ -715,6 +713,15 @@ class TrainingCollector:
             # frame under duplicate_action="discard" — a narrow edge case, not worth
             # special-casing dedup for an empty bbox set.
             self._dispatch_save(frame, [])
+
+        # Must run after `_commit_track_novelty` above: a track can both
+        # contribute a kept crop and die within the same `offer()` call, and
+        # committing novelty first (recording the hash, bumping `_track_kept`)
+        # then letting the death cleanup pop it right back out is the only
+        # ordering that doesn't resurrect per-track state for a track_id whose
+        # death was already consumed and will never be reported again.
+        if frame.dead_track_ids:
+            await self._commit_dead_track_worst(frame.dead_track_ids)
 
     def _match_track(self, det: Any, tracks: "Tuple[TrackedCrop, ...]") -> Optional[int]:
         """Best-IoU track for one detection, or None if nothing overlaps enough.
