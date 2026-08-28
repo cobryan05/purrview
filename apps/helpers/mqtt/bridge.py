@@ -32,8 +32,26 @@ logger = logging.getLogger(__name__)
 
 HA_DISCOVERY_PREFIX = "homeassistant"
 ORIGIN = {"name": "EncounterWatch"}
+
+#: Stamped on every device we publish.
+#:
+#: HA's MQTT panel splits devices into subentries and "devices that don't belong to a
+#: sub-entry", and everything discovery-created lands in the latter — an MQTT subentry
+#: holds exactly one device that a human added through the UI, so it is not a folder and
+#: discovery cannot target one. The discovery device object has no `via_device` either
+#: (its keys are cu/cns/ids/name/mf/mdl/mdl_id/hw/sw/sa/sn), so there is no hub to hang
+#: these off.
+#:
+#: Manufacturer and model are therefore the grouping HA does offer: they make the set
+#: filterable and sortable as one family in the device list instead of nine unrelated
+#: rows. Neither touches `ids`, so no entity is re-registered by adding them.
+MANUFACTURER = "EncounterWatch"
 APP_DEVICE_ID = "encounterwatch_system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
+
+
+def _device(ids: str, name: str, model: str) -> Dict[str, Any]:
+    return {"ids": ids, "name": name, "mf": MANUFACTURER, "mdl": model}
 
 
 #: Component keys that arrive switched off in Home Assistant. HA still creates them, so
@@ -343,7 +361,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         # Namespaced like every other device here (`encounterwatch_subject_…`,
         # `encounterwatch_system`). A bare uuid would sit in HA's global MQTT device
         # namespace shared with every other integration on the broker.
-        "dev": {"ids": source_device_id(source.uuid), "name": source.name},
+        "dev": _device(source_device_id(source.uuid), source.name, "Watched camera"),
         "o": dict(ORIGIN),
         # Both must be online: the app-wide LWT and this source's watcher. Either
         # going offline should be visible as "unavailable", not a frozen last value.
@@ -464,7 +482,7 @@ def build_subject_discovery(
             }
 
     return {
-        "dev": {"ids": subject_device_id(subject.uuid), "name": subject.name},
+        "dev": _device(subject_device_id(subject.uuid), subject.name, "Tracked subject"),
         "o": dict(ORIGIN),
         # Only the app-level LWT: a subject is not owned by any one watcher, so tying
         # its availability to a particular one would blank the device whenever that
@@ -478,7 +496,7 @@ def build_app_discovery(prefix: str) -> Dict[str, Any]:
     """The `encounterwatch_system` device: app-wide diagnostics that belong to no
     single camera."""
     return {
-        "dev": {"ids": APP_DEVICE_ID, "name": "EncounterWatch"},
+        "dev": _device(APP_DEVICE_ID, "EncounterWatch", "Application"),
         "o": dict(ORIGIN),
         "availability": [{"topic": f"{prefix}/status"}],
         "cmps": {

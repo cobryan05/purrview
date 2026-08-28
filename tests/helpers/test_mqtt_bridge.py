@@ -1006,3 +1006,28 @@ class TestEntityNamesDoNotStutter:
         cmps = build_subject_discovery(subject, [(rule, ())], PREFIX)["cmps"]
 
         assert cmps["rule-1_count"]["name"] == "Maple"
+
+
+class TestDevicesAreIdentifiableAsOneFamily:
+    """HA files every discovery-created device under "devices that don't belong to a
+    sub-entry" and offers no way to change that: an MQTT subentry holds exactly one
+    hand-added device, and the discovery device object has no `via_device`, so there is
+    no parent to nest under. Manufacturer and model are the grouping that *is*
+    available, and they are what makes the set filterable as one family."""
+
+    def test_every_device_declares_the_same_manufacturer(self):
+        subject = SubjectView(uuid="cat-1", name="Tabby")
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", subject_uuids=("cat-1",)),))
+
+        devices = [p["dev"] for p in build_all_discovery([profile], PREFIX, {"cat-1": subject}).values()]
+
+        assert devices
+        assert {d.get("mf") for d in devices} == {"EncounterWatch"}
+
+    def test_the_three_device_kinds_are_distinguishable_by_model(self):
+        subject = SubjectView(uuid="cat-1", name="Tabby")
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", subject_uuids=("cat-1",)),))
+
+        models = {p["dev"]["mdl"] for p in build_all_discovery([profile], PREFIX, {"cat-1": subject}).values()}
+
+        assert models == {"Watched camera", "Tracked subject", "Application"}
