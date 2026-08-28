@@ -25,7 +25,7 @@
 
 set -uo pipefail
 
-CONTAINER=whiskerwatcher_mono_dev
+CONTAINER=encounterwatch_mono_dev
 RUNS=5
 STRESS=0
 

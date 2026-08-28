@@ -15,7 +15,7 @@ class TestLandingPage:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/html")
         body = resp.text
-        assert "WhiskerWatcher Inference Server" in body
+        assert "EncounterWatch Inference Server" in body
         assert '"/status"' in body
         assert '"/api/info"' in body
 

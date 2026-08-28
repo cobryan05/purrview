@@ -31,7 +31,7 @@ from apps.helpers.mqtt.bridge import (
     subjects_in_scope,
 )
 
-PREFIX = "whiskerwatcher"
+PREFIX = "encounterwatch"
 
 
 def _profile(**overrides) -> ProfileView:
@@ -195,12 +195,12 @@ class TestDiscoveryReconciliation:
         configs around it must still be adopted."""
         good = build_all_discovery([_profile()], PREFIX)
         retained = {t: json.dumps(p).encode() for t, p in good.items()}
-        retained["homeassistant/device/whiskerwatcher_junk/config"] = b"{not json"
+        retained["homeassistant/device/encounterwatch_junk/config"] = b"{not json"
 
         state = state_from_retained(retained)
 
         assert source_config_topic("src-1") in state.topics
-        assert "homeassistant/device/whiskerwatcher_junk/config" not in state.topics
+        assert "homeassistant/device/encounterwatch_junk/config" not in state.topics
 
     def test_a_deleted_source_is_retracted_with_an_empty_payload(self):
         with_source = [_profile()]

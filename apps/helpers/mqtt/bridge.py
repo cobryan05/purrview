@@ -31,8 +31,8 @@ from ..watch.templating import slugify
 logger = logging.getLogger(__name__)
 
 HA_DISCOVERY_PREFIX = "homeassistant"
-ORIGIN = {"name": "WhiskerWatcher"}
-APP_DEVICE_ID = "whiskerwatcher_system"
+ORIGIN = {"name": "EncounterWatch"}
+APP_DEVICE_ID = "encounterwatch_system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
 
 
@@ -80,7 +80,7 @@ def _apply_default_visibility(cmps: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def source_device_id(source_uuid: str) -> str:
-    return f"whiskerwatcher_{source_uuid}"
+    return f"encounterwatch_{source_uuid}"
 
 
 def source_config_topic(source_uuid: str) -> str:
@@ -207,7 +207,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         # it as the same entity — see HA_INTEGRATION_PLAN.md WP-2 step 5a.
         cmps[f"{rule.uuid}_state"] = {
             "p": "binary_sensor",
-            "unique_id": f"whiskerwatcher_{rule.uuid}_state",
+            "unique_id": f"encounterwatch_{rule.uuid}_state",
             "name": rule.name,
             "device_class": "occupancy",
             "state_topic": f"{rule_base}/state",
@@ -217,7 +217,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_{rule.uuid}_count",
+            "unique_id": f"encounterwatch_{rule.uuid}_count",
             "name": f"{rule.name} count",
             # The single most important setting here: HA purges raw history after
             # ~10 days but keeps long-term statistics forever for a sensor that
@@ -227,7 +227,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_{rule.uuid}_last_seen",
+            "unique_id": f"encounterwatch_{rule.uuid}_last_seen",
             "name": f"{rule.name} last seen",
             "device_class": "timestamp",
             "state_topic": f"{rule_base}/attributes",
@@ -235,7 +235,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_duration"] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_{rule.uuid}_last_duration",
+            "unique_id": f"encounterwatch_{rule.uuid}_last_duration",
             "name": f"{rule.name} last duration",
             "state_class": "measurement",
             "device_class": "duration",
@@ -245,7 +245,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_peak_confidence"] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_{rule.uuid}_peak_confidence",
+            "unique_id": f"encounterwatch_{rule.uuid}_peak_confidence",
             "name": f"{rule.name} peak confidence",
             "state_class": "measurement",
             "state_topic": f"{rule_base}/attributes",
@@ -253,7 +253,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_event"] = {
             "p": "event",
-            "unique_id": f"whiskerwatcher_{rule.uuid}_event",
+            "unique_id": f"encounterwatch_{rule.uuid}_event",
             "name": rule.name,
             "event_types": [rule.name],
             "state_topic": event_topic,
@@ -261,13 +261,13 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
     cmps["camera"] = {
         "p": "camera",
-        "unique_id": f"whiskerwatcher_{source.uuid}_camera",
+        "unique_id": f"encounterwatch_{source.uuid}_camera",
         "name": source.name,
         "topic": f"{base}/image",
     }
     cmps["tracked_count"] = {
         "p": "sensor",
-        "unique_id": f"whiskerwatcher_{source.uuid}_tracked_count",
+        "unique_id": f"encounterwatch_{source.uuid}_tracked_count",
         "name": f"{source.name} tracked objects",
         "state_class": "measurement",
         "state_topic": telemetry_state_topic,
@@ -275,7 +275,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     }
     cmps["health"] = {
         "p": "binary_sensor",
-        "unique_id": f"whiskerwatcher_{source.uuid}_health",
+        "unique_id": f"encounterwatch_{source.uuid}_health",
         "name": f"{source.name} problem",
         "device_class": "problem",
         "entity_category": "diagnostic",
@@ -292,7 +292,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     ):
         entry: Dict[str, Any] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_{source.uuid}_{key}",
+            "unique_id": f"encounterwatch_{source.uuid}_{key}",
             "name": f"{source.name} {key.replace('_', ' ')}",
             "entity_category": "diagnostic",
             "state_class": "measurement",
@@ -315,7 +315,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
 
 def subject_device_id(subject_uuid: str) -> str:
-    return f"whiskerwatcher_subject_{subject_uuid}"
+    return f"encounterwatch_subject_{subject_uuid}"
 
 
 def subject_config_topic(subject_uuid: str) -> str:
@@ -359,7 +359,7 @@ def build_subject_discovery(
     cmps: Dict[str, Any] = {
         "detected": {
             "p": "binary_sensor",
-            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_detected",
+            "unique_id": f"encounterwatch_subject_{subject.uuid}_detected",
             "name": "Detected now",
             "device_class": "occupancy",
             "state_topic": f"{base}/state",
@@ -368,14 +368,14 @@ def build_subject_discovery(
         },
         "count": {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_count",
+            "unique_id": f"encounterwatch_subject_{subject.uuid}_count",
             "name": "Total events",
             "state_class": "total_increasing",
             "state_topic": f"{base}/count",
         },
         "last_seen": {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_last_seen",
+            "unique_id": f"encounterwatch_subject_{subject.uuid}_last_seen",
             "name": "Last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/attributes",
@@ -383,7 +383,7 @@ def build_subject_discovery(
         },
         "last_location": {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_last_location",
+            "unique_id": f"encounterwatch_subject_{subject.uuid}_last_location",
             "name": "Last location",
             "state_topic": f"{base}/attributes",
             "value_template": "{{ value_json.lastSource }}",
@@ -396,14 +396,14 @@ def build_subject_discovery(
         # worth asking and the one a per-camera breakdown alone cannot answer.
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_{rule.uuid}_count",
+            "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_count",
             "name": rule.name,
             "state_class": "total_increasing",
             "state_topic": f"{base}/rule/{rule_slug}/count",
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_{rule.uuid}_last_seen",
+            "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_last_seen",
             "name": f"{rule.name} last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/rule/{rule_slug}/attributes",
@@ -416,7 +416,7 @@ def build_subject_discovery(
             source_slug = _topic_source(source)
             cmps[f"{rule.uuid}_{source.uuid}_count"] = {
                 "p": "sensor",
-                "unique_id": f"whiskerwatcher_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
+                "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
                 "name": f"{rule.name} · {source.name}",
                 "state_class": "total_increasing",
                 "enabled_by_default": False,
@@ -435,10 +435,10 @@ def build_subject_discovery(
 
 
 def build_app_discovery(prefix: str) -> Dict[str, Any]:
-    """The `whiskerwatcher_system` device: app-wide diagnostics that belong to no
+    """The `encounterwatch_system` device: app-wide diagnostics that belong to no
     single camera."""
     return {
-        "dev": {"ids": APP_DEVICE_ID, "name": "WhiskerWatcher"},
+        "dev": {"ids": APP_DEVICE_ID, "name": "EncounterWatch"},
         "o": dict(ORIGIN),
         "availability": [{"topic": f"{prefix}/status"}],
         "cmps": {
@@ -815,7 +815,7 @@ class MqttBridge:
     def __init__(self, db_api_client: Any) -> None:
         self._db_api_client = db_api_client
         self._publisher: Optional[AsyncMqttPublisher] = None
-        self._prefix: str = "whiskerwatcher"
+        self._prefix: str = "encounterwatch"
         self._last_discovery: DiscoveryState = DiscoveryState()
         # Refreshed on every reconcile, so a watcher publishing an event transition can
         # resolve its uuids to topics without a DB round trip on the hot path.
@@ -1203,7 +1203,7 @@ class MqttBridge:
         self._publisher.publish(f"{subject_base_topic(slug)}/state", state, retain=True)
 
     async def publish_system(self, *, watchers_running: int) -> None:
-        """The `whiskerwatcher_system` device's sensors — app-wide figures owned by no
+        """The `encounterwatch_system` device's sensors — app-wide figures owned by no
         camera, so no watcher is in a position to publish them.
 
         Storage comes from `/api/storage/usage`, which walks directories and is

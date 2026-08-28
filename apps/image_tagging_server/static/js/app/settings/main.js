@@ -735,11 +735,11 @@ export const MQTT_SETTING_KEY = 'mqtt_broker';
 const MQTT_DEFAULTS = {
   host: '',
   port: 1883,
-  prefix: 'whiskerwatcher',
+  prefix: 'encounterwatch',
   username: '',
   password: '',
   tls: false,
-  client_id: 'whiskerwatcher',
+  client_id: 'encounterwatch',
 };
 
 /**

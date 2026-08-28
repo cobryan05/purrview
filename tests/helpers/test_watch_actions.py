@@ -448,7 +448,7 @@ class TestAsyncMqttPublisher:
 
     def test_settings_from_dict_applies_defaults(self):
         settings = MqttSettings.from_dict({"host": "broker.lan"})
-        assert settings.port == 1883 and settings.prefix == "whiskerwatcher"
+        assert settings.port == 1883 and settings.prefix == "encounterwatch"
 
     def test_settings_strip_a_trailing_slash_from_the_prefix(self):
         assert MqttSettings.from_dict({"host": "h", "prefix": "home/"}).prefix == "home"

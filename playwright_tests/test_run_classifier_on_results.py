@@ -9,7 +9,7 @@ status polls; image thumbnails, tags, and the image-level bulk-apply-by-uuids
 endpoint are likewise mocked (no real DB/model behind them).
 
 Run with:
-    docker compose --profile dev run --rm --no-deps -w /project whiskerwatcher-dev \
+    docker compose --profile dev run --rm --no-deps -w /project encounterwatch-dev \
         python3.11 -m pytest playwright_tests/test_run_classifier_on_results.py -q
 """
 

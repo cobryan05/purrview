@@ -1,5 +1,5 @@
 # =====================================================================
-# WhiskerWatcher — deployment topologies via compose profiles + .env
+# EncounterWatch — deployment topologies via compose profiles + .env
 # =====================================================================
 # One static set of services; a deployment is selected by COMPOSE_PROFILES
 # and parameterized by .env. Run ./setup.sh to generate a .env, or copy
@@ -62,7 +62,7 @@ services:
   # docker-compose.gpu.yaml for GPU inference.
   # -------------------------------------------------------------------
   app:
-    container_name: whiskerwatcher_app
+    container_name: encounterwatch_app
     build:
       context: .
       dockerfile: Dockerfile
@@ -111,7 +111,7 @@ services:
     tmpfs:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
-      - "7999:7999"   # Whisker-Watcher main app
+      - "7999:7999"   # Encounter-Watch main app
       - "8553:8554"   # RTSP relay
       - "9001:9001"   # Supervisord
     restart: unless-stopped
@@ -122,7 +122,7 @@ services:
   # HTTP, so it can live on a separate/remote GPU host.
   # -------------------------------------------------------------------
   training:
-    container_name: whiskerwatcher_training
+    container_name: encounterwatch_training
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
@@ -152,7 +152,7 @@ services:
   # APP_BASE=cuda-runtime + ORT_REQUIREMENTS=requirements-gpu.txt.
   # -------------------------------------------------------------------
   mono:
-    container_name: whiskerwatcher_mono
+    container_name: encounterwatch_mono
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
@@ -196,7 +196,7 @@ services:
     tmpfs:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
-      - "7999:7999"   # Whisker-Watcher main app
+      - "7999:7999"   # Encounter-Watch main app
       - "8005:8005"   # Training server
       - "8553:8554"   # RTSP relay
       - "9001:9001"   # Supervisord
@@ -209,7 +209,7 @@ services:
   # same as the prod `app` service, since it can be built CPU-only.
   # -------------------------------------------------------------------
   app-dev:
-    container_name: whiskerwatcher_app_dev
+    container_name: encounterwatch_app_dev
     build:
       context: .
       dockerfile: Dockerfile
@@ -260,7 +260,7 @@ services:
     profiles: ["dev"]
 
   training-dev:
-    container_name: whiskerwatcher_training_dev
+    container_name: encounterwatch_training_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
     build:
@@ -288,7 +288,7 @@ services:
     profiles: ["dev"]
 
   mono-dev:
-    container_name: whiskerwatcher_mono_dev
+    container_name: encounterwatch_mono_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     # No per-container memory limit: this workspace runs training (torch +
     # DataLoader workers) alongside the app and a full browser test suite, so

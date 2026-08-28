@@ -1,6 +1,6 @@
 """Measure the ingest lag between a clip's pixels and its detection sidecar.
 
-    docker exec -w /project whiskerwatcher_mono_dev \
+    docker exec -w /project encounterwatch_mono_dev \
         python scripts/measure_overlay_lag.py /data/recordings/clips/<day>/<clip>.mp4 [...]
 
 Set `WATCH_OVERLAY_LAG_S` to the number this reports (see `OVERLAY_LAG_S` in

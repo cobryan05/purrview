@@ -326,7 +326,7 @@ class WebApp:
             """Operator landing page — this service is often alone on a GPU host."""
             return HTMLResponse(
                 render_landing_page(
-                    title="WhiskerWatcher Inference Server",
+                    title="EncounterWatch Inference Server",
                     subtitle="ONNX model serving",
                     status_url="/status",
                     info_url="/api/info",

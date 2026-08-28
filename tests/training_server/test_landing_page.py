@@ -24,7 +24,7 @@ class TestLandingPage:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/html")
         body = resp.text
-        assert "WhiskerWatcher Training Server" in body
+        assert "EncounterWatch Training Server" in body
         # The page drives itself off these two endpoints; a rename that breaks
         # them leaves a page that renders but shows nothing.
         assert '"/status"' in body

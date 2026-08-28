@@ -348,8 +348,8 @@ class TestMqttSettings:
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
         expect(_mqtt_field(page, "settings-mqtt-port")).to_have_value("1883")
-        expect(_mqtt_field(page, "settings-mqtt-prefix")).to_have_value("whiskerwatcher")
-        expect(_mqtt_field(page, "settings-mqtt-client-id")).to_have_value("whiskerwatcher")
+        expect(_mqtt_field(page, "settings-mqtt-prefix")).to_have_value("encounterwatch")
+        expect(_mqtt_field(page, "settings-mqtt-client-id")).to_have_value("encounterwatch")
         expect(_mqtt_field(page, "settings-mqtt-tls")).not_to_be_checked()
         expect(_mqtt_status(page)).to_have_text("No broker configured.")
 
@@ -422,8 +422,8 @@ class TestMqttSettings:
         assert saved["username"] == "user1"
         assert saved["password"] == "secret"
         assert saved["tls"] is True
-        assert saved["prefix"] == "whiskerwatcher"
-        assert saved["client_id"] == "whiskerwatcher"
+        assert saved["prefix"] == "encounterwatch"
+        assert saved["client_id"] == "encounterwatch"
         expect(_mqtt_status(page)).to_contain_text("Saved: broker.local:8883")
 
     def test_save_with_blank_host_disables_mqtt(self, page: Page, base_url: str):

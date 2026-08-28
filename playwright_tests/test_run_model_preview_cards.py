@@ -19,7 +19,7 @@ test_run_model_on_results.py already covers) and mock the small set of API
 endpoints the cards + canvas editor + Apply need.
 
 Run with:
-    docker compose --profile dev run --rm --no-deps -w /project whiskerwatcher-dev \
+    docker compose --profile dev run --rm --no-deps -w /project encounterwatch-dev \
         python3.11 -m pytest playwright_tests/test_run_model_preview_cards.py -q
 """
 

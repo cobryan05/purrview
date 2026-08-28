@@ -63,7 +63,7 @@ DEFAULT_TIMEOUT: Timeout = (5.0, 60.0)
 #: that has genuinely stopped answering must not hold a task hostage forever.
 LONG_TIMEOUT: Timeout = (5.0, 600.0)
 
-_BOUND_MARKER = "_whiskerwatcher_default_timeout"
+_BOUND_MARKER = "_encounterwatch_default_timeout"
 
 
 def bind_default_timeout(api_client: ApiClientT, timeout: Timeout = DEFAULT_TIMEOUT) -> ApiClientT:
