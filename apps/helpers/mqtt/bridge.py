@@ -81,6 +81,33 @@ def _topic_rule(rule: RuleView) -> str:
     return slugify(rule.name)
 
 
+# ── Topic construction ───────────────────────────────────────────────────────────────
+#
+# Discovery advertises these and the live publishes write to them, so they are built
+# here once rather than formatted at each call site: the failure mode of two f-strings
+# drifting apart is an entity that exists in HA and never updates, which throws nothing
+# and looks like a dead camera.
+#
+# Everything is profile-scoped, matching the existing documented event/image scheme in
+# `mqttPublishAction.py`. Source-scoped alone is wrong and was a real bug: multiple
+# watch profiles may watch one camera, and two same-named rules under one source would
+# then share a state topic and overwrite each other's counts. Telemetry is worse — fps
+# and queue depth are properties of a *watcher's analysis of* a source, never of the
+# source itself.
+
+
+def source_base_topic(profile_slug: str, source_slug: str) -> str:
+    return f"{profile_slug}/{source_slug}"
+
+
+def rule_base_topic(profile_slug: str, source_slug: str, rule_slug: str) -> str:
+    return f"{source_base_topic(profile_slug, source_slug)}/rule/{rule_slug}"
+
+
+def telemetry_topic(profile_slug: str, source_slug: str) -> str:
+    return f"{source_base_topic(profile_slug, source_slug)}/telemetry"
+
+
 # ── Discovery payload generation (pure) ──────────────────────────────────────────────
 
 
@@ -92,7 +119,8 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     """
     topic_source = _topic_source(source)
     topic_profile = slugify(profile.name)
-    base = f"{prefix}/{topic_source}"
+    base = f"{prefix}/{source_base_topic(topic_profile, topic_source)}"
+    telemetry_state_topic = f"{prefix}/{telemetry_topic(topic_profile, topic_source)}"
     watcher_topic = f"{prefix}/watcher/{topic_profile}/status"
 
     cmps: Dict[str, Any] = {}
@@ -102,10 +130,12 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         if rule.source_uuids and source.uuid not in rule.source_uuids:
             continue
         topic_rule = _topic_rule(rule)
-        rule_base = f"{base}/rule/{topic_rule}"
+        rule_base = f"{prefix}/{rule_base_topic(topic_profile, topic_source, topic_rule)}"
         # The existing, documented scheme (mqttPublishAction.py) — profile-scoped,
-        # unchanged by this bridge.
-        event_topic = f"{prefix}/{topic_profile}/{topic_source}/event/{topic_rule}"
+        # unchanged by this bridge. Built off the same `base` as the bridge's own
+        # topics now that those are profile-scoped too, which is the point: the two
+        # schemes share a namespace rather than sitting in parallel ones.
+        event_topic = f"{base}/event/{topic_rule}"
 
         # unique_id is uuid-based throughout: renaming the rule changes rule_base and
         # event_topic (cosmetic, human-readable) but never these, so HA keeps treating
@@ -168,14 +198,14 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         "p": "camera",
         "unique_id": f"whiskerwatcher_{source.uuid}_camera",
         "name": source.name,
-        "topic": f"{prefix}/{topic_profile}/{topic_source}/image",
+        "topic": f"{base}/image",
     }
     cmps["tracked_count"] = {
         "p": "sensor",
         "unique_id": f"whiskerwatcher_{source.uuid}_tracked_count",
         "name": f"{source.name} tracked objects",
         "state_class": "measurement",
-        "state_topic": f"{base}/telemetry",
+        "state_topic": telemetry_state_topic,
         "value_template": "{{ value_json.trackedCount }}",
     }
     cmps["health"] = {
@@ -184,7 +214,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         "name": f"{source.name} problem",
         "device_class": "problem",
         "entity_category": "diagnostic",
-        "state_topic": f"{base}/telemetry",
+        "state_topic": telemetry_state_topic,
         "value_template": "{{ 'ON' if value_json.problem else 'OFF' }}",
     }
     for key, json_path, unit in (
@@ -201,7 +231,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
             "name": f"{source.name} {key.replace('_', ' ')}",
             "entity_category": "diagnostic",
             "state_class": "measurement",
-            "state_topic": f"{base}/telemetry",
+            "state_topic": telemetry_state_topic,
             "value_template": f"{{{{ value_json.{json_path} }}}}",
         }
         if unit:
@@ -301,17 +331,116 @@ def build_seed_publishes(profiles: Sequence[ProfileView], counts: Sequence[Dict[
     and still known to current config. A count for a uuid no longer in any profile
     (a deleted rule or source) has no topic to seed onto — its retained state, if any,
     goes away with the rest of that entity's discovery retraction, not through here.
+
+    Resolved per profile rather than against one flat uuid→slug map, because the source
+    slug is profile-scoped: `mqtt_name` lives on the profile↔source link, so one camera
+    watched by two profiles can legitimately have a different slug under each.
     """
-    slug_by_source = {s.uuid: _topic_source(s) for p in profiles for s in p.sources}
-    slug_by_rule = {r.uuid: _topic_rule(r) for p in profiles for r in p.rules}
+    index = build_slug_index(profiles)
     out: Dict[str, int] = {}
-    for row in counts:
-        source_slug = slug_by_source.get(row["source_uuid"])
-        rule_slug = slug_by_rule.get(row["rule_uuid"])
-        if not source_slug or not rule_slug:
-            continue
-        out[f"{source_slug}/rule/{rule_slug}/count"] = row["count"]
+    for (profile_uuid, source_uuid, rule_uuid), count in build_counter_seed(profiles, counts).items():
+        topic = index.count_topic(profile_uuid, source_uuid, rule_uuid)
+        if topic is not None:
+            out[topic] = count
     return out
+
+
+def build_counter_seed(
+    profiles: Sequence[ProfileView], counts: Sequence[Dict[str, Any]]
+) -> Dict[Tuple[str, str, str], int]:
+    """Lifetime counts keyed by `(profile_uuid, source_uuid, rule_uuid)`.
+
+    Uuid-keyed rather than topic-keyed on purpose: this is what the live counter is
+    held in, and a rule rename changes its topic. Keyed by topic, a rename would orphan
+    the running total and restart the sensor at zero — recoverable (`total_increasing`
+    reads a drop as a counter reset) but a needless dent in the statistics.
+
+    A count is attributed to a profile only when that profile holds both the source and
+    the rule, which is what stops two profiles sharing a camera from each claiming the
+    other's events.
+    """
+    out: Dict[Tuple[str, str, str], int] = {}
+    for profile in profiles:
+        source_uuids = {s.uuid for s in profile.sources}
+        rule_uuids = {r.uuid for r in profile.rules}
+        for row in counts:
+            if row["source_uuid"] in source_uuids and row["rule_uuid"] in rule_uuids:
+                out[(profile.uuid, row["source_uuid"], row["rule_uuid"])] = row["count"]
+    return out
+
+
+@dataclass(frozen=True)
+class SlugIndex:
+    """uuid → topic-slug lookup, so a caller holding only uuids can build the same
+    topics `build_source_discovery` advertised. Returns `None` for anything it has not
+    seen: a rule created since the last reconcile has no HA entity yet either, so there
+    is nothing useful to publish about it.
+    """
+
+    #: profile_uuid → (profile_slug, {source_uuid: slug}, {rule_uuid: slug})
+    profiles: Dict[str, Tuple[str, Dict[str, str], Dict[str, str]]]
+
+    def rule_base(self, profile_uuid: str, source_uuid: str, rule_uuid: str) -> Optional[str]:
+        entry = self.profiles.get(profile_uuid)
+        if entry is None:
+            return None
+        profile_slug, sources, rules = entry
+        source_slug, rule_slug = sources.get(source_uuid), rules.get(rule_uuid)
+        if source_slug is None or rule_slug is None:
+            return None
+        return rule_base_topic(profile_slug, source_slug, rule_slug)
+
+    def count_topic(self, profile_uuid: str, source_uuid: str, rule_uuid: str) -> Optional[str]:
+        base = self.rule_base(profile_uuid, source_uuid, rule_uuid)
+        return None if base is None else f"{base}/count"
+
+    def telemetry(self, profile_uuid: str, source_uuid: str) -> Optional[str]:
+        entry = self.profiles.get(profile_uuid)
+        if entry is None:
+            return None
+        profile_slug, sources, _rules = entry
+        source_slug = sources.get(source_uuid)
+        return None if source_slug is None else telemetry_topic(profile_slug, source_slug)
+
+
+def build_slug_index(profiles: Sequence[ProfileView]) -> SlugIndex:
+    return SlugIndex(
+        profiles={
+            p.uuid: (
+                slugify(p.name),
+                {s.uuid: _topic_source(s) for s in p.sources},
+                {r.uuid: _topic_rule(r) for r in p.rules},
+            )
+            for p in profiles
+        }
+    )
+
+
+def build_event_attributes(
+    *,
+    last_seen: str,
+    duration_s: Optional[float],
+    peak_confidence: Optional[float],
+    subject: Optional[str],
+    target: Optional[str],
+    track_ids: Sequence[int],
+) -> Dict[str, Any]:
+    """The `attributes` payload three sensors and the binary_sensor read through
+    `value_template`. One topic rather than five, so a transition is one publish and
+    the values a card shows can never be half-updated.
+
+    Keys are camelCase to match the `value_template`s in `build_source_discovery` and
+    the rest of the app's JSON. `lastSeen` is ISO 8601 with an offset because its
+    sensor declares `device_class: timestamp`, which HA rejects as unknown otherwise.
+    """
+    return {
+        "lastSeen": last_seen,
+        "lastDurationS": round(duration_s, 2) if duration_s is not None else None,
+        "peakConfidence": round(peak_confidence, 4) if peak_confidence is not None else None,
+        "subject": subject,
+        "target": target,
+        "trackIds": list(track_ids),
+    }
 
 
 # ── The connection ────────────────────────────────────────────────────────────────
@@ -331,6 +460,14 @@ class MqttBridge:
         self._publisher: Optional[AsyncMqttPublisher] = None
         self._prefix: str = "whiskerwatcher"
         self._last_discovery_topics: FrozenSet[str] = frozenset()
+        # Refreshed on every reconcile, so a watcher publishing an event transition can
+        # resolve its uuids to topics without a DB round trip on the hot path.
+        self._slugs: SlugIndex = build_slug_index([])
+        # (profile_uuid, source_uuid, rule_uuid) → lifetime count. Seeded from the DB
+        # once at connect and incremented in memory thereafter: the alternative, a
+        # COUNT(*) per event, puts a query on the event path to recompute a number this
+        # process already knows.
+        self._counts: Dict[Tuple[str, str, str], int] = {}
 
     @property
     def connected(self) -> bool:
@@ -411,6 +548,7 @@ class MqttBridge:
         if self._publisher is None:
             return
         profiles = await self._load_profiles()
+        self._slugs = build_slug_index(profiles)
         desired = build_all_discovery(profiles, self._prefix)
         to_publish, self._last_discovery_topics = reconcile_discovery(self._last_discovery_topics, desired)
         for topic, payload in to_publish.items():
@@ -422,13 +560,88 @@ class MqttBridge:
         from db_client.api.watch_profiles_api import WatchProfilesApi
 
         profiles = await self._load_profiles()
+        self._slugs = build_slug_index(profiles)
         counts_resp = await asyncio.to_thread(WatchProfilesApi(self._db_api_client).get_watch_event_counts)
         counts = [
             {"source_uuid": c.source_uuid, "rule_uuid": c.rule_uuid, "count": c.count}
             for c in (counts_resp.counts or [])
         ]
+        self._counts = build_counter_seed(profiles, counts)
         for topic, count in build_seed_publishes(profiles, counts).items():
             self._publisher.publish(topic, count, retain=True)
+
+    # ── Live state, published as events happen ────────────────────────────────────
+    #
+    # Called from `StreamWatcherTask`'s dispatch. Every method here is synchronous and
+    # non-throwing by design: `AsyncMqttPublisher.publish` only enqueues (bounded,
+    # drop-oldest), so none of this can block the analysis loop, and a broker problem
+    # must never propagate into the watcher — a camera that stops recording because
+    # Home Assistant's broker went away would be a far worse failure than a gap in a
+    # graph.
+
+    def publish_rule_transition(
+        self,
+        *,
+        profile_uuid: str,
+        source_uuid: str,
+        rule_uuid: str,
+        active: bool,
+        opened: bool,
+        last_seen: str,
+        duration_s: Optional[float] = None,
+        peak_confidence: Optional[float] = None,
+        subject: Optional[str] = None,
+        target: Optional[str] = None,
+        track_ids: Sequence[int] = (),
+    ) -> None:
+        """One event transition → the retained topics HA's entities read.
+
+        `active` and `opened` are separate because an event has three transitions and
+        only two answers between them: START is both, UPDATE is active but not new (it
+        must not double-count a single event), END is neither.
+
+        Retained throughout, so an HA restart re-reads the current state instead of
+        showing `unknown` until the next event — which for a rule that fires twice a
+        day would be most of the day.
+        """
+        if self._publisher is None:
+            return
+        base = self._slugs.rule_base(profile_uuid, source_uuid, rule_uuid)
+        if base is None:
+            # Config the bridge has not seen yet (a rule added since the last
+            # reconcile). It has no discovery entry either, so there is no entity
+            # waiting for this; the next reconcile creates both.
+            return
+        if opened:
+            key = (profile_uuid, source_uuid, rule_uuid)
+            self._counts[key] = self._counts.get(key, 0) + 1
+            self._publisher.publish(f"{base}/count", self._counts[key], retain=True)
+        self._publisher.publish(
+            f"{base}/attributes",
+            build_event_attributes(
+                last_seen=last_seen,
+                duration_s=duration_s,
+                peak_confidence=peak_confidence,
+                subject=subject,
+                target=target,
+                track_ids=track_ids,
+            ),
+            retain=True,
+        )
+        # Last: the binary_sensor's `json_attributes_topic` is the topic above, and
+        # publishing state first would briefly pair a new ON with the previous event's
+        # attributes.
+        self._publisher.publish(f"{base}/state", "ON" if active else "OFF", retain=True)
+
+    def publish_telemetry(self, *, profile_uuid: str, source_uuid: str, payload: Dict[str, Any]) -> None:
+        """The diagnostic sensors' single JSON topic. Caller decides the cadence —
+        this is per analysed frame's worth of data, which is far more often than
+        anything needs to see it."""
+        if self._publisher is None:
+            return
+        topic = self._slugs.telemetry(profile_uuid, source_uuid)
+        if topic is not None:
+            self._publisher.publish(topic, payload, retain=True)
 
     def set_watcher_availability(self, profile_name: str, online: bool) -> None:
         """A stopped watcher's entities should read `unavailable`, not freeze at a

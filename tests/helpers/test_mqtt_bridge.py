@@ -17,6 +17,7 @@ from apps.helpers.mqtt.bridge import (
     SourceView,
     build_all_discovery,
     build_seed_publishes,
+    build_slug_index,
     build_source_discovery,
     reconcile_discovery,
     source_config_topic,
@@ -159,7 +160,7 @@ class TestCounterSeeding:
         profiles = [_profile()]
         counts = [{"source_uuid": "src-1", "rule_uuid": "rule-1", "count": 42}]
         seeded = build_seed_publishes(profiles, counts)
-        assert seeded["kitchen-cam/rule/cat-at-bowl/count"] == 42
+        assert seeded["living-room-watcher/kitchen-cam/rule/cat-at-bowl/count"] == 42
 
     def test_a_count_for_a_deleted_rule_is_skipped_not_seeded_under_a_bare_uuid(self):
         """A count whose rule no longer exists in any profile has no slug to seed
@@ -208,3 +209,234 @@ class TestAvailability:
     def test_without_a_connected_publisher_it_is_a_silent_no_op(self):
         bridge = MqttBridge(db_api_client=None)
         bridge.set_watcher_availability("Living room watcher", online=True)  # must not raise
+
+
+def _connected_bridge(profiles) -> tuple:
+    """An `MqttBridge` wired to a fake publisher and primed with `profiles`, as a
+    reconcile would leave it. No socket, no DB."""
+    bridge = MqttBridge(db_api_client=None)
+    fake = _FakePublisher()
+    bridge._publisher = fake
+    bridge._prefix = PREFIX
+    bridge._slugs = build_slug_index(profiles)
+    return bridge, fake
+
+
+def _published(fake, suffix: str):
+    return [c for c in fake.calls if c["topic"].endswith(suffix)]
+
+
+class TestLivePublishingMatchesDiscovery:
+    """The regression that matters most here, and the one that throws nothing when it
+    breaks: discovery tells HA which topic an entity reads, and the live publish has to
+    write to that exact topic. Two f-strings drifting apart gives an entity that exists
+    and never updates — indistinguishable, from HA's side, from a dead camera.
+    """
+
+    def test_state_count_and_attribute_topics_are_the_ones_discovery_advertised(self):
+        profile = _profile()
+        bridge, fake = _connected_bridge([profile])
+        cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+
+        # Published topics are prefix-relative; discovery's are absolute.
+        written = {f"{PREFIX}/{c['topic']}" for c in fake.calls}
+        assert cmps["rule-1_state"]["state_topic"] in written
+        assert cmps["rule-1_count"]["state_topic"] in written
+        assert cmps["rule-1_state"]["json_attributes_topic"] in written
+        # The templated sensors read the attributes topic rather than one of their own,
+        # so they are covered by the same publish.
+        assert cmps["rule-1_last_duration"]["state_topic"] in written
+
+    def test_telemetry_topic_is_the_one_discovery_advertised(self):
+        profile = _profile()
+        bridge, fake = _connected_bridge([profile])
+        cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+        bridge.publish_telemetry(profile_uuid="profile-1", source_uuid="src-1", payload={"analysisFps": 5})
+
+        assert f"{PREFIX}/{fake.calls[0]['topic']}" == cmps["fps"]["state_topic"]
+
+
+class TestTopicsAreProfileScoped:
+    """Two watch profiles may watch one camera. Source-scoped topics made two distinct
+    entities share one state topic, so they moved in lockstep and overwrote each
+    other's counts.
+    """
+
+    def test_two_profiles_with_a_same_named_rule_on_one_source_do_not_share_topics(self):
+        shared = SourceView(uuid="src-1", name="Kitchen cam")
+        a = ProfileView(uuid="p-a", name="Daytime", sources=(shared,), rules=(RuleView(uuid="rule-a", name="motion"),))
+        b = ProfileView(
+            uuid="p-b", name="Overnight", sources=(shared,), rules=(RuleView(uuid="rule-b", name="motion"),)
+        )
+        bridge, fake = _connected_bridge([a, b])
+
+        for profile_uuid, rule_uuid in (("p-a", "rule-a"), ("p-b", "rule-b")):
+            bridge.publish_rule_transition(
+                profile_uuid=profile_uuid,
+                source_uuid="src-1",
+                rule_uuid=rule_uuid,
+                active=True,
+                opened=True,
+                last_seen="2026-01-01T00:00:00+00:00",
+            )
+
+        state_topics = [c["topic"] for c in _published(fake, "/state")]
+        assert len(state_topics) == 2
+        assert len(set(state_topics)) == 2
+
+    def test_telemetry_is_per_watcher_not_per_source(self):
+        """fps and queue depth describe a watcher's analysis of a source, so two
+        profiles watching one camera must not overwrite each other's diagnostics."""
+        shared = SourceView(uuid="src-1", name="Kitchen cam")
+        a = ProfileView(uuid="p-a", name="Daytime", sources=(shared,))
+        b = ProfileView(uuid="p-b", name="Overnight", sources=(shared,))
+        bridge, fake = _connected_bridge([a, b])
+
+        bridge.publish_telemetry(profile_uuid="p-a", source_uuid="src-1", payload={"analysisFps": 5})
+        bridge.publish_telemetry(profile_uuid="p-b", source_uuid="src-1", payload={"analysisFps": 1})
+
+        assert len({c["topic"] for c in fake.calls}) == 2
+
+
+class TestLiveCounters:
+    def test_an_opening_event_increments_past_the_seeded_value(self):
+        profile = _profile()
+        bridge, fake = _connected_bridge([profile])
+        bridge._counts = {("profile-1", "src-1", "rule-1"): 42}
+
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+
+        assert [c["payload"] for c in _published(fake, "/count")] == [43]
+
+    def test_update_and_end_transitions_do_not_count_the_same_event_again(self):
+        profile = _profile()
+        bridge, fake = _connected_bridge([profile])
+        bridge._counts = {("profile-1", "src-1", "rule-1"): 42}
+
+        for active, opened in ((True, True), (True, False), (False, False)):
+            bridge.publish_rule_transition(
+                profile_uuid="profile-1",
+                source_uuid="src-1",
+                rule_uuid="rule-1",
+                active=active,
+                opened=opened,
+                last_seen="2026-01-01T00:00:00+00:00",
+            )
+
+        # One event, three transitions, one increment.
+        assert [c["payload"] for c in _published(fake, "/count")] == [43]
+        assert [c["payload"] for c in _published(fake, "/state")] == ["ON", "ON", "OFF"]
+
+    def test_a_rename_does_not_restart_the_running_total(self):
+        """The counter is keyed by uuid, not by topic. Keyed by topic, renaming a rule
+        would orphan its total and restart the sensor at 1."""
+        before = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
+        after = _profile(rules=(RuleView(uuid="rule-1", name="bowl visit"),))
+        bridge, fake = _connected_bridge([before])
+        bridge._counts = {("profile-1", "src-1", "rule-1"): 42}
+
+        kwargs = dict(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+        bridge.publish_rule_transition(**kwargs)
+        bridge._slugs = build_slug_index([after])  # the rename lands on the next reconcile
+        bridge.publish_rule_transition(**kwargs)
+
+        counts = _published(fake, "/count")
+        assert [c["payload"] for c in counts] == [43, 44]
+        # …onto the new topic, which is the half a uuid-keyed counter still has to get
+        # right for HA to follow the entity across the rename.
+        assert "bowl-visit" in counts[-1]["topic"]
+
+
+class TestLivePublishingGuards:
+    def test_a_rule_the_bridge_has_not_reconciled_yet_publishes_nothing(self):
+        """No discovery entry exists for it, so there is no entity waiting — publishing
+        under a guessed topic would create a retained orphan."""
+        bridge, fake = _connected_bridge([_profile()])
+
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-brand-new",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+
+        assert fake.calls == []
+
+    def test_without_a_connected_publisher_it_is_a_silent_no_op(self):
+        bridge = MqttBridge(db_api_client=None)
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+        bridge.publish_telemetry(profile_uuid="profile-1", source_uuid="src-1", payload={})
+
+    def test_attributes_are_published_before_state(self):
+        """The binary_sensor reads its attributes from a separate topic; state first
+        would briefly pair a new ON with the previous event's attributes."""
+        bridge, fake = _connected_bridge([_profile()])
+
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+            duration_s=12.345,
+            peak_confidence=0.9,
+        )
+
+        topics = [c["topic"] for c in fake.calls]
+        assert topics.index(next(t for t in topics if t.endswith("/attributes"))) < topics.index(
+            next(t for t in topics if t.endswith("/state"))
+        )
+
+    def test_attribute_payload_carries_what_the_value_templates_read(self):
+        bridge, fake = _connected_bridge([_profile()])
+
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=False,
+            opened=False,
+            last_seen="2026-01-01T00:00:00+00:00",
+            duration_s=12.345,
+            peak_confidence=0.912345,
+            subject="subject_a",
+        )
+
+        payload = _published(fake, "/attributes")[0]["payload"]
+        assert payload["lastDurationS"] == 12.35
+        assert payload["peakConfidence"] == 0.9123
+        assert payload["subject"] == "subject_a"

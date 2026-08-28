@@ -91,6 +91,10 @@ def _harness():
     task._service_drain = _noop
     task._dispatch_frame = _noop
     task._promote_open_events = _noop
+    # Synchronous, unlike the four above — it only enqueues an MQTT publish. Stubbed
+    # for the same reason as the rest: this test is about which clock a frame and its
+    # boxes are filed under, and the bridge is not part of that.
+    task._publish_bridge_telemetry = lambda pipeline, now: None
 
     pipeline = SimpleNamespace(
         source_uuid="src-1",

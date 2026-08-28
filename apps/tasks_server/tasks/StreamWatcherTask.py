@@ -80,6 +80,11 @@ logger = logging.getLogger(__name__)
 #: not an equality check, because there are two of them now and a third would otherwise
 #: silently build with `publisher=None` and report "no broker configured" forever.
 MQTT_ACTION_KINDS = frozenset({"publish_mqtt", "publish_mqtt_image"})
+
+#: How often a source's diagnostics reach Home Assistant. Deliberately far slower than
+#: the analysis loop: these are numbers someone glances at, and a retained publish per
+#: analysed frame would be the noisiest thing on the broker for no added information.
+BRIDGE_TELEMETRY_INTERVAL_S = 10.0
 #: The one action kind whose output is a playable clip, and so the only one that needs
 #: the rolling buffer, the drain and a detection overlay.
 CLIP_ACTION_KIND = "record_clip"
@@ -195,6 +200,10 @@ class StreamWatcherTask(Task):
         # per source; almost none of them have a live feed configured.
         self._frame_actions: List[tuple] = []
         self._mqtt: Optional[AsyncMqttPublisher] = None
+        #: source uuid → when its Home Assistant telemetry was last published. The
+        #: analysis loop produces this data several times a second and nothing reads it
+        #: faster than a dashboard refresh, so it is throttled rather than mirrored.
+        self._bridge_telemetry_at: Dict[str, float] = {}
         self._action_successes: int = 0
         self._action_failures: int = 0
         # action uuid → the last failure message logged for it, so a per-frame action
@@ -1418,6 +1427,8 @@ class StreamWatcherTask(Task):
         # were evaluated against rather than raw model output the watcher then ignored.
         await self._dispatch_frame(pipeline)
 
+        self._publish_bridge_telemetry(pipeline, now)
+
         # Last, because the frame this pass just handed to the per-frame actions is what
         # may have carried a timelapse session over its frame minimum — checking before
         # it would list every such event one analysis interval late.
@@ -1635,6 +1646,12 @@ class StreamWatcherTask(Task):
         if self._dry_run:
             return
 
+        # Before the actions, not after. A closing event's actions include cutting and
+        # encoding a clip, which takes seconds; Home Assistant should see the rule go
+        # OFF when it went off, not when ffmpeg finished. Publishing only enqueues, so
+        # this costs the dispatch nothing.
+        self._publish_bridge_transition(signal)
+
         trigger = {
             EventPhase.START: "event_started",
             EventPhase.UPDATE: "event_started",
@@ -1673,6 +1690,73 @@ class StreamWatcherTask(Task):
                 )
             if logged:
                 await self._recorder.record(signal, context)
+
+    def _publish_bridge_transition(self, signal) -> None:
+        """Mirror one event transition onto the app-level MQTT bridge's HA entities.
+
+        Separate from the `publish_mqtt` *action* and not a replacement for it: the
+        action is user-configured, templated and profile-scoped, and exists whether or
+        not anyone runs Home Assistant. This is the bridge's own entity state, which
+        must be published for every rule regardless of what actions a profile has —
+        an HA binary_sensor that only worked when someone had also added an MQTT action
+        would be a support trap.
+
+        Swallows everything. A broker problem must not stop a watcher recording.
+        """
+        if not signal.source_uuid:
+            return
+        try:
+            self._manager.get_mqtt_bridge().publish_rule_transition(
+                profile_uuid=self._profile.uuid,
+                source_uuid=signal.source_uuid,
+                rule_uuid=signal.rule_uuid,
+                active=signal.phase is not EventPhase.END,
+                opened=signal.phase is EventPhase.START,
+                last_seen=datetime.fromtimestamp(signal.at, tz=timezone.utc).isoformat(),
+                duration_s=signal.duration_s if signal.phase is EventPhase.END else None,
+                peak_confidence=signal.peak_confidence,
+                subject=signal.subject_name,
+                target=signal.target_name,
+                track_ids=signal.track_ids,
+            )
+        except Exception:
+            logger.debug("MQTT bridge event publish failed", exc_info=True)
+
+    def _publish_bridge_telemetry(self, pipeline: WatchPipeline, now: float) -> None:
+        """Throttled per-source diagnostics for the bridge's HA sensors.
+
+        The MQTT counters are the watcher's, not the source's, so a profile watching
+        three cameras reports the same publish/drop figures on all three. That is
+        honest — there is one publisher behind them — and splitting them per source
+        would mean attributing a shared queue's backlog to whichever camera happened to
+        fill it.
+        """
+        last = self._bridge_telemetry_at.get(pipeline.source_uuid, 0.0)
+        if now - last < BRIDGE_TELEMETRY_INTERVAL_S:
+            return
+        self._bridge_telemetry_at[pipeline.source_uuid] = now
+        try:
+            row = pipeline.status_row(now)
+            self._manager.get_mqtt_bridge().publish_telemetry(
+                profile_uuid=self._profile.uuid,
+                source_uuid=pipeline.source_uuid,
+                payload={
+                    "analysisFps": row["analysisFps"],
+                    "framesAnalysed": row["framesAnalysed"],
+                    "trackedCount": row["tracks"],
+                    # The status panel's label is prose ("reconnecting — no frames for
+                    # 4m"); HA wants the yes/no behind it. `ok` is the only healthy
+                    # value the label takes, so this cannot drift into reporting a
+                    # failing camera as fine.
+                    "problem": row["health"] != "ok",
+                    "mqttPublished": (self._mqtt.published if self._mqtt else 0),
+                    "mqttDropped": (self._mqtt.dropped if self._mqtt else 0),
+                    "mqttCoalesced": (self._mqtt.coalesced if self._mqtt else 0),
+                    "mqttQueuedKb": (round(self._mqtt.stats()["queuedBytes"] / 1024, 1) if self._mqtt else 0),
+                },
+            )
+        except Exception:
+            logger.debug("MQTT bridge telemetry publish failed", exc_info=True)
 
     async def _dispatch_frame(self, pipeline: WatchPipeline) -> None:
         """Fire `frame_analysed` actions for one just-analysed frame.
