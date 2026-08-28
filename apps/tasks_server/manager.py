@@ -309,8 +309,21 @@ class Manager:
         """
         try:
             await self._mqtt_bridge.reconcile()
+            # Published from here rather than from a watcher: these are app-wide
+            # figures that belong to no camera, so no watcher is in a position to
+            # know them.
+            await self._mqtt_bridge.publish_system(watchers_running=self._running_watcher_count())
         except Exception:
             logger.warning("MQTT bridge reconcile failed", exc_info=True)
+
+    def _running_watcher_count(self) -> int:
+        """Watchers currently running. `_running_tasks` holds every kind of task, so
+        this is the same isinstance filter `get_live_preview` uses — the import is
+        local for the same reason it is there, to keep the module import graph free of
+        the task package."""
+        from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
+
+        return sum(1 for info in self._running_tasks.values() if isinstance(info.task, StreamWatcherTask))
 
     async def get_server_config(self) -> Dict[str, Any]:
         return {

@@ -36,6 +36,49 @@ APP_DEVICE_ID = "whiskerwatcher_system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
 
 
+#: Component keys that arrive switched off in Home Assistant. HA still creates them, so
+#: they cost nothing until enabled and are one click away in the device page's "+N
+#: entities not shown" — but a disabled entity holds no state machine slot, no history
+#: and no statistics.
+#:
+#: The count is the reason: sources x rules x 6, plus a per-source diagnostic block, is
+#: ~140 entities on a modest four-camera setup before subjects are counted at all. What
+#: stays on is what a dashboard asks for — did it happen, how often, and the picture.
+#: The detail is for when something looks wrong, and HA is a better place to choose it
+#: than a settings pane here would be.
+#:
+#: Health is the deliberate exception among the diagnostics: it is the one that tells
+#: you a camera has stopped working, and a failure alarm that ships switched off is
+#: worse than no alarm at all.
+DISABLED_BY_DEFAULT_RULE_SUFFIXES = ("_last_seen", "_last_duration", "_peak_confidence", "_event")
+DISABLED_BY_DEFAULT_SOURCE_KEYS = frozenset(
+    {
+        "tracked_count",
+        "fps",
+        "frames_analysed",
+        "mqtt_published",
+        "mqtt_dropped",
+        "mqtt_coalesced",
+        "mqtt_queued_kb",
+    }
+)
+
+
+def _apply_default_visibility(cmps: Dict[str, Any]) -> Dict[str, Any]:
+    """Mark the long tail of a camera device's components disabled-by-default.
+
+    Applied as a pass over the finished component set rather than a flag on each
+    definition above, so the policy is legible in one place — scattered across twenty
+    dict literals it becomes impossible to answer "what does a fresh install show?"
+    without reading all of them.
+    """
+    for key, component in cmps.items():
+        disabled = key in DISABLED_BY_DEFAULT_SOURCE_KEYS or key.endswith(DISABLED_BY_DEFAULT_RULE_SUFFIXES)
+        if disabled:
+            component["enabled_by_default"] = False
+    return cmps
+
+
 def source_device_id(source_uuid: str) -> str:
     return f"whiskerwatcher_{source_uuid}"
 
@@ -267,7 +310,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         # going offline should be visible as "unavailable", not a frozen last value.
         "availability": [{"topic": f"{prefix}/status"}, {"topic": watcher_topic}],
         "availability_mode": "all",
-        "cmps": cmps,
+        "cmps": _apply_default_visibility(cmps),
     }
 
 
@@ -798,6 +841,10 @@ class MqttBridge:
         #: rather than cached at startup.
         self._subject_names: Dict[str, str] = {}
         self._label_ancestry: Dict[str, List[str]] = {}
+        #: (profile, source, rule) currently mid-event, for the app device's open-event
+        #: count. Tracked from published transitions because there is no "still open"
+        #: query — an event's row isn't written until an action commits to filing it.
+        self._open_rules: Set[Tuple[str, str, str]] = set()
 
     @property
     def connected(self) -> bool:
@@ -1036,8 +1083,12 @@ class MqttBridge:
             # reconcile). It has no discovery entry either, so there is no entity
             # waiting for this; the next reconcile creates both.
             return
+        key = (profile_uuid, source_uuid, rule_uuid)
+        # Tracked on every transition, not just the opening one: an event that was
+        # already open when the bridge connected still closes, and dropping that would
+        # leave the count drifting upward for the life of the process.
+        self._open_rules.add(key) if active else self._open_rules.discard(key)
         if opened:
-            key = (profile_uuid, source_uuid, rule_uuid)
             self._counts[key] = self._counts.get(key, 0) + 1
             self._publisher.publish(f"{base}/count", self._counts[key], retain=True)
         self._publisher.publish(
@@ -1150,6 +1201,42 @@ class MqttBridge:
             return
         state = "ON" if subject_uuid in self._present_subjects() else "OFF"
         self._publisher.publish(f"{subject_base_topic(slug)}/state", state, retain=True)
+
+    async def publish_system(self, *, watchers_running: int) -> None:
+        """The `whiskerwatcher_system` device's sensors — app-wide figures owned by no
+        camera, so no watcher is in a position to publish them.
+
+        Storage comes from `/api/storage/usage`, which walks directories and is
+        deliberately not part of `/status` for that reason. Called once per reconcile
+        pass rather than per frame, which is the right order of magnitude for a number
+        that moves as clips are written and retention sweeps run.
+
+        Failures are swallowed: the app device is diagnostics, and a storage walk
+        erroring must not take the reconcile — and therefore every entity's discovery —
+        down with it.
+        """
+        if self._publisher is None:
+            return
+        payload: Dict[str, Any] = {
+            "watchersRunning": watchers_running,
+            # Counted from the transitions this bridge has already published rather
+            # than queried: `list_watch_events` has no "still open" filter, and an
+            # event's row is not even written until an action commits to filing it, so
+            # the DB is the wrong place to ask. This is also the number that agrees
+            # with what HA's own binary_sensors are showing.
+            "openEvents": len(self._open_rules),
+        }
+        try:
+            from db_client.api.recordings_api import RecordingsApi
+
+            usage = await asyncio.to_thread(RecordingsApi(self._db_api_client).get_storage_usage)
+            payload["storageBytes"] = sum(
+                int(getattr(getattr(usage, bucket, None), "bytes", 0) or 0)
+                for bucket in ("recordings", "timelapse", "thumbnail_cache")
+            )
+        except Exception:
+            logger.debug("Storage usage unavailable for the MQTT system topic", exc_info=True)
+        self._publisher.publish("system", payload, retain=True)
 
     def publish_telemetry(self, *, profile_uuid: str, source_uuid: str, payload: Dict[str, Any]) -> None:
         """The diagnostic sensors' single JSON topic. Caller decides the cadence —

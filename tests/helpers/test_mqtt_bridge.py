@@ -250,6 +250,33 @@ class TestCounterSeeding:
         assert build_seed_publishes(profiles, counts) == {}
 
 
+class TestDefaultVisibility:
+    """`enabled_by_default: False` is the cardinality lever — HA still creates the
+    entity, so it costs nothing until switched on, but a fresh install shows a
+    dashboard's worth of entities rather than ~140."""
+
+    def _cmps(self):
+        profile = _profile()
+        return build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+    def test_the_dashboard_entities_are_on_and_the_detail_is_off(self):
+        cmps = self._cmps()
+        on = {k for k, v in cmps.items() if v.get("enabled_by_default") is not False}
+        assert {"camera", "rule-1_state", "rule-1_count"} <= on
+        assert {"rule-1_last_duration", "rule-1_peak_confidence", "fps", "mqtt_dropped"} & on == set()
+
+    def test_health_ships_enabled_because_it_is_the_camera_failure_alarm(self):
+        """The one diagnostic that stays on: an alarm that ships switched off is worse
+        than no alarm."""
+        assert self._cmps()["health"].get("enabled_by_default") is not False
+
+    def test_a_disabled_entity_still_has_a_working_state_topic(self):
+        """Disabled is not omitted — HA replays the retained state when it is enabled,
+        so the topic has to be right even while nothing is listening."""
+        cmps = self._cmps()
+        assert cmps["fps"]["state_topic"].startswith(PREFIX)
+
+
 class TestSubjectEnumeration:
     """Subjects come from rule config expanded through the label tree — rules commonly
     name a parent label, and it is the descendant that lands in an event's
@@ -571,6 +598,26 @@ class TestLiveCounters:
 
 
 class TestLivePublishingGuards:
+    def test_open_events_are_counted_from_transitions_and_close_again(self):
+        """The app device's open-event count. Tracked on every transition, not just the
+        opening one — an event already open when the bridge connected still closes, and
+        dropping that would drift the count upward for the life of the process."""
+        bridge, _fake = _connected_bridge([_profile()])
+        kwargs = dict(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            last_seen="2026-01-01T00:00:00+00:00",
+        )
+
+        bridge.publish_rule_transition(active=True, opened=True, **kwargs)
+        assert len(bridge._open_rules) == 1
+        # An update must not double-count the same open event.
+        bridge.publish_rule_transition(active=True, opened=False, **kwargs)
+        assert len(bridge._open_rules) == 1
+        bridge.publish_rule_transition(active=False, opened=False, **kwargs)
+        assert bridge._open_rules == set()
+
     def test_a_rule_the_bridge_has_not_reconciled_yet_publishes_nothing(self):
         """No discovery entry exists for it, so there is no entity waiting — publishing
         under a guessed topic would create a retained orphan."""
