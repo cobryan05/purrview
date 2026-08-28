@@ -310,20 +310,74 @@ def build_all_discovery(profiles: Sequence[ProfileView], prefix: str) -> Dict[st
     return messages
 
 
-def reconcile_discovery(
-    previous_topics: FrozenSet[str], desired: Dict[str, Dict[str, Any]]
-) -> Tuple[Dict[str, Optional[Dict[str, Any]]], FrozenSet[str]]:
-    """What to publish this pass: every desired message, plus an empty-payload
-    retraction (`None`, published as `""`) for every config topic that existed last
-    pass but is no longer desired — a rule/source/profile that was deleted.
+@dataclass(frozen=True)
+class DiscoveryState:
+    """What the last reconcile published: component ids and their platforms, per config
+    topic. The platforms are the part that matters — removing a component requires
+    naming its platform back to HA, so it cannot be reconstructed from the new config
+    once the component is gone.
 
-    Returns `(to_publish, new_previous_topics)` rather than mutating anything, so the
-    caller decides when — and whether — to persist the second value.
+    In memory only. A component deleted while the app is *down* is therefore not
+    detected on the next start (previous state is empty, so nothing reads as removed)
+    and its entity survives in HA until something else republishes that device. Worth
+    knowing; not worth a state file yet.
     """
-    to_publish: Dict[str, Optional[Dict[str, Any]]] = dict(desired)
-    for gone_topic in previous_topics - desired.keys():
+
+    components: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    @property
+    def topics(self) -> FrozenSet[str]:
+        return frozenset(self.components)
+
+
+def reconcile_discovery(
+    previous: DiscoveryState, desired: Dict[str, Dict[str, Any]]
+) -> Tuple[Dict[str, Optional[Dict[str, Any]]], DiscoveryState]:
+    """What to publish this pass: every desired message, plus the two kinds of removal.
+
+    **A whole device that disappeared** gets an empty payload (`None`, published as
+    `""`) on its config topic — a deleted source or profile.
+
+    **A single component that disappeared** — a deleted or disabled rule, on a device
+    that still exists — needs more than omission. HA's device-discovery docs are
+    explicit that dropping a component from `cmps` does *not* reliably remove its
+    entity; the component must first be republished as an empty config carrying only
+    its platform, and omitted only on a subsequent update. So a pass that notices a
+    component has gone re-inserts it as `{"p": <platform>}` — a tombstone — and the
+    next pass publishes the clean message, which happens by itself because every
+    desired topic is republished every pass.
+
+    Getting this wrong is invisible from here: the payload looks correct, and the
+    entity simply stays in HA forever with no way to remove it but hand-editing the
+    entity registry.
+
+    Returns `(to_publish, new_state)` rather than mutating anything, so the caller
+    decides when — and whether — to persist the second value.
+    """
+    to_publish: Dict[str, Optional[Dict[str, Any]]] = {}
+    for topic, payload in desired.items():
+        previous_components = previous.components.get(topic, {})
+        removed = set(previous_components) - set(payload["cmps"])
+        if removed:
+            payload = {
+                **payload,
+                "cmps": {**payload["cmps"], **{cid: {"p": previous_components[cid]} for cid in removed}},
+            }
+        to_publish[topic] = payload
+
+    for gone_topic in previous.topics - desired.keys():
         to_publish[gone_topic] = None
-    return to_publish, frozenset(desired.keys())
+
+    # Records what was *desired*, never the tombstones — otherwise the next pass would
+    # see them as components that had just disappeared and tombstone them again,
+    # forever.
+    new_state = DiscoveryState(
+        components={
+            topic: {cid: str(component.get("p", "")) for cid, component in payload["cmps"].items()}
+            for topic, payload in desired.items()
+        }
+    )
+    return to_publish, new_state
 
 
 def build_seed_publishes(profiles: Sequence[ProfileView], counts: Sequence[Dict[str, Any]]) -> Dict[str, int]:
@@ -459,7 +513,7 @@ class MqttBridge:
         self._db_api_client = db_api_client
         self._publisher: Optional[AsyncMqttPublisher] = None
         self._prefix: str = "whiskerwatcher"
-        self._last_discovery_topics: FrozenSet[str] = frozenset()
+        self._last_discovery: DiscoveryState = DiscoveryState()
         # Refreshed on every reconcile, so a watcher publishing an event transition can
         # resolve its uuids to topics without a DB round trip on the hot path.
         self._slugs: SlugIndex = build_slug_index([])
@@ -550,7 +604,7 @@ class MqttBridge:
         profiles = await self._load_profiles()
         self._slugs = build_slug_index(profiles)
         desired = build_all_discovery(profiles, self._prefix)
-        to_publish, self._last_discovery_topics = reconcile_discovery(self._last_discovery_topics, desired)
+        to_publish, self._last_discovery = reconcile_discovery(self._last_discovery, desired)
         for topic, payload in to_publish.items():
             self._publisher.publish(topic, "" if payload is None else payload, retain=True, absolute=True)
 

@@ -11,6 +11,7 @@ forever.
 """
 
 from apps.helpers.mqtt.bridge import (
+    DiscoveryState,
     MqttBridge,
     ProfileView,
     RuleView,
@@ -106,37 +107,68 @@ class TestRuleUniqueIdSurvivesRename:
 class TestDiscoveryReconciliation:
     """Rule/source deletion must retract, not just stop updating."""
 
-    def test_a_deleted_rule_is_removed_from_the_republished_device_message(self):
+    def test_a_deleted_rule_is_tombstoned_before_it_is_omitted(self):
+        """Omitting a component from `cmps` does not remove its entity — HA requires it
+        be republished as an empty config naming only its platform first, and omitted
+        only on a later update. Publishing the clean message straight away leaves an
+        entity in HA that nothing can remove but hand-editing the entity registry.
+        """
+        with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
+        without_rule = _profile(rules=())
+        topic = source_config_topic("src-1")
+
+        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([with_rule], PREFIX))
+        removal_pass, state = reconcile_discovery(state, build_all_discovery([without_rule], PREFIX))
+
+        tombstones = {k: v for k, v in removal_pass[topic]["cmps"].items() if k.startswith("rule-1_")}
+        assert tombstones, "the deleted rule's components must still be named, as tombstones"
+        # Each carries its platform and nothing else — that is what makes it a removal
+        # rather than a malformed entity.
+        assert all(set(v) == {"p"} and v["p"] for v in tombstones.values())
+
+        # …and the pass after that publishes clean, which is the second half HA asks
+        # for. Without this the tombstones would be re-sent forever.
+        follow_up, _ = reconcile_discovery(state, build_all_discovery([without_rule], PREFIX))
+        assert not any(k.startswith("rule-1_") for k in follow_up[topic]["cmps"])
+
+    def test_an_unchanged_rule_is_never_tombstoned(self):
+        """The tombstone must key off disappearance, not off being republished — every
+        desired topic is republished every pass."""
+        profile = _profile()
+        topic = source_config_topic("src-1")
+
+        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([profile], PREFIX))
+        again, _ = reconcile_discovery(state, build_all_discovery([profile], PREFIX))
+
+        assert all(set(v) != {"p"} for v in again[topic]["cmps"].values())
+
+    def test_deleting_a_rule_does_not_retract_the_device_it_was_on(self):
+        """Only the rule went away, not the camera. Retracting the whole device would
+        take the camera, telemetry and every other rule down with it."""
         with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
         without_rule = _profile(rules=())
 
-        desired_before = build_all_discovery([with_rule], PREFIX)
-        _, previous_topics = reconcile_discovery(frozenset(), desired_before)
-
-        desired_after = build_all_discovery([without_rule], PREFIX)
-        to_publish, _ = reconcile_discovery(previous_topics, desired_after)
+        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([with_rule], PREFIX))
+        to_publish, _ = reconcile_discovery(state, build_all_discovery([without_rule], PREFIX))
 
         topic = source_config_topic("src-1")
-        # Same device, still present (the source itself wasn't deleted) — but its
-        # cmps no longer mention the deleted rule.
-        assert topic in to_publish
         assert to_publish[topic] is not None
-        assert not any(k.startswith("rule-1_") for k in to_publish[topic]["cmps"])
+        assert "camera" in to_publish[topic]["cmps"]
 
     def test_a_deleted_source_is_retracted_with_an_empty_payload(self):
         with_source = [_profile()]
         without_source = [_profile(sources=(), rules=())]
 
-        _, previous_topics = reconcile_discovery(frozenset(), build_all_discovery(with_source, PREFIX))
+        _, previous_topics = reconcile_discovery(DiscoveryState(), build_all_discovery(with_source, PREFIX))
         to_publish, remaining = reconcile_discovery(previous_topics, build_all_discovery(without_source, PREFIX))
 
         topic = source_config_topic("src-1")
         assert to_publish[topic] is None
-        assert topic not in remaining
+        assert topic not in remaining.topics
 
     def test_an_unchanged_profile_produces_no_retractions(self):
         profile = [_profile()]
-        _, previous_topics = reconcile_discovery(frozenset(), build_all_discovery(profile, PREFIX))
+        _, previous_topics = reconcile_discovery(DiscoveryState(), build_all_discovery(profile, PREFIX))
         to_publish, _ = reconcile_discovery(previous_topics, build_all_discovery(profile, PREFIX))
         assert all(payload is not None for payload in to_publish.values())
 
