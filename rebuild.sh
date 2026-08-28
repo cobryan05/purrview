@@ -32,5 +32,34 @@ docker compose "${down_profile_args[@]}" down --remove-orphans
 echo "Rebuilding and starting..."
 docker compose up -d --build
 
+# Reclaim what this rebuild just orphaned.
+#
+# The app image is ~18GB (CUDA + torch), so every rebuild that invalidates a late
+# layer leaves the entire previous image behind, untagged and unreferenced. Nothing
+# prunes that automatically, so the cost is linear in rebuild count: this filled a
+# 503GB docker disk to 100% in about ten days — 33 dangling ~17.7GB images — which
+# then broke writes inside *every* container on the host, not just this stack's.
+#
+# Two separate reclaims, because they are two separate stores and pruning images
+# alone does not give the disk back — the space resurfaces as build cache:
+#   docker image prune    dangling images, host-wide (nothing references them)
+#   docker builder prune  BuildKit's cache, which is where the bulk actually sits
+#
+# `--keep-storage` is the point of doing this here rather than in a host-wide cron:
+# it keeps the most recent cache so the *next* rebuild is still incremental, and
+# only discards the older generations that no longer speed anything up.
+#
+# Runs after the stack is up, so a failed build never has its cache pruned out from
+# under a retry, and is non-fatal: a rebuild that worked must not report failure
+# because a cleanup did not.
+if [ "${SKIP_PRUNE:-0}" != "1" ]; then
+  echo
+  echo "Reclaiming orphaned build artifacts (SKIP_PRUNE=1 to skip)..."
+  docker image prune -f || echo "  (image prune failed; continuing)" >&2
+  docker builder prune -f --keep-storage 20GB || echo "  (builder prune failed; continuing)" >&2
+  echo "Docker disk now:"
+  docker system df || true
+fi
+
 echo
 docker compose ps
