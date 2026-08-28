@@ -27,6 +27,23 @@ from apps.helpers.watch.rules import descendants_of
 
 logger = logging.getLogger(__name__)
 
+#: Gap between analysed frames, in seconds, above which a source is treated as
+#: producing stills rather than video for presence reporting. ByteTrack has no motion
+#: model by design — at the 2-5 fps this analyses, prediction over a 200-500 ms gap is
+#: mostly noise — so association degrades quickly once frames are seconds apart, and by
+#: 30 s (a Ring camera's idle cadence) it cannot work at all. Anything under this is
+#: comfortably a stream; anything over is not trying to be one.
+SNAPSHOT_MODE_FRAME_GAP_S = 3.0
+
+#: Confidence floor for the snapshot presence path, used only when the tracker does not
+#: expose its own `track_thresh`. Deliberately the same default the tracker uses: the
+#: snapshot path has no tracker gate in front of it, and inventing a second, different
+#: number is how the two drift apart.
+SNAPSHOT_PRESENCE_MIN_CONFIDENCE = 0.5
+
+#: How many cadences a snapshot's verdict stands for before it is treated as stale.
+SNAPSHOT_PRESENCE_CADENCE_SLACK = 2.0
+
 
 def downscale_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
     """Shrink a frame to `target_width`, preserving aspect ratio.
@@ -220,6 +237,14 @@ class WatchPipeline:
     health: SourceHealth = field(default_factory=SourceHealth)
     _next_frame_at: float = 0.0
     _last_tracks: List[Track] = field(default_factory=list)
+    #: When the previous frame was analysed, and the gap to the one before it. Presence
+    #: reporting needs to know whether this source is currently behaving like a video
+    #: stream or like a series of stills — see `presence_labels`. Measured rather than
+    #: read off `ingest_tier`, because a Ring camera is *both* at different moments: it
+    #: escalates to full-rate RTSP on motion and falls back to ~90s cloud snapshots
+    #: when nothing is happening, without its tier ever changing.
+    _last_analysis_at: Optional[float] = None
+    _last_analysis_gap_s: float = 0.0
     #: track_ids live as of the previous `step()`, so the next call can tell which
     #: ones vanished. A vanished id is the only reliable "this track just died"
     #: signal the tracker exposes — it never fires a callback, and a track simply
@@ -335,6 +360,9 @@ class WatchPipeline:
 
     def step(self, detections: Sequence[Detection], now: float) -> List[WatchEventSignal]:
         """Advance the tracker and rule engine for one analysed frame."""
+        if self._last_analysis_at is not None:
+            self._last_analysis_gap_s = max(0.0, now - self._last_analysis_at)
+        self._last_analysis_at = now
         surviving = self.apply_masks(detections)
         # `_last_detections` is what the tracker actually saw, so the live view shows the
         # same picture the rules are reasoning about.
@@ -384,6 +412,70 @@ class WatchPipeline:
         self.buffered = bool(getattr(provider, "buffered", False))
         self.ingest_tier = getattr(provider, "ingest_tier_name", "none")
         self.retention_s = float(getattr(provider, "retention_s", 0.0) or 0.0)
+
+    def presence_mode(self) -> str:
+        """`"tracks"` while this source behaves like a video stream, `"snapshots"`
+        while it behaves like a series of stills.
+
+        Measured from the observed gap between analysed frames, not from `ingest_tier`,
+        because the tier is fixed per source and the behaviour is not: a Ring camera
+        escalates to full-rate RTSP on motion and drops back to ~90 s cloud snapshots
+        when nothing is moving. A per-camera setting would therefore be wrong roughly
+        half the time whichever way it was set, which is why this is derived.
+        """
+        if self._last_analysis_at is None:
+            return "snapshots"
+        return "tracks" if self._last_analysis_gap_s <= SNAPSHOT_MODE_FRAME_GAP_S else "snapshots"
+
+    def presence_labels(self, now: float) -> Set[str]:
+        """Label uuids currently present on this camera, by whichever signal this
+        source can actually support.
+
+        **Streaming: confirmed tracks.** The tracker already solves every problem a
+        naive detection threshold has, and solves them better. A track can only be
+        *started* by a box at or above `track_thresh`, weak boxes only ever continue an
+        existing one, `min_hits` requires several sightings before a track is reported,
+        and expiry runs on per-label lifetimes in wallclock seconds. That is the
+        confidence floor, the anti-flicker and the drop-out debounce, already tuned and
+        already per-label — reimplementing any of it here would create a second set of
+        numbers to keep in sync with the first.
+
+        **Snapshots: recent detections.** At one frame per 30-90 s a track can never
+        confirm (`min_hits` sightings would take minutes) and would expire between
+        frames regardless, so tracks report nothing at all — silently. Detections still
+        work perfectly well: with one frame every half-minute there is no flicker to
+        suppress. This is the path that keeps a cat that walked in during a motion
+        escalation, settled down and stopped moving from reading as absent while it is
+        plainly visible in every snapshot.
+
+        The two are an either/or, never a union: in streaming mode a union would let a
+        single unconfirmed frame flip presence on, which is the exact flicker the
+        tracker exists to absorb.
+        """
+        if self.presence_mode() == "tracks":
+            return {t.label_uuid for t in self._last_tracks if t.confirmed and t.label_uuid}
+
+        # A still is a point sample, so it stays true until the next one is overdue.
+        # Past that the honest answer is "no idea", which reads as absent here and is
+        # surfaced separately by the source's health.
+        if self._last_analysis_at is None:
+            return set()
+        if now - self._last_analysis_at > self._snapshot_presence_hold_s():
+            return set()
+        floor = getattr(self.tracker, "track_thresh", None)
+        floor = SNAPSHOT_PRESENCE_MIN_CONFIDENCE if floor is None else float(floor)
+        return {d.label_uuid for d in self._last_detections if d.label_uuid and d.confidence >= floor}
+
+    def _snapshot_presence_hold_s(self) -> float:
+        """How long a snapshot's verdict stands before it goes stale.
+
+        Scaled off the observed cadence rather than fixed: the same slack the Ring
+        provider applies when deciding whether a snapshot is overdue, for the same
+        reason — cloud snapshot intervals jitter, and a deadline at exactly one cadence
+        would call a healthy camera stale constantly.
+        """
+        cadence = self._last_analysis_gap_s or SNAPSHOT_MODE_FRAME_GAP_S
+        return cadence * SNAPSHOT_PRESENCE_CADENCE_SLACK
 
     def status_row(self, now: float) -> Dict[str, Any]:
         """One row of the status panel's Sources table."""

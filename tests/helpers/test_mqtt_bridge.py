@@ -18,13 +18,17 @@ from apps.helpers.mqtt.bridge import (
     ProfileView,
     RuleView,
     SourceView,
+    SubjectView,
     build_all_discovery,
     build_seed_publishes,
     build_slug_index,
     build_source_discovery,
+    build_subject_seed,
     reconcile_discovery,
     source_config_topic,
     state_from_retained,
+    subject_config_topic,
+    subjects_in_scope,
 )
 
 PREFIX = "whiskerwatcher"
@@ -244,6 +248,126 @@ class TestCounterSeeding:
         profiles = [_profile(rules=())]
         counts = [{"source_uuid": "src-1", "rule_uuid": "rule-1", "count": 5}]
         assert build_seed_publishes(profiles, counts) == {}
+
+
+class TestSubjectEnumeration:
+    """Subjects come from rule config expanded through the label tree — rules commonly
+    name a parent label, and it is the descendant that lands in an event's
+    `subject_ref`."""
+
+    def test_only_labels_a_rule_can_match_get_a_device(self):
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+        assert set(subjects_in_scope([profile])) == {"subj-a"}
+
+    def test_a_disabled_rule_contributes_no_subjects(self):
+        profile = _profile(
+            rules=(RuleView(uuid="rule-1", name="bowl", enabled=False, subject_uuids=("subj-a",)),),
+        )
+        assert subjects_in_scope([profile]) == {}
+
+    def test_a_subject_is_scoped_to_the_sources_its_rule_covers(self):
+        """The per-(rule, source) tier must not invent counters for cameras the rule
+        was never scoped to."""
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Hallway")),
+            rules=(RuleView(uuid="rule-1", name="bowl", source_uuids=("src-1",), subject_uuids=("subj-a",)),),
+        )
+        _rule, sources = subjects_in_scope([profile])["subj-a"][0]
+        assert [s.uuid for s in sources] == ["src-1"]
+
+    def test_a_subject_without_a_known_label_name_gets_no_device(self):
+        """A device titled with a bare uuid is worse than no device."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-gone",)),))
+        desired = build_all_discovery([profile], PREFIX, {})
+        assert not any("subject" in topic for topic in desired)
+
+
+class TestSubjectDeviceShape:
+    def _subject_cmps(self, profile, subjects=None):
+        subjects = subjects or {"subj-a": SubjectView(uuid="subj-a", name="Subject A")}
+        desired = build_all_discovery([profile], PREFIX, subjects)
+        return desired[subject_config_topic("subj-a")]["cmps"]
+
+    def test_the_core_entities_exist_without_any_rule_named_present(self):
+        """The whole point of the core: it is derived from the label and the event
+        stream, so it does not depend on any particular rule existing. A rule-derived
+        anchor would vanish the moment that rule was renamed or deleted."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="something obscure", subject_uuids=("subj-a",)),))
+        cmps = self._subject_cmps(profile)
+        assert {"detected", "count", "last_seen", "last_location"} <= set(cmps)
+
+    def test_the_per_source_tier_is_disabled_by_default_and_the_aggregate_is_not(self):
+        """The cardinality lever: the tier that multiplies out is off, the tier you
+        put on a dashboard is on."""
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Hallway")),
+            rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),),
+        )
+        cmps = self._subject_cmps(profile)
+        assert cmps["rule-1_count"].get("enabled_by_default") is not False
+        assert cmps["rule-1_src-1_count"]["enabled_by_default"] is False
+
+    def test_subject_entities_survive_a_label_rename(self):
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+        before = self._subject_cmps(profile, {"subj-a": SubjectView(uuid="subj-a", name="Subject A")})
+        after = self._subject_cmps(profile, {"subj-a": SubjectView(uuid="subj-a", name="Renamed")})
+
+        assert before["count"]["unique_id"] == after["count"]["unique_id"]
+        assert before["count"]["state_topic"] != after["count"]["state_topic"]
+
+    def test_a_subject_device_is_not_tied_to_one_watchers_availability(self):
+        """A label belongs to no single watcher — tying it to one would blank the
+        device whenever that watcher stopped, even with another still watching."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+        desired = build_all_discovery([profile], PREFIX, {"subj-a": SubjectView(uuid="subj-a", name="Subject A")})
+        availability = desired[subject_config_topic("subj-a")]["availability"]
+        assert availability == [{"topic": f"{PREFIX}/status"}]
+
+
+class TestSubjectTiersAgree:
+    """Every tier is summed from one query, so a subject total is the sum of its rules
+    by construction. Three separate GROUP BYs could disagree after a concurrent write,
+    and a total that isn't the sum of its parts is unexplainable afterwards."""
+
+    COUNTS = [
+        {
+            "source_uuid": "src-1",
+            "rule_uuid": "rule-1",
+            "subject_ref": "subj-a",
+            "count": 5,
+            "last_seen": "2026-01-02T00:00:00+00:00",
+        },
+        {
+            "source_uuid": "src-2",
+            "rule_uuid": "rule-1",
+            "subject_ref": "subj-a",
+            "count": 3,
+            "last_seen": "2026-01-03T00:00:00+00:00",
+        },
+        {
+            "source_uuid": "src-1",
+            "rule_uuid": "rule-2",
+            "subject_ref": "subj-a",
+            "count": 4,
+            "last_seen": "2026-01-01T00:00:00+00:00",
+        },
+    ]
+
+    def test_each_tier_is_the_sum_of_the_one_below(self):
+        seed = build_subject_seed(self.COUNTS)
+        assert seed[("subj-a",)][0] == 12
+        assert seed[("subj-a", "rule-1")][0] == 8
+        assert seed[("subj-a", "rule-1", "src-1")][0] == 5
+
+    def test_last_seen_rolls_up_as_the_most_recent_not_the_last_row(self):
+        seed = build_subject_seed(self.COUNTS)
+        assert seed[("subj-a",)][1] == "2026-01-03T00:00:00+00:00"
+        assert seed[("subj-a", "rule-2")][1] == "2026-01-01T00:00:00+00:00"
+
+    def test_events_with_no_subject_are_not_counted_against_a_subject(self):
+        """A rule with no subject slot still produces events; they belong to the
+        rule-level counters, which seed separately."""
+        assert build_subject_seed([{**self.COUNTS[0], "subject_ref": None}]) == {}
 
 
 class _FakePublisher:

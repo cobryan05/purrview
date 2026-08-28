@@ -1065,7 +1065,14 @@ class WatchEventFacetsResponse(StatusResponse):
 class WatchEventCount(ApiModel):
     source_uuid: str
     rule_uuid: str
+    #: None for a rule with no subject slot. Kept rather than filtered so rule-level
+    #: totals stay complete — the bridge sums these rows to get every coarser tier.
+    subject_ref: Optional[str] = None
     count: int
+    #: ISO 8601, the most recent event in this group. Seeds the "last seen" sensors,
+    #: which would otherwise read `unknown` after a restart until the next event —
+    #: for a rule that fires twice a day, most of the day.
+    last_seen: Optional[str] = None
 
 
 class WatchEventCountsResponse(StatusResponse):

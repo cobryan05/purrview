@@ -7245,23 +7245,46 @@ class DbClient:
             }
 
     async def watch_event_counts(self) -> List[Dict[str, Any]]:
-        """Lifetime event counts grouped by (source, rule).
+        """Lifetime event counts and last-seen times grouped by (source, rule, subject).
 
         For MQTT bridge counter seeding — a bridge that just (re)connected needs each
         rule's lifetime total, not zero, so its first published count doesn't read as
         a reset. No counter table: this is cheap enough to compute on demand and a
         second source of truth would just be one more thing to keep in sync.
+
+        Grouped at the *finest* grain the bridge publishes, deliberately, because it
+        publishes three: per subject, per (subject, rule), and per (subject, rule,
+        source). Those are summed up from this one result rather than fetched as three
+        queries — three separate `GROUP BY`s can disagree after a concurrent write, and
+        a subject total that isn't the sum of its rules is the kind of discrepancy
+        nobody can explain later. One query, one snapshot, arithmetic for the rest.
+
+        `subject_ref` is nullable — a rule with no subject slot still produces events —
+        and is returned as None rather than filtered out, so rule-level totals stay
+        complete whether or not a subject was involved.
         """
         async with self._async_session_maker() as session:
             stmt = (
-                select(WatchEvent.source_uuid, WatchEvent.rule_uuid, func.count())
+                select(
+                    WatchEvent.source_uuid,
+                    WatchEvent.rule_uuid,
+                    WatchEvent.subject_ref,
+                    func.count(),
+                    func.max(WatchEvent.started_at),
+                )
                 .where(WatchEvent.source_uuid != None, WatchEvent.rule_uuid != None)  # noqa: E711
-                .group_by(WatchEvent.source_uuid, WatchEvent.rule_uuid)
+                .group_by(WatchEvent.source_uuid, WatchEvent.rule_uuid, WatchEvent.subject_ref)
             )
             rows = (await session.exec(stmt)).all()
             return [
-                {"source_uuid": source_uuid, "rule_uuid": rule_uuid, "count": count}
-                for source_uuid, rule_uuid, count in rows
+                {
+                    "source_uuid": source_uuid,
+                    "rule_uuid": rule_uuid,
+                    "subject_ref": subject_ref,
+                    "count": count,
+                    "last_seen": last_seen.isoformat() if last_seen is not None else None,
+                }
+                for source_uuid, rule_uuid, subject_ref, count, last_seen in rows
             ]
 
     async def get_watch_event(self, uuid: str) -> Optional[WatchEventRead]:

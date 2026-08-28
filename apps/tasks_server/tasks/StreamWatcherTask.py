@@ -1427,6 +1427,7 @@ class StreamWatcherTask(Task):
         # were evaluated against rather than raw model output the watcher then ignored.
         await self._dispatch_frame(pipeline)
 
+        self._publish_bridge_presence(pipeline, now)
         self._publish_bridge_telemetry(pipeline, now)
 
         # Last, because the frame this pass just handed to the per-frame actions is what
@@ -1719,8 +1720,38 @@ class StreamWatcherTask(Task):
                 target=signal.target_name,
                 track_ids=signal.track_ids,
             )
+            if signal.phase is EventPhase.START and signal.subject_ref:
+                self._manager.get_mqtt_bridge().publish_subject_event(
+                    subject_uuid=signal.subject_ref,
+                    rule_uuid=signal.rule_uuid,
+                    source_uuid=signal.source_uuid,
+                    last_seen=datetime.fromtimestamp(signal.at, tz=timezone.utc).isoformat(),
+                    source_name=self._source_name_for(signal.source_uuid),
+                )
         except Exception:
             logger.debug("MQTT bridge event publish failed", exc_info=True)
+
+    def _source_name_for(self, source_uuid: Optional[str]) -> Optional[str]:
+        for pipeline in self._pipelines:
+            if pipeline.source_uuid == source_uuid:
+                return pipeline.source_name
+        return None
+
+    def _publish_bridge_presence(self, pipeline: WatchPipeline, now: float) -> None:
+        """Report which labels this camera can currently see.
+
+        Every analysed frame, not throttled: the bridge only publishes when a subject's
+        overall answer actually changes, and it needs each frame's view to compute that
+        union. Throttling here would delay presence by the throttle interval for no
+        saving — the expensive part is the publish, which is already conditional.
+        """
+        try:
+            self._manager.get_mqtt_bridge().publish_presence(
+                source_uuid=pipeline.source_uuid,
+                label_uuids=sorted(pipeline.presence_labels(now)),
+            )
+        except Exception:
+            logger.debug("MQTT bridge presence publish failed", exc_info=True)
 
     def _publish_bridge_telemetry(self, pipeline: WatchPipeline, now: float) -> None:
         """Throttled per-source diagnostics for the bridge's HA sensors.
@@ -1956,7 +1987,15 @@ class StreamWatcherTask(Task):
         # Mark unavailable before anything else — a watcher that dies mid-cleanup
         # should still stop looking "online" in HA, not freeze at its last value.
         if self._profile is not None:
-            self._manager.get_mqtt_bridge().set_watcher_availability(self._profile.name, online=False)
+            bridge = self._manager.get_mqtt_bridge()
+            bridge.set_watcher_availability(self._profile.name, online=False)
+            # Subject presence is a union across every camera, and unlike the entities
+            # above it has no per-watcher availability to fall back on — a subject
+            # belongs to no single watcher. So a stopped source must withdraw its
+            # contribution explicitly, or its last sighting pins that subject
+            # "detected" forever with nothing left running to contradict it.
+            for pipeline in self._pipelines:
+                bridge.forget_source_presence(pipeline.source_uuid)
 
         # After the run loop's `finally`, which has already emitted a closing signal for
         # everything still open. Anything left in the map failed to persist and has no

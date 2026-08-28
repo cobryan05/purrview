@@ -80,6 +80,17 @@ class ByteTracker(Tracker):
         self._tracks: List[Track] = []
         self._next_id = 1
 
+    @property
+    def track_thresh(self) -> float:
+        """The confidence at or above which a box may *start* a track.
+
+        Public because a consumer that cannot use tracks at all — a snapshot source,
+        where frames arrive minutes apart and no track can ever confirm — still needs a
+        confidence floor, and it should be this one rather than a second constant kept
+        in sync by hand. See `WatchPipeline.presence_labels`.
+        """
+        return self._track_thresh
+
     @classmethod
     def display_name(cls) -> str:
         return "ByteTrack (two-stage)"

@@ -22,9 +22,10 @@ import dataclasses
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from ..actions.mqttPublisher import AsyncMqttPublisher, load_mqtt_broker_settings
+from ..watch.rules import descendants_of
 from ..watch.templating import slugify
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,12 @@ class RuleView:
     enabled: bool = True
     #: Empty means "every source in the profile" — matches `InteractionRule`.
     source_uuids: Tuple[str, ...] = ()
+    #: Label uuids this rule can match as its subject, already expanded through the
+    #: label tree. Expansion happens above this view because a rule commonly names a
+    #: *parent* label with `include_descendants`, and it is the descendant that ends up
+    #: in an event's `subject_ref` — enumerating only the literal refs would miss every
+    #: individual it can actually match.
+    subject_uuids: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,20 @@ class SourceView:
     name: str
     mqtt_name: Optional[str] = None
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class SubjectView:
+    """A label a rule can match as its subject.
+
+    "Subject" is not a separate concept from a label — `subject_a_kind` is `LABEL` and
+    `subject_a_refs_json` holds label uuids — so this is a label the config says can
+    appear as the subject of an event. Which generalises: nothing here is cat-specific,
+    and a person or vehicle label works identically.
+    """
+
+    uuid: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -250,6 +271,126 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     }
 
 
+def subject_device_id(subject_uuid: str) -> str:
+    return f"whiskerwatcher_subject_{subject_uuid}"
+
+
+def subject_config_topic(subject_uuid: str) -> str:
+    return f"{HA_DISCOVERY_PREFIX}/device/{subject_device_id(subject_uuid)}/config"
+
+
+def subject_base_topic(subject_slug: str) -> str:
+    """Subject topics carry no profile segment, unlike rule and telemetry topics.
+
+    A label is app-wide: two watchers seeing the same cat is precisely the case where
+    one shared answer is wanted, not two. Safe because every watcher runs in one
+    `tasks_server` process against a single `MqttBridge`, so these topics have exactly
+    one writer however many profiles are running.
+    """
+    return f"subject/{subject_slug}"
+
+
+def build_subject_discovery(
+    subject: SubjectView,
+    rules: Sequence[Tuple[RuleView, Sequence[SourceView]]],
+    prefix: str,
+) -> Dict[str, Any]:
+    """One subject label's HA device: a fixed core, plus a breakdown per rule and per
+    (rule, source).
+
+    The core exists because the breakdown cannot be relied on. Rules are user config —
+    they get renamed, disabled and deleted — so anything derived from them is the wrong
+    anchor for a device. These four are properties of the label and the event stream,
+    so they are there whether the profile has five rules or none, and they are what a
+    dashboard card actually wants: is it here, how often, when last, and where.
+
+    `Detected now` is the odd one out and deliberately so: it comes from the tracker,
+    not from events, so it answers "is this label in front of a camera" rather than
+    "did a rule fire". Those genuinely differ — a cat wandering through a room no rule
+    covers is present but generates no events — and the rule-independent answer is the
+    one that stays useful when rules change.
+    """
+    subject_slug = slugify(subject.name)
+    base = f"{prefix}/{subject_base_topic(subject_slug)}"
+
+    cmps: Dict[str, Any] = {
+        "detected": {
+            "p": "binary_sensor",
+            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_detected",
+            "name": "Detected now",
+            "device_class": "occupancy",
+            "state_topic": f"{base}/state",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+        },
+        "count": {
+            "p": "sensor",
+            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_count",
+            "name": "Total events",
+            "state_class": "total_increasing",
+            "state_topic": f"{base}/count",
+        },
+        "last_seen": {
+            "p": "sensor",
+            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_last_seen",
+            "name": "Last seen",
+            "device_class": "timestamp",
+            "state_topic": f"{base}/attributes",
+            "value_template": "{{ value_json.lastSeen }}",
+        },
+        "last_location": {
+            "p": "sensor",
+            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_last_location",
+            "name": "Last location",
+            "state_topic": f"{base}/attributes",
+            "value_template": "{{ value_json.lastSource }}",
+        },
+    }
+
+    for rule, sources in rules:
+        rule_slug = slugify(rule.name)
+        # Tier 2 — "when is this subject doing X on *any* camera", the question most
+        # worth asking and the one a per-camera breakdown alone cannot answer.
+        cmps[f"{rule.uuid}_count"] = {
+            "p": "sensor",
+            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_{rule.uuid}_count",
+            "name": rule.name,
+            "state_class": "total_increasing",
+            "state_topic": f"{base}/rule/{rule_slug}/count",
+        }
+        cmps[f"{rule.uuid}_last_seen"] = {
+            "p": "sensor",
+            "unique_id": f"whiskerwatcher_subject_{subject.uuid}_{rule.uuid}_last_seen",
+            "name": f"{rule.name} last seen",
+            "device_class": "timestamp",
+            "state_topic": f"{base}/rule/{rule_slug}/attributes",
+            "value_template": "{{ value_json.lastSeen }}",
+        }
+        # Tier 3 — the drill-down. Off by default: this is the tier that multiplies
+        # out (subjects x rules x sources) and it answers a question you ask
+        # occasionally, not one you put on a dashboard.
+        for source in sources:
+            source_slug = _topic_source(source)
+            cmps[f"{rule.uuid}_{source.uuid}_count"] = {
+                "p": "sensor",
+                "unique_id": f"whiskerwatcher_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
+                "name": f"{rule.name} · {source.name}",
+                "state_class": "total_increasing",
+                "enabled_by_default": False,
+                "state_topic": f"{base}/rule/{rule_slug}/{source_slug}/count",
+            }
+
+    return {
+        "dev": {"ids": subject_device_id(subject.uuid), "name": subject.name},
+        "o": dict(ORIGIN),
+        # Only the app-level LWT: a subject is not owned by any one watcher, so tying
+        # its availability to a particular one would blank the device whenever that
+        # watcher stopped, even while another was still watching the same label.
+        "availability": [{"topic": f"{prefix}/status"}],
+        "cmps": cmps,
+    }
+
+
 def build_app_discovery(prefix: str) -> Dict[str, Any]:
     """The `whiskerwatcher_system` device: app-wide diagnostics that belong to no
     single camera."""
@@ -288,10 +429,74 @@ def build_app_discovery(prefix: str) -> Dict[str, Any]:
     }
 
 
-def build_all_discovery(profiles: Sequence[ProfileView], prefix: str) -> Dict[str, Dict[str, Any]]:
+def subjects_in_scope(profiles: Sequence[ProfileView]) -> Dict[str, List[Tuple[RuleView, List[SourceView]]]]:
+    """subject uuid → the (rule, sources) pairs that can produce events for it.
+
+    Only labels some enabled rule can actually match get a device. A label nothing
+    references would produce a device whose every entity was permanently zero, which is
+    worse than absent — it looks broken rather than inapplicable.
+    """
+    out: Dict[str, List[Tuple[RuleView, List[SourceView]]]] = {}
+    for profile in profiles:
+        enabled_sources = [s for s in profile.sources if s.enabled]
+        for rule in profile.rules:
+            if not rule.enabled:
+                continue
+            sources = [s for s in enabled_sources if not rule.source_uuids or s.uuid in rule.source_uuids]
+            if not sources:
+                continue
+            for subject_uuid in rule.subject_uuids:
+                out.setdefault(subject_uuid, []).append((rule, sources))
+    return out
+
+
+def build_subject_seed(
+    counts: Sequence[Dict[str, Any]],
+) -> Dict[Tuple[str, ...], Tuple[int, Optional[str]]]:
+    """Roll the finest-grain counts up into every tier the bridge publishes.
+
+    Keys are the grouping, shortest first: `(subject,)`, `(subject, rule)`, and
+    `(subject, rule, source)`. Each value is `(count, last_seen)`.
+
+    Summed from one query rather than fetched per tier so the tiers cannot disagree —
+    a subject total that isn't the sum of its rules is a discrepancy nobody can account
+    for afterwards, and three separate `GROUP BY`s can produce one across a concurrent
+    write. Rows with no subject are skipped: they belong to rule-level counters, which
+    seed separately.
+    """
+    out: Dict[Tuple[str, ...], Tuple[int, Optional[str]]] = {}
+
+    def _add(key: Tuple[str, ...], count: int, last_seen: Optional[str]) -> None:
+        previous_count, previous_seen = out.get(key, (0, None))
+        # max() over ISO 8601 is chronological, which is the one thing that string
+        # format is good for.
+        merged_seen = max(filter(None, (previous_seen, last_seen)), default=None)
+        out[key] = (previous_count + count, merged_seen)
+
+    for row in counts:
+        subject = row.get("subject_ref")
+        if not subject:
+            continue
+        rule, source = row["rule_uuid"], row["source_uuid"]
+        count, last_seen = int(row["count"]), row.get("last_seen")
+        _add((subject,), count, last_seen)
+        _add((subject, rule), count, last_seen)
+        _add((subject, rule, source), count, last_seen)
+    return out
+
+
+def build_all_discovery(
+    profiles: Sequence[ProfileView],
+    prefix: str,
+    subjects: Optional[Dict[str, SubjectView]] = None,
+) -> Dict[str, Dict[str, Any]]:
     """Every device-discovery message that should currently exist, keyed by config
     topic. Does not decide what to *retract* — see `reconcile_discovery`, which diffs
     this against what was published last time.
+
+    `subjects` maps label uuid → the label, for every label that can be a rule subject.
+    Omitted, no subject devices are produced — the caller has no vocabulary to name
+    them with, and a device titled with a bare uuid is worse than no device.
     """
     messages: Dict[str, Dict[str, Any]] = {}
     for profile in profiles:
@@ -307,6 +512,12 @@ def build_all_discovery(profiles: Sequence[ProfileView], prefix: str) -> Dict[st
                 messages[topic]["cmps"].update(payload["cmps"])
             else:
                 messages[topic] = payload
+    for subject_uuid, rule_scopes in subjects_in_scope(profiles).items():
+        subject = (subjects or {}).get(subject_uuid)
+        if subject is None:
+            continue
+        messages[subject_config_topic(subject_uuid)] = build_subject_discovery(subject, rule_scopes, prefix)
+
     messages[APP_CONFIG_TOPIC] = build_app_discovery(prefix)
     return messages
 
@@ -475,6 +686,28 @@ class SlugIndex:
         base = self.rule_base(profile_uuid, source_uuid, rule_uuid)
         return None if base is None else f"{base}/count"
 
+    def rule_slug(self, rule_uuid: str) -> Optional[str]:
+        """A rule's topic slug, without needing to know its profile.
+
+        Subject topics are app-wide — a label is not owned by a profile — so their
+        rule and source segments are looked up across every profile rather than within
+        one. A rule uuid belongs to exactly one profile, so this is unambiguous.
+        """
+        for _slug, _sources, rules in self.profiles.values():
+            if rule_uuid in rules:
+                return rules[rule_uuid]
+        return None
+
+    def source_slug(self, source_uuid: str) -> Optional[str]:
+        """A source's topic slug. Unlike `rule_slug` this *can* be ambiguous — one
+        camera watched by two profiles may carry a different `mqtt_name` under each —
+        so the first match wins and the subject tree stays stable rather than
+        alternating between two spellings of the same camera."""
+        for _slug, sources, _rules in self.profiles.values():
+            if source_uuid in sources:
+                return sources[source_uuid]
+        return None
+
     def telemetry(self, profile_uuid: str, source_uuid: str) -> Optional[str]:
         entry = self.profiles.get(profile_uuid)
         if entry is None:
@@ -549,6 +782,22 @@ class MqttBridge:
         # COUNT(*) per event, puts a query on the event path to recompute a number this
         # process already knows.
         self._counts: Dict[Tuple[str, str, str], int] = {}
+        # source uuid → the label uuids that source can currently see. The published
+        # per-subject answer is the union across all of them, so this is kept whole
+        # rather than reduced on arrival: removing a camera's contribution requires
+        # knowing what it was contributing.
+        self._presence_by_source: Dict[str, Set[str]] = {}
+        #: subject label uuid → topic slug, refreshed with the profile snapshot.
+        self._subject_slugs: Dict[str, str] = {}
+        #: Rolled-up subject counters, keyed shortest-tuple-first exactly as
+        #: `build_subject_seed` produces them: (subject,), (subject, rule),
+        #: (subject, rule, source).
+        self._subject_counts: Dict[Tuple[str, ...], int] = {}
+        #: Label vocabulary, refreshed with the profile snapshot. Labels live in the DB
+        #: and change without this process being told, so both are re-read per reconcile
+        #: rather than cached at startup.
+        self._subject_names: Dict[str, str] = {}
+        self._label_ancestry: Dict[str, List[str]] = {}
 
     @property
     def connected(self) -> bool:
@@ -602,6 +851,61 @@ class MqttBridge:
         if await self.ensure_started():
             await self.publish_all_discovery()
 
+    async def _load_labels(self) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+        """`(uuid → name, uuid → ancestor uuids)` for the whole label tree.
+
+        The ancestry half is what makes subject enumeration correct: rules commonly
+        name a *parent* label with `include_descendants`, and it is the descendant that
+        lands in an event's `subject_ref`, so the literal refs alone would miss every
+        individual the rule can actually match.
+        """
+        from db_client.api.labels_api import LabelsApi
+
+        labels_resp = await asyncio.to_thread(LabelsApi(self._db_api_client).get_labels)
+        labels = list(labels_resp.labels or [])
+        parent_of = {label.uuid: getattr(label, "parent_uuid", None) for label in labels}
+
+        def _ancestors(uuid: str) -> List[str]:
+            chain, cursor, guard = [], parent_of.get(uuid), 0
+            # Guarded rather than trusted: a cycle here would hang the reconcile pass,
+            # and this walks data the bridge does not own.
+            while cursor and guard < 64:
+                chain.append(cursor)
+                cursor, guard = parent_of.get(cursor), guard + 1
+            return chain
+
+        return ({label.uuid: label.name for label in labels}, {label.uuid: _ancestors(label.uuid) for label in labels})
+
+    def _subject_views(self, profiles: Sequence[ProfileView]) -> Dict[str, SubjectView]:
+        """The subject labels in scope, named. A subject whose label has since been
+        deleted is dropped rather than shown as a bare uuid — its rule will stop
+        matching it too, so the device would only ever be a dead one."""
+        return {
+            uuid: SubjectView(uuid=uuid, name=self._subject_names[uuid])
+            for uuid in subjects_in_scope(profiles)
+            if uuid in self._subject_names
+        }
+
+    def _expand_subjects(self, rule: Any) -> Tuple[str, ...]:
+        """Every label uuid this rule can match as its subject.
+
+        Only `subject_a` — that is the slot an event records in `subject_ref`, and it
+        is what "which cat" means. `subject_b` is the *target* (the bowl, the litter
+        box), which belongs to the other half of an interaction and gets no device.
+
+        Only `LABEL` subjects. A zone-kind subject refers to geometry, which has no
+        label to hang a device off and never appears as a `subject_ref`.
+        """
+        if str(getattr(rule, "subject_a_kind", "label")).lower() != "label":
+            return ()
+        refs = [str(r) for r in (getattr(rule, "subject_a_refs_json", None) or [])]
+        if not getattr(rule, "subject_a_include_descendants", False):
+            return tuple(refs)
+        expanded = set(refs)
+        for ref in refs:
+            expanded.update(descendants_of(ref, self._label_ancestry))
+        return tuple(sorted(expanded))
+
     async def _load_profiles(self) -> List[ProfileView]:
         from db_client.api.sources_api import SourcesApi
         from db_client.api.watch_profiles_api import WatchProfilesApi
@@ -609,6 +913,9 @@ class MqttBridge:
         profiles_resp = await asyncio.to_thread(WatchProfilesApi(self._db_api_client).list_watch_profiles)
         sources_resp = await asyncio.to_thread(SourcesApi(self._db_api_client).get_sources)
         source_by_uuid = {s.uuid: s for s in (sources_resp.sources or [])}
+        label_names, ancestry = await self._load_labels()
+        self._subject_names = label_names
+        self._label_ancestry = ancestry
 
         views: List[ProfileView] = []
         for profile in profiles_resp.profiles or []:
@@ -628,6 +935,7 @@ class MqttBridge:
                     name=r.name,
                     enabled=r.enabled,
                     source_uuids=tuple(r.source_uuids_json or []),
+                    subject_uuids=self._expand_subjects(r),
                 )
                 for r in (profile.rules or [])
             )
@@ -644,7 +952,9 @@ class MqttBridge:
             return
         profiles = await self._load_profiles()
         self._slugs = build_slug_index(profiles)
-        desired = build_all_discovery(profiles, self._prefix)
+        subjects = self._subject_views(profiles)
+        self._subject_slugs = {uuid: slugify(view.name) for uuid, view in subjects.items()}
+        desired = build_all_discovery(profiles, self._prefix, subjects)
         to_publish, self._last_discovery = reconcile_discovery(self._last_discovery, desired)
         for topic, payload in to_publish.items():
             self._publisher.publish(topic, "" if payload is None else payload, retain=True, absolute=True)
@@ -658,12 +968,31 @@ class MqttBridge:
         self._slugs = build_slug_index(profiles)
         counts_resp = await asyncio.to_thread(WatchProfilesApi(self._db_api_client).get_watch_event_counts)
         counts = [
-            {"source_uuid": c.source_uuid, "rule_uuid": c.rule_uuid, "count": c.count}
+            {
+                "source_uuid": c.source_uuid,
+                "rule_uuid": c.rule_uuid,
+                "subject_ref": c.subject_ref,
+                "count": c.count,
+                "last_seen": c.last_seen,
+            }
             for c in (counts_resp.counts or [])
         ]
         self._counts = build_counter_seed(profiles, counts)
         for topic, count in build_seed_publishes(profiles, counts).items():
             self._publisher.publish(topic, count, retain=True)
+
+        # Subject tiers, all rolled up from the same rows the rule counters used, so a
+        # subject's total is the sum of its rules by construction rather than by two
+        # queries happening to agree.
+        seed = build_subject_seed(counts)
+        self._subject_counts = {key: count for key, (count, _seen) in seed.items()}
+        for key, (count, last_seen) in seed.items():
+            topic = self._subject_topic(key)
+            if topic is None:
+                continue
+            self._publisher.publish(f"{topic}/count", count, retain=True)
+            if last_seen:
+                self._publisher.publish(f"{topic}/attributes", {"lastSeen": last_seen}, retain=True)
 
     # ── Live state, published as events happen ────────────────────────────────────
     #
@@ -727,6 +1056,100 @@ class MqttBridge:
         # publishing state first would briefly pair a new ON with the previous event's
         # attributes.
         self._publisher.publish(f"{base}/state", "ON" if active else "OFF", retain=True)
+
+    def _subject_topic(self, key: Tuple[str, ...]) -> Optional[str]:
+        """A rolled-up counter key → its topic, or None if any part is unknown to the
+        current config. Mirrors the tiers `build_subject_seed` produces."""
+        subject_slug = self._subject_slugs.get(key[0])
+        if subject_slug is None:
+            return None
+        base = subject_base_topic(subject_slug)
+        if len(key) == 1:
+            return base
+        rule_slug = self._slugs.rule_slug(key[1])
+        if rule_slug is None:
+            return None
+        if len(key) == 2:
+            return f"{base}/rule/{rule_slug}"
+        source_slug = self._slugs.source_slug(key[2])
+        return None if source_slug is None else f"{base}/rule/{rule_slug}/{source_slug}"
+
+    def publish_subject_event(
+        self,
+        *,
+        subject_uuid: str,
+        rule_uuid: str,
+        source_uuid: str,
+        last_seen: str,
+        source_name: Optional[str] = None,
+    ) -> None:
+        """One opening event, rolled into all three subject tiers.
+
+        Called only on START. The tiers are incremented together from one transition
+        rather than recomputed, which is what keeps them consistent between reseeds:
+        they are the same number counted at three granularities, so they must move
+        together or not at all.
+        """
+        if self._publisher is None or subject_uuid not in self._subject_slugs:
+            return
+        for key in ((subject_uuid,), (subject_uuid, rule_uuid), (subject_uuid, rule_uuid, source_uuid)):
+            topic = self._subject_topic(key)
+            if topic is None:
+                continue
+            self._subject_counts[key] = self._subject_counts.get(key, 0) + 1
+            self._publisher.publish(f"{topic}/count", self._subject_counts[key], retain=True)
+            attributes: Dict[str, Any] = {"lastSeen": last_seen}
+            if len(key) == 1:
+                # Only the device-level topic carries location: at rule or source
+                # granularity the camera is already implied by the topic itself.
+                attributes["lastSource"] = source_name
+            self._publisher.publish(f"{topic}/attributes", attributes, retain=True)
+
+    def publish_presence(self, *, source_uuid: str, label_uuids: Sequence[str]) -> None:
+        """Report which labels one camera can currently see, and republish any subject
+        whose overall answer changed.
+
+        The union across cameras is the published answer: a cat in front of *any*
+        camera is present. Taken here rather than in the watcher because no watcher can
+        see the others — and they all share this one bridge instance, so the union is a
+        plain dictionary read rather than anything that needs coordinating.
+
+        Only changes are published. Presence is evaluated every analysed frame, several
+        times a second per source, and a retained publish per frame would be the
+        noisiest thing on the broker while saying nothing new.
+        """
+        if self._publisher is None:
+            return
+        incoming = set(label_uuids)
+        if self._presence_by_source.get(source_uuid) == incoming:
+            return
+        was_present = self._present_subjects()
+        self._presence_by_source[source_uuid] = incoming
+        for subject_uuid in was_present ^ self._present_subjects():
+            self._publish_subject_presence(subject_uuid)
+
+    def forget_source_presence(self, source_uuid: str) -> None:
+        """Drop a stopped source's contribution. Without this its last sighting would
+        pin a subject present forever — the watcher is gone, so nothing will ever
+        arrive to contradict it."""
+        if source_uuid not in self._presence_by_source:
+            return
+        was_present = self._present_subjects()
+        self._presence_by_source.pop(source_uuid, None)
+        for subject_uuid in was_present ^ self._present_subjects():
+            self._publish_subject_presence(subject_uuid)
+
+    def _present_subjects(self) -> Set[str]:
+        return set().union(*self._presence_by_source.values()) if self._presence_by_source else set()
+
+    def _publish_subject_presence(self, subject_uuid: str) -> None:
+        if self._publisher is None:
+            return
+        slug = self._subject_slugs.get(subject_uuid)
+        if slug is None:
+            return
+        state = "ON" if subject_uuid in self._present_subjects() else "OFF"
+        self._publisher.publish(f"{subject_base_topic(slug)}/state", state, retain=True)
 
     def publish_telemetry(self, *, profile_uuid: str, source_uuid: str, payload: Dict[str, Any]) -> None:
         """The diagnostic sensors' single JSON topic. Caller decides the cadence —
