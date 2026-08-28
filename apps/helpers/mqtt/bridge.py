@@ -19,6 +19,7 @@ forever.
 
 import asyncio
 import dataclasses
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
@@ -330,6 +331,32 @@ class DiscoveryState:
         return frozenset(self.components)
 
 
+def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
+    """Rebuild `DiscoveryState` from the broker's retained discovery configs.
+
+    The retained messages under `homeassistant/device/+/config` *are* the record of
+    what Home Assistant has been told exists — published by us, kept by the broker,
+    outliving any restart of ours. Reading them back means the reconcile stops
+    remembering what it did and starts observing what is, which additionally cleans up
+    configs this process never published: an older version of the app, a stray
+    `mosquitto_pub`, a dev instance pointed at the same broker.
+
+    Anything unparseable is skipped rather than raised on. A config we cannot read is
+    one we will not retract — the same safe direction as reading nothing at all — and
+    refusing to start the bridge over one malformed retained message would be a far
+    worse trade.
+    """
+    components: Dict[str, Dict[str, str]] = {}
+    for topic, payload in retained.items():
+        try:
+            config = json.loads(payload)
+            cmps = config.get("cmps") or {}
+            components[topic] = {cid: str(comp.get("p", "")) for cid, comp in cmps.items() if isinstance(comp, dict)}
+        except Exception:
+            logger.debug("Skipping unparseable retained discovery config on %s", topic, exc_info=True)
+    return DiscoveryState(components=components)
+
+
 def reconcile_discovery(
     previous: DiscoveryState, desired: Dict[str, Dict[str, Any]]
 ) -> Tuple[Dict[str, Optional[Dict[str, Any]]], DiscoveryState]:
@@ -542,6 +569,20 @@ class MqttBridge:
         await publisher.start()
         self._publisher = publisher
         self._prefix = settings.prefix
+        # Ask the broker what Home Assistant currently believes exists, rather than
+        # assuming nothing does. Without this the first reconcile after any restart
+        # sees an empty previous state, so it can only ever add entities — anything
+        # deleted while this process was down stays in HA forever. See
+        # `state_from_retained`.
+        try:
+            retained = await publisher.read_retained(f"{HA_DISCOVERY_PREFIX}/device/+/config", absolute=True)
+            self._last_discovery = state_from_retained(retained)
+            logger.info("MQTT bridge adopted %s retained discovery config(s)", len(self._last_discovery.components))
+        except Exception:
+            # Starting with an empty state is the pre-existing behaviour: additive
+            # only, no retraction this pass. Worth a warning, not worth refusing to
+            # bring the bridge up.
+            logger.warning("Could not read retained discovery configs; starting from empty", exc_info=True)
         try:
             await self.seed_counters()
         except Exception:

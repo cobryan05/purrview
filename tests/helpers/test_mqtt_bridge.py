@@ -10,6 +10,8 @@ that disappears from config must have its discovery retracted, not left retained
 forever.
 """
 
+import json
+
 from apps.helpers.mqtt.bridge import (
     DiscoveryState,
     MqttBridge,
@@ -22,6 +24,7 @@ from apps.helpers.mqtt.bridge import (
     build_source_discovery,
     reconcile_discovery,
     source_config_topic,
+    state_from_retained,
 )
 
 PREFIX = "whiskerwatcher"
@@ -154,6 +157,46 @@ class TestDiscoveryReconciliation:
         topic = source_config_topic("src-1")
         assert to_publish[topic] is not None
         assert "camera" in to_publish[topic]["cmps"]
+
+    def test_state_read_back_from_the_broker_can_retract_across_a_restart(self):
+        """The bug the retained read-back exists to fix. With an in-memory state, a
+        restart forgets what was published, so a rule deleted while tasks_server was
+        down can never be retracted — the process concludes it has told HA nothing and
+        can only ever add. Adopting the broker's retained configs is what makes the
+        first reconcile after a restart able to remove.
+        """
+        with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
+        without_rule = _profile(rules=())
+        topic = source_config_topic("src-1")
+
+        # What the broker is holding, published by a previous run of the process.
+        published = build_all_discovery([with_rule], PREFIX)
+        retained = {t: json.dumps(p).encode() for t, p in published.items()}
+
+        # A fresh process: no memory at all, only what the broker replays.
+        adopted = state_from_retained(retained)
+        to_publish, _ = reconcile_discovery(adopted, build_all_discovery([without_rule], PREFIX))
+
+        tombstones = {k: v for k, v in to_publish[topic]["cmps"].items() if k.startswith("rule-1_")}
+        assert tombstones, "a rule deleted while the process was down must still be retracted"
+        assert all(set(v) == {"p"} for v in tombstones.values())
+
+    def test_an_empty_retained_payload_is_not_adopted_as_a_live_config(self):
+        """Empty payloads are retractions someone already published. Adopting one would
+        resurrect the entity it removed, on the very next reconcile."""
+        assert state_from_retained({source_config_topic("src-1"): b""}).components == {}
+
+    def test_an_unparseable_retained_config_is_skipped_not_fatal(self):
+        """One malformed retained message must not stop the bridge coming up — and the
+        configs around it must still be adopted."""
+        good = build_all_discovery([_profile()], PREFIX)
+        retained = {t: json.dumps(p).encode() for t, p in good.items()}
+        retained["homeassistant/device/whiskerwatcher_junk/config"] = b"{not json"
+
+        state = state_from_retained(retained)
+
+        assert source_config_topic("src-1") in state.topics
+        assert "homeassistant/device/whiskerwatcher_junk/config" not in state.topics
 
     def test_a_deleted_source_is_retracted_with_an_empty_payload(self):
         with_source = [_profile()]

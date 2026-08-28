@@ -25,9 +25,10 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Callable, Deque, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,11 @@ class AsyncMqttPublisher:
         self._worker: Optional[asyncio.Task] = None
         self._client: Any = None
         self._connected = threading.Event()
+        # Subscriptions are re-applied on every connect. paho does not restore them
+        # itself after a reconnect (we use a clean session), so a broker blip would
+        # otherwise leave a silently deaf subscriber — the failure mode being that
+        # inbound commands simply stop arriving, with nothing logged.
+        self._subscriptions: Dict[str, Tuple[Callable[[str, bytes], None], int]] = {}
         # Counters the status panel reads, so a broker problem is visible rather than
         # silently degrading the feature.
         self.published = 0
@@ -166,7 +172,7 @@ class AsyncMqttPublisher:
         # Last Will: the broker publishes "offline" for us if we vanish, which is what
         # makes the state topic trustworthy to a Home Assistant user.
         client.will_set(self._availability_topic, payload="offline", retain=True)
-        client.on_connect = lambda *_: self._connected.set()
+        client.on_connect = self._on_connect
         client.on_disconnect = lambda *_: self._connected.clear()
 
         try:
@@ -186,6 +192,108 @@ class AsyncMqttPublisher:
                 client.loop_start()
             except Exception:
                 pass
+
+    def _on_connect(self, *_args: Any) -> None:
+        self._connected.set()
+        # Re-apply on every connect, not just the first: this fires again after each
+        # reconnect, and that is the only place subscriptions can be restored.
+        for topic, (callback, qos) in list(self._subscriptions.items()):
+            try:
+                # Both halves: a subscription registered before the client existed has
+                # no callback attached yet, and re-adding an existing one just replaces
+                # it. Only `subscribe` is strictly lost across a reconnect, but doing
+                # both here keeps the two from ever disagreeing.
+                self._client.message_callback_add(topic, lambda _c, _u, msg, _cb=callback: _cb(msg.topic, msg.payload))
+                self._client.subscribe(topic, qos=qos)
+            except Exception:
+                logger.debug("MQTT resubscribe failed for %s", topic, exc_info=True)
+
+    # ------------------------------------------------------------------ subscribe
+
+    def subscribe(
+        self,
+        topic: str,
+        callback: Callable[[str, bytes], None],
+        *,
+        absolute: bool = False,
+        qos: int = 0,
+    ) -> None:
+        """Register a handler for inbound messages on `topic` (wildcards allowed).
+
+        `callback` is invoked with `(topic, payload_bytes)` **on paho's network
+        thread**, not the event loop. Keep it to recording state; anything touching the
+        loop must hop back with `run_coroutine_threadsafe`.
+
+        `absolute` has the same meaning as in `publish`: skip the `<prefix>/` prepend,
+        which is what reading Home Assistant's own `homeassistant/` tree requires.
+        """
+        full_topic = topic if absolute else f"{self._settings.prefix}/{topic.lstrip('/')}"
+        self._subscriptions[full_topic] = (callback, qos)
+        if self._client is None:
+            return
+        try:
+            self._client.message_callback_add(full_topic, lambda _c, _u, msg: callback(msg.topic, msg.payload))
+            self._client.subscribe(full_topic, qos=qos)
+        except Exception:
+            self.failures += 1
+            logger.warning("MQTT subscribe failed for %s", full_topic, exc_info=True)
+
+    def unsubscribe(self, topic: str, *, absolute: bool = False) -> None:
+        full_topic = topic if absolute else f"{self._settings.prefix}/{topic.lstrip('/')}"
+        self._subscriptions.pop(full_topic, None)
+        if self._client is None:
+            return
+        try:
+            self._client.message_callback_remove(full_topic)
+            self._client.unsubscribe(full_topic)
+        except Exception:
+            logger.debug("MQTT unsubscribe failed for %s", full_topic, exc_info=True)
+
+    async def read_retained(
+        self,
+        pattern: str,
+        *,
+        absolute: bool = False,
+        quiet_s: float = 0.5,
+        timeout_s: float = 5.0,
+    ) -> Dict[str, bytes]:
+        """Collect the retained messages currently held under `pattern`.
+
+        Subscribing to a wildcard makes the broker replay everything retained beneath
+        it, which is how you ask "what did I publish last time?" without having
+        remembered it. Used by the discovery reconcile, where the broker's retained
+        configs are a better record of what Home Assistant knows about than anything
+        this process can keep in memory across a restart.
+
+        **There is no protocol signal for "that was the last retained message"**, so
+        this waits for a quiet period rather than for completion: it returns once
+        `quiet_s` has passed with nothing new, or at `timeout_s` regardless. Under-
+        reading is the safe direction — a config we miss is simply one we do not
+        retract this pass, which is exactly today's behaviour, whereas over-waiting
+        would stall a reconnect.
+        """
+        collected: Dict[str, bytes] = {}
+        last_arrival = time.monotonic()
+
+        def _collect(topic: str, payload: bytes) -> None:
+            nonlocal last_arrival
+            last_arrival = time.monotonic()
+            # An empty payload is a retraction someone already published, not a
+            # config. Recording it would resurrect the very entity it removed.
+            if payload:
+                collected[topic] = payload
+
+        self.subscribe(pattern, _collect, absolute=absolute)
+        try:
+            started = time.monotonic()
+            while True:
+                await asyncio.sleep(0.1)
+                now = time.monotonic()
+                if now - last_arrival >= quiet_s or now - started >= timeout_s:
+                    break
+        finally:
+            self.unsubscribe(pattern, absolute=absolute)
+        return collected
 
     async def close(self) -> None:
         """Explicit lifecycle, tied to the task's `_deinit`.
