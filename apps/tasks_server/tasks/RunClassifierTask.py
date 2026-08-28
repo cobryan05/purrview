@@ -183,7 +183,8 @@ class RunClassifierTask(Task):
 
         # Filter to images under the given sources.
         sources_resp = await asyncio.to_thread(SourcesApi(db_api_client).get_sources)
-        source_by_uuid = {s.uuid: s for s in (sources_resp.sources or [])}
+        # Already keyed by uuid — iterating it yields the uuid strings, not the sources.
+        source_by_uuid = dict(sources_resp.sources or {})
         path_prefixes: list[str] = []
         for uuid in self._source_uuids:
             src = source_by_uuid.get(uuid)
