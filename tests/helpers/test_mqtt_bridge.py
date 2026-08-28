@@ -26,6 +26,7 @@ from apps.helpers.mqtt.bridge import (
     build_subject_seed,
     reconcile_discovery,
     source_config_topic,
+    source_device_id,
     state_from_retained,
     subject_config_topic,
     subjects_in_scope,
@@ -79,10 +80,14 @@ class TestSourceDiscoveryShape:
         cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
         assert not any(k.startswith("rule-1_") for k in cmps)
 
-    def test_device_identity_is_the_source_uuid_not_its_name(self):
+    def test_device_identity_derives_from_the_source_uuid_not_its_name(self):
+        """Rename-stability is `test_source_device_identity_is_stable_across_a_rename`;
+        this pins that the identity is the *namespaced* uuid, not the bare one."""
         profile = _profile()
+
         payload = build_source_discovery(profile, profile.sources[0], PREFIX)
-        assert payload["dev"]["ids"] == "src-1"
+
+        assert payload["dev"]["ids"] == source_device_id("src-1")
 
 
 class TestRuleUniqueIdSurvivesRename:
@@ -686,3 +691,251 @@ class TestLivePublishingGuards:
         assert payload["lastDurationS"] == 12.35
         assert payload["peakConfidence"] == 0.9123
         assert payload["subject"] == "subject_a"
+
+
+class TestLoadProfiles:
+    """`_load_profiles`/`_load_labels` are where the bridge meets the real db_client.
+
+    Every other test in this file builds `ProfileView`/`SourceView` by hand, so this
+    path had no coverage at all — and it was broken end to end in production: it called
+    a method the client does not have (`LabelsApi.get_labels`) and iterated a
+    uuid-keyed mapping (`GetSourcesResponse.sources`) as if it were a list of objects.
+    Every reconcile pass raised, so no discovery was ever published.
+
+    So these stub the *transport* but not the contract: the fake API objects are checked
+    against the real generated classes (a renamed or missing method fails here), and the
+    responses are real generated models (a changed response shape fails here).
+    """
+
+    @staticmethod
+    def _fake_api(real_cls, method_name, value):
+        """A stand-in for a generated API class, pinned to the real one's surface.
+
+        `real_cls` must actually expose `method_name` — that is the half of the
+        contract a hand-written fake otherwise silently invents.
+        """
+        assert hasattr(real_cls, method_name), f"{real_cls.__name__} has no {method_name}()"
+
+        class _Fake:
+            def __init__(self, _client):
+                pass
+
+        setattr(_Fake, method_name, lambda self: value)
+        return _Fake
+
+    def _patch(self, monkeypatch, *, sources_resp, profiles_resp, labels_resp):
+        import db_client.api.labels_api as labels_api_mod
+        import db_client.api.sources_api as sources_api_mod
+        import db_client.api.watch_profiles_api as profiles_api_mod
+
+        monkeypatch.setattr(
+            sources_api_mod,
+            "SourcesApi",
+            self._fake_api(sources_api_mod.SourcesApi, "get_sources", sources_resp),
+        )
+        monkeypatch.setattr(
+            profiles_api_mod,
+            "WatchProfilesApi",
+            self._fake_api(profiles_api_mod.WatchProfilesApi, "list_watch_profiles", profiles_resp),
+        )
+        monkeypatch.setattr(
+            labels_api_mod,
+            "LabelsApi",
+            self._fake_api(labels_api_mod.LabelsApi, "list_labels", labels_resp),
+        )
+
+    @staticmethod
+    def _source(uuid: str, name: str):
+        from db_client.models.source_read import SourceRead
+
+        return SourceRead(uuid=uuid, name=name, typename="rtsp", params={})
+
+    @staticmethod
+    def _labels(*labels):
+        from db_client.models.label_read import LabelRead
+        from db_client.models.list_labels_response import ListLabelsResponse
+
+        return ListLabelsResponse(
+            status="success",
+            labels=[LabelRead(uuid=u, name=n, parent_uuid=p) for u, n, p in labels],
+        )
+
+    @staticmethod
+    def _profiles(rules=None):
+        from db_client.models.list_watch_profiles_response import ListWatchProfilesResponse
+        from db_client.models.watch_profile_read import WatchProfileRead
+        from db_client.models.watch_profile_source_read import WatchProfileSourceRead
+
+        return ListWatchProfilesResponse(
+            status="success",
+            profiles=[
+                WatchProfileRead(
+                    uuid="profile-1",
+                    name="Living room watcher",
+                    tracker_typename="bytetrack",
+                    sources=[
+                        WatchProfileSourceRead(uuid="ps-1", profile_uuid="profile-1", source_uuid="src-1", enabled=True)
+                    ],
+                    rules=rules or [],
+                )
+            ],
+        )
+
+    @staticmethod
+    def _sources(mapping):
+        from db_client.models.get_sources_response import GetSourcesResponse
+
+        return GetSourcesResponse(status="success", sources=mapping)
+
+    async def test_source_name_resolves_from_the_uuid_keyed_mapping(self, monkeypatch):
+        """`GetSourcesResponse.sources` is `dict[uuid, SourceRead]`, not a list."""
+        self._patch(
+            monkeypatch,
+            sources_resp=self._sources({"src-1": self._source("src-1", "Kitchen cam")}),
+            profiles_resp=self._profiles(),
+            labels_resp=self._labels(),
+        )
+
+        profiles = await MqttBridge(db_api_client=object())._load_profiles()
+
+        assert [s.name for s in profiles[0].sources] == ["Kitchen cam"]
+
+    async def test_source_deleted_out_from_under_a_profile_is_dropped(self, monkeypatch):
+        """The "source can be deleted out from under a profile" guard still holds."""
+        self._patch(
+            monkeypatch,
+            sources_resp=self._sources({"other": self._source("other", "Hallway")}),
+            profiles_resp=self._profiles(),
+            labels_resp=self._labels(),
+        )
+
+        profiles = await MqttBridge(db_api_client=object())._load_profiles()
+
+        assert profiles[0].sources == ()
+
+    async def test_label_ancestry_expands_a_parent_subject_to_its_descendants(self, monkeypatch):
+        """A rule naming a parent label with `include_descendants` must cover the
+        children — that is what lands in an event's `subject_ref`."""
+        from db_client.models.interaction_rule_read import InteractionRuleRead
+
+        rule = InteractionRuleRead(
+            uuid="rule-1",
+            profile_uuid="profile-1",
+            name="cat at bowl",
+            enabled=True,
+            subject_a_kind="label",
+            subject_a_refs_json=["cat"],
+            subject_a_include_descendants=True,
+            relation="near",
+            subject_b_kind="label",
+        )
+        self._patch(
+            monkeypatch,
+            sources_resp=self._sources({"src-1": self._source("src-1", "Kitchen cam")}),
+            profiles_resp=self._profiles(rules=[rule]),
+            labels_resp=self._labels(("cat", "Cat", None), ("tabby", "Tabby", "cat"), ("dog", "Dog", None)),
+        )
+
+        profiles = await MqttBridge(db_api_client=object())._load_profiles()
+
+        assert set(profiles[0].rules[0].subject_uuids) == {"cat", "tabby"}
+
+
+class TestUniqueIdsDoNotCollide:
+    """HA keys entities on `unique_id` and silently drops duplicates.
+
+    A collision does not raise anywhere in this codebase — HA logs "Platform mqtt does
+    not generate unique IDs ... ignoring <entity>" and registers only the first. That is
+    how every camera after the first went missing in production while the broker showed
+    a complete, correct set of retained configs: rule entities hang off the *source*
+    device but were keyed on the rule uuid alone, and one rule covers every source in
+    the profile.
+    """
+
+    @staticmethod
+    def _unique_ids(messages):
+        for payload in messages.values():
+            for cmp in payload.get("cmps", {}).values():
+                uid = cmp.get("unique_id")
+                if uid is not None:
+                    yield uid
+
+    def test_one_rule_across_two_sources_yields_distinct_unique_ids(self):
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Hallway")),
+            rules=(RuleView(uuid="rule-1", name="cat at bowl"),),
+        )
+
+        ids = list(self._unique_ids(build_all_discovery([profile], PREFIX)))
+
+        assert len(ids) == len(set(ids)), f"duplicate unique_id: {sorted(i for i in ids if ids.count(i) > 1)}"
+
+    def test_every_unique_id_in_a_full_discovery_set_is_distinct(self):
+        """The whole set at once — sources, subjects and the app device together."""
+        subject = SubjectView(uuid="cat-1", name="Tabby")
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Hallway")),
+            rules=(
+                RuleView(uuid="rule-1", name="cat at bowl", subject_uuids=("cat-1",)),
+                RuleView(uuid="rule-2", name="cat in litter", subject_uuids=("cat-1",)),
+            ),
+        )
+
+        ids = list(self._unique_ids(build_all_discovery([profile], PREFIX, {"cat-1": subject})))
+
+        assert len(ids) == len(set(ids)), f"duplicate unique_id: {sorted(i for i in ids if ids.count(i) > 1)}"
+
+
+class TestDeviceIdentifiersAreNamespaced:
+    """Device `ids` land in HA's global MQTT device namespace, shared with every other
+    integration on the broker — so they carry the app's own prefix rather than a bare
+    uuid. Source devices originally published `source.uuid` alone while subjects and the
+    app device were namespaced; this keeps the three consistent."""
+
+    def test_no_device_publishes_a_bare_identifier(self):
+        subject = SubjectView(uuid="cat-1", name="Tabby")
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"),),
+            rules=(RuleView(uuid="rule-1", name="cat at bowl", subject_uuids=("cat-1",)),),
+        )
+
+        messages = build_all_discovery([profile], PREFIX, {"cat-1": subject})
+        ids = [payload["dev"]["ids"] for payload in messages.values()]
+
+        assert ids, "no devices built"
+        assert all(i.startswith("encounterwatch") for i in ids), ids
+
+
+class TestWatcherAvailabilitySurvivesALateConnect:
+    """A watcher starts before the bridge finishes connecting.
+
+    `StreamWatcherTask` announces availability once, at watcher start. The bridge
+    connects separately, on the manager's worker pass, so that call routinely lands
+    while `_publisher is None`. Dropping it there is silent and permanent: nothing
+    republishes the topic, `availability_mode: all` never sees its second topic, and
+    every entity on every source device reads `unavailable` forever — which is exactly
+    how this behaved against a real HA.
+    """
+
+    def test_availability_set_before_connect_is_published_once_connected(self):
+        bridge = MqttBridge(db_api_client=None)
+        assert bridge._publisher is None
+
+        bridge.set_watcher_availability("Living room watcher", online=True)
+        fake = _FakePublisher()
+        bridge._publisher = fake
+        bridge._publish_watcher_availability()
+
+        assert [(c["topic"], c["payload"]) for c in fake.calls] == [("watcher/living-room-watcher/status", "online")]
+
+    def test_the_latest_state_wins_rather_than_replaying_every_transition(self):
+        """Re-asserting must not resurrect a stopped watcher as online."""
+        bridge = MqttBridge(db_api_client=None)
+        bridge.set_watcher_availability("Living room watcher", online=True)
+        bridge.set_watcher_availability("Living room watcher", online=False)
+
+        fake = _FakePublisher()
+        bridge._publisher = fake
+        bridge._publish_watcher_availability()
+
+        assert [c["payload"] for c in fake.calls] == ["offline"]

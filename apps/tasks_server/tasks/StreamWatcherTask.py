@@ -1713,7 +1713,7 @@ class StreamWatcherTask(Task):
                 rule_uuid=signal.rule_uuid,
                 active=signal.phase is not EventPhase.END,
                 opened=signal.phase is EventPhase.START,
-                last_seen=datetime.fromtimestamp(signal.at, tz=timezone.utc).isoformat(),
+                last_seen=self._wall_iso(signal.at),
                 duration_s=signal.duration_s if signal.phase is EventPhase.END else None,
                 peak_confidence=signal.peak_confidence,
                 subject=signal.subject_name,
@@ -1725,11 +1725,21 @@ class StreamWatcherTask(Task):
                     subject_uuid=signal.subject_ref,
                     rule_uuid=signal.rule_uuid,
                     source_uuid=signal.source_uuid,
-                    last_seen=datetime.fromtimestamp(signal.at, tz=timezone.utc).isoformat(),
+                    last_seen=self._wall_iso(signal.at),
                     source_name=self._source_name_for(signal.source_uuid),
                 )
         except Exception:
             logger.debug("MQTT bridge event publish failed", exc_info=True)
+
+    def _wall_iso(self, monotonic_at: float) -> str:
+        """A signal's timestamp as a wallclock ISO 8601 string.
+
+        `WatchEventSignal.at` is on the monotonic clock (its docstring says
+        "wallclock", which is what made this easy to get wrong). Feeding it straight to
+        `datetime.fromtimestamp` yields a date in January 1970 — which throws nothing,
+        and reaches Home Assistant as a `device_class: timestamp` sensor reading 1970.
+        """
+        return datetime.fromtimestamp(monotonic_at + self._wallclock_offset, tz=timezone.utc).isoformat()
 
     def _source_name_for(self, source_uuid: Optional[str]) -> Optional[str]:
         for pipeline in self._pipelines:

@@ -48,7 +48,9 @@ class WatchEventSignal:
     rule_uuid: str
     rule_name: str
     phase: EventPhase
-    #: Wallclock seconds of the transition.
+    #: Seconds of the transition on the **monotonic** clock, not wallclock — add
+    #: `StreamWatcherTask._wallclock_offset` before formatting it as a date. Passing it
+    #: to `datetime.fromtimestamp` directly yields January 1970 and raises nothing.
     at: float
     #: When the *event* began — equal to `at` on START, earlier on UPDATE/END. This is
     #: what a clip's pre-roll is measured back from, so it must be the moment the

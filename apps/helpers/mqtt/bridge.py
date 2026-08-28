@@ -205,9 +205,15 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         # unique_id is uuid-based throughout: renaming the rule changes rule_base and
         # event_topic (cosmetic, human-readable) but never these, so HA keeps treating
         # it as the same entity — see HA_INTEGRATION_PLAN.md WP-2 step 5a.
+        #
+        # Scoped by *source as well as rule*. These entities hang off the source device,
+        # but one rule applies to every source in the profile, so keying on the rule
+        # alone makes all of them collide: HA registers the first and logs "Platform
+        # mqtt does not generate unique IDs ... ignoring" for the rest, which silently
+        # drops every camera after the first.
         cmps[f"{rule.uuid}_state"] = {
             "p": "binary_sensor",
-            "unique_id": f"encounterwatch_{rule.uuid}_state",
+            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_state",
             "name": rule.name,
             "device_class": "occupancy",
             "state_topic": f"{rule_base}/state",
@@ -217,7 +223,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{rule.uuid}_count",
+            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_count",
             "name": f"{rule.name} count",
             # The single most important setting here: HA purges raw history after
             # ~10 days but keeps long-term statistics forever for a sensor that
@@ -227,7 +233,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{rule.uuid}_last_seen",
+            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_last_seen",
             "name": f"{rule.name} last seen",
             "device_class": "timestamp",
             "state_topic": f"{rule_base}/attributes",
@@ -235,7 +241,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_duration"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{rule.uuid}_last_duration",
+            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_last_duration",
             "name": f"{rule.name} last duration",
             "state_class": "measurement",
             "device_class": "duration",
@@ -245,7 +251,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_peak_confidence"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{rule.uuid}_peak_confidence",
+            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_peak_confidence",
             "name": f"{rule.name} peak confidence",
             "state_class": "measurement",
             "state_topic": f"{rule_base}/attributes",
@@ -253,7 +259,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_event"] = {
             "p": "event",
-            "unique_id": f"encounterwatch_{rule.uuid}_event",
+            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_event",
             "name": rule.name,
             "event_types": [rule.name],
             "state_topic": event_topic,
@@ -304,7 +310,10 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[key] = entry
 
     return {
-        "dev": {"ids": source.uuid, "name": source.name},
+        # Namespaced like every other device here (`encounterwatch_subject_…`,
+        # `encounterwatch_system`). A bare uuid would sit in HA's global MQTT device
+        # namespace shared with every other integration on the broker.
+        "dev": {"ids": source_device_id(source.uuid), "name": source.name},
         "o": dict(ORIGIN),
         # Both must be online: the app-wide LWT and this source's watcher. Either
         # going offline should be visible as "unavailable", not a frozen last value.
@@ -845,6 +854,10 @@ class MqttBridge:
         #: count. Tracked from published transitions because there is no "still open"
         #: query — an event's row isn't written until an action commits to filing it.
         self._open_rules: Set[Tuple[str, str, str]] = set()
+        #: watcher slug → last known online state. Held independently of the
+        #: connection so a watcher that starts before the bridge connects is not lost;
+        #: re-asserted on every reconcile.
+        self._watcher_availability: Dict[str, bool] = {}
 
     @property
     def connected(self) -> bool:
@@ -896,6 +909,7 @@ class MqttBridge:
         right now" — the worker loop's periodic pass, and a watcher's start/stop.
         """
         if await self.ensure_started():
+            self._publish_watcher_availability()
             await self.publish_all_discovery()
 
     async def _load_labels(self) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
@@ -908,7 +922,7 @@ class MqttBridge:
         """
         from db_client.api.labels_api import LabelsApi
 
-        labels_resp = await asyncio.to_thread(LabelsApi(self._db_api_client).get_labels)
+        labels_resp = await asyncio.to_thread(LabelsApi(self._db_api_client).list_labels)
         labels = list(labels_resp.labels or [])
         parent_of = {label.uuid: getattr(label, "parent_uuid", None) for label in labels}
 
@@ -959,7 +973,9 @@ class MqttBridge:
 
         profiles_resp = await asyncio.to_thread(WatchProfilesApi(self._db_api_client).list_watch_profiles)
         sources_resp = await asyncio.to_thread(SourcesApi(self._db_api_client).get_sources)
-        source_by_uuid = {s.uuid: s for s in (sources_resp.sources or [])}
+        # `GetSourcesResponse.sources` is already keyed by uuid — iterating it yields
+        # the uuid strings, not the sources.
+        source_by_uuid = dict(sources_resp.sources or {})
         label_names, ancestry = await self._load_labels()
         self._subject_names = label_names
         self._label_ancestry = ancestry
@@ -1250,8 +1266,20 @@ class MqttBridge:
 
     def set_watcher_availability(self, profile_name: str, online: bool) -> None:
         """A stopped watcher's entities should read `unavailable`, not freeze at a
-        stale value — this is the per-watcher half of `availability_mode: all`."""
+        stale value — this is the per-watcher half of `availability_mode: all`.
+
+        Recorded before the connection check, and re-asserted by every reconcile pass,
+        because a watcher starts before the bridge finishes connecting: dropping the
+        call when `_publisher is None` left the availability topic unwritten, and since
+        nothing else republished it, every entity on every source device sat at
+        `unavailable` until the watcher happened to restart.
+        """
+        self._watcher_availability[slugify(profile_name)] = online
+        self._publish_watcher_availability()
+
+    def _publish_watcher_availability(self) -> None:
+        """Idempotent, and cheap: a handful of retained one-word messages."""
         if self._publisher is None:
             return
-        topic = f"watcher/{slugify(profile_name)}/status"
-        self._publisher.publish(topic, "online" if online else "offline", retain=True)
+        for slug, online in self._watcher_availability.items():
+            self._publisher.publish(f"watcher/{slug}/status", "online" if online else "offline", retain=True)
