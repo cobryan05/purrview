@@ -189,6 +189,46 @@ def _blip(**overrides) -> dict:
     return blip
 
 
+class _Query(dict):
+    """One recorded search query: the first value per key, with every value kept too.
+
+    Nearly every assertion here reads a single value (`q.get("limit") == "60"`), which a
+    bare dict-of-lists would break. But the facet filters send a repeated key per chosen
+    value, and flattening loses all but the first — so the full lists stay available on
+    `.all` for the tests that care how many arrived.
+    """
+
+    def __init__(self, raw: dict):
+        super().__init__({k: v[0] for k, v in raw.items()})
+        self.all = raw
+
+
+def _query_values(query, key: str) -> list:
+    """Every value sent for `key`, not just the first."""
+    return getattr(query, "all", {}).get(key, [])
+
+
+def _pick_facet(page: Page, testid: str, name: str, exclude: bool = False):
+    """Include (or, with `exclude`, negate) one option of a facet filter dropdown.
+
+    The facet filters are multi-select dropdowns rather than `<select>`s, so there is no
+    `select_option` to call: the panel has to be opened and the row's checkbox — or its
+    ≠ button — clicked.
+
+    The panel is then closed again, because it floats over the rest of the filter row:
+    left open, it swallows the next click a test makes on any other control.
+    """
+    field = page.locator(f"[data-testid='{testid}']")
+    trigger = field.locator(".ms-dropdown__trigger")
+    trigger.click()
+    row = field.locator(".ms-item", has_text=name)
+    if exclude:
+        row.locator(".ms-item__not-btn").click()
+    else:
+        row.locator("input[type='checkbox']").click()
+    trigger.click()
+
+
 def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, deletes=None, blips=None):
     """Route every call the Events page makes, and record the search queries.
 
@@ -233,7 +273,7 @@ def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, de
         if "/snapshot" in url:
             route.fulfill(status=200, content_type="image/jpeg", body=PIXEL_JPEG)
             return
-        queries.append({k: v[0] for k, v in parse_qs(urlparse(url).query).items()})
+        queries.append(_Query(parse_qs(urlparse(url).query)))
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -463,32 +503,79 @@ class TestFiltersReachTheServer:
         _open_events_pane(page, base_url)
 
         with _issues_a_search(page, queries):
-            page.locator("[data-testid='event-filter-rule']").select_option("rule-1")
-        assert queries[-1].get("rule_uuid") == "rule-1"
+            _pick_facet(page, "event-filter-rule", "cat using litter box")
+        assert queries[-1].get("rule_uuids") == "rule-1"
 
     def test_filtering_by_camera(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
         with _issues_a_search(page, queries):
-            page.locator("[data-testid='event-filter-source']").select_option("src-1")
-        assert queries[-1].get("source_uuid") == "src-1"
+            _pick_facet(page, "event-filter-source", "Litter cam")
+        assert queries[-1].get("source_uuids") == "src-1"
 
     def test_filtering_by_the_acting_thing(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
         with _issues_a_search(page, queries):
-            page.locator("[data-testid='event-filter-subject']").select_option("label-cat")
-        assert queries[-1].get("subject_ref") == "label-cat"
+            _pick_facet(page, "event-filter-subject", "Tabby")
+        assert queries[-1].get("subject_refs") == "label-cat"
 
     def test_filtering_by_the_thing_acted_on(self, page: Page, base_url: str):
         queries = _mock(page)
         _open_events_pane(page, base_url)
 
         with _issues_a_search(page, queries):
-            page.locator("[data-testid='event-filter-target']").select_option("zone-box")
-        assert queries[-1].get("target_ref") == "zone-box"
+            _pick_facet(page, "event-filter-target", "litter box")
+        assert queries[-1].get("target_refs") == "zone-box"
+
+    def test_excluding_the_acting_thing(self, page: Page, base_url: str):
+        """The ≠ toggle has to send the value as an *exclusion*, not as a selection.
+
+        Wiring it to the same parameter as the checkbox would look identical in the
+        dropdown — struck-through row, "not Tabby" on the trigger — while returning
+        exactly the events the user asked to be rid of.
+        """
+        queries = _mock(page)
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-subject", "Tabby", exclude=True)
+        assert queries[-1].get("exclude_subject_refs") == "label-cat"
+        assert "subject_refs" not in queries[-1], "an excluded value must not also be sent as an inclusion"
+
+    def test_excluding_then_including_replaces_the_exclusion(self, page: Page, base_url: str):
+        """Checking a row that is currently excluded must drop the exclusion. Sending
+        both would ask for events that are and are not this camera — always nothing."""
+        queries = _mock(page)
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-source", "Litter cam", exclude=True)
+        assert queries[-1].get("exclude_source_uuids") == "src-1", "precondition: exclusion applied"
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-source", "Litter cam")
+        assert queries[-1].get("source_uuids") == "src-1"
+        assert "exclude_source_uuids" not in queries[-1]
+
+    def test_two_values_of_one_facet_are_both_sent(self, page: Page, base_url: str):
+        """The facet filters became multi-select alongside the ≠ toggle; picking a
+        second camera must widen the search rather than replace the first."""
+        queries = _mock(
+            page,
+            facets=_facets(sources=[{"ref": "src-1", "name": "Litter cam"}, {"ref": "src-2", "name": "Door cam"}]),
+        )
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-source", "Litter cam")
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-source", "Door cam")
+
+        sent = _query_values(queries[-1], "source_uuids")
+        assert sorted(sent) == ["src-1", "src-2"], f"both cameras should be sent; got {sent}"
 
     def test_filtering_by_date_range(self, page: Page, base_url: str):
         """The `to` bound must cover the whole day it names, or picking one day for both
@@ -528,12 +615,27 @@ class TestFiltersReachTheServer:
         # on-open query, where "rule_uuid" is trivially absent and the test would
         # pass even if Clear did nothing whatsoever.
         with _issues_a_search(page, queries):
-            page.locator("[data-testid='event-filter-rule']").select_option("rule-1")
-        assert queries[-1].get("rule_uuid") == "rule-1", "precondition: the filter must be applied before clearing it"
+            _pick_facet(page, "event-filter-rule", "cat using litter box")
+        assert queries[-1].get("rule_uuids") == "rule-1", "precondition: the filter must be applied before clearing it"
 
         with _issues_a_search(page, queries):
             page.locator("[data-testid='event-filter-clear']").click()
-        assert "rule_uuid" not in queries[-1]
+        assert "rule_uuids" not in queries[-1]
+
+    def test_clearing_removes_an_exclusion_too(self, page: Page, base_url: str):
+        """Clear resets the state object, but the dropdowns are what hold the ≠ marks —
+        a rebuild that restored them from stale state would leave the search narrowed
+        with no filter visibly set."""
+        queries = _mock(page)
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-rule", "cat using litter box", exclude=True)
+        assert queries[-1].get("exclude_rule_uuids") == "rule-1", "precondition: the exclusion must be applied"
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-clear']").click()
+        assert "exclude_rule_uuids" not in queries[-1]
 
     def test_an_empty_result_explains_itself(self, page: Page, base_url: str):
         _mock(page, events=[])

@@ -673,3 +673,68 @@ class TestClosingStrandedEvents:
         await _make_event(http_client, profile)
         assert (await self._close(http_client, profile))["closed"] == 1
         assert (await self._close(http_client, profile))["closed"] == 0
+
+
+class TestWatchEventExclusionFilters:
+    """The "not this one" half of each facet filter, plus the multi-value half.
+
+    Both arrived together with the ≠ toggle on the Events page. An exclusion that
+    quietly matches nothing, or one that also swallows the events with no value in that
+    slot at all, looks on screen exactly like a correctly narrowed search.
+    """
+
+    async def test_excluding_a_camera_keeps_every_other_one(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)
+        await _make_event(http_client, profile_uuid, sourceUuid=cam_a)
+        await _make_event(http_client, profile_uuid, sourceUuid=cam_b)
+
+        body = await _list(http_client, exclude_source_uuids=[cam_a])
+        assert body["total"] == 1
+        assert body["events"][0]["sourceUuid"] == cam_b
+
+    async def test_excluding_a_subject_keeps_events_that_have_no_subject(self, http_client):
+        """`subject_ref` is nullable — a rule with no subject slot still produces events.
+
+        Plain `NOT IN` drops those rows, because SQL compares NULL to the list and gets
+        NULL rather than true. "Not the cat" plainly includes an event with no subject
+        at all, so the NULL case has to be handled explicitly.
+        """
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(http_client, profile_uuid, subjectRef="cat-ref", ruleName="cat")
+        await _make_event(http_client, profile_uuid, subjectRef="dog-ref", ruleName="dog")
+        await _make_event(http_client, profile_uuid, ruleName="no subject at all")
+
+        body = await _list(http_client, exclude_subject_refs=["cat-ref"])
+        assert sorted(e["ruleName"] for e in body["events"]) == ["dog", "no subject at all"]
+
+    async def test_excluding_two_values_drops_both(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        for ref in ("cat-ref", "dog-ref", "fox-ref"):
+            await _make_event(http_client, profile_uuid, subjectRef=ref)
+
+        body = await _list(http_client, exclude_subject_refs=["cat-ref", "dog-ref"])
+        assert [e["subjectRef"] for e in body["events"]] == ["fox-ref"]
+
+    async def test_including_several_values_of_one_facet_widens(self, http_client):
+        """Values within one facet are alternatives: an event has exactly one subject,
+        so anding them would always return nothing."""
+        profile_uuid = await _make_profile(http_client)
+        for ref in ("cat-ref", "dog-ref", "fox-ref"):
+            await _make_event(http_client, profile_uuid, subjectRef=ref)
+
+        body = await _list(http_client, subject_refs=["cat-ref", "dog-ref"])
+        assert sorted(e["subjectRef"] for e in body["events"]) == ["cat-ref", "dog-ref"]
+
+    async def test_including_and_excluding_different_facets_compose(self, http_client):
+        """Across facets the filters and together — excluding a camera must narrow the
+        subject filter rather than replace it."""
+        profile_uuid = await _make_profile(http_client)
+        cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)
+        await _make_event(http_client, profile_uuid, subjectRef="cat-ref", sourceUuid=cam_a)
+        await _make_event(http_client, profile_uuid, subjectRef="cat-ref", sourceUuid=cam_b)
+        await _make_event(http_client, profile_uuid, subjectRef="dog-ref", sourceUuid=cam_b)
+
+        body = await _list(http_client, subject_refs=["cat-ref"], exclude_source_uuids=[cam_a])
+        assert body["total"] == 1
+        assert body["events"][0]["sourceUuid"] == cam_b

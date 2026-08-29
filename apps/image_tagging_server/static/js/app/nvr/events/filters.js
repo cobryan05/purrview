@@ -13,11 +13,29 @@
  * events on screen.
  */
 import { fetchWatchEventFacets } from '/app-static/js/shared/api/watchProfiles.js';
-import { Logger } from '/app-static/js/ui/utils/index.js';
+import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index.js';
 
-/** @typedef {{sourceUuid: ?string, ruleUuid: ?string, subjectRef: ?string,
- *             targetRef: ?string, startFrom: ?string, startTo: ?string,
+/** @typedef {{sourceUuids: string[], ruleUuids: string[], subjectRefs: string[],
+ *             targetRefs: string[], sourceExcludeUuids: string[], ruleExcludeUuids: string[],
+ *             subjectExcludeRefs: string[], targetExcludeRefs: string[],
+ *             startFrom: ?string, startTo: ?string,
  *             hasRecording: ?boolean, recordingKind: ?string}} EventFilterState */
+
+/**
+ * The four facet filters, as `[state key for includes, state key for excludes, facet key,
+ * label, "no filter" text, testid]`.
+ *
+ * One table rather than four near-identical blocks: every one of them is the same
+ * control over a different column, and the three places that need them — building,
+ * restoring after a facet refresh, and reporting emptiness — were drifting apart when
+ * each was written out longhand.
+ */
+export const FACET_FILTERS = [
+  ['ruleUuids', 'ruleExcludeUuids', 'rules', 'Event type', 'Any event type', 'event-filter-rule'],
+  ['sourceUuids', 'sourceExcludeUuids', 'sources', 'Camera', 'Any camera', 'event-filter-source'],
+  ['subjectRefs', 'subjectExcludeRefs', 'subjects', 'Acting', 'Anything acting', 'event-filter-subject'],
+  ['targetRefs', 'targetExcludeRefs', 'targets', 'Acted on', 'Anything acted on', 'event-filter-target'],
+];
 
 /**
  * The Video select's options, as `[value, label]`.
@@ -62,16 +80,29 @@ export function applyVideoFilter(state, value) {
 
 /** @returns {EventFilterState} */
 export function defaultFilterState() {
-  return {
-    sourceUuid: null,
-    ruleUuid: null,
-    subjectRef: null,
-    targetRef: null,
+  const state = {
     startFrom: null,
     startTo: null,
     hasRecording: null,
     recordingKind: null,
   };
+  for (const [includeKey, excludeKey] of FACET_FILTERS) {
+    state[includeKey] = [];
+    state[excludeKey] = [];
+  }
+  return state;
+}
+
+/**
+ * Whether any filter is actually narrowing the search.
+ *
+ * An empty array is not a filter, so a plain "is anything non-null" test would report
+ * every fresh page as filtered and offer the user a Clear button that changes nothing.
+ *
+ * @param {EventFilterState} state
+ */
+export function hasActiveFilter(state) {
+  return Object.values(state).some(v => (Array.isArray(v) ? v.length > 0 : v != null));
 }
 
 function el(tag, className, text) {
@@ -98,26 +129,21 @@ function field(labelText, control, testid) {
 }
 
 /**
- * @param {Array<{ref: string, name: string}>} options
- * @param {string} anyLabel - what "no filter" is called, e.g. "Any camera"
+ * A labelled multi-select dropdown, wrapped so the whole control carries the testid.
+ *
+ * The dropdown's own element is a div, not a form control, so it cannot be the target of
+ * a `<label for>` the way the plain `<select>`s this replaced could.
+ *
+ * @param {string} labelText
+ * @param {{element: HTMLElement}} dropdown
+ * @param {string} testid
  */
-function select(options, anyLabel) {
-  const node = document.createElement('select');
-  node.className = 'event-filters__select';
-  const any = document.createElement('option');
-  any.value = '';
-  any.textContent = anyLabel;
-  node.appendChild(any);
-  for (const opt of options) {
-    const option = document.createElement('option');
-    option.value = opt.ref;
-    option.textContent = opt.name;
-    node.appendChild(option);
-  }
-  // Disabled rather than hidden when history holds nothing to filter on: a control that
-  // vanishes reads as a missing feature, one that is greyed out reads as "not yet".
-  node.disabled = options.length === 0;
-  return node;
+function dropdownField(labelText, dropdown, testid) {
+  const wrap = el('div', 'event-filters__field');
+  wrap.dataset.testid = testid;
+  wrap.appendChild(el('span', 'event-filters__label', labelText));
+  wrap.appendChild(dropdown.element);
+  return wrap;
 }
 
 function dateInput() {
@@ -146,52 +172,64 @@ export async function createEventFilters(onChange) {
 
   // Rebuilt on refresh rather than mutated: the option sets change wholesale when new
   // event kinds appear, and reconciling them in place is more code than re-rendering
-  // four <select>s.
-  let ruleSelect;
-  let sourceSelect;
-  let subjectSelect;
-  let targetSelect;
+  // four dropdowns.
+  /** @type {Array<{destroy: () => void}>} live dropdowns, destroyed before each rebuild */
+  let facetDropdowns = [];
   let clipSelect;
   const fromInput = dateInput();
   const toInput = dateInput();
 
-  function commit() {
-    onChange({ ...state });
+  /** A copy no caller can write back through — the list values are arrays. */
+  function snapshot() {
+    const copy = { ...state };
+    for (const [includeKey, excludeKey] of FACET_FILTERS) {
+      copy[includeKey] = [...state[includeKey]];
+      copy[excludeKey] = [...state[excludeKey]];
+    }
+    return copy;
   }
 
-  function bindSelect(node, key) {
-    node.addEventListener('change', () => {
-      state[key] = node.value || null;
-      commit();
-    });
+  function commit() {
+    onChange(snapshot());
   }
 
   function renderControls() {
+    for (const dd of facetDropdowns) dd.destroy();
+    facetDropdowns = [];
     controls.innerHTML = '';
 
-    ruleSelect = select(facets.rules, 'Any event type');
-    sourceSelect = select(facets.sources, 'Any camera');
-    subjectSelect = select(facets.subjects, 'Anything acting');
-    targetSelect = select(facets.targets, 'Anything acted on');
+    for (const [includeKey, excludeKey, facetKey, labelText, anyLabel, testid] of FACET_FILTERS) {
+      const options = facets[facetKey] ?? [];
+      const known = new Set(options.map(o => o.ref));
+      // Drop values history no longer holds (the last event with one was deleted).
+      // Keeping them would show an empty result set with no visible cause; the rest of
+      // the selection survives the rebuild, because a filter that silently cleared
+      // itself on a facet refresh would look like it never worked.
+      state[includeKey] = state[includeKey].filter(ref => known.has(ref));
+      state[excludeKey] = state[excludeKey].filter(ref => known.has(ref));
 
-    // Restore the current selection after a rebuild. A filter silently clearing itself
-    // because the facets refreshed would re-run the search over everything, which looks
-    // like the filter never worked.
-    for (const [node, key] of [
-      [ruleSelect, 'ruleUuid'],
-      [sourceSelect, 'sourceUuid'],
-      [subjectSelect, 'subjectRef'],
-      [targetSelect, 'targetRef'],
-    ]) {
-      if (state[key] && [...node.options].some(o => o.value === state[key])) {
-        node.value = state[key];
-      } else if (state[key]) {
-        // The value no longer exists in history (the last event with it was deleted).
-        // Dropping it silently is right — keeping it would show an empty result set
-        // with no visible cause.
-        state[key] = null;
-      }
-      bindSelect(node, key);
+      const dropdown = createMultiSelectDropdown({
+        label: '',
+        items: options.map(o => ({ uuid: o.ref, name: o.name })),
+        defaultSelected: [...state[includeKey]],
+        // An event has exactly one camera, one rule, one subject and one target, so
+        // "all of" could only ever match nothing — offering it would be a dead end.
+        showModeToggle: false,
+        emptySummary: anyLabel,
+        emptyText: 'Nothing recorded yet',
+        searchable: options.length > 8,
+        filterKey: `event-${facetKey}`,
+        defaultWidth: '220px',
+        defaultHeight: '260px',
+        onChange: (selected, excluded) => {
+          state[includeKey] = selected;
+          state[excludeKey] = excluded;
+          commit();
+        },
+      });
+      dropdown.setState(null, null, null, [...state[excludeKey]]);
+      facetDropdowns.push(dropdown);
+      controls.appendChild(dropdownField(labelText, dropdown, testid));
     }
 
     clipSelect = document.createElement('select');
@@ -208,10 +246,6 @@ export async function createEventFilters(onChange) {
       commit();
     });
 
-    controls.appendChild(field('Event type', ruleSelect, 'event-filter-rule'));
-    controls.appendChild(field('Camera', sourceSelect, 'event-filter-source'));
-    controls.appendChild(field('Acting', subjectSelect, 'event-filter-subject'));
-    controls.appendChild(field('Acted on', targetSelect, 'event-filter-target'));
     controls.appendChild(field('From', fromInput, 'event-filter-from'));
     controls.appendChild(field('To', toInput, 'event-filter-to'));
     controls.appendChild(field('Video', clipSelect, 'event-filter-clip'));
@@ -261,7 +295,7 @@ export async function createEventFilters(onChange) {
 
   return {
     element: container,
-    getState: () => ({ ...state }),
+    getState: snapshot,
     reset,
     refreshFacets,
   };

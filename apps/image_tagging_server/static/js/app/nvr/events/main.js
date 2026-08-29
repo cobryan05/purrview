@@ -14,7 +14,7 @@ import { deleteWatchEvents, fetchWatchEvent, fetchWatchEvents } from '/app-stati
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
 import { buildEventCard } from './eventCard.js';
-import { createEventFilters } from './filters.js';
+import { createEventFilters, hasActiveFilter } from './filters.js';
 import { openEventDetailModal } from './eventDetailModal.js';
 
 const PAGE_SIZE = 60;
@@ -263,7 +263,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     grid.innerHTML = '';
     const box = el('div', 'nvr-empty');
     box.dataset.testid = 'event-search-empty';
-    const anyFilter = Object.values(filters.getState()).some(v => v != null);
+    const anyFilter = hasActiveFilter(filters.getState());
     box.appendChild(el('strong', null, anyFilter ? 'No events match these filters' : 'No events recorded yet'));
     box.appendChild(el('p', null, anyFilter
       ? 'Try widening the date range, or clearing a filter.'

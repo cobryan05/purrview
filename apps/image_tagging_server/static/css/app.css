@@ -977,6 +977,18 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   margin: 0;
 }
 
+/* The facet filters are multi-select dropdowns, whose trigger is an inline-sized button
+   by default. Left-aligned and full width so the seven controls read as one row of
+   fields rather than a ragged mix of buttons and inputs. */
+.event-filters__field .ms-dropdown {
+  width: 100%;
+}
+
+.event-filters__field .ms-dropdown__trigger {
+  width: 100%;
+  text-align: left;
+}
+
 /* Select-all, the result count and the selection actions on one line: the count is what
    the user reads, and the two controls are what they reach for while reading it. */
 .event-search__toolbar {
@@ -3246,46 +3258,70 @@ button.filter-active {
   --pico-form-element-spacing-horizontal: 0.4rem;
 }
 
+/* Legend for the ≠ buttons, pinned under the list (the panel is a flex column and this
+   row doesn't grow, so it stays put as the list scrolls). */
+.ms-dropdown__exclude-hint {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--pico-muted-border-color, var(--border-subtle));
+  font-size: 0.7em;
+  color: var(--text-faint, var(--pico-muted-color));
+  user-select: none;
+  pointer-events: none;
+}
+
+/* The per-row exclude toggle.
+
+   It used to be invisible until the row was hovered, on the theory that a resting list
+   should be just checkboxes and names. That hid the feature outright: nothing on screen
+   suggested a row could be negated, so "not the cat" was only ever found by accident.
+   It is now always drawn — but as a bare glyph, never a box.
+
+   The box it briefly had (border + fill + a 21px square) was worse than the problem: it
+   changed the row's height, so the rows of some dropdowns no longer lined up, and in the
+   review filter panel — whose rows are tighter — it overlapped its neighbours outright.
+   Brightness carries the affordance instead, and colour alone carries the state. Keep
+   this box-free: anything with its own geometry has to fit the *tightest* row in the app,
+   not the roomiest. */
 .ms-item__not-btn {
   flex-shrink: 0;
-  width: 17px;
-  height: 17px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  font-size: 0.75em;
-  border: 1px solid transparent;
-  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  font-size: 0.95em;
+  border: none;
+  border-radius: 0;
   cursor: pointer;
   background: none;
-  color: var(--pico-muted-color, var(--text-muted));
-  opacity: 0;
+  color: var(--text-muted, var(--pico-muted-color));
+  opacity: 0.8;
   line-height: 1;
+  /* No height of its own: the row's own line-height decides, so this can never be what
+     makes one list taller than another. */
+  height: auto;
+  width: auto;
   margin-left: auto;
 }
 
-/* Revealed on hover so the resting list is just checkboxes and names; the
-   active state stays visible regardless (see .ms-item__not-btn.active below). */
+/* Hover on the row, not just on the glyph: the affordance should read as available
+   before the pointer has found the target. */
 .ms-item:hover .ms-item__not-btn,
 .ms-item:focus-within .ms-item__not-btn {
-  opacity: 0.5;
+  opacity: 1;
 }
 
-.ms-item__not-btn:hover {
+.ms-item__not-btn:hover,
+.ms-item__not-btn:focus-visible {
   opacity: 1;
   color: var(--color-danger);
-  border-color: var(--color-danger);
-}
-
-@media (hover: none) {
-  .ms-item__not-btn { opacity: 0.5; }
 }
 
 .ms-item__not-btn.active {
   opacity: 1;
   color: var(--color-danger);
-  border-color: var(--color-danger);
-  background: rgba(221, 68, 68, 0.12);
+  /* The one weight change, so an applied exclusion reads as set rather than hovered. */
+  font-weight: bold;
 }
 
 .ms-item--excluded {

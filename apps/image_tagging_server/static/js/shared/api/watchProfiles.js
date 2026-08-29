@@ -146,6 +146,14 @@ export async function deleteWatchProfile(uuid) {
  * @param {?string} [opts.ruleUuid] - the event type
  * @param {?string} [opts.subjectRef] - the acting thing
  * @param {?string} [opts.targetRef] - the thing acted on
+ * @param {string[]} [opts.sourceUuids] - cameras to include; any of
+ * @param {string[]} [opts.ruleUuids] - event types to include; any of
+ * @param {string[]} [opts.subjectRefs] - acting things to include; any of
+ * @param {string[]} [opts.targetRefs] - things acted on to include; any of
+ * @param {string[]} [opts.sourceExcludeUuids] - cameras to exclude
+ * @param {string[]} [opts.ruleExcludeUuids] - event types to exclude
+ * @param {string[]} [opts.subjectExcludeRefs] - acting things to exclude
+ * @param {string[]} [opts.targetExcludeRefs] - things acted on to exclude
  * @param {?string} [opts.startFrom] - ISO, inclusive
  * @param {?string} [opts.startTo] - ISO, inclusive
  * @param {?boolean} [opts.hasRecording] - owns any media, or none
@@ -160,6 +168,14 @@ export async function fetchWatchEvents({
   ruleUuid,
   subjectRef,
   targetRef,
+  sourceUuids,
+  ruleUuids,
+  subjectRefs,
+  targetRefs,
+  sourceExcludeUuids,
+  ruleExcludeUuids,
+  subjectExcludeRefs,
+  targetExcludeRefs,
   startFrom,
   startTo,
   hasRecording,
@@ -173,6 +189,20 @@ export async function fetchWatchEvents({
   if (ruleUuid) params.set('rule_uuid', ruleUuid);
   if (subjectRef) params.set('subject_ref', subjectRef);
   if (targetRef) params.set('target_ref', targetRef);
+  // Repeated rather than comma-joined: a rule name is free text and may contain a
+  // comma, which a joined list would silently split into two filters.
+  for (const [key, values] of [
+    ['source_uuids', sourceUuids],
+    ['rule_uuids', ruleUuids],
+    ['subject_refs', subjectRefs],
+    ['target_refs', targetRefs],
+    ['exclude_source_uuids', sourceExcludeUuids],
+    ['exclude_rule_uuids', ruleExcludeUuids],
+    ['exclude_subject_refs', subjectExcludeRefs],
+    ['exclude_target_refs', targetExcludeRefs],
+  ]) {
+    for (const value of values ?? []) params.append(key, value);
+  }
   if (startFrom) params.set('start_from', startFrom);
   if (startTo) params.set('start_to', startTo);
   // Explicit null check: `false` is a real filter ("events with no clip") and must not

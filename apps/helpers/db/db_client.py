@@ -7137,6 +7137,14 @@ class DbClient:
         rule_uuid: Optional[str] = None,
         subject_ref: Optional[str] = None,
         target_ref: Optional[str] = None,
+        source_uuids: Optional[List[str]] = None,
+        rule_uuids: Optional[List[str]] = None,
+        subject_refs: Optional[List[str]] = None,
+        target_refs: Optional[List[str]] = None,
+        exclude_source_uuids: Optional[List[str]] = None,
+        exclude_rule_uuids: Optional[List[str]] = None,
+        exclude_subject_refs: Optional[List[str]] = None,
+        exclude_target_refs: Optional[List[str]] = None,
         start_from: Optional[datetime] = None,
         start_to: Optional[datetime] = None,
         has_recording: Optional[bool] = None,
@@ -7151,19 +7159,45 @@ class DbClient:
         Offset rather than the keyset cursor the review queue uses: events are a
         bounded, append-only log ordered by a single scalar the user also filters on,
         and the page shows "N events" — which needs the count anyway.
+
+        Each of the four facet filters takes a list of values to include and a list to
+        exclude. The singular forms are the same filter spelled for one value, folded
+        into the lists below rather than applied separately, so asking for both cannot
+        produce two contradictory conditions on one column.
         """
+
+        def _include(column, singular: Optional[str], values: Optional[List[str]]):
+            wanted = [v for v in ([singular] if singular else []) + list(values or []) if v]
+            # Within one column the values are alternatives: an event has exactly one
+            # camera, so "cameras A and B" can only mean "A or B".
+            return column.in_(wanted) if wanted else None
+
+        def _exclude(column, values: Optional[List[str]]):
+            unwanted = [v for v in (values or []) if v]
+            if not unwanted:
+                return None
+            # `NOT IN` alone drops rows where the column is NULL, because SQL compares
+            # NULL to the list and gets NULL rather than true. Those are exactly the
+            # events with no subject at all, which "not the cat" plainly includes — so
+            # the NULL case has to be spelled out.
+            return or_(column == None, column.notin_(unwanted))  # noqa: E711
+
         async with self._async_session_maker() as session:
             stmt = select(WatchEvent)
             if profile_uuid:
                 stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
-            if source_uuid:
-                stmt = stmt.where(WatchEvent.source_uuid == source_uuid)
-            if rule_uuid:
-                stmt = stmt.where(WatchEvent.rule_uuid == rule_uuid)
-            if subject_ref:
-                stmt = stmt.where(WatchEvent.subject_ref == subject_ref)
-            if target_ref:
-                stmt = stmt.where(WatchEvent.target_ref == target_ref)
+            for clause in (
+                _include(WatchEvent.source_uuid, source_uuid, source_uuids),
+                _include(WatchEvent.rule_uuid, rule_uuid, rule_uuids),
+                _include(WatchEvent.subject_ref, subject_ref, subject_refs),
+                _include(WatchEvent.target_ref, target_ref, target_refs),
+                _exclude(WatchEvent.source_uuid, exclude_source_uuids),
+                _exclude(WatchEvent.rule_uuid, exclude_rule_uuids),
+                _exclude(WatchEvent.subject_ref, exclude_subject_refs),
+                _exclude(WatchEvent.target_ref, exclude_target_refs),
+            ):
+                if clause is not None:
+                    stmt = stmt.where(clause)
             if start_from:
                 stmt = stmt.where(WatchEvent.started_at >= start_from)
             if start_to:

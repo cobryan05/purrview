@@ -331,7 +331,10 @@ export function createMultiSelectDropdown({
       notBtn = document.createElement('button');
       notBtn.type = 'button';
       notBtn.className = 'ms-item__not-btn';
-      notBtn.title = 'Exclude this item';
+      // Spelled out rather than "Exclude this item": the glyph is the only clue this
+      // control exists, so its tooltip has to say what the filter will end up meaning.
+      notBtn.title = `Exclude — match everything except ${item.name}`;
+      notBtn.setAttribute('aria-label', notBtn.title);
       notBtn.textContent = '≠';
       notBtnMap.set(item.uuid, notBtn);
       lbl.appendChild(notBtn);
@@ -379,6 +382,16 @@ export function createMultiSelectDropdown({
   const _items = [...items];
   for (const item of _items) _buildItem(item);
   _syncEmpty();
+
+  // A one-line legend for the ≠ buttons. The glyph alone is not self-explanatory —
+  // users read it as decoration or as "equals" — and a row that can be negated is worth
+  // nothing if nobody knows it can be. Only where excluding is actually offered.
+  if (allowExclude) {
+    const hint = document.createElement('div');
+    hint.className = 'ms-dropdown__exclude-hint';
+    hint.textContent = '≠ excludes an item';
+    panelEl.appendChild(hint);
+  }
 
   /** Hide rows that don't match the search box; no-op when not searchable. */
   function _applySearch() {
@@ -486,7 +499,10 @@ export function createMultiSelectDropdown({
       const isExcluded = _excluded.has(uuid);
       lbl.classList.toggle('ms-item--excluded', isExcluded);
       const notBtn = notBtnMap.get(uuid);
-      if (notBtn) notBtn.classList.toggle('active', isExcluded);
+      if (notBtn) {
+        notBtn.classList.toggle('active', isExcluded);
+        notBtn.setAttribute('aria-pressed', String(isExcluded));
+      }
     }
   }
 
