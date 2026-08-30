@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from apps.db_server.manager import Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.types import (
+    DEFAULT_SESSION_GAP_S,
     ApiModel,
     BBoxConfidenceRange,
     BBoxUpdate,
@@ -1077,6 +1078,153 @@ class WatchEventCount(ApiModel):
 
 class WatchEventCountsResponse(StatusResponse):
     counts: List[WatchEventCount] = Field(default_factory=list)
+
+
+class WatchEventQuery:
+    """The `watch_events` search parameters, shared by every endpoint that asks them.
+
+    Three endpoints — the grid, the grouped view and the timeline — must answer the
+    *same* question about the *same* rows and differ only in what they return. Spelled
+    out three times, the first filter added to one and not the others would show a group
+    count that disagreed with the grid total it drills into, with nothing to make the
+    divergence audible. FastAPI flattens a dependency's parameters into the operation's
+    query string, so this reads identically from the outside and generates the same
+    client.
+
+    The db layer has the matching half of this contract in
+    `DbClient._apply_watch_event_filters`; `as_kwargs()` is the join between them.
+    """
+
+    def __init__(
+        self,
+        profile_uuid: Optional[str] = None,
+        source_uuid: Optional[str] = None,
+        rule_uuid: Optional[str] = None,
+        subject_ref: Optional[str] = None,
+        target_ref: Optional[str] = None,
+        source_uuids: Optional[List[str]] = Query(None),
+        rule_uuids: Optional[List[str]] = Query(None),
+        subject_refs: Optional[List[str]] = Query(None),
+        target_refs: Optional[List[str]] = Query(None),
+        exclude_source_uuids: Optional[List[str]] = Query(None),
+        exclude_rule_uuids: Optional[List[str]] = Query(None),
+        exclude_subject_refs: Optional[List[str]] = Query(None),
+        exclude_target_refs: Optional[List[str]] = Query(None),
+        start_from: Optional[datetime] = None,
+        start_to: Optional[datetime] = None,
+        has_recording: Optional[bool] = None,
+        recording_kind: Optional[str] = None,
+        has_blips: Optional[bool] = None,
+        review_state: Optional[str] = None,
+    ):
+        self.profile_uuid = profile_uuid
+        self.source_uuid = source_uuid
+        self.rule_uuid = rule_uuid
+        self.subject_ref = subject_ref
+        self.target_ref = target_ref
+        self.source_uuids = source_uuids
+        self.rule_uuids = rule_uuids
+        self.subject_refs = subject_refs
+        self.target_refs = target_refs
+        self.exclude_source_uuids = exclude_source_uuids
+        self.exclude_rule_uuids = exclude_rule_uuids
+        self.exclude_subject_refs = exclude_subject_refs
+        self.exclude_target_refs = exclude_target_refs
+        self.start_from = start_from
+        self.start_to = start_to
+        self.has_recording = has_recording
+        self.recording_kind = recording_kind
+        self.has_blips = has_blips
+        self.review_state = review_state
+
+    def as_kwargs(self) -> Dict[str, Any]:
+        return dict(self.__dict__)
+
+
+class WatchEventGroup(ApiModel):
+    """One identity — a rule, an actor and a thing acted on — and its whole history."""
+
+    rule_uuid: Optional[str] = None
+    rule_name: Optional[str] = None
+    subject_ref: Optional[str] = None
+    subject_name: Optional[str] = None
+    target_ref: Optional[str] = None
+    target_name: Optional[str] = None
+    #: Grouped at the finest grain always; the UI folds the camera away unless asked to
+    #: split by it, summing these rows the way the MQTT bridge sums `/counts`.
+    source_uuid: Optional[str] = None
+    count: int = 0
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+    #: Summed over closed events only. Open ones contribute nothing rather than a guess.
+    total_duration_s: float = 0.0
+    #: The event whose snapshot is the card art — newest *with* a snapshot, so a group
+    #: cannot render as an empty tile because its newest event happened to lack one.
+    representative_uuid: Optional[str] = None
+    with_recording: int = 0
+    with_blips: int = 0
+
+
+class WatchEventGroupsResponse(StatusResponse):
+    groups: List[WatchEventGroup] = Field(default_factory=list)
+    #: Events behind the groups, so the view switcher can show the same total the grid
+    #: does without a second round trip.
+    total: int = 0
+
+
+class WatchEventHistogramBucket(ApiModel):
+    #: ISO 8601 without an offset, in **UTC** — see `watch_event_histogram`. The client
+    #: composes local days from hour buckets rather than this endpoint taking a timezone.
+    bucket_start: str
+    rule_uuid: Optional[str] = None
+    subject_ref: Optional[str] = None
+    target_ref: Optional[str] = None
+    source_uuid: Optional[str] = None
+    count: int = 0
+
+
+class SetWatchEventReviewStatesRequest(Payload):
+    uuids: List[str] = Field(default_factory=list)
+    state: str = ""
+
+
+class WatchEventSession(ApiModel):
+    """One visit — consecutive events of an identity with no long gap between them.
+
+    A single trip to the water bowl re-fires its rule several times as `min_duration_s`
+    and `rearm_delay_s` cycle, so the flat grid shows seven tiles for one drink.
+    """
+
+    rule_uuid: Optional[str] = None
+    rule_name: Optional[str] = None
+    subject_ref: Optional[str] = None
+    subject_name: Optional[str] = None
+    target_ref: Optional[str] = None
+    target_name: Optional[str] = None
+    source_uuid: Optional[str] = None
+    #: The session's ordinal within its identity. Stable for a given gap and filter set,
+    #: and only meaningful alongside the identity — not a global id.
+    session_ix: int = 0
+    count: int = 0
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    representative_uuid: Optional[str] = None
+
+
+class ListWatchEventSessionsResponse(StatusResponse):
+    sessions: List[WatchEventSession] = Field(default_factory=list)
+    total: int = 0
+    #: Echoed back so the UI can label the grouping it is actually showing rather than
+    #: the one it asked for.
+    gap_s: float = 0.0
+
+
+class WatchEventHistogramResponse(StatusResponse):
+    #: The resolution actually used — `day` when an `hour` request would have overflowed.
+    #: Reported rather than applied silently: a histogram that quietly coarsened itself
+    #: would misrepresent when things happened.
+    bucket: str = "hour"
+    buckets: List[WatchEventHistogramBucket] = Field(default_factory=list)
 
 
 class WatchEventCreate(Payload):
@@ -4577,51 +4725,15 @@ class WebApp:
             operation_id="list_watch_events",
         )
         async def list_watch_events(
-            profile_uuid: Optional[str] = None,
-            source_uuid: Optional[str] = None,
-            rule_uuid: Optional[str] = None,
-            subject_ref: Optional[str] = None,
-            target_ref: Optional[str] = None,
-            source_uuids: Optional[List[str]] = Query(None),
-            rule_uuids: Optional[List[str]] = Query(None),
-            subject_refs: Optional[List[str]] = Query(None),
-            target_refs: Optional[List[str]] = Query(None),
-            exclude_source_uuids: Optional[List[str]] = Query(None),
-            exclude_rule_uuids: Optional[List[str]] = Query(None),
-            exclude_subject_refs: Optional[List[str]] = Query(None),
-            exclude_target_refs: Optional[List[str]] = Query(None),
-            start_from: Optional[datetime] = None,
-            start_to: Optional[datetime] = None,
-            has_recording: Optional[bool] = None,
-            recording_kind: Optional[str] = None,
-            has_blips: Optional[bool] = None,
-            review_state: Optional[str] = None,
+            query: WatchEventQuery = Depends(),
             limit: int = 200,
             offset: int = 0,
         ) -> ListWatchEventsResponse:
             try:
                 events, total = await self._manager.list_watch_events(
-                    profile_uuid=profile_uuid,
-                    source_uuid=source_uuid,
-                    rule_uuid=rule_uuid,
-                    subject_ref=subject_ref,
-                    target_ref=target_ref,
-                    source_uuids=source_uuids,
-                    rule_uuids=rule_uuids,
-                    subject_refs=subject_refs,
-                    target_refs=target_refs,
-                    exclude_source_uuids=exclude_source_uuids,
-                    exclude_rule_uuids=exclude_rule_uuids,
-                    exclude_subject_refs=exclude_subject_refs,
-                    exclude_target_refs=exclude_target_refs,
-                    start_from=start_from,
-                    start_to=start_to,
-                    has_recording=has_recording,
-                    recording_kind=recording_kind,
-                    has_blips=has_blips,
-                    review_state=review_state,
                     limit=limit,
                     offset=offset,
+                    **query.as_kwargs(),
                 )
                 return ListWatchEventsResponse(status=JsonValues.SUCCESS, events=events, total=total)
             except Exception as e:
@@ -4675,6 +4787,88 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return WatchEventCountsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Same ordering reason as `facets` and `counts` above — must precede `/{uuid}`.
+        @self._app.get(
+            "/api/watch-events/groups",
+            response_model=WatchEventGroupsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event_groups",
+        )
+        async def get_watch_event_groups(query: WatchEventQuery = Depends()) -> WatchEventGroupsResponse:
+            """The filtered events collapsed to one row per identity, biggest first.
+
+            Deliberately *not* `/counts`, which looks superficially similar: that one
+            ignores every filter, groups by a shape the MQTT bridge chose, and exists to
+            seed counters. Pointing the review UI at it would couple what the user sees
+            to what the bridge publishes.
+            """
+            try:
+                groups = await self._manager.watch_event_groups(**query.as_kwargs())
+                return WatchEventGroupsResponse(
+                    status=JsonValues.SUCCESS,
+                    groups=groups,
+                    total=sum(g["count"] for g in groups),
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventGroupsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Same ordering reason as `facets` and `counts` above — must precede `/{uuid}`.
+        @self._app.get(
+            "/api/watch-events/sessions",
+            response_model=ListWatchEventSessionsResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="list_watch_event_sessions",
+        )
+        async def list_watch_event_sessions(
+            query: WatchEventQuery = Depends(),
+            gap_s: float = DEFAULT_SESSION_GAP_S,
+            limit: int = 60,
+            offset: int = 0,
+        ) -> ListWatchEventSessionsResponse:
+            """The flat grid's events, collapsed into the visits they describe.
+
+            Paged over *sessions*, not events, so a session can never be split across two
+            pages — which is also why this cannot be done in the browser.
+            """
+            try:
+                sessions, total = await self._manager.watch_event_sessions(
+                    gap_s=gap_s,
+                    limit=limit,
+                    offset=offset,
+                    **query.as_kwargs(),
+                )
+                return ListWatchEventSessionsResponse(
+                    status=JsonValues.SUCCESS, sessions=sessions, total=total, gap_s=gap_s
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListWatchEventSessionsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Same ordering reason as `facets` and `counts` above — must precede `/{uuid}`.
+        @self._app.get(
+            "/api/watch-events/histogram",
+            response_model=WatchEventHistogramResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event_histogram",
+        )
+        async def get_watch_event_histogram(
+            query: WatchEventQuery = Depends(),
+            bucket: str = "hour",
+        ) -> WatchEventHistogramResponse:
+            """Event counts per UTC time bucket per identity — the timeline's data.
+
+            Ask for `hour` and compose local days in the browser; see
+            `DbClient.watch_event_histogram` for why this endpoint has no timezone
+            parameter.
+            """
+            try:
+                result = await self._manager.watch_event_histogram(bucket=bucket, **query.as_kwargs())
+                return WatchEventHistogramResponse(status=JsonValues.SUCCESS, **result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return WatchEventHistogramResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/watch-events/{uuid}",
@@ -4824,6 +5018,31 @@ class WebApp:
                 if payload.state not in {s.value for s in BlipState}:
                     raise ValueError(f"unknown blip state {payload.state!r}")
                 updated = await self._manager.set_event_blip_states(payload.uuids, payload.state)
+                return UpdatedCountResponse(status=JsonValues.SUCCESS, updated=updated)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return UpdatedCountResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Before `/{uuid}`, same reason as `facets`, `counts`, `groups` and the rest:
+        # a literal segment declared after a path parameter of the same shape is
+        # unreachable, and "review-states" would be read as an event uuid and 404.
+        @self._app.post(
+            "/api/watch-events/review-states",
+            response_model=UpdatedCountResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="set_watch_event_review_states",
+        )
+        async def set_watch_event_review_states(payload: SetWatchEventReviewStatesRequest) -> UpdatedCountResponse:
+            """Move a selection of events to one triage state.
+
+            POST with a body for the same reason the bulk delete is one: the uuids are a
+            list, and a GET or DELETE carrying one is not reliably forwarded through the
+            proxy.
+            """
+            try:
+                if payload.state not in {s.value for s in WatchEventReviewState}:
+                    raise ValueError(f"unknown review state {payload.state!r}")
+                updated = await self._manager.set_watch_event_review_states(payload.uuids, payload.state)
                 return UpdatedCountResponse(status=JsonValues.SUCCESS, updated=updated)
             except Exception as e:
                 logger.error(e, exc_info=True)

@@ -4220,6 +4220,15 @@ class Manager:
     async def watch_event_counts(self) -> List[Dict[str, Any]]:
         return await self._db_client.watch_event_counts()
 
+    async def watch_event_groups(self, **kwargs) -> List[Dict[str, Any]]:
+        return await self._db_client.watch_event_groups(**kwargs)
+
+    async def watch_event_histogram(self, **kwargs) -> Dict[str, Any]:
+        return await self._db_client.watch_event_histogram(**kwargs)
+
+    async def watch_event_sessions(self, **kwargs) -> Tuple[List[Dict[str, Any]], int]:
+        return await self._db_client.watch_event_sessions(**kwargs)
+
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
         return await self._db_client.create_watch_event(event)
 
@@ -4242,6 +4251,9 @@ class Manager:
 
     async def set_event_blip_states(self, uuids: Sequence[str], state: str) -> int:
         return await self._db_client.set_event_blip_states(uuids, state)
+
+    async def set_watch_event_review_states(self, uuids: Sequence[str], state: str) -> int:
+        return await self._db_client.set_watch_event_review_states(uuids, state)
 
     async def expire_blips_for_recording(self, recording_uuid: str) -> int:
         return await self._db_client.expire_blips_for_recording(recording_uuid)

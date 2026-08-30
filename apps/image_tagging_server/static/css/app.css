@@ -1194,6 +1194,379 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   color: var(--color-warning, #fbbf24);
 }
 
+/* ----- view switcher, split toggle and the timeline's time-window chip ----- */
+
+.event-search__views {
+  display: flex;
+  gap: 1px;
+}
+
+.event-search__view--active {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}
+
+.event-search__split {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* Reads as a removable filter, because that is what it is — a scope the user clicked
+   into from the timeline that no other control on the page can show them. */
+.event-search__window-chip {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+/* Prev · preset · next as one unit, so the two steppers read as belonging to the range
+   they move rather than as generic pagination. */
+.event-filters__range-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.event-filters__step {
+  padding-inline: var(--space-2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.event-search__gap,
+.event-search__sort,
+.event-search__group-by {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.event-search__group-by-text,
+.event-search__sort-text {
+  color: var(--text-muted);
+}
+
+/* The rule under the actor's name, so two lanes for the same cat under different rules
+   are told apart. Its own line rather than a suffix: the label column is narrow and
+   ellipsising "Luna — Cat Drinking Water" would cut off the part that disambiguates. */
+.event-timeline__label-rule {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-faint);
+  font-size: 0.85em;
+}
+
+/* A folded visit is still an event card; the count is what distinguishes it, so it sits
+   where the media badges do rather than restyling the whole card. */
+.event-card__badge--repeat {
+  position: absolute;
+  bottom: var(--space-1);
+  right: var(--space-1);
+  background: #000b;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The timeline is one wide block, not a card grid — the lanes have to share an axis. */
+.event-search__grid--timeline {
+  display: block;
+}
+
+/* ----- identity focus -----
+   One class on the root dims everything, one class per member undims it. Doing it this
+   way round means a hover costs two class flips total rather than a style write per
+   element, which is what keeps a strip of hundreds of marks smooth.
+
+   ⚠️ **Group cards are deliberately absent here.** Dimming earns its place only where one
+   identity has *several* elements scattered among others — the flat grid, where a run of
+   "Maple → Tupperware" tiles is interleaved with everything else, and the timeline, where
+   a lane must be isolated from twenty others. The grouped view draws exactly one card per
+   identity, so dimming there would grey out every other card to point at the one already
+   under the pointer: all cost, no answer. They keep the `is-focused` highlight below. */
+.event-focus-active .event-card:not(.is-focused),
+.event-focus-active .event-timeline__lane:not(.is-focused) {
+  opacity: 0.25;
+}
+
+.event-focus-active .event-card,
+.event-focus-active .event-timeline__lane {
+  transition: opacity 0.12s ease-out;
+}
+
+.event-timeline__lane.is-focused,
+.event-group-card.is-focused {
+  /* The highlight has to read as "this one" on its own, not merely as "not dimmed" —
+     otherwise a lane with no neighbours on screen looks identical either way. */
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+/* A pinned focus is a mode the user is *in*, so it says so rather than looking like a
+   hover that got stuck. */
+.event-focus-pinned .event-timeline__lane.is-focused {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+/* ----- group card ----- */
+
+.event-group-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--surface-raised, transparent);
+}
+
+.event-group-card:hover,
+.event-group-card:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.event-group-card--selected {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.event-group-card__media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-sunken, #0003);
+}
+
+.event-group-card__media--empty::after {
+  content: 'No snapshot';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-group-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* The count takes the place the timestamp holds on an event card, and is sized like a
+   headline because for a group it *is* the headline fact. */
+.event-group-card__count {
+  position: absolute;
+  right: var(--space-1);
+  bottom: var(--space-1);
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-sm);
+  background: #000b;
+  color: #fff;
+  font-size: var(--text-lg, 1.1rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.event-group-card__badge {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background: #000a;
+  color: #fff;
+}
+
+.event-group-card__badge--blips {
+  color: var(--color-warning, #fbbf24);
+}
+
+.event-group-card__select {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--space-1);
+  margin: 0;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px #000a;
+}
+
+.event-group-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: var(--space-2);
+}
+
+.event-group-card__headline {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.25;
+}
+
+.event-group-card__rule {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Sized in CSS, drawn with a unitless viewBox, so one piece of markup works at any card
+   width — and on a narrow screen — without a resize observer. */
+.event-group-card__spark {
+  width: 100%;
+  height: 1.6rem;
+  margin: 0.2rem 0;
+  fill: var(--color-accent);
+  opacity: 0.75;
+}
+
+.event-group-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-group-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+
+/* ----- timeline ----- */
+
+.event-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.event-timeline__note {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-warning, #fbbf24);
+}
+
+.event-timeline__axis,
+.event-timeline__lane {
+  display: grid;
+  /* One shared template so every lane's marks line up with the axis above them. The
+     label column is in `ch` and shrinks on a narrow screen rather than pushing the
+     track off the side. */
+  grid-template-columns: minmax(6rem, 14ch) 1fr;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.event-timeline__axis {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-bottom: var(--space-1);
+  background: var(--surface-base, var(--surface-raised, transparent));
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.event-timeline__axis-track {
+  position: relative;
+  height: 1.2rem;
+}
+
+.event-timeline__tick {
+  position: absolute;
+  top: 0;
+  /* Centred on its own instant rather than starting there, so the label sits over the
+     time it names instead of to the right of it. */
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.event-timeline__tick--major {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.event-timeline__lane {
+  border-radius: var(--radius-sm);
+}
+
+.event-timeline__label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  width: 100%;
+  /* The label can run to two lines at a coarser grain; the track must grow with it
+     rather than letting the rule name overlap the lane below. */
+  min-height: 1.5rem;
+  padding: 0.2rem var(--space-1);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* A column, so a coarser grain can add the rule beneath the actor's name. `min-width: 0`
+   is what lets the children actually ellipsise instead of forcing the flex item wide. */
+.event-timeline__label-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.event-timeline__label-primary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-timeline__label-count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.event-timeline__track {
+  position: relative;
+  /* Tall enough to be a comfortable pointer target for the whole lane, which is the
+     hover surface — an identity that fired twice would otherwise be two thin marks. */
+  height: 1.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken, #0002);
+}
+
+.event-timeline__mark {
+  position: absolute;
+  top: 0.15rem;
+  bottom: 0.15rem;
+  /* A floor in px on top of the percentage width: a one-hour bin across a month is far
+     under a pixel, and an invisible mark is a missing answer. Also the minimum that is
+     tappable without a mouse. */
+  min-width: 3px;
+  border-radius: 1px;
+  background: var(--color-accent);
+  cursor: pointer;
+}
+
+.event-timeline__mark:hover {
+  background: var(--color-accent-strong, var(--color-accent));
+  filter: brightness(1.4);
+}
+
 /* ----- detail modal ----- */
 .event-detail {
   width: min(72rem, 94vw);

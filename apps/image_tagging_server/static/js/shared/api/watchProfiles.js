@@ -162,7 +162,19 @@ export async function deleteWatchProfile(uuid) {
  * @param {number} [opts.offset]
  * @returns {Promise<{events: Array<Object>, total: number}>}
  */
-export async function fetchWatchEvents({
+/**
+ * Turn an event filter state into the query string every event endpoint understands.
+ *
+ * The grid, the grouped view and the timeline all ask the *same* question and differ
+ * only in what comes back, so they must serialise the filters identically — a filter
+ * spelled here and forgotten in one of the other two would show a group count that
+ * disagreed with the grid it drills into. The backend holds the matching halves of this
+ * contract in `WatchEventQuery` and `DbClient._apply_watch_event_filters`.
+ *
+ * @param {Object} [state] - an EventFilterState (see app/nvr/events/filters.js)
+ * @returns {URLSearchParams}
+ */
+export function watchEventFilterParams({
   profileUuid,
   sourceUuid,
   ruleUuid,
@@ -180,8 +192,8 @@ export async function fetchWatchEvents({
   startTo,
   hasRecording,
   recordingKind,
-  limit = 60,
-  offset = 0,
+  hasBlips,
+  reviewState,
 } = {}) {
   const params = new URLSearchParams();
   if (profileUuid) params.set('profile_uuid', profileUuid);
@@ -205,10 +217,17 @@ export async function fetchWatchEvents({
   }
   if (startFrom) params.set('start_from', startFrom);
   if (startTo) params.set('start_to', startTo);
-  // Explicit null check: `false` is a real filter ("events with no clip") and must not
+  // Explicit null checks: `false` is a real filter ("events with no clip") and must not
   // be dropped the way a falsy guard would drop it.
   if (hasRecording != null) params.set('has_recording', String(hasRecording));
   if (recordingKind) params.set('recording_kind', recordingKind);
+  if (hasBlips != null) params.set('has_blips', String(hasBlips));
+  if (reviewState) params.set('review_state', reviewState);
+  return params;
+}
+
+export async function fetchWatchEvents({ limit = 60, offset = 0, ...filters } = {}) {
+  const params = watchEventFilterParams(filters);
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const res = await apiFetch(`/api/watch-events/?${params}`);
@@ -217,6 +236,99 @@ export async function fetchWatchEvents({
     throw new Error(data.message || 'Failed to fetch events');
   }
   return { events: data.events || [], total: data.total ?? 0 };
+}
+
+/**
+ * The filtered events collapsed to one row per identity, biggest first.
+ *
+ * Tens of rows for any filter, because it aggregates server-side — the counts are
+ * properties of the whole filtered set and the grid only ever holds a page of it.
+ * Deliberately not answerable by fetching every event with a huge `limit`: this log is
+ * append-only and the list endpoint joins recordings and blip counts per row.
+ *
+ * @param {Object} [filters] - an EventFilterState
+ * @returns {Promise<{groups: Array<Object>, total: number}>}
+ */
+export async function fetchWatchEventGroups(filters = {}) {
+  const res = await apiFetch(`/api/watch-events/groups?${watchEventFilterParams(filters)}`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch event groups');
+  }
+  return { groups: data.groups || [], total: data.total ?? 0 };
+}
+
+/**
+ * The flat grid's events, collapsed into the visits they describe.
+ *
+ * ⚠️ Paged over *sessions*, not events, and computed server-side — which is the whole
+ * reason this is an endpoint rather than a `reduce` over the page. Grouping in the
+ * browser would split every session that straddles a page boundary and would group
+ * differently depending on which page you landed on.
+ *
+ * Expect roughly a halving, not the order-of-magnitude the grouped view gives: on live
+ * history a 120s gap turns 1277 events into 653 sessions. It is what stops one drink at
+ * the bowl looking like seven visits, not what makes the page comprehensible.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.gapS] - seconds of quiet that end a session
+ * @returns {Promise<{sessions: Array<Object>, total: number, gapS: number}>}
+ */
+export async function fetchWatchEventSessions({ gapS = null, limit = 60, offset = 0, ...filters } = {}) {
+  const params = watchEventFilterParams(filters);
+  if (gapS != null) params.set('gap_s', String(gapS));
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  const res = await apiFetch(`/api/watch-events/sessions?${params}`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch event sessions');
+  }
+  return { sessions: data.sessions || [], total: data.total ?? 0, gapS: data.gapS ?? gapS };
+}
+
+/**
+ * Move a selection of events to one triage state.
+ *
+ * @param {string[]} uuids
+ * @param {string} state - 'unreviewed' | 'confirmed' | 'dismissed' | 'flagged'
+ * @returns {Promise<number>} how many rows actually moved
+ */
+export async function setWatchEventReviewStates(uuids, state) {
+  const res = await apiFetch('/api/watch-events/review-states', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uuids, state }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to update those events');
+  }
+  return data.updated ?? 0;
+}
+
+/**
+ * Event counts per time bucket per identity — the timeline's data source.
+ *
+ * ⚠️ `bucketStart` is **UTC** and carries no offset. Ask for hour buckets and compose
+ * local days from them (`groupBucketsByLocalDay`); the server has no timezone parameter
+ * on purpose. `bucket` in the response is the resolution actually used, which is `day`
+ * when an hour-resolution answer would have been too large — check it rather than
+ * assuming you got what you asked for.
+ *
+ * @param {Object} [opts]
+ * @param {string} [opts.bucket] - 'hour' | 'day'
+ * @returns {Promise<{bucket: string, buckets: Array<Object>}>}
+ */
+export async function fetchWatchEventHistogram({ bucket = 'hour', ...filters } = {}) {
+  const params = watchEventFilterParams(filters);
+  params.set('bucket', bucket);
+  const res = await apiFetch(`/api/watch-events/histogram?${params}`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch the event timeline');
+  }
+  return { bucket: data.bucket || bucket, buckets: data.buckets || [] };
 }
 
 /**

@@ -23,6 +23,7 @@ import base64
 import json
 import re
 from contextlib import contextmanager
+from datetime import date
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Page, expect
@@ -229,7 +230,17 @@ def _pick_facet(page: Page, testid: str, name: str, exclude: bool = False):
     trigger.click()
 
 
-def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, deletes=None, blips=None):
+def _mock(
+    page: Page,
+    events=None,
+    facets=None,
+    recording=True,
+    overlay=None,
+    deletes=None,
+    blips=None,
+    sessions=None,
+    review_states=None,
+):
     """Route every call the Events page makes, and record the search queries.
 
     Returns the list of parsed query dicts, so a test can assert that a filter actually
@@ -272,6 +283,49 @@ def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, de
             return
         if "/snapshot" in url:
             route.fulfill(status=200, content_type="image/jpeg", body=PIXEL_JPEG)
+            return
+        # ⚠️ Both derived from `rows`, never hand-written. The three endpoints answer the
+        # same question about the same events, so a mock whose groups could disagree with
+        # its own list would let exactly the drift these views must not have pass a test.
+        if "/groups" in url:
+            queries.append(_Query(parse_qs(urlparse(url).query)))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "groups": _group_rows(rows), "total": len(rows)}),
+            )
+            return
+        if "/histogram" in url:
+            queries.append(_Query(parse_qs(urlparse(url).query)))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "bucket": "hour", "buckets": _histogram_rows(rows)}),
+            )
+            return
+        if "/review-states" in url:
+            payload = json.loads(route.request.post_data or "{}")
+            if review_states is not None:
+                review_states.append((payload.get("state"), payload.get("uuids", [])))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "updated": len(payload.get("uuids", []))}),
+            )
+            return
+        if "/sessions" in url:
+            queries.append(_Query(parse_qs(urlparse(url).query)))
+            # A fixed payload, not a re-derivation of `rows`. Which events fold into one
+            # visit is decided by a window function and is covered exhaustively in
+            # tests/db_server/; what needs a browser is only that the page asks for
+            # sessions and renders what comes back.
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {"status": "success", "sessions": sessions or [], "total": len(sessions or []), "gapS": 120.0}
+                ),
+            )
             return
         queries.append(_Query(parse_qs(urlparse(url).query)))
         route.fulfill(
@@ -385,12 +439,87 @@ def _mock(page: Page, events=None, facets=None, recording=True, overlay=None, de
     return queries
 
 
-def _open_events_pane(page: Page, base_url: str):
+def _group_rows(rows):
+    """Collapse mocked events to groups exactly as the backend does."""
+    groups = {}
+    for row in rows:
+        key = (row.get("ruleUuid"), row.get("subjectRef"), row.get("targetRef"), row.get("sourceUuid"))
+        group = groups.setdefault(
+            key,
+            {
+                "ruleUuid": row.get("ruleUuid"),
+                "ruleName": row.get("ruleName"),
+                "subjectRef": row.get("subjectRef"),
+                "subjectName": row.get("subjectName"),
+                "targetRef": row.get("targetRef"),
+                "targetName": row.get("targetName"),
+                "sourceUuid": row.get("sourceUuid"),
+                "count": 0,
+                "firstSeen": row.get("startedAt"),
+                "lastSeen": row.get("startedAt"),
+                "totalDurationS": 0.0,
+                "representativeUuid": row["uuid"],
+                "withRecording": 0,
+                "withBlips": 0,
+            },
+        )
+        group["count"] += 1
+        if row.get("recordings"):
+            group["withRecording"] += 1
+        if row.get("startedAt") and row["startedAt"] > (group["lastSeen"] or ""):
+            group["lastSeen"] = row["startedAt"]
+            group["representativeUuid"] = row["uuid"]
+    return sorted(groups.values(), key=lambda g: -g["count"])
+
+
+def _histogram_rows(rows):
+    """One bucket per (hour, identity), same derivation as the group rows above."""
+    buckets = {}
+    for row in rows:
+        started = row.get("startedAt") or ""
+        key = (
+            f"{started[:13]}:00:00" if len(started) >= 13 else started,
+            row.get("ruleUuid"),
+            row.get("subjectRef"),
+            row.get("targetRef"),
+            row.get("sourceUuid"),
+        )
+        buckets[key] = buckets.get(key, 0) + 1
+    return [
+        {
+            "bucketStart": bucket_start,
+            "ruleUuid": rule_uuid,
+            "subjectRef": subject_ref,
+            "targetRef": target_ref,
+            "sourceUuid": source_uuid,
+            "count": count,
+        }
+        for (bucket_start, rule_uuid, subject_ref, target_ref, source_uuid), count in buckets.items()
+    ]
+
+
+def _open_events_pane(page: Page, base_url: str, view: str = "all", date_range: str = ""):
+    """Open NVR → Events on a named view and a named date range.
+
+    Both are chosen explicitly rather than left to the default. The view is remembered in
+    localStorage, so a test inheriting whatever the previous one picked would depend on
+    execution order — and most of these tests are about the flat grid specifically, which
+    is no longer where the page lands.
+
+    `date_range` defaults to `""` — **All time** — because the fixtures here are dated at
+    fixed points in 2026 while the page now opens on the last 7 days. Leaving the default
+    would make almost every test depend on how long ago those fixture dates were, i.e. it
+    would pass today and start failing on its own next week. Tests that are *about* the
+    range set it themselves.
+    """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
     page.locator(".workspace-tab-button[data-tab='tab-nvr-events']").click()
     page.wait_for_selector("[data-testid='event-search']")
+    page.locator("[data-testid='event-filter-range-select']").select_option(date_range)
+    page.locator(f"[data-testid='event-view-{view}']").click()
+    page.wait_for_selector(f"[data-testid='event-view-{view}'].event-search__view--active")
 
 
 class TestTheCardAnswersTheObviousQuestions:
@@ -585,17 +714,18 @@ class TestFiltersReachTheServer:
 
         page.locator("[data-testid='event-filter-from']").fill("2026-08-18")
         page.locator("[data-testid='event-filter-to']").fill("2026-08-18")
-        # Each bound issues its own search, so waiting for "a new query" could
-        # settle on the one carrying only `from`. Wait for the pair to be
-        # present; the assertions below are about the *values*, which is the
-        # actual claim — that `to` covers the whole day rather than midnight.
+        # Wait on both *values* at once. Testing only that the keys are present is
+        # satisfied by the page-open request whenever a range preset is active, and
+        # waiting on `start_from` alone settles on the search that the first `fill` fired
+        # — which legitimately has no `start_to` yet. Only the query carrying both is the
+        # one this test is about.
         wait_until(
             page,
-            lambda: queries and {"start_from", "start_to"} <= queries[-1].keys(),
-            lambda: f"no search carried both date bounds: {queries[-1] if queries else None}",
+            lambda: queries
+            and queries[-1].get("start_from") == "2026-08-18T00:00:00"
+            and queries[-1].get("start_to") == "2026-08-18T23:59:59",
+            lambda: f"no search carried both typed bounds: {queries[-1] if queries else None}",
         )
-        assert queries[-1].get("start_from") == "2026-08-18T00:00:00"
-        assert queries[-1].get("start_to") == "2026-08-18T23:59:59"
 
     def test_filtering_to_events_with_no_video(self, page: Page, base_url: str):
         """`false` is a real filter and must not be dropped the way a falsy guard would."""
@@ -1350,3 +1480,678 @@ class TestTheCardSaysWhenTrackingWentWrong:
 
         expect(page.locator("[data-testid='event-card']")).to_have_count(1)
         expect(page.locator("[data-testid='event-card-blip-badge']")).to_have_count(0)
+
+
+def _two_identities() -> list:
+    """Four events of one kind and two of another — a set the grouped view must reduce."""
+    drinks = [
+        _event(
+            uuid=f"drink-{i:04d}",
+            ruleUuid="rule-water",
+            ruleName="cat drinking water",
+            subjectRef="label-cat",
+            subjectName="Tabby",
+            targetRef="zone-bowl",
+            targetName="water bowl",
+            startedAt=f"2026-08-18T09:{10 + i:02d}:00",
+            endedAt=f"2026-08-18T09:{10 + i:02d}:20",
+            recordings=[],
+        )
+        for i in range(4)
+    ]
+    litter = [
+        _event(
+            uuid=f"litter-{i:04d}",
+            ruleUuid="rule-litter",
+            ruleName="cat using litter box",
+            subjectRef="label-other",
+            subjectName="Clover",
+            targetRef="zone-box",
+            targetName="litter box",
+            startedAt=f"2026-08-18T11:{10 + i:02d}:00",
+            endedAt=f"2026-08-18T11:{10 + i:02d}:20",
+            recordings=[],
+        )
+        for i in range(2)
+    ]
+    return drinks + litter
+
+
+def _opacity(page: Page, selector: str, index: int = 0) -> float:
+    return float(page.locator(selector).nth(index).evaluate("el => getComputedStyle(el).opacity"))
+
+
+class TestGroupingCollapsesRepeatedEvents:
+    """The reason this view exists.
+
+    The flat grid shows one tile per event, which for a rule that fires four hundred
+    times a week is the wrong *unit* rather than too much detail. The assertions here are
+    all comparisons between the two views of the same data — an existence check on a
+    group card would pass just as happily against a view that grouped nothing.
+    """
+
+    def test_six_events_of_two_kinds_become_two_cards(self, page: Page, base_url: str):
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="all")
+        expect(page.locator("[data-testid='event-card']")).to_have_count(6)
+
+        page.locator("[data-testid='event-view-groups']").click()
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+    def test_the_card_says_how_many_events_it_stands_for(self, page: Page, base_url: str):
+        """The count is the headline fact of a group; a card that omitted it would send
+        the user back to the flat grid to find out how much it was hiding."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="groups")
+
+        counts = page.locator("[data-testid='event-group-card-count']")
+        expect(counts).to_have_count(2)
+        assert [c.strip() for c in counts.all_text_contents()] == ["4", "2"], "biggest group leads"
+
+    def test_clicking_a_group_narrows_the_flat_view_to_it(self, page: Page, base_url: str):
+        """Drilling in must actually filter, not merely switch views.
+
+        The mock returns every event whatever is asked, so the check is on the request:
+        a drill-down that switched views without sending the identity would look right on
+        screen and show the wrong events against a real server.
+        """
+        queries = _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="groups")
+
+        page.locator("[data-testid='event-group-card-drill']").first.click()
+        expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
+        wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-water"])
+        assert _query_values(queries[-1], "subject_refs") == ["label-cat"]
+        assert _query_values(queries[-1], "target_refs") == ["zone-bowl"]
+
+    def test_selecting_a_group_arms_a_delete_for_every_event_in_it(self, page: Page, base_url: str):
+        """A group's checkbox stands for four rows, and the button must say four.
+
+        This is the one gesture on the page that can destroy far more than it appears to,
+        so "2 selected" must never quietly mean 665 events.
+        """
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="groups")
+
+        page.locator("[data-testid='event-group-card-select']").first.click()
+        expect(page.locator("[data-testid='event-search-delete-selected']")).to_have_text("Delete 4 events")
+
+
+class TestHoveringOneEventHighlightsEveryOtherLikeIt:
+    """The requested behaviour: pick out one kind of event among many at a glance.
+
+    Keyed on identity rather than on the element, so it is the same mechanism in the flat
+    grid, on the group cards and along the timeline's lanes.
+    """
+
+    def test_hovering_a_tile_lights_its_own_kind_and_dims_the_rest(self, page: Page, base_url: str):
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="all")
+        expect(page.locator("[data-testid='event-card']")).to_have_count(6)
+
+        page.locator("[data-event-uuid='drink-0000']").hover()
+
+        # Every event of the hovered kind, not just the one under the pointer — which is
+        # the whole difference between this and a plain :hover rule.
+        expect(page.locator("[data-event-uuid='drink-0003'].is-focused")).to_have_count(1)
+        expect(page.locator("[data-event-uuid='litter-0000'].is-focused")).to_have_count(0)
+
+    def test_the_dimming_is_actually_visible(self, page: Page, base_url: str):
+        """Guards the CSS, not the class.
+
+        The class flip is meaningless if the rule that acts on it is deleted or renamed,
+        and every other assertion here would still pass.
+        """
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="all")
+        expect(page.locator("[data-testid='event-card']")).to_have_count(6)
+        assert _opacity(page, "[data-event-uuid='litter-0000']") == 1.0
+
+        page.locator("[data-event-uuid='drink-0000']").hover()
+
+        wait_until(page, lambda: _opacity(page, "[data-event-uuid='litter-0000']") < 1.0)
+        assert _opacity(page, "[data-event-uuid='drink-0003']") == 1.0
+
+    def test_moving_away_restores_every_card(self, page: Page, base_url: str):
+        """A highlight that never released would leave the page permanently dimmed."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="all")
+        expect(page.locator("[data-testid='event-card']")).to_have_count(6)
+
+        page.locator("[data-event-uuid='drink-0000']").hover()
+        wait_until(page, lambda: _opacity(page, "[data-event-uuid='litter-0000']") < 1.0)
+
+        page.locator("[data-testid='event-search-summary']").hover()
+        wait_until(page, lambda: _opacity(page, "[data-event-uuid='litter-0000']") == 1.0)
+
+
+class TestTheTimelineShowsWhenThingsHappened:
+    def test_one_lane_per_identity(self, page: Page, base_url: str):
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(2)
+        expect(page.locator("[data-testid='event-timeline-mark']").first).to_be_attached()
+
+    def test_hovering_a_lane_dims_the_others(self, page: Page, base_url: str):
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(2)
+
+        page.locator("[data-testid='event-timeline-lane']").first.hover()
+
+        expect(page.locator("[data-testid='event-timeline-lane'].is-focused")).to_have_count(1)
+        wait_until(page, lambda: _opacity(page, "[data-testid='event-timeline-lane']", 1) < 1.0)
+
+    def test_clicking_a_mark_narrows_to_that_identity_and_that_hour(self, page: Page, base_url: str):
+        """A bin holds many events, so it drills into the grid scoped to both — opening
+        one arbitrary event of the fifty in an hour would be a guess at which."""
+        queries = _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-mark']").first).to_be_attached()
+
+        page.locator("[data-testid='event-timeline-mark']").first.click()
+
+        expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
+        expect(page.locator("[data-testid='event-window-chip']")).to_be_visible()
+        wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-water"])
+        assert queries[-1].get("start_from"), "the clicked hour must reach the server"
+        assert queries[-1].get("start_to")
+
+
+class TestTheViewSwitchKeepsTheFilters:
+    def test_a_filter_set_in_one_view_still_applies_in_another(self, page: Page, base_url: str):
+        """The three views are projections of one query. A switch that dropped the
+        filters would quietly widen the result set at the moment the user changed how
+        they were looking at it."""
+        queries = _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="all")
+
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-rule", "cat using litter box")
+        assert _query_values(queries[-1], "rule_uuids") == ["rule-1"]
+
+        page.locator("[data-testid='event-view-groups']").click()
+        wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-1"])
+
+
+def _session(**overrides) -> dict:
+    session = {
+        "ruleUuid": "rule-water",
+        "ruleName": "cat drinking water",
+        "subjectRef": "label-cat",
+        "subjectName": "Tabby",
+        "targetRef": "zone-bowl",
+        "targetName": "water bowl",
+        "sourceUuid": "src-1",
+        "sessionIx": 1,
+        "count": 7,
+        "startedAt": "2026-08-18T09:15:00",
+        "endedAt": "2026-08-18T09:22:00",
+        "representativeUuid": EVENT_UUID,
+    }
+    session.update(overrides)
+    return session
+
+
+class TestSessionGroupingFoldsRepeats:
+    """One visit to the bowl re-fires its rule several times; the flat grid shows a tile
+    for each. The grouping itself is a window function covered in tests/db_server/ — what
+    needs a browser is that the control asks for it and the page renders what returns."""
+
+    def test_choosing_a_gap_asks_the_server_to_group(self, page: Page, base_url: str):
+        queries = _mock(page, events=_events(3), sessions=[_session()])
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-session-gap']").select_option("120")
+
+        wait_until(page, lambda: queries[-1].get("gap_s") == "120")
+        expect(page.locator("[data-testid='event-session-card']")).to_have_count(1)
+
+    def test_a_folded_visit_says_how_many_events_it_hides(self, page: Page, base_url: str):
+        """Without the count the card is indistinguishable from a single event, and the
+        seven it stands for are invisible."""
+        _mock(page, events=_events(3), sessions=[_session(count=7)])
+        _open_events_pane(page, base_url, view="all")
+        page.locator("[data-testid='event-session-gap']").select_option("120")
+
+        expect(page.locator("[data-testid='event-session-repeat-badge']")).to_have_text("×7")
+
+    def test_a_visit_of_one_event_carries_no_repeat_badge(self, page: Page, base_url: str):
+        """The conditional half of the rule above: a badge on every card would stop
+        meaning "several were folded here"."""
+        _mock(page, events=_events(3), sessions=[_session(count=1)])
+        _open_events_pane(page, base_url, view="all")
+        page.locator("[data-testid='event-session-gap']").select_option("120")
+
+        expect(page.locator("[data-testid='event-session-card']")).to_have_count(1)
+        expect(page.locator("[data-testid='event-session-repeat-badge']")).to_have_count(0)
+
+    def test_opening_a_visit_ungroups_it(self, page: Page, base_url: str):
+        """Drilling in with the collapse still on would land on the very card just
+        clicked — it is the only thing inside its own window."""
+        queries = _mock(page, events=_events(3), sessions=[_session()])
+        _open_events_pane(page, base_url, view="all")
+        page.locator("[data-testid='event-session-gap']").select_option("120")
+        expect(page.locator("[data-testid='event-session-card']")).to_have_count(1)
+
+        page.locator("[data-testid='event-session-card']").click()
+
+        expect(page.locator("[data-testid='event-card']")).to_have_count(3)
+        assert page.locator("[data-testid='event-session-gap']").input_value() == "0"
+        assert queries[-1].get("gap_s") is None, "the ungrouped page must not ask for sessions"
+
+
+class TestReviewTriage:
+    def test_marking_a_selection_reviewed_sends_the_state(self, page: Page, base_url: str):
+        states = []
+        _mock(page, events=_events(3), review_states=states)
+        _open_events_pane(page, base_url, view="all")
+
+        page.locator("[data-testid='event-card-select']").first.click()
+        page.locator("[data-testid='event-search-review-confirmed']").click()
+
+        wait_until(page, lambda: len(states) == 1)
+        assert states[0][0] == "confirmed"
+        assert states[0][1] == ["event-uuid-0000"]
+
+    def test_marking_a_group_reviewed_covers_every_event_behind_it(self, page: Page, base_url: str):
+        """The payoff of pairing triage with grouping: the thing you want to dismiss is
+        all four of these, not one card standing for them."""
+        states = []
+        _mock(page, events=_two_identities(), review_states=states)
+        _open_events_pane(page, base_url, view="groups")
+
+        page.locator("[data-testid='event-group-card-select']").first.click()
+        page.locator("[data-testid='event-search-review-confirmed']").click()
+
+        wait_until(page, lambda: len(states) == 1)
+        assert states[0][0] == "confirmed"
+        assert len(states[0][1]) == 6, "the drill-down fetch returns the mock's whole set"
+
+
+def _one_rule_two_actors() -> list:
+    """One event type, two actors, two targets — so every grain gives a different answer.
+
+    detail (actor & target) → 3 rows · actor → 2 rows · event type → 1 row.
+    A fixture where the grains agreed would let a broken fold pass.
+    """
+    spec = [
+        ("Tabby", "label-tabby", "bowl A", "zone-a"),
+        ("Tabby", "label-tabby", "bowl A", "zone-a"),
+        ("Tabby", "label-tabby", "bowl B", "zone-b"),
+        ("Clover", "label-clover", "bowl A", "zone-a"),
+    ]
+    return [
+        _event(
+            uuid=f"drink-{i:04d}",
+            ruleUuid="rule-water",
+            ruleName="cat drinking water",
+            subjectRef=subject_ref,
+            subjectName=subject,
+            targetRef=target_ref,
+            targetName=target,
+            startedAt=f"2026-08-18T09:{10 + i:02d}:00",
+            endedAt=f"2026-08-18T09:{10 + i:02d}:20",
+            recordings=[],
+        )
+        for i, (subject, subject_ref, target, target_ref) in enumerate(spec)
+    ]
+
+
+class TestTheGroupingGrainIsSelectable:
+    """The finest grain is the unit an event happened at; it is the wrong unit for
+    "how much is each cat drinking", where one rule splits across several vessels and
+    nothing sums them. Every assertion here compares two grains of the same data — a
+    count read at one grain alone would prove nothing about the fold."""
+
+    def test_each_grain_gives_a_different_number_of_cards(self, page: Page, base_url: str):
+        _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(3)
+
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+        page.locator("[data-testid='event-group-by']").select_option("event")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(1)
+
+    def test_a_coarser_grain_sums_the_finer_rows_rather_than_dropping_them(self, page: Page, base_url: str):
+        """The summary row must account for every event under it. A fold that picked one
+        sub-row instead of summing would look plausible and undercount."""
+        _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+
+        counts = page.locator("[data-testid='event-group-card-count']")
+
+        page.locator("[data-testid='event-group-by']").select_option("event")
+        # The count settles before the text is read: a multi-element locator makes
+        # `to_have_text` a strict-mode error rather than something it retries, so reading
+        # text first would report a race as a failure.
+        expect(counts).to_have_count(1)
+        expect(counts).to_have_text("4")
+
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+        expect(counts).to_have_count(2)
+        assert sorted(int(c) for c in counts.all_text_contents()) == [1, 3]
+
+    def test_a_per_actor_row_is_not_captioned_with_one_of_its_targets(self, page: Page, base_url: str):
+        """Tabby drank from two bowls. A row summing both must not claim to be "bowl A" —
+        it would be a wrong answer about a row whose number includes bowl B.
+        """
+        _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+        # At the finest grain the target is genuinely part of what the row is.
+        expect(page.locator("[data-testid='event-group-card-headline']").first).to_contain_text("bowl A")
+
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+
+        headlines = page.locator("[data-testid='event-group-card-headline']")
+        expect(headlines).to_have_count(2)
+        assert sorted(h.strip() for h in headlines.all_text_contents()) == ["Clover", "Tabby"]
+        assert not any("bowl" in h for h in headlines.all_text_contents())
+
+    def test_drilling_from_a_coarse_row_does_not_filter_by_the_folded_dimension(self, page: Page, base_url: str):
+        """A per-actor row that also sent a target would open onto a fraction of what it
+        counted, and the card's number would visibly disagree with the grid."""
+        queries = _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+        page.locator("[data-testid='event-group-card-drill']").first.click()
+
+        wait_until(page, lambda: _query_values(queries[-1], "subject_refs") == ["label-tabby"])
+        assert _query_values(queries[-1], "rule_uuids") == ["rule-water"]
+        assert _query_values(queries[-1], "target_refs") == [], "the folded dimension must not narrow the drill-down"
+
+
+class TestTimelineLanesFollowTheGrain:
+    def test_grouping_per_actor_gives_one_lane_per_cat(self, page: Page, base_url: str):
+        """The side-by-side comparison: one lane per cat for a single event type, rather
+        than a lane per actor/target pairing."""
+        _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(3)
+
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(2)
+        labels = page.locator("[data-testid='event-timeline-label']")
+        assert sorted(x.strip() for x in labels.locator(".event-timeline__label-primary").all_text_contents()) == [
+            "Clover",
+            "Tabby",
+        ]
+
+    def test_a_lane_names_its_rule_when_the_actor_alone_would_be_ambiguous(self, page: Page, base_url: str):
+        """Two rules acting on one cat would otherwise be two lanes both reading "Luna"
+        — the duplicate-headline problem the camera split already avoids."""
+        _mock(page, events=_one_rule_two_actors() + _two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+
+        expect(page.locator(".event-timeline__label-rule").first).to_be_visible()
+        expect(page.locator("[data-testid='event-timeline-label']").first).to_contain_text("drinking water")
+
+    def test_the_highlight_still_follows_the_coarser_row(self, page: Page, base_url: str):
+        """The focus key is built from the same dimensions, so changing the grain must
+        not leave the hover keyed on a row shape that no longer exists."""
+        _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="timeline")
+        page.locator("[data-testid='event-group-by']").select_option("actor")
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(2)
+
+        page.locator("[data-testid='event-timeline-lane']").first.hover()
+
+        expect(page.locator("[data-testid='event-timeline-lane'].is-focused")).to_have_count(1)
+        wait_until(page, lambda: _opacity(page, "[data-testid='event-timeline-lane']", 1) < 1.0)
+
+
+class TestTheDefaultRangeAndItsSteppers:
+    """The page used to open on all of history, which grows without bound. It now opens
+    on a window, which is a filter nobody asked for — so the control naming it is always
+    visible, and every assertion here is about the range being *honest* on screen."""
+
+    def test_the_page_opens_on_a_bounded_range_and_says_which(self, page: Page, base_url: str):
+        queries = _mock(page)
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+        page.locator(".main-tab-button[data-tab='tab-nvr']").click()
+        page.locator(".workspace-tab-button[data-tab='tab-nvr-events']").click()
+        page.wait_for_selector("[data-testid='event-search']")
+
+        wait_until(page, lambda: bool(queries))
+        assert queries[-1].get("start_from"), "the first search must already be bounded"
+        assert page.locator("[data-testid='event-filter-range-select']").input_value() == "7"
+        # The dates are the visible truth about what is filtered; a preset that narrowed
+        # the search without filling them in would be an invisible filter.
+        assert page.locator("[data-testid='event-filter-from']").input_value()
+        assert page.locator("[data-testid='event-filter-to']").input_value()
+
+    def test_all_time_removes_the_bound_entirely(self, page: Page, base_url: str):
+        queries = _mock(page)
+        _open_events_pane(page, base_url, date_range="7")
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-range-select']").select_option("")
+
+        assert "start_from" not in queries[-1]
+        assert page.locator("[data-testid='event-filter-from']").input_value() == ""
+
+    def test_stepping_back_moves_the_window_by_its_own_length(self, page: Page, base_url: str):
+        """Abutting windows with no gap and no overlap is the whole point of the step —
+        a fixed step would double-count or skip days whenever the range was not that size.
+        """
+        queries = _mock(page)
+        _open_events_pane(page, base_url, date_range="7")
+        before_from = page.locator("[data-testid='event-filter-from']").input_value()
+        before_to = page.locator("[data-testid='event-filter-to']").input_value()
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-range-prev']").click()
+
+        after_from = page.locator("[data-testid='event-filter-from']").input_value()
+        after_to = page.locator("[data-testid='event-filter-to']").input_value()
+        assert (date.fromisoformat(before_from) - date.fromisoformat(after_from)).days == 7
+        assert (date.fromisoformat(before_to) - date.fromisoformat(after_to)).days == 7
+        # The new window ends the day before the old one starts: contiguous, not overlapping.
+        assert (date.fromisoformat(before_from) - date.fromisoformat(after_to)).days == 1
+
+    def test_stepping_back_then_forward_returns_to_where_it_started(self, page: Page, base_url: str):
+        queries = _mock(page)
+        _open_events_pane(page, base_url, date_range="7")
+        original = page.locator("[data-testid='event-filter-from']").input_value()
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-range-prev']").click()
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-range-next']").click()
+
+        assert page.locator("[data-testid='event-filter-from']").input_value() == original
+
+    def test_stepping_off_a_preset_stops_calling_it_that(self, page: Page, base_url: str):
+        """ "Last 7 days" names a window ending today. The week before last is not that,
+        and a label still claiming it would misreport what is on screen."""
+        queries = _mock(page)
+        _open_events_pane(page, base_url, date_range="7")
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-range-prev']").click()
+
+        assert page.locator("[data-testid='event-filter-range-select']").input_value() == "custom"
+
+    def test_there_is_no_stepping_into_the_future(self, page: Page, base_url: str):
+        """A window that has not happened yet can only ever be empty."""
+        _mock(page)
+        _open_events_pane(page, base_url, date_range="7")
+
+        expect(page.locator("[data-testid='event-filter-range-next']")).to_be_disabled()
+
+    def test_the_steppers_are_dead_with_no_window_to_move(self, page: Page, base_url: str):
+        _mock(page)
+        _open_events_pane(page, base_url, date_range="")
+
+        expect(page.locator("[data-testid='event-filter-range-prev']")).to_be_disabled()
+        expect(page.locator("[data-testid='event-filter-range-next']")).to_be_disabled()
+
+    def test_typing_a_date_by_hand_drops_the_preset(self, page: Page, base_url: str):
+        queries = _mock(page)
+        _open_events_pane(page, base_url, date_range="7")
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-from']").fill("2026-08-01")
+
+        assert page.locator("[data-testid='event-filter-range-select']").input_value() == "custom"
+
+    def test_clearing_returns_to_the_range_the_page_opens_on(self, page: Page, base_url: str):
+        """Not to all of history: Clear should leave the page as a reload would, and
+        silently widening to every event ever recorded is a bigger change than the button
+        appears to offer."""
+        queries = _mock(page)
+        _open_events_pane(page, base_url, date_range="")
+        assert "start_from" not in queries[-1]
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-clear']").click()
+
+        assert queries[-1].get("start_from")
+        assert page.locator("[data-testid='event-filter-range-select']").input_value() == "7"
+
+
+def _named_groups() -> list:
+    """Four identities whose alphabetical order is the reverse of their size order.
+
+    Deliberately adversarial: if the two orders agreed, a sort control that did nothing
+    would pass every assertion below.
+    """
+    spec = [
+        ("Zara", "label-zara", "rule-water", "cat drinking water", 4),
+        ("Mittens", "label-mittens", "rule-water", "cat drinking water", 3),
+        ("Bella", "label-bella", "rule-litter", "cat using litter box", 2),
+        ("Alfie", "label-alfie", "rule-litter", "cat using litter box", 1),
+    ]
+    rows = []
+    for i, (subject, subject_ref, rule_uuid, rule_name, count) in enumerate(spec):
+        for n in range(count):
+            rows.append(
+                _event(
+                    uuid=f"{subject_ref}-{n}",
+                    ruleUuid=rule_uuid,
+                    ruleName=rule_name,
+                    subjectRef=subject_ref,
+                    subjectName=subject,
+                    targetRef=None,
+                    targetName=None,
+                    startedAt=f"2026-08-18T{9 + i:02d}:{10 + n:02d}:00",
+                    endedAt=f"2026-08-18T{9 + i:02d}:{10 + n:02d}:20",
+                    recordings=[],
+                )
+            )
+    return rows
+
+
+def _headlines(page: Page) -> list:
+    return [h.strip() for h in page.locator("[data-testid='event-group-card-headline']").all_text_contents()]
+
+
+class TestSortingTheGroupedViews:
+    """Biggest-first answers "what dominates my day"; it is useless for finding a
+    particular cat among twenty. Each assertion compares two orders of the same rows."""
+
+    def test_the_default_is_biggest_first(self, page: Page, base_url: str):
+        _mock(page, events=_named_groups())
+        _open_events_pane(page, base_url, view="groups")
+
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(4)
+        assert _headlines(page) == ["Zara", "Mittens", "Bella", "Alfie"]
+
+    def test_sorting_by_name_is_alphabetical_not_by_size(self, page: Page, base_url: str):
+        _mock(page, events=_named_groups())
+        _open_events_pane(page, base_url, view="groups")
+
+        page.locator("[data-testid='event-sort-by']").select_option("name")
+
+        wait_until(page, lambda: _headlines(page) == ["Alfie", "Bella", "Mittens", "Zara"])
+
+    def test_sorting_by_event_type_groups_the_rules_together(self, page: Page, base_url: str):
+        """Within one rule the rows keep the incoming order, so the result is readable
+        rather than arbitrary — 'drinking water' before 'litter box', biggest first inside
+        each."""
+        _mock(page, events=_named_groups())
+        _open_events_pane(page, base_url, view="groups")
+
+        page.locator("[data-testid='event-sort-by']").select_option("rule")
+
+        wait_until(page, lambda: _headlines(page) == ["Zara", "Mittens", "Bella", "Alfie"])
+        rules = [r.strip() for r in page.locator(".event-group-card__rule").all_text_contents()]
+        assert rules == sorted(rules), "rows of one event type must be contiguous and ordered"
+
+    def test_the_sort_survives_a_change_of_grain(self, page: Page, base_url: str):
+        """The two controls are independent; re-folding must not silently revert the
+        order to the fold's own deterministic base."""
+        _mock(page, events=_named_groups())
+        _open_events_pane(page, base_url, view="groups")
+        page.locator("[data-testid='event-sort-by']").select_option("name")
+        wait_until(page, lambda: _headlines(page) == ["Alfie", "Bella", "Mittens", "Zara"])
+
+        page.locator("[data-testid='event-group-by']").select_option("event")
+
+        wait_until(page, lambda: _headlines(page) == ["cat drinking water", "cat using litter box"])
+
+    def test_the_timeline_lanes_follow_the_same_order(self, page: Page, base_url: str):
+        """The lanes and the cards are the same rows; two views of one list disagreeing
+        about its order is the bug this shares a code path to avoid."""
+        _mock(page, events=_named_groups())
+        _open_events_pane(page, base_url, view="timeline")
+        page.locator("[data-testid='event-sort-by']").select_option("name")
+
+        wait_until(
+            page,
+            lambda: [
+                x.strip()
+                for x in page.locator(
+                    "[data-testid='event-timeline-label'] .event-timeline__label-primary"
+                ).all_text_contents()
+            ]
+            == ["Alfie", "Bella", "Mittens", "Zara"],
+        )
+
+    def test_sorting_is_not_offered_where_it_would_mean_nothing(self, page: Page, base_url: str):
+        """The chronological view is ordered by the server, newest first — the only order
+        a log of events has."""
+        _mock(page, events=_named_groups())
+        _open_events_pane(page, base_url, view="all")
+
+        expect(page.locator("[data-testid='event-sort-by']")).to_be_hidden()
+
+
+class TestTheGroupedViewDoesNotDim:
+    """Dimming earns its place only where one identity has several elements among others.
+
+    The grouped view draws exactly one card per identity, so dimming would grey out every
+    other card to point at the one already under the pointer. These assertions are the
+    reason that stays true through a future CSS tidy-up.
+    """
+
+    def test_hovering_a_group_card_leaves_the_others_fully_visible(self, page: Page, base_url: str):
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="groups")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(2)
+
+        page.locator("[data-testid='event-group-card']").first.hover()
+
+        # The focus really is engaged — without this the test would pass just as well
+        # against a page where hovering did nothing at all.
+        expect(page.locator("[data-testid='event-group-card'].is-focused")).to_have_count(1)
+        assert _opacity(page, "[data-testid='event-group-card']", 1) == 1.0
+
+    def test_the_flat_grid_still_dims(self, page: Page, base_url: str):
+        """The other half of the rule: removing the dim from group cards must not remove
+        it from the view whose whole point is picking one kind out of a mixed page."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="all")
+        expect(page.locator("[data-testid='event-card']")).to_have_count(6)
+
+        page.locator("[data-event-uuid='drink-0000']").hover()
+
+        wait_until(page, lambda: _opacity(page, "[data-event-uuid='litter-0000']") < 1.0)

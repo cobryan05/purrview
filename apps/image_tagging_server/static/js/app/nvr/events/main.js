@@ -10,14 +10,83 @@
  * events are a bounded append-only log ordered by the single scalar the user also
  * filters on, and the page shows a total, which needs the count anyway.
  */
-import { deleteWatchEvents, fetchWatchEvent, fetchWatchEvents } from '/app-static/js/shared/api/watchProfiles.js';
+import {
+  deleteWatchEvents,
+  fetchWatchEvent,
+  fetchWatchEventGroups,
+  fetchWatchEventHistogram,
+  fetchWatchEventSessions,
+  fetchWatchEvents,
+  setWatchEventReviewStates,
+} from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 import { Logger, showConfirmModal, toast } from '/app-static/js/ui/utils/index.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 import { buildEventCard } from './eventCard.js';
+import { buildGroupCard } from './groupCard.js';
 import { createEventFilters, hasActiveFilter } from './filters.js';
 import { openEventDetailModal } from './eventDetailModal.js';
+import { buildSessionCard } from './sessionCard.js';
+import { buildTimeline } from './timeline.js';
+import {
+  GROUP_BY_MODES,
+  GROUP_SORTS,
+  createFocusController,
+  dimensionsFor,
+  foldGroups,
+  groupDrilldownFilters,
+  groupFacetSeeds,
+  identityKey,
+  sortGroups,
+} from './identity.js';
 
 const PAGE_SIZE = 60;
+
+/**
+ * The three projections of one query.
+ *
+ * `groups` is the default because it is the one that answers the question you have when
+ * you *arrive*: 1277 events are 22 things that happened, and the flat grid shows the
+ * wrong unit rather than too much detail. `all` is where you end up once you know what
+ * you are looking for — which is also what the filters have always been for.
+ */
+const VIEWS = [
+  ['groups', 'Groups', 'What keeps happening — one card per kind of event'],
+  ['timeline', 'Timeline', 'When events happened, one lane per kind'],
+  ['all', 'All events', 'Every event, newest first'],
+];
+
+const VIEW_STORAGE_KEY = 'nvr.events.view';
+
+/** How many sparkline buckets a group card gets, across whatever range is filtered. */
+const SPARK_BUCKETS = 24;
+
+const SESSION_STORAGE_KEY = 'nvr.events.sessionGapS';
+const GROUP_BY_STORAGE_KEY = 'nvr.events.groupBy';
+const SORT_STORAGE_KEY = 'nvr.events.sortBy';
+
+/**
+ * The gap options offered for session grouping, in seconds.
+ *
+ * `0` is "off" rather than a zero-second gap — with grouping disabled the grid pages
+ * over events, which is a different endpoint, not a degenerate case of this one.
+ * The default matches the backend's, which is the measured median gap between
+ * consecutive events of one identity.
+ */
+const SESSION_GAP_OPTIONS = [
+  [0, 'Every event'],
+  [60, 'Group repeats within 1 min'],
+  [120, 'Group repeats within 2 min'],
+  [300, 'Group repeats within 5 min'],
+  [900, 'Group repeats within 15 min'],
+];
+
+/** The triage states offered in bulk, as `[value, button label]`. */
+const REVIEW_ACTIONS = [
+  ['confirmed', 'Mark reviewed'],
+  ['dismissed', 'Dismiss'],
+  ['unreviewed', 'Reopen'],
+];
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -113,11 +182,200 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   // otherwise let the slower response paint over the newer one.
   let requestSeq = 0;
 
+  // Which projection is on screen. Remembered across visits because it is a working
+  // preference, not a navigation state — someone who thinks in groups thinks in groups
+  // tomorrow too. A bad stored value falls back rather than blanking the page.
+  let view = VIEWS.some(([id]) => id === localStorage.getItem(VIEW_STORAGE_KEY))
+    ? localStorage.getItem(VIEW_STORAGE_KEY)
+    : 'groups';
+  let splitByCamera = false;
+  // How coarsely the aggregate views group. Remembered like the view: "how much am I
+  // summing" is a working preference, and re-picking it on every visit is friction.
+  let groupBy = GROUP_BY_MODES.some(([id]) => id === localStorage.getItem(GROUP_BY_STORAGE_KEY))
+    ? localStorage.getItem(GROUP_BY_STORAGE_KEY)
+    : 'detail';
+  const dimensions = () => dimensionsFor(groupBy);
+  // Biggest-first answers "what dominates my day"; alphabetical is the only order you
+  // can actually look something up in. Remembered alongside the grain for the same
+  // reason — it is how this user reads the page, not where they are in it.
+  let sortBy = GROUP_SORTS.some(([id]) => id === localStorage.getItem(SORT_STORAGE_KEY))
+    ? localStorage.getItem(SORT_STORAGE_KEY)
+    : 'count';
+  // Seconds of quiet that end a session; 0 disables the grouping entirely. Remembered
+  // like the view, because how coarsely you want repeats folded is a working preference.
+  let sessionGapS = Number(localStorage.getItem(SESSION_STORAGE_KEY) ?? 0) || 0;
+  // The groups behind the current render, folded to the grain on screen.
+  let pageGroups = [];
+  const selectedGroups = new Set();
+  // A time window clicked out of the timeline, held *outside* the filter state on
+  // purpose: it has hour precision and `<input type="date">` cannot show one, so
+  // writing it into the date filters would display "26 Aug" for a filter that actually
+  // means 14:00–15:00. A labelled chip says what is really being applied.
+  let windowOverride = null;
+
+  const focus = createFocusController(page);
+
   const filters = await createEventFilters(() => {
     // Any filter change is a new search, so the page resets — staying on page 4 of a
     // result set that no longer has four pages shows an empty grid for no visible
     // reason.
     offset = 0;
+    // An explicit date change supersedes a window picked off the timeline; leaving both
+    // on would apply the narrower one and make the date control look broken.
+    windowOverride = null;
+    void search();
+  });
+
+  /** The filter state actually sent to the server, timeline window included. */
+  function queryState() {
+    const state = filters.getState();
+    if (windowOverride) {
+      state.startFrom = windowOverride.from.toISOString();
+      state.startTo = windowOverride.to.toISOString();
+    }
+    return state;
+  }
+
+  // ── View switcher ───────────────────────────────────────────────────────────
+  const viewSwitch = el('div', 'event-search__views');
+  viewSwitch.dataset.testid = 'event-view-switch';
+  viewSwitch.setAttribute('role', 'tablist');
+  const viewButtons = new Map();
+  for (const [id, label, description] of VIEWS) {
+    const btn = button(label, () => setView(id), { testid: `event-view-${id}`, className: 'panel-btn event-search__view' });
+    btn.title = description;
+    btn.setAttribute('role', 'tab');
+    viewButtons.set(id, btn);
+    viewSwitch.appendChild(btn);
+  }
+
+  function syncViewUi() {
+    for (const [id, btn] of viewButtons) {
+      const on = id === view;
+      btn.classList.toggle('event-search__view--active', on);
+      btn.setAttribute('aria-selected', String(on));
+    }
+    splitLabel.hidden = view === 'all';
+    // Grain only means anything where rows are folded; the chronological view
+    // shows events, which are already at the finest grain there is.
+    groupByLabel.hidden = view === 'all';
+    // Same scope as the grain: the chronological view is ordered by the server,
+    // newest first, which is the only order a log of events has.
+    sortLabel.hidden = view === 'all';
+    // Session grouping folds *consecutive* events, which only the chronological view
+    // has; the aggregate views have already collapsed by identity, which subsumes it.
+    gapLabel.hidden = view !== 'all';
+    // The pager counts events; neither aggregate view is paged, because both already
+    // show the whole filtered set in tens of rows.
+    pager.hidden = view !== 'all';
+    selectAllLabel.hidden = view === 'timeline' || (view === 'all' ? pageEvents.length === 0 : pageGroups.length === 0);
+  }
+
+  function setView(next) {
+    if (next === view) return;
+    view = next;
+    localStorage.setItem(VIEW_STORAGE_KEY, next);
+    // Selection is scoped to what is on screen and the two views select different kinds
+    // of thing; carrying it across would arm a delete against rows in another unit.
+    selected.clear();
+    selectedGroups.clear();
+    anchorIndex = -1;
+    focus.clear();
+    offset = 0;
+    syncViewUi();
+    void search();
+  }
+
+  // ── Grouping grain ──────────────────────────────────────────────────────────
+  //
+  // The finest grain is the unit an event happened at and is right for triage; it is the
+  // wrong unit for "how much is each cat drinking", where one rule splits across four
+  // vessels and nothing sums them. The backend already returns the finest grain, so this
+  // only changes how the client folds — no request, no round trip.
+  const groupBySelect = document.createElement('select');
+  groupBySelect.className = 'event-filters__select';
+  groupBySelect.dataset.testid = 'event-group-by';
+  for (const [id, , label, description] of GROUP_BY_MODES) {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = label;
+    option.title = description;
+    groupBySelect.appendChild(option);
+  }
+  groupBySelect.value = groupBy;
+  const groupByLabel = el('label', 'event-search__group-by');
+  groupByLabel.appendChild(el('span', 'event-search__group-by-text', 'Group by'));
+  groupByLabel.appendChild(groupBySelect);
+  groupBySelect.addEventListener('change', () => {
+    groupBy = groupBySelect.value;
+    localStorage.setItem(GROUP_BY_STORAGE_KEY, groupBy);
+    // The rows are a different shape now, so a selection keyed on the old ones would
+    // arm an action against groups that no longer exist.
+    selectedGroups.clear();
+    focus.clear();
+    void search();
+  });
+
+  // ── Sort order ──────────────────────────────────────────────────────────────
+  //
+  // Pure presentation over rows already in hand, like the grain: no request, no re-fetch.
+  const sortSelect = document.createElement('select');
+  sortSelect.className = 'event-filters__select';
+  sortSelect.dataset.testid = 'event-sort-by';
+  for (const [id, label] of GROUP_SORTS) {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = label;
+    sortSelect.appendChild(option);
+  }
+  sortSelect.value = sortBy;
+  const sortLabel = el('label', 'event-search__sort');
+  sortLabel.appendChild(el('span', 'event-search__sort-text', 'Sort'));
+  sortLabel.appendChild(sortSelect);
+  sortSelect.addEventListener('change', () => {
+    sortBy = sortSelect.value;
+    localStorage.setItem(SORT_STORAGE_KEY, sortBy);
+    void search();
+  });
+
+  const splitBox = document.createElement('input');
+  splitBox.type = 'checkbox';
+  splitBox.dataset.testid = 'event-split-by-camera';
+  const splitLabel = el('label', 'event-search__split');
+  splitLabel.appendChild(splitBox);
+  splitLabel.appendChild(el('span', null, 'Split by camera'));
+  splitLabel.title = 'Most identities happen on one camera; a few span several. '
+    + 'Split them apart when you care which camera saw it.';
+  splitBox.addEventListener('change', () => {
+    splitByCamera = splitBox.checked;
+    selectedGroups.clear();
+    focus.clear();
+    void search();
+  });
+
+  // ── Session grouping (flat view only) ───────────────────────────────────────
+  const gapSelect = document.createElement('select');
+  gapSelect.className = 'event-filters__select';
+  gapSelect.dataset.testid = 'event-session-gap';
+  gapSelect.title = 'One visit to the water bowl re-fires its rule several times. '
+    + 'Grouping repeats folds them into the visit they describe.';
+  for (const [value, label] of SESSION_GAP_OPTIONS) {
+    const option = document.createElement('option');
+    option.value = String(value);
+    option.textContent = label;
+    gapSelect.appendChild(option);
+  }
+  gapSelect.value = String(sessionGapS);
+  const gapLabel = el('label', 'event-search__gap');
+  gapLabel.appendChild(gapSelect);
+  gapSelect.addEventListener('change', () => {
+    sessionGapS = Number(gapSelect.value) || 0;
+    localStorage.setItem(SESSION_STORAGE_KEY, String(sessionGapS));
+    // Sessions and events are different units, and the offset counts whichever is on
+    // screen — holding it across the switch would land on an arbitrary page.
+    offset = 0;
+    selected.clear();
+    anchorIndex = -1;
     void search();
   });
 
@@ -135,10 +393,74 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   selectAllLabel.appendChild(el('span', null, 'Select all'));
   selectAllBox.addEventListener('change', () => {
     selected.clear();
-    if (selectAllBox.checked) for (const e of pageEvents) selected.add(e.uuid);
+    selectedGroups.clear();
+    if (selectAllBox.checked) {
+      if (view === 'all') for (const e of pageEvents) selected.add(e.uuid);
+      else for (const g of pageGroups) selectedGroups.add(g.key);
+    }
     anchorIndex = -1;
     syncSelectionUi();
   });
+
+  // ── The timeline's time-window scope ────────────────────────────────────────
+  const windowChip = el('button', 'event-search__window-chip');
+  windowChip.type = 'button';
+  windowChip.hidden = true;
+  windowChip.dataset.testid = 'event-window-chip';
+  windowChip.title = 'Clear this time window';
+  windowChip.addEventListener('click', () => {
+    windowOverride = null;
+    offset = 0;
+    void search();
+  });
+
+  function syncWindowChip() {
+    windowChip.hidden = !windowOverride;
+    if (!windowOverride) return;
+    const { from, to } = windowOverride;
+    const sameDay = from.toDateString() === to.toDateString();
+    const time = d => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    windowChip.textContent = sameDay
+      ? `${from.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time(from)}–${time(to)} ✕`
+      : `${from.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} → `
+        + `${to.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} ✕`;
+  }
+
+  /**
+   * Narrow to one identity and show its events — the group and session cards' action.
+   *
+   * `ungroupSessions` is what makes opening a visit meaningful: with the collapse still
+   * on, drilling into a session would land on the very card just clicked, since it is
+   * the only thing in that window.
+   */
+  function drilldown(group, { window: win = null, ungroupSessions = false } = {}) {
+    windowOverride = win;
+    if (ungroupSessions && sessionGapS > 0) {
+      sessionGapS = 0;
+      gapSelect.value = '0';
+      localStorage.setItem(SESSION_STORAGE_KEY, '0');
+    }
+    filters.setState(groupDrilldownFilters(group, { splitByCamera }), {
+      silent: true,
+      // The identity came from history a moment ago, so it is a legitimate filter even
+      // if the facet list predates it — see `groupFacetSeeds`.
+      seed: groupFacetSeeds(group),
+    });
+    offset = 0;
+    view = 'all';
+    localStorage.setItem(VIEW_STORAGE_KEY, view);
+    selected.clear();
+    selectedGroups.clear();
+    focus.clear();
+    syncViewUi();
+    void search();
+  }
+
+  function toggleSelectGroup(group, { checked }) {
+    if (checked) selectedGroups.add(group.key);
+    else selectedGroups.delete(group.key);
+    syncSelectionUi();
+  }
 
   const selectionActions = el('div', 'event-search__selection');
   selectionActions.dataset.testid = 'event-search-selection';
@@ -149,6 +471,14 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     className: 'panel-btn panel-btn--danger',
   });
   selectionActions.appendChild(selectionCount);
+  // Triage before delete, and separated from it: marking a run of events reviewed is
+  // the common, reversible thing, and putting it beside the irreversible one makes the
+  // safe action the easy one to reach.
+  for (const [state, label] of REVIEW_ACTIONS) {
+    selectionActions.appendChild(button(label, () => void applyReviewState(state), {
+      testid: `event-search-review-${state}`,
+    }));
+  }
   selectionActions.appendChild(deleteBtn);
   selectionActions.appendChild(button('Clear selection', () => {
     selected.clear();
@@ -157,10 +487,22 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   }, { testid: 'event-search-clear-selection' }));
 
   const refreshBtn = button('Refresh', () => void search(), { testid: 'event-search-refresh' });
+  toolbar.appendChild(viewSwitch);
   toolbar.appendChild(selectAllLabel);
+  toolbar.appendChild(groupByLabel);
+  toolbar.appendChild(sortLabel);
+  toolbar.appendChild(splitLabel);
+  toolbar.appendChild(gapLabel);
   toolbar.appendChild(summary);
+  toolbar.appendChild(windowChip);
   toolbar.appendChild(refreshBtn);
   toolbar.appendChild(selectionActions);
+
+  /** How many events the current selection covers, in either unit. */
+  function selectedEventCount() {
+    if (view === 'all') return selected.size;
+    return pageGroups.filter(g => selectedGroups.has(g.key)).reduce((sum, g) => sum + g.count, 0);
+  }
 
   /** Push the selection into the DOM: card classes, checkboxes, and the action bar. */
   function syncSelectionUi() {
@@ -170,12 +512,26 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       const box = card.querySelector('.event-card__select');
       if (box) box.checked = isSelected;
     }
-    selectionActions.hidden = selected.size === 0;
-    selectionCount.textContent = `${selected.size} selected`;
-    deleteBtn.textContent = `Delete ${selected.size} event${selected.size === 1 ? '' : 's'}`;
-    selectAllLabel.hidden = pageEvents.length === 0;
-    selectAllBox.checked = pageEvents.length > 0 && selected.size === pageEvents.length;
-    selectAllBox.indeterminate = selected.size > 0 && selected.size < pageEvents.length;
+    for (const card of grid.querySelectorAll('.event-group-card[data-identity-key]')) {
+      const isSelected = selectedGroups.has(card.dataset.identityKey);
+      card.classList.toggle('event-group-card--selected', isSelected);
+      const box = card.querySelector('.event-group-card__select');
+      if (box) box.checked = isSelected;
+    }
+    const units = view === 'all' ? selected.size : selectedGroups.size;
+    const events = selectedEventCount();
+    selectionActions.hidden = units === 0;
+    selectionCount.textContent = view === 'all'
+      ? `${units} selected`
+      // A group's checkbox arms a delete against every event behind it, which is the
+      // whole point of it and also the one thing that could badly surprise someone. Both
+      // numbers, always, so "2 selected" can never quietly mean 665 rows.
+      : `${units} group${units === 1 ? '' : 's'} — ${events} event${events === 1 ? '' : 's'}`;
+    deleteBtn.textContent = `Delete ${events} event${events === 1 ? '' : 's'}`;
+    const items = view === 'all' ? pageEvents.length : pageGroups.length;
+    selectAllLabel.hidden = view === 'timeline' || items === 0;
+    selectAllBox.checked = items > 0 && units === items;
+    selectAllBox.indeterminate = units > 0 && units < items;
   }
 
   function toggleSelect(event, { shiftKey, checked }) {
@@ -202,8 +558,70 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     syncSelectionUi();
   }
 
+  /**
+   * Every event uuid behind the selected groups.
+   *
+   * Deferred to the delete click rather than paid while browsing, the same bargain the
+   * Review page's Apply-to-All strikes: the grouped view's whole value is that it does
+   * not fetch 383 rows to show you one card, and it would be self-defeating to fetch
+   * them anyway just in case you tick the box. The exact count is therefore known at
+   * confirm time, which is the only moment it has to be right.
+   */
+  async function uuidsForSelectedGroups() {
+    const groups = pageGroups.filter(g => selectedGroups.has(g.key));
+    const uuids = [];
+    for (const group of groups) {
+      const { events } = await fetchWatchEvents({
+        ...queryState(),
+        ...groupDrilldownFilters(group, { splitByCamera }),
+        limit: Math.max(1, group.count),
+        offset: 0,
+      });
+      for (const event of events) uuids.push(event.uuid);
+    }
+    return uuids;
+  }
+
+  /**
+   * Move the selection to a triage state.
+   *
+   * Reuses the same uuid resolution as the delete, so ticking a group and marking it
+   * reviewed covers all 383 of its events rather than the one card representing them.
+   */
+  async function applyReviewState(state) {
+    try {
+      const uuids = view === 'all' ? [...selected] : await uuidsForSelectedGroups();
+      if (!uuids.length) return;
+      const updated = await setWatchEventReviewStates(uuids, state);
+      toast(`Updated ${updated} event${updated === 1 ? '' : 's'}`, 3000);
+      selected.clear();
+      selectedGroups.clear();
+      anchorIndex = -1;
+      await search();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not update those events', 5000, 'error');
+    }
+  }
+
   async function deleteSelected() {
-    const uuids = [...selected];
+    let uuids;
+    if (view === 'all') {
+      uuids = [...selected];
+    } else {
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Loading events…';
+      try {
+        uuids = await uuidsForSelectedGroups();
+      } catch (err) {
+        Logger.error(err);
+        toast(err.message || 'Could not load the events in that group', 5000, 'error');
+        return;
+      } finally {
+        deleteBtn.disabled = false;
+        syncSelectionUi();
+      }
+    }
     if (!uuids.length) return;
     const confirmed = await showConfirmModal({
       title: `Delete ${uuids.length} event${uuids.length === 1 ? '' : 's'}?`,
@@ -275,11 +693,186 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     grid.appendChild(box);
   }
 
+  /**
+   * Bucket a group's histogram rows into a fixed number of slots for its sparkline.
+   *
+   * Fixed count rather than fixed width so every card's spark spans the same window and
+   * they can be read against each other — a card whose bars covered a different period
+   * from its neighbour's would invite exactly the wrong comparison.
+   *
+   * @param {Array<Object>} rows - histogram rows for one identity
+   * @param {?{start: number, end: number}} span
+   * @returns {number[]}
+   */
+  function sparkCounts(rows, span) {
+    if (!span || span.end <= span.start) return [];
+    const counts = new Array(SPARK_BUCKETS).fill(0);
+    for (const row of rows) {
+      const at = parseApiDate(row.bucketStart)?.getTime();
+      if (at == null) continue;
+      const slot = Math.min(
+        SPARK_BUCKETS - 1,
+        Math.max(0, Math.floor(((at - span.start) / (span.end - span.start)) * SPARK_BUCKETS)),
+      );
+      counts[slot] += row.count;
+    }
+    return counts;
+  }
+
+  /**
+   * The aggregate views' data: groups and the histogram, in one round trip each.
+   *
+   * Both views need both — the timeline needs the group list for its lane order and
+   * headlines, the group cards need the histogram for their sparklines — so they are
+   * fetched together and the view switch costs nothing beyond a re-render.
+   */
+  async function searchAggregate(seq) {
+    const state = queryState();
+    const [{ groups: raw, total: groupTotal }, histogram] = await Promise.all([
+      fetchWatchEventGroups(state),
+      fetchWatchEventHistogram({ ...state, bucket: 'hour' }),
+    ]);
+    if (seq !== requestSeq) return;
+
+    total = groupTotal;
+    pageGroups = sortGroups(foldGroups(raw, { dimensions: dimensions(), splitByCamera }), sortBy, dimensions());
+    // Registrations point at elements that are about to be discarded; a Map still
+    // holding them would pin the whole previous render in memory.
+    focus.reset();
+    grid.innerHTML = '';
+    grid.classList.toggle('event-search__grid--timeline', view === 'timeline');
+
+    if (!pageGroups.length) {
+      renderEmpty();
+    } else if (view === 'timeline') {
+      grid.appendChild(buildTimeline({
+        groups: pageGroups,
+        buckets: histogram.buckets,
+        bucket: histogram.bucket,
+        filters: state,
+        focus,
+        dimensions: dimensions(),
+        splitByCamera,
+        onSelectGroup: group => drilldown(group),
+        onSelectBucket: (group, win) => drilldown(group, { window: win }),
+      }));
+    } else {
+      const byIdentity = new Map();
+      for (const row of histogram.buckets) {
+        const key = identityKey(row, { dimensions: dimensions(), splitByCamera });
+        let list = byIdentity.get(key);
+        if (!list) byIdentity.set(key, (list = []));
+        list.push(row);
+      }
+      const times = histogram.buckets
+        .map(b => parseApiDate(b.bucketStart)?.getTime())
+        .filter(t => t != null);
+      const span = times.length ? { start: Math.min(...times), end: Math.max(...times) + 3600000 } : null;
+
+      for (const group of pageGroups) {
+        const card = buildGroupCard(group, {
+          sourceNames,
+          sparkCounts: sparkCounts(byIdentity.get(group.key) ?? [], span),
+          onDrilldown: g => drilldown(g),
+          onOpenLatest: async g => {
+            try {
+              const event = await fetchWatchEvent(g.representativeUuid);
+              openEventDetailModal(event, { sourceNames, onDeleted: () => void search() });
+            } catch (err) {
+              Logger.error(err);
+              toast(err.message || 'Could not open that event', 5000, 'error');
+            }
+          },
+          onToggleSelect: toggleSelectGroup,
+          selected: selectedGroups.has(group.key),
+        });
+        focus.register(group.key, card);
+        grid.appendChild(card);
+      }
+    }
+
+    syncSelectionUi();
+    syncWindowChip();
+    const shown = pageGroups.length;
+    summary.textContent = total
+      ? `${total} event${total === 1 ? '' : 's'} in ${shown} group${shown === 1 ? '' : 's'}`
+      : '';
+    renderPager();
+  }
+
+  /**
+   * The flat view with repeats folded into visits.
+   *
+   * Paged over sessions rather than events, which is why it has its own branch: the
+   * offset means a different thing here, and a session can never be split across a page
+   * boundary the way a client-side grouping would split it.
+   */
+  async function searchSessions(seq) {
+    const { sessions, total: sessionTotal } = await fetchWatchEventSessions({
+      ...queryState(),
+      gapS: sessionGapS,
+      limit: PAGE_SIZE,
+      offset,
+    });
+    if (seq !== requestSeq) return;
+
+    total = sessionTotal;
+    if (!sessions.length && total > 0 && offset >= total) {
+      offset = (Math.ceil(total / PAGE_SIZE) - 1) * PAGE_SIZE;
+      await search();
+      return;
+    }
+
+    grid.innerHTML = '';
+    grid.classList.remove('event-search__grid--timeline');
+    focus.reset();
+    // A session is not an event, so nothing that selects events may survive into it —
+    // the selection and delete paths below both key on event uuids.
+    pageEvents = [];
+    pageGroups = [];
+    selected.clear();
+    anchorIndex = -1;
+
+    if (!sessions.length) {
+      renderEmpty();
+    } else {
+      for (const session of sessions) {
+        const card = buildSessionCard(session, {
+          sourceNames,
+          // A visit has no single clip to play, so it drills into its own events and
+          // its own minutes rather than guessing which of the seven was meant.
+          onOpen: s => drilldown(s, {
+            window: { from: parseApiDate(s.startedAt), to: parseApiDate(s.endedAt) },
+            ungroupSessions: true,
+          }),
+        });
+        focus.register(identityKey(session, { dimensions: dimensions(), splitByCamera }), card);
+        grid.appendChild(card);
+      }
+    }
+    syncSelectionUi();
+    syncWindowChip();
+
+    const folded = sessions.reduce((sum, s) => sum + s.count, 0);
+    summary.textContent = total
+      ? `${total} visit${total === 1 ? '' : 's'}${folded > sessions.length ? ` — ${folded} events on this page` : ''}`
+      : '';
+    renderPager();
+  }
+
   async function search() {
     const seq = ++requestSeq;
     grid.setAttribute('aria-busy', 'true');
     try {
-      const result = await fetchWatchEvents({ ...filters.getState(), limit: PAGE_SIZE, offset });
+      if (view !== 'all') {
+        await searchAggregate(seq);
+        return;
+      }
+      if (sessionGapS > 0) {
+        await searchSessions(seq);
+        return;
+      }
+      const result = await fetchWatchEvents({ ...queryState(), limit: PAGE_SIZE, offset });
       if (seq !== requestSeq) return;
 
       total = result.total;
@@ -298,17 +891,20 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       }
 
       grid.innerHTML = '';
+      grid.classList.remove('event-search__grid--timeline');
+      focus.reset();
       // A selection is a set of cards on screen, so it cannot survive the cards. Kept
       // across a re-render it would silently arm "Delete 12 events" against a page the
       // user is no longer looking at.
       pageEvents = result.events;
+      pageGroups = [];
       selected.clear();
       anchorIndex = -1;
       if (!result.events.length) {
         renderEmpty();
       } else {
         for (const event of result.events) {
-          grid.appendChild(buildEventCard(event, {
+          const card = buildEventCard(event, {
             sourceNames,
             onToggleSelect: toggleSelect,
             selected: selected.has(event.uuid),
@@ -325,10 +921,15 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
                 void search();
               },
             }),
-          }));
+          });
+          // Every tile joins the same highlight as its lane and its group card, so
+          // hovering one "Maple → Tupperware" lights every other one on the page.
+          focus.register(identityKey(event, { dimensions: dimensions(), splitByCamera }), card);
+          grid.appendChild(card);
         }
       }
       syncSelectionUi();
+      syncWindowChip();
 
       const shown = result.events.length;
       summary.textContent = total
@@ -349,5 +950,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     }
   }
 
+  splitBox.checked = splitByCamera;
+  syncViewUi();
   await search();
 }

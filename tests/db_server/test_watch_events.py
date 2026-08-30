@@ -738,3 +738,456 @@ class TestWatchEventExclusionFilters:
         body = await _list(http_client, subject_refs=["cat-ref"], exclude_source_uuids=[cam_a])
         assert body["total"] == 1
         assert body["events"][0]["sourceUuid"] == cam_b
+
+
+async def _groups(http_client, **params) -> dict:
+    r = await http_client.get("/api/watch-events/groups", params=params)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body
+
+
+async def _histogram(http_client, **params) -> dict:
+    r = await http_client.get("/api/watch-events/histogram", params=params)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body
+
+
+class TestWatchEventGroups:
+    """The grouped review view: 1277 events are 22 things that happened.
+
+    The failure mode that matters here is not an error — it is a group card that says
+    "383 events" and drills into a grid showing a different number, which is what
+    happens the moment the two endpoints stop filtering identically.
+    """
+
+    async def test_events_of_one_identity_collapse_to_one_row(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        for _ in range(3):
+            await _make_event(http_client, profile_uuid, ruleUuid="rule-a", subjectRef="cat", targetRef="bowl")
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-a", subjectRef="dog", targetRef="bowl")
+
+        body = await _groups(http_client)
+        assert len(body["groups"]) == 2
+        assert [g["count"] for g in body["groups"]] == [3, 1], "biggest group must lead"
+        assert body["total"] == 4
+
+    async def test_group_counts_sum_to_the_grid_total_under_the_same_filter(self, http_client):
+        """The drift detector for the shared filter predicate.
+
+        Both endpoints assemble their WHERE from `_apply_watch_event_filters`. If one
+        ever grows a condition the other lacks, the counts diverge — and a group card
+        promising 3 events that opens onto 5 is a wrong answer, not a crash.
+        """
+        profile_uuid = await _make_profile(http_client)
+        cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)
+        for cam in (cam_a, cam_a, cam_b):
+            await _make_event(http_client, profile_uuid, ruleUuid="rule-a", subjectRef="cat", sourceUuid=cam)
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-b", subjectRef="dog", sourceUuid=cam_b)
+
+        for params in (
+            {},
+            {"source_uuids": [cam_a]},
+            {"exclude_source_uuids": [cam_a]},
+            {"subject_refs": ["cat"]},
+            {"rule_uuids": ["rule-a"], "exclude_subject_refs": ["dog"]},
+        ):
+            grouped = await _groups(http_client, **params)
+            listed = await _list(http_client, **params)
+            assert sum(g["count"] for g in grouped["groups"]) == listed["total"], params
+            assert grouped["total"] == listed["total"], params
+
+    async def test_an_identity_with_no_subject_or_target_is_its_own_group(self, http_client):
+        """A rule with no slots — the live history has one — is a real identity.
+
+        NULL is not a missing value to be dropped here: grouping that silently discarded
+        the row would lose the events entirely, and the total would stop matching the
+        grid's.
+        """
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(http_client, profile_uuid, ruleUuid="motion")
+        await _make_event(http_client, profile_uuid, ruleUuid="motion")
+        await _make_event(http_client, profile_uuid, ruleUuid="motion", subjectRef="cat")
+
+        body = await _groups(http_client)
+        bare = [g for g in body["groups"] if g["subjectRef"] is None]
+        assert len(bare) == 1
+        assert bare[0]["count"] == 2
+        assert body["total"] == 3
+
+    async def test_the_representative_is_the_newest_event_that_has_a_snapshot(self, http_client):
+        """Not simply the newest.
+
+        Card art comes from the representative, so a group whose newest event happens to
+        lack a snapshot would render as an empty tile — with nothing on screen to say
+        why, since the other events in it have pictures.
+        """
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        older_with_art = await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=base.isoformat(),
+            snapshotPath="/data/recordings/event_snapshots/a.jpg",
+        )
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=(base + timedelta(hours=1)).isoformat(),
+        )
+
+        body = await _groups(http_client)
+        assert body["groups"][0]["representativeUuid"] == older_with_art["uuid"]
+
+    async def test_a_group_with_no_snapshots_at_all_still_names_a_representative(self, http_client):
+        """The fallback. Returning nothing would make the card art unreachable even for
+        an event that later gains a snapshot."""
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid, ruleUuid="rule-a")
+
+        body = await _groups(http_client)
+        assert body["groups"][0]["representativeUuid"] == event["uuid"]
+
+    async def test_an_event_owning_two_recordings_counts_once_toward_with_recording(self, http_client):
+        """`withRecording` must never exceed the group's own count.
+
+        A join would count an event owning both a clip and a timelapse twice, and
+        "4 of 3 have video" is the kind of number nobody can explain later.
+        """
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid, ruleUuid="rule-a")
+        for kind in ("clip", "timelapse"):
+            r = await http_client.post(
+                "/api/recordings",
+                json={
+                    "eventUuid": event["uuid"],
+                    "kind": kind,
+                    "path": f"/data/recordings/{kind}.mp4",
+                    "durationS": 4.0,
+                },
+            )
+            assert r.status_code == 200, r.text
+
+        body = await _groups(http_client)
+        assert body["groups"][0]["count"] == 1
+        assert body["groups"][0]["withRecording"] == 1
+
+    async def test_total_duration_ignores_open_events(self, http_client):
+        """An open event has no duration yet. Counting its start as an end would report
+        a measurement where there is only a guess — the same refusal the card makes."""
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            startedAt=base.isoformat(),
+            endedAt=(base + timedelta(seconds=30)).isoformat(),
+        )
+        await _make_event(
+            http_client, profile_uuid, ruleUuid="rule-a", startedAt=(base + timedelta(hours=2)).isoformat()
+        )
+
+        body = await _groups(http_client)
+        assert body["groups"][0]["count"] == 2
+        assert body["groups"][0]["totalDurationS"] == pytest.approx(30.0, abs=0.5)
+
+
+class TestWatchEventHistogram:
+    """The timeline's data source."""
+
+    async def test_events_in_one_hour_share_a_bucket_and_events_in_two_do_not(self, http_client):
+        base = datetime(2026, 1, 1, 14, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        for minutes in (0, 20, 50):
+            await _make_event(
+                http_client,
+                profile_uuid,
+                ruleUuid="rule-a",
+                startedAt=(base + timedelta(minutes=minutes)).isoformat(),
+            )
+        await _make_event(
+            http_client, profile_uuid, ruleUuid="rule-a", startedAt=(base + timedelta(hours=1)).isoformat()
+        )
+
+        body = await _histogram(http_client, bucket="hour")
+        assert body["bucket"] == "hour"
+        by_start = {b["bucketStart"]: b["count"] for b in body["buckets"]}
+        assert by_start == {"2026-01-01T14:00:00": 3, "2026-01-01T15:00:00": 1}
+
+    async def test_buckets_are_split_by_identity(self, http_client):
+        """One lane per identity is the whole shape of the timeline; a histogram summed
+        across identities could not draw it."""
+        base = datetime(2026, 1, 1, 14, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-a", startedAt=base.isoformat())
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-b", startedAt=base.isoformat())
+
+        body = await _histogram(http_client, bucket="hour")
+        assert len(body["buckets"]) == 2
+        assert {b["ruleUuid"] for b in body["buckets"]} == {"rule-a", "rule-b"}
+
+    async def test_the_histogram_respects_the_same_filters_as_the_grid(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-a", sourceUuid=cam_a)
+        await _make_event(http_client, profile_uuid, ruleUuid="rule-a", sourceUuid=cam_b)
+
+        body = await _histogram(http_client, source_uuids=[cam_a])
+        assert sum(b["count"] for b in body["buckets"]) == (await _list(http_client, source_uuids=[cam_a]))["total"]
+
+    async def test_an_oversized_hour_request_falls_back_to_days_without_losing_events(
+        self, http_client, db_client, monkeypatch
+    ):
+        """The overflow answer coarsens the resolution and *says so*.
+
+        Truncating instead would silently misreport when things happened, which is worse
+        than a coarse picture — and the flag is what lets the UI tell the user the marks
+        are whole days rather than hours.
+        """
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        for hours in range(6):
+            await _make_event(
+                http_client, profile_uuid, ruleUuid="rule-a", startedAt=(base + timedelta(hours=hours)).isoformat()
+            )
+        monkeypatch.setattr(type(db_client), "HISTOGRAM_ROW_LIMIT", 2)
+
+        body = await _histogram(http_client, bucket="hour")
+        assert body["bucket"] == "day", "the caller must be told the resolution changed"
+        assert sum(b["count"] for b in body["buckets"]) == 6, "no event may be dropped by the fallback"
+        assert [b["bucketStart"] for b in body["buckets"]] == ["2026-01-01T00:00:00"]
+
+
+async def _sessions(http_client, **params) -> dict:
+    r = await http_client.get("/api/watch-events/sessions", params=params)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return body
+
+
+class TestWatchEventSessions:
+    """Consecutive events of one identity, folded into the visit they describe.
+
+    The property that matters is that the fold is computed over the *whole* filtered set:
+    doing it per page — which is what a browser-side grouping would be — splits every
+    session that straddles a page boundary, and groups differently depending on which
+    page you happen to land on.
+    """
+
+    async def test_a_burst_of_events_becomes_one_visit(self, http_client):
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        # Three events 30s apart — one trip to the bowl, re-firing as the rule rearms.
+        for i in range(3):
+            start = base + timedelta(seconds=i * 30)
+            await _make_event(
+                http_client,
+                profile_uuid,
+                ruleUuid="rule-a",
+                subjectRef="cat",
+                startedAt=start.isoformat(),
+                endedAt=(start + timedelta(seconds=10)).isoformat(),
+            )
+
+        body = await _sessions(http_client, gap_s=120)
+        assert body["total"] == 1
+        assert body["sessions"][0]["count"] == 3
+
+    async def test_a_long_gap_starts_a_new_visit(self, http_client):
+        """The whole point of the threshold. Two trips an hour apart are two visits,
+        however identical the events are."""
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        for offset_min in (0, 60):
+            start = base + timedelta(minutes=offset_min)
+            await _make_event(
+                http_client,
+                profile_uuid,
+                ruleUuid="rule-a",
+                subjectRef="cat",
+                startedAt=start.isoformat(),
+                endedAt=(start + timedelta(seconds=10)).isoformat(),
+            )
+
+        assert (await _sessions(http_client, gap_s=120))["total"] == 2
+        # Widen the threshold past the gap and the same two events become one visit.
+        assert (await _sessions(http_client, gap_s=7200))["total"] == 1
+
+    async def test_the_gap_is_measured_from_the_end_not_the_start(self, http_client):
+        """A five-minute event followed 30s later by another is one visit.
+
+        Measuring start-to-start would call them two, because the *starts* are five and
+        a half minutes apart — and a long event would split from its own continuation.
+        """
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=base.isoformat(),
+            endedAt=(base + timedelta(minutes=5)).isoformat(),
+        )
+        resume = base + timedelta(minutes=5, seconds=30)
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=resume.isoformat(),
+            endedAt=(resume + timedelta(seconds=10)).isoformat(),
+        )
+
+        body = await _sessions(http_client, gap_s=120)
+        assert body["total"] == 1, "the second event resumed the first, 30s after it ended"
+        assert body["sessions"][0]["count"] == 2
+
+    async def test_two_identities_never_share_a_visit(self, http_client):
+        """Interleaved in time, but a different cat is a different visit."""
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        for i, subject in enumerate(("cat", "dog", "cat", "dog")):
+            start = base + timedelta(seconds=i * 20)
+            await _make_event(
+                http_client,
+                profile_uuid,
+                ruleUuid="rule-a",
+                subjectRef=subject,
+                startedAt=start.isoformat(),
+                endedAt=(start + timedelta(seconds=5)).isoformat(),
+            )
+
+        body = await _sessions(http_client, gap_s=120)
+        assert body["total"] == 2
+        assert {s["subjectRef"] for s in body["sessions"]} == {"cat", "dog"}
+        assert all(s["count"] == 2 for s in body["sessions"])
+
+    async def test_every_event_lands_in_exactly_one_visit(self, http_client):
+        """The counts must reconcile with the grid, or the two views disagree about how
+        much history there is."""
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        for i in range(12):
+            start = base + timedelta(minutes=i * 7)
+            await _make_event(
+                http_client,
+                profile_uuid,
+                ruleUuid="rule-a",
+                subjectRef="cat" if i % 2 else "dog",
+                startedAt=start.isoformat(),
+                endedAt=(start + timedelta(seconds=20)).isoformat(),
+            )
+
+        body = await _sessions(http_client, gap_s=600, limit=1000)
+        assert sum(s["count"] for s in body["sessions"]) == (await _list(http_client))["total"]
+
+    async def test_a_visit_is_not_split_across_a_page_boundary(self, http_client):
+        """The reason this is server-side.
+
+        Paging by session and grouping over the whole filtered set means a burst is one
+        row wherever it falls; a client grouping the 60 events it received would cut the
+        burst that straddled the edge into two half-visits.
+        """
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        # Three bursts of three, far enough apart to be distinct visits.
+        for burst in range(3):
+            for i in range(3):
+                start = base + timedelta(hours=burst, seconds=i * 20)
+                await _make_event(
+                    http_client,
+                    profile_uuid,
+                    ruleUuid="rule-a",
+                    subjectRef="cat",
+                    startedAt=start.isoformat(),
+                    endedAt=(start + timedelta(seconds=5)).isoformat(),
+                )
+
+        first = await _sessions(http_client, gap_s=120, limit=2, offset=0)
+        second = await _sessions(http_client, gap_s=120, limit=2, offset=2)
+        assert first["total"] == 3
+        assert [s["count"] for s in first["sessions"]] == [3, 3]
+        assert [s["count"] for s in second["sessions"]] == [3]
+
+    async def test_the_visit_spans_from_its_first_start_to_its_last_end(self, http_client):
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        for i in range(3):
+            start = base + timedelta(seconds=i * 30)
+            await _make_event(
+                http_client,
+                profile_uuid,
+                ruleUuid="rule-a",
+                subjectRef="cat",
+                startedAt=start.isoformat(),
+                endedAt=(start + timedelta(seconds=10)).isoformat(),
+            )
+
+        session = (await _sessions(http_client, gap_s=120))["sessions"][0]
+        assert session["startedAt"].startswith("2026-01-01T12:00:00")
+        assert session["endedAt"].startswith("2026-01-01T12:01:10")
+
+    async def test_sessions_honour_the_same_filters_as_the_grid(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)
+        for cam in (cam_a, cam_b):
+            await _make_event(http_client, profile_uuid, ruleUuid="rule-a", sourceUuid=cam)
+
+        body = await _sessions(http_client, gap_s=120, source_uuids=[cam_a], limit=1000)
+        assert sum(s["count"] for s in body["sessions"]) == (await _list(http_client, source_uuids=[cam_a]))["total"]
+
+
+class TestReviewStateTriage:
+    """The column, the read model and the `review_state` filter all predate any way to
+    write it — every event in live history reads `unreviewed` because nothing could."""
+
+    async def test_marking_events_reviewed_makes_them_filterable(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        reviewed = await _make_event(http_client, profile_uuid, ruleName="seen")
+        await _make_event(http_client, profile_uuid, ruleName="not seen")
+
+        r = await http_client.post(
+            "/api/watch-events/review-states",
+            json={"uuids": [reviewed["uuid"]], "state": "confirmed"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["updated"] == 1
+
+        assert [e["ruleName"] for e in (await _list(http_client, review_state="confirmed"))["events"]] == ["seen"]
+        assert [e["ruleName"] for e in (await _list(http_client, review_state="unreviewed"))["events"]] == ["not seen"]
+
+    async def test_an_unknown_state_is_refused(self, http_client):
+        """A typo must not silently write a state nothing can filter for, stranding the
+        events in a value no control offers."""
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+
+        r = await http_client.post(
+            "/api/watch-events/review-states",
+            json={"uuids": [event["uuid"]], "state": "definitely-not-a-state"},
+        )
+        assert r.json()["status"] == "failure"
+        assert (await _list(http_client, review_state="unreviewed"))["total"] == 1
+
+    async def test_a_uuid_that_is_already_gone_is_not_an_error(self, http_client):
+        """Same promise the bulk delete makes: two tabs triaging one selection is normal,
+        and the count reports what actually moved."""
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+
+        r = await http_client.post(
+            "/api/watch-events/review-states",
+            json={"uuids": [event["uuid"], "no-such-event"], "state": "dismissed"},
+        )
+        assert r.json()["status"] == "success"
+        assert r.json()["updated"] == 1

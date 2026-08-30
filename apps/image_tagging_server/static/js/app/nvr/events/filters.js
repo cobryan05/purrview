@@ -78,11 +78,99 @@ export function applyVideoFilter(state, value) {
   state.hasRecording = value === '' ? null : value === 'true';
 }
 
+/**
+ * The relative range presets, as `[days, label]`. `null` days is "all of history".
+ *
+ * Whole *local* days, not rolling hours: the bounds have to survive a round trip through
+ * `<input type="date">`, which cannot represent an hour. "Last 24 hours" would display as
+ * a plain date and quietly mean something else — the same mismatch that keeps the
+ * timeline's clicked-hour window out of the filter state entirely.
+ */
+export const RANGE_PRESETS = [
+  [7, 'Last 7 days'],
+  [1, 'Today'],
+  [30, 'Last 30 days'],
+  [90, 'Last 3 months'],
+  [365, 'Last year'],
+  [null, 'All time'],
+];
+
+/**
+ * How much history the page shows before anyone touches a control.
+ *
+ * Unfiltered used to mean "everything", which grows without bound — the log is
+ * append-only and already covers months. A default range is a filter the user did not
+ * ask for, so the control naming it is always on screen and the empty state says so.
+ */
+export const DEFAULT_RANGE_DAYS = 7;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `YYYY-MM-DD` in the **viewer's** timezone.
+ *
+ * `toISOString().slice(0, 10)` is the obvious spelling and is wrong: it formats in UTC,
+ * so for anyone west of Greenwich "today" becomes yesterday for part of every day.
+ *
+ * @param {Date} date
+ * @returns {string}
+ */
+export function toDateInputValue(date) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * The `days` whole local days ending today.
+ *
+ * @param {number} days
+ * @returns {{from: string, to: string}} date-input values
+ */
+export function rangeEndingToday(days) {
+  const end = new Date();
+  const start = new Date(end.getTime() - (days - 1) * DAY_MS);
+  return { from: toDateInputValue(start), to: toDateInputValue(end) };
+}
+
+/**
+ * Slide a window by its own length — what the prev/next buttons do.
+ *
+ * Derived from the window rather than from the chosen preset, so the buttons keep
+ * working after the dates have been edited by hand: stepping a custom 3-day range moves
+ * by 3 days, which is the only step that makes the two windows abut without a gap or an
+ * overlap.
+ *
+ * @param {string} from - date-input value
+ * @param {string} to
+ * @param {number} direction - -1 for earlier, +1 for later
+ * @returns {{from: string, to: string}}
+ */
+export function shiftRange(from, to, direction) {
+  // Parsed as local midnight, not through `new Date('YYYY-MM-DD')`, which the spec says
+  // to read as UTC — that would drift the window by a day for most of the world.
+  const parse = value => {
+    const [y, m, d] = value.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const start = parse(from);
+  const end = parse(to);
+  const span = Math.round((end - start) / DAY_MS) + 1;
+  return {
+    from: toDateInputValue(new Date(start.getTime() + direction * span * DAY_MS)),
+    to: toDateInputValue(new Date(end.getTime() + direction * span * DAY_MS)),
+  };
+}
+
 /** @returns {EventFilterState} */
 export function defaultFilterState() {
   const state = {
     startFrom: null,
     startTo: null,
+    // Which preset the dates came from, or null for a hand-picked range. A UI mode
+    // rather than a filter — `watchEventFilterParams` never sends it, and
+    // `hasActiveFilter` skips it, because the narrowing it implies is already fully
+    // expressed by `startFrom`/`startTo`.
+    rangeDays: null,
     hasRecording: null,
     recordingKind: null,
   };
@@ -102,7 +190,12 @@ export function defaultFilterState() {
  * @param {EventFilterState} state
  */
 export function hasActiveFilter(state) {
-  return Object.values(state).some(v => (Array.isArray(v) ? v.length > 0 : v != null));
+  return Object.entries(state).some(
+    // `rangeDays` only records which button produced the dates; counting it too would
+    // make a range look like two filters and would report "filtered" for a state whose
+    // dates had been cleared.
+    ([key, v]) => key !== 'rangeDays' && (Array.isArray(v) ? v.length > 0 : v != null),
+  );
 }
 
 function el(tag, className, text) {
@@ -176,6 +269,9 @@ export async function createEventFilters(onChange) {
   /** @type {Array<{destroy: () => void}>} live dropdowns, destroyed before each rebuild */
   let facetDropdowns = [];
   let clipSelect;
+  let rangeSelect;
+  let prevBtn;
+  let nextBtn;
   const fromInput = dateInput();
   const toInput = dateInput();
 
@@ -246,6 +342,7 @@ export async function createEventFilters(onChange) {
       commit();
     });
 
+    controls.appendChild(buildRangeControls());
     controls.appendChild(field('From', fromInput, 'event-filter-from'));
     controls.appendChild(field('To', toInput, 'event-filter-to'));
     controls.appendChild(field('Video', clipSelect, 'event-filter-clip'));
@@ -257,26 +354,175 @@ export async function createEventFilters(onChange) {
     clear.dataset.testid = 'event-filter-clear';
     clear.addEventListener('click', () => reset());
     controls.appendChild(clear);
+
+    // The range controls are rebuilt along with everything else, so the freshly created
+    // select starts on its first option and both buttons start enabled. Without this a
+    // facet refresh silently relabels the current range as "Last 7 days".
+    syncRangeControls();
+  }
+
+  /**
+   * Write a window into the state and the two date inputs at once.
+   *
+   * The inputs stay the single visible truth about what is filtered — a relative preset
+   * is a *way of choosing* dates, not a second, competing notion of time the user cannot
+   * see. That is also what lets prev/next work on a hand-typed range.
+   *
+   * @param {?{from: string, to: string}} window - date-input values, or null for all time
+   */
+  function applyRange(window) {
+    fromInput.value = window ? window.from : '';
+    toInput.value = window ? window.to : '';
+    // `To` covers the whole day it names — otherwise picking one day for both bounds
+    // returns only events at exactly 00:00:00.
+    state.startFrom = window ? `${window.from}T00:00:00` : null;
+    state.startTo = window ? `${window.to}T23:59:59` : null;
+    syncRangeControls();
+  }
+
+  function syncRangeControls() {
+    if (!rangeSelect) return;
+    rangeSelect.value = state.rangeDays == null ? (state.startFrom ? 'custom' : '') : String(state.rangeDays);
+    const hasWindow = Boolean(fromInput.value && toInput.value);
+    prevBtn.disabled = !hasWindow;
+    // Stepping forward past today would land on a window that cannot contain anything
+    // yet — a control that only ever empties the page is worse than a disabled one.
+    nextBtn.disabled = !hasWindow || toInput.value >= toDateInputValue(new Date());
+  }
+
+  function step(direction) {
+    if (!fromInput.value || !toInput.value) return;
+    // Stepping leaves the preset behind: "Last 7 days" names a window ending today, and
+    // the week before last is not that. The label has to stop claiming otherwise.
+    state.rangeDays = null;
+    applyRange(shiftRange(fromInput.value, toInput.value, direction));
+    commit();
+  }
+
+  function buildRangeControls() {
+    const wrap = el('div', 'event-filters__field event-filters__range');
+    wrap.dataset.testid = 'event-filter-range';
+    wrap.appendChild(el('span', 'event-filters__label', 'Range'));
+    const row = el('div', 'event-filters__range-row');
+
+    prevBtn = el('button', 'panel-btn event-filters__step', '‹');
+    prevBtn.type = 'button';
+    prevBtn.title = 'Jump back one window';
+    prevBtn.dataset.testid = 'event-filter-range-prev';
+    prevBtn.addEventListener('click', () => step(-1));
+
+    rangeSelect = document.createElement('select');
+    rangeSelect.className = 'event-filters__select';
+    rangeSelect.dataset.testid = 'event-filter-range-select';
+    for (const [days, label] of RANGE_PRESETS) {
+      const option = document.createElement('option');
+      option.value = days == null ? '' : String(days);
+      option.textContent = label;
+      rangeSelect.appendChild(option);
+    }
+    // Not offered, only reachable: "Custom" is what the control *becomes* when the dates
+    // stop matching a preset, so picking it from the list would mean nothing.
+    const custom = document.createElement('option');
+    custom.value = 'custom';
+    custom.textContent = 'Custom range';
+    custom.disabled = true;
+    rangeSelect.appendChild(custom);
+    rangeSelect.addEventListener('change', () => {
+      const value = rangeSelect.value;
+      state.rangeDays = value === '' ? null : Number(value);
+      applyRange(state.rangeDays == null ? null : rangeEndingToday(state.rangeDays));
+      commit();
+    });
+
+    nextBtn = el('button', 'panel-btn event-filters__step', '›');
+    nextBtn.type = 'button';
+    nextBtn.title = 'Jump forward one window';
+    nextBtn.dataset.testid = 'event-filter-range-next';
+    nextBtn.addEventListener('click', () => step(1));
+
+    row.appendChild(prevBtn);
+    row.appendChild(rangeSelect);
+    row.appendChild(nextBtn);
+    wrap.appendChild(row);
+    return wrap;
   }
 
   // A <input type="date"> gives a bare YYYY-MM-DD, which the backend would read as
   // midnight UTC. `To` therefore has to cover the whole day it names, or picking the
   // same day for both returns only events at exactly 00:00:00.
+  //
+  // Editing either by hand drops the preset: the dates are the truth, and a select still
+  // reading "Last 7 days" over a range that is not the last 7 days would be a lie.
   fromInput.addEventListener('change', () => {
     state.startFrom = fromInput.value ? `${fromInput.value}T00:00:00` : null;
+    state.rangeDays = null;
+    syncRangeControls();
     commit();
   });
   toInput.addEventListener('change', () => {
     state.startTo = toInput.value ? `${toInput.value}T23:59:59` : null;
+    state.rangeDays = null;
+    syncRangeControls();
     commit();
   });
 
   function reset() {
     Object.assign(state, defaultFilterState());
-    fromInput.value = '';
-    toInput.value = '';
     renderControls();
+    // Back to the range the page opens on, not to unbounded history: "Clear" should put
+    // the page in the state you would get by reloading it, and quietly widening to every
+    // event ever recorded is a bigger change than the button appears to offer.
+    state.rangeDays = DEFAULT_RANGE_DAYS;
+    applyRange(rangeEndingToday(DEFAULT_RANGE_DAYS));
     commit();
+  }
+
+  /**
+   * Replace the facet selections wholesale — how a group card drills into its events.
+   *
+   * Starts from `defaultFilterState()` rather than merging into what is already there:
+   * "show me these 383" means *only* those, and merging would silently intersect the
+   * drill-down with a selection the user had made three clicks ago and forgotten. The
+   * dates are deliberately not touched, because narrowing to an identity is a different
+   * question from narrowing to a day and the two compose.
+   *
+   * ⚠️ `seed` is not optional decoration for a caller that knows its values are new.
+   * `renderControls` drops any selection the facet list does not contain, so that a
+   * value whose last event was deleted cannot linger as a filter matching nothing. A
+   * drill-down is the one case where that guard is wrong: the identity demonstrably
+   * exists — the group card came from the same history a moment ago — but the facets
+   * are only refreshed on load and on delete, so an identity that fired since the last
+   * refresh is *not* in the list. Pruned, the drill-down silently clears its own filter
+   * and shows every event instead of the group's, which looks like the feature working.
+   * Seeding the option in tells the control what the caller already knows.
+   *
+   * @param {Object} partial - a partial EventFilterState
+   * @param {Object} [opts]
+   * @param {boolean} [opts.silent] - skip the onChange callback, for a caller that is
+   *   about to re-search anyway and would otherwise do it twice
+   * @param {Object} [opts.seed] - `{rules|subjects|targets|sources: [{ref, name}]}`
+   *   options to add to the facet lists if history has not reported them yet
+   */
+  function setState(partial, { silent = false, seed = null } = {}) {
+    for (const [facetKey, options] of Object.entries(seed ?? {})) {
+      const known = new Set((facets[facetKey] ?? []).map(o => o.ref));
+      for (const option of options) {
+        if (option?.ref && !known.has(option.ref)) {
+          facets[facetKey] = [...(facets[facetKey] ?? []), { ref: option.ref, name: option.name || option.ref }];
+        }
+      }
+    }
+    const next = defaultFilterState();
+    next.startFrom = state.startFrom;
+    next.startTo = state.startTo;
+    next.rangeDays = state.rangeDays;
+    Object.assign(next, partial);
+    Object.assign(state, next);
+    fromInput.value = state.startFrom ? state.startFrom.slice(0, 10) : '';
+    toInput.value = state.startTo ? state.startTo.slice(0, 10) : '';
+    renderControls();
+    syncRangeControls();
+    if (!silent) commit();
   }
 
   async function refreshFacets() {
@@ -292,10 +538,16 @@ export async function createEventFilters(onChange) {
   }
 
   await refreshFacets();
+  // After the controls exist — `applyRange` writes through them — and without
+  // committing: the caller runs the first search itself, and firing `onChange` here
+  // would make the page open with two identical requests in flight.
+  state.rangeDays = DEFAULT_RANGE_DAYS;
+  applyRange(rangeEndingToday(DEFAULT_RANGE_DAYS));
 
   return {
     element: container,
     getState: snapshot,
+    setState,
     reset,
     refreshFacets,
   };

@@ -38,6 +38,7 @@ from apps.helpers.watch.events import EventCloseReason
 from .types import (
     BBOX_CONFIDENCE_METADATA_KEYS,
     CONFUSABLE_TAG_UUID,
+    DEFAULT_SESSION_GAP_S,
     DETECTOR_MISS_TAG_UUID,
     HARVESTED_TAG_UUID,
     MODEL_TYPE_ARCHITECTURES,
@@ -7130,8 +7131,9 @@ class DbClient:
             event.recordings = by_event.get(event.uuid, [])
         return events
 
-    async def list_watch_events(
-        self,
+    @staticmethod
+    def _apply_watch_event_filters(
+        stmt,
         profile_uuid: Optional[str] = None,
         source_uuid: Optional[str] = None,
         rule_uuid: Optional[str] = None,
@@ -7151,14 +7153,19 @@ class DbClient:
         recording_kind: Optional[str] = None,
         has_blips: Optional[bool] = None,
         review_state: Optional[str] = None,
-        limit: int = 200,
-        offset: int = 0,
-    ) -> Tuple[List[WatchEventRead], int]:
-        """Newest first, offset paginated, with the unpaginated total.
+    ):
+        """Every `watch_events` search predicate, in one place, for every reader.
 
-        Offset rather than the keyset cursor the review queue uses: events are a
-        bounded, append-only log ordered by a single scalar the user also filters on,
-        and the page shows "N events" — which needs the count anyway.
+        Four endpoints ask the same question of this table and differ only in what they
+        do with the matching rows: `list_watch_events` pages them, `watch_event_groups`
+        collapses them by identity, `watch_event_histogram` bins them by time, and
+        `watch_event_sessions` walks them in order. If each assembled its own `WHERE`,
+        the group counts and the grid totals would drift the first time a filter was
+        added to one and not the others — the same failure mode
+        `_apply_image_search_filters` exists to prevent on the image side.
+
+        Adds no ORDER BY, LIMIT or cursor: those are the caller's, and they are the only
+        thing the callers legitimately disagree about.
 
         Each of the four facet filters takes a list of values to include and a list to
         exclude. The singular forms are the same filter spelled for one value, folded
@@ -7182,51 +7189,67 @@ class DbClient:
             # the NULL case has to be spelled out.
             return or_(column == None, column.notin_(unwanted))  # noqa: E711
 
+        if profile_uuid:
+            stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
+        for clause in (
+            _include(WatchEvent.source_uuid, source_uuid, source_uuids),
+            _include(WatchEvent.rule_uuid, rule_uuid, rule_uuids),
+            _include(WatchEvent.subject_ref, subject_ref, subject_refs),
+            _include(WatchEvent.target_ref, target_ref, target_refs),
+            _exclude(WatchEvent.source_uuid, exclude_source_uuids),
+            _exclude(WatchEvent.rule_uuid, exclude_rule_uuids),
+            _exclude(WatchEvent.subject_ref, exclude_subject_refs),
+            _exclude(WatchEvent.target_ref, exclude_target_refs),
+        ):
+            if clause is not None:
+                stmt = stmt.where(clause)
+        if start_from:
+            stmt = stmt.where(WatchEvent.started_at >= start_from)
+        if start_to:
+            stmt = stmt.where(WatchEvent.started_at <= start_to)
+        if has_recording is not None:
+            # EXISTS rather than the reverse pointer this used to test, because an
+            # event can own several recordings and no single column can answer it.
+            # `recordings.event_uuid` is indexed, so this stays a lookup per row.
+            owns_media = select(Recording.uuid).where(Recording.event_uuid == WatchEvent.uuid).exists()
+            stmt = stmt.where(owns_media if has_recording else ~owns_media)
+        if recording_kind:
+            # Narrower than `has_recording`, and deliberately a separate parameter
+            # rather than a third state of it: "owns a timelapse" says nothing about
+            # whether it also owns a clip, and the two questions compose. Same
+            # indexed `event_uuid` lookup, with `kind` — also indexed — alongside.
+            owns_kind = (
+                select(Recording.uuid)
+                .where(Recording.event_uuid == WatchEvent.uuid, Recording.kind == recording_kind)
+                .exists()
+            )
+            stmt = stmt.where(owns_kind)
+        if has_blips is not None:
+            # EXISTS for the same reason as recordings above: an event owns many
+            # blips and no column on the event can answer it. `event_blips.event_uuid`
+            # is indexed, so this stays a lookup per row rather than a scan.
+            flagged = select(EventBlip.uuid).where(EventBlip.event_uuid == WatchEvent.uuid).exists()
+            stmt = stmt.where(flagged if has_blips else ~flagged)
+        if review_state:
+            stmt = stmt.where(WatchEvent.review_state == review_state)
+        return stmt
+
+    async def list_watch_events(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        **filters,
+    ) -> Tuple[List[WatchEventRead], int]:
+        """Newest first, offset paginated, with the unpaginated total.
+
+        Offset rather than the keyset cursor the review queue uses: events are a
+        bounded, append-only log ordered by a single scalar the user also filters on,
+        and the page shows "N events" — which needs the count anyway.
+
+        See `_apply_watch_event_filters` for what `**filters` accepts.
+        """
         async with self._async_session_maker() as session:
-            stmt = select(WatchEvent)
-            if profile_uuid:
-                stmt = stmt.where(WatchEvent.profile_uuid == profile_uuid)
-            for clause in (
-                _include(WatchEvent.source_uuid, source_uuid, source_uuids),
-                _include(WatchEvent.rule_uuid, rule_uuid, rule_uuids),
-                _include(WatchEvent.subject_ref, subject_ref, subject_refs),
-                _include(WatchEvent.target_ref, target_ref, target_refs),
-                _exclude(WatchEvent.source_uuid, exclude_source_uuids),
-                _exclude(WatchEvent.rule_uuid, exclude_rule_uuids),
-                _exclude(WatchEvent.subject_ref, exclude_subject_refs),
-                _exclude(WatchEvent.target_ref, exclude_target_refs),
-            ):
-                if clause is not None:
-                    stmt = stmt.where(clause)
-            if start_from:
-                stmt = stmt.where(WatchEvent.started_at >= start_from)
-            if start_to:
-                stmt = stmt.where(WatchEvent.started_at <= start_to)
-            if has_recording is not None:
-                # EXISTS rather than the reverse pointer this used to test, because an
-                # event can own several recordings and no single column can answer it.
-                # `recordings.event_uuid` is indexed, so this stays a lookup per row.
-                owns_media = select(Recording.uuid).where(Recording.event_uuid == WatchEvent.uuid).exists()
-                stmt = stmt.where(owns_media if has_recording else ~owns_media)
-            if recording_kind:
-                # Narrower than `has_recording`, and deliberately a separate parameter
-                # rather than a third state of it: "owns a timelapse" says nothing about
-                # whether it also owns a clip, and the two questions compose. Same
-                # indexed `event_uuid` lookup, with `kind` — also indexed — alongside.
-                owns_kind = (
-                    select(Recording.uuid)
-                    .where(Recording.event_uuid == WatchEvent.uuid, Recording.kind == recording_kind)
-                    .exists()
-                )
-                stmt = stmt.where(owns_kind)
-            if has_blips is not None:
-                # EXISTS for the same reason as recordings above: an event owns many
-                # blips and no column on the event can answer it. `event_blips.event_uuid`
-                # is indexed, so this stays a lookup per row rather than a scan.
-                flagged = select(EventBlip.uuid).where(EventBlip.event_uuid == WatchEvent.uuid).exists()
-                stmt = stmt.where(flagged if has_blips else ~flagged)
-            if review_state:
-                stmt = stmt.where(WatchEvent.review_state == review_state)
+            stmt = self._apply_watch_event_filters(select(WatchEvent), **filters)
 
             count_stmt = select(func.count()).select_from(stmt.subquery())
             total = (await session.exec(count_stmt)).one()
@@ -7236,6 +7259,378 @@ class DbClient:
             events = [self._watch_event_to_read(e) for e in result.all()]
             events = await self._attach_event_recordings(session, events)
             return await self._attach_event_blip_counts(session, events), int(total)
+
+    #: The identity of an event for grouping: the rule that fired, the thing that acted,
+    #: and the thing it acted on — plus the camera, which the UI folds away by default.
+    #:
+    #: Measured on live history: 22 distinct `(rule, subject, target)` identities cover
+    #: 1277 events, and 7 of those 22 span more than one camera. Including the camera in
+    #: the key takes 22 rows to 29 and renders as visibly duplicated headlines, so the
+    #: grouping is always computed at the finer grain here and summed to the coarser one
+    #: in the caller — one query serving both, the same trick `watch_event_counts` uses.
+    _IDENTITY_COLUMNS = (
+        WatchEvent.rule_uuid,
+        WatchEvent.subject_ref,
+        WatchEvent.target_ref,
+        WatchEvent.source_uuid,
+    )
+
+    async def watch_event_groups(self, **filters) -> List[Dict[str, Any]]:
+        """Collapse the filtered events to one row per identity.
+
+        This is the whole point of the grouped review view: 1277 events are 22 things
+        that happened, and a grid of 1277 tiles is the wrong unit rather than too much
+        detail. Aggregating here rather than in the browser is not an optimisation — the
+        counts are properties of the *whole* filtered set, and the grid only ever holds
+        a page of it.
+
+        Two queries, both `GROUP BY`s over tens of output rows:
+
+        1. the aggregates (count, span, duration, media/blip tallies), and
+        2. the representative event whose snapshot becomes the card's art.
+
+        The representative cannot be folded into (1). SQLite's bare-column rule would
+        hand it over for free with a single `max()`, but this query has several
+        aggregates, and with more than one min/max the value taken is explicitly
+        undefined. A `ROW_NUMBER()` window says what is actually wanted instead.
+        """
+        async with self._async_session_maker() as session:
+            # Correlated EXISTS in a SUM, not a JOIN: an event owning both a clip and a
+            # timelapse would be counted twice by a join, which turns "377 of 383 have
+            # video" into a number larger than the group.
+            owns_media = select(Recording.uuid).where(Recording.event_uuid == WatchEvent.uuid).exists()
+            owns_blips = select(EventBlip.uuid).where(EventBlip.event_uuid == WatchEvent.uuid).exists()
+            stmt = self._apply_watch_event_filters(
+                select(
+                    *self._IDENTITY_COLUMNS,
+                    # max() over the display names rather than grouping by them: a slot
+                    # renamed mid-history would otherwise split one identity in two,
+                    # exactly as `watch_event_facets` guards against.
+                    func.max(WatchEvent.rule_name),
+                    func.max(WatchEvent.subject_name),
+                    func.max(WatchEvent.target_name),
+                    func.count(),
+                    func.min(WatchEvent.started_at),
+                    func.max(WatchEvent.started_at),
+                    # Open events contribute nothing rather than a guess — the same
+                    # refusal `formatDuration` makes on the card. julianday() is in days.
+                    func.sum((func.julianday(WatchEvent.ended_at) - func.julianday(WatchEvent.started_at)) * 86400.0),
+                    func.sum(case((owns_media, 1), else_=0)),
+                    func.sum(case((owns_blips, 1), else_=0)),
+                ),
+                **filters,
+            ).group_by(*self._IDENTITY_COLUMNS)
+            rows = (await session.exec(stmt)).all()
+
+            representatives = await self._watch_event_group_representatives(session, **filters)
+            groups = []
+            for (
+                rule_uuid,
+                subject_ref,
+                target_ref,
+                source_uuid,
+                rule_name,
+                subject_name,
+                target_name,
+                count,
+                first_seen,
+                last_seen,
+                total_duration_s,
+                with_recording,
+                with_blips,
+            ) in rows:
+                key = (rule_uuid, subject_ref, target_ref, source_uuid)
+                groups.append(
+                    {
+                        "rule_uuid": rule_uuid,
+                        "rule_name": rule_name,
+                        "subject_ref": subject_ref,
+                        "subject_name": subject_name,
+                        "target_ref": target_ref,
+                        "target_name": target_name,
+                        "source_uuid": source_uuid,
+                        "count": int(count),
+                        "first_seen": first_seen.isoformat() if first_seen is not None else None,
+                        "last_seen": last_seen.isoformat() if last_seen is not None else None,
+                        "total_duration_s": float(total_duration_s or 0.0),
+                        "representative_uuid": representatives.get(key),
+                        "with_recording": int(with_recording or 0),
+                        "with_blips": int(with_blips or 0),
+                    }
+                )
+            # Biggest first: the grouped view exists to put "383 of these" at the top of
+            # the page. Ties broken by recency so the order is total and therefore stable
+            # between two renders of an unchanged set.
+            groups.sort(key=lambda g: (-g["count"], g["last_seen"] or "", g["rule_uuid"] or ""))
+            return groups
+
+    async def _watch_event_group_representatives(self, session: Any, **filters) -> Dict[Tuple, str]:
+        """Per identity, the uuid of the event whose snapshot should be the card art.
+
+        Newest event *that has a snapshot*, falling back to the newest overall when none
+        of them do. The fallback matters more than it looks: 1 event in 1277 has no card
+        art, and a group whose representative happened to be that one would render as an
+        empty tile for no cause the user could see.
+        """
+        has_snapshot = case((WatchEvent.snapshot_path != None, 1), else_=0)  # noqa: E711
+        ranked = self._apply_watch_event_filters(
+            select(
+                WatchEvent.uuid,
+                *self._IDENTITY_COLUMNS,
+                func.row_number()
+                .over(
+                    partition_by=list(self._IDENTITY_COLUMNS),
+                    order_by=[has_snapshot.desc(), WatchEvent.started_at.desc()],
+                )
+                .label("rn"),
+            ),
+            **filters,
+        ).subquery()
+        # Columns named explicitly rather than `select(ranked)`: selecting a subquery
+        # whole hands back its entity as well as its columns, and the shape of the row
+        # is then something the caller has to guess at.
+        rows = (
+            await session.exec(
+                select(
+                    ranked.c.uuid,
+                    ranked.c.rule_uuid,
+                    ranked.c.subject_ref,
+                    ranked.c.target_ref,
+                    ranked.c.source_uuid,
+                ).where(ranked.c.rn == 1)
+            )
+        ).all()
+        return {
+            (rule_uuid, subject_ref, target_ref, source_uuid): uuid
+            for uuid, rule_uuid, subject_ref, target_ref, source_uuid in rows
+        }
+
+    async def watch_event_sessions(
+        self,
+        gap_s: float = DEFAULT_SESSION_GAP_S,
+        limit: int = 200,
+        offset: int = 0,
+        **filters,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Consecutive events of one identity, collapsed into the visit they describe.
+
+        ⚠️ **Computed here, never in the browser.** The grid is offset-paged, so a client
+        that grouped what it received would split every session straddling a page
+        boundary — and would group differently depending on which page you happened to
+        land on. The window function sees the whole filtered set, so a session has one
+        identity and one extent no matter how it is paged.
+
+        Expect roughly a halving, not the order-of-magnitude the grouped view gives:
+        measured on live history, a 120s gap turns 1277 events into 653 sessions. The
+        big reduction is identity grouping (`watch_event_groups`); this is what stops one
+        drink at the bowl *inside* that group looking like seven separate visits.
+
+        SQLite has had `LAG` and windowed `SUM` since 3.25 and the container ships 3.37.
+        """
+        async with self._async_session_maker() as session:
+            # The event's own end, or its start when it is still open — an open event
+            # cannot have left a gap behind it yet.
+            prev_end = func.lag(func.coalesce(WatchEvent.ended_at, WatchEvent.started_at)).over(
+                partition_by=list(self._IDENTITY_COLUMNS),
+                order_by=WatchEvent.started_at,
+            )
+            # julianday() is in days; the first event of a partition has no predecessor
+            # and always opens a session.
+            starts_session = case(
+                (prev_end == None, 1),  # noqa: E711
+                ((func.julianday(WatchEvent.started_at) - func.julianday(prev_end)) * 86400.0 > gap_s, 1),
+                else_=0,
+            )
+            marked = self._apply_watch_event_filters(
+                select(
+                    WatchEvent.uuid,
+                    *self._IDENTITY_COLUMNS,
+                    WatchEvent.rule_name,
+                    WatchEvent.subject_name,
+                    WatchEvent.target_name,
+                    WatchEvent.started_at,
+                    WatchEvent.ended_at,
+                    WatchEvent.snapshot_path,
+                    starts_session.label("starts_session"),
+                ),
+                **filters,
+            ).subquery()
+
+            # A running count of session starts *is* the session number: it increments
+            # exactly where a new one begins and holds steady through the rest of it.
+            sessioned = select(
+                marked,
+                func.sum(marked.c.starts_session)
+                .over(
+                    partition_by=[
+                        marked.c.rule_uuid,
+                        marked.c.subject_ref,
+                        marked.c.target_ref,
+                        marked.c.source_uuid,
+                    ],
+                    order_by=marked.c.started_at,
+                    rows=(None, 0),
+                )
+                .label("session_ix"),
+            ).subquery()
+
+            # ⚠️ A separate level, not another column alongside `session_ix`. SQLite
+            # rejects a window function inside another window's PARTITION BY outright
+            # ("misuse of window function sum()"), and this one has to partition by the
+            # session number the level below computes.
+            ranked = select(
+                sessioned,
+                func.row_number()
+                .over(
+                    # Ranked within the session rather than the identity, so each session
+                    # card gets art from its own visit rather than from the newest one.
+                    partition_by=[
+                        sessioned.c.rule_uuid,
+                        sessioned.c.subject_ref,
+                        sessioned.c.target_ref,
+                        sessioned.c.source_uuid,
+                        sessioned.c.session_ix,
+                    ],
+                    order_by=[
+                        case((sessioned.c.snapshot_path != None, 1), else_=0).desc(),  # noqa: E711
+                        sessioned.c.started_at.desc(),
+                    ],
+                )
+                .label("rn"),
+            ).subquery()
+            sessioned = ranked
+
+            group_cols = [
+                sessioned.c.rule_uuid,
+                sessioned.c.subject_ref,
+                sessioned.c.target_ref,
+                sessioned.c.source_uuid,
+                sessioned.c.session_ix,
+            ]
+            agg = (
+                select(
+                    *group_cols,
+                    func.max(sessioned.c.rule_name).label("rule_name"),
+                    func.max(sessioned.c.subject_name).label("subject_name"),
+                    func.max(sessioned.c.target_name).label("target_name"),
+                    func.count().label("count"),
+                    func.min(sessioned.c.started_at).label("started_at"),
+                    func.max(func.coalesce(sessioned.c.ended_at, sessioned.c.started_at)).label("ended_at"),
+                    # `rn` is 1 on exactly one row per session, so a max() over this
+                    # picks that row's uuid without a second pass over the table.
+                    func.max(case((sessioned.c.rn == 1, sessioned.c.uuid))).label("representative_uuid"),
+                )
+                .group_by(*group_cols)
+                .subquery()
+            )
+
+            total = (await session.exec(select(func.count()).select_from(agg))).one()
+            # Newest session first, matching the grid this replaces. Ordered by the
+            # session's *start*, which is the moment the card is captioned with.
+            ordered = (
+                select(
+                    agg.c.rule_uuid,
+                    agg.c.subject_ref,
+                    agg.c.target_ref,
+                    agg.c.source_uuid,
+                    agg.c.session_ix,
+                    agg.c.rule_name,
+                    agg.c.subject_name,
+                    agg.c.target_name,
+                    agg.c.count,
+                    agg.c.started_at,
+                    agg.c.ended_at,
+                    agg.c.representative_uuid,
+                )
+                .order_by(agg.c.started_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            rows = (await session.exec(ordered)).all()
+
+            sessions = []
+            for (
+                rule_uuid,
+                subject_ref,
+                target_ref,
+                source_uuid,
+                session_ix,
+                rule_name,
+                subject_name,
+                target_name,
+                count,
+                started_at,
+                ended_at,
+                representative_uuid,
+            ) in rows:
+                sessions.append(
+                    {
+                        "rule_uuid": rule_uuid,
+                        "rule_name": rule_name,
+                        "subject_ref": subject_ref,
+                        "subject_name": subject_name,
+                        "target_ref": target_ref,
+                        "target_name": target_name,
+                        "source_uuid": source_uuid,
+                        "session_ix": int(session_ix or 0),
+                        "count": int(count),
+                        "started_at": started_at.isoformat() if hasattr(started_at, "isoformat") else started_at,
+                        "ended_at": ended_at.isoformat() if hasattr(ended_at, "isoformat") else ended_at,
+                        "representative_uuid": representative_uuid,
+                    }
+                )
+            return sessions, int(total)
+
+    #: Above this many histogram rows the request is answered at day resolution instead.
+    #: The output of the histogram is `buckets × identities`, which is unbounded in
+    #: principle — a year at hour resolution across 22 identities is ~190k rows — even
+    #: though real history is sparse enough to return a few hundred.
+    HISTOGRAM_ROW_LIMIT = 5000
+
+    async def watch_event_histogram(self, bucket: str = "hour", **filters) -> Dict[str, Any]:
+        """Event counts per time bucket per identity — the timeline's whole data source.
+
+        ⚠️ **Buckets are UTC, and `hour` is the resolution the UI should ask for.**
+        `started_at` carries no offset, so bucketing by *day* in SQL buckets by UTC day,
+        and "today" then begins at the wrong hour for every user who is not on UTC. Hour
+        buckets are safe to re-aggregate into local days in the browser for every
+        whole-hour timezone, which is why the client composes local days itself rather
+        than this endpoint growing a timezone parameter.
+
+        `day` exists only as the overflow answer for very wide ranges, where a few hours
+        of skew at the edges cannot change what the picture says. It is reported back in
+        the response rather than applied silently: a histogram that quietly changed
+        resolution — or worse, was truncated — would be a lie about when things happened.
+        """
+        bucket = "day" if bucket == "day" else "hour"
+        async with self._async_session_maker() as session:
+            for attempt in ("hour", "day") if bucket == "hour" else ("day",):
+                fmt = "%Y-%m-%dT%H:00:00" if attempt == "hour" else "%Y-%m-%dT00:00:00"
+                bucket_col = func.strftime(fmt, WatchEvent.started_at).label("bucket_start")
+                stmt = self._apply_watch_event_filters(
+                    select(bucket_col, *self._IDENTITY_COLUMNS, func.count()),
+                    **filters,
+                ).group_by(bucket_col, *self._IDENTITY_COLUMNS)
+                rows = (await session.exec(stmt)).all()
+                if len(rows) <= self.HISTOGRAM_ROW_LIMIT or attempt == "day":
+                    return {
+                        "bucket": attempt,
+                        # Truncation is never the answer; when even day buckets overflow
+                        # the caller gets the whole honest result and the flag saying the
+                        # resolution was coarsened.
+                        "buckets": [
+                            {
+                                "bucket_start": bucket_start,
+                                "rule_uuid": rule_uuid,
+                                "subject_ref": subject_ref,
+                                "target_ref": target_ref,
+                                "source_uuid": source_uuid,
+                                "count": int(count),
+                            }
+                            for bucket_start, rule_uuid, subject_ref, target_ref, source_uuid, count in rows
+                        ],
+                    }
+            return {"bucket": bucket, "buckets": []}
 
     async def watch_event_facets(self, profile_uuid: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
         """The distinct values each filter dropdown can offer, with display names.
@@ -7451,6 +7846,25 @@ class DbClient:
             return 0
         async with self._async_session_maker() as session:
             result = await session.exec(sa_update(EventBlip).where(EventBlip.uuid.in_(list(uuids))).values(state=state))
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    async def set_watch_event_review_states(self, uuids: Sequence[str], state: str) -> int:
+        """Bulk triage for events, mirroring `set_event_blip_states` for blips.
+
+        Turns the events page from a log into a queue. The column, the read model and the
+        `review_state` search filter all predate this — every one of the 1277 rows in
+        live history reads `unreviewed` because nothing could ever write it.
+
+        Returns how many rows actually moved; lower than requested is normal (an event
+        already in the target state, or deleted from another tab), not an error.
+        """
+        if not uuids:
+            return 0
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                sa_update(WatchEvent).where(WatchEvent.uuid.in_(list(uuids))).values(review_state=state)
+            )
             await session.commit()
             return int(result.rowcount or 0)
 

@@ -2126,6 +2126,20 @@ class BlipState(str, Enum):
     EXPIRED = "expired"
 
 
+#: Seconds of quiet that end an event *session* — one visit, however many times the rule
+#: re-fired during it.
+#:
+#: A single trip to the water bowl re-fires its rule several times as `min_duration_s`
+#: and `rearm_delay_s` cycle. Measured on live history, 32% of consecutive same-identity
+#: events start within 30s of the previous one ending, and this default — the observed
+#: median gap — turns 1277 events into 653 sessions.
+#:
+#: Lives here rather than on `DbClient` so the query layer and the API layer that
+#: defaults the parameter share one definition; two copies would drift and the endpoint
+#: would document a grouping it does not perform.
+DEFAULT_SESSION_GAP_S = 120.0
+
+
 class WatchEvent(SQLModel, table=True):
     """One opening and closing of a rule.
 
@@ -2194,6 +2208,25 @@ class WatchEvent(SQLModel, table=True):
     # curates, this one is the review page's card art and is deleted with the event.
     snapshot_path: Optional[str] = Field(default=None)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+    __table_args__ = (
+        # The grid's ORDER BY. `started_at` is the only column every reader of this
+        # table sorts on and it had no index of its own — tolerable while the log was
+        # small, but it is append-only and grows forever.
+        sa.Index("ix_watch_events_started_at", "started_at"),
+        # The identity grouping, in the exact column order `DbClient._IDENTITY_COLUMNS`
+        # groups and partitions by, with `started_at` last so the representative
+        # `ROW_NUMBER()` and the session window function can walk each partition in
+        # order instead of sorting it.
+        sa.Index(
+            "ix_watch_events_identity_started_at",
+            "rule_uuid",
+            "subject_ref",
+            "target_ref",
+            "source_uuid",
+            "started_at",
+        ),
+    )
 
 
 class EventBlip(TimestampModel, table=True):
