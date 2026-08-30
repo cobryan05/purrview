@@ -617,6 +617,33 @@ function wfield(labelText, control, { width = null, help = null } = {}) {
 }
 
 /**
+ * A checkbox with its name *beside* it rather than above it.
+ *
+ * `wfield` stacks the label over the control, which costs a line — and the rule and
+ * camera rows are both held to one control line (`test_the_source_row_stays_one_control_line`,
+ * `test_source_and_action_rows_are_single_line`). That constraint is why these boxes
+ * were briefly unlabelled, and unlabelled was the wrong trade: two adjacent checkboxes
+ * on a rule row are unreadable without hovering, and a lone one on a camera row reads as
+ * "enable this camera" — which is not what it does, and the camera row has no enable box
+ * of its own to disambiguate it.
+ *
+ * Hover `title` stays as the long explanation, but it is no longer load-bearing: a
+ * tooltip is invisible until you already suspect it is there, and it does not exist at
+ * all on touch.
+ *
+ * @param {HTMLInputElement} box   the checkbox itself; callers keep reading `.checked`
+ * @param {string} text            two or three characters, not a sentence
+ */
+function checkTag(box, text, { className = '' } = {}) {
+  const wrap = el('label', `watch-row-tag${className ? ` ${className}` : ''}`);
+  // The title lives on the wrapper so the text is hoverable too, not just the 13px box.
+  wrap.title = box.title;
+  wrap.appendChild(box);
+  wrap.appendChild(el('span', 'watch-row-tag__text', text));
+  return wrap;
+}
+
+/**
  * The on/off box that leads a rule or action row.
  *
  * A real switch, not a note to yourself: `StreamWatcherTask` builds its rule list from
@@ -1024,9 +1051,9 @@ function buildSourceRow(src, ctx) {
       + 'action or rule scoped to it.',
   }));
 
-  // A bare checkbox, not a labelled `wfield`: the source row is held to one control
-  // line (`test_the_source_row_stays_one_control_line`), which is the same constraint
-  // that put the mask opt-out in a modal. The title carries the explanation.
+  // Tagged "HA", not left bare: this row has no enable/disable box of its own, so an
+  // unlabelled checkbox here reads as one — and unticking it would then look like it
+  // stops the camera being watched, which is the opposite of what it does.
   const publishBox = publishToggle(src.publishToHa, ctx.onAnyChange, {
     testid: 'watch-source-publish',
     title: 'Publish this camera to Home Assistant. Unticked, the watcher still analyses it and '
@@ -1034,7 +1061,7 @@ function buildSourceRow(src, ctx) {
       + 'roughly (rules × 6) + 9 entities. Its rules keep contributing to the Rules device, so '
       + 'automations written against a rule rather than a camera are unaffected.',
   });
-  row.appendChild(publishBox);
+  row.appendChild(checkTag(publishBox, 'HA'));
 
   // What `{source}` publishes as, for this watcher only. The placeholder tracks the
   // selected camera so "blank means the source's own name" needs no help text — and so
@@ -1256,16 +1283,18 @@ function buildRuleRow(rule, ctx) {
       + 'so this is the way to silence a rule for an evening without rebuilding it afterwards. '
       + 'Takes effect on the watcher’s next start.',
   });
-  row.appendChild(enabledBox);
+  // "On" and "HA" rather than bare boxes: they sit next to each other and mean very
+  // different things — only the first stops the rule being evaluated at all.
+  row.appendChild(checkTag(enabledBox, 'On', { className: 'watch-row-tag--enabled' }));
 
   const publishBox = publishToggle(rule.publishToHa, ctx.onAnyChange, {
     testid: 'watch-rule-publish',
-    title: 'Whether this rule appears in Home Assistant. Unticked, the rule still runs — '
-      + 'events are still raised, recorded and browsable here — but its entities are removed '
-      + 'from HA, on the cameras, the subjects and the Rules device alike. Use it to keep a '
-      + 'noisy or experimental rule out of your automations without losing its history.',
+    title: 'Publish to Home Assistant. Unticked, the rule still runs — events are still raised, '
+      + 'recorded and browsable here — but its entities are removed from HA, on the cameras, the '
+      + 'subjects and the Rules device alike. Use it to keep a noisy or experimental rule out of '
+      + 'your automations without losing its history.',
   });
-  row.appendChild(publishBox);
+  row.appendChild(checkTag(publishBox, 'HA'));
 
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
@@ -1900,6 +1929,11 @@ function buildActionRow(action, ctx) {
       + 'nothing and publishes nothing, but its parameters and scope are kept — the way to stop '
       + 'recording for a week without losing the setup. Takes effect on the watcher’s next start.',
   });
+  // Left bare, unlike the rule row's. Tagging it cost this row a whole line (measured:
+  // 90px -> 114px, past `test_source_and_action_rows_are_single_line`), and it does not
+  // buy the same thing: an action row has exactly one checkbox, so there is no second
+  // box to confuse it with and nothing it could be mistaken for.
+  enabledBox.classList.add('watch-row-tag--enabled');
   row.appendChild(enabledBox);
 
   const name = document.createElement('input');

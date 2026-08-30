@@ -7731,12 +7731,37 @@ progress.progress-indeterminate:indeterminate {
 /* A disabled row is dimmed, never hidden or collapsed: keeping how it was configured is
    the entire point, so it has to stay readable and editable. The toggle itself keeps full
    contrast — it is the one control you need to find in order to switch the row back on,
-   and dimming it along with everything else is how a "disabled" row becomes a lost one. */
-.watch-row--disabled > *:not(.watch-row-enabled) {
+   and dimming it along with everything else is how a "disabled" row becomes a lost one.
+   Matched on the tag wrapper, since the checkbox is no longer a direct child of the row. */
+.watch-row--disabled > *:not(.watch-row-tag--enabled) {
   opacity: 0.5;
 }
-.watch-row--disabled:hover > *:not(.watch-row-enabled) {
+.watch-row--disabled:hover > *:not(.watch-row-tag--enabled) {
   opacity: 0.8;
+}
+
+/* A checkbox with its name beside it. Inline, because these live on rows held to a
+   single control line — `wfield` stacks its label above the control and costs that line. */
+.watch-row-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.watch-row-tag input {
+  margin: 0;
+}
+
+.watch-row-tag__text {
+  font-size: 0.7rem;
+  line-height: 1;
+  opacity: 0.75;
+  letter-spacing: 0.02em;
+  user-select: none;
 }
 
 /* Directory field: a path input with its Browse button flush against it, so the pair
