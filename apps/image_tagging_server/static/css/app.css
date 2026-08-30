@@ -1459,7 +1459,8 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 }
 
 .event-timeline__axis,
-.event-timeline__lane {
+.event-timeline__lane,
+.event-timeline__grid {
   display: grid;
   /* One shared template so every lane's marks line up with the axis above them. The
      label column is in `ch` and shrinks on a narrow screen rather than pushing the
@@ -1501,6 +1502,52 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 
 .event-timeline__lane {
   border-radius: var(--radius-sm);
+  /* Above the gridline overlay, which is painted across the whole stack of lanes. */
+  position: relative;
+  z-index: 1;
+}
+
+/* ----- gridlines ----- */
+
+/* The lanes box is the positioning context for the single gridline overlay stretched
+   across it; `isolation` keeps the overlay's stacking inside the timeline rather than
+   letting z-index: 1 lanes compete with the sticky axis above. */
+.event-timeline__lanes {
+  position: relative;
+  isolation: isolate;
+}
+
+.event-timeline__grid {
+  position: absolute;
+  inset: 0;
+  /* Overrides the `align-items: center` of the shared template: the lines have to run
+     the full height of the lane stack, not sit in the middle of it. */
+  align-items: stretch;
+  /* Purely a backdrop — every pointer event belongs to the lane on top of it. */
+  pointer-events: none;
+}
+
+.event-timeline__grid-track {
+  position: relative;
+}
+
+.event-timeline__gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  /* Deliberately at the threshold of visible. This is a ruler the eye follows when it
+     is looking for one, and wallpaper the rest of the time — anything stronger competes
+     with the marks, which are the data. */
+  background: var(--border);
+}
+
+/* Midnight, or a whole-day tick on a wide range: the one boundary worth being able to
+   find without counting, since "which day was that?" is the question the plain hour
+   rules cannot answer. Still a hairline — a heavier rule here read as a chart axis and
+   made every day look like a separate panel. */
+.event-timeline__gridline--major {
+  background: var(--border-strong);
 }
 
 .event-timeline__label {
@@ -1565,6 +1612,73 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .event-timeline__mark:hover {
   background: var(--color-accent-strong, var(--color-accent));
   filter: brightness(1.4);
+}
+
+/* ----- hover preview ----- */
+
+.event-timeline__preview {
+  position: fixed;
+  /* The layer built for pointer-following surfaces: above the modal band, because a
+     preview must not be buried by a modal opened from a mark underneath it, and below
+     the bottom bars. Set here rather than inline so nothing has to allocate a modal
+     layer for something that closes on mouseout. */
+  z-index: var(--layer-hover-popover);
+  /* It follows the pointer, so it must never be *under* the pointer: a popup that can
+     take a hover is a popup the mark can be "left" for, and the mark's own mouseleave
+     would close it out from under the cursor. It holds no controls for the same reason
+     — see the note in timeline.js. */
+  pointer-events: none;
+  width: 16rem;
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  font-size: var(--text-xs);
+}
+
+.event-timeline__preview-image {
+  width: 100%;
+  /* Fixed box with object-fit rather than auto height: the popup is positioned from its
+     measured size, and a snapshot that changed the height after decoding would leave it
+     hanging off its anchor. `place()` re-runs on load for the same reason. */
+  height: 9rem;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.event-timeline__preview-empty {
+  margin: 0;
+  color: var(--text-faint);
+}
+
+.event-timeline__preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  color: var(--text-muted);
+}
+
+.event-timeline__preview-meta strong {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The camera a lane belongs to, when "split by camera" has subdivided the identities.
+   Sized and coloured like the rule line beneath it — it is the same kind of fact about
+   the row, not a heading. */
+.event-timeline__label-camera {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
 }
 
 /* ----- detail modal ----- */

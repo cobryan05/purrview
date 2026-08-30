@@ -43,6 +43,16 @@ import {
 const PAGE_SIZE = 60;
 
 /**
+ * Most events a timeline mark will hand the detail modal to walk.
+ *
+ * A bin is one hour of one identity, so this is generous rather than tight — but it is
+ * a bound, because a watcher left pointing at a busy road can put four figures in an
+ * hour and the modal holds its siblings in memory. Beyond this the honest answer is the
+ * grid, which the hover preview's "show these in the grid" button reaches.
+ */
+const BUCKET_MODAL_LIMIT = 200;
+
+/**
  * The three projections of one query.
  *
  * `groups` is the default because it is the one that answers the question you have when
@@ -456,6 +466,68 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     void search();
   }
 
+  /**
+   * The events behind one lane's bin, under the filters currently in force.
+   *
+   * Scoped to the lane's identity *and* the bin's hour, which is what keeps this
+   * affordable: the timeline is drawn from a binned histogram precisely so the client
+   * never holds every event, and resolving one bin on demand is the other half of that
+   * bargain. Spread over `queryState()` so the page's own filters (review state, camera,
+   * excluded rules) still apply — a preview that ignored them would show an event the
+   * grid is deliberately hiding.
+   *
+   * @param {Object} group
+   * @param {{from: Date, to: Date}} win
+   * @param {number} limit
+   */
+  async function bucketEvents(group, win, limit) {
+    const { events, total } = await fetchWatchEvents({
+      ...queryState(),
+      ...groupDrilldownFilters(group, { dimensions: dimensions(), splitByCamera }),
+      startFrom: win.from.toISOString(),
+      startTo: win.to.toISOString(),
+      limit,
+      offset: 0,
+    });
+    return { events, total };
+  }
+
+  /** One event's worth, for the hover snapshot. */
+  async function previewBucket(group, win) {
+    const { events, total } = await bucketEvents(group, win, 1);
+    return { event: events[0] ?? null, total };
+  }
+
+  /**
+   * Clicking a mark opens its events in the detail modal, over the timeline.
+   *
+   * Handed the whole bin as `siblings` so the modal's prev/next walks the bin rather
+   * than dead-ending on the first event — a busy hour is the case you clicked into, and
+   * a modal that showed one of fifty and offered no way to the rest would send you back
+   * to the drill-down this exists to avoid.
+   */
+  async function openBucketEvents(group, win) {
+    try {
+      const { events } = await bucketEvents(group, win, BUCKET_MODAL_LIMIT);
+      if (!events.length) {
+        // The histogram said there was something here, so an empty answer means the
+        // events were deleted between the draw and the click. Say so and refresh
+        // rather than opening an empty modal.
+        toast('Those events are no longer there', 4000);
+        void search();
+        return;
+      }
+      openEventDetailModal(events[0], {
+        sourceNames,
+        siblings: events,
+        onDeleted: () => void search(),
+      });
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not open those events', 5000, 'error');
+    }
+  }
+
   function toggleSelectGroup(group, { checked }) {
     if (checked) selectedGroups.add(group.key);
     else selectedGroups.delete(group.key);
@@ -753,8 +825,11 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         focus,
         dimensions: dimensions(),
         splitByCamera,
+        sourceNames,
         onSelectGroup: group => drilldown(group),
         onSelectBucket: (group, win) => drilldown(group, { window: win }),
+        onOpenBucket: (group, win) => void openBucketEvents(group, win),
+        onPreviewBucket: (group, win) => previewBucket(group, win),
       }));
     } else {
       const byIdentity = new Map();

@@ -1643,15 +1643,84 @@ class TestTheTimelineShowsWhenThingsHappened:
         expect(page.locator("[data-testid='event-timeline-lane'].is-focused")).to_have_count(1)
         wait_until(page, lambda: _opacity(page, "[data-testid='event-timeline-lane']", 1) < 1.0)
 
-    def test_clicking_a_mark_narrows_to_that_identity_and_that_hour(self, page: Page, base_url: str):
-        """A bin holds many events, so it drills into the grid scoped to both — opening
-        one arbitrary event of the fifty in an hour would be a guess at which."""
-        queries = _mock(page, events=_two_identities())
+    def test_clicking_a_mark_opens_its_events_without_leaving_the_timeline(self, page: Page, base_url: str):
+        """A mark opens its bin in the detail modal, over a timeline that is still there.
+
+        Clicking used to rewrite the page's filters into a grid drill-down. That answered
+        the objection "opening one arbitrary event of the fifty in an hour is a guess at
+        which" by opening none of them — at the cost of a one-way door, since getting back
+        meant noticing the window chip, clearing it, re-picking the view and re-finding
+        the lane. Handing the modal the whole bin answers the objection properly.
+        """
+        _mock(page, events=_two_identities())
         _open_events_pane(page, base_url, view="timeline")
         expect(page.locator("[data-testid='event-timeline-mark']").first).to_be_attached()
 
         page.locator("[data-testid='event-timeline-mark']").first.click()
 
+        expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
+        # The negative half, and the point of the change: the view underneath is
+        # untouched, where the drill-down used to have replaced it with a filtered grid.
+        expect(page.locator("[data-testid='event-view-timeline']")).to_have_class(
+            re.compile("event-search__view--active")
+        )
+        expect(page.locator("[data-testid='event-timeline']")).to_be_attached()
+        expect(page.locator("[data-testid='event-window-chip']")).to_be_hidden()
+
+    def test_a_mark_hands_the_modal_the_whole_bin_to_walk(self, page: Page, base_url: str):
+        """Opening one event of the bin with no way to the other three would be exactly
+        the guess the drill-down existed to avoid.
+
+        Two halves, because the mock answers any event query with its whole fixture and
+        so cannot prove the *size* of the walk: that the request was scoped to this lane
+        and this hour, and that the modal came up with its navigation live — which it
+        hides for a lone event, so it is only there if siblings were passed.
+        """
+        queries = _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-mark']").first).to_be_attached()
+
+        page.locator("[data-testid='event-timeline-lane']").first.locator(
+            "[data-testid='event-timeline-mark']"
+        ).first.click()
+
+        expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='event-detail-nav']")).to_be_visible()
+        wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-water"])
+        assert queries[-1].get("start_from"), "the clicked bin must scope the fetch"
+        assert queries[-1].get("start_to")
+
+    def test_the_hover_preview_shows_the_bin_before_it_is_opened(self, page: Page, base_url: str):
+        """The preview is what makes a mark worth aiming at: a 3px block with a tooltip
+        of counts gives no reason to prefer one over another."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        mark = page.locator("[data-testid='event-timeline-mark']").first
+        expect(mark).to_be_attached()
+        # Absent until asked for — the state-dependent half. A preview that were merely
+        # rendered hidden would pass a bare visibility check on the popup below.
+        expect(page.locator("[data-testid='event-timeline-preview']")).to_have_count(0)
+
+        mark.hover()
+
+        preview = page.locator("[data-testid='event-timeline-preview']")
+        expect(preview).to_be_visible()
+        expect(preview).to_contain_text("4 events")
+        expect(preview.locator("img")).to_be_visible()
+
+    def test_shift_clicking_a_mark_still_narrows_to_that_identity_and_that_hour(self, page: Page, base_url: str):
+        """Narrowing the page to one identity and one hour did not stop being useful —
+        it stopped being what an unmodified click does, because it is a one-way door and
+        acting on a whole hour at once is the rarer errand."""
+        queries = _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        mark = page.locator("[data-testid='event-timeline-mark']").first
+        expect(mark).to_be_attached()
+
+        mark.click(modifiers=["Shift"])
+
+        # The modal is the plain-click path, so it must *not* be what shift produced.
+        expect(page.locator("[data-testid='event-detail-modal']")).to_have_count(0)
         expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
         expect(page.locator("[data-testid='event-window-chip']")).to_be_visible()
         wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-water"])
@@ -1892,6 +1961,71 @@ class TestTimelineLanesFollowTheGrain:
 
         expect(page.locator(".event-timeline__label-rule").first).to_be_visible()
         expect(page.locator("[data-testid='event-timeline-label']").first).to_contain_text("drinking water")
+
+    def test_splitting_by_camera_names_the_camera_on_every_lane(self, page: Page, base_url: str):
+        """The split subdivides one identity into several lanes that are otherwise
+        captioned identically — same actor, same rule, same count column. Without the
+        camera on the lane the toggle looks like it duplicated the row rather than split
+        it, and there is no way to tell which lane is which camera.
+        """
+        one_identity_two_cameras = [
+            _event(
+                uuid=f"drink-{i:04d}",
+                ruleUuid="rule-water",
+                ruleName="cat drinking water",
+                subjectRef="label-cat",
+                subjectName="Tabby",
+                targetRef="zone-bowl",
+                targetName="water bowl",
+                sourceUuid=source,
+                startedAt=f"2026-08-18T09:{10 + i:02d}:00",
+                endedAt=f"2026-08-18T09:{10 + i:02d}:20",
+                recordings=[],
+            )
+            for i, source in enumerate(["src-1", "src-1", "src-2", "src-2"])
+        ]
+        _mock(page, events=one_identity_two_cameras)
+        # Registered after _mock's own, and so matched first: two cameras, because a
+        # single-camera fixture cannot show a split at all.
+        page.route(
+            re.compile(r"/api/sources/get"),
+            lambda r: r.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "sources": {
+                            "src-1": {"uuid": "src-1", "name": "Litter cam", "typename": "F", "params": {}},
+                            "src-2": {"uuid": "src-2", "name": "Door cam", "typename": "F", "params": {}},
+                        },
+                    }
+                ),
+            ),
+        )
+        _open_events_pane(page, base_url, view="timeline")
+        lanes = page.locator("[data-testid='event-timeline-lane']")
+        expect(lanes).to_have_count(1)
+
+        page.locator("[data-testid='event-split-by-camera']").check()
+
+        expect(lanes).to_have_count(2)
+        cameras = sorted(
+            x.strip()
+            for x in page.locator(
+                "[data-testid='event-timeline-label'] .event-timeline__label-camera"
+            ).all_text_contents()
+        )
+        assert cameras == ["Door cam", "Litter cam"], cameras
+
+    def test_a_lane_names_no_camera_until_the_split_asks_for_one(self, page: Page, base_url: str):
+        """The conditional half: unsplit lanes cover every camera, so naming one would
+        be picking whichever sub-group happened to be folded first."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(2)
+
+        expect(page.locator(".event-timeline__label-camera")).to_have_count(0)
 
     def test_the_highlight_still_follows_the_coarser_row(self, page: Page, base_url: str):
         """The focus key is built from the same dimensions, so changing the grain must
