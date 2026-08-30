@@ -1157,3 +1157,55 @@ class TestInlineRename:
 
         assert not calls, "Cancel must NOT PATCH"
         expect(page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")).to_contain_text(ROOT_LABEL["name"])
+
+
+class TestLabelHomeAssistantPanel:
+    """The per-camera breakdown is the tier whose size is (labels x rules x cameras), so
+    the panel has to make it clear it is subordinate to the label being published at
+    all — and must never send an opt-in that cannot apply."""
+
+    def test_the_per_camera_box_is_unavailable_while_the_label_is_not_published(self, page: Page, base_url: str):
+        _mock_labels(page, [ROOT_LABEL])
+        _navigate_to_labels(page, base_url)
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
+        row.locator("button[title='Home Assistant']").click()
+
+        publish = page.get_by_test_id("label-publish-to-ha")
+        per_source = page.get_by_test_id("label-publish-per-source")
+        # Publishing by default (the label predates the field), so the breakdown is
+        # merely unticked — available, just not chosen.
+        expect(publish).to_be_checked()
+        expect(per_source).to_be_enabled()
+
+        publish.uncheck()
+        # …and now unavailable, because there is no device for it to be a breakdown of.
+        expect(per_source).to_be_disabled()
+
+    def test_opting_out_of_the_label_does_not_send_a_per_camera_opt_in(self, page: Page, base_url: str):
+        """A disabled checkbox keeps whatever it was last set to. Sending that alongside
+        `publishToHa: false` would store an opt-in that silently takes effect the moment
+        the label is published again."""
+        patched = {}
+
+        def handle(route):
+            if route.request.method == "PATCH":
+                patched.update(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "labels": [ROOT_LABEL]}),
+            )
+
+        _mock_labels(page, [ROOT_LABEL])
+        page.route("**/api/labels/**", handle)
+        _navigate_to_labels(page, base_url)
+
+        row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
+        row.locator("button[title='Home Assistant']").click()
+        page.get_by_test_id("label-publish-per-source").check()
+        page.get_by_test_id("label-publish-to-ha").uncheck()
+        page.get_by_test_id("label-ha-panel").locator("button:has-text('Save')").click()
+
+        wait_until(page, lambda: "publishToHa" in patched)
+        assert patched["publishToHa"] is False, patched
+        assert patched["publishPerSource"] is False, patched

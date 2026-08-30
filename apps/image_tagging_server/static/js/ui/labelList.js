@@ -235,6 +235,99 @@ function toggleMovePicker(anchorRow, { label, labelsMap, indentLevel, onMove }) 
   anchorRow.after(moveRow);
 }
 
+/**
+ * The label's Home Assistant publishing settings, as an inline panel under its row.
+ *
+ * A panel rather than two checkboxes in the row itself: the tree is dense and most of
+ * these labels are annotation vocabulary that will never go near Home Assistant, so
+ * putting the controls on every row would cost more attention than they are worth. It
+ * mirrors `toggleMovePicker` exactly, which is the established shape for "a setting that
+ * needs more than a click".
+ *
+ * The two flags are deliberately separate. Turning the label off removes its device
+ * entirely; the second only controls the per-camera breakdown *within* that device,
+ * which is the tier whose size is (labels × rules × cameras) and the one worth thinking
+ * before enabling.
+ */
+function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
+  const existing = anchorRow.nextElementSibling;
+  if (existing?.dataset?.haRowFor === label.uuid) {
+    existing.remove();
+    return;
+  }
+  anchorRow.parentElement?.querySelectorAll('[data-ha-row-for]').forEach((el) => el.remove());
+
+  const haRow = document.createElement('div');
+  haRow.className = 'label-move-row';
+  haRow.dataset.haRowFor = label.uuid;
+  haRow.dataset.testid = 'label-ha-panel';
+  haRow.style.marginLeft = `${indentLevel * 14}px`;
+
+  const check = (labelText, checked, testid, title) => {
+    const wrap = document.createElement('label');
+    wrap.className = 'label-ha-check';
+    wrap.title = title;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = checked;
+    box.dataset.testid = testid;
+    wrap.append(box, document.createTextNode(` ${labelText}`));
+    return { wrap, box };
+  };
+
+  const publish = check(
+    'Publish to Home Assistant',
+    label.publishToHa !== false,
+    'label-publish-to-ha',
+    'Whether this label gets its own device in Home Assistant. Off, it is still detected, '
+      + 'still recorded and still drives rule entities — it just has no device of its own.',
+  );
+  const perSource = check(
+    'Per-camera breakdown',
+    label.publishPerSource === true,
+    'label-publish-per-source',
+    'Adds one counter per (rule × camera) for this label. This is the tier that multiplies '
+      + 'out, so it is off unless you want the per-camera statistics specifically. The Rules '
+      + 'device already reports which camera fired a rule, as an attribute.',
+  );
+  // The breakdown lives inside the device, so it cannot apply without one.
+  const syncEnabled = () => {
+    perSource.box.disabled = !publish.box.checked;
+    perSource.wrap.classList.toggle('label-ha-check--muted', !publish.box.checked);
+  };
+  publish.box.addEventListener('change', syncEnabled);
+  syncEnabled();
+
+  haRow.append(publish.wrap, perSource.wrap);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'label-move-apply';
+  applyBtn.textContent = 'Save';
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    try {
+      await onSave({
+        publishToHa: publish.box.checked,
+        publishPerSource: publish.box.checked && perSource.box.checked,
+      });
+    } catch (err) {
+      toast(err.message, 5000, 'error');
+      applyBtn.disabled = false;
+    }
+  };
+  haRow.appendChild(applyBtn);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'label-move-cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => haRow.remove();
+  haRow.appendChild(cancelBtn);
+
+  anchorRow.after(haRow);
+}
+
 // ─── Shared row builder ──────────────────────────────────────────────────────
 //
 // One compact row shape for every mode:
@@ -526,6 +619,16 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
           indentLevel,
           onMove: async (newParentUuid) => {
             await updateLabel(uuid, name, color, { parentUuid: newParentUuid });
+            onRerender();
+          },
+        }),
+      }),
+      iconAction('home', 'Home Assistant', {
+        onClick: () => toggleHaPicker(row, {
+          label,
+          indentLevel,
+          onSave: async (flags) => {
+            await updateLabel(uuid, name, color, flags);
             onRerender();
           },
         }),

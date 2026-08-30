@@ -665,6 +665,68 @@ class TestWatcherEditor:
         expect(page.locator(".watch-action-params")).to_contain_text("Pre-roll")
 
 
+class TestHomeAssistantPublishFlags:
+    """`publishToHa` is a different question from `enabled`, and the payload has to keep
+    them apart: `enabled` off stops the rule running, this only stops it reaching Home
+    Assistant. A save that conflated them would silently stop recording."""
+
+    def test_unpublishing_a_rule_leaves_it_enabled(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        page.locator("[data-testid='watch-rule-publish']").first.uncheck()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        rule = saved["rules"][0]
+        assert rule["publishToHa"] is False, rule
+        assert rule["enabled"] is True, rule
+
+    def test_unpublishing_a_camera_leaves_the_rule_publishing(self, page: Page, base_url: str):
+        """The two flags are independent axes — silencing a camera must not silence the
+        rules that run on it, which is what keeps a rule-based automation working when a
+        camera is taken out of Home Assistant."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        page.locator("[data-testid='watch-source-publish']").first.uncheck()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("sources")))
+        assert saved["sources"][0]["publishToHa"] is False, saved["sources"][0]
+        assert saved["rules"][0]["publishToHa"] is True, saved["rules"][0]
+
+    def test_a_save_that_ignores_the_flags_still_sends_them_as_publishing(self, page: Page, base_url: str):
+        """Two regressions in one, both silent.
+
+        FAKE_PROFILE predates these fields, exactly like a row saved before the
+        migration — absent has to read as "publish", or upgrading would empty everyone's
+        Home Assistant. And a profile saves as a whole-list replace, so a flag the editor
+        forgets to send is a flag the save resets; editing something unrelated must not
+        quietly turn publishing on or off.
+        """
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        expect(page.locator("[data-testid='watch-rule-publish']").first).to_be_checked()
+        expect(page.locator("[data-testid='watch-source-publish']").first).to_be_checked()
+
+        # Dirty the form via a field that has nothing to do with publishing — Save stays
+        # disabled until something changes, and that unrelated edit is the scenario.
+        page.locator("[data-testid='watch-rule-name']").first.fill("cat at the litter box")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["publishToHa"] is True, saved["rules"][0]
+        assert saved["sources"][0]["publishToHa"] is True, saved["sources"][0]
+
+
 class TestZonesModal:
     def test_zones_button_opens_the_modal(self, page: Page, base_url: str):
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])

@@ -247,6 +247,24 @@ class LabelBase(SQLModel):
     parent_uuid: Optional[str] = Field(default=None, foreign_key="labels.uuid", ondelete="RESTRICT")
     label_type: LabelType = Field(default=LabelType.STANDARD)
     scope: LabelScope = Field(default=LabelScope.OBJECT)
+    # ── Home Assistant publishing ────────────────────────────────────────────────
+    #
+    # On the label rather than on a watch profile because the question is global: a
+    # label either is or is not something the user wants represented in their house's
+    # automation system. The same label watched by two profiles should not appear in HA
+    # under one and not the other.
+    #
+    # Off means the label gets no subject device at all — no entities, and its existing
+    # discovery is retracted. Its events are still recorded and still drive rule-level
+    # entities; this suppresses the *per-label* device only.
+    publish_to_ha: bool = Field(default=True)
+    # The finest tier: one counter per (label, rule, source). Default off because this
+    # is the only term in the entity count that multiplies all three axes together —
+    # every other tier is additive. A label tree of any size makes it the dominant cost,
+    # and it answers a question ("how often at *that* camera specifically") that the
+    # rule-level event entity's attributes already answer for automations. Opt in per
+    # label where the per-camera breakdown is genuinely wanted as long-term statistics.
+    publish_per_source: bool = Field(default=False)
 
 
 class Label(LabelBase, TimestampModel, table=True):
@@ -275,6 +293,19 @@ class Label(LabelBase, TimestampModel, table=True):
             server_default="object",
         ),
     )
+    # Overridden for the same reason as the two enums above: without an explicit
+    # `server_default` the table SQLModel creates has NOT NULL and no DEFAULT, while the
+    # migration's has both — so a row inserted without these columns succeeds against a
+    # migrated database and fails against a freshly created one. That divergence shows
+    # up only as an IntegrityError in whichever of the two a given environment built.
+    publish_to_ha: bool = Field(
+        default=True,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("1")),
+    )
+    publish_per_source: bool = Field(
+        default=False,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("0")),
+    )
     parent: Optional["Label"] = Relationship(
         back_populates="children", sa_relationship_kwargs={"remote_side": "Label.uuid"}
     )
@@ -293,6 +324,8 @@ class LabelRead(OrmModel):
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
     scope: LabelScope = LabelScope.OBJECT
+    publish_to_ha: bool = True
+    publish_per_source: bool = False
 
 
 class LabelUpdate(ApiModel):
@@ -301,6 +334,8 @@ class LabelUpdate(ApiModel):
     parent_uuid: Optional[str] = None
     label_type: Optional[LabelType] = None
     scope: Optional[LabelScope] = None
+    publish_to_ha: Optional[bool] = None
+    publish_per_source: Optional[bool] = None
 
 
 class ImageTagLink(SQLModel, table=True):
@@ -1838,6 +1873,16 @@ class WatchProfileSource(SQLModel, table=True):
     source_uuid: str = Field(foreign_key="sources.uuid", index=True, ondelete="RESTRICT")
     order: int = Field(default=0)
     enabled: bool = Field(default=True)
+    # As on InteractionRule: `enabled` stops the camera being watched, this stops only
+    # its Home Assistant representation. Watching a camera without publishing it is the
+    # case this exists for — recording and event history continue, the device and its
+    # entities go away.
+    #
+    # `server_default` so the created and migrated schemas agree — see `Label`.
+    publish_to_ha: bool = Field(
+        default=True,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("1")),
+    )
     # What `{source}` renders as in this watcher's MQTT topics. NULL or blank falls back
     # to the source's own name.
     #
@@ -1886,6 +1931,18 @@ class InteractionRule(SQLModel, table=True):
     order: int = Field(default=0)
     name: str
     enabled: bool = Field(default=True)
+    # Distinct from `enabled`, and the distinction is the point: `enabled` stops the
+    # rule being evaluated at all, so no event is raised, nothing is recorded and no
+    # clip is kept. This stops only the Home Assistant *representation* — the rule still
+    # runs, still files events, still shows in the event browser, it simply has no
+    # entities. Off retracts whatever discovery it previously had, on every device it
+    # appeared on (camera, subject and the rules device alike).
+    #
+    # `server_default` so the created and migrated schemas agree — see `Label`.
+    publish_to_ha: bool = Field(
+        default=True,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("1")),
+    )
     # Which sources this rule is evaluated on. **Empty means every source in the
     # profile**, matching `WatchAction`'s two scope lists, so a rule written before this
     # column existed — or by someone who never opens the picker — still runs everywhere.
@@ -2328,6 +2385,7 @@ class WatchProfileSourceRead(OrmModel):
     source_uuid: str
     order: int = 0
     enabled: bool = True
+    publish_to_ha: bool = True
     mqtt_name: Optional[str] = None
     model_group_uuid: Optional[str] = None
     model_name: Optional[str] = None
@@ -2345,6 +2403,7 @@ class WatchProfileSourceWrite(ApiModel):
     source_uuid: str
     order: int = 0
     enabled: bool = True
+    publish_to_ha: bool = True
     # Blank is stored as NULL by `_normalise_mqtt_name`, so "cleared" and "never set"
     # are the same state rather than two that behave alike but compare differently.
     mqtt_name: Optional[str] = None
@@ -2391,6 +2450,7 @@ class InteractionRuleRead(OrmModel):
     order: int = 0
     name: str
     enabled: bool = True
+    publish_to_ha: bool = True
     source_uuids_json: List[Any] = Field(default_factory=list)
     subject_a_kind: str
     subject_a_refs_json: List[Any] = Field(default_factory=list)
@@ -2413,6 +2473,7 @@ class InteractionRuleWrite(ApiModel):
     order: int = 0
     name: str
     enabled: bool = True
+    publish_to_ha: bool = True
     # Empty means "every source in this profile" — see `InteractionRule`.
     source_uuids_json: List[Any] = Field(default_factory=list)
     subject_a_kind: RuleSubjectKind = RuleSubjectKind.LABEL

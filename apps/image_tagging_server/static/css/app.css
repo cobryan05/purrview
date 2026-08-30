@@ -1984,6 +1984,28 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   width: auto;
 }
 
+/* Home Assistant publishing flags, in the same inline panel shape as the move picker. */
+.label-ha-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.label-ha-check input {
+  margin: 0;
+  vertical-align: middle;
+}
+
+/* The per-camera breakdown lives inside the device, so it reads as unavailable rather
+   than merely unticked while the device itself is turned off. */
+.label-ha-check--muted {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
 /* Visibility / Apply-to-all target preset menu (openAnchoredPopup content) */
 .label-preset-menu {
   background: var(--pico-background-color, var(--bg));
@@ -7696,6 +7718,15 @@ progress.progress-indeterminate:indeterminate {
 /* The on/off box leading a rule or action row. */
 .watch-row-enabled {
   cursor: pointer;
+}
+
+/* The Home Assistant publish box, sitting beside the on/off box on rule and camera rows.
+   Tinted differently on purpose: two adjacent checkboxes that mean very different things
+   ("stop evaluating this" vs "stop publishing this") are otherwise indistinguishable
+   without hovering for the tooltip, and only one of them stops events being recorded. */
+.watch-row-publish {
+  cursor: pointer;
+  accent-color: var(--color-info);
 }
 /* A disabled row is dimmed, never hidden or collapsed: keeping how it was configured is
    the entire point, so it has to stay readable and editable. The toggle itself keeps full

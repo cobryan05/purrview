@@ -648,6 +648,34 @@ function enabledToggle(row, current, onChange, { testid, title }) {
 }
 
 /**
+ * The "publish to Home Assistant" box, beside the enabled box on rules and cameras.
+ *
+ * Deliberately *not* the same control as `enabledToggle`, and the distinction is the
+ * whole reason it exists: unticking `enabled` stops the rule being evaluated, so there
+ * are no events, no clips and no history. This stops only the Home Assistant entities.
+ * The row keeps working; it just goes quiet in HA.
+ *
+ * Untinting the row is intentional too — a row that is publishing nothing is still fully
+ * operational, so dimming it the way a disabled row is dimmed would misreport it.
+ *
+ * The cost this answers is entity count: HA holds a registry entry per entity whether or
+ * not anyone enables it, and the total is a product of cameras, rules and labels. See the
+ * app device's "HA entities published" sensor for the running figure.
+ */
+function publishToggle(current, onChange, { testid, title }) {
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  // `!== false` for the same reason as `enabledToggle`: a row built from scratch has no
+  // flag, and publishing is the default.
+  box.checked = current !== false;
+  box.className = 'watch-row-publish';
+  box.dataset.testid = testid;
+  box.title = title;
+  box.addEventListener('change', onChange);
+  return box;
+}
+
+/**
  * A `(?)` beside a topic field, opening the placeholder vocabulary.
  *
  * The tokens used to be reachable only as the topic input's `title`, which is not
@@ -996,6 +1024,18 @@ function buildSourceRow(src, ctx) {
       + 'action or rule scoped to it.',
   }));
 
+  // A bare checkbox, not a labelled `wfield`: the source row is held to one control
+  // line (`test_the_source_row_stays_one_control_line`), which is the same constraint
+  // that put the mask opt-out in a modal. The title carries the explanation.
+  const publishBox = publishToggle(src.publishToHa, ctx.onAnyChange, {
+    testid: 'watch-source-publish',
+    title: 'Publish this camera to Home Assistant. Unticked, the watcher still analyses it and '
+      + 'still records — only its HA device and that device’s entities go away, which is worth '
+      + 'roughly (rules × 6) + 9 entities. Its rules keep contributing to the Rules device, so '
+      + 'automations written against a rule rather than a camera are unaffected.',
+  });
+  row.appendChild(publishBox);
+
   // What `{source}` publishes as, for this watcher only. The placeholder tracks the
   // selected camera so "blank means the source's own name" needs no help text — and so
   // it keeps reading correctly after the row is repointed at a different camera.
@@ -1178,6 +1218,7 @@ function buildSourceRow(src, ctx) {
       sourceUuid: sourceSel.value,
       order: 0,
       enabled: true,
+      publishToHa: publishBox.checked,
       // null, not '', so "cleared" and "never set" are one state. The backend
       // normalises blanks too; doing it here as well keeps the payload honest.
       mqttName: mqttName.value.trim() || null,
@@ -1216,6 +1257,15 @@ function buildRuleRow(rule, ctx) {
       + 'Takes effect on the watcher’s next start.',
   });
   row.appendChild(enabledBox);
+
+  const publishBox = publishToggle(rule.publishToHa, ctx.onAnyChange, {
+    testid: 'watch-rule-publish',
+    title: 'Whether this rule appears in Home Assistant. Unticked, the rule still runs — '
+      + 'events are still raised, recorded and browsable here — but its entities are removed '
+      + 'from HA, on the cameras, the subjects and the Rules device alike. Use it to keep a '
+      + 'noisy or experimental rule out of your automations without losing its history.',
+  });
+  row.appendChild(publishBox);
 
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
@@ -1664,6 +1714,7 @@ function buildRuleRow(rule, ctx) {
         order: 0,
         name: nameInput.value.trim() || 'Unnamed rule',
         enabled: enabledBox.checked,
+        publishToHa: publishBox.checked,
         // Always sent: a watch profile saves as a whole-list replace, so a field the
         // editor omits is a field the save resets to its default.
         sourceUuidsJson: [...sourceScope],

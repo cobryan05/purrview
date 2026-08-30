@@ -68,10 +68,21 @@ export async function createNewLabel(name, color, parentUuid = null, labelType =
 }
 
 
-export async function updateLabel(uuid, name, color, { labelType, scope, parentUuid } = {}) {
+export async function updateLabel(
+  uuid,
+  name,
+  color,
+  { labelType, scope, parentUuid, publishToHa, publishPerSource } = {},
+) {
   const body = { name, color };
   if (labelType !== undefined) body.labelType = labelType;
   if (scope !== undefined) body.scope = scope;
+  // Same rule as parentUuid below: send only when the caller meant to change it. These
+  // are booleans, so an unconditional `body.publishToHa = publishToHa` would post
+  // `undefined` on every plain rename and the backend would read it as "no change" only
+  // by luck of its own filtering.
+  if (publishToHa !== undefined) body.publishToHa = publishToHa;
+  if (publishPerSource !== undefined) body.publishPerSource = publishPerSource;
   // Only send parentUuid when the caller explicitly provided it (including
   // `null`, which promotes to root) — omitting it must leave the label's
   // existing parent untouched, never accidentally re-parent on a plain rename.

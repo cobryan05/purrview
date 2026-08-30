@@ -1719,6 +1719,7 @@ class StreamWatcherTask(Task):
                 subject=signal.subject_name,
                 target=signal.target_name,
                 track_ids=signal.track_ids,
+                source_name=self._source_name_for(signal.source_uuid),
             )
             if signal.phase is EventPhase.START and signal.subject_ref:
                 self._manager.get_mqtt_bridge().publish_subject_event(

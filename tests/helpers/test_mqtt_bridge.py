@@ -13,6 +13,9 @@ forever.
 import json
 
 from apps.helpers.mqtt.bridge import (
+    APP_CONFIG_TOPIC,
+    APP_DEVICE_ID,
+    RULES_CONFIG_TOPIC,
     DiscoveryState,
     MqttBridge,
     ProfileView,
@@ -20,11 +23,13 @@ from apps.helpers.mqtt.bridge import (
     SourceView,
     SubjectView,
     build_all_discovery,
+    build_rules_discovery,
     build_seed_publishes,
     build_slug_index,
     build_source_discovery,
     build_subject_discovery,
     build_subject_seed,
+    count_entities,
     reconcile_discovery,
     source_config_topic,
     source_device_id,
@@ -363,16 +368,29 @@ class TestSubjectDeviceShape:
         cmps = self._subject_cmps(profile)
         assert {"detected", "count", "last_seen", "last_location"} <= set(cmps)
 
-    def test_the_per_source_tier_is_disabled_by_default_and_the_aggregate_is_not(self):
-        """The cardinality lever: the tier that multiplies out is off, the tier you
-        put on a dashboard is on."""
+    def test_the_per_source_tier_is_opt_in_per_label_and_the_aggregate_is_not(self):
+        """The cardinality lever, and the one conditional worth pinning here.
+
+        Publishing the (label x rule x source) tier disabled-by-default was not enough:
+        HA still creates a registry entry per entity, so the cost scaled with the label
+        tree while being invisible. It is now absent unless the label asks for it, and
+        the aggregate tier — the one a dashboard uses — is unaffected either way.
+        """
         profile = _profile(
             sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Hallway")),
             rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),),
         )
-        cmps = self._subject_cmps(profile)
-        assert cmps["rule-1_count"].get("enabled_by_default") is not False
-        assert cmps["rule-1_src-1_count"]["enabled_by_default"] is False
+
+        off = self._subject_cmps(profile, {"subj-a": SubjectView(uuid="subj-a", name="Subject A")})
+        assert off["rule-1_count"].get("enabled_by_default") is not False
+        assert not [key for key in off if key.startswith("rule-1_src-")]
+
+        on = self._subject_cmps(
+            profile, {"subj-a": SubjectView(uuid="subj-a", name="Subject A", publish_per_source=True)}
+        )
+        assert on["rule-1_count"].get("enabled_by_default") is not False
+        assert on["rule-1_src-1_count"]["enabled_by_default"] is False
+        assert on["rule-1_src-2_count"]["enabled_by_default"] is False
 
     def test_subject_entities_survive_a_label_rename(self):
         profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
@@ -492,6 +510,19 @@ def _published(fake, suffix: str):
     return [c for c in fake.calls if c["topic"].endswith(suffix)]
 
 
+# A rule now publishes on two tiers — `<profile>/<source>/rule/<rule>/…` for the camera
+# device and `<profile>/rules/<rule>/…` for the Rules device — so matching on a suffix
+# alone no longer identifies one of them. Singular vs plural is the discriminator.
+def _per_source(fake, suffix: str):
+    """Only the per-camera tier."""
+    return [c for c in _published(fake, suffix) if "/rules/" not in c["topic"]]
+
+
+def _rule_global(fake, suffix: str):
+    """Only the Rules device tier."""
+    return [c for c in _published(fake, suffix) if "/rules/" in c["topic"]]
+
+
 class TestLivePublishingMatchesDiscovery:
     """The regression that matters most here, and the one that throws nothing when it
     breaks: discovery tells HA which topic an entity reads, and the live publish has to
@@ -556,9 +587,13 @@ class TestTopicsAreProfileScoped:
                 last_seen="2026-01-01T00:00:00+00:00",
             )
 
-        state_topics = [c["topic"] for c in _published(fake, "/state")]
-        assert len(state_topics) == 2
-        assert len(set(state_topics)) == 2
+        # Distinctness is the property under test, not the number of tiers: two
+        # profiles must never write to one topic, whatever tiers exist. Asserted per
+        # tier so a collision cannot hide behind the other tier's distinct topics.
+        for tier in (_per_source, _rule_global):
+            topics = [c["topic"] for c in tier(fake, "/state")]
+            assert len(topics) == 2, topics
+            assert len(set(topics)) == 2, topics
 
     def test_telemetry_is_per_watcher_not_per_source(self):
         """fps and queue depth describe a watcher's analysis of a source, so two
@@ -589,7 +624,10 @@ class TestLiveCounters:
             last_seen="2026-01-01T00:00:00+00:00",
         )
 
-        assert [c["payload"] for c in _published(fake, "/count")] == [43]
+        assert [c["payload"] for c in _per_source(fake, "/count")] == [43]
+        # The Rules device's counter is the same event summed across sources — with one
+        # source that is the same number, and it must not be a second increment.
+        assert [c["payload"] for c in _rule_global(fake, "/count")] == [43]
 
     def test_update_and_end_transitions_do_not_count_the_same_event_again(self):
         profile = _profile()
@@ -606,9 +644,11 @@ class TestLiveCounters:
                 last_seen="2026-01-01T00:00:00+00:00",
             )
 
-        # One event, three transitions, one increment.
-        assert [c["payload"] for c in _published(fake, "/count")] == [43]
-        assert [c["payload"] for c in _published(fake, "/state")] == ["ON", "ON", "OFF"]
+        # One event, three transitions, one increment — on each tier independently.
+        assert [c["payload"] for c in _per_source(fake, "/count")] == [43]
+        assert [c["payload"] for c in _rule_global(fake, "/count")] == [43]
+        assert [c["payload"] for c in _per_source(fake, "/state")] == ["ON", "ON", "OFF"]
+        assert [c["payload"] for c in _rule_global(fake, "/state")] == ["ON", "ON", "OFF"]
 
     def test_a_rename_does_not_restart_the_running_total(self):
         """The counter is keyed by uuid, not by topic. Keyed by topic, renaming a rule
@@ -630,7 +670,7 @@ class TestLiveCounters:
         bridge._slugs = build_slug_index([after])  # the rename lands on the next reconcile
         bridge.publish_rule_transition(**kwargs)
 
-        counts = _published(fake, "/count")
+        counts = _per_source(fake, "/count")
         assert [c["payload"] for c in counts] == [43, 44]
         # …onto the new topic, which is the half a uuid-keyed counter still has to get
         # right for HA to follow the entity across the rename.
@@ -1063,4 +1103,201 @@ class TestDevicesAreIdentifiableAsOneFamily:
 
         models = {p["dev"]["mdl"] for p in build_all_discovery([profile], PREFIX, {"cat-1": subject}).values()}
 
-        assert models == {"Watched camera", "Tracked subject", "Application"}
+        assert models == {"Watched camera", "Tracked subject", "Rules", "Application"}
+
+
+class TestRulesDevice:
+    """The device automations are written against: one rule, one entity, independent of
+    how many cameras or labels exist."""
+
+    def _cmps(self, profiles):
+        device = build_rules_discovery(profiles, PREFIX)
+        return {} if device is None else device["cmps"]
+
+    def test_one_rule_on_many_cameras_is_still_one_set_of_entities(self):
+        """The reason this device exists. The camera devices give a rule N entities for
+        N cameras, so an automation has to know every camera and silently stops covering
+        one the moment a camera is added. Here the rule is one entity whatever N is."""
+        one = _profile(sources=(SourceView(uuid="src-1", name="Kitchen"),))
+        four = _profile(
+            sources=tuple(SourceView(uuid=f"src-{i}", name=f"Cam {i}") for i in range(1, 5)),
+        )
+
+        assert set(self._cmps([one])) == set(self._cmps([four]))
+
+    def test_the_state_stays_on_until_the_last_camera_closes(self):
+        """The behaviour a per-camera binary_sensor cannot express, and the reason an
+        automation built by OR-ing them together gets this wrong: a rule open on two
+        cameras must not read OFF when only the first one ends."""
+        profile = _profile(sources=(SourceView(uuid="src-1", name="A"), SourceView(uuid="src-2", name="B")))
+        bridge, fake = _connected_bridge([profile])
+        common = dict(profile_uuid="profile-1", rule_uuid="rule-1", last_seen="2026-01-01T00:00:00+00:00")
+
+        bridge.publish_rule_transition(source_uuid="src-1", active=True, opened=True, **common)
+        bridge.publish_rule_transition(source_uuid="src-2", active=True, opened=True, **common)
+        bridge.publish_rule_transition(source_uuid="src-1", active=False, opened=False, **common)
+        assert [c["payload"] for c in _rule_global(fake, "/state")] == ["ON", "ON", "ON"]
+
+        bridge.publish_rule_transition(source_uuid="src-2", active=False, opened=False, **common)
+        assert [c["payload"] for c in _rule_global(fake, "/state")][-1] == "OFF"
+
+    def test_the_event_carries_the_subject_and_camera_that_fired_it(self):
+        """What makes the per-(rule, label, camera) entity tier unnecessary for
+        automations: one entity, and the combination arrives as attributes."""
+        bridge, fake = _connected_bridge([_profile()])
+
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:00:00+00:00",
+            subject="Luna",
+            source_name="Kitchen cam",
+        )
+
+        event = _rule_global(fake, "/event")[-1]["payload"]
+        assert event["event_type"] == "opened"
+        assert event["subject"] == "Luna"
+        assert event["source"] == "Kitchen cam"
+
+    def test_the_event_topic_is_not_retained(self):
+        """HA's event entity fires on every message it receives, including the retained
+        one replayed on reconnect. Retaining this would re-trigger every automation
+        bound to it whenever HA restarted."""
+        bridge, fake = _connected_bridge([_profile()])
+        common = dict(
+            profile_uuid="profile-1", source_uuid="src-1", rule_uuid="rule-1", last_seen="2026-01-01T00:00:00+00:00"
+        )
+
+        bridge.publish_rule_transition(active=True, opened=True, **common)
+
+        assert [c["retain"] for c in _rule_global(fake, "/event")] == [False]
+        # …while the state it sits beside is retained, so HA still knows the rule is on.
+        assert all(c["retain"] for c in _rule_global(fake, "/state"))
+
+    def test_only_opening_and_closing_fire_an_event(self):
+        """An UPDATE is neither. Firing on it would run the automation repeatedly for
+        one visit."""
+        bridge, fake = _connected_bridge([_profile()])
+        common = dict(
+            profile_uuid="profile-1", source_uuid="src-1", rule_uuid="rule-1", last_seen="2026-01-01T00:00:00+00:00"
+        )
+
+        for active, opened in ((True, True), (True, False), (False, False)):
+            bridge.publish_rule_transition(active=active, opened=opened, **common)
+
+        assert [c["payload"]["event_type"] for c in _rule_global(fake, "/event")] == ["opened", "closed"]
+
+
+class TestPublishFlagsRemoveEntities:
+    """Each flag has to *retract*, not merely stop updating. A discovery config left
+    retained keeps its entities alive in HA forever with no way to remove them but
+    hand-editing the entity registry."""
+
+    def _topics(self, profiles, subjects):
+        return set(build_all_discovery(profiles, PREFIX, subjects).keys())
+
+    def test_a_rule_opted_out_disappears_from_every_device_it_was_on(self):
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna")}
+        rule = RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",))
+        on = _profile(rules=(rule,))
+        off = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",), publish_to_ha=False),))
+
+        before = build_all_discovery([on], PREFIX, subjects)
+        after = build_all_discovery([off], PREFIX, subjects)
+
+        # Camera device keeps existing; the rule's components leave it.
+        camera = source_config_topic("src-1")
+        assert any(k.startswith("rule-1_") for k in before[camera]["cmps"])
+        assert not [k for k in after[camera]["cmps"] if k.startswith("rule-1_")]
+        # The rules device held nothing else, so it goes entirely rather than empty.
+        assert RULES_CONFIG_TOPIC in before
+        assert RULES_CONFIG_TOPIC not in after
+        # …and the subject had nothing else to be in scope for.
+        assert subject_config_topic("subj-a") not in after
+
+    def test_a_label_opted_out_loses_its_device_but_not_the_rule(self):
+        """Opting a label out must not take the rule's own entities with it — the rule
+        still fires, and the Rules device is where that is visible."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+
+        on = self._topics([profile], {"subj-a": SubjectView(uuid="subj-a", name="Luna")})
+        off = self._topics([profile], {"subj-a": SubjectView(uuid="subj-a", name="Luna", publish_to_ha=False)})
+
+        assert subject_config_topic("subj-a") in on
+        assert subject_config_topic("subj-a") not in off
+        assert RULES_CONFIG_TOPIC in off
+        assert source_config_topic("src-1") in off
+
+    def test_a_camera_opted_out_loses_its_device_but_not_the_rule(self):
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna")}
+        rules = (RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),)
+        on = _profile(sources=(SourceView(uuid="src-1", name="Kitchen"),), rules=rules)
+        off = _profile(sources=(SourceView(uuid="src-1", name="Kitchen", publish_to_ha=False),), rules=rules)
+
+        assert source_config_topic("src-1") in self._topics([on], subjects)
+        after = self._topics([off], subjects)
+        assert source_config_topic("src-1") not in after
+        assert RULES_CONFIG_TOPIC in after
+
+    def test_turning_a_flag_off_emits_a_retraction(self):
+        """The end-to-end property: reconciling from on to off publishes the empty
+        payload that actually removes the device."""
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna")}
+        rules = (RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),)
+        on = _profile(sources=(SourceView(uuid="src-1", name="Kitchen"),), rules=rules)
+        off = _profile(sources=(SourceView(uuid="src-1", name="Kitchen", publish_to_ha=False),), rules=rules)
+
+        _, previous = reconcile_discovery(DiscoveryState(), build_all_discovery([on], PREFIX, subjects))
+        to_publish, _ = reconcile_discovery(previous, build_all_discovery([off], PREFIX, subjects))
+
+        assert to_publish[source_config_topic("src-1")] is None
+
+
+class TestDevicesAreGroupedUnderTheApp:
+    def test_every_device_hangs_off_the_app_device(self):
+        """`via_device` is what makes HA show these as one family rather than N
+        unrelated rows in a flat MQTT device list."""
+        subject = SubjectView(uuid="cat-1", name="Tabby")
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", subject_uuids=("cat-1",)),))
+
+        messages = build_all_discovery([profile], PREFIX, {"cat-1": subject})
+
+        for topic, payload in messages.items():
+            if topic == APP_CONFIG_TOPIC:
+                # The hub cannot be its own parent — HA drops a device that is.
+                assert "via_device" not in payload["dev"]
+            else:
+                assert payload["dev"]["via_device"] == APP_DEVICE_ID, topic
+
+
+class TestEntityBudget:
+    def test_the_count_tracks_what_discovery_actually_asks_for(self):
+        """The budget sensor is only worth having if it moves with config. Adding a
+        camera must change it; it is the product of the axes that makes the number
+        worth watching in the first place."""
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna")}
+        rules = (RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),)
+        one = _profile(sources=(SourceView(uuid="src-1", name="A"),), rules=rules)
+        two = _profile(sources=(SourceView(uuid="src-1", name="A"), SourceView(uuid="src-2", name="B")), rules=rules)
+
+        assert count_entities(build_all_discovery([two], PREFIX, subjects)) > count_entities(
+            build_all_discovery([one], PREFIX, subjects)
+        )
+
+    def test_opting_a_label_into_the_per_source_tier_costs_entities(self):
+        """The tier being opt-in is only meaningful if opting in is visibly more
+        expensive than not."""
+        rules = (RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),)
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="A"), SourceView(uuid="src-2", name="B")), rules=rules
+        )
+
+        lean = count_entities(build_all_discovery([profile], PREFIX, {"subj-a": SubjectView("subj-a", "Luna")}))
+        rich = count_entities(
+            build_all_discovery([profile], PREFIX, {"subj-a": SubjectView("subj-a", "Luna", publish_per_source=True)})
+        )
+
+        assert rich == lean + 2  # one counter per source, for the one rule

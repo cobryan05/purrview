@@ -38,13 +38,15 @@ ORIGIN = {"name": "PurrView"}
 #: HA's MQTT panel splits devices into subentries and "devices that don't belong to a
 #: sub-entry", and everything discovery-created lands in the latter — an MQTT subentry
 #: holds exactly one device that a human added through the UI, so it is not a folder and
-#: discovery cannot target one. The discovery device object has no `via_device` either
-#: (its keys are cu/cns/ids/name/mf/mdl/mdl_id/hw/sw/sa/sn), so there is no hub to hang
-#: these off.
+#: discovery cannot target one.
 #:
-#: Manufacturer and model are therefore the grouping HA does offer: they make the set
-#: filterable and sortable as one family in the device list instead of nine unrelated
-#: rows. Neither touches `ids`, so no entity is re-registered by adding them.
+#: Manufacturer and model are a grouping HA offers cheaply: they make the set filterable
+#: and sortable as one family in the device list instead of N unrelated rows. Neither
+#: touches `ids`, so no entity is re-registered by adding them.
+#:
+#: The stronger grouping is `via_device`, which `_device` sets — see there. An earlier
+#: version of this comment claimed the discovery device object had no such key; that was
+#: wrong, and the flat device list it resigned itself to was the consequence.
 MANUFACTURER = "PurrView"
 
 #: Namespace on every device id this app publishes, and — via `owns_config_topic` —
@@ -57,6 +59,15 @@ DEVICE_ID_PREFIX = "purrview_"
 
 APP_DEVICE_ID = f"{DEVICE_ID_PREFIX}system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
+
+#: One device holding every rule's cross-camera, cross-label entities.
+#:
+#: A device per rule would be the obvious shape and is the wrong one: rules are the
+#: axis most likely to grow, and HA charges per *device* in the UI (a row in the device
+#: list, a page, an area assignment) in a way it does not charge per entity. One device
+#: with N entities stays one row however many rules exist.
+RULES_DEVICE_ID = f"{DEVICE_ID_PREFIX}rules"
+RULES_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{RULES_DEVICE_ID}/config"
 
 
 def owns_config_topic(topic: str) -> bool:
@@ -77,8 +88,26 @@ def owns_config_topic(topic: str) -> bool:
     return topic.startswith(f"{HA_DISCOVERY_PREFIX}/device/{DEVICE_ID_PREFIX}") and topic.endswith("/config")
 
 
-def _device(ids: str, name: str, model: str) -> Dict[str, Any]:
-    return {"ids": ids, "name": name, "mf": MANUFACTURER, "mdl": model}
+def _device(ids: str, name: str, model: str, via: bool = True) -> Dict[str, Any]:
+    """A discovery device object, hung off the app device unless it *is* the app device.
+
+    `via_device` is what gives Home Assistant the grouping the manufacturer/model pair
+    can only approximate: the app device's page lists every camera, subject and the
+    rules device as connected devices, and each of those shows "Connected via PurrView".
+    That is the at-a-glance "these are one integration" view; MQTT-discovered devices
+    otherwise land in one flat list with everything else on the broker.
+
+    This contradicts an earlier comment here claiming the discovery device object has no
+    `via_device`. It does — verified against HA 2026.7.4 by publishing a device
+    declaring one and reading `via_device_id` back off the device registry. The key is
+    not abbreviated, unlike its neighbours.
+
+    It does not touch `ids`, so adding it re-registers nothing.
+    """
+    device: Dict[str, Any] = {"ids": ids, "name": name, "mf": MANUFACTURER, "mdl": model}
+    if via and ids != APP_DEVICE_ID:
+        device["via_device"] = APP_DEVICE_ID
+    return device
 
 
 #: Component keys that arrive switched off in Home Assistant. HA still creates them, so
@@ -140,6 +169,11 @@ class RuleView:
     uuid: str
     name: str
     enabled: bool = True
+    #: Whether this rule is represented in Home Assistant at all. Distinct from
+    #: `enabled`, which stops the rule being evaluated: a rule can run, file events and
+    #: keep history while publishing nothing. False removes it from every device it
+    #: appears on and retracts what it had.
+    publish_to_ha: bool = True
     #: Empty means "every source in the profile" — matches `InteractionRule`.
     source_uuids: Tuple[str, ...] = ()
     #: Label uuids this rule can match as its subject, already expanded through the
@@ -156,6 +190,9 @@ class SourceView:
     name: str
     mqtt_name: Optional[str] = None
     enabled: bool = True
+    #: As on `RuleView`: `enabled` stops the camera being watched, this stops only its
+    #: Home Assistant device.
+    publish_to_ha: bool = True
 
 
 @dataclass(frozen=True)
@@ -170,6 +207,15 @@ class SubjectView:
 
     uuid: str
     name: str
+    #: Whether this label gets a device at all.
+    publish_to_ha: bool = True
+    #: Whether it also gets the per-(rule, source) counter tier. Off by default: this is
+    #: the only tier whose size is subjects x rules x sources, so it is the one that
+    #: turns a growing label tree into a four-figure entity count. The rule-level event
+    #: entity carries the same breakdown as attributes, which is what an automation
+    #: needs; this tier exists for long-term per-camera statistics, which is a
+    #: deliberate, occasional want.
+    publish_per_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,6 +291,24 @@ def telemetry_topic(profile_slug: str, source_slug: str) -> str:
     return f"{source_base_topic(profile_slug, source_slug)}/telemetry"
 
 
+def rule_global_base_topic(profile_slug: str, rule_slug: str) -> str:
+    """A rule's topics across every source and subject at once.
+
+    Deliberately `<profile>/rules/<rule>` — the same hierarchy as
+    `rule_base_topic`'s `<profile>/<source>/rule/<rule>` with the source segment
+    dropped, which is exactly what "this rule, on any camera" means.
+
+    Profile-scoped, unlike subject topics: a label is app-wide (two watchers seeing the
+    same cat want one answer), but a rule is owned by its profile, and two profiles that
+    happen to contain a rule of the same name hold two different rules.
+
+    Plural `rules/` rather than `rule/` so it cannot collide with a *source* whose slug
+    is literally "rule", which `<profile>/<source>/rule/<rule>` would otherwise make
+    ambiguous.
+    """
+    return f"{profile_slug}/rules/{rule_slug}"
+
+
 # ── Discovery payload generation (pure) ──────────────────────────────────────────────
 
 
@@ -262,7 +326,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
     cmps: Dict[str, Any] = {}
     for rule in profile.rules:
-        if not rule.enabled:
+        if not rule.enabled or not rule.publish_to_ha:
             continue
         if rule.source_uuids and source.uuid not in rule.source_uuids:
             continue
@@ -494,9 +558,15 @@ def build_subject_discovery(
             "state_topic": f"{base}/rule/{rule_slug}/attributes",
             "value_template": "{{ value_json.lastSeen }}",
         }
-        # Tier 3 — the drill-down. Off by default: this is the tier that multiplies
-        # out (subjects x rules x sources) and it answers a question you ask
-        # occasionally, not one you put on a dashboard.
+        # Tier 3 — the drill-down, and the only tier gated behind a per-label opt-in.
+        #
+        # It is the term that multiplies all three axes (subjects x rules x sources)
+        # while every other tier merely adds, so it is what turns a large label tree
+        # into a four-figure entity count. Publishing it disabled-by-default was not
+        # enough: HA still creates a registry entry per entity, so the cost was real and
+        # invisible. Now a label that wants the per-camera breakdown asks for it.
+        if not subject.publish_per_source:
+            continue
         for source in sources:
             source_slug = _topic_source(source)
             cmps[f"{rule.uuid}_{source.uuid}_count"] = {
@@ -514,6 +584,105 @@ def build_subject_discovery(
         # Only the app-level LWT: a subject is not owned by any one watcher, so tying
         # its availability to a particular one would blank the device whenever that
         # watcher stopped, even while another was still watching the same label.
+        "availability": [{"topic": f"{prefix}/status"}],
+        "cmps": cmps,
+    }
+
+
+def build_rules_discovery(profiles: Sequence[ProfileView], prefix: str) -> Optional[Dict[str, Any]]:
+    """The `purrview_rules` device: every rule, once, independent of camera and label.
+
+    This is the device automations are written against. The camera and subject devices
+    answer "did this rule fire *here*" and "did this rule fire for *her*"; neither
+    answers "did this rule fire", which is the question an automation almost always
+    actually asks — the litter box wants emptying whoever used it and whichever camera
+    saw it. Composing that from the per-camera entities means an automation that silently
+    stops covering a camera the moment one is added, which is the kind of bug nobody
+    notices until the automation was needed.
+
+    The `event` component is the reason this device does not need a per-(rule, camera,
+    label) entity to be useful. Its payload carries the source and the subject as
+    attributes, so one automation triggers on the rule and branches on
+    `trigger.event.data.subject` — the combination is available without an entity per
+    combination, which is what keeps the cardinality flat.
+
+    Returns None when no rule is publishable, so the device is retracted rather than
+    published empty. An empty device in HA reads as broken, not as inapplicable.
+    """
+    cmps: Dict[str, Any] = {}
+    for profile in profiles:
+        profile_slug = slugify(profile.name)
+        for rule in profile.rules:
+            if not rule.enabled or not rule.publish_to_ha:
+                continue
+            rule_slug = slugify(rule.name)
+            base = f"{prefix}/{rule_global_base_topic(profile_slug, rule_slug)}"
+            label = entity_name("PurrView Rules", rule.name)
+            # uuid-based like everywhere else: renaming a rule moves its topics but must
+            # not orphan its history.
+            uid = f"{RULES_DEVICE_ID}_{rule.uuid}"
+
+            cmps[f"{rule.uuid}_state"] = {
+                "p": "binary_sensor",
+                "unique_id": f"{uid}_state",
+                "name": label,
+                "device_class": "occupancy",
+                "state_topic": f"{base}/state",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "json_attributes_topic": f"{base}/attributes",
+            }
+            cmps[f"{rule.uuid}_count"] = {
+                "p": "sensor",
+                "unique_id": f"{uid}_count",
+                "name": f"{label} count",
+                # Without a state_class HA purges raw history after ~10 days and keeps
+                # nothing; with it, "how many times last year" stays answerable forever.
+                "state_class": "total_increasing",
+                "state_topic": f"{base}/count",
+            }
+            cmps[f"{rule.uuid}_last_seen"] = {
+                "p": "sensor",
+                "unique_id": f"{uid}_last_seen",
+                "name": f"{label} last seen",
+                "device_class": "timestamp",
+                "state_topic": f"{base}/attributes",
+                "value_template": "{{ value_json.lastSeen }}",
+            }
+            # HA's MQTT event platform reads `event_type` out of the JSON payload and
+            # exposes every other key as an attribute — which is what carries the
+            # source and subject through to the automation.
+            cmps[f"{rule.uuid}_event"] = {
+                "p": "event",
+                "unique_id": f"{uid}_event",
+                "name": f"{label} event",
+                "state_topic": f"{base}/event",
+                "event_types": ["opened", "closed"],
+            }
+            # Read off the same retained attributes payload rather than topics of their
+            # own: two more entities, no more messages.
+            cmps[f"{rule.uuid}_last_subject"] = {
+                "p": "sensor",
+                "unique_id": f"{uid}_last_subject",
+                "name": f"{label} last subject",
+                "state_topic": f"{base}/attributes",
+                "value_template": "{{ value_json.lastSubject }}",
+            }
+            cmps[f"{rule.uuid}_last_source"] = {
+                "p": "sensor",
+                "unique_id": f"{uid}_last_source",
+                "name": f"{label} last camera",
+                "state_topic": f"{base}/attributes",
+                "value_template": "{{ value_json.lastSource }}",
+            }
+
+    if not cmps:
+        return None
+    return {
+        "dev": _device(RULES_DEVICE_ID, "PurrView Rules", "Rules"),
+        "o": dict(ORIGIN),
+        # App-level availability only: a rule spans every watcher, so tying it to one
+        # would blank it whenever that watcher stopped.
         "availability": [{"topic": f"{prefix}/status"}],
         "cmps": cmps,
     }
@@ -553,8 +722,30 @@ def build_app_discovery(prefix: str) -> Dict[str, Any]:
                 "state_topic": f"{prefix}/system",
                 "value_template": "{{ value_json.watchersRunning }}",
             },
+            # How many entities this app is asking Home Assistant to hold.
+            #
+            # Here because the cost is otherwise invisible until it is a problem: the
+            # count is a product of labels, rules and cameras, so it grows when config
+            # grows and nothing in the app or in HA says so. Publishing it means the
+            # number can be watched, put on a dashboard and alerted on, which is the
+            # difference between a budget and a hope.
+            "ha_entities": {
+                "p": "sensor",
+                "unique_id": f"{APP_DEVICE_ID}_ha_entities",
+                "name": "HA entities published",
+                "state_class": "measurement",
+                "state_topic": f"{prefix}/system",
+                "value_template": "{{ value_json.haEntities }}",
+            },
         },
     }
+
+
+def count_entities(messages: Dict[str, Dict[str, Any]]) -> int:
+    """Total components across every device-discovery message — i.e. how many entities
+    Home Assistant is being asked to create. Counts disabled-by-default ones too: HA
+    still makes a registry entry for those, which is the cost being measured."""
+    return sum(len(message.get("cmps") or {}) for message in messages.values())
 
 
 def subjects_in_scope(profiles: Sequence[ProfileView]) -> Dict[str, List[Tuple[RuleView, List[SourceView]]]]:
@@ -566,9 +757,9 @@ def subjects_in_scope(profiles: Sequence[ProfileView]) -> Dict[str, List[Tuple[R
     """
     out: Dict[str, List[Tuple[RuleView, List[SourceView]]]] = {}
     for profile in profiles:
-        enabled_sources = [s for s in profile.sources if s.enabled]
+        enabled_sources = [s for s in profile.sources if s.enabled and s.publish_to_ha]
         for rule in profile.rules:
-            if not rule.enabled:
+            if not rule.enabled or not rule.publish_to_ha:
                 continue
             sources = [s for s in enabled_sources if not rule.source_uuids or s.uuid in rule.source_uuids]
             if not sources:
@@ -629,7 +820,7 @@ def build_all_discovery(
     messages: Dict[str, Dict[str, Any]] = {}
     for profile in profiles:
         for source in profile.sources:
-            if not source.enabled:
+            if not source.enabled or not source.publish_to_ha:
                 continue
             topic = source_config_topic(source.uuid)
             payload = build_source_discovery(profile, source, prefix)
@@ -642,10 +833,16 @@ def build_all_discovery(
                 messages[topic] = payload
     for subject_uuid, rule_scopes in subjects_in_scope(profiles).items():
         subject = (subjects or {}).get(subject_uuid)
-        if subject is None:
+        if subject is None or not subject.publish_to_ha:
             continue
         messages[subject_config_topic(subject_uuid)] = build_subject_discovery(subject, rule_scopes, prefix)
 
+    rules_device = build_rules_discovery(profiles, prefix)
+    if rules_device is not None:
+        messages[RULES_CONFIG_TOPIC] = rules_device
+
+    # Built last: it reports the size of everything above it, so it has to be able to
+    # count the finished set.
     messages[APP_CONFIG_TOPIC] = build_app_discovery(prefix)
     return messages
 
@@ -821,6 +1018,15 @@ class SlugIndex:
         base = self.rule_base(profile_uuid, source_uuid, rule_uuid)
         return None if base is None else f"{base}/count"
 
+    def rule_global_base(self, profile_uuid: str, rule_uuid: str) -> Optional[str]:
+        """The rule's cross-camera topics — `rule_base` without the source segment."""
+        entry = self.profiles.get(profile_uuid)
+        if entry is None:
+            return None
+        profile_slug, _sources, rules = entry
+        rule_slug = rules.get(rule_uuid)
+        return None if rule_slug is None else rule_global_base_topic(profile_slug, rule_slug)
+
     def rule_slug(self, rule_uuid: str) -> Optional[str]:
         """A rule's topic slug, without needing to know its profile.
 
@@ -892,6 +1098,29 @@ def build_event_attributes(
     }
 
 
+def build_rule_global_attributes(
+    *,
+    last_seen: str,
+    subject: Optional[str],
+    source_name: Optional[str],
+    duration_s: Optional[float],
+    peak_confidence: Optional[float],
+) -> Dict[str, Any]:
+    """The Rules device's attributes payload: what fired this rule, and where.
+
+    `lastSubject` and `lastSource` are the whole point of the device — the per-camera
+    and per-label devices each know only their own half, and this is the tier that
+    holds both. Their sensors read them straight out of this one retained message.
+    """
+    return {
+        "lastSeen": last_seen,
+        "lastSubject": subject,
+        "lastSource": source_name,
+        "lastDurationS": round(duration_s, 2) if duration_s is not None else None,
+        "peakConfidence": round(peak_confidence, 4) if peak_confidence is not None else None,
+    }
+
+
 # ── The connection ────────────────────────────────────────────────────────────────
 
 
@@ -933,6 +1162,12 @@ class MqttBridge:
         #: rather than cached at startup.
         self._subject_names: Dict[str, str] = {}
         self._label_ancestry: Dict[str, List[str]] = {}
+        #: label uuid → (publish_to_ha, publish_per_source). Absent means the defaults,
+        #: so a label the bridge has not seen behaves as it did before the flags existed.
+        self._label_publish: Dict[str, Tuple[bool, bool]] = {}
+        #: Entities in the last desired discovery set, for the app device's budget
+        #: sensor. Zero until the first reconcile, which is honest: nothing published.
+        self._entity_count: int = 0
         #: (profile, source, rule) currently mid-event, for the app device's open-event
         #: count. Tracked from published transitions because there is no "still open"
         #: query — an event's row isn't written until an action commits to filing it.
@@ -1001,13 +1236,18 @@ class MqttBridge:
             self._publish_watcher_availability()
             await self.publish_all_discovery()
 
-    async def _load_labels(self) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
-        """`(uuid → name, uuid → ancestor uuids)` for the whole label tree.
+    async def _load_labels(self) -> Tuple[Dict[str, str], Dict[str, List[str]], Dict[str, Tuple[bool, bool]]]:
+        """`(uuid → name, uuid → ancestor uuids, uuid → publish flags)` for the label tree.
 
         The ancestry half is what makes subject enumeration correct: rules commonly
         name a *parent* label with `include_descendants`, and it is the descendant that
         lands in an event's `subject_ref`, so the literal refs alone would miss every
         individual the rule can actually match.
+
+        The flags are read per label and **not** inherited down the tree, deliberately.
+        Inheritance would make "why does this label have no entities" unanswerable
+        without walking to the root, and the tree is an annotation taxonomy — its shape
+        is chosen for labelling, not for what belongs in someone's house automation.
         """
         from db_client.api.labels_api import LabelsApi
 
@@ -1024,14 +1264,29 @@ class MqttBridge:
                 cursor, guard = parent_of.get(cursor), guard + 1
             return chain
 
-        return ({label.uuid: label.name for label in labels}, {label.uuid: _ancestors(label.uuid) for label in labels})
+        return (
+            {label.uuid: label.name for label in labels},
+            {label.uuid: _ancestors(label.uuid) for label in labels},
+            {
+                label.uuid: (
+                    bool(getattr(label, "publish_to_ha", True)),
+                    bool(getattr(label, "publish_per_source", False)),
+                )
+                for label in labels
+            },
+        )
 
     def _subject_views(self, profiles: Sequence[ProfileView]) -> Dict[str, SubjectView]:
         """The subject labels in scope, named. A subject whose label has since been
         deleted is dropped rather than shown as a bare uuid — its rule will stop
         matching it too, so the device would only ever be a dead one."""
         return {
-            uuid: SubjectView(uuid=uuid, name=self._subject_names[uuid])
+            uuid: SubjectView(
+                uuid=uuid,
+                name=self._subject_names[uuid],
+                publish_to_ha=self._label_publish.get(uuid, (True, False))[0],
+                publish_per_source=self._label_publish.get(uuid, (True, False))[1],
+            )
             for uuid in subjects_in_scope(profiles)
             if uuid in self._subject_names
         }
@@ -1065,9 +1320,10 @@ class MqttBridge:
         # `GetSourcesResponse.sources` is already keyed by uuid — iterating it yields
         # the uuid strings, not the sources.
         source_by_uuid = dict(sources_resp.sources or {})
-        label_names, ancestry = await self._load_labels()
+        label_names, ancestry, label_publish = await self._load_labels()
         self._subject_names = label_names
         self._label_ancestry = ancestry
+        self._label_publish = label_publish
 
         views: List[ProfileView] = []
         for profile in profiles_resp.profiles or []:
@@ -1077,6 +1333,7 @@ class MqttBridge:
                     name=source_by_uuid[ps.source_uuid].name,
                     mqtt_name=ps.mqtt_name,
                     enabled=ps.enabled,
+                    publish_to_ha=bool(getattr(ps, "publish_to_ha", True)),
                 )
                 for ps in (profile.sources or [])
                 if ps.source_uuid in source_by_uuid  # a source can be deleted out from under a profile
@@ -1086,6 +1343,7 @@ class MqttBridge:
                     uuid=r.uuid,
                     name=r.name,
                     enabled=r.enabled,
+                    publish_to_ha=bool(getattr(r, "publish_to_ha", True)),
                     source_uuids=tuple(r.source_uuids_json or []),
                     subject_uuids=self._expand_subjects(r),
                 )
@@ -1107,6 +1365,10 @@ class MqttBridge:
         subjects = self._subject_views(profiles)
         self._subject_slugs = {uuid: slugify(view.name) for uuid, view in subjects.items()}
         desired = build_all_discovery(profiles, self._prefix, subjects)
+        # Measured off `desired`, not off what this pass happens to publish: an
+        # unchanged config publishes nothing, and a budget that read zero whenever
+        # nothing moved would be useless.
+        self._entity_count = count_entities(desired)
         to_publish, self._last_discovery = reconcile_discovery(self._last_discovery, desired)
         for topic, payload in to_publish.items():
             self._publisher.publish(topic, "" if payload is None else payload, retain=True, absolute=True)
@@ -1169,6 +1431,7 @@ class MqttBridge:
         subject: Optional[str] = None,
         target: Optional[str] = None,
         track_ids: Sequence[int] = (),
+        source_name: Optional[str] = None,
     ) -> None:
         """One event transition → the retained topics HA's entities read.
 
@@ -1212,6 +1475,85 @@ class MqttBridge:
         # publishing state first would briefly pair a new ON with the previous event's
         # attributes.
         self._publisher.publish(f"{base}/state", "ON" if active else "OFF", retain=True)
+
+        self._publish_rule_global(
+            profile_uuid=profile_uuid,
+            rule_uuid=rule_uuid,
+            active=active,
+            opened=opened,
+            last_seen=last_seen,
+            subject=subject,
+            source_name=source_name,
+            duration_s=duration_s,
+            peak_confidence=peak_confidence,
+        )
+
+    def _publish_rule_global(
+        self,
+        *,
+        profile_uuid: str,
+        rule_uuid: str,
+        active: bool,
+        opened: bool,
+        last_seen: str,
+        subject: Optional[str],
+        source_name: Optional[str],
+        duration_s: Optional[float],
+        peak_confidence: Optional[float],
+    ) -> None:
+        """The Rules device's tier: this rule, across every camera and every label.
+
+        Must run *after* `_open_rules` has been updated for this transition — the state
+        it publishes is "open on any source", which is read back out of that set. A rule
+        firing on two cameras must stay ON until the second one closes, which is exactly
+        what the per-camera binary_sensor cannot express and what an automation written
+        against one camera gets wrong.
+        """
+        if self._publisher is None:
+            return
+        base = self._slugs.rule_global_base(profile_uuid, rule_uuid)
+        if base is None:
+            return
+
+        if opened:
+            # Lifetime total across sources, summed from the same per-source counters
+            # the camera device publishes, so the two tiers cannot disagree.
+            total = sum(c for (p, _s, r), c in self._counts.items() if p == profile_uuid and r == rule_uuid)
+            self._publisher.publish(f"{base}/count", total, retain=True)
+
+        self._publisher.publish(
+            f"{base}/attributes",
+            build_rule_global_attributes(
+                last_seen=last_seen,
+                subject=subject,
+                source_name=source_name,
+                duration_s=duration_s,
+                peak_confidence=peak_confidence,
+            ),
+            retain=True,
+        )
+        still_open = any(p == profile_uuid and r == rule_uuid for p, _s, r in self._open_rules)
+        self._publisher.publish(f"{base}/state", "ON" if still_open else "OFF", retain=True)
+
+        # UPDATE transitions are neither an open nor a close and must not fire an event
+        # — an automation triggered off this would run repeatedly for one visit.
+        event_type = "opened" if opened else ("closed" if not active else None)
+        if event_type is not None:
+            # **Not retained**, unlike everything else here. HA's event entity fires on
+            # every message it receives, including the retained one replayed on each
+            # reconnect — so retaining this would re-trigger every automation bound to
+            # it whenever HA restarted or the broker dropped.
+            self._publisher.publish(
+                f"{base}/event",
+                {
+                    "event_type": event_type,
+                    "subject": subject,
+                    "source": source_name,
+                    "durationS": round(duration_s, 2) if duration_s is not None else None,
+                    "peakConfidence": round(peak_confidence, 4) if peak_confidence is not None else None,
+                },
+                retain=False,
+            )
 
     def _subject_topic(self, key: Tuple[str, ...]) -> Optional[str]:
         """A rolled-up counter key → its topic, or None if any part is unknown to the
@@ -1330,6 +1672,7 @@ class MqttBridge:
             # the DB is the wrong place to ask. This is also the number that agrees
             # with what HA's own binary_sensors are showing.
             "openEvents": len(self._open_rules),
+            "haEntities": self._entity_count,
         }
         try:
             from db_client.api.recordings_api import RecordingsApi

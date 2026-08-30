@@ -530,6 +530,8 @@ class Manager:
         color: Optional[str] = None,
         label_type: Optional[LabelType] = None,
         scope: Optional[LabelScope] = None,
+        publish_to_ha: Optional[bool] = None,
+        publish_per_source: Optional[bool] = None,
         parent_uuid: Any = _PARENT_UUID_NOT_SET,
     ) -> None:
         """
@@ -541,6 +543,11 @@ class Manager:
             color (Optional[str]): New color for the label.
             label_type (Optional[LabelType]): New label type.
             scope (Optional[LabelScope]): New label scope.
+            publish_to_ha (Optional[bool]): Whether this label gets a Home Assistant
+                device at all. Does not affect detection, events or history.
+            publish_per_source (Optional[bool]): Whether it also gets the finest
+                (label x rule x source) counter tier. Off by default — see the column's
+                comment in `types.py` for why this one is the cardinality risk.
             parent_uuid: New parent uuid ("move" the label), or None to promote
                 the label to root. Uses the sentinel default `_PARENT_UUID_NOT_SET`
                 (rather than `None`) because `None` is itself a meaningful value
@@ -551,6 +558,9 @@ class Manager:
             ValueError: if `parent_uuid` would make the label its own parent, or
                 a descendant of itself (a cycle).
         """
+        # `None` means "not supplied" for every key here, which is why the two booleans
+        # can live in the same filtered dict: `False` is not `None`, so turning a flag
+        # off survives the filter while leaving it alone does not.
         updates = {
             k: v
             for k, v in {
@@ -558,6 +568,8 @@ class Manager:
                 "color": color,
                 "label_type": label_type,
                 "scope": scope,
+                "publish_to_ha": publish_to_ha,
+                "publish_per_source": publish_per_source,
             }.items()
             if v is not None
         }

@@ -1729,6 +1729,8 @@ class WebApp:
                     color=request.color,
                     label_type=request.label_type,
                     scope=request.scope,
+                    publish_to_ha=request.publish_to_ha,
+                    publish_per_source=request.publish_per_source,
                     **parent_uuid_kwargs,
                 )
                 return UpdateLabelResponse(status=JsonValues.SUCCESS)
