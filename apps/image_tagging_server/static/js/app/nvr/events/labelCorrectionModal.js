@@ -1,15 +1,27 @@
 /**
- * NVR → Events: "these labels are wrong, they were actually…".
+ * NVR → Events: "this event's label is wrong, it was actually…".
  *
  * The correction half of the loop the NVR exists for. A watcher that calls the tabby
  * "Clover" will keep calling her Clover, and the only thing that fixes it is training
- * data saying otherwise — so the moment you *notice* is the moment worth capturing,
- * with the frame already in front of you and the boxes already drawn.
+ * data saying otherwise — so the moment you *notice* is the moment worth capturing.
  *
- * The remap is per detected label rather than one label for the whole frame. A frame
+ * **This is an event-level operation, not a frame one.** It is deliberately not a
+ * variant of "save this frame for annotation": the mistake being corrected is one the
+ * watcher made about *the whole event*, and the tracker followed that box across the
+ * entire clip. Correcting only the frame that happens to be on screen would throw away
+ * everything the tracker already did, and would hand the trainer a single image of a
+ * mistake that lasted ninety seconds.
+ *
+ * So the correction harvests a **spread** across the clip rather than one frame — and,
+ * equally deliberately, not *every* frame. Consecutive frames of a tracked animal are
+ * near-duplicates; a hundred of them is not a hundred times the training signal, it is
+ * one pose weighted a hundredfold, plus a hundred images for the dedup pass to throw
+ * away. `pickTrainingFrames` is where that judgement lives.
+ *
+ * The remap is per detected label rather than one label for the whole event. A clip
  * routinely holds more than one thing: correcting "Clover → Luna" must not also rewrite
- * the correctly-detected water bowl next to her, and a single-label form would do
- * exactly that while looking like it had worked.
+ * the correctly-detected water bowl beside her, and a single-label form would do exactly
+ * that while looking like it had worked.
  *
  * What it does *not* do is decide anything about the boxes' geometry. The detections'
  * rectangles are kept as they are and written Unverified, exactly as
@@ -17,6 +29,25 @@
  * is still a guess about *where*, and the review queue is where that gets settled.
  */
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
+
+/**
+ * Most frames one correction will harvest from a clip.
+ *
+ * A ceiling rather than a target: a two-second visit has three frames and should yield
+ * three. It exists because the cost is paid twice — once seeking and encoding each frame
+ * in the browser, once by whoever reviews them — and the tenth near-identical picture of
+ * the same cat at the same bowl earns neither.
+ */
+export const MAX_TRAINING_FRAMES = 8;
+
+/**
+ * Closest two harvested frames may sit in clip time.
+ *
+ * The sidecar samples at the analysis rate, so at 5 fps a burst of frames spans barely a
+ * second and shows one pose. Spacing them is what makes the set a *spread* — different
+ * positions, different poses, occasionally a different part of the room.
+ */
+export const MIN_FRAME_GAP_S = 0.75;
 
 /** The select option meaning "this label was right, leave its boxes alone". */
 const KEEP = '';
@@ -29,32 +60,108 @@ function el(tag, className, text) {
 }
 
 /**
- * Group a frame's detections by the label the model gave them.
+ * Tally every label the watcher put on this clip, across all of it.
  *
- * Exported for its own sake: the counts are what make the dialog readable ("Clover
- * (2 boxes)"), and a frame where one label appears three times must offer one row, not
- * three identical ones.
+ * Both counts are shown, because they answer different questions: *boxes* is how much
+ * the model insisted on the label, *frames* is how much training data correcting it
+ * would actually produce. Two boxes in one frame and two boxes across a minute are the
+ * same number and very different situations.
  *
- * @param {Array<{labelUuid: ?string}>} boxes - overlay boxes for the current frame
+ * @param {Object} doc - a clip overlay sidecar
  * @param {Map<string, Object>} labels - uuid → label, as `fetchLabels()` returns
- * @returns {Array<{labelUuid: string, name: string, count: number}>} biggest first
+ * @returns {Array<{labelUuid: string, name: string, boxes: number, frames: number}>} biggest first
  */
-export function groupDetectionsByLabel(boxes, labels) {
-  const counts = new Map();
-  for (const box of boxes ?? []) {
-    if (!box?.labelUuid) continue;
-    counts.set(box.labelUuid, (counts.get(box.labelUuid) ?? 0) + 1);
+export function labelTallyAcrossClip(doc, labels) {
+  const tally = new Map();
+  for (const frame of doc?.frames ?? []) {
+    const seenHere = new Set();
+    for (const box of frame?.boxes ?? []) {
+      if (!box?.labelUuid) continue;
+      let row = tally.get(box.labelUuid);
+      if (!row) tally.set(box.labelUuid, (row = { boxes: 0, frames: 0 }));
+      row.boxes += 1;
+      // Counted once per frame however many boxes of it are in that frame — otherwise
+      // "frames" would say 12 for a clip that only has 4.
+      if (!seenHere.has(box.labelUuid)) {
+        seenHere.add(box.labelUuid);
+        row.frames += 1;
+      }
+    }
   }
-  return [...counts.entries()]
-    .map(([labelUuid, count]) => ({
+  return [...tally.entries()]
+    .map(([labelUuid, row]) => ({
       labelUuid,
-      // A label the DB has never heard of is still worth showing as a row: it is
-      // precisely the kind of stale detection someone wants to correct, and hiding it
-      // would leave the frame uncorrectable for the one box that is wrong.
+      // A label the DB has never heard of is still worth a row: it is precisely the kind
+      // of stale detection someone wants to correct, and hiding it would leave the event
+      // uncorrectable for the one label that is wrong.
       name: labels?.get(labelUuid)?.name || labelUuid,
-      count,
+      ...row,
     }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    .sort((a, b) => b.boxes - a.boxes || a.name.localeCompare(b.name));
+}
+
+/**
+ * The times of every frame holding at least one of these labels.
+ *
+ * @param {Object} doc - a clip overlay sidecar
+ * @param {Iterable<string>} labelUuids
+ * @returns {number[]} clip-relative seconds, ascending
+ */
+export function framesHoldingLabels(doc, labelUuids) {
+  const wanted = new Set(labelUuids ?? []);
+  const times = [];
+  for (const frame of doc?.frames ?? []) {
+    if (typeof frame?.t !== 'number') continue;
+    if ((frame.boxes ?? []).some(b => wanted.has(b?.labelUuid))) times.push(frame.t);
+  }
+  return times.sort((a, b) => a - b);
+}
+
+/**
+ * Choose the subset of frames actually worth saving.
+ *
+ * Two passes, in this order, because they answer different objections:
+ *
+ *  1. **Thin by time.** Frames closer together than `minGapS` show the same pose. This
+ *     pass runs first so the cap is spent on *distinct* frames rather than on whichever
+ *     burst happened to be densest.
+ *  2. **Spread to the cap.** If more survive than the cap allows, take evenly spaced
+ *     ones across the whole span — first and last included, since the beginning and end
+ *     of a visit are where the animal is entering and leaving, and those are the poses
+ *     the middle of the clip does not have.
+ *
+ * Taking the *first* N instead would hand the trainer the first two seconds of every
+ * event and nothing else, which is a worse set than a random sample and looks fine.
+ *
+ * @param {number[]} times - ascending, as from framesHoldingLabels
+ * @param {Object} [opts]
+ * @param {number} [opts.maxFrames]
+ * @param {number} [opts.minGapS]
+ * @returns {number[]}
+ */
+export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, minGapS = MIN_FRAME_GAP_S } = {}) {
+  const spaced = [];
+  for (const t of times ?? []) {
+    if (!spaced.length || t - spaced[spaced.length - 1] >= minGapS) spaced.push(t);
+  }
+  // The greedy pass always keeps the *first* frame but silently drops the *last* one
+  // whenever the tail of the clip falls inside the gap behind the previous keep — and
+  // the end of a visit, where the animal is leaving, is precisely the pose the middle
+  // of the clip does not have. Swapped in over the final keep rather than appended, so
+  // the minimum-gap invariant still holds: the frame it replaces was already at least
+  // `minGapS` past the one before it, and this one is later still.
+  const last = times?.length ? times[times.length - 1] : null;
+  if (spaced.length >= 2 && last != null && spaced[spaced.length - 1] !== last) {
+    spaced[spaced.length - 1] = last;
+  }
+  if (spaced.length <= maxFrames) return spaced;
+  if (maxFrames <= 1) return spaced.slice(0, Math.max(0, maxFrames));
+  const picked = [];
+  // Fenceposts, not buckets: dividing by (maxFrames - 1) is what puts the last pick on
+  // the final frame rather than one step short of it.
+  const step = (spaced.length - 1) / (maxFrames - 1);
+  for (let i = 0; i < maxFrames; i++) picked.push(spaced[Math.round(i * step)]);
+  return [...new Set(picked)];
 }
 
 /**
@@ -76,23 +183,27 @@ export function applyLabelRemap(boxes, remap) {
 }
 
 /**
- * Ask which of this frame's detected labels were wrong, and what they should have been.
+ * Ask which of this event's labels were wrong, and what they should have been.
  *
  * @param {Object} opts
- * @param {Array<{labelUuid: string, name: string, count: number}>} opts.detected - from groupDetectionsByLabel
+ * @param {Array<{labelUuid: string, name: string, boxes: number, frames: number}>} opts.detected -
+ *   from labelTallyAcrossClip
  * @param {Map<string, Object>} opts.labels - every label the DB knows, uuid → label
+ * @param {(labelUuids: string[]) => number} [opts.estimateFrames] - how many frames a
+ *   given selection would harvest, for the live count
  * @param {(remap: Map<string, string>) => (void | Promise<void>)} opts.onConfirm - non-empty remap
  * @returns {{close: () => void}}
  */
-export function openLabelCorrectionModal({ detected, labels, onConfirm }) {
+export function openLabelCorrectionModal({ detected, labels, estimateFrames, onConfirm }) {
   const shell = createModalShell();
   shell.dialog.classList.add('label-correction');
   shell.dialog.dataset.testid = 'label-correction-modal';
 
-  shell.dialog.appendChild(el('h3', 'label-correction__title', 'Which labels are wrong?'));
+  shell.dialog.appendChild(el('h3', 'label-correction__title', 'What did the watcher get wrong?'));
   shell.dialog.appendChild(el('p', 'label-correction__note',
-    'The frame is saved with these boxes, relabelled and left unverified for review. '
-    + 'The event is flagged so you can find it again.'));
+    'A spread of frames from across this clip is saved with these boxes relabelled and '
+    + 'left unverified for review — not every frame, because consecutive frames of the '
+    + 'same animal are near-duplicates. The event is flagged so you can find it again.'));
 
   const rows = el('div', 'label-correction__rows');
   /** @type {Array<{from: string, select: HTMLSelectElement}>} */
@@ -105,8 +216,11 @@ export function openLabelCorrectionModal({ detected, labels, onConfirm }) {
   for (const row of detected) {
     const line = el('div', 'label-correction__row');
     line.dataset.testid = 'label-correction-row';
+    // Both counts: how insistent the model was, and how much training data correcting it
+    // would produce. They are routinely very different numbers.
     line.appendChild(el('span', 'label-correction__from',
-      `${row.name} (${row.count} box${row.count === 1 ? '' : 'es'})`));
+      `${row.name} — ${row.boxes} box${row.boxes === 1 ? '' : 'es'} `
+      + `in ${row.frames} frame${row.frames === 1 ? '' : 's'}`));
 
     const select = document.createElement('select');
     select.className = 'label-correction__to';
@@ -129,6 +243,13 @@ export function openLabelCorrectionModal({ detected, labels, onConfirm }) {
   }
   shell.dialog.appendChild(rows);
 
+  // The number the user is actually deciding about. Live rather than stated afterwards:
+  // "correcting this will produce two frames" is worth knowing *before* agreeing to it,
+  // and it is the honest answer to "why did I only get two?" for a short event.
+  const estimate = el('p', 'label-correction__estimate');
+  estimate.dataset.testid = 'label-correction-estimate';
+  shell.dialog.appendChild(estimate);
+
   const actions = el('div', 'label-correction__actions');
   const confirm = el('button', 'panel-btn label-correction__confirm', 'Flag & save for review');
   confirm.type = 'button';
@@ -139,12 +260,22 @@ export function openLabelCorrectionModal({ detected, labels, onConfirm }) {
   cancel.dataset.testid = 'label-correction-cancel';
   cancel.addEventListener('click', () => shell.close());
 
-  /** A correction with nothing corrected would flag the event and save a duplicate
-   * frame for no reason, so the button stays dead until something is actually chosen. */
+  /** A correction with nothing corrected would flag the event and save duplicate frames
+   * for no reason, so the button stays dead until something is actually chosen. */
   function syncConfirm() {
-    confirm.disabled = !pickers.some(p => p.select.value !== KEEP);
+    const chosen = pickers.filter(p => p.select.value !== KEEP).map(p => p.from);
+    confirm.disabled = !chosen.length;
+    if (!chosen.length) {
+      estimate.textContent = '';
+      return;
+    }
+    const frames = estimateFrames?.(chosen);
+    estimate.textContent = frames == null
+      ? ''
+      : `Will save ${frames} frame${frames === 1 ? '' : 's'} from this clip.`;
   }
   for (const picker of pickers) picker.select.addEventListener('change', syncConfirm);
+  syncConfirm();
 
   confirm.addEventListener('click', async () => {
     const remap = new Map();

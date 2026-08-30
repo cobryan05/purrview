@@ -2362,19 +2362,21 @@ class TestCorrectingAWrongLabel:
         twice and allow two contradictory answers to it."""
         self._open_modal(page, base_url, overlay=_two_label_overlay())
 
-        page.locator("[data-testid='event-detail-correct-labels']").click()
+        page.locator("[data-testid='event-detail-relabel-event']").click()
 
         rows = page.locator("[data-testid='label-correction-row']")
         expect(rows).to_have_count(2)
-        # Counted, and biggest first — the cat has two boxes, the bowl one.
-        expect(rows.first).to_contain_text("Tabby (2 boxes)")
-        expect(rows.nth(1)).to_contain_text("Water bowl (1 box)")
+        # Counted, and biggest first — the cat has two boxes, the bowl one. Both counts
+        # are shown because they answer different questions: how insistent the model was,
+        # and how much training data correcting it would produce.
+        expect(rows.first).to_contain_text("Tabby — 2 boxes in 1 frame")
+        expect(rows.nth(1)).to_contain_text("Water bowl — 1 box in 1 frame")
 
     def test_confirming_is_refused_until_something_is_actually_corrected(self, page: Page, base_url: str):
         """A correction with nothing corrected would flag the event and save a duplicate
         frame for no reason, so the state of the button has to follow the choices."""
         self._open_modal(page, base_url, overlay=_two_label_overlay())
-        page.locator("[data-testid='event-detail-correct-labels']").click()
+        page.locator("[data-testid='event-detail-relabel-event']").click()
         confirm = page.locator("[data-testid='label-correction-confirm']")
         expect(confirm).to_be_disabled()
 
@@ -2387,20 +2389,22 @@ class TestCorrectingAWrongLabel:
         confirm that does nothing but flag the event."""
         self._open_modal(page, base_url, overlay=_two_label_overlay())
 
-        page.locator("[data-testid='event-detail-correct-labels']").click()
+        page.locator("[data-testid='event-detail-relabel-event']").click()
 
         options = page.locator("[data-testid='label-correction-select']").first.locator("option")
         assert "Tabby" not in options.all_text_contents()
         assert "Clover" in options.all_text_contents()
 
-    def test_a_frame_with_no_detections_says_so_rather_than_opening_empty(self, page: Page, base_url: str):
-        """A clip with no sidecar has nothing on this frame to relabel. An empty dialog
-        would look like the feature was broken."""
+    def test_a_clip_with_no_sidecar_offers_no_relabel_at_all(self, page: Page, base_url: str):
+        """Without per-frame boxes there is nothing to relabel: the event's own subject
+        label describes one analysed instant and cannot say where in the clip the box
+        was. A button that explained that *after* being pressed is worse than absent."""
         self._open_modal(page, base_url, overlay=None)
 
-        page.locator("[data-testid='event-detail-correct-labels']").click()
-
-        expect(page.locator("[data-testid='label-correction-modal']")).to_have_count(0)
+        expect(page.locator("[data-testid='event-detail-relabel-event']")).to_have_count(0)
+        # The frame tools are still there — this is the event action that is missing,
+        # not the whole toolbar.
+        expect(page.locator("[data-testid='event-detail-save-frame']")).to_be_visible()
 
     def test_the_remap_rewrites_only_the_labels_it_was_given(self, page: Page, base_url: str):
         """The multi-object case the per-label form exists for, asserted on the function
@@ -2408,29 +2412,81 @@ class TestCorrectingAWrongLabel:
         self._open_modal(page, base_url, overlay=_two_label_overlay())
 
         result = page.evaluate("""async () => {
-                const { applyLabelRemap, groupDetectionsByLabel } =
+                const { applyLabelRemap } =
                   await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
                 const boxes = [
                   { labelUuid: 'lbl-1', bbox: [0, 0, 1, 1] },
                   { labelUuid: 'lbl-1', bbox: [1, 1, 2, 2] },
                   { labelUuid: 'lbl-2', bbox: [2, 2, 3, 3] },
                 ];
-                const labels = new Map([
-                  ['lbl-1', { uuid: 'lbl-1', name: 'Tabby' }],
-                  ['lbl-2', { uuid: 'lbl-2', name: 'Water bowl' }],
-                ]);
                 return {
-                  grouped: groupDetectionsByLabel(boxes, labels).map(g => [g.name, g.count]),
                   remapped: applyLabelRemap(boxes, new Map([['lbl-1', 'lbl-3']])).map(b => b.labelUuid),
                   untouched: boxes.map(b => b.labelUuid),
                 };
             }""")
 
-        assert result["grouped"] == [["Tabby", 2], ["Water bowl", 1]]
         assert result["remapped"] == ["lbl-3", "lbl-3", "lbl-2"], "only the remapped label may change"
         # The overlay's boxes belong to a running redraw loop; rewriting them in place
         # would change what is painted over the video.
         assert result["untouched"] == ["lbl-1", "lbl-1", "lbl-2"], "the caller's boxes must not be mutated"
+
+    def test_the_tally_counts_boxes_and_frames_separately(self, page: Page, base_url: str):
+        """Two boxes in one frame and two boxes across a minute are the same box count
+        and very different situations — one yields one training image, the other two."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        result = page.evaluate("""async () => {
+                const { labelTallyAcrossClip } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const doc = { frames: [
+                  { t: 0, boxes: [{ labelUuid: 'a' }, { labelUuid: 'a' }, { labelUuid: 'b' }] },
+                  { t: 5, boxes: [{ labelUuid: 'a' }] },
+                ] };
+                const labels = new Map([['a', { uuid: 'a', name: 'Cat' }]]);
+                return labelTallyAcrossClip(doc, labels).map(r => [r.name, r.boxes, r.frames]);
+            }""")
+
+        assert result[0] == ["Cat", 3, 2], "three boxes, but only two frames to harvest"
+        # A label the DB has never heard of still gets a row: it is exactly the kind of
+        # stale detection someone wants to correct.
+        assert result[1] == ["b", 1, 1]
+
+    def test_the_harvest_is_a_spread_not_the_first_few_frames(self, page: Page, base_url: str):
+        """The sampling policy, which is the whole difference between "some subset" and
+        "the first two seconds of every event".
+
+        Consecutive frames of a tracked animal are near-duplicates: a hundred of them is
+        not a hundred times the signal, it is one pose weighted a hundredfold. So close
+        frames are thinned first, and only then is the cap spent — evenly, across the
+        whole span, keeping the first and last where the animal enters and leaves.
+        """
+        # Loaded only for an origin to import the module from; this asserts a pure
+        # function, so it needs no mocks and no modal.
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate("""async () => {
+                const { pickTrainingFrames } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                // 0.2s apart: a 5 fps burst, all of it one pose.
+                const dense = Array.from({ length: 50 }, (_, i) => +(i * 0.2).toFixed(1));
+                return {
+                  thinned: pickTrainingFrames([0, 0.1, 0.2, 5], { maxFrames: 8, minGapS: 0.75 }),
+                  capped: pickTrainingFrames(dense, { maxFrames: 4, minGapS: 0.75 }),
+                  short: pickTrainingFrames([0, 2, 4], { maxFrames: 8, minGapS: 0.75 }),
+                };
+            }""")
+
+        assert result["thinned"] == [0, 5], "frames inside the gap are the same pose twice"
+        capped = result["capped"]
+        assert len(capped) == 4, capped
+        assert capped[0] == 0, "the start of the visit is where the animal enters"
+        assert capped[-1] == 9.8, "and the end is where it leaves"
+        assert capped == sorted(capped)
+        # Not bunched at the front, which is what taking the first N would give.
+        assert capped[1] > 2, capped
+        # A short event yields what it has rather than being padded to the cap.
+        assert result["short"] == [0, 2, 4]
 
     def test_the_flagged_events_can_be_found_again(self, page: Page, base_url: str):
         """Flagging is only worth doing if the flagged ones come back. The filter sends

@@ -37,7 +37,13 @@ import {
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
-import { applyLabelRemap, groupDetectionsByLabel, openLabelCorrectionModal } from './labelCorrectionModal.js';
+import {
+  applyLabelRemap,
+  framesHoldingLabels,
+  labelTallyAcrossClip,
+  openLabelCorrectionModal,
+  pickTrainingFrames,
+} from './labelCorrectionModal.js';
 import { createBlipsPanel } from './blipsPanel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { describeCloseReason, eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
@@ -184,8 +190,7 @@ export function openEventDetailModal(
   // otherwise leave a dozen redraw loops running against detached videos.
   const shell = createModalShell({
     onClose: () => {
-      overlay?.destroy();
-      overlay = null;
+      dropOverlay();
       _dropFullscreenSyncs();
       // Leaving fullscreen behind a closing modal strands the user on a fullscreen
       // element that is about to be removed from the document.
@@ -292,6 +297,10 @@ export function openEventDetailModal(
 
   let video = null;
   let overlay = null;
+  // The sidecar the overlay was built from, kept because the whole-event relabel reads
+  // it directly: it needs every frame's boxes across the clip, not the one instant
+  // `overlay.boxesAt` can answer for.
+  let overlayDoc = null;
   //: `fullscreenchange` listeners belonging to fullscreen buttons that may already have
   //: been thrown away with their media pane. Unhooked together on close and on every
   //: re-render, in the same spirit as the overlay's loops above: this modal replaces its
@@ -299,7 +308,6 @@ export function openEventDetailModal(
   let _fullscreenSyncs = [];
   let saveBtn = null;
   let annotateBtn = null;
-  let correctBtn = null;
   let mediaSwitcher = null;
   //: Object URL of a mid-event timelapse preview, held so it can be revoked. The
   //: browser keeps a blob alive until it is, and these are whole videos.
@@ -469,8 +477,7 @@ export function openEventDetailModal(
   function playPreview(preview) {
     revokePreview();
     previewUrl = preview.url;
-    overlay?.destroy();
-    overlay = null;
+    dropOverlay();
     mediaPane.innerHTML = '';
     if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
 
@@ -503,8 +510,7 @@ export function openEventDetailModal(
   function renderSnapshotOnly(message) {
     // Before the wipe: the overlay's loops outlive the nodes they draw on, and
     // `innerHTML = ''` does not tell it anything.
-    overlay?.destroy();
-    overlay = null;
+    dropOverlay();
     video = null;
     mediaPane.innerHTML = '';
     // Kept above the message even when this recording cannot be shown: one of an
@@ -533,8 +539,7 @@ export function openEventDetailModal(
     // event's clip and its timelapse replaces the <video> the overlay's animation loop
     // is drawing onto, and a loop left running against a detached node keeps a whole
     // clip's worth of boxes alive for as long as the modal is open.
-    overlay?.destroy();
-    overlay = null;
+    dropOverlay();
     _dropFullscreenSyncs();
     mediaPane.innerHTML = '';
     if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
@@ -639,6 +644,9 @@ export function openEventDetailModal(
     // connected too, and these boxes would be drawn over the wrong clip.
     if (seq !== loadSeq || !doc || !video || !video.isConnected) return;
     overlay = attachClipOverlay(video, doc);
+    overlayDoc = doc;
+    // The relabel is only offered once there is a sidecar to drive it — see relabelEvent.
+    renderSidebar();
 
     const label = el('label', 'event-detail__toggle');
     const box = document.createElement('input');
@@ -726,13 +734,17 @@ export function openEventDetailModal(
     const tools = el('div', 'event-detail__tools');
     saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
     annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
-    correctBtn = button('Wrong labels…', () => void correctLabels(), { testid: 'event-detail-correct-labels' });
-    correctBtn.title = 'Relabel this frame’s detections and save it for review, and flag the event.';
     tools.appendChild(saveBtn);
     tools.appendChild(annotateBtn);
-    tools.appendChild(correctBtn);
     tools.appendChild(savedHint);
     return tools;
+  }
+
+  /** Drop the overlay and the sidecar together — they are only ever valid as a pair. */
+  function dropOverlay() {
+    overlay?.destroy();
+    overlay = null;
+    overlayDoc = null;
   }
 
   /**
@@ -744,13 +756,21 @@ export function openEventDetailModal(
    * detections on *this* frame to speak for. Said out loud rather than silently doing
    * nothing, which is how a dead-looking button gets reported as a bug.
    */
-  async function correctLabels() {
-    if (!video) return;
-    const boxes = overlay?.boxesAt(video.currentTime || 0)?.filter(b => b.labelUuid) ?? [];
-    if (!boxes.length) {
-      toast('There are no detections on this frame to correct', 4000);
-      return;
-    }
+  /**
+   * "The watcher called this the wrong thing" — a correction about the whole event.
+   *
+   * Deliberately not a frame operation, and deliberately not next to "Save For
+   * Annotation": the mistake is one the watcher made about the event, the tracker
+   * followed the box across the whole clip, and correcting only the frame that happens
+   * to be on screen would throw all of that away. So it lives with the event's own
+   * actions, reads the entire sidecar, and harvests a spread from across the clip.
+   *
+   * Requires the sidecar, which is why the button only appears once one has loaded: the
+   * event's own subject label describes a single analysed instant and cannot say where
+   * in the clip the box was, so without per-frame boxes there is nothing to relabel.
+   */
+  async function relabelEvent() {
+    if (!video || !overlayDoc) return;
     let labels;
     try {
       labels = await fetchLabels();
@@ -759,11 +779,124 @@ export function openEventDetailModal(
       toast(err.message || 'Could not load the labels', 5000, 'error');
       return;
     }
+    const detected = labelTallyAcrossClip(overlayDoc, labels);
+    if (!detected.length) {
+      toast('The watcher recorded no labelled detections on this clip', 4000);
+      return;
+    }
     openLabelCorrectionModal({
-      detected: groupDetectionsByLabel(boxes, labels),
+      detected,
       labels,
-      onConfirm: remap => saveCorrectedFrame(remap, labels),
+      estimateFrames: labelUuids => pickTrainingFrames(framesHoldingLabels(overlayDoc, labelUuids)).length,
+      onConfirm: remap => saveCorrectedFrames(remap, labels),
     });
+  }
+
+  /**
+   * Seek the clip to each chosen time and capture the frame there.
+   *
+   * Sequential rather than parallel because there is one `<video>` and one playhead;
+   * "seek to all of these at once" is not a thing it can do. Each capture waits for the
+   * `seeked` event rather than a timeout — a decode is not instant and a `drawImage`
+   * issued too early silently paints the *previous* frame, which would put the corrected
+   * boxes on the wrong picture.
+   *
+   * The playhead is put back where the user left it: this runs behind a modal they are
+   * about to return to, and finding the clip parked somewhere else would read as the
+   * correction having done something to the video.
+   */
+  async function captureFramesAt(times) {
+    const resumeAt = video.currentTime;
+    const wasPlaying = !video.paused;
+    video.pause();
+    const frames = [];
+    for (const t of times) {
+      const seeked = new Promise(resolve => {
+        // `once` so a later seek in this same loop cannot resolve an earlier promise.
+        video.addEventListener('seeked', resolve, { once: true });
+      });
+      video.currentTime = t;
+      await seeked;
+      const frame = await captureVideoFrame(video);
+      if (frame) frames.push({ at: t, frame });
+    }
+    video.currentTime = resumeAt;
+    if (wasPlaying) void video.play().catch(() => {});
+    return frames;
+  }
+
+  /**
+   * Save a spread of corrected frames from across the clip, then flag the event.
+   *
+   * A failure part-way through keeps what already saved rather than unwinding: each
+   * frame is an independent training image, and eight-of-eight is better than nothing
+   * when the ninth 500s. The count reported at the end is what actually landed.
+   */
+  async function saveCorrectedFrames(remap, labels) {
+    const times = pickTrainingFrames(framesHoldingLabels(overlayDoc, remap.keys()));
+    if (!times.length) return;
+    saveBtn.disabled = true;
+    annotateBtn.disabled = true;
+    savedHint.textContent = `Saving ${times.length} frame${times.length === 1 ? '' : 's'}…`;
+    const camera = sourceNames.get(event.sourceUuid) || 'camera';
+    const nameOf = uuid => labels?.get(uuid)?.name || uuid;
+    const correctedFrom = [...remap.entries()].map(([from, to]) => `${nameOf(from)} → ${nameOf(to)}`).join(', ');
+    const saved = [];
+    try {
+      const captured = await captureFramesAt(times);
+      for (const { at, frame } of captured) {
+        const boxes = (overlay?.boxesAt(at) ?? [])
+          .filter(b => b.labelUuid)
+          .map(b => ({
+            labelUuid: b.labelUuid,
+            bbox: [b.x * frame.width, b.y * frame.height, (b.x + b.w) * frame.width, (b.y + b.h) * frame.height],
+            confidence: b.conf,
+          }));
+        if (!boxes.length) continue;
+        const result = await saveFrameForAnnotation({
+          blob: frame.blob,
+          // Per-frame stamps, so eight captures in the same second do not all collide on
+          // one name and get uniquified into a confusing sequence by the server.
+          filename: captureFilename(`${camera}_t${at.toFixed(1)}`),
+          path: DEFAULT_CAPTURE_DIR,
+          boxes: applyLabelRemap(boxes, remap),
+          frameWidth: frame.width,
+          frameHeight: frame.height,
+          extra: {
+            source_camera: camera,
+            source_event: event.uuid,
+            source_event_rule: event.ruleName || '',
+            source_clip_offset_s: at.toFixed(2),
+            // Which guess this replaced: a reviewer meeting the frame later can see it
+            // was a correction rather than a detection the model got right, and it is
+            // the record of what the model is bad at.
+            corrected_from: correctedFrom,
+          },
+        });
+        saved.push(result);
+      }
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not save every corrected frame', 5000, 'error');
+    }
+    savedHint.textContent = saved.length ? `Saved ${saved.length} frames` : '';
+    saveBtn.disabled = false;
+    annotateBtn.disabled = false;
+    if (!saved.length) {
+      toast('No frames could be saved', 5000, 'error');
+      return;
+    }
+    try {
+      await setWatchEventReviewStates([event.uuid], 'flagged');
+      event.reviewState = 'flagged';
+      renderSidebar();
+    } catch (err) {
+      // Reported, but not allowed to swallow the offer below: the frames — the thing
+      // actually worth reviewing — were saved either way.
+      Logger.error(err);
+      toast('The corrected frames were saved, but the event could not be flagged', 6000, 'error');
+    }
+    await offerToReview(saved);
   }
 
   /**
@@ -780,83 +913,22 @@ export function openEventDetailModal(
    * make the fast path the annoying one. "Not now" leaves the frame in the queue, which
    * is where it was always going.
    */
-  async function offerToReview(result) {
-    if (!result?.boxesSaved) return;
-    const boxes = `${result.boxesSaved} box${result.boxesSaved === 1 ? '' : 'es'}`;
+  async function offerToReview(saved) {
+    if (!saved?.length) return;
+    const frames = `${saved.length} frame${saved.length === 1 ? '' : 's'}`;
+    const boxes = saved.reduce((sum, r) => sum + (r.boxesSaved ?? 0), 0);
     const wantsReview = await showConfirmModal({
-      title: 'Saved for review',
-      // Names the file, because "saved" without a where is the complaint this whole
-      // flow exists to avoid.
-      message: `${boxes} relabelled and saved unverified as ${result.path}. `
-        + 'Review the boxes now, or leave it in the annotation queue?',
+      title: `${frames} tagged`,
+      message: `${boxes} box${boxes === 1 ? '' : 'es'} relabelled across ${frames} of this clip, `
+        + 'saved unverified. Review them now, or leave them in the annotation queue?',
       confirmText: 'Review now',
       cancelText: 'Not now',
     });
     if (!wantsReview) {
-      toast(`${boxes} saved for review`, 4000);
+      toast(`${frames} saved for review`, 4000);
       return;
     }
-    await openOnCanvas(result);
-  }
-
-  /**
-   * Save the frame under its corrected labels, then flag the event.
-   *
-   * In that order, and not in one transaction, because the two have different worth: the
-   * frame *is* the training data, and a flag on an event whose frame failed to save is a
-   * note about work that was never captured. If the flag fails the correction still
-   * stands, and the toast says so rather than implying the save was lost too.
-   */
-  async function saveCorrectedFrame(remap, labels) {
-    const frame = await captureVideoFrame(video);
-    if (!frame) {
-      toast('The video has not loaded a frame yet', 3000, 'error');
-      return;
-    }
-    const seeded = overlayBoxes(frame);
-    if (!seeded.boxes?.length) return;
-    saveBtn.disabled = true;
-    annotateBtn.disabled = true;
-    correctBtn.disabled = true;
-    try {
-      const camera = sourceNames.get(event.sourceUuid) || 'camera';
-      const nameOf = uuid => labels?.get(uuid)?.name || uuid;
-      const result = await saveFrameForAnnotation({
-        blob: frame.blob,
-        filename: captureFilename(camera),
-        path: DEFAULT_CAPTURE_DIR,
-        ...seeded,
-        boxes: applyLabelRemap(seeded.boxes, remap),
-        extra: {
-          source_camera: camera,
-          source_event: event.uuid,
-          source_event_rule: event.ruleName || '',
-          // Provenance for the corrected boxes: which guess this replaced. A reviewer
-          // meeting the frame later can see it was a correction rather than a detection
-          // the model got right, and it is the record of what the model is bad at.
-          corrected_from: [...remap.entries()].map(([from, to]) => `${nameOf(from)} → ${nameOf(to)}`).join(', '),
-        },
-      });
-      savedHint.textContent = `Saved ${result.path}`;
-      try {
-        await setWatchEventReviewStates([event.uuid], 'flagged');
-        event.reviewState = 'flagged';
-        renderSidebar();
-      } catch (err) {
-        // Reported, but not allowed to swallow the offer below: the frame — the thing
-        // actually worth reviewing — was saved either way.
-        Logger.error(err);
-        toast('The corrected frame was saved, but the event could not be flagged', 6000, 'error');
-      }
-      await offerToReview(result);
-    } catch (err) {
-      Logger.error(err);
-      toast(err.message || 'Could not save the corrected frame', 5000, 'error');
-    } finally {
-      saveBtn.disabled = false;
-      annotateBtn.disabled = false;
-      correctBtn.disabled = false;
-    }
+    await openOnCanvas(saved);
   }
 
   async function saveFrame({ openCanvas = false } = {}) {
@@ -922,20 +994,28 @@ export function openEventDetailModal(
    * filename and reads back whatever was just persisted by `saveFrameForAnnotation`,
    * so the detections saved above (tagged unverified) show up pre-placed. */
   async function openOnCanvas(result) {
-    if (!result?.path) return;
+    // One result or a whole harvest: "Annotate Image" saves a single frame, the
+    // whole-event relabel saves a spread of them, and both land here.
+    const results = (Array.isArray(result) ? result : [result]).filter(r => r?.path);
+    if (!results.length) return;
     const resumeAtS = video?.currentTime ?? null;
     shell.close();
     const [{ showCanvasModal }, labels] = await Promise.all([
       import('/app-static/js/app/review/main.js'),
       fetchLabels().catch(() => new Map()),
     ]);
-    const img = { uuid: result.uuid, filename: result.path, bboxes: [] };
+    const images = results.map(r => ({ uuid: r.uuid, filename: r.path, bboxes: [] }));
     const navContext = {
-      items: [],
+      // Navigable only when there is somewhere to navigate: a lone frame with prev/next
+      // wired is two dead buttons, which is what `allowNavigation` already avoids for
+      // the single-frame case.
+      items: images.map(img => ({ img, bbox: null })),
       startIndex: 0,
       onClose: () => openEventDetailModal(event, { sourceNames, onDeleted, siblings: walk, seekToS: resumeAtS }),
     };
-    showCanvasModal(null, img, labels, async () => {}, navContext, { allowNavigation: false });
+    showCanvasModal(null, images[0], labels, async () => {}, navContext, {
+      allowNavigation: images.length > 1,
+    });
   }
 
   // ---------------------------------------------------------------- details
@@ -975,6 +1055,15 @@ export function openEventDetailModal(
     sidebar.appendChild(blipsHost);
 
     const actions = el('div', 'event-detail__side-actions');
+    // With the event's own actions rather than the frame toolbar under the video: this
+    // is a statement about what the watcher decided, not about the frame on screen.
+    // Only once the sidecar has loaded — without per-frame boxes there is nothing to
+    // relabel, and a button that explains that after you press it is worse than absent.
+    if (overlayDoc) {
+      actions.appendChild(button('Wrong label…', () => void relabelEvent(), {
+        testid: 'event-detail-relabel-event',
+      }));
+    }
     actions.appendChild(button('Delete event', () => void removeEvent(), {
       testid: 'event-detail-delete',
       className: 'panel-btn panel-btn--danger',
