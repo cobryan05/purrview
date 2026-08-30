@@ -1681,6 +1681,58 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   color: var(--text-faint);
 }
 
+/* ----- label correction ----- */
+
+.label-correction {
+  width: min(32rem, 94vw);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label-correction__title {
+  margin: 0;
+}
+
+.label-correction__note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.label-correction__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Two columns rather than a label above each select: the rows are read *down* the
+   "should be" column when there is more than one, and a stacked layout makes that
+   comparison a scroll. */
+.label-correction__row {
+  display: grid;
+  grid-template-columns: 1fr minmax(10rem, 14rem);
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.label-correction__from {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.label-correction__to {
+  /* Pico gives form elements a bottom margin that would space the rows unevenly. */
+  margin: 0;
+}
+
+.label-correction__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
 /* ----- detail modal ----- */
 .event-detail {
   width: min(72rem, 94vw);

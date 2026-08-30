@@ -19,7 +19,8 @@ import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index
  *             targetRefs: string[], sourceExcludeUuids: string[], ruleExcludeUuids: string[],
  *             subjectExcludeRefs: string[], targetExcludeRefs: string[],
  *             startFrom: ?string, startTo: ?string,
- *             hasRecording: ?boolean, recordingKind: ?string}} EventFilterState */
+ *             hasRecording: ?boolean, recordingKind: ?string,
+ *             reviewState: ?string}} EventFilterState */
 
 /**
  * The four facet filters, as `[state key for includes, state key for excludes, facet key,
@@ -52,6 +53,24 @@ const VIDEO_FILTER_OPTIONS = [
   ['false', 'No video'],
   ['kind:clip', 'Has a clip'],
   ['kind:timelapse', 'Has a timelapse'],
+];
+
+/**
+ * The Review select's options, as `[value, label]`.
+ *
+ * Values are the `WatchEventReviewState` strings verbatim — `watchEventFilterParams`
+ * passes `reviewState` straight through and the backend validates it against the enum,
+ * so a label invented here would 422 rather than quietly matching nothing.
+ *
+ * "Labels were wrong" is the queue the correction flow fills: flagging an event is only
+ * worth doing if the flagged ones can be found again afterwards.
+ */
+const REVIEW_FILTER_OPTIONS = [
+  ['', 'Any review state'],
+  ['unreviewed', 'Not yet reviewed'],
+  ['flagged', 'Labels were wrong'],
+  ['confirmed', 'Reviewed'],
+  ['dismissed', 'Dismissed'],
 ];
 
 /** @param {EventFilterState} state @returns {string} the select value for a state */
@@ -173,6 +192,7 @@ export function defaultFilterState() {
     rangeDays: null,
     hasRecording: null,
     recordingKind: null,
+    reviewState: null,
   };
   for (const [includeKey, excludeKey] of FACET_FILTERS) {
     state[includeKey] = [];
@@ -269,6 +289,7 @@ export async function createEventFilters(onChange) {
   /** @type {Array<{destroy: () => void}>} live dropdowns, destroyed before each rebuild */
   let facetDropdowns = [];
   let clipSelect;
+  let reviewSelect;
   let rangeSelect;
   let prevBtn;
   let nextBtn;
@@ -346,6 +367,23 @@ export async function createEventFilters(onChange) {
     controls.appendChild(field('From', fromInput, 'event-filter-from'));
     controls.appendChild(field('To', toInput, 'event-filter-to'));
     controls.appendChild(field('Video', clipSelect, 'event-filter-clip'));
+
+    reviewSelect = document.createElement('select');
+    reviewSelect.className = 'event-filters__select';
+    for (const [value, label] of REVIEW_FILTER_OPTIONS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      reviewSelect.appendChild(option);
+    }
+    reviewSelect.value = state.reviewState ?? '';
+    reviewSelect.addEventListener('change', () => {
+      // Empty string means "any", which is the absence of a filter — stored as null so
+      // hasActiveFilter does not count it and the Clear button stays honest.
+      state.reviewState = reviewSelect.value || null;
+      commit();
+    });
+    controls.appendChild(field('Review', reviewSelect, 'event-filter-review'));
 
     const clear = document.createElement('button');
     clear.type = 'button';

@@ -31,15 +31,30 @@ import {
   deleteWatchEvent,
   fetchRecording,
   recordingFileUrl,
+  setWatchEventReviewStates,
   watchEventSnapshotUrl,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
+import { applyLabelRemap, groupDetectionsByLabel, openLabelCorrectionModal } from './labelCorrectionModal.js';
 import { createBlipsPanel } from './blipsPanel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { describeCloseReason, eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
+
+/**
+ * How a settled review state reads in the sidebar.
+ *
+ * `unreviewed` is deliberately absent rather than mapped to "Unreviewed": it is the
+ * default every event carries, and the row exists to mark the ones somebody has acted
+ * on. Keyed on the same strings as `WatchEventReviewState` in db/types.py.
+ */
+const REVIEW_STATE_LABELS = {
+  confirmed: 'Reviewed',
+  dismissed: 'Dismissed',
+  flagged: 'Flagged — labels were wrong',
+};
 
 /**
  * How a timelapse describes itself, from the metadata its action recorded.
@@ -284,6 +299,7 @@ export function openEventDetailModal(
   let _fullscreenSyncs = [];
   let saveBtn = null;
   let annotateBtn = null;
+  let correctBtn = null;
   let mediaSwitcher = null;
   //: Object URL of a mid-event timelapse preview, held so it can be revoked. The
   //: browser keeps a blob alive until it is, and these are whole videos.
@@ -571,12 +587,7 @@ export function openEventDetailModal(
         line.dataset.testid = 'event-detail-timelapse-note';
         mediaPane.appendChild(line);
       }
-      const tools = el('div', 'event-detail__tools');
-      saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
-      annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
-      tools.appendChild(saveBtn);
-      tools.appendChild(annotateBtn);
-      tools.appendChild(savedHint);
+      const tools = buildFrameTools();
       mediaPane.appendChild(tools);
       void attachOverlay(recording, tools);
       return;
@@ -604,12 +615,7 @@ export function openEventDetailModal(
       mediaPane.appendChild(warn);
     }
 
-    const tools = el('div', 'event-detail__tools');
-    saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
-    annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
-    tools.appendChild(saveBtn);
-    tools.appendChild(annotateBtn);
-    tools.appendChild(savedHint);
+    const tools = buildFrameTools();
     mediaPane.appendChild(tools);
 
     // Fire and forget: the clip is playable the moment the element exists, and a modal
@@ -707,6 +713,115 @@ export function openEventDetailModal(
       }));
     if (!boxes.length) return {};
     return { boxes, frameWidth: frame.width, frameHeight: frame.height };
+  }
+
+  /**
+   * The frame-capture toolbar, identical for a clip and for a timelapse.
+   *
+   * Built once rather than twice: the two media paths differ in what they say about the
+   * footage, not in what you can do with a frame of it, and the pair drifted apart the
+   * first time a third button was added to only one of them.
+   */
+  function buildFrameTools() {
+    const tools = el('div', 'event-detail__tools');
+    saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
+    annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
+    correctBtn = button('Wrong labels…', () => void correctLabels(), { testid: 'event-detail-correct-labels' });
+    correctBtn.title = 'Relabel this frame’s detections and save it for review, and flag the event.';
+    tools.appendChild(saveBtn);
+    tools.appendChild(annotateBtn);
+    tools.appendChild(correctBtn);
+    tools.appendChild(savedHint);
+    return tools;
+  }
+
+  /**
+   * "These labels are wrong, they were actually…" — correct the frame, keep the boxes.
+   *
+   * Only ever offered against the overlay, because a correction needs something to
+   * correct: the event's own subject label describes one analysed instant and would land
+   * on empty space anywhere else in the clip, so a clip without a sidecar has no
+   * detections on *this* frame to speak for. Said out loud rather than silently doing
+   * nothing, which is how a dead-looking button gets reported as a bug.
+   */
+  async function correctLabels() {
+    if (!video) return;
+    const boxes = overlay?.boxesAt(video.currentTime || 0)?.filter(b => b.labelUuid) ?? [];
+    if (!boxes.length) {
+      toast('There are no detections on this frame to correct', 4000);
+      return;
+    }
+    let labels;
+    try {
+      labels = await fetchLabels();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not load the labels', 5000, 'error');
+      return;
+    }
+    openLabelCorrectionModal({
+      detected: groupDetectionsByLabel(boxes, labels),
+      labels,
+      onConfirm: remap => saveCorrectedFrame(remap, labels),
+    });
+  }
+
+  /**
+   * Save the frame under its corrected labels, then flag the event.
+   *
+   * In that order, and not in one transaction, because the two have different worth: the
+   * frame *is* the training data, and a flag on an event whose frame failed to save is a
+   * note about work that was never captured. If the flag fails the correction still
+   * stands, and the toast says so rather than implying the save was lost too.
+   */
+  async function saveCorrectedFrame(remap, labels) {
+    const frame = await captureVideoFrame(video);
+    if (!frame) {
+      toast('The video has not loaded a frame yet', 3000, 'error');
+      return;
+    }
+    const seeded = overlayBoxes(frame);
+    if (!seeded.boxes?.length) return;
+    saveBtn.disabled = true;
+    annotateBtn.disabled = true;
+    correctBtn.disabled = true;
+    try {
+      const camera = sourceNames.get(event.sourceUuid) || 'camera';
+      const nameOf = uuid => labels?.get(uuid)?.name || uuid;
+      const result = await saveFrameForAnnotation({
+        blob: frame.blob,
+        filename: captureFilename(camera),
+        path: DEFAULT_CAPTURE_DIR,
+        ...seeded,
+        boxes: applyLabelRemap(seeded.boxes, remap),
+        extra: {
+          source_camera: camera,
+          source_event: event.uuid,
+          source_event_rule: event.ruleName || '',
+          // Provenance for the corrected boxes: which guess this replaced. A reviewer
+          // meeting the frame later can see it was a correction rather than a detection
+          // the model got right, and it is the record of what the model is bad at.
+          corrected_from: [...remap.entries()].map(([from, to]) => `${nameOf(from)} → ${nameOf(to)}`).join(', '),
+        },
+      });
+      savedHint.textContent = `Saved ${result.path}`;
+      try {
+        await setWatchEventReviewStates([event.uuid], 'flagged');
+        event.reviewState = 'flagged';
+        renderSidebar();
+        toast(`Saved ${result.boxesSaved} corrected box${result.boxesSaved === 1 ? '' : 'es'} for review`, 4000);
+      } catch (err) {
+        Logger.error(err);
+        toast('The corrected frame was saved, but the event could not be flagged', 6000, 'error');
+      }
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not save the corrected frame', 5000, 'error');
+    } finally {
+      saveBtn.disabled = false;
+      annotateBtn.disabled = false;
+      correctBtn.disabled = false;
+    }
   }
 
   async function saveFrame({ openCanvas = false } = {}) {
@@ -811,6 +926,12 @@ export function openEventDetailModal(
     }
     if (event.truncated) {
       sidebar.appendChild(detailRow('Ended by', describeCloseReason(event.closeReason).title));
+    }
+    // Only once it is something other than the default. Every event starts unreviewed,
+    // so a row saying so on all of them is a column of noise that makes the events
+    // somebody *has* acted on harder to spot, not easier.
+    if (REVIEW_STATE_LABELS[event.reviewState]) {
+      sidebar.appendChild(detailRow('Review', REVIEW_STATE_LABELS[event.reviewState]));
     }
 
     // Above the delete button, below the facts: the findings are something to act on,

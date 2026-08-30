@@ -2289,3 +2289,170 @@ class TestTheGroupedViewDoesNotDim:
         page.locator("[data-event-uuid='drink-0000']").hover()
 
         wait_until(page, lambda: _opacity(page, "[data-event-uuid='litter-0000']") < 1.0)
+
+
+def _two_label_overlay() -> dict:
+    """A sidecar whose frames hold two different labels.
+
+    The multi-object case is the whole reason the correction is per detected label: a
+    frame with a misidentified cat *and* a correctly detected bowl must not have both
+    rewritten by one choice.
+    """
+    return _overlay(
+        frames=[
+            {
+                "t": 0.0,
+                "boxes": [
+                    {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "label": "cat", "labelUuid": "lbl-1", "conf": 0.8},
+                    {"x": 0.5, "y": 0.5, "w": 0.1, "h": 0.1, "label": "cat", "labelUuid": "lbl-1", "conf": 0.7},
+                    {"x": 0.7, "y": 0.2, "w": 0.1, "h": 0.1, "label": "bowl", "labelUuid": "lbl-2", "conf": 0.9},
+                ],
+                "tracks": [],
+            },
+        ],
+    )
+
+
+def _route_labels(page: Page):
+    """Answer `/api/labels`, which the correction dialog needs for its dropdowns."""
+    page.route(
+        re.compile(r"/api/labels$"),
+        lambda r: r.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "status": "success",
+                    "labels": [
+                        {"uuid": "lbl-1", "name": "Tabby", "color": "#fff", "parentUuid": None},
+                        {"uuid": "lbl-2", "name": "Water bowl", "color": "#fff", "parentUuid": None},
+                        {"uuid": "lbl-3", "name": "Clover", "color": "#fff", "parentUuid": None},
+                    ],
+                }
+            ),
+        ),
+    )
+
+
+class TestCorrectingAWrongLabel:
+    """ "Wrong label, it was actually this" — the correction half of the training loop.
+
+    The frame is already on screen with the model's boxes drawn on it, so the moment you
+    notice the label is wrong is the cheapest possible moment to capture the correction.
+
+    ⚠️ The save itself is not reachable from here. `captureVideoFrame` needs a decoded
+    frame (`videoWidth`), and the mocked clip is an empty body that Chromium never
+    decodes — which is why every existing save-frame test stops at the button too. What
+    these cover is the dialog's behaviour and the remap logic; the upload and the flag
+    round-trip are not covered by any test.
+    """
+
+    def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
+        _mock(page, **mock_kwargs)
+        _route_labels(page)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']")
+
+    def test_a_row_per_detected_label_not_per_box(self, page: Page, base_url: str):
+        """Three boxes of two kinds is two decisions, not three: the same label detected
+        twice is one thing to correct, and a row per box would ask the same question
+        twice and allow two contradictory answers to it."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        page.locator("[data-testid='event-detail-correct-labels']").click()
+
+        rows = page.locator("[data-testid='label-correction-row']")
+        expect(rows).to_have_count(2)
+        # Counted, and biggest first — the cat has two boxes, the bowl one.
+        expect(rows.first).to_contain_text("Tabby (2 boxes)")
+        expect(rows.nth(1)).to_contain_text("Water bowl (1 box)")
+
+    def test_confirming_is_refused_until_something_is_actually_corrected(self, page: Page, base_url: str):
+        """A correction with nothing corrected would flag the event and save a duplicate
+        frame for no reason, so the state of the button has to follow the choices."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+        page.locator("[data-testid='event-detail-correct-labels']").click()
+        confirm = page.locator("[data-testid='label-correction-confirm']")
+        expect(confirm).to_be_disabled()
+
+        page.locator("[data-testid='label-correction-select']").first.select_option("lbl-3")
+
+        expect(confirm).to_be_enabled()
+
+    def test_a_label_is_not_offered_as_its_own_correction(self, page: Page, base_url: str):
+        """ "Tabby should have been Tabby" is not a correction, and offering it invites a
+        confirm that does nothing but flag the event."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        page.locator("[data-testid='event-detail-correct-labels']").click()
+
+        options = page.locator("[data-testid='label-correction-select']").first.locator("option")
+        assert "Tabby" not in options.all_text_contents()
+        assert "Clover" in options.all_text_contents()
+
+    def test_a_frame_with_no_detections_says_so_rather_than_opening_empty(self, page: Page, base_url: str):
+        """A clip with no sidecar has nothing on this frame to relabel. An empty dialog
+        would look like the feature was broken."""
+        self._open_modal(page, base_url, overlay=None)
+
+        page.locator("[data-testid='event-detail-correct-labels']").click()
+
+        expect(page.locator("[data-testid='label-correction-modal']")).to_have_count(0)
+
+    def test_the_remap_rewrites_only_the_labels_it_was_given(self, page: Page, base_url: str):
+        """The multi-object case the per-label form exists for, asserted on the function
+        that actually decides it — correcting the cat must leave the bowl alone."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        result = page.evaluate("""async () => {
+                const { applyLabelRemap, groupDetectionsByLabel } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const boxes = [
+                  { labelUuid: 'lbl-1', bbox: [0, 0, 1, 1] },
+                  { labelUuid: 'lbl-1', bbox: [1, 1, 2, 2] },
+                  { labelUuid: 'lbl-2', bbox: [2, 2, 3, 3] },
+                ];
+                const labels = new Map([
+                  ['lbl-1', { uuid: 'lbl-1', name: 'Tabby' }],
+                  ['lbl-2', { uuid: 'lbl-2', name: 'Water bowl' }],
+                ]);
+                return {
+                  grouped: groupDetectionsByLabel(boxes, labels).map(g => [g.name, g.count]),
+                  remapped: applyLabelRemap(boxes, new Map([['lbl-1', 'lbl-3']])).map(b => b.labelUuid),
+                  untouched: boxes.map(b => b.labelUuid),
+                };
+            }""")
+
+        assert result["grouped"] == [["Tabby", 2], ["Water bowl", 1]]
+        assert result["remapped"] == ["lbl-3", "lbl-3", "lbl-2"], "only the remapped label may change"
+        # The overlay's boxes belong to a running redraw loop; rewriting them in place
+        # would change what is painted over the video.
+        assert result["untouched"] == ["lbl-1", "lbl-1", "lbl-2"], "the caller's boxes must not be mutated"
+
+    def test_the_flagged_events_can_be_found_again(self, page: Page, base_url: str):
+        """Flagging is only worth doing if the flagged ones come back. The filter sends
+        the review state to the server rather than hiding rows client-side, because the
+        grid holds a page and the flagged event is usually not on it."""
+        queries = _mock(page, events=_two_identities())
+        _route_labels(page)
+        _open_events_pane(page, base_url, view="all")
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-review']").select_option("flagged")
+
+        assert queries[-1].get("review_state") == "flagged"
+
+    def test_any_review_state_is_not_a_filter(self, page: Page, base_url: str):
+        """The negative half: "Any review state" must clear the parameter rather than
+        sending an empty one, which the backend validates and rejects."""
+        queries = _mock(page, events=_two_identities())
+        _route_labels(page)
+        _open_events_pane(page, base_url, view="all")
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-review']").select_option("flagged")
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='event-filter-review']").select_option("")
+
+        assert queries[-1].get("review_state") is None
