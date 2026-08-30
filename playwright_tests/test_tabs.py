@@ -33,13 +33,18 @@ def test_page_title(page: Page, base_url: str):
 # ---------------------------------------------------------------------------
 
 
-def test_initial_tab_is_image_tagging(page: Page, base_url: str):
-    """Image Tagging should be the active tab on first load."""
+def test_initial_tab_is_watch(page: Page, base_url: str):
+    """Watch is the landing tab, and it is *not* simply the first button.
+
+    The landing tab is named by `data-default-tab` while Annotate stays leftmost, so
+    asserting the pane is active also pins that the attribute is honoured rather than
+    the header's DOM order silently deciding.
+    """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
-    button = page.locator(".main-tab-button[data-tab='tab-image-tagging']")
-    expect(button).to_have_class(re.compile(r"\bactive\b"))
-    expect(page.locator("#tab-image-tagging")).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator(".main-tab-button[data-tab='tab-nvr']")).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#tab-nvr")).to_have_class(re.compile(r"\bactive\b"))
+    expect(page.locator("#tab-image-tagging")).not_to_have_class(re.compile(r"\bactive\b"))
 
 
 def test_switch_to_configuration_tab(page: Page, base_url: str):

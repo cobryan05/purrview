@@ -697,9 +697,10 @@ export async function init() {
     navigateTabs('tab-configuration', 'tab-watcher-management', { selectUuid: NEW_ITEM_SELECTION });
   });
 
-  // activate default NVR tab
-  const defaultTabBtn = container?.querySelector('.workspace-tab-button');
-  if (defaultTabBtn) defaultTabBtn.click();
+  // Only when nothing is active yet — see the note in image-tagging/main.js.
+  if (!container?.querySelector('.workspace-tab-button.active')) {
+    container?.querySelector('.workspace-tab-button')?.click();
+  }
 
   // This module is lazy-loaded on the NVR tab's first focus, so by the time init runs
   // the pane is on screen — and no MAIN_TAB_CHANGED will fire to say so.

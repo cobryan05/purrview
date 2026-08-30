@@ -59,7 +59,9 @@ export async function init() {
     refreshListEditorHeights();
   });
 
-  // activate default configuration tab
-  const defaultTabBtn = tabs.container?.querySelector('.workspace-tab-button');
-  if (defaultTabBtn) defaultTabBtn.click();
+  // Only when nothing is active yet — see the note in image-tagging/main.js: this runs
+  // after the pane's awaits, so an unconditional click stomps a sub-tab picked in between.
+  if (!tabs.container?.querySelector('.workspace-tab-button.active')) {
+    tabs.container?.querySelector('.workspace-tab-button')?.click();
+  }
 }

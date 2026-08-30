@@ -157,12 +157,17 @@ class TestRunsTaskStreamLifecycle:
         page.goto(base_url)
         page.wait_for_load_state("networkidle")
 
+        # A baseline rather than zero: the landing tab (Watch) opens a stream of its
+        # own, and this test is about streams opened *by the task-config pane*. Counting
+        # from zero would make it a test of whichever tab happens to open at load.
+        baseline = page.evaluate("() => window.__taskStreams.length")
+
         page.locator(".main-tab-button[data-tab='tab-configuration']").click()
         page.wait_for_timeout(300)
         page.locator("#tab-configuration [data-tab='tab-task-management']").click()
         page.wait_for_timeout(500)
 
-        assert page.evaluate("() => window.__taskStreams.length") == 0
+        assert page.evaluate("() => window.__taskStreams.length") == baseline
 
 
 class TestAsyncRenderReentrancy:

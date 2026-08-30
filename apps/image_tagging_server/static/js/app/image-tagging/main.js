@@ -69,9 +69,13 @@ export async function init(runtime, tab_pane) {
     });
   }
 
-  // activate default workspace tab
-  const defaultTabBtn = tab_pane?.querySelector('.workspace-tab-button');
-  if (defaultTabBtn) defaultTabBtn.click();
+  // Activate the default workspace tab — but only if nothing is active yet.
+  // setupWorkspaceTabs (above) already activated one, and this init awaits several
+  // fetches before reaching here: an unconditional click stomps whatever the user or
+  // navigateTabs picked in that gap, snapping them back to the first tab.
+  if (!tab_pane?.querySelector('.workspace-tab-button.active')) {
+    tab_pane?.querySelector('.workspace-tab-button')?.click();
+  }
 
   _resolveCanvasReady();
 }

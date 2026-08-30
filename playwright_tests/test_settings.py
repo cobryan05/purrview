@@ -44,7 +44,10 @@ def _navigate_to_files(page: Page, base_url: str):
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
     page.wait_for_load_state("networkidle")
-    page.locator(".workspace-tab-button[data-tab='tab-files']").click()
+    # `[data-tab-wired]`, because Annotate is lazy-initialised: until its init has
+    # attached the listeners the button is in the DOM but inert, and a click on it does
+    # nothing at all, silently. Same guard navigateTabs uses.
+    page.locator(".workspace-tab-button[data-tab='tab-files'][data-tab-wired]").click()
     page.wait_for_load_state("networkidle")
     page.wait_for_selector("#tab-files .fb-container")
 

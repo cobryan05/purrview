@@ -169,9 +169,10 @@ export async function init() {
     }
   });
 
-  // activate default Jobs tab
-  const defaultTabBtn = tabs.container?.querySelector('.workspace-tab-button');
-  if (defaultTabBtn) defaultTabBtn.click();
+  // Only when nothing is active yet — see the note in image-tagging/main.js.
+  if (!tabs.container?.querySelector('.workspace-tab-button.active')) {
+    tabs.container?.querySelector('.workspace-tab-button')?.click();
+  }
 
   openTaskStream();
   seedBadge();

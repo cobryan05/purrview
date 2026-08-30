@@ -54,6 +54,16 @@ def _prepare(page: Page, base_url: str):
     page.add_init_script(FAKE_EVENT_SOURCE)
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
+    # The landing tab (Watch) subscribes to the task stream itself, and drops the
+    # subscription when the main tab changes. These tests drive taskStream.js's own
+    # sharing and refcounting, so move to a pane that holds no subscriber and wait for
+    # the refcount to actually reach zero — with a live app subscriber "closes when the
+    # last subscriber leaves" is not merely untestable, it is false.
+    page.locator(".main-tab-button[data-tab='tab-image-tagging']").click()
+    page.wait_for_function("() => FakeEventSource.instances.every(s => s.closed)")
+    # Cleared so the tests' own socket is instances[0] again, in the same spirit as the
+    # notices-bar exclusion in the stub above.
+    page.evaluate("() => { FakeEventSource.instances.length = 0; }")
 
 
 class TestSharing:
