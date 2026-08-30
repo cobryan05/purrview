@@ -5,7 +5,7 @@ Both properties here are ones the pane got *wrong* while still looking fine:
 
   - the card reported `defaultAnalysisFps` — the profile-level fallback — so a
     watcher whose source is configured at 1 fps advertised the default 5;
-  - "Edit rules" navigated to the Watchers pane without naming the profile, so it
+  - "Edit config" navigated to the Watchers pane without naming the profile, so it
     opened whatever was last selected rather than the card you clicked.
 
 Run with:
@@ -183,7 +183,7 @@ class TestNvrEditRules:
 
         # The second card, so a pane that ignores the selection lands on the first.
         card = page.locator(".nvr-profile-card", has_text="Zzz garden cam").first
-        card.locator("button:has-text('Edit rules')").click()
+        card.locator("button:has-text('Edit config')").click()
 
         _wait_for_watcher_editor(page)
         expect(page.locator("[data-testid='watcher-name']")).to_have_value("Zzz garden cam")

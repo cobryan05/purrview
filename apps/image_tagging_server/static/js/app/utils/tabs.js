@@ -48,8 +48,16 @@ function setupTabs(containerOrSelector, buttonSelector, paneSelector, onTabChang
     button.dataset.tabWired = '1';
   });
 
-  // ensure at least one tab is active on setup
-  const initialTab = getActiveTab() ?? getButtons()[0]?.dataset.tab;
+  // ensure at least one tab is active on setup. `data-default-tab` lets the
+  // markup pick the landing tab without reordering the header — the DOM order
+  // is the reading order of the tabs, not a statement about which one opens.
+  // It is read as a *name* rather than a pre-set `active` class because
+  // activateTab() early-returns on an already-active tab, so a class in the
+  // HTML would skip onTabChange and the tab's lazy init would never run.
+  const initialTab = getActiveTab()
+    ?? (container.dataset.defaultTab && getButtons().some(b => b.dataset.tab === container.dataset.defaultTab)
+      ? container.dataset.defaultTab
+      : getButtons()[0]?.dataset.tab);
   if (initialTab) activateTab(initialTab);
 
   return { container, activateTab };

@@ -24,7 +24,10 @@
 <main class="container">
 
   <!-- Top-level tabs wrapper -->
-  <div id="main-tabs">
+  <!-- Watch is the landing tab: the app's day-to-day job is watching, and
+       annotation is the occasional detour. The header keeps Annotate first
+       because that is still the natural left-to-right reading order. -->
+  <div id="main-tabs" data-default-tab="tab-nvr">
     <div class="main-tab-header">
       <span class="main-tab-button" data-tab="tab-image-tagging" data-tour="nav.annotate">Annotate</span>
       <span class="main-tab-button" data-tab="tab-nvr" data-testid="nvr-tab" data-tour="nav.nvr">Watch</span>

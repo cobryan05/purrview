@@ -503,9 +503,9 @@ function _profileCard(profile, task, sources = []) {
   bar.appendChild(_startStopButton(profile, task));
 
   // `selectUuid` is not optional decoration: without it the Watchers pane opens on
-  // whatever was last selected, so "Edit rules" on card B lands you in card A's editor.
+  // whatever was last selected, so "Edit config" on card B lands you in card A's editor.
   bar.appendChild(_panelButton(
-    'Edit rules',
+    'Edit config',
     () => navigateTabs('tab-configuration', 'tab-watcher-management', { selectUuid: profile.uuid }),
   ));
 
