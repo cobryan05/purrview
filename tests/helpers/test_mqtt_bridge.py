@@ -197,6 +197,39 @@ class TestDiscoveryReconciliation:
         resurrect the entity it removed, on the very next reconcile."""
         assert state_from_retained({source_config_topic("src-1"): b""}).components == {}
 
+    def test_another_integrations_device_config_is_neither_adopted_nor_retracted(self):
+        """The read-back subscribes to `homeassistant/device/+/config`, which is every
+        device-discovery config on the broker — not just ours. Adopting a foreign one
+        puts it in `previous`, and the very next reconcile retracts everything in
+        `previous` that we do not desire, so this app would delete another
+        integration's entities out of Home Assistant.
+
+        Nothing catches that downstream: the payload we publish is a correct
+        retraction, so the only symptom is somebody else's devices silently
+        disappearing.
+        """
+        retained = {t: json.dumps(p).encode() for t, p in build_all_discovery([_profile()], PREFIX).items()}
+        foreign = "homeassistant/device/0x00124b0022ab1234/config"
+        retained[foreign] = json.dumps(
+            {"dev": {"ids": "0x00124b0022ab1234"}, "cmps": {"temperature": {"p": "sensor"}}}
+        ).encode()
+
+        adopted = state_from_retained(retained)
+        assert foreign not in adopted.topics, "a device we did not publish must not be adopted"
+
+        to_publish, _ = reconcile_discovery(adopted, build_all_discovery([_profile()], PREFIX))
+        assert foreign not in to_publish, "a device we did not publish must never be retracted"
+
+    def test_our_own_configs_are_still_adopted_across_a_rename_of_nothing(self):
+        """The ownership filter must not throw the baby out: configs carrying our own
+        device-id namespace are exactly what the read-back exists to recover."""
+        retained = {t: json.dumps(p).encode() for t, p in build_all_discovery([_profile()], PREFIX).items()}
+
+        adopted = state_from_retained(retained)
+
+        assert source_config_topic("src-1") in adopted.topics
+        assert adopted.topics == set(retained)
+
     def test_an_unparseable_retained_config_is_skipped_not_fatal(self):
         """One malformed retained message must not stop the bridge coming up — and the
         configs around it must still be adopted."""

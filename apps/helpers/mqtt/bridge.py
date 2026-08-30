@@ -46,8 +46,35 @@ ORIGIN = {"name": "PurrView"}
 #: filterable and sortable as one family in the device list instead of nine unrelated
 #: rows. Neither touches `ids`, so no entity is re-registered by adding them.
 MANUFACTURER = "PurrView"
-APP_DEVICE_ID = "purrview_system"
+
+#: Namespace on every device id this app publishes, and — via `owns_config_topic` —
+#: the test for whether a retained discovery config is ours to reconcile at all.
+#:
+#: Keep the id builders below derived from this rather than spelling the prefix out
+#: again: the read-back trusts the two to agree, and a device published under an id
+#: this constant does not match would be adopted by nobody and retracted by nobody.
+DEVICE_ID_PREFIX = "purrview_"
+
+APP_DEVICE_ID = f"{DEVICE_ID_PREFIX}system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
+
+
+def owns_config_topic(topic: str) -> bool:
+    """Whether a `homeassistant/device/<id>/config` topic is one of ours.
+
+    The retained read-back has to subscribe to `homeassistant/device/+/config` —
+    every device-discovery config on the broker, from every integration — because
+    MQTT's `+` matches a whole topic level and cannot express "ids starting with
+    `purrview_`". `homeassistant/device/purrview_+/config` is not a narrower filter,
+    it is an invalid one that matches nothing. So the narrowing happens here, on the
+    way in, and the subscription stays wide on purpose.
+
+    Skipping this filter is not a cosmetic bug: an adopted topic lands in `previous`,
+    and `reconcile_discovery` retracts everything in `previous` it does not desire —
+    so the app would publish a correct, effective deletion of another integration's
+    devices, with no error anywhere and no symptom but their entities vanishing.
+    """
+    return topic.startswith(f"{HA_DISCOVERY_PREFIX}/device/{DEVICE_ID_PREFIX}") and topic.endswith("/config")
 
 
 def _device(ids: str, name: str, model: str) -> Dict[str, Any]:
@@ -98,7 +125,7 @@ def _apply_default_visibility(cmps: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def source_device_id(source_uuid: str) -> str:
-    return f"purrview_{source_uuid}"
+    return f"{DEVICE_ID_PREFIX}{source_uuid}"
 
 
 def source_config_topic(source_uuid: str) -> str:
@@ -372,7 +399,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
 
 def subject_device_id(subject_uuid: str) -> str:
-    return f"purrview_subject_{subject_uuid}"
+    return f"{DEVICE_ID_PREFIX}subject_{subject_uuid}"
 
 
 def subject_config_topic(subject_uuid: str) -> str:
@@ -653,6 +680,11 @@ def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
     configs this process never published: an older version of the app, a stray
     `mosquitto_pub`, a dev instance pointed at the same broker.
 
+    That scope is deliberately "someone else publishing *our* devices", not "anyone
+    else's devices". Only topics passing `owns_config_topic` are adopted — the
+    subscription cannot narrow itself, and adopting a foreign config is a licence to
+    delete it. See `owns_config_topic` for why the filter lives here.
+
     Anything unparseable is skipped rather than raised on. A config we cannot read is
     one we will not retract — the same safe direction as reading nothing at all — and
     refusing to start the bridge over one malformed retained message would be a far
@@ -660,6 +692,8 @@ def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
     """
     components: Dict[str, Dict[str, str]] = {}
     for topic, payload in retained.items():
+        if not owns_config_topic(topic):
+            continue
         try:
             config = json.loads(payload)
             cmps = config.get("cmps") or {}
@@ -932,6 +966,12 @@ class MqttBridge:
         # sees an empty previous state, so it can only ever add entities — anything
         # deleted while this process was down stays in HA forever. See
         # `state_from_retained`.
+        #
+        # The `+` is every integration's device configs, not just ours, and cannot be
+        # narrowed at the broker — MQTT wildcards match whole levels, so there is no
+        # subscription that means "ids starting with `purrview_`". `state_from_retained`
+        # drops the ones we do not own; do not "fix" this by writing `purrview_+`, which
+        # matches nothing and would silently disable the read-back entirely.
         try:
             retained = await publisher.read_retained(f"{HA_DISCOVERY_PREFIX}/device/+/config", absolute=True)
             self._last_discovery = state_from_retained(retained)
