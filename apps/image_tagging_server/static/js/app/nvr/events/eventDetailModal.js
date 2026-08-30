@@ -767,6 +767,39 @@ export function openEventDetailModal(
   }
 
   /**
+   * Offer to open what was just auto-tagged, rather than only saying it happened.
+   *
+   * A toast is the wrong instrument here. The boxes are written Unverified, which means
+   * the save is explicitly *not* the end of the job — something still has to confirm the
+   * rectangles — and a notification that fades after four seconds leaves the user with
+   * nothing to act on and a frame filed somewhere they would have to go and find. The
+   * one moment they are certainly willing to review it is the moment they asked for it.
+   *
+   * Declining is a real answer and the default one: correcting a run of events in a row
+   * is the other real workflow, and a modal that hijacked the screen every time would
+   * make the fast path the annoying one. "Not now" leaves the frame in the queue, which
+   * is where it was always going.
+   */
+  async function offerToReview(result) {
+    if (!result?.boxesSaved) return;
+    const boxes = `${result.boxesSaved} box${result.boxesSaved === 1 ? '' : 'es'}`;
+    const wantsReview = await showConfirmModal({
+      title: 'Saved for review',
+      // Names the file, because "saved" without a where is the complaint this whole
+      // flow exists to avoid.
+      message: `${boxes} relabelled and saved unverified as ${result.path}. `
+        + 'Review the boxes now, or leave it in the annotation queue?',
+      confirmText: 'Review now',
+      cancelText: 'Not now',
+    });
+    if (!wantsReview) {
+      toast(`${boxes} saved for review`, 4000);
+      return;
+    }
+    await openOnCanvas(result);
+  }
+
+  /**
    * Save the frame under its corrected labels, then flag the event.
    *
    * In that order, and not in one transaction, because the two have different worth: the
@@ -809,11 +842,13 @@ export function openEventDetailModal(
         await setWatchEventReviewStates([event.uuid], 'flagged');
         event.reviewState = 'flagged';
         renderSidebar();
-        toast(`Saved ${result.boxesSaved} corrected box${result.boxesSaved === 1 ? '' : 'es'} for review`, 4000);
       } catch (err) {
+        // Reported, but not allowed to swallow the offer below: the frame — the thing
+        // actually worth reviewing — was saved either way.
         Logger.error(err);
         toast('The corrected frame was saved, but the event could not be flagged', 6000, 'error');
       }
+      await offerToReview(result);
     } catch (err) {
       Logger.error(err);
       toast(err.message || 'Could not save the corrected frame', 5000, 'error');

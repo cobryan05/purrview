@@ -2343,8 +2343,10 @@ class TestCorrectingAWrongLabel:
     ⚠️ The save itself is not reachable from here. `captureVideoFrame` needs a decoded
     frame (`videoWidth`), and the mocked clip is an empty body that Chromium never
     decodes — which is why every existing save-frame test stops at the button too. What
-    these cover is the dialog's behaviour and the remap logic; the upload and the flag
-    round-trip are not covered by any test.
+    these cover is the dialog's behaviour and the remap logic. Everything downstream of
+    a confirmed correction — the upload, the flag, and the "review now?" offer that
+    follows it — is not covered by any test, here or elsewhere. Covering it needs a real
+    decodable fixture (WebM; Chromium has no H.264), not a better assertion.
     """
 
     def _open_modal(self, page: Page, base_url: str, **mock_kwargs):
