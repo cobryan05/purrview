@@ -57,6 +57,18 @@ MANUFACTURER = "PurrView"
 #: this constant does not match would be adopted by nobody and retracted by nobody.
 DEVICE_ID_PREFIX = "purrview_"
 
+#: The namespace this app used before the rename, kept **only** so its retained configs
+#: are still recognised as ours.
+#:
+#: Nothing is ever published under it again. It exists because ownership is what decides
+#: whether a retained config is retractable: dropping the old prefix from the filter does
+#: not leave the old devices alone, it strands them. They stay retained on the broker
+#: forever, Home Assistant keeps re-creating a full set of dead entities from them on
+#: every restart, and no future version of this app can ever clean them up. Adopted here,
+#: the first reconcile after the rename retracts them, because they are in `previous` and
+#: not in `desired` — which is exactly the machinery a rename should be using.
+LEGACY_DEVICE_ID_PREFIXES = ("encounterwatch_",)
+
 APP_DEVICE_ID = f"{DEVICE_ID_PREFIX}system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
 
@@ -84,8 +96,15 @@ def owns_config_topic(topic: str) -> bool:
     and `reconcile_discovery` retracts everything in `previous` it does not desire —
     so the app would publish a correct, effective deletion of another integration's
     devices, with no error anywhere and no symptom but their entities vanishing.
+
+    "Ours" includes `LEGACY_DEVICE_ID_PREFIXES` — see there. A config we published under
+    the old name is still a config we published, and it is only retractable while we
+    still claim it.
     """
-    return topic.startswith(f"{HA_DISCOVERY_PREFIX}/device/{DEVICE_ID_PREFIX}") and topic.endswith("/config")
+    if not topic.endswith("/config"):
+        return False
+    base = f"{HA_DISCOVERY_PREFIX}/device/"
+    return any(topic.startswith(f"{base}{prefix}") for prefix in (DEVICE_ID_PREFIX, *LEGACY_DEVICE_ID_PREFIXES))
 
 
 def _device(ids: str, name: str, model: str, via: bool = True) -> Dict[str, Any]:
@@ -1059,12 +1078,27 @@ class SlugIndex:
 
 
 def build_slug_index(profiles: Sequence[ProfileView]) -> SlugIndex:
+    """The lookup the live publishers resolve their topics through.
+
+    ⚠️ Rules and cameras with `publish_to_ha` off are **left out**, which is what actually
+    makes that flag do what it says. Unticking it retracts the discovery configs, but a
+    watcher goes on firing the rule — so with them still in this index the bridge kept
+    publishing retained `state`/`count`/`attributes` to topics no entity reads any more.
+    Those messages are retained, so they never expire: they sit on the broker for good,
+    and re-ticking the flag replays a stale count and a stale ON/OFF into a freshly
+    created entity. Absent from here, `rule_base` returns None and the publisher takes
+    the same early exit it already takes for a rule created since the last reconcile.
+
+    `enabled` is deliberately *not* filtered on. A disabled rule never fires, so it has
+    nothing to publish either way, and dropping it would only make the distinction
+    between the two flags harder to read.
+    """
     return SlugIndex(
         profiles={
             p.uuid: (
                 slugify(p.name),
-                {s.uuid: _topic_source(s) for s in p.sources},
-                {r.uuid: _topic_rule(r) for r in p.rules},
+                {s.uuid: _topic_source(s) for s in p.sources if s.publish_to_ha},
+                {r.uuid: _topic_rule(r) for r in p.rules if r.publish_to_ha},
             )
             for p in profiles
         }
