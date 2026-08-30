@@ -25,7 +25,7 @@
 
 set -uo pipefail
 
-CONTAINER=encounterwatch_mono_dev
+CONTAINER=purrview_mono_dev
 RUNS=5
 STRESS=0
 

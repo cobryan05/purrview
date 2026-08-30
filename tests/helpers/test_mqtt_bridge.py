@@ -34,7 +34,7 @@ from apps.helpers.mqtt.bridge import (
 )
 from apps.helpers.watch.templating import slugify
 
-PREFIX = "encounterwatch"
+PREFIX = "purrview"
 
 
 def _profile(**overrides) -> ProfileView:
@@ -202,12 +202,12 @@ class TestDiscoveryReconciliation:
         configs around it must still be adopted."""
         good = build_all_discovery([_profile()], PREFIX)
         retained = {t: json.dumps(p).encode() for t, p in good.items()}
-        retained["homeassistant/device/encounterwatch_junk/config"] = b"{not json"
+        retained["homeassistant/device/purrview_junk/config"] = b"{not json"
 
         state = state_from_retained(retained)
 
         assert source_config_topic("src-1") in state.topics
-        assert "homeassistant/device/encounterwatch_junk/config" not in state.topics
+        assert "homeassistant/device/purrview_junk/config" not in state.topics
 
     def test_a_deleted_source_is_retracted_with_an_empty_payload(self):
         with_source = [_profile()]
@@ -905,7 +905,7 @@ class TestDeviceIdentifiersAreNamespaced:
         ids = [payload["dev"]["ids"] for payload in messages.values()]
 
         assert ids, "no devices built"
-        assert all(i.startswith("encounterwatch") for i in ids), ids
+        assert all(i.startswith("purrview") for i in ids), ids
 
 
 class TestWatcherAvailabilitySurvivesALateConnect:
@@ -1022,7 +1022,7 @@ class TestDevicesAreIdentifiableAsOneFamily:
         devices = [p["dev"] for p in build_all_discovery([profile], PREFIX, {"cat-1": subject}).values()]
 
         assert devices
-        assert {d.get("mf") for d in devices} == {"EncounterWatch"}
+        assert {d.get("mf") for d in devices} == {"PurrView"}
 
     def test_the_three_device_kinds_are_distinguishable_by_model(self):
         subject = SubjectView(uuid="cat-1", name="Tabby")

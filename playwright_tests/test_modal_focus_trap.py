@@ -12,7 +12,7 @@ hand-rolled modal right after it's attached to the document: focus moves
 inside the dialog on open, and is trapped there (Tab included) until close.
 
 Run with:
-    docker compose exec -T encounterwatch-dev bash -lc \
+    docker compose exec -T purrview-dev bash -lc \
       'cd /project && python -m pytest playwright_tests/test_modal_focus_trap.py -p no:asyncio -q'
 """
 

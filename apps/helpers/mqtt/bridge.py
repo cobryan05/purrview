@@ -31,7 +31,7 @@ from ..watch.templating import slugify
 logger = logging.getLogger(__name__)
 
 HA_DISCOVERY_PREFIX = "homeassistant"
-ORIGIN = {"name": "EncounterWatch"}
+ORIGIN = {"name": "PurrView"}
 
 #: Stamped on every device we publish.
 #:
@@ -45,8 +45,8 @@ ORIGIN = {"name": "EncounterWatch"}
 #: Manufacturer and model are therefore the grouping HA does offer: they make the set
 #: filterable and sortable as one family in the device list instead of nine unrelated
 #: rows. Neither touches `ids`, so no entity is re-registered by adding them.
-MANUFACTURER = "EncounterWatch"
-APP_DEVICE_ID = "encounterwatch_system"
+MANUFACTURER = "PurrView"
+APP_DEVICE_ID = "purrview_system"
 APP_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{APP_DEVICE_ID}/config"
 
 
@@ -98,7 +98,7 @@ def _apply_default_visibility(cmps: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def source_device_id(source_uuid: str) -> str:
-    return f"encounterwatch_{source_uuid}"
+    return f"purrview_{source_uuid}"
 
 
 def source_config_topic(source_uuid: str) -> str:
@@ -259,7 +259,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         # drops every camera after the first.
         cmps[f"{rule.uuid}_state"] = {
             "p": "binary_sensor",
-            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_state",
+            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_state",
             "name": rule_label,
             "device_class": "occupancy",
             "state_topic": f"{rule_base}/state",
@@ -269,7 +269,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_count",
+            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_count",
             "name": f"{rule_label} count",
             # The single most important setting here: HA purges raw history after
             # ~10 days but keeps long-term statistics forever for a sensor that
@@ -279,7 +279,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_last_seen",
+            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_last_seen",
             "name": f"{rule_label} last seen",
             "device_class": "timestamp",
             "state_topic": f"{rule_base}/attributes",
@@ -287,7 +287,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_duration"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_last_duration",
+            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_last_duration",
             "name": f"{rule_label} last duration",
             "state_class": "measurement",
             "device_class": "duration",
@@ -297,7 +297,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_peak_confidence"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_peak_confidence",
+            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_peak_confidence",
             "name": f"{rule_label} peak confidence",
             "state_class": "measurement",
             "state_topic": f"{rule_base}/attributes",
@@ -305,7 +305,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_event"] = {
             "p": "event",
-            "unique_id": f"encounterwatch_{source.uuid}_{rule.uuid}_event",
+            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_event",
             "name": rule_label,
             "event_types": [rule.name],
             "state_topic": event_topic,
@@ -313,7 +313,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
     cmps["camera"] = {
         "p": "camera",
-        "unique_id": f"encounterwatch_{source.uuid}_camera",
+        "unique_id": f"purrview_{source.uuid}_camera",
         # No name: HA treats an unnamed component as the device's primary entity, so this
         # is `camera.<source>` rather than `camera.<source>_<source>`.
         "name": None,
@@ -321,7 +321,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     }
     cmps["tracked_count"] = {
         "p": "sensor",
-        "unique_id": f"encounterwatch_{source.uuid}_tracked_count",
+        "unique_id": f"purrview_{source.uuid}_tracked_count",
         "name": "tracked objects",
         "state_class": "measurement",
         "state_topic": telemetry_state_topic,
@@ -329,7 +329,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     }
     cmps["health"] = {
         "p": "binary_sensor",
-        "unique_id": f"encounterwatch_{source.uuid}_health",
+        "unique_id": f"purrview_{source.uuid}_health",
         "name": "problem",
         "device_class": "problem",
         "entity_category": "diagnostic",
@@ -346,7 +346,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     ):
         entry: Dict[str, Any] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_{source.uuid}_{key}",
+            "unique_id": f"purrview_{source.uuid}_{key}",
             "name": key.replace("_", " "),
             "entity_category": "diagnostic",
             "state_class": "measurement",
@@ -358,8 +358,8 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         cmps[key] = entry
 
     return {
-        # Namespaced like every other device here (`encounterwatch_subject_…`,
-        # `encounterwatch_system`). A bare uuid would sit in HA's global MQTT device
+        # Namespaced like every other device here (`purrview_subject_…`,
+        # `purrview_system`). A bare uuid would sit in HA's global MQTT device
         # namespace shared with every other integration on the broker.
         "dev": _device(source_device_id(source.uuid), source.name, "Watched camera"),
         "o": dict(ORIGIN),
@@ -372,7 +372,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
 
 def subject_device_id(subject_uuid: str) -> str:
-    return f"encounterwatch_subject_{subject_uuid}"
+    return f"purrview_subject_{subject_uuid}"
 
 
 def subject_config_topic(subject_uuid: str) -> str:
@@ -416,7 +416,7 @@ def build_subject_discovery(
     cmps: Dict[str, Any] = {
         "detected": {
             "p": "binary_sensor",
-            "unique_id": f"encounterwatch_subject_{subject.uuid}_detected",
+            "unique_id": f"purrview_subject_{subject.uuid}_detected",
             "name": "Detected now",
             "device_class": "occupancy",
             "state_topic": f"{base}/state",
@@ -425,14 +425,14 @@ def build_subject_discovery(
         },
         "count": {
             "p": "sensor",
-            "unique_id": f"encounterwatch_subject_{subject.uuid}_count",
+            "unique_id": f"purrview_subject_{subject.uuid}_count",
             "name": "Total events",
             "state_class": "total_increasing",
             "state_topic": f"{base}/count",
         },
         "last_seen": {
             "p": "sensor",
-            "unique_id": f"encounterwatch_subject_{subject.uuid}_last_seen",
+            "unique_id": f"purrview_subject_{subject.uuid}_last_seen",
             "name": "Last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/attributes",
@@ -440,7 +440,7 @@ def build_subject_discovery(
         },
         "last_location": {
             "p": "sensor",
-            "unique_id": f"encounterwatch_subject_{subject.uuid}_last_location",
+            "unique_id": f"purrview_subject_{subject.uuid}_last_location",
             "name": "Last location",
             "state_topic": f"{base}/attributes",
             "value_template": "{{ value_json.lastSource }}",
@@ -454,14 +454,14 @@ def build_subject_discovery(
         # worth asking and the one a per-camera breakdown alone cannot answer.
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_count",
+            "unique_id": f"purrview_subject_{subject.uuid}_{rule.uuid}_count",
             "name": rule_label,
             "state_class": "total_increasing",
             "state_topic": f"{base}/rule/{rule_slug}/count",
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_last_seen",
+            "unique_id": f"purrview_subject_{subject.uuid}_{rule.uuid}_last_seen",
             "name": f"{rule_label} last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/rule/{rule_slug}/attributes",
@@ -474,7 +474,7 @@ def build_subject_discovery(
             source_slug = _topic_source(source)
             cmps[f"{rule.uuid}_{source.uuid}_count"] = {
                 "p": "sensor",
-                "unique_id": f"encounterwatch_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
+                "unique_id": f"purrview_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
                 "name": f"{rule_label} · {source.name}",
                 "state_class": "total_increasing",
                 "enabled_by_default": False,
@@ -493,10 +493,10 @@ def build_subject_discovery(
 
 
 def build_app_discovery(prefix: str) -> Dict[str, Any]:
-    """The `encounterwatch_system` device: app-wide diagnostics that belong to no
+    """The `purrview_system` device: app-wide diagnostics that belong to no
     single camera."""
     return {
-        "dev": _device(APP_DEVICE_ID, "EncounterWatch", "Application"),
+        "dev": _device(APP_DEVICE_ID, "PurrView", "Application"),
         "o": dict(ORIGIN),
         "availability": [{"topic": f"{prefix}/status"}],
         "cmps": {
@@ -873,7 +873,7 @@ class MqttBridge:
     def __init__(self, db_api_client: Any) -> None:
         self._db_api_client = db_api_client
         self._publisher: Optional[AsyncMqttPublisher] = None
-        self._prefix: str = "encounterwatch"
+        self._prefix: str = "purrview"
         self._last_discovery: DiscoveryState = DiscoveryState()
         # Refreshed on every reconcile, so a watcher publishing an event transition can
         # resolve its uuids to topics without a DB round trip on the hot path.
@@ -1268,7 +1268,7 @@ class MqttBridge:
         self._publisher.publish(f"{subject_base_topic(slug)}/state", state, retain=True)
 
     async def publish_system(self, *, watchers_running: int) -> None:
-        """The `encounterwatch_system` device's sensors — app-wide figures owned by no
+        """The `purrview_system` device's sensors — app-wide figures owned by no
         camera, so no watcher is in a position to publish them.
 
         Storage comes from `/api/storage/usage`, which walks directories and is

@@ -10,7 +10,7 @@ an in-memory, stateful fake that mirrors the real db_server contract closely
 enough to exercise pagination, filtering and decision persistence.
 
 Run with:
-    docker compose --profile dev run --rm --no-deps -w /project encounterwatch-dev \
+    docker compose --profile dev run --rm --no-deps -w /project purrview-dev \
         python3.11 -m pytest playwright_tests/test_preview_panel.py -q
 """
 

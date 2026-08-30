@@ -11,7 +11,7 @@
 #
 # Install with ./scripts/install-git-hooks.sh
 
-CONTAINER="${ENCOUNTERWATCH_CONTAINER:-encounterwatch_mono_dev}"
+CONTAINER="${PURRVIEW_CONTAINER:-purrview_mono_dev}"
 
 files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
 config=$(git diff --cached --name-only --diff-filter=ACMR -- pyproject.toml requirements-dev.txt)

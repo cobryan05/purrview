@@ -735,11 +735,11 @@ export const MQTT_SETTING_KEY = 'mqtt_broker';
 const MQTT_DEFAULTS = {
   host: '',
   port: 1883,
-  prefix: 'encounterwatch',
+  prefix: 'purrview',
   username: '',
   password: '',
   tls: false,
-  client_id: 'encounterwatch',
+  client_id: 'purrview',
 };
 
 /**

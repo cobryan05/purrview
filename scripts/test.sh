@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a test suite in the container at low priority.
 #
-# Why this exists: the suites run on the same host as the live EncounterWatch
+# Why this exists: the suites run on the same host as the live PurrView
 # services (and frigate, jellyfin, …). A full Playwright run saturates all 16
 # cores — each Chromium test costs roughly two — and the app becomes visibly
 # unresponsive while it does. The tests have no deadline; the app does. `nice`
@@ -28,7 +28,7 @@
 
 set -uo pipefail
 
-CONTAINER=encounterwatch_mono_dev
+CONTAINER=purrview_mono_dev
 # Lowering priority never needs privileges; raising it would.
 PRIORITY=(nice -n 19 ionice -c3)
 

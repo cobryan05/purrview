@@ -222,7 +222,7 @@ class Manager:
             connected = threading.Event()
             result_code: Dict[str, Any] = {}
 
-            client = mqtt.Client(client_id=f"encounterwatch-test-{int(time.time())}")
+            client = mqtt.Client(client_id=f"purrview-test-{int(time.time())}")
             if username:
                 client.username_pw_set(username, password or None)
             if tls:

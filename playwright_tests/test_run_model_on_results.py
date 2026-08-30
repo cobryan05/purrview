@@ -10,7 +10,7 @@ couple of status polls. Bbox thumbnails, bulk-apply-by-uuids, and the thumbnail
 invalidation endpoint are likewise mocked (no real DB/detector behind them).
 
 Run with:
-    docker compose --profile dev run --rm --no-deps -w /project encounterwatch-dev \
+    docker compose --profile dev run --rm --no-deps -w /project purrview-dev \
         python3.11 -m pytest playwright_tests/test_run_model_on_results.py -q
 """
 

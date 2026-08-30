@@ -503,7 +503,7 @@ class WebApp:
             """Operator landing page — this service is often the only thing on its host."""
             return HTMLResponse(
                 render_landing_page(
-                    title="EncounterWatch Training Server",
+                    title="PurrView Training Server",
                     subtitle="model training jobs + image cache",
                     status_url="/status",
                     info_url="/api/training/info",

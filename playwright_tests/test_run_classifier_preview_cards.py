@@ -21,7 +21,7 @@ test_run_classifier_on_results.py already covers) and mock the small set of API
 endpoints the cards need.
 
 Run with:
-    docker compose --profile dev run --rm --no-deps -w /project encounterwatch-dev \
+    docker compose --profile dev run --rm --no-deps -w /project purrview-dev \
         python3.11 -m pytest playwright_tests/test_run_classifier_preview_cards.py -q
 """
 

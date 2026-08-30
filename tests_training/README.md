@@ -1,6 +1,6 @@
 # Training Container Tests
 
-These tests **must run inside the `encounterwatch-training-dev` container** where
+These tests **must run inside the `purrview-training-dev` container** where
 PyTorch, torchvision, timm, albumentations, and onnxruntime-gpu are installed.
 
 ```bash

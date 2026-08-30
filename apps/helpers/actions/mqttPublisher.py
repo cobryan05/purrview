@@ -73,22 +73,22 @@ DEFAULT_QUEUE_BYTES = 32 * 1024 * 1024
 class MqttSettings:
     host: str
     port: int = 1883
-    prefix: str = "encounterwatch"
+    prefix: str = "purrview"
     username: Optional[str] = None
     password: Optional[str] = None
     tls: bool = False
-    client_id: str = "encounterwatch"
+    client_id: str = "purrview"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MqttSettings":
         return cls(
             host=str(data.get("host") or "localhost"),
             port=int(data.get("port") or 1883),
-            prefix=str(data.get("prefix") or "encounterwatch").rstrip("/"),
+            prefix=str(data.get("prefix") or "purrview").rstrip("/"),
             username=data.get("username") or None,
             password=data.get("password") or None,
             tls=bool(data.get("tls", False)),
-            client_id=str(data.get("client_id") or "encounterwatch"),
+            client_id=str(data.get("client_id") or "purrview"),
         )
 
 

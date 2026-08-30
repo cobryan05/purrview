@@ -1,4 +1,4 @@
-# EncounterWatch
+# PurrView
 
 Self-hosted image **annotation, inference, and training** for object detection and
 image classification. Annotate images in the browser, run ONNX models to
@@ -55,8 +55,8 @@ profiles. `./setup.sh` picks the right image base and profiles for you.
 ## Quick start
 
 ```bash
-git clone https://github.com/cobryan05/encounter-watch.git
-cd encounter-watch
+git clone https://github.com/cobryan05/purrview.git
+cd purrview
 
 ./setup.sh                     # answer a few questions → writes .env
 docker compose up -d --build   # build + start what .env selected
@@ -113,7 +113,7 @@ Common cases:
 
 NVR clips, event snapshots and event timelapses are written under
 `/data/recordings/`, inside the `./data:/data` bind mount. To keep recordings on
-another disk, move **that whole mount** (`- /mnt/nas/encounterwatch:/data` in
+another disk, move **that whole mount** (`- /mnt/nas/purrview:/data` in
 `docker-compose.override.yml`). Everything beneath it belongs to the app, so this
 is always safe.
 

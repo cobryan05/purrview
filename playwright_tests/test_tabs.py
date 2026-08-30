@@ -25,7 +25,7 @@ def test_page_loads(page: Page, base_url: str):
 
 def test_page_title(page: Page, base_url: str):
     page.goto(base_url)
-    expect(page).to_have_title("Annotation Tool")
+    expect(page).to_have_title("PurrView")
 
 
 # ---------------------------------------------------------------------------

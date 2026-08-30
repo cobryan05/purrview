@@ -14,7 +14,7 @@ Covers:
   - no gapsConfig → no row and no /image-gaps request at all.
 
 Run with:
-    docker compose exec -T encounterwatch-dev bash -lc \
+    docker compose exec -T purrview-dev bash -lc \
       'cd /project && python -m pytest playwright_tests/test_review_card_gaps.py -p no:asyncio -q'
 """
 

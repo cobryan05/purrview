@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# EncounterWatch deployment configurator.
+# PurrView deployment configurator.
 #
 # Interactively asks what this host should run and writes a .env that
 # `docker compose` reads automatically. It picks the right image base
@@ -138,7 +138,7 @@ UID_VAL="$(id -u)"
 GID_VAL="$(id -g)"
 
 echo "=========================================================="
-echo " EncounterWatch setup"
+echo " PurrView setup"
 echo "=========================================================="
 if [ "$GPU_DEFAULT" = "y" ]; then
   echo "Detected an NVIDIA GPU on this host."
