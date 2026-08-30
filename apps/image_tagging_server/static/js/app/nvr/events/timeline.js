@@ -100,7 +100,13 @@ export function axisTicks({ start, end }) {
   // is done here rather than in SQL.
   const cursor = new Date(start);
   cursor.setMinutes(0, 0, 0);
-  while (cursor.getTime() < start || (cursor.getTime() - start) % step !== 0) {
+  // Stepped on the local hour and measured against *this* boundary rather than against
+  // `start`: on a whole-hour offset the two agree, but at UTC+05:30 the data's own
+  // extent (UTC hour buckets) is 30 minutes off the local hour, so `(cursor - start) %
+  // step` could never reach 0 and the loop ran past `end` — leaving the timeline with no
+  // axis labels and no gridlines at all for half the world.
+  const anchor = cursor.getTime();
+  while (cursor.getTime() < start || (cursor.getTime() - anchor) % step !== 0) {
     cursor.setHours(cursor.getHours() + 1);
     if (cursor.getTime() > end) break;
   }

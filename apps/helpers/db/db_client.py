@@ -7362,8 +7362,15 @@ class DbClient:
                 )
             # Biggest first: the grouped view exists to put "383 of these" at the top of
             # the page. Ties broken by recency so the order is total and therefore stable
-            # between two renders of an unchanged set.
-            groups.sort(key=lambda g: (-g["count"], g["last_seen"] or "", g["rule_uuid"] or ""))
+            # between two renders of an unchanged set — *most* recent first, which is the
+            # reverse of the order `last_seen` strings sort in naturally. Two stable
+            # passes rather than one clever key: `sort` is stable, so the count pass
+            # preserves the recency order within each tie, and neither pass has to invent
+            # a reversible encoding of a timestamp. A missing `last_seen` lands last, for
+            # the same reason it does in the client's `sortGroups` — a row that has never
+            # fired is not the most recent thing that happened.
+            groups.sort(key=lambda g: (g["last_seen"] or "", g["rule_uuid"] or ""), reverse=True)
+            groups.sort(key=lambda g: -g["count"])
             return groups
 
     async def _watch_event_group_representatives(self, session: Any, **filters) -> Dict[Tuple, str]:

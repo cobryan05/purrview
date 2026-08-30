@@ -710,6 +710,11 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       const deleted = await deleteWatchEvents(uuids);
       toast(`Deleted ${deleted} event${deleted === 1 ? '' : 's'}`, 3000);
       selected.clear();
+      // Both units, because either could have armed this delete: a group whose events
+      // are gone but whose key survives the re-render (a partial delete, or an identity
+      // that fired again in between) would come back still ticked, with the action bar
+      // still armed against rows the user believes they already dealt with.
+      selectedGroups.clear();
       anchorIndex = -1;
       void filters.refreshFacets();
       await search();

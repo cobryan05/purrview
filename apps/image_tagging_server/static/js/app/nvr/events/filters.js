@@ -210,11 +210,19 @@ export function defaultFilterState() {
  * @param {EventFilterState} state
  */
 export function hasActiveFilter(state) {
-  return Object.entries(state).some(
+  // The range the page opens on is not a filter the *user* applied, and counting it made
+  // this always true: an install with no events at all answered "No events match these
+  // filters — try widening the date range" instead of the one screen that explains where
+  // events come from. Only a range that has been changed from the default counts.
+  const skipDates = state?.rangeDays === DEFAULT_RANGE_DAYS;
+  const ignored = new Set(
     // `rangeDays` only records which button produced the dates; counting it too would
     // make a range look like two filters and would report "filtered" for a state whose
     // dates had been cleared.
-    ([key, v]) => key !== 'rangeDays' && (Array.isArray(v) ? v.length > 0 : v != null),
+    skipDates ? ['rangeDays', 'startFrom', 'startTo'] : ['rangeDays'],
+  );
+  return Object.entries(state).some(
+    ([key, v]) => !ignored.has(key) && (Array.isArray(v) ? v.length > 0 : v != null),
   );
 }
 

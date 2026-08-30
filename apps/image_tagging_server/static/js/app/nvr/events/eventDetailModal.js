@@ -813,7 +813,18 @@ export function openEventDetailModal(
     for (const t of times) {
       const seeked = new Promise(resolve => {
         // `once` so a later seek in this same loop cannot resolve an earlier promise.
-        video.addEventListener('seeked', resolve, { once: true });
+        const done = () => {
+          clearTimeout(timer);
+          video.removeEventListener('seeked', done);
+          resolve();
+        };
+        // A bounded wait, not an open-ended one. `seeked` does not fire when the
+        // playhead is already at `t` (the first pick often is, since the harvest starts
+        // where the user left it) and it never fires at all if the media errors mid-run
+        // — either way an unguarded await hangs here forever, with Save and Annotate
+        // left disabled and no error anywhere to say why.
+        const timer = setTimeout(done, 2000);
+        video.addEventListener('seeked', done, { once: true });
       });
       video.currentTime = t;
       await seeked;

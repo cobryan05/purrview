@@ -203,9 +203,9 @@ export function foldGroups(groups, { dimensions = ['rule', 'subject', 'target'],
 /**
  * The filter state that isolates one identity — what a group card drills into.
  *
- * Returns the *singular* filter parameters rather than the list ones, because they mean
- * the same thing to the backend and leaving the user's list selections untouched lets
- * "Clear" put the page back exactly as it was.
+ * Returns a *sparse* partial: only the dimensions the row is actually grouped at appear
+ * as keys, so spreading it over a live filter state narrows exactly those facets and
+ * leaves every other selection — and "Clear" — exactly as the user left it.
  *
  * Only the dimensions the row is actually grouped at become filters. A per-actor row
  * that also filtered by target would open onto a fraction of the events it counted, and
@@ -219,13 +219,22 @@ export function foldGroups(groups, { dimensions = ['rule', 'subject', 'target'],
  */
 export function groupDrilldownFilters(group, { dimensions = null, splitByCamera = false } = {}) {
   const dims = dimensions ?? group.dimensions ?? ['rule', 'subject', 'target'];
-  const pick = (dim, value) => (dims.includes(dim) && value ? [value] : []);
-  return {
-    ruleUuids: pick('rule', group.ruleUuid),
-    subjectRefs: pick('subject', group.subjectRef),
-    targetRefs: pick('target', group.targetRef),
-    sourceUuids: splitByCamera && group.sourceUuid ? [group.sourceUuid] : [],
+  const out = {};
+  // ⚠️ A facet the row is *not* grouped at is **omitted**, never written as `[]`. Callers
+  // spread this over the page's live filter state (`{...queryState(), ...these}`) to
+  // resolve a group's events, and an empty array there does not mean "no constraint from
+  // me" — it overwrites the user's own selection. That is how ticking one group card
+  // while filtered to a single cat armed "Delete 40 events" against the newest 40 events
+  // of that rule across *every* cat. `setState` merges onto `defaultFilterState()`, so an
+  // absent key is already the empty list there and the drill-down is unaffected.
+  const put = (key, dim, value) => {
+    if (dims.includes(dim) && value) out[key] = [value];
   };
+  put('ruleUuids', 'rule', group.ruleUuid);
+  put('subjectRefs', 'subject', group.subjectRef);
+  put('targetRefs', 'target', group.targetRef);
+  if (splitByCamera && group.sourceUuid) out.sourceUuids = [group.sourceUuid];
+  return out;
 }
 
 /**
