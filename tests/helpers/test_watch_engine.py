@@ -1524,7 +1524,10 @@ class TestRuntimeArming:
         )
         engine.set_rule_armed("rule-1", False, now=0.0)
 
-        assert engine.armed_rule_uuids() == ["rule-2"]
+        assert [(uuid, armed) for uuid, _name, armed in engine.rule_arming()] == [
+            ("rule-1", False),
+            ("rule-2", True),
+        ]
         inside = [_track(bbox=(450, 450, 550, 550))]
         engine.step(inside, now=0.0)
         signals = engine.step(inside, now=1.5)

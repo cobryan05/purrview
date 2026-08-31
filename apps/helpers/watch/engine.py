@@ -192,11 +192,21 @@ class WatchEngine:
                     signals.append(signal)
         return signals
 
-    def armed_rule_uuids(self) -> List[str]:
-        """The subset of `rule_uuids` currently armed — what the status panel reports."""
-        return list(
-            dict.fromkeys(rule_uuid for (rule_uuid, _a, _b), machine in self._machines.items() if machine.spec.armed)
-        )
+    def rule_arming(self) -> List[Tuple[str, str, bool]]:
+        """`(uuid, name, armed)` per rule this engine runs, for the status panel.
+
+        Read off the machines rather than off the profile rows, so the panel reports the
+        state the watcher is actually running under rather than what something else
+        believes. The two can differ for a pass — arming is polled, not pushed — and in
+        that window the machines are the truthful answer.
+
+        De-duplicated per rule like `rule_uuids`: a multi-ref rule owns a machine per
+        slot, and they arm and disarm together.
+        """
+        rows: Dict[str, Tuple[str, str, bool]] = {}
+        for (rule_uuid, _a, _b), machine in self._machines.items():
+            rows.setdefault(rule_uuid, (rule_uuid, machine.spec.name, machine.spec.armed))
+        return list(rows.values())
 
     # ------------------------------------------------------------------ status
 

@@ -276,6 +276,10 @@ class StreamWatcherTask(Task):
                     {"id": "eventsStarted", "label": "Events started"},
                     {"id": "eventsEnded", "label": "Events ended"},
                     {"id": "openEvents", "label": "Open events"},
+                    # Glanceable counterpart to the Rules table below. Zero is the normal
+                    # reading, so a non-zero one is the thing worth noticing before
+                    # concluding a rule is broken.
+                    {"id": "rulesDisarmed", "label": "Rules disarmed"},
                     {"id": "activeTracks", "label": "Active tracks"},
                     {"id": "inferenceP50Ms", "label": "Inference p50 (ms)"},
                     {"id": "inferenceP95Ms", "label": "Inference p95 (ms)"},
@@ -313,6 +317,20 @@ class StreamWatcherTask(Task):
                     {"id": "ageS", "label": "Age (s)"},
                     {"id": "confidence", "label": "Conf"},
                     {"id": "anchor", "label": "Anchor"},
+                ],
+            },
+            {
+                "id": "rulesTable",
+                "type": "table",
+                # Named for the question it answers. A rule can be enabled in the editor
+                # and disarmed from Home Assistant at the same time, and without this the
+                # only symptom is a rule that quietly records nothing — the editor shows
+                # its checkbox ticked, because `enabled` is exactly what the user set.
+                "label": "Rules (armed state is set from Home Assistant, not here)",
+                "columns": [
+                    {"id": "rule", "label": "Rule"},
+                    {"id": "armed", "label": "Armed"},
+                    {"id": "cameras", "label": "Cameras"},
                 ],
             },
             {
@@ -2109,6 +2127,23 @@ class StreamWatcherTask(Task):
             open_rows.extend(pipeline.engine.open_events())
             hints.extend(pipeline.engine.tuning_hints())
 
+        # One row per rule, not per (rule, camera): a rule is armed profile-wide, and a
+        # row per camera would repeat the same Armed value once per source while burying
+        # the one column that differs. The cameras it runs on become a cell instead,
+        # which is also the answer to "is this rule even pointed at that camera?".
+        rule_rows: Dict[str, Dict[str, Any]] = {}
+        for pipeline in self._pipelines:
+            for rule_uuid, rule_name, armed in pipeline.engine.rule_arming():
+                row = rule_rows.setdefault(
+                    rule_uuid, {"rule": rule_name, "armed": "Armed" if armed else "Disarmed", "cameras": []}
+                )
+                row["cameras"].append(pipeline.source_name)
+        rules_table = [{**row, "cameras": ", ".join(row["cameras"])} for row in rule_rows.values()]
+        # Words rather than a checkmark or a bare boolean: "Disarmed" is the whole
+        # explanation for a rule that is recording nothing, and it has to read as one
+        # without a legend.
+        disarmed = sum(1 for row in rules_table if row["armed"] == "Disarmed")
+
         # One row per attached training collector, rendered by status_schema()'s
         # "collectorsTable" widget. status_stats() is synchronous in-memory
         # counters (no I/O), same contract this whole method already runs under —
@@ -2154,6 +2189,7 @@ class StreamWatcherTask(Task):
                 "eventsStarted": self._events_started,
                 "eventsEnded": self._events_ended,
                 "openEvents": len(open_rows),
+                "rulesDisarmed": disarmed,
                 "activeTracks": len(tracks_rows),
                 "inferenceP50Ms": self._percentile(50),
                 "inferenceP95Ms": self._percentile(95),
@@ -2172,6 +2208,7 @@ class StreamWatcherTask(Task):
                 "mqttQueuedKb": (round(self._mqtt.stats()["queuedBytes"] / 1024, 1) if self._mqtt else 0),
             },
             "sources": [p.status_row(now) for p in self._pipelines],
+            "rulesTable": rules_table,
             "activeTracksTable": tracks_rows,
             "openEventsTable": open_rows,
             "collectorsTable": collectors_table,
