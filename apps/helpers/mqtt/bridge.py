@@ -1617,15 +1617,30 @@ class MqttBridge:
             # there is nothing to echo to; record it and let the next reconcile publish.
             self._armed[rule_uuid] = armed
             return
-        loop.call_soon_threadsafe(self._apply_armed, rule_uuid, armed)
+        loop.call_soon_threadsafe(self.set_rule_armed, rule_uuid, armed)
 
-    def _apply_armed(self, rule_uuid: str, armed: bool) -> None:
-        """Record an arming change and echo it, on the event loop.
+    def set_rule_armed(self, rule_uuid: str, armed: bool) -> None:
+        """Record an arming change and echo it. **Must be called on the event loop.**
+
+        The one writer for both sources of an arming change — Home Assistant's switch
+        (via `_on_armed_command`, which hops here) and the app's own status-panel
+        buttons. Sharing it is what keeps the two from drifting: whichever flips the
+        rule, the retained state topic is updated, so HA's switch moves when the app is
+        used and the app agrees when HA is.
 
         The echo is what moves the switch in HA — the entity is deliberately not
         optimistic, so it shows what the app actually applied rather than what was asked.
         The watchers pick the change up by polling `is_rule_armed`; nothing is pushed at
         them, so a watcher that starts later gets the current answer for free.
+
+        Safe to call with no broker configured: the state is still recorded and still
+        honoured by the watchers, it simply is not published and so does not survive a
+        restart. That is the right degradation — arming is a live control, and a profile
+        with no MQTT at all should still be able to use it from the app.
+
+        Cheap enough for a request handler, which is what `handle_command`'s contract
+        requires: a dict write plus `AsyncMqttPublisher.publish`, which is documented to
+        never block and never raise.
         """
         self._armed[rule_uuid] = armed
         if self._publisher is None:

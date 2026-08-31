@@ -1600,7 +1600,7 @@ class TestRuleArmingSwitch:
         for it. The arming itself is state of the world, not of the connection.
         """
         bridge, _fake = _armed_bridge([_profile()])
-        bridge._apply_armed("rule-1", False)
+        bridge.set_rule_armed("rule-1", False)
 
         await bridge.stop()
 

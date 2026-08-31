@@ -13,6 +13,8 @@ the app.
 
 from types import SimpleNamespace
 
+import pytest
+
 from apps.helpers.tracking.tracker import Track
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.geometry import Zone
@@ -186,3 +188,76 @@ class TestTheWatcherAppliesArming:
         await task._apply_rule_arming(now=2.0)  # must not raise
 
         assert task.dispatched == []
+
+
+class TestArmingIsReachableFromTheApp:
+    """Home Assistant must not be the only writer.
+
+    The Watchers editor holds `enabled`, which is config; arming is runtime, so it lives
+    on the running watcher's card instead — as buttons, next to the table that reports it.
+    """
+
+    def _task_with_bridge(self, engine):
+        task = _task([_pipeline("Hall cam", engine)])
+        task.armed_calls = []
+        bridge = SimpleNamespace(
+            is_rule_armed=lambda _uuid: True,
+            set_rule_armed=lambda uuid, armed: task.armed_calls.append((uuid, armed)),
+        )
+        task._manager = SimpleNamespace(get_mqtt_bridge=lambda: bridge)
+        return task
+
+    def test_an_armed_rule_offers_to_disarm_it_and_the_reverse(self):
+        """The label names the effect, not the state — a button reading "Armed" would be
+        ambiguous about whether it reports or acts. Asserted both ways round so it cannot
+        pass by hard-coding either verb."""
+        engine = _engine()
+        task = self._task_with_bridge(engine)
+
+        armed_action = [a for a in task.get_status_actions() if a["command"] == "set_rule_armed"]
+        assert [a["label"] for a in armed_action] == ["Disarm 'person in house'"]
+        assert armed_action[0]["params"] == {"ruleUuid": "rule-1", "armed": False}
+
+        engine.set_rule_armed("rule-1", False, now=0.0)
+
+        disarmed_action = [a for a in task.get_status_actions() if a["command"] == "set_rule_armed"]
+        assert [a["label"] for a in disarmed_action] == ["Arm 'person in house'"]
+        assert disarmed_action[0]["params"] == {"ruleUuid": "rule-1", "armed": True}
+
+    def test_a_rule_on_several_cameras_gets_one_button(self):
+        engine_a, engine_b = _engine(), _engine()
+        task = _task([_pipeline("Hall cam", engine_a), _pipeline("Kitchen cam", engine_b)])
+
+        actions = [a for a in task.get_status_actions() if a.get("command") == "set_rule_armed"]
+
+        assert len(actions) == 1
+
+    async def test_the_command_reaches_the_bridge_rather_than_the_engine(self):
+        """`handle_command` runs in a request handler, so it may only record the change —
+        the running loop applies it on its next pass. Going straight to the engines here
+        would both break that contract and skip the retained publish that moves the
+        Home Assistant switch."""
+        engine = _engine()
+        task = self._task_with_bridge(engine)
+
+        await task.handle_command("set_rule_armed", {"ruleUuid": "rule-1", "armed": False})
+
+        assert task.armed_calls == [("rule-1", False)]
+
+    async def test_an_unknown_command_is_rejected(self):
+        task = self._task_with_bridge(_engine())
+
+        with pytest.raises(ValueError):
+            await task.handle_command("delete_everything", {})
+
+        assert task.armed_calls == []
+
+    async def test_a_command_without_a_rule_is_rejected(self):
+        """The params come off an HTTP request, so a missing uuid must be a clean error
+        rather than an arming entry under an empty key that nothing can ever clear."""
+        task = self._task_with_bridge(_engine())
+
+        with pytest.raises(ValueError):
+            await task.handle_command("set_rule_armed", {"armed": False})
+
+        assert task.armed_calls == []

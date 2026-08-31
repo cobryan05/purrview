@@ -323,10 +323,14 @@ class StreamWatcherTask(Task):
                 "id": "rulesTable",
                 "type": "table",
                 # Named for the question it answers. A rule can be enabled in the editor
-                # and disarmed from Home Assistant at the same time, and without this the
-                # only symptom is a rule that quietly records nothing — the editor shows
-                # its checkbox ticked, because `enabled` is exactly what the user set.
-                "label": "Rules (armed state is set from Home Assistant, not here)",
+                # and disarmed at the same time, and without this the only symptom is a
+                # rule that quietly records nothing — the editor shows its checkbox
+                # ticked, because `enabled` is exactly what the user set.
+                #
+                # The state is read here and changed from this card's action buttons
+                # (`get_status_actions`) or from the rule's switch in Home Assistant;
+                # both go through `MqttBridge.set_rule_armed`, so they cannot disagree.
+                "label": "Rules (arm/disarm from the buttons on this card, or from Home Assistant)",
                 "columns": [
                     {"id": "rule", "label": "Rule"},
                     {"id": "armed", "label": "Armed"},
@@ -2216,6 +2220,22 @@ class StreamWatcherTask(Task):
             "tuningHints": "\n".join(hints) if hints else "No tuning suggestions yet.",
         }
 
+    async def handle_command(self, command: str, params: dict[str, Any]) -> None:
+        """Arm or disarm a rule from the status panel.
+
+        Honours the base contract's "no I/O here": this only records the new value on the
+        bridge, which is a dict write plus a non-blocking publish enqueue. The running
+        loop picks it up on its next pass through `_apply_rule_arming`, exactly as it
+        picks up a change made from Home Assistant — there is no second code path, so an
+        in-app disarm closes an open event the same way and cannot drift from the switch.
+        """
+        if command != "set_rule_armed":
+            raise ValueError(f"Unknown command {command!r}")
+        rule_uuid = str(params.get("ruleUuid") or "")
+        if not rule_uuid:
+            raise ValueError("set_rule_armed requires a ruleUuid")
+        self._manager.get_mqtt_bridge().set_rule_armed(rule_uuid, bool(params.get("armed")))
+
     def get_status_actions(self) -> list[dict]:
         """Ways into Review over what the attached collectors have collected.
 
@@ -2244,6 +2264,31 @@ class StreamWatcherTask(Task):
                 # a single collector's buttons read better unprefixed.
                 label = f"{name} — {action['label']}" if multiple else action["label"]
                 actions.append({**action, "label": label})
+
+        # One toggle per rule, so arming is reachable without Home Assistant — for an
+        # install that has no broker at all, and for the ordinary case of wanting to
+        # check what a rule does without going to another app to flip it.
+        #
+        # Labelled with the *effect*, not the state: a button reading "Armed" is
+        # ambiguous about whether it reports or acts. The Rules table alongside is where
+        # the current state is read.
+        #
+        # De-duplicated across pipelines — a rule on four cameras is one rule and gets
+        # one button. Sorted so the buttons do not reorder under the pointer between two
+        # polls of a dict that is rebuilt per pass.
+        seen: dict[str, tuple[str, bool]] = {}
+        for pipeline in getattr(self, "_pipelines", None) or []:
+            for rule_uuid, rule_name, armed in pipeline.engine.rule_arming():
+                seen.setdefault(rule_uuid, (rule_name, armed))
+        for rule_uuid, (rule_name, armed) in sorted(seen.items(), key=lambda kv: kv[1][0].lower()):
+            actions.append(
+                {
+                    "type": "task_command",
+                    "label": f"{'Disarm' if armed else 'Arm'} '{rule_name}'",
+                    "command": "set_rule_armed",
+                    "params": {"ruleUuid": rule_uuid, "armed": not armed},
+                }
+            )
         return actions
 
     # ------------------------------------------------------------------ live view
