@@ -773,7 +773,14 @@ export function openEventDetailModal(
    * in the clip the box was, so without per-frame boxes there is nothing to relabel.
    */
   async function relabelEvent() {
-    if (!video || !overlayDoc) return;
+    // The button is rendered when the sidecar is loaded, but the sidebar is not redrawn
+    // when the media pane switches to the timelapse or to a snapshot — both of which drop
+    // the overlay. Said out loud rather than returning silently, which is how a
+    // dead-looking button gets reported as a bug.
+    if (!video || !overlayDoc) {
+      toast('Switch back to the event clip to correct its labels', 4000);
+      return;
+    }
     let labels;
     try {
       labels = await fetchLabels();
