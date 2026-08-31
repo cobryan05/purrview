@@ -1531,7 +1531,15 @@ class MqttBridge:
         await self._restore_armed_state()
         self._ensure_armed_subscription()
         subjects = self._subject_views(profiles)
-        self._subject_slugs = {uuid: slugify(view.name) for uuid, view in subjects.items()}
+        # ⚠️ Opted-out labels are **left out**, for the same reason `build_slug_index`
+        # drops an opted-out rule or camera: this map is the gate every subject publisher
+        # checks, and a label in it with no device means retained `state`/`count`/
+        # `attributes` published to topics no entity reads. Retained messages never
+        # expire, so they sit on the broker for good and re-ticking the label replays a
+        # stale count and a stale ON into a freshly created entity. Now that the flag is
+        # opt-in and `_subject_views` returns the whole vocabulary, an unfiltered map
+        # would do that for *every* label the tracker ever sees.
+        self._subject_slugs = {uuid: slugify(view.name) for uuid, view in subjects.items() if view.publish_to_ha}
         desired = build_all_discovery(profiles, self._prefix, subjects)
         # Measured off `desired`, not off what this pass happens to publish: an
         # unchanged config publishes nothing, and a budget that read zero whenever
