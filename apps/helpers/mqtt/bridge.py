@@ -584,6 +584,14 @@ def build_subject_discovery(
         # into a four-figure entity count. Publishing it disabled-by-default was not
         # enough: HA still creates a registry entry per entity, so the cost was real and
         # invisible. Now a label that wants the per-camera breakdown asks for it.
+        #
+        # And having asked, it gets entities that *work*. These were also marked
+        # `enabled_by_default: False`, which left the opt-in with no observable effect
+        # at all: HA created the entities disabled, so they carried no state and no
+        # history until each one was hand-enabled in the UI, while this bridge published
+        # to their topics regardless. Ticking the box appeared to do nothing. The
+        # per-label gate is the cardinality lever now, and it is the only one — a second
+        # gate behind it only means the first one does not work.
         if not subject.publish_per_source:
             continue
         for source in sources:
@@ -593,7 +601,6 @@ def build_subject_discovery(
                 "unique_id": f"{subject_device_id(subject.uuid)}_{rule.uuid}_{source.uuid}_count",
                 "name": f"{rule_label} · {source.name}",
                 "state_class": "total_increasing",
-                "enabled_by_default": False,
                 "state_topic": f"{base}/rule/{rule_slug}/{source_slug}/count",
             }
 

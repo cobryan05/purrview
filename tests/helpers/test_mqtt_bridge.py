@@ -378,6 +378,13 @@ class TestSubjectDeviceShape:
         HA still creates a registry entry per entity, so the cost scaled with the label
         tree while being invisible. It is now absent unless the label asks for it, and
         the aggregate tier — the one a dashboard uses — is unaffected either way.
+
+        And when the label does ask, the entities have to be *enabled*. They used to
+        carry `enabled_by_default: False` as well, which made the opt-in unobservable:
+        HA created them disabled, so they had no state and no history until each was
+        hand-enabled, even though the bridge published to their topics the whole time.
+        The per-label flag is the cardinality gate; a second gate behind it just breaks
+        the first.
         """
         profile = _profile(
             sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Hallway")),
@@ -392,8 +399,10 @@ class TestSubjectDeviceShape:
             profile, {"subj-a": SubjectView(uuid="subj-a", name="Subject A", publish_per_source=True)}
         )
         assert on["rule-1_count"].get("enabled_by_default") is not False
-        assert on["rule-1_src-1_count"]["enabled_by_default"] is False
-        assert on["rule-1_src-2_count"]["enabled_by_default"] is False
+        # Present *and* enabled — an opted-in breakdown that HA creates disabled is
+        # indistinguishable from the toggle doing nothing.
+        assert on["rule-1_src-1_count"].get("enabled_by_default") is not False
+        assert on["rule-1_src-2_count"].get("enabled_by_default") is not False
 
     def test_subject_entities_survive_a_label_rename(self):
         profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
