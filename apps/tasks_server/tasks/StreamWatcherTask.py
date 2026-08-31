@@ -160,6 +160,11 @@ class StreamWatcherTask(Task):
         #: status message, so a watcher with a dead camera stops reporting the
         #: unqualified "Watching" it reports when everything is fine.
         self._failed_sources: Set[str] = set()
+        #: Sources currently being serviced, keyed by source uuid. Sources are read
+        #: concurrently (see `_run`), so this is what stops one pipeline being handed
+        #: to two overlapping `_service_source` calls — which would mean two reads on
+        #: one provider and two `step()`s into one tracker.
+        self._inflight: Dict[str, asyncio.Task] = {}
         self._pin_ids: Dict[str, Optional[str]] = {}
         self._dry_run: bool = False
         self._analysis_fps_cap: Optional[float] = None
@@ -1161,7 +1166,10 @@ class StreamWatcherTask(Task):
                 # disarm has to close what it closes even when no source is due, and
                 # "stop recording now that everyone is home" must not wait on a frame.
                 await self._apply_rule_arming(now)
-                due = [p for p in self._pipelines if p.due(now)]
+                # A source already being read is not due again, however long it has
+                # been: `due()` only knows about pacing, and a source blocked on a
+                # slow frame has not been rescheduled yet.
+                due = [p for p in self._pipelines if p.source_uuid not in self._inflight and p.due(now)]
                 if not due:
                     await asyncio.sleep(self._idle_sleep(now))
                     continue
@@ -1170,15 +1178,28 @@ class StreamWatcherTask(Task):
                 # cached at start-up would keep addressing the host that Settings →
                 # Servers pointed away from (and whose pool has since been cleared).
                 inference_api = InferenceApi(self._manager.get_inference_api_client())
+                # Dispatched, not awaited. Sources are independent — each owns its own
+                # provider, tracker and engine — and awaiting them here made the whole
+                # watcher run at the pace of its slowest camera. That is not a
+                # theoretical cost: an idle Ring source blocks until its next cloud
+                # snapshot, tens of seconds away, and on a live profile that stalled
+                # four RTSP cameras configured at 1 fps down to one frame per 30 s
+                # while every one of them still reported itself healthy.
+                #
+                # Nothing is awaited across the dispatch, so the loop below keeps
+                # checkpointing, honouring pause/cancel, closing events for lost
+                # sources and applying rule arming while a slow camera is mid-read.
                 for pipeline in due:
                     if self._cancel_flag.is_set():
                         break
-                    await self._service_source(pipeline, inference_api)
+                    self._dispatch_source(pipeline, inference_api)
 
                 self._status_msg = self._watching_status_msg()
                 await self.heartbeat()
         finally:
             renewal.cancel()
+            # Before anything below touches pipeline state — see `_drain_inflight`.
+            await self._drain_inflight()
             self._status_msg = "Closing open events"
             # Order matters: the events below are force-closed and still cut their
             # clips, so the chunks must outlive them. Discarding happens after.
@@ -1284,18 +1305,22 @@ class StreamWatcherTask(Task):
         for pipeline in self._pipelines:
             if not pipeline.health.is_failed(now):
                 continue
-            signals = pipeline.close_open_events(now, EventCloseReason.SOURCE_LOST)
-            if not signals:
-                continue
-            self.log(
-                f"Source '{pipeline.source_name}' has been dark for "
-                f"{_format_duration(pipeline.health.downtime_s(now))} — closing "
-                f"{len(signals)} event(s) it was still holding open."
-            )
-            for signal in signals:
-                self._resolve_slot_names(signal, pipeline)
-                self._note_event(signal)
-                await self._dispatch(signal, pipeline)
+            # Held for the same reason the frame path holds it: this source may be
+            # mid-frame on another task right now, and its open and this close must not
+            # reach the recorder out of order. See `WatchPipeline.dispatch_lock`.
+            async with pipeline.dispatch_lock:
+                signals = pipeline.close_open_events(now, EventCloseReason.SOURCE_LOST)
+                if not signals:
+                    continue
+                self.log(
+                    f"Source '{pipeline.source_name}' has been dark for "
+                    f"{_format_duration(pipeline.health.downtime_s(now))} — closing "
+                    f"{len(signals)} event(s) it was still holding open."
+                )
+                for signal in signals:
+                    self._resolve_slot_names(signal, pipeline)
+                    self._note_event(signal)
+                    await self._dispatch(signal, pipeline)
 
     async def _apply_rule_arming(self, now: float) -> None:
         """Mirror Home Assistant's per-rule arming switches onto the engines.
@@ -1319,17 +1344,24 @@ class StreamWatcherTask(Task):
             return
         for pipeline in self._pipelines:
             for rule_uuid in pipeline.engine.rule_uuids:
-                signals = pipeline.engine.set_rule_armed(rule_uuid, bridge.is_rule_armed(rule_uuid), now)
-                if not signals:
-                    continue
-                self.log(
-                    f"Rule disarmed from Home Assistant — closing {len(signals)} event(s) "
-                    f"it was holding open on '{pipeline.source_name}'."
-                )
-                for signal in signals:
-                    self._resolve_slot_names(signal, pipeline)
-                    self._note_event(signal)
-                    await self._dispatch(signal, pipeline)
+                # Taken unconditionally rather than only when the value changed: arming
+                # lives per *machine* (`machine.spec.armed`) and one rule can span
+                # several, so there is no single "is this rule armed" to compare
+                # against. Cheap enough to be uninteresting — an uncontended
+                # `asyncio.Lock` does not yield, and the lock is never held across a
+                # fetch or an inference. See `WatchPipeline.dispatch_lock`.
+                async with pipeline.dispatch_lock:
+                    signals = pipeline.engine.set_rule_armed(rule_uuid, bridge.is_rule_armed(rule_uuid), now)
+                    if not signals:
+                        continue
+                    self.log(
+                        f"Rule disarmed from Home Assistant — closing {len(signals)} event(s) "
+                        f"it was holding open on '{pipeline.source_name}'."
+                    )
+                    for signal in signals:
+                        self._resolve_slot_names(signal, pipeline)
+                        self._note_event(signal)
+                        await self._dispatch(signal, pipeline)
 
     def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:
         """Record a failed attempt, and say so the first time it becomes a fault.
@@ -1350,6 +1382,82 @@ class StreamWatcherTask(Task):
                 f"{_format_duration(pipeline.health.downtime_s(now))} — marking it failed. "
                 f"Still retrying every {int(pipeline.health.BACKOFF_MAX_S)}s. Last error: {error}"
             )
+
+    def _dispatch_source(self, pipeline: WatchPipeline, inference_api: InferenceApi) -> None:
+        """Start servicing one source, without waiting for it to finish.
+
+        The in-flight entry is written *here*, synchronously, rather than inside the
+        coroutine: `create_task` does not run any of the body until the next time the
+        loop yields, so registering it there would leave a window in which the main
+        loop sees the pipeline as neither in flight nor rescheduled and dispatches it a
+        second time.
+        """
+        task = asyncio.create_task(self._service_source(pipeline, inference_api))
+        self._inflight[pipeline.source_uuid] = task
+        task.add_done_callback(lambda t, uuid=pipeline.source_uuid: self._on_source_done(uuid, t))
+
+    def _on_source_done(self, source_uuid: str, task: "asyncio.Task") -> None:
+        """Retire an in-flight source and make sure a crash in it is not swallowed.
+
+        `_service_source` is written never to raise, so anything arriving here is a bug
+        rather than a camera problem — but a task whose exception is never retrieved is
+        reported by asyncio at garbage-collection time, detached from the loop that
+        started it, which is the worst possible place to first learn about it.
+        """
+        # Only if it is still ours: a pipeline retried after cancellation could have
+        # registered a newer task under the same uuid.
+        if self._inflight.get(source_uuid) is task:
+            del self._inflight[source_uuid]
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Servicing source %s raised", source_uuid, exc_info=exc)
+
+    async def _drain_inflight(self) -> None:
+        """Stop every in-flight source read and wait for it to actually be gone.
+
+        Awaited before the shutdown path touches pipeline state. A source task closes
+        events, cuts clips and steps trackers, so letting one run on while `_run`'s
+        `finally` is force-closing the same pipeline's events would have the two
+        writing the same event from opposite ends.
+        """
+        inflight = list(self._inflight.values())
+        self._inflight.clear()
+        for task in inflight:
+            task.cancel()
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
+
+    def _fetch_budget_s(self, pipeline: WatchPipeline) -> float:
+        """How long to wait for this source's next frame before calling it a timeout.
+
+        `_FETCH_TIMEOUT_S` is a sane bound for a continuous stream and badly wrong for
+        a source whose cadence is measured in minutes. An idle Ring camera produces a
+        cloud snapshot every ~30 s (the bridge's setting, not ours), so a flat 30 s
+        budget *races its own cadence*: the frame arrives at roughly the moment the
+        wait gives up, and whether a perfectly healthy camera is recorded as a success
+        or a failure comes down to which of the two lands first.
+
+        `next_frame_expected_by()` is the provider's own answer to this and already
+        tracks the tier it is in — seconds while live, the measured snapshot cadence
+        while idle, a connect allowance in between. Deferring to it is what that method
+        exists for; this is its first use in the watcher.
+
+        Clamped so it can only ever be *more* patient than the flat timeout, never
+        less: a provider returning a deadline that has nearly passed must not turn into
+        a shorter fuse than the one every source has always had.
+        """
+        try:
+            deadline = pipeline.provider.next_frame_expected_by()
+        except Exception:
+            # A provider with an opinion it cannot compute is one with no opinion.
+            logger.debug("next_frame_expected_by() failed for %r", pipeline.provider, exc_info=True)
+            deadline = None
+        if deadline is None:
+            return self._FETCH_TIMEOUT_S
+        # Same clock by contract (see ImageProvider.next_frame_expected_by).
+        return max(self._FETCH_TIMEOUT_S, deadline - time.monotonic())
 
     async def _service_source(self, pipeline: WatchPipeline, inference_api: InferenceApi) -> None:
         """Fetch, analyse and step one source. Never raises — failures back off."""
@@ -1397,7 +1505,7 @@ class StreamWatcherTask(Task):
                 return
 
         try:
-            provided = await asyncio.wait_for(pipeline.provider.getNextImage(), timeout=self._FETCH_TIMEOUT_S)
+            provided = await asyncio.wait_for(pipeline.provider.getNextImage(), timeout=self._fetch_budget_s(pipeline))
         except asyncio.TimeoutError:
             self._record_source_failure(pipeline, now, "frame fetch timed out")
             return
@@ -1441,59 +1549,66 @@ class StreamWatcherTask(Task):
             inference_api, base64_img, pipeline.model_names, frame_size=(analysed_w, analysed_h)
         )
 
-        now = time.monotonic()
-        was_failing = not pipeline.health.healthy
-        recovered_after = pipeline.health.downtime_s(now)
-        pipeline.health.record_success(now)
-        if was_failing:
-            # Announced, because the matching "went down" line is in the log above it
-            # and a run that only ever reports losses reads as though nothing ever
-            # comes back.
-            self.log(
-                f"Source '{pipeline.source_name}' is back after " f"{_format_duration(recovered_after)} — reconnected"
-            )
-            self._failed_sources.discard(pipeline.source_uuid)
-        self._frames_analysed += 1
+        # Everything from here on either emits event signals or dispatches them, so it
+        # is held against the loop-level closers (`_close_events_for_lost_sources`,
+        # `_apply_rule_arming`) that can now run while this source is mid-frame. The
+        # fetch and the inference above are deliberately outside it — see
+        # `WatchPipeline.dispatch_lock`.
+        async with pipeline.dispatch_lock:
+            now = time.monotonic()
+            was_failing = not pipeline.health.healthy
+            recovered_after = pipeline.health.downtime_s(now)
+            pipeline.health.record_success(now)
+            if was_failing:
+                # Announced, because the matching "went down" line is in the log above it
+                # and a run that only ever reports losses reads as though nothing ever
+                # comes back.
+                self.log(
+                    f"Source '{pipeline.source_name}' is back after "
+                    f"{_format_duration(recovered_after)} — reconnected"
+                )
+                self._failed_sources.discard(pipeline.source_uuid)
+            self._frames_analysed += 1
 
-        signals = pipeline.step(detections, now)
+            signals = pipeline.step(detections, now)
 
-        # Between `step` and dispatch, and both halves of that matter. After `step`,
-        # because `pipeline.detections`/`.tracks` hold the *previous* frame until it has
-        # run — pushing earlier would file this frame's timestamp against last frame's
-        # boxes and offset the whole overlay by one analysis interval. Before dispatch,
-        # because dispatch is where a closing event cuts its clip and writes the sidecar
-        # out of this ring, and the frame that closed the event is one of the frames you
-        # most want to see boxes on.
-        #
-        # Stamped with `arrived_at`, not `now`. `now` was re-read after inference
-        # returned, so using it dated every sample by the model's own latency and slid
-        # the whole overlay that far past the picture — on top of which it disagreed
-        # with the frame ring, which files the very same frame under `arrived_at`, so a
-        # ring-cut clip and its boxes were built on two different clocks.
-        self._push_detection_track(pipeline, arrived_at, (analysed_w, analysed_h))
+            # Between `step` and dispatch, and both halves of that matter. After `step`,
+            # because `pipeline.detections`/`.tracks` hold the *previous* frame until it has
+            # run — pushing earlier would file this frame's timestamp against last frame's
+            # boxes and offset the whole overlay by one analysis interval. Before dispatch,
+            # because dispatch is where a closing event cuts its clip and writes the sidecar
+            # out of this ring, and the frame that closed the event is one of the frames you
+            # most want to see boxes on.
+            #
+            # Stamped with `arrived_at`, not `now`. `now` was re-read after inference
+            # returned, so using it dated every sample by the model's own latency and slid
+            # the whole overlay that far past the picture — on top of which it disagreed
+            # with the frame ring, which files the very same frame under `arrived_at`, so a
+            # ring-cut clip and its boxes were built on two different clocks.
+            self._push_detection_track(pipeline, arrived_at, (analysed_w, analysed_h))
 
-        for signal in signals:
-            self._resolve_slot_names(signal, pipeline)
-            self._note_event(signal)
-            await self._dispatch(signal, pipeline)
+            for signal in signals:
+                self._resolve_slot_names(signal, pipeline)
+                self._note_event(signal)
+                await self._dispatch(signal, pipeline)
 
-        # After dispatch, so an event that just closed has already had its clip cut from
-        # the chunks before they are discarded — and an event that just opened arms the
-        # drain on this same pass rather than one frame late.
-        await self._service_drain(pipeline)
+            # After dispatch, so an event that just closed has already had its clip cut from
+            # the chunks before they are discarded — and an event that just opened arms the
+            # drain on this same pass rather than one frame late.
+            await self._service_drain(pipeline)
 
-        # After `step`, not before: the pipeline's `detections` are the mask-filtered
-        # ones the tracker actually saw, so a live feed draws the same boxes the rules
-        # were evaluated against rather than raw model output the watcher then ignored.
-        await self._dispatch_frame(pipeline)
+            # After `step`, not before: the pipeline's `detections` are the mask-filtered
+            # ones the tracker actually saw, so a live feed draws the same boxes the rules
+            # were evaluated against rather than raw model output the watcher then ignored.
+            await self._dispatch_frame(pipeline)
 
-        self._publish_bridge_presence(pipeline, now)
-        self._publish_bridge_telemetry(pipeline, now)
+            self._publish_bridge_presence(pipeline, now)
+            self._publish_bridge_telemetry(pipeline, now)
 
-        # Last, because the frame this pass just handed to the per-frame actions is what
-        # may have carried a timelapse session over its frame minimum — checking before
-        # it would list every such event one analysis interval late.
-        await self._promote_open_events(pipeline)
+            # Last, because the frame this pass just handed to the per-frame actions is what
+            # may have carried a timelapse session over its frame minimum — checking before
+            # it would list every such event one analysis interval late.
+            await self._promote_open_events(pipeline)
 
     async def _promote_open_events(self, pipeline: WatchPipeline) -> None:
         """Give a still-open event its row once an action has committed to filing media.

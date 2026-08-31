@@ -18,6 +18,7 @@ What these pin:
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import Optional
 
@@ -80,6 +81,9 @@ def _pipeline(provider=None, name="Front door", uuid="src-1") -> SimpleNamespace
     )
     # Only what _service_source touches before the first frame arrives.
     pipeline.schedule_next = lambda now: None
+    # Sources are serviced concurrently, so the event-dispatch paths take the real
+    # pipeline's lock; a stand-in has to carry one too.
+    pipeline.dispatch_lock = asyncio.Lock()
     return pipeline
 
 
@@ -88,6 +92,7 @@ def _task() -> StreamWatcherTask:
     task = StreamWatcherTask.__new__(StreamWatcherTask)
     task._failed_sources = set()
     task._pipelines = []
+    task._inflight = {}
     task._log_lines = []
     task.log = task._log_lines.append
     return task
@@ -668,3 +673,109 @@ class TestALostSourceDoesNotHoldItsEventsOpen:
 
         assert dispatched == []
         assert engine.open_signals(500.0)
+
+
+class TestASlowSourceDoesNotStallTheOthers:
+    """The watcher services every camera from one loop, and it used to `await` each
+    source in turn.
+
+    That made the whole watcher run at the pace of its slowest camera. It is not a
+    theoretical cost: an idle Ring source blocks until its next cloud snapshot, tens
+    of seconds away, and on a live profile with three of them the four RTSP cameras
+    configured at 1 fps were getting one frame every 30 s — about 3% of their
+    configured rate. Nothing reported a fault, because a source waiting for a frame
+    is not an error; every one of the seven sources read `health: ok` throughout.
+
+    So the property worth pinning is not "sources are read concurrently" (an
+    implementation detail) but the thing that failed: a blocked source must not
+    prevent another source from being read and finishing.
+    """
+
+    async def test_a_fast_source_finishes_while_a_slow_one_is_still_blocked(self):
+        task = _task()
+        slow_started = asyncio.Event()
+        release_slow = asyncio.Event()
+        finished: list = []
+
+        async def _service(pipeline, inference_api):
+            if pipeline.source_uuid == "slow":
+                slow_started.set()
+                await release_slow.wait()
+            finished.append(pipeline.source_uuid)
+
+        task._service_source = _service
+
+        task._dispatch_source(_pipeline(uuid="slow"), inference_api=None)
+        await slow_started.wait()
+        task._dispatch_source(_pipeline(uuid="fast"), inference_api=None)
+        # Hand control back to the loop without releasing the slow source.
+        for _ in range(4):
+            await asyncio.sleep(0)
+
+        assert finished == ["fast"], "a blocked source still gates the others"
+        assert "slow" in task._inflight, "the blocked source should still be in flight"
+
+        release_slow.set()
+        for _ in range(4):
+            await asyncio.sleep(0)
+        assert finished == ["fast", "slow"]
+        # Retired on completion, or the loop would never look at them again.
+        assert task._inflight == {}
+
+    async def test_drain_cancels_reads_still_in_flight(self):
+        """Shutdown force-closes every open event, so a source read must not still be
+        stepping trackers and dispatching events while that happens."""
+        task = _task()
+        started = asyncio.Event()
+        cancelled = []
+
+        async def _service(pipeline, inference_api):
+            started.set()
+            try:
+                await asyncio.Event().wait()  # never completes on its own
+            except asyncio.CancelledError:
+                cancelled.append(pipeline.source_uuid)
+                raise
+
+        task._service_source = _service
+        task._dispatch_source(_pipeline(uuid="stuck"), inference_api=None)
+        await started.wait()
+
+        await task._drain_inflight()
+
+        assert cancelled == ["stuck"]
+        assert task._inflight == {}
+
+
+class TestFetchBudget:
+    """How long one source is given to produce a frame.
+
+    A flat 30 s is right for a continuous stream and wrong for anything slower. An
+    idle Ring camera publishes a cloud snapshot on the bridge's own interval (~30 s),
+    so a flat budget races the cadence: whether a perfectly healthy camera is recorded
+    as a success or a failure comes down to which lands first. Providers answer this
+    themselves via `next_frame_expected_by()`.
+    """
+
+    def test_a_provider_with_no_opinion_keeps_the_flat_timeout(self):
+        task = _task()
+        pipeline = _pipeline()  # _FakeProvider has no next_frame_expected_by
+        assert task._fetch_budget_s(pipeline) == StreamWatcherTask._FETCH_TIMEOUT_S
+
+    def test_a_slow_provider_is_given_until_its_own_deadline(self):
+        task = _task()
+        pipeline = _pipeline()
+        far = StreamWatcherTask._FETCH_TIMEOUT_S * 4
+        pipeline.provider.next_frame_expected_by = lambda: time.monotonic() + far
+        budget = task._fetch_budget_s(pipeline)
+        assert budget > StreamWatcherTask._FETCH_TIMEOUT_S
+        assert budget == pytest.approx(far, abs=1.0)
+
+    def test_a_deadline_already_passed_never_shortens_the_budget(self):
+        """Only ever more patient than the flat timeout, never less — otherwise a
+        provider reporting an overdue frame would get a shorter fuse than every
+        source has always had."""
+        task = _task()
+        pipeline = _pipeline()
+        pipeline.provider.next_frame_expected_by = lambda: time.monotonic() - 500.0
+        assert task._fetch_budget_s(pipeline) == StreamWatcherTask._FETCH_TIMEOUT_S

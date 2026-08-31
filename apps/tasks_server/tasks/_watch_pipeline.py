@@ -9,6 +9,7 @@ Nothing here does inference or persistence; both are injected by the task. That 
 the pipeline testable against a fake provider and a stub inference callable.
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -297,6 +298,20 @@ class WatchPipeline:
     #: assigns it directly. A `frame_analysed` action that wants to run its own
     #: inference reuses this instead of re-encoding `last_full_frame`.
     last_analysis_base64: Optional[str] = None
+    #: Serialises the "emit signals, then dispatch them" section for this source.
+    #:
+    #: The task reads its sources concurrently, so this pipeline's own frame handling
+    #: can now overlap with the loop-level paths that also close this pipeline's events
+    #: (a source declared lost, a rule disarmed from Home Assistant). The *state*
+    #: transitions cannot interleave — `step()` and `close_open_events()` are both
+    #: synchronous, so whichever runs first leaves the machine IDLE and the other emits
+    #: nothing — but the `await`ed dispatch of what they emitted can, and an event's
+    #: close reaching the recorder before its open is a row that reads backwards.
+    #:
+    #: Deliberately NOT held across the frame fetch or inference: a Ring camera's fetch
+    #: budget is measured in minutes, and blocking rule arming behind it would undo the
+    #: reason arming is applied outside the frame path in the first place.
+    dispatch_lock: "asyncio.Lock" = field(default_factory=lambda: asyncio.Lock())
 
     @property
     def frame_interval_s(self) -> float:

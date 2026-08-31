@@ -11,6 +11,7 @@ editor — without the panel below, a rule recording nothing has no explanation 
 the app.
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -58,7 +59,15 @@ def _inside() -> list:
 
 
 def _pipeline(name: str, engine: WatchEngine) -> SimpleNamespace:
-    return SimpleNamespace(source_name=name, engine=engine, tracks=[], status_row=lambda now: {"source": name})
+    return SimpleNamespace(
+        source_name=name,
+        engine=engine,
+        tracks=[],
+        status_row=lambda now: {"source": name},
+        # Sources are serviced concurrently, so the arming path takes the real
+        # pipeline's dispatch lock; a stand-in has to carry one too.
+        dispatch_lock=asyncio.Lock(),
+    )
 
 
 def _task(pipelines) -> StreamWatcherTask:

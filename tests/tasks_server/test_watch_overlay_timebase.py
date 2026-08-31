@@ -108,6 +108,9 @@ def _harness():
     pipeline.schedule_next = lambda now: None
     pipeline.prepare_frame = lambda image: image
     pipeline.step = lambda detections, now: []
+    # Sources are serviced concurrently, so `_service_source` holds the real
+    # pipeline's dispatch lock around its post-inference half.
+    pipeline.dispatch_lock = asyncio.Lock()
     return task, pipeline, ring, track
 
 
