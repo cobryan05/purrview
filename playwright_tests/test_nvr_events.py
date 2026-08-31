@@ -58,6 +58,9 @@ def _timelapse_summary(**overrides) -> dict:
 #: with the live-view tests so both exercise the same decode.
 PIXEL_JPEG = base64.b64decode(FRAME_B64)
 
+#: Does a serialised timestamp state its zone? Mirrors `HAS_OFFSET` in `shared/time.js`.
+_HAS_OFFSET = re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$")
+
 
 def _event(**overrides) -> dict:
     event = {
@@ -722,10 +725,30 @@ class TestFiltersReachTheServer:
         wait_until(
             page,
             lambda: queries
-            and queries[-1].get("start_from") == "2026-08-18T00:00:00"
-            and queries[-1].get("start_to") == "2026-08-18T23:59:59",
+            and (queries[-1].get("start_from") or "").startswith("2026-08-18T00:00:00")
+            and (queries[-1].get("start_to") or "").startswith("2026-08-18T23:59:59"),
             lambda: f"no search carried both typed bounds: {queries[-1] if queries else None}",
         )
+
+    def test_a_typed_date_is_sent_with_an_explicit_offset(self, page: Page, base_url: str):
+        """A date input holds a *local* calendar day, and the backend reads an offset-less
+        datetime as UTC (`UtcDateTime.process_bind_param`). Sent bare, "18 Aug" meant
+        17:00 on the 17th for a viewer at UTC−7 — the window was wrong, and the timeline
+        drew its day gridlines against that wrong start.
+
+        Asserted as "an offset is present" rather than against a literal zone: the
+        browser's timezone decides which offset, and pinning one would make this pass
+        only wherever CI happens to run.
+        """
+        queries = _mock(page)
+        _open_events_pane(page, base_url)
+
+        page.locator("[data-testid='event-filter-from']").fill("2026-08-18")
+        page.locator("[data-testid='event-filter-to']").fill("2026-08-18")
+        wait_until(page, lambda: queries and (queries[-1].get("start_to") or "").startswith("2026-08-18T23:59:59"))
+
+        for key in ("start_from", "start_to"):
+            assert _HAS_OFFSET.search(queries[-1][key]), f"{key} was sent without a zone: {queries[-1][key]}"
 
     def test_filtering_to_events_with_no_video(self, page: Page, base_url: str):
         """`false` is a real filter and must not be dropped the way a falsy guard would."""
@@ -2208,15 +2231,26 @@ class TestSortingTheGroupedViews:
         wait_until(page, lambda: _headlines(page) == ["Alfie", "Bella", "Mittens", "Zara"])
 
     def test_sorting_by_event_type_groups_the_rules_together(self, page: Page, base_url: str):
-        """Within one rule the rows keep the incoming order, so the result is readable
-        rather than arbitrary — 'drinking water' before 'litter box', biggest first inside
-        each."""
+        """Rules contiguous and A–Z, and *within* a rule alphabetical by name too — the
+        `rule` comparator falls back to `byName` so the order is total, which is what
+        makes it stable between two renders rather than dependent on arrival order.
+
+        ⚠️ The expected order must differ from the biggest-first default, asserted below.
+        This test previously expected the default order, so `wait_until` was satisfied by
+        the pre-sort DOM on its first poll and the test passed no matter what the sort
+        did — it only surfaced once the re-fold became synchronous and beat the poll.
+        """
         _mock(page, events=_named_groups())
         _open_events_pane(page, base_url, view="groups")
+        default_order = ["Zara", "Mittens", "Bella", "Alfie"]
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(4)
+        assert _headlines(page) == default_order
 
         page.locator("[data-testid='event-sort-by']").select_option("rule")
 
-        wait_until(page, lambda: _headlines(page) == ["Zara", "Mittens", "Bella", "Alfie"])
+        by_rule = ["Mittens", "Zara", "Alfie", "Bella"]
+        assert by_rule != default_order, "the fixture must make this sort observable"
+        wait_until(page, lambda: _headlines(page) == by_rule)
         rules = [r.strip() for r in page.locator(".event-group-card__rule").all_text_contents()]
         assert rules == sorted(rules), "rows of one event type must be contiguous and ordered"
 
@@ -2514,3 +2548,111 @@ class TestCorrectingAWrongLabel:
             page.locator("[data-testid='event-filter-review']").select_option("")
 
         assert queries[-1].get("review_state") is None
+
+
+class TestTheFoldControlsDoNotRefetch:
+    """Grain, sort and split are folds over rows already on the client.
+
+    Each of their handlers says so in a comment — "no request, no round trip" — and each
+    of them called `search()`, which re-runs *two* queries. The assertions here are
+    paired on purpose: that the view actually changed, and that nothing was fetched to
+    change it. Either alone would pass against the bug.
+    """
+
+    def test_changing_the_grain_refolds_without_asking_the_server(self, page: Page, base_url: str):
+        queries = _mock(page, events=_one_rule_two_actors())
+        _open_events_pane(page, base_url, view="groups")
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(3)
+        before = len(queries)
+
+        page.locator("[data-testid='event-group-by']").select_option("event")
+
+        expect(page.locator("[data-testid='event-group-card']")).to_have_count(1)
+        assert len(queries) == before, queries[before:]
+
+    def test_changing_the_sort_reorders_without_asking_the_server(self, page: Page, base_url: str):
+        queries = _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="groups")
+        counts = page.locator("[data-testid='event-group-card-count']")
+        expect(counts).to_have_text(["4", "2"])
+        before = len(queries)
+
+        # Clover (2) sorts before Tabby (4), so an alphabetical order is visibly not the
+        # count order it replaces — a sort that silently did nothing cannot pass this.
+        page.locator("[data-testid='event-sort-by']").select_option("name")
+
+        expect(counts).to_have_text(["2", "4"])
+        assert len(queries) == before, queries[before:]
+
+
+class TestALaneLabelDrillsDownWithoutPinning:
+    def test_clicking_a_lane_label_does_not_leave_the_page_dimmed(self, page: Page, base_url: str):
+        """The lane label carried two click handlers that undid each other: the drill-down
+        cleared the focus and the pin, registered second, immediately restored it. The
+        user landed in the flat grid with every non-matching tile dimmed and no control
+        left on screen to unpin — the pin's only trigger was the lane they had just
+        navigated away from.
+        """
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-label']")).to_have_count(2)
+
+        page.locator("[data-testid='event-timeline-label']").first.click()
+
+        expect(page.locator("[data-testid='event-view-all']")).to_have_class(re.compile("event-search__view--active"))
+        expect(page.locator("[data-testid='event-search']")).not_to_have_class(re.compile("event-focus-pinned"))
+
+    def test_the_lane_strip_still_pins(self, page: Page, base_url: str):
+        """The pin did not merely get deleted — it moved to the element that can hold it.
+        Touch has no hover, so without a sticky focus the lanes cannot be read at all."""
+        _mock(page, events=_two_identities())
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-lane']")).to_have_count(2)
+
+        # The strip *between* the marks, not a mark: marks stop propagation and open their
+        # own bin. The busiest lane leads, and its events are all in the earliest bucket,
+        # so its mark sits at the left and the right-hand end of the track is bare.
+        track = page.locator(".event-timeline__track").first
+        box = track.bounding_box()
+        track.click(position={"x": box["width"] * 0.9, "y": box["height"] / 2})
+
+        expect(page.locator("[data-testid='event-search']")).to_have_class(re.compile("event-focus-pinned"))
+        # Still on the timeline — pinning is a highlight, not a navigation.
+        expect(page.locator("[data-testid='event-timeline']")).to_be_attached()
+
+
+class TestAFacetFailureDoesNotClearTheFilters:
+    def test_a_failed_facet_refresh_keeps_the_selection(self, page: Page, base_url: str):
+        """`refreshFacets` runs fire-and-forget after every delete. Blanking the facet
+        lists on failure looks conservative and is not: the controls prune the selection
+        against the option list, so four empty lists clear all four filters — turning a
+        drill-down showing a handful of events into an unfiltered grid of everything,
+        with only a console line to say why.
+        """
+        _mock(
+            page,
+            events=_two_identities(),
+            deletes=[],
+            facets=_facets(
+                rules=[
+                    {"ref": "rule-water", "name": "cat drinking water"},
+                    {"ref": "rule-litter", "name": "cat using litter box"},
+                ]
+            ),
+        )
+        _open_events_pane(page, base_url, view="all")
+        _pick_facet(page, "event-filter-rule", "cat drinking water")
+        trigger = page.locator("[data-testid='event-filter-rule'] .ms-dropdown__trigger")
+        expect(trigger).to_contain_text("cat drinking water")
+
+        # Registered after _mock's, and so matched first: the facet refresh that follows
+        # the delete now fails.
+        page.route(re.compile(r"/api/watch-events/facets"), lambda route: route.abort())
+
+        page.locator("[data-testid='event-card-select']").nth(0).check()
+        page.locator("[data-testid='event-search-delete-selected']").click()
+        page.get_by_role("button", name="Delete", exact=True).click()
+        expect(page.locator("[data-testid='event-card']")).to_have_count(5)
+
+        expect(trigger).to_contain_text("cat drinking water")
+        expect(trigger).not_to_contain_text("Any event type")

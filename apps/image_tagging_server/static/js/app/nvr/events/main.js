@@ -216,6 +216,11 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   let sessionGapS = Number(localStorage.getItem(SESSION_STORAGE_KEY) ?? 0) || 0;
   // The groups behind the current render, folded to the grain on screen.
   let pageGroups = [];
+  // The last aggregate response, at the server's finest grain — the *input* to the fold
+  // that produced `pageGroups`. Held so the grain, sort and split controls can re-fold
+  // locally; null whenever the flat view is what is on screen, so those controls fall
+  // back to a real search rather than redrawing stale rows.
+  let aggregate = null;
   const selectedGroups = new Set();
   // A time window clicked out of the timeline, held *outside* the filter state on
   // purpose: it has hour precision and `<input type="date">` cannot show one, so
@@ -296,6 +301,19 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     void search();
   }
 
+  /**
+   * Redraw an aggregate view after a control that only changes the *fold*.
+   *
+   * The grain, the sort and split-by-camera are all applied client-side to rows already
+   * in hand, so none of them is a reason to re-query. Falls back to a real search when
+   * there is nothing cached — the flat view, or a control changed before the first
+   * response lands — so the toggles still work from any state.
+   */
+  function refoldAggregate() {
+    if (view !== 'all' && aggregate) renderAggregate();
+    else void search();
+  }
+
   // ── Grouping grain ──────────────────────────────────────────────────────────
   //
   // The finest grain is the unit an event happened at and is right for triage; it is the
@@ -323,7 +341,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     // arm an action against groups that no longer exist.
     selectedGroups.clear();
     focus.clear();
-    void search();
+    refoldAggregate();
   });
 
   // ── Sort order ──────────────────────────────────────────────────────────────
@@ -345,7 +363,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   sortSelect.addEventListener('change', () => {
     sortBy = sortSelect.value;
     localStorage.setItem(SORT_STORAGE_KEY, sortBy);
-    void search();
+    refoldAggregate();
   });
 
   const splitBox = document.createElement('input');
@@ -360,7 +378,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     splitByCamera = splitBox.checked;
     selectedGroups.clear();
     focus.clear();
-    void search();
+    refoldAggregate();
   });
 
   // ── Session grouping (flat view only) ───────────────────────────────────────
@@ -811,6 +829,26 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     ]);
     if (seq !== requestSeq) return;
 
+    // Kept so the grain/sort/split toggles can re-fold without asking again — see
+    // `refoldAggregate`. Held at the finest grain the server returns, which is the input
+    // `foldGroups` wants; `pageGroups` below is the folded output and cannot be re-folded.
+    aggregate = { raw, groupTotal, histogram, state };
+    renderAggregate();
+  }
+
+  /**
+   * Draw the aggregate views from data already in hand.
+   *
+   * Split out from the fetch because the grouping grain, the sort order and split-by-
+   * camera are all pure client-side folds over the same finest-grain rows — the comments
+   * on those three controls have always said "no request, no round trip", and until this
+   * split they each triggered two (groups *and* histogram). Nothing they change is a
+   * query parameter.
+   */
+  function renderAggregate() {
+    if (!aggregate) return;
+    const { raw, groupTotal, histogram, state } = aggregate;
+
     total = groupTotal;
     pageGroups = sortGroups(foldGroups(raw, { dimensions: dimensions(), splitByCamera }), sortBy, dimensions());
     // Registrations point at elements that are about to be discarded; a Map still
@@ -910,6 +948,9 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     // the selection and delete paths below both key on event uuids.
     pageEvents = [];
     pageGroups = [];
+    // The flat views draw from their own responses, so nothing aggregate is in hand any
+    // more; the fold toggles must fetch rather than redraw rows for a different query.
+    aggregate = null;
     selected.clear();
     anchorIndex = -1;
 
@@ -978,6 +1019,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       // user is no longer looking at.
       pageEvents = result.events;
       pageGroups = [];
+      aggregate = null;
       selected.clear();
       anchorIndex = -1;
       if (!result.events.length) {

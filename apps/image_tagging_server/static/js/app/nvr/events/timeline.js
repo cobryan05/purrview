@@ -408,7 +408,8 @@ export function buildTimeline({
     label.appendChild(el('span', 'event-timeline__label-count', String(group.count)));
     label.title = `${primary}${secondary ? ` — ${secondary}` : ''}${cameraName ? ` — ${cameraName}` : ''}`
       + ` — ${group.count} events. `
-      + 'Click to see them; the highlight follows this row across every view.';
+      + 'Click to see them; the highlight follows this row across every view. '
+      + 'Tap the row itself to keep it highlighted.';
     label.addEventListener('click', () => onSelectGroup?.(group));
     lane.appendChild(label);
 
@@ -458,9 +459,18 @@ export function buildTimeline({
     // One registration for the lane, so hovering the label or any mark lights the whole
     // identity — here, on its group card, and on every matching tile in the flat grid.
     focus.register(group.key, lane);
-    // Clicking the label pins, so the highlight survives the pointer leaving. Without
-    // this the view is unusable by touch, which has no hover at all.
-    label.addEventListener('click', () => focus.togglePin(group.key));
+    // Tapping the lane's empty strip pins, so the highlight survives the pointer leaving.
+    // Without a pin the view is unusable by touch, which has no hover at all.
+    //
+    // ⚠️ Deliberately the *track*, not the label. The label already drills down, and the
+    // two on one element fought: `onSelectGroup` clears the focus on its way out and this
+    // handler — registered second — immediately re-pinned it, landing the user in the flat
+    // grid with everything dimmed and no control left on screen to unpin, because this is
+    // the only caller of `togglePin` and it had just been navigated away from. The track
+    // is the right target anyway: it is already the hover region for this identity, so a
+    // tap on it is exactly the touch equivalent of the hover it stands in for. Marks
+    // `stopPropagation`, so this fires only for the strip between them.
+    track.addEventListener('click', () => focus.togglePin(group.key));
   }
   root.appendChild(lanes);
   return root;

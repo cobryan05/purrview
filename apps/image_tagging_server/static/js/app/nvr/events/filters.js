@@ -13,6 +13,7 @@
  * events on screen.
  */
 import { fetchWatchEventFacets } from '/app-static/js/shared/api/watchProfiles.js';
+import { localWallClockIso } from '/app-static/js/shared/time.js';
 import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index.js';
 
 /** @typedef {{sourceUuids: string[], ruleUuids: string[], subjectRefs: string[],
@@ -421,8 +422,8 @@ export async function createEventFilters(onChange) {
     toInput.value = window ? window.to : '';
     // `To` covers the whole day it names — otherwise picking one day for both bounds
     // returns only events at exactly 00:00:00.
-    state.startFrom = window ? `${window.from}T00:00:00` : null;
-    state.startTo = window ? `${window.to}T23:59:59` : null;
+    state.startFrom = window ? localWallClockIso(window.from, '00:00:00') : null;
+    state.startTo = window ? localWallClockIso(window.to, '23:59:59') : null;
     syncRangeControls();
   }
 
@@ -500,13 +501,13 @@ export async function createEventFilters(onChange) {
   // Editing either by hand drops the preset: the dates are the truth, and a select still
   // reading "Last 7 days" over a range that is not the last 7 days would be a lie.
   fromInput.addEventListener('change', () => {
-    state.startFrom = fromInput.value ? `${fromInput.value}T00:00:00` : null;
+    state.startFrom = fromInput.value ? localWallClockIso(fromInput.value, '00:00:00') : null;
     state.rangeDays = null;
     syncRangeControls();
     commit();
   });
   toInput.addEventListener('change', () => {
-    state.startTo = toInput.value ? `${toInput.value}T23:59:59` : null;
+    state.startTo = toInput.value ? localWallClockIso(toInput.value, '23:59:59') : null;
     state.rangeDays = null;
     syncRangeControls();
     commit();
@@ -572,14 +573,28 @@ export async function createEventFilters(onChange) {
   }
 
   async function refreshFacets() {
+    let next;
     try {
-      facets = await fetchWatchEventFacets();
+      next = await fetchWatchEventFacets();
     } catch (err) {
       // A facets failure must not take the page down: the grid can still list events,
-      // it just cannot offer the dropdowns. Logged so the cause is not invisible.
+      // it just cannot offer *fresh* dropdowns. Logged so the cause is not invisible.
+      //
+      // ⚠️ The last good facets are kept rather than blanked. Blanking is not the
+      // conservative choice it looks like: `renderControls` prunes the selection against
+      // the option list, so four empty lists silently clear all four filters. This runs
+      // fire-and-forget after every delete, concurrently with a search, so one transient
+      // 500 would turn a drill-down showing 40 events into an unfiltered grid of
+      // everything — with nothing on screen to say why. Stale options are a far smaller
+      // lie than a filter that undid itself.
+      //
+      // `renderControls` still runs: it mounts the date inputs and the range controls as
+      // well as the dropdowns, so returning early here would leave the whole filter bar
+      // empty when the very first load is the one that fails.
       Logger.error(err);
-      facets = { rules: [], subjects: [], targets: [], sources: [] };
+      next = facets;
     }
+    facets = next;
     renderControls();
   }
 

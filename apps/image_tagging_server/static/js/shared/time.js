@@ -47,3 +47,41 @@ export function parseApiDateMs(value) {
   const date = parseApiDate(value);
   return date === null ? null : date.getTime();
 }
+
+/**
+ * Stamp a local wall-clock date and time with the viewer's UTC offset.
+ *
+ * The other direction from `parseApiDate`, and the fix for the case its own header
+ * warns about: a `<input type="date">` value is a *local* calendar day, so sending
+ * `"2026-08-24T00:00:00"` bare hands the backend a naive datetime it reads as UTC
+ * (`UtcDateTime.process_bind_param` assumes UTC for naive input). At UTC−7 "24 Aug"
+ * then means 23 Aug 17:00 local — the query window is wrong, and so is anything the
+ * client draws from it. Notably `timelineRange`, whose axis walks to local midnight
+ * and never reaches it when the range starts at 17:00, leaving the timeline with day
+ * gridlines seven hours out.
+ *
+ * The offset is resolved against the named day itself rather than against "now", so a
+ * range spanning a DST boundary stamps each end with the offset actually in force
+ * there. Emitting the offset explicitly is what lets `parseApiDate` read the value
+ * back unambiguously, so the round trip through the filter state stays lossless.
+ *
+ * @param {string} dateStr - `YYYY-MM-DD`, as an `<input type="date">` yields it.
+ * @param {string} [timeStr] - `HH:MM:SS` local wall clock.
+ * @returns {?string} offset-bearing ISO 8601, or null if the date is unusable.
+ */
+export function localWallClockIso(dateStr, timeStr = '00:00:00') {
+  if (!dateStr) return null;
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  const [hh = 0, mm = 0, ss = 0] = String(timeStr).split(':').map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+  const local = new Date(y, (m - 1), d, hh, mm, ss);
+  if (Number.isNaN(local.getTime())) return null;
+  // `getTimezoneOffset` is minutes *behind* UTC, so its sign is inverted from the one
+  // an ISO offset prints: UTC−7 reports +420 and must render as `-07:00`.
+  const offsetMin = -local.getTimezoneOffset();
+  const sign = offsetMin < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMin);
+  const pad = n => String(n).padStart(2, '0');
+  return `${dateStr}T${pad(hh)}:${pad(mm)}:${pad(ss)}`
+    + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
