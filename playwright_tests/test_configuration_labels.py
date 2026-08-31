@@ -1172,13 +1172,19 @@ class TestLabelHomeAssistantPanel:
 
         publish = page.get_by_test_id("label-publish-to-ha")
         per_source = page.get_by_test_id("label-publish-per-source")
-        # Publishing by default (the label predates the field), so the breakdown is
-        # merely unticked — available, just not chosen.
-        expect(publish).to_be_checked()
+        # Publishing is opt-in, and this label does not carry the field at all — which is
+        # how a row written before the column existed arrives. Unticked, so the breakdown
+        # has no device to be a breakdown of.
+        expect(publish).not_to_be_checked()
+        expect(per_source).to_be_disabled()
+
+        publish.check()
+        # Available once there is a device, and still merely unticked rather than assumed.
         expect(per_source).to_be_enabled()
+        expect(per_source).not_to_be_checked()
 
         publish.uncheck()
-        # …and now unavailable, because there is no device for it to be a breakdown of.
+        # Both directions, so the gate cannot pass by being disabled unconditionally.
         expect(per_source).to_be_disabled()
 
     def test_opting_out_of_the_label_does_not_send_a_per_camera_opt_in(self, page: Page, base_url: str):
@@ -1202,6 +1208,9 @@ class TestLabelHomeAssistantPanel:
 
         row = page.locator(f"#labels-list [data-uuid='{ROOT_LABEL['uuid']}']")
         row.locator("button[title='Home Assistant']").click()
+        # Publishing first: the breakdown box is disabled until there is a device, so it
+        # cannot be ticked at all from the opted-out state this label now starts in.
+        page.get_by_test_id("label-publish-to-ha").check()
         page.get_by_test_id("label-publish-per-source").check()
         page.get_by_test_id("label-publish-to-ha").uncheck()
         page.get_by_test_id("label-ha-panel").locator("button:has-text('Save')").click()

@@ -257,7 +257,16 @@ class LabelBase(SQLModel):
     # Off means the label gets no subject device at all — no entities, and its existing
     # discovery is retracted. Its events are still recorded and still drive rule-level
     # entities; this suppresses the *per-label* device only.
-    publish_to_ha: bool = Field(default=True)
+    #
+    # Default **off**, and it is an opt-in for the same reason `publish_per_source` is.
+    # A label device is justified by the label rather than by a rule mentioning it, which
+    # is what makes `Detected now` useful without inventing a rule — but it also means
+    # the vocabulary is what bounds the device count, and a vocabulary is a working list
+    # that grows with every class a model can name. Defaulting on turned a 43-label tree
+    # into 43 Home Assistant devices, most of them things nobody automates on. Home
+    # Assistant charges per *device* in its UI, so the cost lands where it is most
+    # visible. Tick the handful you actually want in the house.
+    publish_to_ha: bool = Field(default=False)
     # The finest tier: one counter per (label, rule, source). Default off because this
     # is the only term in the entity count that multiplies all three axes together —
     # every other tier is additive. A label tree of any size makes it the dominant cost,
@@ -299,8 +308,8 @@ class Label(LabelBase, TimestampModel, table=True):
     # migrated database and fails against a freshly created one. That divergence shows
     # up only as an IntegrityError in whichever of the two a given environment built.
     publish_to_ha: bool = Field(
-        default=True,
-        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        default=False,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("0")),
     )
     publish_per_source: bool = Field(
         default=False,
@@ -324,7 +333,9 @@ class LabelRead(OrmModel):
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
     scope: LabelScope = LabelScope.OBJECT
-    publish_to_ha: bool = True
+    #: Matches `LabelBase` — both opt-in. A read model that defaulted on would make a
+    #: row serialised before the column existed arrive at the UI ticked.
+    publish_to_ha: bool = False
     publish_per_source: bool = False
 
 

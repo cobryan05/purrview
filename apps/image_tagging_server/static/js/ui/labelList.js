@@ -277,10 +277,15 @@ function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
 
   const publish = check(
     'Publish to Home Assistant',
-    label.publishToHa !== false,
+    // `=== true`, not `!== false`: the flag is opt-in, so anything that is not an
+    // explicit yes — including a label read back from before the column existed —
+    // must render unticked rather than promising a device that is not there.
+    label.publishToHa === true,
     'label-publish-to-ha',
-    'Whether this label gets its own device in Home Assistant. Off, it is still detected, '
-      + 'still recorded and still drives rule entities — it just has no device of its own.',
+    'Whether this label gets its own device in Home Assistant, with a "detected now" sensor. '
+      + 'Off by default so the vocabulary does not become a wall of devices — tick the few you '
+      + 'automate on. Off, the label is still detected, still recorded and still drives rule '
+      + 'entities; it just has no device of its own.',
   );
   const perSource = check(
     'Per-camera breakdown',

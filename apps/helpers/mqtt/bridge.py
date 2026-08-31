@@ -1275,7 +1275,12 @@ class MqttBridge:
         #: rather than cached at startup.
         self._subject_names: Dict[str, str] = {}
         self._label_ancestry: Dict[str, List[str]] = {}
-        #: label uuid → (publish_to_ha, publish_per_source). Absent means the defaults,
+        #: label uuid → (publish_to_ha, publish_per_source). Both default off, matching
+        #: `LabelBase`: a label the bridge has not seen must not be published on a guess,
+        #: because publishing is the expensive direction — it creates a device in someone
+        #: else's Home Assistant, where absence is merely a label they have not opted in.
+        #:
+        #: Absent means the defaults,
         #: so a label the bridge has not seen behaves as it did before the flags existed.
         self._label_publish: Dict[str, Tuple[bool, bool]] = {}
         #: Entities in the last desired discovery set, for the app device's budget
@@ -1415,7 +1420,7 @@ class MqttBridge:
             {label.uuid: _ancestors(label.uuid) for label in labels},
             {
                 label.uuid: (
-                    bool(getattr(label, "publish_to_ha", True)),
+                    bool(getattr(label, "publish_to_ha", False)),
                     bool(getattr(label, "publish_per_source", False)),
                 )
                 for label in labels
@@ -1442,8 +1447,8 @@ class MqttBridge:
             uuid: SubjectView(
                 uuid=uuid,
                 name=name,
-                publish_to_ha=self._label_publish.get(uuid, (True, False))[0],
-                publish_per_source=self._label_publish.get(uuid, (True, False))[1],
+                publish_to_ha=self._label_publish.get(uuid, (False, False))[0],
+                publish_per_source=self._label_publish.get(uuid, (False, False))[1],
             )
             for uuid, name in self._subject_names.items()
         }
