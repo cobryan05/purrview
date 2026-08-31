@@ -269,6 +269,7 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
     } catch (err) {
       Logger.warn('nvr: could not load watch profiles', err);
       stopAllCardPreviews();
+      _stopArmingPoll();
       container.replaceChildren();
       showPaneError(container, 'Could not load watch profiles');
       return;
@@ -284,6 +285,11 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
     // Deliberately here rather than at the top: until this point nothing has been
     // replaced, so an earlier render's thumbnails keep updating while this one loads.
     stopAllCardPreviews();
+    // Beside the previews and for the same reason: the updaters close over cards that
+    // are about to be discarded, and every early return below replaces the pane's
+    // contents. Left running, the interval keeps polling task status every 5s forever,
+    // repainting detached nodes — one more zombie per render of the pane.
+    _stopArmingPoll();
 
     if (!rows.length) {
       container.replaceChildren(_emptyState(
@@ -297,7 +303,6 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
     const list = document.createElement('div');
     list.className = 'nvr-live-list';
 
-    _stopArmingPoll();
     for (const profile of rows) {
       const task = running.get(profile.uuid) ?? null;
       list.appendChild(_profileCard(
