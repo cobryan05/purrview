@@ -16,7 +16,7 @@
  */
 import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
-import { cancelTasks, fetchTaskStatusData, fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
+import { cancelTasks, fetchTaskStatusData, fetchTasksStatus, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
@@ -141,24 +141,29 @@ async function fetchRunningWatchers() {
 }
 
 /**
- * Each running watcher's sources, for the card thumbnails.
+ * Each running watcher's sources and rule arming, for the cards.
  *
- * One batched call for the whole pane. The live-preview endpoint could answer this too,
- * but its job is to return a *frame* — it would encode and ship a JPEG per card purely
- * to learn some names. The status payload already carries the sources and encodes
- * nothing, which is the difference between a free pane and one that costs a JPEG per
- * watcher every time you open it.
+ * One batched call for the whole pane, answering both questions. The live-preview
+ * endpoint could give the sources too, but its job is to return a *frame* — it would
+ * encode and ship a JPEG per card purely to learn some names. The status payload
+ * already carries the sources and encodes nothing, which is the difference between a
+ * free pane and one that costs a JPEG per watcher every time you open it.
+ *
+ * Arming rides along on the same response rather than fetching its own. The two are
+ * read at the same moments by the same cards, and a second call would double the pane's
+ * request count to learn something the first reply already contained.
  *
  * @param {string[]} taskUuids
- * @returns {Promise<Map<string, Array<{sourceUuid: string, sourceName: string}>>>}
+ * @returns {Promise<{sources: Map<string, Array<Object>>, arming: Map<string, Map<string, boolean>>}>}
  */
-async function fetchWatcherSources(taskUuids) {
-  const byTask = new Map();
-  if (!taskUuids.length) return byTask;
+async function fetchWatcherStatus(taskUuids) {
+  const sources = new Map();
+  const arming = new Map();
+  if (!taskUuids.length) return { sources, arming };
   try {
     const statusData = await fetchTaskStatusData(taskUuids);
     for (const [taskUuid, data] of statusData) {
-      const sources = (data?.sources ?? []).map(row => ({
+      const rows = (data?.sources ?? []).map(row => ({
         sourceUuid: row.sourceUuid,
         // `source` is the status table's column name for the human name.
         sourceName: row.source,
@@ -167,13 +172,64 @@ async function fetchWatcherSources(taskUuids) {
         // card silently reports on a subset of its own cameras.
         health: row.health,
       })).filter(s => s.sourceUuid);
-      if (sources.length) byTask.set(taskUuid, sources);
+      if (rows.length) sources.set(taskUuid, rows);
+
+      // `armed` is the word the panel prints, not a boolean — the status payload is
+      // shaped for a table first. Compared against the string rather than coerced, so a
+      // future third state cannot silently read as "armed".
+      const byRule = new Map();
+      for (const row of data?.rulesTable ?? []) {
+        if (row?.ruleUuid) byRule.set(row.ruleUuid, row.armed === 'Armed');
+      }
+      if (byRule.size) arming.set(taskUuid, byRule);
     }
   } catch (err) {
-    // Thumbnails are an enhancement; the cards are still worth showing without them.
-    Logger.warn('nvr: could not read watcher sources', err);
+    // Both are enhancements; the cards are still worth showing without them.
+    Logger.warn('nvr: could not read watcher status', err);
   }
-  return byTask;
+  return { sources, arming };
+}
+
+/**
+ * How often the cards re-read rule arming.
+ *
+ * Slow on purpose. Arming changes when someone flips a switch — in Home Assistant, or
+ * on a card — not continuously, so this exists to notice an *external* change rather
+ * than to drive the UI: a local toggle repaints immediately without waiting for it.
+ * One batched call covers every card on the pane.
+ */
+const ARMING_POLL_MS = 5000;
+
+/** taskUuid → repaint fn, for the cards currently on the pane. */
+const _armingUpdaters = new Map();
+let _armingTimer = null;
+
+/**
+ * Stop the arming poll and forget the cards it was repainting.
+ *
+ * Called before every re-render for the same reason `stopAllCardPreviews` is: the
+ * updaters close over DOM that is about to be discarded, and a timer left running
+ * against detached nodes is a leak that compounds on each render of the pane.
+ */
+function _stopArmingPoll() {
+  if (_armingTimer !== null) clearInterval(_armingTimer);
+  _armingTimer = null;
+  _armingUpdaters.clear();
+}
+
+function _startArmingPoll(taskUuids) {
+  if (!taskUuids.length || !_armingUpdaters.size) return;
+  _armingTimer = setInterval(async () => {
+    // Re-read the registry each tick rather than closing over it: a render that lands
+    // between ticks replaces the updaters, and a stale closure would repaint cards that
+    // are no longer on the page.
+    if (!_armingUpdaters.size) return;
+    const { arming } = await fetchWatcherStatus(taskUuids);
+    for (const [taskUuid, update] of _armingUpdaters) {
+      const byRule = arming.get(taskUuid);
+      if (byRule) update(byRule);
+    }
+  }, ARMING_POLL_MS);
 }
 
 /** Guards renderLive against overlapping calls — see the note there. */
@@ -219,7 +275,8 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
     }
 
     const running = await fetchRunningWatchers();
-    const sourcesByTask = await fetchWatcherSources([...running.values()].map(t => t.taskUuid));
+    const taskUuids = [...running.values()].map(t => t.taskUuid);
+    const { sources: sourcesByTask, arming: armingByTask } = await fetchWatcherStatus(taskUuids);
     const rows = [...(profiles?.values?.() ?? [])];
 
     // Every card about to be discarded owns polling timers, and a timer left running
@@ -240,12 +297,21 @@ async function renderLive({ target = 'nvr-live-box' } = {}) {
     const list = document.createElement('div');
     list.className = 'nvr-live-list';
 
+    _stopArmingPoll();
     for (const profile of rows) {
       const task = running.get(profile.uuid) ?? null;
-      list.appendChild(_profileCard(profile, task, sourcesByTask.get(task?.taskUuid) ?? []));
+      list.appendChild(_profileCard(
+        profile,
+        task,
+        sourcesByTask.get(task?.taskUuid) ?? [],
+        armingByTask.get(task?.taskUuid) ?? new Map(),
+      ));
     }
 
     container.replaceChildren(list);
+    // Started only after the cards are in the DOM, and only when something is running:
+    // a pane of stopped watchers has no arming to track and should cost nothing.
+    _startArmingPoll(taskUuids);
   } finally {
     _rendering = false;
     if (_renderQueued) {
@@ -386,9 +452,10 @@ function _refreshRateControl(profileUuid, onChange) {
  * @param {object} profile
  * @param {?object} task - live task info, or null when not running
  * @param {Array<{sourceUuid: string, sourceName: string}>} [sources] - for the thumbnails
+ * @param {Map<string, boolean>} [arming] - rule uuid → armed, for the rules the watcher runs
  * @returns {HTMLElement}
  */
-function _profileCard(profile, task, sources = []) {
+function _profileCard(profile, task, sources = [], arming = new Map()) {
   const card = document.createElement('section');
   card.className = 'panel-box nvr-profile-card';
   // The one case that justifies a wide card: several cameras' thumbnails side by side.
@@ -562,11 +629,79 @@ function _profileCard(profile, task, sources = []) {
   ].filter(Boolean).join(' · ');
   body.appendChild(meta);
 
+  // Rule rows are read/write while the watcher is running, and inert text when it is
+  // not. Listing them at all was previously hard to justify — a name and nothing to do
+  // with it. Arming is the thing that makes the list worth its space, and this is where
+  // someone looks for it: the card that already says whether the watcher is running.
+  //
+  // Not on the Watchers *editor*, which holds `enabled`. That is config, saved with a
+  // form; this is a live control on a thing that is currently running, and a profile
+  // being edited may not be running at all.
+  const armedRows = new Map();
   for (const rule of rules) {
     const row = document.createElement('div');
     row.className = 'nvr-rule-row';
-    row.textContent = rule.name || '(unnamed rule)';
+    row.dataset.testid = 'nvr-rule-row';
+
+    const name = document.createElement('span');
+    name.className = 'nvr-rule-row__name';
+    name.textContent = rule.name || '(unnamed rule)';
+    row.appendChild(name);
+
+    // A rule the running watcher does not report is one it is not evaluating — scoped
+    // to other cameras, or disabled. It has no arming to show and no button to offer,
+    // which is honest: a control here would claim to govern something that is not
+    // running whatever it said.
+    if (task && arming.has(rule.uuid)) {
+      const pill = document.createElement('span');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'nvr-rule-row__toggle';
+      btn.dataset.testid = 'nvr-rule-arm-toggle';
+
+      const paint = (armed) => {
+        pill.className = `nvr-state-pill ${armed ? 'nvr-state-pill--running' : 'nvr-state-pill--disarmed'}`;
+        pill.textContent = armed ? 'Armed' : 'Disarmed';
+        // The button names what it will do; the pill names what is true. A single
+        // control carrying both readings is the thing that reads as ambiguous.
+        btn.textContent = armed ? 'Disarm' : 'Arm';
+        btn.dataset.armed = String(armed);
+        row.classList.toggle('nvr-rule-row--disarmed', !armed);
+      };
+      paint(arming.get(rule.uuid));
+
+      btn.addEventListener('click', async () => {
+        const next = btn.dataset.armed !== 'true';
+        btn.disabled = true;
+        // Painted before the round trip: the watcher applies arming on its next loop
+        // pass, so waiting for the poll to confirm would leave the button looking dead
+        // for seconds after a click that did work.
+        paint(next);
+        try {
+          await sendTaskCommand({ taskUuid: task.taskUuid, command: 'set_rule_armed', params: { ruleUuid: rule.uuid, armed: next } });
+        } catch (err) {
+          Logger.warn('nvr: could not change rule arming', err);
+          paint(!next);
+          toast('Could not change that rule', 4000, 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      row.appendChild(pill);
+      row.appendChild(btn);
+      armedRows.set(rule.uuid, paint);
+    }
     body.appendChild(row);
+  }
+  // Registered even when empty is pointless, and registering a card with no armed rows
+  // would keep the poll alive for a card that cannot show its answer.
+  if (task?.taskUuid && armedRows.size) {
+    _armingUpdaters.set(task.taskUuid, (byRule) => {
+      for (const [ruleUuid, paint] of armedRows) {
+        if (byRule.has(ruleUuid)) paint(byRule.get(ruleUuid));
+      }
+    });
   }
 
   // Seeded state, before any tile has polled: a card that has just been rendered onto

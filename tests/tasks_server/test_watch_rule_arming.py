@@ -86,15 +86,12 @@ class TestTheStatusPanelShowsArming:
         """
         engine = _engine()
         task = _task([_pipeline("Hall cam", engine)])
-        assert task.get_status_data()["rulesTable"] == [
-            {"rule": "person in house", "armed": "Armed", "cameras": "Hall cam"}
-        ]
+        armed_row = {"ruleUuid": "rule-1", "rule": "person in house", "armed": "Armed", "cameras": "Hall cam"}
+        assert task.get_status_data()["rulesTable"] == [armed_row]
 
         engine.set_rule_armed("rule-1", False, now=0.0)
 
-        assert task.get_status_data()["rulesTable"] == [
-            {"rule": "person in house", "armed": "Disarmed", "cameras": "Hall cam"}
-        ]
+        assert task.get_status_data()["rulesTable"] == [{**armed_row, "armed": "Disarmed"}]
 
     def test_the_disarmed_count_tracks_the_table(self):
         """The glanceable number and the table must not be able to disagree — a stat

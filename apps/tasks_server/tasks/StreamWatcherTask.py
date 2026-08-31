@@ -2139,7 +2139,18 @@ class StreamWatcherTask(Task):
         for pipeline in self._pipelines:
             for rule_uuid, rule_name, armed in pipeline.engine.rule_arming():
                 row = rule_rows.setdefault(
-                    rule_uuid, {"rule": rule_name, "armed": "Armed" if armed else "Disarmed", "cameras": []}
+                    rule_uuid,
+                    {
+                        # Carried but not in `status_schema`'s columns, so the status
+                        # panel never shows it: the table widget renders the columns it
+                        # is given and ignores the rest. The Live pane's watcher cards
+                        # read the same payload and need the uuid to address a rule when
+                        # arming it — without this they would have to match on the name.
+                        "ruleUuid": rule_uuid,
+                        "rule": rule_name,
+                        "armed": "Armed" if armed else "Disarmed",
+                        "cameras": [],
+                    },
                 )
                 row["cameras"].append(pipeline.source_name)
         rules_table = [{**row, "cameras": ", ".join(row["cameras"])} for row in rule_rows.values()]

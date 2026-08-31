@@ -849,10 +849,59 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
+  /* A row now carries a name, a state pill and a toggle. Flex rather than a grid so a
+     rule the watcher is not running — which has neither of the last two — still reads
+     as the same row rather than a name with two empty columns beside it. */
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.nvr-rule-row__name {
+  flex: 1;
+  /* A long rule name must not push the control off the card. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nvr-rule-row:hover {
   background: var(--surface-raised);
+}
+
+/* Dimmed like the editor dims a disabled rule, so "not currently recording" looks the
+   same wherever it is shown. The pill carries the reason; this only has to make the row
+   scannable in a list where most rules are armed. */
+.nvr-rule-row--disarmed .nvr-rule-row__name {
+  color: var(--text-faint);
+}
+
+/* Outlined, not filled: unlike the offline pill this is not an alarm — a disarmed rule
+   is usually someone's automation working exactly as intended. */
+.nvr-state-pill--disarmed {
+  border-color: var(--color-warning, #fbbf24);
+  color: var(--color-warning, #fbbf24);
+}
+
+.nvr-rule-row__toggle {
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.nvr-rule-row__toggle:hover:not(:disabled) {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.nvr-rule-row__toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .nvr-state-pill {
