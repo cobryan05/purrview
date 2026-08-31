@@ -10,6 +10,7 @@ that disappears from config must have its discovery retracted, not left retained
 forever.
 """
 
+import asyncio
 import json
 
 from apps.helpers.mqtt.bridge import (
@@ -1413,3 +1414,195 @@ class TestRetractionsArePublishedBeforeReplacements:
         kinds = [payload is None for payload in to_publish.values()]
         assert any(kinds) and not all(kinds), kinds
         assert kinds == sorted(kinds, reverse=True), kinds
+
+
+class _ArmingPublisher(_FakePublisher):
+    """A fake that also records subscriptions and serves retained messages back.
+
+    Both halves matter here and neither is exercised anywhere else: arming is the first
+    thing the bridge *reads* from the broker rather than only writing to it.
+    """
+
+    def __init__(self, retained=None):
+        super().__init__()
+        self.subscriptions = {}
+        self._retained = dict(retained or {})
+
+    def subscribe(self, topic, callback, *, absolute=False, qos=0):
+        # ⚠️ Prefixed exactly as `AsyncMqttPublisher.subscribe` does. Storing the bare
+        # pattern instead silently makes `deliver` match nothing, which turns every test
+        # below into a vacuous pass — it is how the first cut of these tests "passed".
+        self.subscriptions[topic if absolute else f"{PREFIX}/{topic.lstrip('/')}"] = callback
+
+    async def close(self):
+        self.closed = True
+
+    async def read_retained(self, pattern, *, absolute=False, quiet_s=0.5, timeout_s=5.0):
+        return dict(self._retained)
+
+    def deliver(self, topic: str, payload: bytes) -> int:
+        """Hand a message to whichever wildcard subscription matches it.
+
+        Returns how many handlers ran, so a caller can assert the message was actually
+        routed rather than quietly dropped.
+        """
+        delivered = 0
+        for pattern, callback in self.subscriptions.items():
+            if _topic_matches(pattern, topic):
+                callback(topic, payload)
+                delivered += 1
+        return delivered
+
+
+def _topic_matches(pattern: str, topic: str) -> bool:
+    """MQTT `+` matching, enough for the wildcards this bridge subscribes to."""
+    p, t = pattern.split("/"), topic.split("/")
+    return len(p) == len(t) and all(a == "+" or a == b for a, b in zip(p, t))
+
+
+def _armed_bridge(profiles, retained=None):
+    """A bridge primed as a reconcile would leave it, with arming wired up."""
+    bridge = MqttBridge(db_api_client=None)
+    fake = _ArmingPublisher(retained)
+    bridge._publisher = fake
+    bridge._prefix = PREFIX
+    bridge._slugs = build_slug_index(profiles)
+    try:
+        # What `ensure_started` captures. Inbound commands hop back onto it, so without
+        # it the handler takes its no-loop fallback and never echoes.
+        bridge._loop = asyncio.get_running_loop()
+    except RuntimeError:
+        bridge._loop = None
+    bridge._ensure_armed_subscription()
+    return bridge, fake
+
+
+ARMED_SET_TOPIC = f"{PREFIX}/living-room-watcher/rules/cat-at-bowl/armed/set"
+ARMED_STATE_TOPIC = f"{PREFIX}/living-room-watcher/rules/cat-at-bowl/armed"
+
+
+class TestRuleArmingSwitch:
+    """A rule's HA switch is a *runtime* gate, not an edit of the rule.
+
+    It exists so an automation can say "record people only while the house is empty"
+    without the app having to know what "empty" means, and without a presence change
+    writing to the config DB. See `RuleSpec.armed`.
+    """
+
+    def test_the_rules_device_offers_a_switch_per_rule(self):
+        device = build_rules_discovery([_profile()], PREFIX)
+
+        switch = device["cmps"]["rule-1_armed"]
+        assert switch["p"] == "switch"
+        assert switch["command_topic"].endswith("/armed/set")
+        assert switch["state_topic"].endswith("/armed")
+        # The state topic must not be the command topic: a switch that read back its own
+        # commands would show armed the moment one was sent, whether or not it applied.
+        assert switch["state_topic"] != switch["command_topic"]
+        # Not optimistic — HA only moves the toggle once the app echoes the new state.
+        assert "optimistic" not in switch
+
+    def test_a_rule_that_publishes_nothing_gets_no_switch(self):
+        """Consistent with every other entity on this device: `publish_to_ha` off means
+        no HA representation at all, so there is nothing to arm from there."""
+        off = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", publish_to_ha=False),))
+
+        assert build_rules_discovery([off], PREFIX) is None
+
+    def test_rules_start_armed(self):
+        """The flag is additive: an install that never touches a switch must behave
+        exactly as it did before switches existed."""
+        bridge, _fake = _armed_bridge([_profile()])
+
+        assert bridge.is_rule_armed("rule-1") is True
+        assert bridge.is_rule_armed("a-rule-never-seen") is True
+
+    async def test_an_off_command_disarms_the_rule_and_is_echoed(self):
+        bridge, fake = _armed_bridge([_profile()])
+
+        assert fake.deliver(ARMED_SET_TOPIC, b"OFF") == 1, "the command topic must be subscribed"
+        await asyncio.sleep(0)  # the handler hops off paho's thread onto the loop
+
+        assert bridge.is_rule_armed("rule-1") is False
+        echoes = [c for c in fake.calls if c["topic"].endswith("/armed")]
+        assert [c["payload"] for c in echoes] == ["OFF"]
+        # Retained, or the switch would read `unknown` after every HA restart.
+        assert echoes[0]["retain"] is True
+
+    async def test_an_on_command_arms_it_again(self):
+        """The pair, so the handler cannot pass by hard-coding either answer."""
+        bridge, fake = _armed_bridge([_profile()])
+        fake.deliver(ARMED_SET_TOPIC, b"OFF")
+        await asyncio.sleep(0)
+
+        fake.deliver(ARMED_SET_TOPIC, b"ON")
+        await asyncio.sleep(0)
+
+        assert bridge.is_rule_armed("rule-1") is True
+        assert [c["payload"] for c in fake.calls if c["topic"].endswith("/armed")] == ["OFF", "ON"]
+
+    async def test_a_command_for_an_unknown_rule_is_ignored(self):
+        """Retained commands outlive the rules they named. Resolving the slug to nothing
+        must be a no-op, not an entry under a bogus key that a watcher would then read.
+        """
+        bridge, fake = _armed_bridge([_profile()])
+
+        assert fake.deliver(f"{PREFIX}/living-room-watcher/rules/a-deleted-rule/armed/set", b"OFF") == 1
+        await asyncio.sleep(0)
+
+        assert bridge._armed == {}
+
+    async def test_an_unrecognised_payload_changes_nothing(self):
+        bridge, fake = _armed_bridge([_profile()])
+
+        assert fake.deliver(ARMED_SET_TOPIC, b"maybe") == 1
+        await asyncio.sleep(0)
+
+        assert bridge._armed == {}
+        assert bridge.is_rule_armed("rule-1") is True
+
+    def test_the_state_topic_is_not_read_back_as_a_command(self):
+        """The state and command topics differ by a level precisely so the app's own
+        retained echo cannot be re-consumed as an instruction — which would make every
+        reconnect replay the last command back into the handler."""
+        bridge, fake = _armed_bridge([_profile()])
+
+        assert fake.deliver(ARMED_STATE_TOPIC, b"OFF") == 0, "the echo must not reach the command handler"
+        # It still resolves as a *state* topic, which is what the restore path reads.
+        assert bridge._rule_uuid_from_topic(ARMED_STATE_TOPIC) == "rule-1"
+
+    async def test_arming_is_restored_from_the_retained_state(self):
+        """Without this a service restart silently re-arms everything — for the case this
+        feature exists for, that is the privacy-invasive direction and nothing reports it.
+        """
+        retained = {f"{PREFIX}/living-room-watcher/rules/cat-at-bowl/armed": b"OFF"}
+        bridge, _fake = _armed_bridge([_profile()], retained=retained)
+
+        await bridge._restore_armed_state()
+
+        assert bridge.is_rule_armed("rule-1") is False
+
+    async def test_a_restore_failure_leaves_everything_armed(self):
+        """Degrading to the pre-feature behaviour beats refusing to bring the bridge up."""
+        bridge, fake = _armed_bridge([_profile()])
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("broker said no")
+
+        fake.read_retained = boom
+        await bridge._restore_armed_state()
+
+        assert bridge.is_rule_armed("rule-1") is True
+
+    async def test_stopping_forgets_the_subscription_but_not_the_arming(self):
+        """`ensure_started` builds a *new* publisher with an empty subscription table, so
+        a bridge that thought it was still subscribed would go deaf with nothing to show
+        for it. The arming itself is state of the world, not of the connection.
+        """
+        bridge, _fake = _armed_bridge([_profile()])
+        bridge._apply_armed("rule-1", False)
+
+        await bridge.stop()
+
+        assert bridge._armed_subscribed is False
+        assert bridge.is_rule_armed("rule-1") is False

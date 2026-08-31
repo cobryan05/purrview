@@ -159,6 +159,45 @@ class WatchEngine:
                 signals.append(signal)
         return signals
 
+    def set_rule_armed(
+        self,
+        rule_uuid: str,
+        armed: bool,
+        now: float,
+        reason: EventCloseReason = EventCloseReason.FORCED,
+    ) -> List[WatchEventSignal]:
+        """Arm or disarm one rule at runtime, returning any events the change closed.
+
+        The signals are returned rather than swallowed because disarming closes an open
+        event *immediately* rather than on the rule's next frame. Waiting for the frame
+        would be wrong twice over: a source that is down or simply not due is not stepped
+        for minutes at a time, so "stop recording when everyone comes home" would keep
+        recording until the camera next produced a frame — and a source that never comes
+        back would strand the event entirely, which is the bug `close_all` exists to
+        avoid on the shutdown path.
+
+        Idempotent: re-arming an armed rule closes nothing, so a retained MQTT message
+        replayed on every reconnect is free.
+
+        Returns an empty list when arming, which cannot close anything by definition.
+        """
+        signals: List[WatchEventSignal] = []
+        for (machine_rule_uuid, _a, _b), machine in self._machines.items():
+            if machine_rule_uuid != rule_uuid or machine.spec.armed == armed:
+                continue
+            machine.spec.armed = armed
+            if not armed:
+                signal = machine.force_close(now, reason)
+                if signal is not None:
+                    signals.append(signal)
+        return signals
+
+    def armed_rule_uuids(self) -> List[str]:
+        """The subset of `rule_uuids` currently armed — what the status panel reports."""
+        return list(
+            dict.fromkeys(rule_uuid for (rule_uuid, _a, _b), machine in self._machines.items() if machine.spec.armed)
+        )
+
     # ------------------------------------------------------------------ status
 
     def open_events(self) -> List[Dict[str, object]]:

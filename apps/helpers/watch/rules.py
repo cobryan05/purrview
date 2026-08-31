@@ -89,6 +89,28 @@ class RuleSpec:
     #: or its machine would sit in CLOSING and emit a stray END later.
     #: Declared last so the field order the rest of the dataclass exposes is unchanged.
     source_uuids: List[str] = field(default_factory=list)
+    #: Whether the rule is armed *right now*, as opposed to `enabled`, which is whether
+    #: the user configured it to run at all.
+    #:
+    #: The two are deliberately separate. `enabled` is authored intent, lives in the DB
+    #: and is what the Watchers editor shows; `armed` is runtime state driven from Home
+    #: Assistant ("record people only while the house is empty") and is never persisted —
+    #: it is restored from its own retained MQTT topic instead. Folding the two together
+    #: would mean every arrival and departure wrote to the config DB and silently moved a
+    #: checkbox the user had set by hand.
+    #:
+    #: A rule that is `enabled=False` has no HA representation at all, so it can never be
+    #: armed or disarmed from there; arming only ever narrows what an enabled rule does.
+    armed: bool = True
+
+    @property
+    def active(self) -> bool:
+        """Whether this rule should be evaluated at all on this frame.
+
+        The one place the two flags are combined, so no caller has to remember that
+        there are two.
+        """
+        return self.enabled and self.armed
 
     @classmethod
     def from_row(cls, row) -> "RuleSpec":
@@ -435,11 +457,11 @@ class RuleMachine:
 
     def step(self, result: PredicateResult, now: float) -> List[WatchEventSignal]:
         """Advance the machine one frame; return any transitions to dispatch."""
-        if not self.spec.enabled:
+        if not self.spec.active:
             if self.state != RuleState.IDLE:
-                # Disabling a rule mid-event must close it, not strand it open forever.
-                # Forced, not predicate: the subject may still be right there, and the
-                # span stops short of whatever it was actually doing.
+                # Disabling *or disarming* a rule mid-event must close it, not strand it
+                # open forever. Forced, not predicate: the subject may still be right
+                # there, and the span stops short of whatever it was actually doing.
                 signals = [self._signal(EventPhase.END, now, EventCloseReason.FORCED)]
                 self._reset()
                 return signals

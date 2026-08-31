@@ -1135,6 +1135,10 @@ class StreamWatcherTask(Task):
                 # and if every source is down nothing is due at all — which is exactly
                 # when this most needs to run.
                 await self._close_events_for_lost_sources(now)
+                # Above the due check for the same reason as the line before it: a
+                # disarm has to close what it closes even when no source is due, and
+                # "stop recording now that everyone is home" must not wait on a frame.
+                await self._apply_rule_arming(now)
                 due = [p for p in self._pipelines if p.due(now)]
                 if not due:
                     await asyncio.sleep(self._idle_sleep(now))
@@ -1270,6 +1274,40 @@ class StreamWatcherTask(Task):
                 self._resolve_slot_names(signal, pipeline)
                 self._note_event(signal)
                 await self._dispatch(signal, pipeline)
+
+    async def _apply_rule_arming(self, now: float) -> None:
+        """Mirror Home Assistant's per-rule arming switches onto the engines.
+
+        Polled off the bridge rather than pushed at the watcher. The bridge receives
+        commands on paho's network thread, and pushing from there into a task that owns
+        pipelines, clip drains and an event loop is a threading problem for no gain — the
+        loop already runs continuously, so reading a dict once a pass is both simpler and
+        automatically right for a watcher that starts after the switch was flipped.
+
+        Cheap by construction: a dict lookup per rule per pass, and `set_rule_armed` is a
+        no-op unless the value actually changed, so the steady state costs nothing and
+        emits nothing.
+
+        Disarming closes the rule's open events here, immediately, rather than leaving
+        them to the next `step()` — see `WatchEngine.set_rule_armed`.
+        """
+        try:
+            bridge = self._manager.get_mqtt_bridge()
+        except Exception:
+            return
+        for pipeline in self._pipelines:
+            for rule_uuid in pipeline.engine.rule_uuids:
+                signals = pipeline.engine.set_rule_armed(rule_uuid, bridge.is_rule_armed(rule_uuid), now)
+                if not signals:
+                    continue
+                self.log(
+                    f"Rule disarmed from Home Assistant — closing {len(signals)} event(s) "
+                    f"it was holding open on '{pipeline.source_name}'."
+                )
+                for signal in signals:
+                    self._resolve_slot_names(signal, pipeline)
+                    self._note_event(signal)
+                    await self._dispatch(signal, pipeline)
 
     def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:
         """Record a failed attempt, and say so the first time it becomes a fault.

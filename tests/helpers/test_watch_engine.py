@@ -1432,3 +1432,100 @@ class TestMarginPredicates:
         """SQLite hands back None for a column added before its default was applied."""
         row = {"uuid": "r", "name": "n", "subject_a_kind": "label", "subject_a_refs_json": [CAT], "margin": None}
         assert RuleSpec.from_row(row).margin == 0.0
+
+
+class TestRuntimeArming:
+    """`armed` is the runtime half of "is this rule running", driven from Home Assistant
+    and ANDed with the configured `enabled`. The two are separate so that arming never
+    rewrites the user's saved intent — see `RuleSpec.armed`.
+    """
+
+    def _engine(self, **rule_overrides) -> WatchEngine:
+        return WatchEngine(
+            rules=[_rule(min_duration_s=1.0, rearm_delay_s=5.0, **rule_overrides)],
+            zones=[LITTER_ZONE],
+            source_uuid="src-1",
+            frame_width=FRAME_W,
+            frame_height=FRAME_H,
+        )
+
+    def _open(self, engine) -> list:
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        return engine.step(inside, now=1.5)
+
+    def test_disarming_closes_the_open_event_without_waiting_for_a_frame(self):
+        """The reason `set_rule_armed` returns signals at all. A source that is down, or
+        simply not due, is not stepped for minutes — so leaving the close to the next
+        `step()` would keep recording well after the condition stopped holding, and a
+        source that never came back would strand the event outright.
+        """
+        engine = self._engine()
+        assert [s.phase for s in self._open(engine)] == [EventPhase.START]
+
+        signals = engine.set_rule_armed("rule-1", False, now=3.0)
+
+        assert [s.phase for s in signals] == [EventPhase.END]
+        assert engine.open_events() == []
+
+    def test_disarming_twice_closes_nothing_the_second_time(self):
+        """The retained command is replayed on every reconnect, so a no-op disarm has to
+        be genuinely free rather than emitting a second END for an event already closed.
+        """
+        engine = self._engine()
+        self._open(engine)
+        engine.set_rule_armed("rule-1", False, now=3.0)
+
+        assert engine.set_rule_armed("rule-1", False, now=4.0) == []
+
+    def test_arming_closes_nothing(self):
+        engine = self._engine()
+        self._open(engine)
+
+        assert engine.set_rule_armed("rule-1", True, now=3.0) == []
+        assert len(engine.open_events()) == 1, "an armed rule keeps the event it holds"
+
+    def test_a_disarmed_rule_opens_nothing_and_reopens_once_rearmed(self):
+        """The gate itself. Asserted as a conditional — that the same input produces no
+        event while disarmed and an event once armed — because a test that only checked
+        the disarmed half would pass against a rule that was simply broken.
+        """
+        engine = self._engine()
+        engine.set_rule_armed("rule-1", False, now=0.0)
+        inside = [_track(bbox=(450, 450, 550, 550))]
+
+        engine.step(inside, now=0.0)
+        assert engine.step(inside, now=1.5) == []
+
+        engine.set_rule_armed("rule-1", True, now=2.0)
+        engine.step(inside, now=2.0)
+        assert [s.phase for s in engine.step(inside, now=3.5)] == [EventPhase.START]
+
+    def test_arming_cannot_revive_a_rule_the_user_disabled(self):
+        """`enabled` is authored intent and stays authoritative: a switch in HA narrows
+        what an enabled rule does, it never turns a disabled one back on."""
+        engine = self._engine(enabled=False)
+        engine.set_rule_armed("rule-1", True, now=0.0)
+        inside = [_track(bbox=(450, 450, 550, 550))]
+
+        engine.step(inside, now=0.0)
+        assert engine.step(inside, now=1.5) == []
+
+    def test_arming_one_rule_leaves_the_others_alone(self):
+        engine = WatchEngine(
+            rules=[
+                _rule(uuid="rule-1", min_duration_s=1.0),
+                _rule(uuid="rule-2", min_duration_s=1.0),
+            ],
+            zones=[LITTER_ZONE],
+            source_uuid="src-1",
+            frame_width=FRAME_W,
+            frame_height=FRAME_H,
+        )
+        engine.set_rule_armed("rule-1", False, now=0.0)
+
+        assert engine.armed_rule_uuids() == ["rule-2"]
+        inside = [_track(bbox=(450, 450, 550, 550))]
+        engine.step(inside, now=0.0)
+        signals = engine.step(inside, now=1.5)
+        assert [s.rule_uuid for s in signals] == ["rule-2"]

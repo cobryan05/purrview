@@ -694,6 +694,34 @@ def build_rules_discovery(profiles: Sequence[ProfileView], prefix: str) -> Optio
                 "state_topic": f"{base}/attributes",
                 "value_template": "{{ value_json.lastSource }}",
             }
+            # The one *writable* entity the app publishes, and the reason this device is
+            # the right home for it: arming is a property of the rule across every camera,
+            # so one switch per rule covers the whole profile rather than multiplying by
+            # sources the way a camera-device entity would.
+            #
+            # It does not edit the rule. `enabled` stays the user's authored intent in the
+            # Watchers editor; this is a runtime gate ANDed with it (`RuleSpec.active`),
+            # so flipping it never writes to the config DB and never moves a checkbox
+            # under the person who set it. Turning it off closes any event the rule
+            # currently holds open rather than letting it run on.
+            #
+            # `optimistic` is off by default and must stay off: the switch reflects
+            # `state_topic`, which the app publishes retained only once it has actually
+            # applied the command. A switch that flipped optimistically would show armed
+            # while the watcher was still recording.
+            cmps[f"{rule.uuid}_armed"] = {
+                "p": "switch",
+                "unique_id": f"{uid}_armed",
+                "name": f"{label} armed",
+                "command_topic": f"{base}/armed/set",
+                "state_topic": f"{base}/armed",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                # No `entity_category`. `config` would file this under the device page's
+                # Configuration fold and keep it out of auto-generated dashboards, which
+                # is wrong for the entity an automation is most likely to target — this
+                # is a primary control, not a setting you tweak once.
+            }
 
     if not cmps:
         return None
@@ -1045,6 +1073,25 @@ class SlugIndex:
             return None
         return rule_base_topic(profile_slug, source_slug, rule_slug)
 
+    def rule_uuid_for_slugs(self, profile_slug: str, rule_slug: str) -> Optional[str]:
+        """The reverse direction: a slug pair off an inbound topic back to a rule uuid.
+
+        Needed because a command topic is the one place the app *reads* its own topic
+        namespace rather than writing it. Linear over profiles rather than a second
+        prebuilt map: this runs on a switch being flipped in Home Assistant, not per
+        frame, and a second map is one more thing to keep in step with the first.
+
+        Ambiguity is impossible by construction — `rule_global_base_topic` is
+        profile-scoped precisely so two profiles holding a same-named rule stay apart.
+        """
+        for profile_slug_candidate, _sources, rules in self.profiles.values():
+            if profile_slug_candidate != profile_slug:
+                continue
+            for rule_uuid, slug in rules.items():
+                if slug == rule_slug:
+                    return rule_uuid
+        return None
+
     def count_topic(self, profile_uuid: str, source_uuid: str, rule_uuid: str) -> Optional[str]:
         base = self.rule_base(profile_uuid, source_uuid, rule_uuid)
         return None if base is None else f"{base}/count"
@@ -1229,10 +1276,30 @@ class MqttBridge:
         #: connection so a watcher that starts before the bridge connects is not lost;
         #: re-asserted on every reconcile.
         self._watcher_availability: Dict[str, bool] = {}
+        #: rule uuid → armed, the runtime half of "is this rule running right now".
+        #:
+        #: Absent means armed: a rule the bridge has never heard a command for behaves
+        #: exactly as it did before switches existed, which is what keeps this additive
+        #: for every install that does not use it.
+        #:
+        #: Deliberately **not** persisted to the DB. It is restored from its own retained
+        #: MQTT topic at connect (`_restore_armed_state`), which is both cheaper and more
+        #: honest than writing config on every arrival and departure — see `RuleSpec.armed`.
+        self._armed: Dict[str, bool] = {}
+        #: Set once the command subscription is registered. The subscription is a
+        #: wildcard, so it covers rules renamed or added later and never needs redoing.
+        self._armed_subscribed: bool = False
+        #: The loop this bridge was started on, captured so inbound MQTT callbacks —
+        #: which arrive on paho's network thread — have somewhere to hand work back to.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     @property
     def connected(self) -> bool:
         return self._publisher is not None
+
+    def is_rule_armed(self, rule_uuid: str) -> bool:
+        """Whether a rule is currently armed. Unknown rules are armed — see `_armed`."""
+        return self._armed.get(rule_uuid, True)
 
     async def ensure_started(self) -> bool:
         if self._publisher is not None:
@@ -1249,6 +1316,9 @@ class MqttBridge:
         await publisher.start()
         self._publisher = publisher
         self._prefix = settings.prefix
+        # Captured here rather than at construction: the bridge is built in the manager's
+        # __init__, which may not be running on the loop that ends up serving it.
+        self._loop = asyncio.get_running_loop()
         # Ask the broker what Home Assistant currently believes exists, rather than
         # assuming nothing does. Without this the first reconcile after any restart
         # sees an empty previous state, so it can only ever add entities — anything
@@ -1279,6 +1349,16 @@ class MqttBridge:
         if self._publisher is not None:
             await self._publisher.close()
             self._publisher = None
+        self._loop = None
+        # The subscription belonged to the publisher that just went away, not to this
+        # bridge: `ensure_started` builds a fresh `AsyncMqttPublisher` with an empty
+        # subscription table, so leaving this set would silently never re-subscribe and
+        # the switches would stop responding with nothing to show for it.
+        #
+        # `_armed` is deliberately kept — it is the current state of the world, not a
+        # property of the connection, and dropping it would re-arm every rule on a
+        # reconnect.
+        self._armed_subscribed = False
 
     async def reconcile(self) -> None:
         """Connect if not already connected, then republish discovery against current
@@ -1415,6 +1495,12 @@ class MqttBridge:
             return
         profiles = await self._load_profiles()
         self._slugs = build_slug_index(profiles)
+        # Both need the slug index above — the restore maps inbound topics back to uuids,
+        # and it must land before any armed state is published or a reconnect would
+        # overwrite a disarmed rule with the default. Restore is once per process; the
+        # subscription is a wildcard and so covers rules added or renamed later.
+        await self._restore_armed_state()
+        self._ensure_armed_subscription()
         subjects = self._subject_views(profiles)
         self._subject_slugs = {uuid: slugify(view.name) for uuid, view in subjects.items()}
         desired = build_all_discovery(profiles, self._prefix, subjects)
@@ -1425,6 +1511,129 @@ class MqttBridge:
         to_publish, self._last_discovery = reconcile_discovery(self._last_discovery, desired)
         for topic, payload in to_publish.items():
             self._publisher.publish(topic, "" if payload is None else payload, retain=True, absolute=True)
+        # After discovery, so the switch entity exists before its first state arrives.
+        self._publish_armed_states(profiles)
+
+    # ---------------------------------------------------------------- rule arming
+
+    def _publish_armed_states(self, profiles: Sequence[ProfileView]) -> None:
+        """Retained `armed` state for every rule that has a switch.
+
+        Republished each reconcile rather than only on change: the state topic is what
+        the switch entity reads, so a rule whose switch was just created by this same
+        pass would otherwise sit `unknown` in HA until someone toggled it.
+        """
+        if self._publisher is None:
+            return
+        for profile in profiles:
+            for rule in profile.rules:
+                if not rule.enabled or not rule.publish_to_ha:
+                    continue
+                base = self._slugs.rule_global_base(profile.uuid, rule.uuid)
+                if base is None:
+                    continue
+                self._publisher.publish(f"{base}/armed", "ON" if self.is_rule_armed(rule.uuid) else "OFF", retain=True)
+
+    async def _restore_armed_state(self) -> None:
+        """Re-read the armed flags this app itself retained, once per process.
+
+        This is what makes a runtime-only flag survive a restart. Without it a service
+        restart would silently re-arm every rule — for the case this feature exists for
+        ("record people only while the house is empty") that is the privacy-invasive
+        direction, and nothing would report it: the rule would simply start recording
+        again until the next time the automation happened to fire.
+
+        Failure is non-fatal and leaves everything armed, which is the pre-feature
+        behaviour. Worth a warning, not worth refusing to bring the bridge up.
+        """
+        if self._publisher is None or self._armed:
+            return
+        try:
+            # Four levels, so `<profile>/rules/<rule>/armed/set` — five — cannot match.
+            # The command topic must not be read back as if it were state.
+            retained = await self._publisher.read_retained("+/rules/+/armed")
+        except Exception:
+            logger.warning("Could not read retained rule arming; every rule starts armed", exc_info=True)
+            return
+        restored = 0
+        for topic, payload in retained.items():
+            rule_uuid = self._rule_uuid_from_topic(topic)
+            if rule_uuid is None:
+                continue
+            self._armed[rule_uuid] = payload.decode(errors="replace").strip().upper() == "ON"
+            restored += 1
+        if restored:
+            logger.info("MQTT bridge restored arming for %s rule(s)", restored)
+
+    def _ensure_armed_subscription(self) -> None:
+        """Subscribe to every rule's command topic, once.
+
+        A wildcard rather than a topic per rule: rules are added, renamed and deleted
+        without this process being told, and a per-rule subscription would have to be
+        torn down and rebuilt on each reconcile to keep up. The wildcard is correct for
+        all of them and is re-registered automatically across a reconnect by the
+        publisher itself.
+        """
+        if self._publisher is None or self._armed_subscribed:
+            return
+        self._publisher.subscribe("+/rules/+/armed/set", self._on_armed_command)
+        self._armed_subscribed = True
+
+    def _rule_uuid_from_topic(self, topic: str) -> Optional[str]:
+        """`<prefix>/<profile>/rules/<rule>/armed[/set]` → rule uuid, or None.
+
+        Returns None for a rule this process does not know about, which is the ordinary
+        case for a retained flag belonging to a rule since deleted. Silently ignoring it
+        is right: there is nothing to arm, and the retained message goes away with the
+        rest of that rule's discovery.
+        """
+        parts = topic.split("/")
+        if len(parts) >= 5 and parts[-1] == "set":
+            parts = parts[:-1]
+        # <prefix> <profile> rules <rule> armed
+        if len(parts) < 5 or parts[-1] != "armed" or parts[-3] != "rules":
+            return None
+        return self._slugs.rule_uuid_for_slugs(parts[-4], parts[-2])
+
+    def _on_armed_command(self, topic: str, payload: bytes) -> None:
+        """Handle a switch flip from Home Assistant.
+
+        ⚠️ Runs on paho's network thread. It does nothing but parse and hop back to the
+        loop: `AsyncMqttPublisher.publish` ends in `asyncio.Event.set()`, which is not
+        thread-safe, so echoing the state from here would poke the loop from the wrong
+        thread — the exact hazard `subscribe`'s docstring warns about. Applying the
+        change on the loop also means `_armed` has a single writer.
+        """
+        rule_uuid = self._rule_uuid_from_topic(topic)
+        if rule_uuid is None:
+            return
+        value = payload.decode(errors="replace").strip().upper()
+        if value not in ("ON", "OFF"):
+            logger.debug("Ignoring unrecognised arming payload %r on %s", value, topic)
+            return
+        loop, armed = self._loop, value == "ON"
+        if loop is None:
+            # No loop captured yet means no connection was ever established on one, so
+            # there is nothing to echo to; record it and let the next reconcile publish.
+            self._armed[rule_uuid] = armed
+            return
+        loop.call_soon_threadsafe(self._apply_armed, rule_uuid, armed)
+
+    def _apply_armed(self, rule_uuid: str, armed: bool) -> None:
+        """Record an arming change and echo it, on the event loop.
+
+        The echo is what moves the switch in HA — the entity is deliberately not
+        optimistic, so it shows what the app actually applied rather than what was asked.
+        The watchers pick the change up by polling `is_rule_armed`; nothing is pushed at
+        them, so a watcher that starts later gets the current answer for free.
+        """
+        self._armed[rule_uuid] = armed
+        if self._publisher is None:
+            return
+        for profile_uuid in self._slugs.profiles:
+            base = self._slugs.rule_global_base(profile_uuid, rule_uuid)
+            if base is not None:
+                self._publisher.publish(f"{base}/armed", "ON" if armed else "OFF", retain=True)
 
     async def seed_counters(self) -> None:
         if self._publisher is None:
