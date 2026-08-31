@@ -703,11 +703,14 @@ export function openEventDetailModal(
    * makes that conversion a multiplication rather than a guess about downscale ratios.
    *
    * @param {{width: number, height: number}} frame
+   * @param {?number} [atS] - clip offset in seconds; defaults to where the video is now.
+   *   Passed explicitly when capturing a batch of frames, which reads several offsets
+   *   without ever moving `video.currentTime` to them.
    * @returns {Object} spread into the save call — empty when there is no overlay
    */
-  function overlayBoxes(frame) {
+  function overlayBoxes(frame, atS = null) {
     if (!overlay || !video) return {};
-    const boxes = overlay.boxesAt(video.currentTime || 0)
+    const boxes = overlay.boxesAt(atS ?? video.currentTime ?? 0)
       .filter(b => b.labelUuid)
       .map(b => ({
         labelUuid: b.labelUuid,
@@ -856,13 +859,11 @@ export function openEventDetailModal(
     try {
       const captured = await captureFramesAt(times);
       for (const { at, frame } of captured) {
-        const boxes = (overlay?.boxesAt(at) ?? [])
-          .filter(b => b.labelUuid)
-          .map(b => ({
-            labelUuid: b.labelUuid,
-            bbox: [b.x * frame.width, b.y * frame.height, (b.x + b.w) * frame.width, (b.y + b.h) * frame.height],
-            confidence: b.conf,
-          }));
+        // Same normalised→pixel conversion the frame toolbar uses, taken from the one
+        // place that owns it. Inlined here it was a second copy of the coordinate
+        // convention that only the toolbar path had tests for, so a fix to one would
+        // leave the other writing wrongly-scaled boxes with the suite still green.
+        const { boxes = [] } = overlayBoxes(frame, at);
         if (!boxes.length) continue;
         const result = await saveFrameForAnnotation({
           blob: frame.blob,
