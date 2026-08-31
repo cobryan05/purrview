@@ -1301,3 +1301,115 @@ class TestEntityBudget:
         )
 
         assert rich == lean + 2  # one counter per source, for the one rule
+
+
+class TestAnOptedOutCameraStillFeedsTheRulesDevice:
+    """`publish_to_ha` on a *camera* is a camera-level opt-out, not a rule-level one.
+
+    The Rules device answers "did this rule fire anywhere", which is precisely the
+    question a per-camera opt-out must not change — and the watchers UI promises as much
+    in the flag's own tooltip. The bridge used to take one early exit for both tiers, so
+    unticking one camera silently removed it from the cross-camera answer.
+    """
+
+    ON = SourceView(uuid="src-1", name="Kitchen cam")
+    OFF = SourceView(uuid="src-1", name="Kitchen cam", publish_to_ha=False)
+
+    def _open(self, bridge, **kw):
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-1",
+            rule_uuid="rule-1",
+            last_seen="2026-01-01T00:00:00+00:00",
+            **kw,
+        )
+
+    def test_the_cameras_own_topics_go_quiet(self):
+        """The half that already worked, asserted so the fix cannot be mistaken for
+        'the flag stopped doing anything'."""
+        bridge, fake = _connected_bridge([_profile(sources=(self.OFF,))])
+
+        self._open(bridge, active=True, opened=True)
+
+        assert _per_source(fake, "/state") == []
+
+    def test_but_the_rules_device_still_hears_it(self):
+        bridge, fake = _connected_bridge([_profile(sources=(self.OFF,))])
+
+        self._open(bridge, active=True, opened=True)
+
+        assert [c["payload"] for c in _rule_global(fake, "/state")] == ["ON"]
+
+    def test_opting_out_mid_event_does_not_strand_the_rule_on(self):
+        """The one that corrupts state rather than merely omitting it.
+
+        Flipping the flag between an event's START and END used to skip the `discard`
+        that closes the event, so the Rules device's retained `state` stayed ON for the
+        life of the process — with no further transition able to clear it.
+        """
+        bridge, fake = _connected_bridge([_profile(sources=(self.ON,))])
+        self._open(bridge, active=True, opened=True)
+
+        # What a reconcile does after the flag is unticked, mid-event.
+        bridge._slugs = build_slug_index([_profile(sources=(self.OFF,))])
+        self._open(bridge, active=False, opened=False)
+
+        assert [c["payload"] for c in _rule_global(fake, "/state")] == ["ON", "OFF"]
+        assert bridge._open_rules == set()
+
+    def test_the_cross_camera_total_still_counts_it(self):
+        """The Rules device's count is summed from the per-camera counters, so a camera
+        that is not counted at all is one the total silently under-reports."""
+        two_cams = (self.OFF, SourceView(uuid="src-2", name="Hall cam"))
+        bridge, fake = _connected_bridge([_profile(sources=two_cams)])
+
+        self._open(bridge, active=True, opened=True)
+        bridge.publish_rule_transition(
+            profile_uuid="profile-1",
+            source_uuid="src-2",
+            rule_uuid="rule-1",
+            active=True,
+            opened=True,
+            last_seen="2026-01-01T00:01:00+00:00",
+        )
+
+        assert [c["payload"] for c in _rule_global(fake, "/count")] == [1, 2]
+
+
+class TestRetractionsArePublishedBeforeReplacements:
+    def test_a_device_that_changes_id_is_retracted_before_the_new_one_is_published(self):
+        """Ordering, not content — and it is what a rename costs if it is wrong.
+
+        HA keys entities by `unique_id` but derives `entity_id` from the device and
+        entity *names*, which a rename of the id namespace leaves untouched. Publish the
+        replacement first and both devices exist at once, so every new entity collides
+        with a live old one and is uniquified to `…_2` — permanently, because the old is
+        retracted a moment later and nothing renames the survivor. Long-term statistics
+        are keyed on `entity_id`, so they are orphaned with it.
+        """
+        subjects = {}
+        before = build_all_discovery([_profile()], PREFIX, subjects)
+        _, previous = reconcile_discovery(DiscoveryState(), before)
+
+        # A device whose id changed: same camera, same names, new topic — exactly the
+        # shape of the `encounterwatch_` → `purrview_` rename.
+        renamed = _profile(sources=(SourceView(uuid="src-9", name="Kitchen cam"),))
+        to_publish, _ = reconcile_discovery(previous, build_all_discovery([renamed], PREFIX, subjects))
+
+        order = list(to_publish)
+        gone = source_config_topic("src-1")
+        added = source_config_topic("src-9")
+        assert to_publish[gone] is None
+        assert order.index(gone) < order.index(added)
+
+    def test_every_retraction_precedes_every_publish(self):
+        """Asserted as a partition rather than on one pair, so a future edit that
+        appends a retraction in the wrong place cannot pass by luck."""
+        subjects = {}
+        _, previous = reconcile_discovery(DiscoveryState(), build_all_discovery([_profile()], PREFIX, subjects))
+        renamed = _profile(sources=(SourceView(uuid="src-9", name="Kitchen cam"),))
+        to_publish, _ = reconcile_discovery(previous, build_all_discovery([renamed], PREFIX, subjects))
+
+        kinds = [payload is None for payload in to_publish.values()]
+        assert any(kinds) and not all(kinds), kinds
+        assert kinds == sorted(kinds, reverse=True), kinds

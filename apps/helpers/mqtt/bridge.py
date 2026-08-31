@@ -369,7 +369,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         # drops every camera after the first.
         cmps[f"{rule.uuid}_state"] = {
             "p": "binary_sensor",
-            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_state",
+            "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_state",
             "name": rule_label,
             "device_class": "occupancy",
             "state_topic": f"{rule_base}/state",
@@ -379,7 +379,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_count",
+            "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_count",
             "name": f"{rule_label} count",
             # The single most important setting here: HA purges raw history after
             # ~10 days but keeps long-term statistics forever for a sensor that
@@ -389,7 +389,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_last_seen",
+            "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_last_seen",
             "name": f"{rule_label} last seen",
             "device_class": "timestamp",
             "state_topic": f"{rule_base}/attributes",
@@ -397,7 +397,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_last_duration"] = {
             "p": "sensor",
-            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_last_duration",
+            "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_last_duration",
             "name": f"{rule_label} last duration",
             "state_class": "measurement",
             "device_class": "duration",
@@ -407,7 +407,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_peak_confidence"] = {
             "p": "sensor",
-            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_peak_confidence",
+            "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_peak_confidence",
             "name": f"{rule_label} peak confidence",
             "state_class": "measurement",
             "state_topic": f"{rule_base}/attributes",
@@ -415,7 +415,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
         }
         cmps[f"{rule.uuid}_event"] = {
             "p": "event",
-            "unique_id": f"purrview_{source.uuid}_{rule.uuid}_event",
+            "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_event",
             "name": rule_label,
             "event_types": [rule.name],
             "state_topic": event_topic,
@@ -423,7 +423,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
 
     cmps["camera"] = {
         "p": "camera",
-        "unique_id": f"purrview_{source.uuid}_camera",
+        "unique_id": f"{source_device_id(source.uuid)}_camera",
         # No name: HA treats an unnamed component as the device's primary entity, so this
         # is `camera.<source>` rather than `camera.<source>_<source>`.
         "name": None,
@@ -431,7 +431,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     }
     cmps["tracked_count"] = {
         "p": "sensor",
-        "unique_id": f"purrview_{source.uuid}_tracked_count",
+        "unique_id": f"{source_device_id(source.uuid)}_tracked_count",
         "name": "tracked objects",
         "state_class": "measurement",
         "state_topic": telemetry_state_topic,
@@ -439,7 +439,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     }
     cmps["health"] = {
         "p": "binary_sensor",
-        "unique_id": f"purrview_{source.uuid}_health",
+        "unique_id": f"{source_device_id(source.uuid)}_health",
         "name": "problem",
         "device_class": "problem",
         "entity_category": "diagnostic",
@@ -456,7 +456,7 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
     ):
         entry: Dict[str, Any] = {
             "p": "sensor",
-            "unique_id": f"purrview_{source.uuid}_{key}",
+            "unique_id": f"{source_device_id(source.uuid)}_{key}",
             "name": key.replace("_", " "),
             "entity_category": "diagnostic",
             "state_class": "measurement",
@@ -526,7 +526,7 @@ def build_subject_discovery(
     cmps: Dict[str, Any] = {
         "detected": {
             "p": "binary_sensor",
-            "unique_id": f"purrview_subject_{subject.uuid}_detected",
+            "unique_id": f"{subject_device_id(subject.uuid)}_detected",
             "name": "Detected now",
             "device_class": "occupancy",
             "state_topic": f"{base}/state",
@@ -535,14 +535,14 @@ def build_subject_discovery(
         },
         "count": {
             "p": "sensor",
-            "unique_id": f"purrview_subject_{subject.uuid}_count",
+            "unique_id": f"{subject_device_id(subject.uuid)}_count",
             "name": "Total events",
             "state_class": "total_increasing",
             "state_topic": f"{base}/count",
         },
         "last_seen": {
             "p": "sensor",
-            "unique_id": f"purrview_subject_{subject.uuid}_last_seen",
+            "unique_id": f"{subject_device_id(subject.uuid)}_last_seen",
             "name": "Last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/attributes",
@@ -550,7 +550,7 @@ def build_subject_discovery(
         },
         "last_location": {
             "p": "sensor",
-            "unique_id": f"purrview_subject_{subject.uuid}_last_location",
+            "unique_id": f"{subject_device_id(subject.uuid)}_last_location",
             "name": "Last location",
             "state_topic": f"{base}/attributes",
             "value_template": "{{ value_json.lastSource }}",
@@ -564,14 +564,14 @@ def build_subject_discovery(
         # worth asking and the one a per-camera breakdown alone cannot answer.
         cmps[f"{rule.uuid}_count"] = {
             "p": "sensor",
-            "unique_id": f"purrview_subject_{subject.uuid}_{rule.uuid}_count",
+            "unique_id": f"{subject_device_id(subject.uuid)}_{rule.uuid}_count",
             "name": rule_label,
             "state_class": "total_increasing",
             "state_topic": f"{base}/rule/{rule_slug}/count",
         }
         cmps[f"{rule.uuid}_last_seen"] = {
             "p": "sensor",
-            "unique_id": f"purrview_subject_{subject.uuid}_{rule.uuid}_last_seen",
+            "unique_id": f"{subject_device_id(subject.uuid)}_{rule.uuid}_last_seen",
             "name": f"{rule_label} last seen",
             "device_class": "timestamp",
             "state_topic": f"{base}/rule/{rule_slug}/attributes",
@@ -590,7 +590,7 @@ def build_subject_discovery(
             source_slug = _topic_source(source)
             cmps[f"{rule.uuid}_{source.uuid}_count"] = {
                 "p": "sensor",
-                "unique_id": f"purrview_subject_{subject.uuid}_{rule.uuid}_{source.uuid}_count",
+                "unique_id": f"{subject_device_id(subject.uuid)}_{rule.uuid}_{source.uuid}_count",
                 "name": f"{rule_label} · {source.name}",
                 "state_class": "total_increasing",
                 "enabled_by_default": False,
@@ -943,7 +943,22 @@ def reconcile_discovery(
     Returns `(to_publish, new_state)` rather than mutating anything, so the caller
     decides when — and whether — to persist the second value.
     """
+    # ⚠️ Retractions are inserted **first**, and the caller publishes in iteration order.
+    #
+    # It looks like housekeeping and it is not. When a device's id changes — the whole
+    # `encounterwatch_` → `purrview_` rename is one such pass — the same camera is
+    # retracted under one id and published under another in a single reconcile. Publish
+    # the new one first and both exist in HA at once: the device names and entity names
+    # are identical (only the *id* changed), so every new entity collides with a live old
+    # one and HA uniquifies it to `sensor.<name>_2`. The old is retracted a moment later
+    # and its entity_id freed, but the new entity keeps the `_2` for good — breaking every
+    # automation and dashboard that referenced it, and orphaning the long-term statistics,
+    # which are keyed on entity_id. Retract first and the id is free before its
+    # replacement asks for it, so the entity_id — and its history — carry across.
     to_publish: Dict[str, Optional[Dict[str, Any]]] = {}
+    for gone_topic in previous.topics - desired.keys():
+        to_publish[gone_topic] = None
+
     for topic, payload in desired.items():
         previous_components = previous.components.get(topic, {})
         removed = set(previous_components) - set(payload["cmps"])
@@ -953,9 +968,6 @@ def reconcile_discovery(
                 "cmps": {**payload["cmps"], **{cid: {"p": previous_components[cid]} for cid in removed}},
             }
         to_publish[topic] = payload
-
-    for gone_topic in previous.topics - desired.keys():
-        to_publish[gone_topic] = None
 
     # Records what was *desired*, never the tombstones — otherwise the next pass would
     # see them as components that had just disappeared and tombstone them again,
@@ -1086,8 +1098,15 @@ def build_slug_index(profiles: Sequence[ProfileView]) -> SlugIndex:
     publishing retained `state`/`count`/`attributes` to topics no entity reads any more.
     Those messages are retained, so they never expire: they sit on the broker for good,
     and re-ticking the flag replays a stale count and a stale ON/OFF into a freshly
-    created entity. Absent from here, `rule_base` returns None and the publisher takes
-    the same early exit it already takes for a rule created since the last reconcile.
+    created entity. Absent from here, `rule_base` returns None and the publisher skips
+    the per-source topics, exactly as it does for a rule created since the last reconcile.
+
+    Note the asymmetry between the two filters, which is not an oversight. Dropping a
+    *source* silences that camera's own topics only — `publish_rule_transition` still
+    counts the event and still publishes the cross-camera Rules tier, because that tier
+    hangs off the rule. Dropping a *rule* removes it from `rules` here, so
+    `rule_global_base` returns None too and the rule goes quiet everywhere. Camera-level
+    and rule-level opt-outs are different questions and the flags answer them separately.
 
     `enabled` is deliberately *not* filtered on. A disabled rule never fires, so it has
     nothing to publish either way, and dropping it would only make the distinction
@@ -1479,37 +1498,52 @@ class MqttBridge:
         """
         if self._publisher is None:
             return
-        base = self._slugs.rule_base(profile_uuid, source_uuid, rule_uuid)
-        if base is None:
-            # Config the bridge has not seen yet (a rule added since the last
-            # reconcile). It has no discovery entry either, so there is no entity
-            # waiting for this; the next reconcile creates both.
-            return
         key = (profile_uuid, source_uuid, rule_uuid)
+        # Bookkeeping first, and unconditionally — it is not a publish, and gating it on
+        # having somewhere to publish is what made `publish_to_ha` corrupt state rather
+        # than just quieten it. Untick the flag on one camera between an event's START
+        # and END and the key is never discarded: `openEvents` drifts upward for the life
+        # of the process and the Rules device's `state` stays retained-ON forever.
+        #
         # Tracked on every transition, not just the opening one: an event that was
         # already open when the bridge connected still closes, and dropping that would
         # leave the count drifting upward for the life of the process.
         self._open_rules.add(key) if active else self._open_rules.discard(key)
         if opened:
+            # Counted unconditionally too: `_publish_rule_global` sums this dict for the
+            # Rules device's cross-camera total, so skipping a camera here would make
+            # that tier silently under-report rather than merely omit a topic.
             self._counts[key] = self._counts.get(key, 0) + 1
-            self._publisher.publish(f"{base}/count", self._counts[key], retain=True)
-        self._publisher.publish(
-            f"{base}/attributes",
-            build_event_attributes(
-                last_seen=last_seen,
-                duration_s=duration_s,
-                peak_confidence=peak_confidence,
-                subject=subject,
-                target=target,
-                track_ids=track_ids,
-            ),
-            retain=True,
-        )
-        # Last: the binary_sensor's `json_attributes_topic` is the topic above, and
-        # publishing state first would briefly pair a new ON with the previous event's
-        # attributes.
-        self._publisher.publish(f"{base}/state", "ON" if active else "OFF", retain=True)
 
+        # Only the *per-source* topics are gated. `rule_base` is None either for a config
+        # the bridge has not seen yet (a rule added since the last reconcile — no entity
+        # is waiting, and the next reconcile creates both) or for a source with
+        # `publish_to_ha` off. Neither is a reason to skip the tier below: that one hangs
+        # off the rule, not the camera, and the UI promises a camera's rules keep
+        # contributing to the Rules device even when the camera itself publishes nothing.
+        base = self._slugs.rule_base(profile_uuid, source_uuid, rule_uuid)
+        if base is not None:
+            if opened:
+                self._publisher.publish(f"{base}/count", self._counts[key], retain=True)
+            self._publisher.publish(
+                f"{base}/attributes",
+                build_event_attributes(
+                    last_seen=last_seen,
+                    duration_s=duration_s,
+                    peak_confidence=peak_confidence,
+                    subject=subject,
+                    target=target,
+                    track_ids=track_ids,
+                ),
+                retain=True,
+            )
+            # Last: the binary_sensor's `json_attributes_topic` is the topic above, and
+            # publishing state first would briefly pair a new ON with the previous
+            # event's attributes.
+            self._publisher.publish(f"{base}/state", "ON" if active else "OFF", retain=True)
+
+        # Reached whether or not the camera publishes: `rule_global_base` does its own
+        # gating on the *rule's* `publish_to_ha`, which is the flag that governs this tier.
         self._publish_rule_global(
             profile_uuid=profile_uuid,
             rule_uuid=rule_uuid,
