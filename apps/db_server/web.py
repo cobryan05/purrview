@@ -233,6 +233,12 @@ class AddLabelPayload(ApiPayload):
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
     scope: LabelScope = LabelScope.OBJECT
+    #: Both default off, matching `LabelBase`. Accepted at creation because the client
+    #: has always sent them (`shared/api/labels.js`) — the payload simply had no field to
+    #: receive them, so they were dropped. Harmless while the default was on; now it is
+    #: the difference between creating an opted-in label and having to patch it after.
+    publish_to_ha: bool = False
+    publish_per_source: bool = False
 
 
 class AddLabelResponse(StatusResponse):
@@ -1663,6 +1669,8 @@ class WebApp:
                     parent_uuid=request.parent_uuid,
                     label_type=request.label_type,
                     scope=request.scope,
+                    publish_to_ha=request.publish_to_ha,
+                    publish_per_source=request.publish_per_source,
                 )
 
                 return AddLabelResponse(status=JsonValues.SUCCESS, label=label)

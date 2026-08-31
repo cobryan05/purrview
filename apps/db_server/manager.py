@@ -500,6 +500,8 @@ class Manager:
         parent_uuid: Optional[str] = None,
         label_type: LabelType = LabelType.STANDARD,
         scope: LabelScope = LabelScope.OBJECT,
+        publish_to_ha: bool = False,
+        publish_per_source: bool = False,
     ) -> Label:
         """
         Adds a new label to the database
@@ -507,7 +509,15 @@ class Manager:
         Returns:
             Label: Label added to database
         """
-        ret = await self._db_client.add_label(name, color, parent_uuid=parent_uuid, label_type=label_type, scope=scope)
+        ret = await self._db_client.add_label(
+            name,
+            color,
+            parent_uuid=parent_uuid,
+            label_type=label_type,
+            scope=scope,
+            publish_to_ha=publish_to_ha,
+            publish_per_source=publish_per_source,
+        )
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
 

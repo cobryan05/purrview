@@ -2760,8 +2760,14 @@ class DbClient:
         parent_uuid: Optional[str] = None,
         label_type: LabelType = LabelType.STANDARD,
         scope: LabelScope = LabelScope.OBJECT,
+        publish_to_ha: bool = False,
+        publish_per_source: bool = False,
     ) -> Label:
-        """Insert a label and return the created object."""
+        """Insert a label and return the created object.
+
+        The two publish flags default off to match `LabelBase`, so a caller that does not
+        mention Home Assistant does not create a device in one.
+        """
         new_label = Label(
             uuid=uuid or str(uuid4()),
             name=name,
@@ -2769,6 +2775,8 @@ class DbClient:
             parent_uuid=parent_uuid,
             label_type=label_type,
             scope=scope,
+            publish_to_ha=publish_to_ha,
+            publish_per_source=publish_per_source,
         )
 
         async with self._async_session_maker() as session:

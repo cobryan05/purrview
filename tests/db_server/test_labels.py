@@ -394,3 +394,54 @@ class TestSeedSystemLabels:
             assert image_empty_after.uuid != obj_empty.uuid
         finally:
             await client.close()
+
+
+class TestHomeAssistantPublishing:
+    """`publishToHa` is opt-in. A label device is justified by the label rather than by a
+    rule mentioning it, so this flag is what bounds how many devices an install creates —
+    and a vocabulary grows with every class a model can name.
+    """
+
+    async def test_a_new_label_is_not_published(self, http_client):
+        r = await http_client.post("/api/labels", json={"name": "cat", "color": "#FF0000"})
+
+        assert r.json()["label"]["publishToHa"] is False
+
+    async def test_it_can_be_opted_in_at_creation(self, http_client):
+        """The pair: off is a default, not a refusal."""
+        r = await http_client.post(
+            "/api/labels",
+            json={"name": "person", "color": "#00FF00", "publishToHa": True},
+        )
+
+        assert r.json()["label"]["publishToHa"] is True
+
+    async def test_opting_in_later_sticks(self, http_client):
+        """The path someone actually takes — tick the few you automate on, after the
+        vocabulary already exists."""
+        uuid = (await http_client.post("/api/labels", json={"name": "dog", "color": "#111"})).json()["label"]["uuid"]
+
+        patch = await http_client.patch(f"/api/labels/{uuid}", json={"publishToHa": True})
+        assert patch.status_code == 200
+
+        listed = (await http_client.get("/api/labels")).json()["labels"]
+        assert next(l for l in listed if l["name"] == "dog")["publishToHa"] is True
+
+    async def test_a_row_inserted_without_the_column_reads_back_unpublished(self, db_client, http_client):
+        """The migration backfill path. A label written before the column existed must
+        arrive unticked rather than silently claiming a device — publishing is the
+        expensive direction, and absence is only a label nobody opted in.
+        """
+        import sqlalchemy as sa
+
+        async with db_client._engine.begin() as conn:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO labels (uuid, name, label_type, scope, created_at, updated_at)"
+                    " VALUES (:uuid, :name, 'standard', 'object', datetime('now'), datetime('now'))"
+                ),
+                {"uuid": "ha-default-test", "name": "migrated_ha_label"},
+            )
+
+        listed = (await http_client.get("/api/labels")).json()["labels"]
+        assert next(l for l in listed if l["name"] == "migrated_ha_label")["publishToHa"] is False
