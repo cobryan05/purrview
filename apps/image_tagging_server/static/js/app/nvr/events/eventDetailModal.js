@@ -807,8 +807,19 @@ export function openEventDetailModal(
    * The playhead is put back where the user left it: this runs behind a modal they are
    * about to return to, and finding the clip parked somewhere else would read as the
    * correction having done something to the video.
+   *
+   * ⚠️ `times` are *sidecar* times and the playhead runs in *player* time; the two differ
+   * by the untrimmed head this browser is playing (`leadSeconds`, measured at several
+   * seconds on real clips). Seeking straight to a sidecar time lands `lead` seconds early
+   * — and `boxesAt` subtracts the same lead again, so the early picks sample before t=0
+   * and come back empty, silently dropping most of a harvest the dialog had already
+   * promised a count for. Both the seek and the box lookup are done in player time here.
+   *
+   * @returns {Promise<Array<{at: number, sidecarAt: number, frame: Object}>>} `at` is
+   *   player time, for `overlayBoxes`; `sidecarAt` is the clip offset the pick names.
    */
   async function captureFramesAt(times) {
+    const lead = overlay?.leadSeconds?.() ?? 0;
     const resumeAt = video.currentTime;
     const wasPlaying = !video.paused;
     video.pause();
@@ -829,10 +840,11 @@ export function openEventDetailModal(
         const timer = setTimeout(done, 2000);
         video.addEventListener('seeked', done, { once: true });
       });
-      video.currentTime = t;
+      const playerT = t + lead;
+      video.currentTime = playerT;
       await seeked;
       const frame = await captureVideoFrame(video);
-      if (frame) frames.push({ at: t, frame });
+      if (frame) frames.push({ at: playerT, sidecarAt: t, frame });
     }
     video.currentTime = resumeAt;
     if (wasPlaying) void video.play().catch(() => {});
@@ -858,7 +870,7 @@ export function openEventDetailModal(
     const saved = [];
     try {
       const captured = await captureFramesAt(times);
-      for (const { at, frame } of captured) {
+      for (const { at, sidecarAt, frame } of captured) {
         // Same normalised→pixel conversion the frame toolbar uses, taken from the one
         // place that owns it. Inlined here it was a second copy of the coordinate
         // convention that only the toolbar path had tests for, so a fix to one would
@@ -869,7 +881,9 @@ export function openEventDetailModal(
           blob: frame.blob,
           // Per-frame stamps, so eight captures in the same second do not all collide on
           // one name and get uniquified into a confusing sequence by the server.
-          filename: captureFilename(`${camera}_t${at.toFixed(1)}`),
+          // Stamped with the *sidecar* offset, which is the clip's own timebase and the
+          // one the event's times are quoted in — not the player time the seek used.
+          filename: captureFilename(`${camera}_t${sidecarAt.toFixed(1)}`),
           path: DEFAULT_CAPTURE_DIR,
           boxes: applyLabelRemap(boxes, remap),
           frameWidth: frame.width,
@@ -878,7 +892,7 @@ export function openEventDetailModal(
             source_camera: camera,
             source_event: event.uuid,
             source_event_rule: event.ruleName || '',
-            source_clip_offset_s: at.toFixed(2),
+            source_clip_offset_s: sidecarAt.toFixed(2),
             // Which guess this replaced: a reviewer meeting the frame later can see it
             // was a correction rather than a detection the model got right, and it is
             // the record of what the model is bad at.
