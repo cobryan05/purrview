@@ -226,7 +226,13 @@ class PreviewModelRelabelTask(Task):
 
         await self._pin_model(inference_api_client)
         pin_ids = {self._model_name: self._pin_id} if self._pin_id else {}
-        backend = _HttpInferenceBackend(inference_api_client, pin_ids)
+        # The *factory*, not the client it returns — `_HttpInferenceBackend` calls this
+        # per request so a Settings → Servers change mid-run is picked up (see its
+        # docstring). Passing the already-called client made every `detect()` raise
+        # `TypeError: 'ApiClient' object is not callable`, which `_run`'s per-image
+        # handler swallowed into `images_failed`: the run "succeeded" with zero
+        # candidates, every time.
+        backend = _HttpInferenceBackend(self._manager.get_inference_api_client, pin_ids)
 
         # The client already knows each candidate bbox's image (it enumerated both
         # from the review queue), so no bbox->image resolution is needed here — we

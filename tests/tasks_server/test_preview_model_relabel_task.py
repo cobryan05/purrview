@@ -7,6 +7,7 @@ round-trip involved (mirrors ApplyFilterChainTask's test pattern).
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -879,3 +880,117 @@ class TestBatchConcurrency:
         assert result["images_processed"] == len(task._processed_image_uuids)
         resume = task._build_resume_data()
         assert len(resume["processed_image_uuids"]) == result["images_processed"]
+
+
+class TestInferenceBackendWiring:
+    """`_run()` builds its own `_HttpInferenceBackend`, and nothing above covers
+    that construction: every other test injects a `_FakeBackend` or patches
+    `_HttpInferenceBackend.detect` outright, so the backend's own plumbing is
+    never entered.
+
+    It was broken, and completely. `_HttpInferenceBackend` takes a *factory*
+    returning a client — `ApplyFilterChainTask` passes
+    `self._manager.get_inference_api_client`, uncalled — while this task passed
+    the already-called client. `detect()` evaluates `self._client_provider()`,
+    which on an `ApiClient` instance raises `TypeError: 'ApiClient' object is
+    not callable`, for every image on every run. `_run`'s per-image handler
+    catches it into `images_failed`, so the task still reported success and the
+    preview modal simply said there were no candidates: the "Run Model on
+    Results always returns 0" report.
+
+    This test therefore patches strictly *below* the backend — the generated
+    `InferenceApi` that `_HttpInferenceBackend` resolves — leaving `detect` and
+    the client-provider call real, which is the only way the defect is visible.
+    """
+
+    @staticmethod
+    def _detection(label_uuid, x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9):
+        """The generated client's detection shape (attribute access, not dicts)."""
+        bbox = SimpleNamespace(x=x, y=y, width=width, height=height, label_uuid=label_uuid, class_str=None)
+        return SimpleNamespace(bbox=bbox, confidence=confidence)
+
+    @staticmethod
+    def _make_task(params):
+        """Like the module-level `_make_task`, but with a manager that hands out a
+        client which is *not callable*.
+
+        This is the whole reason the defect could hide. `_MOCK_MANAGER` is a
+        `MagicMock`, so `get_inference_api_client()` returns a `MagicMock` — and a
+        `MagicMock` is callable, which makes the bad `self._client_provider()` call
+        succeed and produce a second mock. The real `inference_client.ApiClient` is
+        not callable, so only a stand-in that shares that property reproduces
+        production behaviour.
+        """
+
+        class _ApiClientLike:
+            """Non-callable, exactly like the generated `ApiClient`."""
+
+        manager = MagicMock()
+        manager.update_task_heartbeat = AsyncMock()
+        manager.get_inference_api_client.return_value = _ApiClientLike()
+        task = PreviewModelRelabelTask(task_config_uuid="cfg-uuid", params=params, manager=manager)
+        task.set_instance_uuid("11111111-1111-1111-1111-111111111111")
+        return task
+
+    def _patch_edges(self, task, images, detections, monkeypatch):
+        """Fake the DB and the inference HTTP call, and nothing in between."""
+        by_uuid = {img["uuid"]: img for img in images}
+
+        class _FakeImagesApi:
+            def __init__(self, _client):
+                pass
+
+            def batch_images_by_uuids(self, payload):
+                return MagicMock(images=[by_uuid[u] for u in payload.image_uuids if u in by_uuid])
+
+        class _FakeLabelsApi:
+            def __init__(self, _client):
+                pass
+
+            def list_labels(self):
+                return MagicMock(labels=[MagicMock(uuid="cat", name="Cat"), MagicMock(uuid="dog", name="Dog")])
+
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.ImagesApi", _FakeImagesApi)
+        monkeypatch.setattr("apps.tasks_server.tasks.PreviewModelRelabelTask.LabelsApi", _FakeLabelsApi)
+        monkeypatch.setattr(
+            "apps.tasks_server.tasks.PreviewModelRelabelTask._read_model_kind", lambda _n: "object_detector"
+        )
+        task._pin_model = AsyncMock()
+        task._load_image_bytes = AsyncMock(return_value=b"fake-jpeg")
+
+        # Patched where `_HttpInferenceBackend` looks it up, so the backend's
+        # `InferenceApi(self._client_provider())` line still runs for real.
+        def _fake_inference_api(_client):
+            api = MagicMock()
+            api.detect.return_value = SimpleNamespace(status="success", result=SimpleNamespace(detections=detections))
+            return api
+
+        monkeypatch.setattr("apps.tasks_server.tasks.ApplyFilterChainTask.InferenceApi", _fake_inference_api)
+
+    async def test_run_reaches_inference_through_the_real_backend(self, monkeypatch):
+        task = self._make_task(_base_params())
+        await task._init(task._params, None)
+        images = [_image(uuid="img-1", filename="img_1.jpg", bboxes=[_bbox(uuid="bbox-1", label_uuid="cat")])]
+        self._patch_edges(task, images, [self._detection("dog")], monkeypatch)
+
+        result = await task._run()
+
+        # The assertion that fails on the bug: the run "succeeds" either way, so
+        # only the failure counter and the sample error say what went wrong.
+        assert result["images_failed"] == 0, f"inference backend never ran: {result['sample_errors']}"
+        assert result["candidate_count"] == 1
+        assert task._candidates[0]["proposedLabelUuid"] == "dog"
+
+    async def test_add_new_run_over_a_boxless_image_proposes_a_new_box(self, monkeypatch):
+        """The user-facing shape of the same bug: 'add boxes' over images with no
+        bboxes at all, which can only ever produce new-box candidates."""
+        task = self._make_task(_base_params(bbox_uuids=[], add_new=True, relabel_existing=False))
+        await task._init(task._params, None)
+        images = [_image(uuid="img-1", filename="img_1.jpg", bboxes=[])]
+        self._patch_edges(task, images, [self._detection("dog")], monkeypatch)
+
+        result = await task._run()
+
+        assert result["images_failed"] == 0, f"inference backend never ran: {result['sample_errors']}"
+        assert result["new_boxes_found"] == 1
+        assert task._candidates[0]["isNew"] is True
