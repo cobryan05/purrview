@@ -324,11 +324,13 @@ class TestDefaultVisibility:
 
 
 class TestSubjectEnumeration:
-    """Subjects come from rule config expanded through the label tree — rules commonly
-    name a parent label, and it is the descendant that lands in an event's
-    `subject_ref`."""
+    """`subjects_in_scope` is the per-rule *breakdown* on a label's device, not the gate
+    on whether the label has one — that is `publish_to_ha`, see `TestEveryLabelGetsADevice`.
 
-    def test_only_labels_a_rule_can_match_get_a_device(self):
+    Subjects come from rule config expanded through the label tree — rules commonly name
+    a parent label, and it is the descendant that lands in an event's `subject_ref`."""
+
+    def test_only_labels_a_rule_can_match_get_a_breakdown(self):
         profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
         assert set(subjects_in_scope([profile])) == {"subj-a"}
 
@@ -1216,8 +1218,12 @@ class TestPublishFlagsRemoveEntities:
         # The rules device held nothing else, so it goes entirely rather than empty.
         assert RULES_CONFIG_TOPIC in before
         assert RULES_CONFIG_TOPIC not in after
-        # …and the subject had nothing else to be in scope for.
-        assert subject_config_topic("subj-a") not in after
+        # The label keeps its device — it has one because it is a label, not because a
+        # rule mentioned it — but loses the per-rule counters that rule contributed.
+        subject = subject_config_topic("subj-a")
+        assert any(k.startswith("rule-1_") for k in before[subject]["cmps"])
+        assert not [k for k in after[subject]["cmps"] if k.startswith("rule-1_")]
+        assert "detected" in after[subject]["cmps"], "the tracker-driven core survives a rule going away"
 
     def test_a_label_opted_out_loses_its_device_but_not_the_rule(self):
         """Opting a label out must not take the rule's own entities with it — the rule
@@ -1606,3 +1612,77 @@ class TestRuleArmingSwitch:
 
         assert bridge._armed_subscribed is False
         assert bridge.is_rule_armed("rule-1") is False
+
+
+class TestEveryLabelGetsADevice:
+    """A label's device is justified by the label, not by a rule mentioning it.
+
+    `Detected now` reads off the tracker rather than off events, so it answers "is she in
+    the room" for anything a model can detect — no rule required. Gating the device on
+    rule membership meant writing a rule you did not want purely to get that sensor.
+    `publish_to_ha` on the label is the opt-out, and the only one.
+    """
+
+    def _subject(self, **overrides):
+        kwargs = {"uuid": "subj-a", "name": "Luna"}
+        kwargs.update(overrides)
+        return {kwargs["uuid"]: SubjectView(**kwargs)}
+
+    def test_a_label_no_rule_mentions_still_gets_its_device(self):
+        ruleless = _profile(rules=())
+
+        desired = build_all_discovery([ruleless], PREFIX, self._subject())
+
+        assert subject_config_topic("subj-a") in desired
+
+    def test_that_device_carries_the_tracker_driven_core(self):
+        """The four that are properties of the label rather than of any rule. Asserted by
+        name because "a device exists" would pass against an empty one."""
+        cmps = build_all_discovery([_profile(rules=())], PREFIX, self._subject())[subject_config_topic("subj-a")][
+            "cmps"
+        ]
+
+        assert {"detected", "count", "last_seen", "last_location"} <= set(cmps)
+        assert cmps["detected"]["p"] == "binary_sensor"
+
+    def test_it_carries_no_per_rule_counters(self):
+        """The other half of the same fact: the core is there, and the tiers that would
+        genuinely have nothing to count are not invented alongside it."""
+        cmps = build_all_discovery([_profile(rules=())], PREFIX, self._subject())[subject_config_topic("subj-a")][
+            "cmps"
+        ]
+
+        assert not [k for k in cmps if k.startswith("rule-")]
+
+    def test_a_label_opted_out_gets_no_device_even_with_a_rule(self):
+        """The opt-out still wins, and it is now the only thing that can suppress a
+        device."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+
+        desired = build_all_discovery([profile], PREFIX, self._subject(publish_to_ha=False))
+
+        assert subject_config_topic("subj-a") not in desired
+
+    def test_a_rule_mentioning_it_still_adds_the_breakdown(self):
+        """Rule-less is not a downgrade of the old behaviour — a label a rule *does*
+        mention keeps everything it had."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+
+        cmps = build_all_discovery([profile], PREFIX, self._subject())[subject_config_topic("subj-a")]["cmps"]
+
+        assert "detected" in cmps
+        assert [k for k in cmps if k.startswith("rule-1_")]
+
+    def test_the_vocabulary_is_what_bounds_the_devices(self):
+        """Two labels, two devices — and nothing invents a device for a label the caller
+        never named, which is what keeps a deleted label from becoming a bare-uuid card.
+        """
+        subjects = {
+            "subj-a": SubjectView(uuid="subj-a", name="Luna"),
+            "subj-b": SubjectView(uuid="subj-b", name="Clover"),
+        }
+
+        desired = build_all_discovery([_profile(rules=())], PREFIX, subjects)
+
+        subject_topics = {t for t in desired if "subject" in t}
+        assert subject_topics == {subject_config_topic("subj-a"), subject_config_topic("subj-b")}

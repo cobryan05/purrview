@@ -798,9 +798,11 @@ def count_entities(messages: Dict[str, Dict[str, Any]]) -> int:
 def subjects_in_scope(profiles: Sequence[ProfileView]) -> Dict[str, List[Tuple[RuleView, List[SourceView]]]]:
     """subject uuid → the (rule, sources) pairs that can produce events for it.
 
-    Only labels some enabled rule can actually match get a device. A label nothing
-    references would produce a device whose every entity was permanently zero, which is
-    worse than absent — it looks broken rather than inapplicable.
+    The *breakdown* on a label's device, not the gate on whether it has one — that is
+    `publish_to_ha` on the label itself, applied in `build_all_discovery`. A label no
+    rule mentions is simply absent here and gets the core four entities only, which is
+    the right answer: `Detected now` comes from the tracker and needs no rule, while the
+    per-rule counters genuinely have nothing to count.
     """
     out: Dict[str, List[Tuple[RuleView, List[SourceView]]]] = {}
     for profile in profiles:
@@ -878,11 +880,22 @@ def build_all_discovery(
                 messages[topic]["cmps"].update(payload["cmps"])
             else:
                 messages[topic] = payload
-    for subject_uuid, rule_scopes in subjects_in_scope(profiles).items():
-        subject = (subjects or {}).get(subject_uuid)
-        if subject is None or not subject.publish_to_ha:
+    # Driven by the *label vocabulary*, not by what the rules happen to mention. A label
+    # gets a device unless it is opted out, and its rule breakdown is whatever
+    # `subjects_in_scope` can find — commonly nothing.
+    #
+    # The earlier reading was that a rule-less label produces a device of permanent
+    # zeroes and so looks broken. That is true of the *event* tiers and false of the one
+    # people actually want: `Detected now` comes from the tracker, not from events, so it
+    # works for any label a model can detect and needs no rule at all. Requiring a rule
+    # meant inventing one purely to see whether the cat was in the room.
+    rule_scopes = subjects_in_scope(profiles)
+    for subject_uuid, subject in (subjects or {}).items():
+        if not subject.publish_to_ha:
             continue
-        messages[subject_config_topic(subject_uuid)] = build_subject_discovery(subject, rule_scopes, prefix)
+        messages[subject_config_topic(subject_uuid)] = build_subject_discovery(
+            subject, rule_scopes.get(subject_uuid, []), prefix
+        )
 
     rules_device = build_rules_discovery(profiles, prefix)
     if rules_device is not None:
@@ -1410,18 +1423,29 @@ class MqttBridge:
         )
 
     def _subject_views(self, profiles: Sequence[ProfileView]) -> Dict[str, SubjectView]:
-        """The subject labels in scope, named. A subject whose label has since been
-        deleted is dropped rather than shown as a bare uuid — its rule will stop
-        matching it too, so the device would only ever be a dead one."""
+        """Every label that should have a device, named.
+
+        The whole vocabulary, not just the labels some rule mentions: a label's
+        `Detected now` reads off the tracker and is useful with no rule at all, and
+        requiring one meant writing a rule you did not want purely to see whether
+        something was in the room. `publish_to_ha` on the label is the opt-out, and it is
+        the only one — see `build_all_discovery`.
+
+        Keyed off `_subject_names`, so a label deleted since the last reconcile drops out
+        by itself rather than becoming a device titled with a bare uuid.
+
+        `profiles` is unused now and kept deliberately: the rule breakdown still comes
+        from them (`subjects_in_scope`), and a signature that stopped mentioning them
+        would suggest subjects and profiles had become unrelated.
+        """
         return {
             uuid: SubjectView(
                 uuid=uuid,
-                name=self._subject_names[uuid],
+                name=name,
                 publish_to_ha=self._label_publish.get(uuid, (True, False))[0],
                 publish_per_source=self._label_publish.get(uuid, (True, False))[1],
             )
-            for uuid in subjects_in_scope(profiles)
-            if uuid in self._subject_names
+            for uuid, name in self._subject_names.items()
         }
 
     def _expand_subjects(self, rule: Any) -> Tuple[str, ...]:
