@@ -1805,7 +1805,24 @@ def _presence_bridge(per_source=True, name="Luna"):
     bridge, fake = _connected_bridge([profile])
     bridge._subject_slugs = {"subj-a": slugify(name)}
     bridge._label_publish = {"subj-a": (True, per_source)}
+    # A broker holding nothing yet, which is what a first run looks like. Tests that
+    # care about an existing retained value set this themselves.
+    bridge._published_source_states = set()
     return bridge, fake
+
+
+def _adopt_retained(bridge, relative_topics):
+    """Prime the bridge as `ensure_started` does, through the same normalisation.
+
+    Deliberately fed **absolute** topics, because that is what `read_retained` returns
+    — its pattern is relative but the broker delivers full topics. A test that assigned
+    `_published_source_states` directly in the relative form would encode the author's
+    assumption instead of the broker's behaviour, and did: the mismatch made every topic
+    read as unpublished, so the seed overwrote exactly the retained values it exists to
+    protect, and the test still passed.
+    """
+    absolute = {f"{PREFIX}/{topic}": b"ON" for topic in relative_topics}
+    bridge._published_source_states = {bridge._strip_prefix(topic) for topic in absolute}
 
 
 def _payloads(fake, topic):
@@ -1829,6 +1846,43 @@ class TestPerCameraPresenceIsSeeded:
         bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1")
 
         assert _payloads(fake, "subject/luna/source/kitchen/state") == ["OFF"]
+
+    def test_a_topic_that_already_has_a_value_is_left_alone(self):
+        """The regression the first version of this caused.
+
+        Seeding every subject on the first report wrote that frame's answer over a
+        perfectly good retained one — and the first frame after a restart is the worst
+        evidence in the run, with a Ring camera mid-escalation and one snapshot under
+        the confidence floor indistinguishable from an empty room. A cat that really was
+        in the garage went ON -> OFF -> ON, the OFF lasting until the next snapshot
+        thirty seconds later.
+        """
+        bridge, fake = _presence_bridge()
+        _adopt_retained(bridge, ["subject/luna/source/kitchen/state"])
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == []
+
+    def test_a_real_change_still_publishes_over_a_retained_value(self):
+        """Only the *seed* defers to what is retained. An actual arrival is new
+        evidence and must be published however stale the old answer was."""
+        bridge, fake = _presence_bridge()
+        _adopt_retained(bridge, ["subject/luna/source/kitchen/state"])
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON"]
+
+    def test_nothing_is_seeded_when_the_retained_read_failed(self):
+        """`None` means "the broker did not tell us". Seeding blind would overwrite
+        arbitrary topics, and a blank entity is a smaller fault than a wrong one."""
+        bridge, fake = _presence_bridge()
+        bridge._published_source_states = None
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == []
 
     def test_the_first_report_seeds_every_camera_it_covers(self):
         """Seeded per source as that source first reports, so a subject present on one

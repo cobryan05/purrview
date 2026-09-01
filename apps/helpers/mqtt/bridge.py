@@ -1396,6 +1396,10 @@ class MqttBridge:
         #: A camera that is not "known" is dropped from `_presence_by_source` entirely
         #: rather than contributing an empty set — abstaining, not voting absent.
         self._presence_known: Dict[str, bool] = {}
+        #: Per-camera state topics the broker already holds a retained value for, read
+        #: back at connect. Only the blanks are seeded — see `_unpublished_subjects`.
+        #: `None` means the read failed and nothing may be seeded this run.
+        self._published_source_states: Optional[Set[str]] = None
         #: subject label uuid → topic slug, refreshed with the profile snapshot.
         self._subject_slugs: Dict[str, str] = {}
         #: topic → the attributes payload last published there, so a writer that knows
@@ -1500,6 +1504,32 @@ class MqttBridge:
             # only, no retraction this pass. Worth a warning, not worth refusing to
             # bring the bridge up.
             logger.warning("Could not read retained discovery configs; starting from empty", exc_info=True)
+        # Which per-camera presence states already exist on the broker.
+        #
+        # Read rather than assumed, because the two mistakes are opposite and both are
+        # bad: seeding a topic that already has a value overwrites a *correct* retained
+        # answer with a guess from one frame — and the first frame after a restart is
+        # the worst evidence there is, with a Ring camera mid-escalation and a single
+        # snapshot below the confidence floor indistinguishable from an empty room. Not
+        # seeding at all leaves the entity `unknown` forever. The broker knows which
+        # case each topic is in.
+        try:
+            existing = await publisher.read_retained("subject/+/source/+/state")
+            # ⚠️ `read_retained` keys are **absolute** — the pattern is relative, but the
+            # broker delivers full topics, so every key carries the `<prefix>/` this
+            # module otherwise never writes. Stripping it here keeps the rest of the
+            # bridge in the relative form `publish` takes. Comparing the two forms
+            # directly matches nothing, which fails in the worst possible direction:
+            # every topic reads as unpublished, so the seed fires on all of them and
+            # overwrites the good retained values it exists to avoid touching.
+            self._published_source_states = {self._strip_prefix(topic) for topic in existing}
+            logger.info("MQTT bridge adopted %s retained per-camera state(s)", len(self._published_source_states))
+        except Exception:
+            # Treating everything as already-published is the safe direction: it seeds
+            # nothing, which is the pre-seeding behaviour, and never overwrites a good
+            # value with a guess.
+            self._published_source_states = None
+            logger.warning("Could not read retained per-camera states; not seeding this run", exc_info=True)
         try:
             await self.seed_counters()
         except Exception:
@@ -1667,6 +1697,7 @@ class MqttBridge:
             return
         profiles = await self._load_profiles()
         self._slugs = build_slug_index(profiles)
+        self._withdraw_unreported_presence(profiles)
         # Both need the slug index above — the restore maps inbound topics back to uuids,
         # and it must land before any armed state is published or a reconnect would
         # overwrite a disarmed rule with the default. Restore is once per process; the
@@ -2144,23 +2175,32 @@ class MqttBridge:
         self._presence_by_source[source_uuid] = incoming
         for subject_uuid in was_present ^ self._present_subjects():
             self._publish_subject_presence(subject_uuid)
-        # Changes only, except on this source's first report, which seeds *every*
-        # per-camera subject it covers.
+        # Changes only, except on this source's first report, which additionally fills
+        # in any per-camera topic that has never been published at all.
         #
-        # Without the seed a camera that has never seen a subject never publishes its
-        # topic at all — nothing ever "changed" there — so the entity has no state and
-        # HA reports `unknown` forever. Observed on a live device: six of seven
-        # per-camera sensors blank, indefinitely, and back to blank after every restart.
-        # `unknown` is worse than it looks: it is not `unavailable`, so it reads as a
-        # working sensor, while `is_state(..., "off")` never matches it.
+        # Without that a camera which has never seen a subject never publishes its topic
+        # — nothing ever "changed" there — so the entity has no state and HA reports
+        # `unknown` forever. Observed on a live device: six of seven per-camera sensors
+        # blank, indefinitely, and back to blank after every restart. `unknown` is worse
+        # than it looks: it is not `unavailable`, so it reads as a working sensor, while
+        # `is_state(..., "off")` never matches it.
+        #
+        # **Only topics with no retained value.** Seeding every subject on the first
+        # report — which is what this did at first — writes that frame's answer over a
+        # perfectly good retained one, and the first frame after a restart is the worst
+        # evidence in the run: a Ring camera is mid-escalation, and one snapshot scoring
+        # under the confidence floor is indistinguishable from an empty room. That
+        # turned a correctly-retained ON into OFF and back to ON thirty seconds later —
+        # a bounce introduced by the fix for the blank ones.
         #
         # Once per source per connection, not per frame: presence is evaluated several
         # times a second, and re-seeding each time would make retained state the
         # noisiest thing on the broker. `previous is None` is exactly "this source has
-        # not reported since the bridge came up", which also re-seeds after a watcher
+        # not reported since the bridge came up", which also re-runs after a watcher
         # restart drops it from the map.
-        seeding = previous is None
-        for subject_uuid in self._subject_slugs if seeding else (previous or set()) ^ incoming:
+        changed = (previous or set()) ^ incoming
+        subjects = (changed | self._unpublished_subjects(source_uuid)) if previous is None else changed
+        for subject_uuid in subjects:
             self._publish_subject_source_presence(subject_uuid, source_uuid)
         if at is None:
             return
@@ -2200,6 +2240,39 @@ class MqttBridge:
         state = "ON" if subject_uuid in self._present_subjects() else "OFF"
         self._publisher.publish(f"{subject_base_topic(slug)}/state", state, retain=True)
 
+    def _strip_prefix(self, topic: str) -> str:
+        """An absolute topic as the relative one `publish` would have been given."""
+        head = f"{self._prefix}/"
+        return topic[len(head) :] if topic.startswith(head) else topic
+
+    def _unpublished_subjects(self, source_uuid: str) -> Set[str]:
+        """Subjects whose per-camera topic for this source has no retained value.
+
+        These are the blanks — an entity Home Assistant has created from discovery and
+        has never been given a state for. Everything else is left alone, because a
+        retained value is a real answer from a previous run and this frame is not
+        necessarily a better one.
+
+        `None` means the retained read failed, in which case nothing is seeded: not
+        knowing which topics exist makes overwriting the wrong ones the only possible
+        outcome, and a blank entity is a smaller fault than a wrong one.
+        """
+        if self._published_source_states is None:
+            return set()
+        source_slug = self._slugs.source_slug(source_uuid)
+        if source_slug is None:
+            return set()
+        blanks = set()
+        for subject_uuid, slug in self._subject_slugs.items():
+            topic = f"{subject_base_topic(slug)}/source/{source_slug}/state"
+            if topic not in self._published_source_states:
+                blanks.add(subject_uuid)
+                # Recorded as published now, so a later re-seed (a watcher restart drops
+                # the source and `previous` goes back to None) does not fill it again
+                # over whatever it has since become.
+                self._published_source_states.add(topic)
+        return blanks
+
     def _publish_subject_source_presence(self, subject_uuid: str, source_uuid: str) -> None:
         """One camera's own answer for one subject.
 
@@ -2228,6 +2301,43 @@ class MqttBridge:
         if source_name is not None:
             updates["lastSource"] = source_name
         self._publish_subject_attributes(subject_base_topic(slug), **updates)
+
+    def _withdraw_unreported_presence(self, profiles: Sequence[ProfileView]) -> None:
+        """Mark every camera's presence unbelievable until it has actually reported.
+
+        The app comes back online before it has anything true to say. `{prefix}/status`
+        goes `online` the moment the broker connection is up, while every
+        `presence/<camera>/status` still holds the retained `online` from the previous
+        run and every state topic still holds the previous run's answer — so for about a
+        second after a restart the entities are *available and showing stale state*.
+        Home Assistant recorded that as a real transition: `on` at 21:17:45, then
+        `unavailable` at 21:17:46 once the loop noticed nothing had been analysed yet,
+        then the truth. An automation watching for `on` fires on the stale value.
+
+        So the withdrawal is published up front rather than waited for. A camera that
+        has not produced a frame since this process started genuinely has no verdict,
+        and `unavailable` is the honest way to say so — the same thing the loop concludes
+        a second later, minus the second.
+
+        Only for sources with no entry in `_presence_known`, so this is a startup
+        correction and not something that fights a running watcher on every reconcile.
+        """
+        if self._publisher is None:
+            return
+        seeded = False
+        for profile in profiles:
+            for source in profile.sources:
+                if source.uuid not in self._presence_known:
+                    self._publish_presence_availability(source.uuid, False)
+                    seeded = True
+        # The app-wide flag needs the same correction and does not get it from the loop
+        # above: `_publish_presence_availability` only republishes it when the *any*
+        # answer changes, and going from "nothing known" to "one camera known-false"
+        # leaves it false throughout. Its retained value is still the previous run's
+        # `online`, which would leave the device-level `Detected now` available and
+        # stale for exactly as long as the per-camera ones were.
+        if seeded and not any(self._presence_known.values()):
+            self._publisher.publish(PRESENCE_ANY_AVAILABILITY_TOPIC, "offline", retain=True)
 
     def _publish_presence_availability(self, source_uuid: str, known: bool) -> None:
         """Mark one camera's presence verdict believable or not, and keep the app-wide
