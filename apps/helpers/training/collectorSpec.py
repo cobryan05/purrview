@@ -681,10 +681,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                     "label": "Also flag disagreements between models",
                     "description": (
                         "When two of the models above put incompatible labels on the same object "
-                        "(one says cat, the other says dog), flag it — two independently trained "
+                        "(one says car, the other says truck), flag it — two independently trained "
                         "models disagreeing is a strong signal, and both boxes get marked with the "
                         "other model named.\n\n"
-                        "A parent/child pair (Animal vs Cat) is not a disagreement and is never "
+                        "A parent/child pair (Vehicle vs Car) is not a disagreement and is never "
                         "flagged. Has no effect with only one model configured, and unlike the "
                         "check above it works with every model type — including end-to-end exports "
                         "that cannot report runner-up classes at all."
@@ -796,7 +796,7 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                     "label": "Max Frames Per Track",
                     "description": (
                         "Hard cap on how many distinct crops one track can contribute during a single "
-                        "visit. A safety valve for an animal that never stops moving — appearance novelty, "
+                        "visit. A safety valve for a subject that never stops moving — appearance novelty, "
                         "not this number, is what normally decides. Keep it around 20-30; a low cap "
                         "discards the pose variation the detector needs."
                     ),

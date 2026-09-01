@@ -970,7 +970,7 @@ function buildLifetimeRow(lifetime, ctx) {
     + 'zone. A confident detection still moves it.\n\n'
     + 'It does not extend the lifetime: an anchored track still dies after the TTL beside '
     + 'it with no detections at all, so pair this with a long TTL.\n\n'
-    + 'For furniture — a litter box, a feeder, a door. Not for animals, which really do move.';
+    + 'For fixtures — a bin, a parked vehicle, a door. Not for subjects that really do move.';
   anchor.addEventListener('change', ctx.onAnyChange);
   row.appendChild(wfield('Anchor', anchor, { help: anchor.title }));
 
@@ -1642,7 +1642,7 @@ function buildRuleRow(rule, ctx) {
       sensitivity,
       'How big a change to a single pixel counts as movement, 0–1. Raise it on a noisy or '
       + 'infrared camera that reports motion with nothing in front of it; lower it to catch '
-      + 'a dark animal against a dark floor. This is the other half of “area” beside it: '
+      + 'a dark subject against a dark floor. This is the other half of “area” beside it: '
       + 'sensitivity decides which pixels changed, area decides how many is enough. '
       + '0 means use the default (0.1).',
     ],
