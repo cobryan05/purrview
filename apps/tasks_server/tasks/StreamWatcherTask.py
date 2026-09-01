@@ -183,6 +183,13 @@ class StreamWatcherTask(Task):
         #: to two overlapping `_service_source` calls — which would mean two reads on
         #: one provider and two `step()`s into one tracker.
         self._inflight: Dict[str, asyncio.Task] = {}
+        #: Source uuids the UI has asked to wake onto their live tier, set by
+        #: `handle_command` and drained by `_honour_live_requests` on the next loop
+        #: pass. A set rather than a call, because `handle_command` runs inside a
+        #: request handler and may not do I/O (see `Task.handle_command`); draining it
+        #: at loop level rather than in `_service_source` is what makes the button act
+        #: while the source is still blocked on its previous (30 s+) snapshot read.
+        self._live_requests: Set[str] = set()
         self._pin_ids: Dict[str, Optional[str]] = {}
         self._dry_run: bool = False
         self._analysis_fps_cap: Optional[float] = None
@@ -1324,6 +1331,12 @@ class StreamWatcherTask(Task):
                 # disarm has to close what it closes even when no source is due, and
                 # "stop recording now that everyone is home" must not wait on a frame.
                 await self._apply_rule_arming(now)
+                # Same placement argument again, and the strongest case of the three:
+                # an idle Ring source spends nearly all its time blocked inside
+                # `getNextImage` waiting for a cloud snapshot, so a "go live" honoured
+                # in `_service_source` would not act until the snapshot it is meant to
+                # replace had already arrived.
+                await self._honour_live_requests()
                 # Third loop-level pass with the same justification: the case it exists
                 # for is a camera that has stopped producing frames, so the per-frame
                 # presence publish is precisely the thing that will not run.
@@ -1524,6 +1537,51 @@ class StreamWatcherTask(Task):
                         self._resolve_slot_names(signal, pipeline)
                         self._note_event(signal)
                         await self._dispatch(signal, pipeline)
+
+    @staticmethod
+    def _frame_due_in_s(pipeline: WatchPipeline, now: float) -> Optional[float]:
+        """Seconds until this source's next frame is overdue, or None if it has no view.
+
+        Sent as a *duration* rather than the provider's deadline: the deadline is on
+        this process's `time.monotonic()` clock, which means nothing in a browser.
+        Clamped at zero so an overdue source reads as 0 rather than a negative number
+        the view would have to interpret.
+        """
+        try:
+            deadline = pipeline.provider.next_frame_expected_by()
+        except Exception:
+            logger.debug("next_frame_expected_by() failed for %r", pipeline.provider, exc_info=True)
+            return None
+        if deadline is None:
+            return None
+        return round(max(0.0, deadline - now), 1)
+
+    async def _honour_live_requests(self) -> None:
+        """Wake any source the UI asked for live video on, and forget the request.
+
+        Only providers with a live tier of their own can answer this — today that is
+        the Ring bridge, whose idle tier is a cloud snapshot every 30–90 s. Anything
+        else already *is* live, so the absence of `request_live` is not an error; the
+        button that raises this is only offered for providers that advertise it (see
+        `supportsGoLive` in the live-preview payload).
+
+        Drained before the attempt, not after: a provider that raises must not leave a
+        request behind to be retried on every pass for the life of the run.
+        """
+        if not self._live_requests:
+            return
+        requested, self._live_requests = self._live_requests, set()
+        for source_uuid in requested:
+            pipeline = self._pipeline_for(source_uuid)
+            request_live = getattr(pipeline.provider, "request_live", None) if pipeline else None
+            if request_live is None:
+                continue
+            try:
+                await request_live()
+                self.log(f"Live video requested for '{pipeline.source_name}'")
+            except Exception:
+                logger.exception("Failed to request live video for source %s", source_uuid)
+                self.log(f"Could not request live video for '{pipeline.source_name}'")
 
     def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:
         """Record a failed attempt, and say so the first time it becomes a fault.
@@ -2549,14 +2607,23 @@ class StreamWatcherTask(Task):
         }
 
     async def handle_command(self, command: str, params: dict[str, Any]) -> None:
-        """Arm or disarm a rule from the status panel.
+        """Arm or disarm a rule from the status panel, or wake a source onto live video.
 
-        Honours the base contract's "no I/O here": this only records the new value on the
+        Honours the base contract's "no I/O here": `request_live` only adds a uuid to a
+        set, and `set_rule_armed` only records the new value on the
         bridge, which is a dict write plus a non-blocking publish enqueue. The running
         loop picks it up on its next pass through `_apply_rule_arming`, exactly as it
         picks up a change made from Home Assistant — there is no second code path, so an
         in-app disarm closes an open event the same way and cannot drift from the switch.
         """
+        if command == "request_live":
+            source_uuid = str(params.get("sourceUuid") or "")
+            if not source_uuid:
+                raise ValueError("request_live requires a sourceUuid")
+            if self._pipeline_for(source_uuid) is None:
+                raise ValueError(f"No source {source_uuid!r} in this watcher")
+            self._live_requests.add(source_uuid)
+            return
         if command != "set_rule_armed":
             raise ValueError(f"Unknown command {command!r}")
         rule_uuid = str(params.get("ruleUuid") or "")
@@ -2734,6 +2801,17 @@ class StreamWatcherTask(Task):
                 "lastError": pipeline.health.last_error,
                 "buffer": pipeline._buffer_label(),
                 "frameAgeS": (round(now - pipeline.health.last_frame_at, 2) if pipeline.health.last_frame_at else None),
+                # How long the *provider* says the next frame may take. Without it the
+                # view had to guess from `analysisFps`, which describes how often the
+                # watcher asks — not how often the source answers — and so reported a
+                # perfectly healthy Ring camera, 30 s into its 90 s snapshot cadence,
+                # as "the source may be down". None means "no opinion" and the caller
+                # keeps its own pacing (see `ImageProvider.next_frame_expected_by`).
+                "frameDueInS": self._frame_due_in_s(pipeline, now),
+                # Whether this source can be woken onto a live tier on demand — the
+                # `request_live` command below. False for a source that is already
+                # live, which is most of them.
+                "supportsGoLive": hasattr(pipeline.provider, "request_live"),
                 # Pre-tracker, so an empty tracks list next to a populated detections
                 # list localises the problem to the tracker rather than the model.
                 "detections": [

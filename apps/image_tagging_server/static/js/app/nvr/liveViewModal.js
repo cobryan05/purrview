@@ -22,7 +22,7 @@
  *  - polling stops entirely while the tab is hidden or the view is paused.
  */
 import { createModalShell, Logger, toast } from '/app-static/js/ui/utils/index.js';
-import { fetchTaskLivePreview } from '/app-static/js/shared/api/tasks.js';
+import { fetchTaskLivePreview, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 // Shared with the Live card thumbnails: the same box must mean the same thing in the
@@ -155,6 +155,31 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     if (!state.paused) void poll({ immediate: true });
   }, { testid: 'watch-live-pause' });
   bar.appendChild(pauseBtn);
+
+  // Only some sources have anything to go live *from*. A Ring camera idles on a cloud
+  // snapshot every 30–90 s and can be woken onto real video on demand; an RTSP camera
+  // is already live, and a button offering to make it live again would be noise. The
+  // provider says which it is (`supportsGoLive`), so this stays hidden until a poll
+  // has answered — never guessed from the source's name or type.
+  const goLiveBtn = button('Go live', async () => {
+    if (!state.sourceUuid) return;
+    goLiveBtn.disabled = true;
+    try {
+      await sendTaskCommand({ taskUuid, command: 'request_live', params: { sourceUuid: state.sourceUuid } });
+      // Deliberately not "now live": the request is a wake-up published to the camera,
+      // and the stream takes several seconds to come up. Promising more than that is
+      // how the button reads as broken.
+      toast('Asked the camera for live video — it takes a few seconds to come up.', 4000);
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not request live video', 5000, 'error');
+    } finally {
+      goLiveBtn.disabled = false;
+    }
+  }, { testid: 'watch-live-go-live' });
+  goLiveBtn.title = 'Wake this camera onto its live stream instead of waiting for the next snapshot.';
+  goLiveBtn.hidden = true;
+  bar.appendChild(goLiveBtn);
 
   bar.appendChild(checkbox('Detections', true, v => { state.show.detections = v; draw(); }, 'watch-live-show-detections'));
   bar.appendChild(checkbox('Tracks', true, v => { state.show.tracks = v; draw(); }, 'watch-live-show-tracks'));
@@ -510,15 +535,34 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
 
   function renderSide(preview) {
     const age = preview.frameAgeS;
-    const stale = age != null && preview.analysisFps && age > Math.max(5, 5 / preview.analysisFps);
+    goLiveBtn.hidden = !preview.supportsGoLive;
+    // A slow source is not a broken one. The old rule derived "late" from
+    // `analysisFps`, which is how often the *watcher asks* — so an idle Ring camera,
+    // 30 s into a snapshot cadence its own provider puts at 90 s, was reported as
+    // "the source may be down" every single time anyone opened this view.
+    //
+    // `frameDueInS` is the provider's own deadline for the next frame, so while it is
+    // still counting down the source is on schedule by definition. The fps guess is
+    // kept only for providers with no opinion, which is what it was written for.
+    const dueIn = preview.frameDueInS;
+    const overdue = dueIn != null
+      ? dueIn <= 0
+      : age != null && preview.analysisFps && age > Math.max(5, 5 / preview.analysisFps);
+    // The watcher's own health beats both: it decides a source is failing using the
+    // same provider deadline, and it has seen every read, not just this poll's.
+    const failing = preview.sourceState === 'failed' || preview.sourceState === 'reconnecting';
+    const stale = overdue || failing;
     statusLine.classList.toggle('watch-live-status--error', Boolean(preview.lastError) || stale);
+    const dueSuffix = dueIn != null && dueIn > 0 ? ` Next frame due in ${Math.round(dueIn)}s.` : '';
     statusLine.textContent = preview.lastError
       ? `Source error: ${preview.lastError}`
       : stale
         ? `No new frame for ${age}s — the source may be down.`
-        : preview.dryRun
-          ? 'Watching (dry run — no actions will fire).'
-          : 'Watching.';
+        : preview.sourceState === 'connecting'
+          ? `Connecting to the source…${dueSuffix}`
+          : preview.dryRun
+            ? `Watching (dry run — no actions will fire).${dueSuffix}`
+            : `Watching.${dueSuffix}`;
 
     // Counts sit next to each other because the *comparison* is the diagnosis:
     // detections without tracks, or tracks without events, each point somewhere
@@ -529,6 +573,9 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
       ['Open events', (preview.openEvents ?? []).length],
       ['Frames analysed', preview.framesAnalysed ?? 0],
       ['Frame age (s)', age == null ? '—' : age.toFixed(2)],
+      // Beside the age on purpose: the pair is the diagnosis. "40s old, due in 50s" is
+      // a healthy slow camera; "40s old, due in 0s" is one that has stopped.
+      ['Next frame due in (s)', dueIn == null ? '—' : dueIn.toFixed(1)],
       ['Analysis', preview.frameWidth ? `${preview.frameWidth}×${preview.frameHeight} @ ${preview.analysisFps} fps` : '—'],
       ['Models', (preview.modelNames ?? []).join(', ') || '— none configured —'],
       ['Buffer', preview.buffer ?? '—'],
