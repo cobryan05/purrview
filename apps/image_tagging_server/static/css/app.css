@@ -4629,6 +4629,27 @@ button.filter-active {
   overflow: hidden;
 }
 
+/* ===== Run Model on Results (app/review/runModelOnResults.js) =====
+   Every row keeps its natural height; only the model list gives ground. Without this
+   the flex column shrinks the sliders and selects past their own content the moment
+   the dialog is taller than the window, and their labels overflow onto the list below
+   — visible as nothing at all, until a click on a model checkbox lands on the label
+   sitting invisibly on top of it. The picker row opts back in via its own inline
+   `flex:1`, which wins over this. */
+.run-model-on-results-dialog > * {
+  flex-shrink: 0;
+}
+
+/* ⚠️ `.inference-conf-row` is shared with the inference side panel, where it is a
+   *horizontal* row inside a row and its `flex: 1` means "take the leftover width".
+   Here it is a child of a flex **column**, so the same declaration means "take the
+   leftover height" — it grew tall, squeezed the model list below its own min-height,
+   and the list overflowed its parent while this row painted on top of it. The symptom
+   was a model checkbox that could be seen but not clicked. */
+.run-model-on-results-dialog > .inference-conf-row {
+  flex: 0 0 auto;
+}
+
 /* ===== File Browser (ui/fileBrowser.js) ===== */
 .fb-container {
   display: flex;

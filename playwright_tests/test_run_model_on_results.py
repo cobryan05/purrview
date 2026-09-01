@@ -1011,6 +1011,89 @@ class TestRunModelFullFlow:
         # reached the route handler. Poll the thing under test.
         wait_until(page, lambda: cancel_called["n"] >= 1, "Expected a cancel/delete POST after clicking Cancel")
 
+    def test_cancel_keeps_what_the_run_already_found(self, page: Page, base_url: str):
+        """Cancelling a long run means "this is enough", not "throw it away".
+
+        The task streams its candidates into the preview run as it goes, so they are
+        already in the database when Cancel is pressed — but the dialog used to close
+        on a run row nothing ever opened again, which from the user's side is
+        indistinguishable from discarding the work. The negative half matters as much
+        as the positive one: the *error* path deletes the run, and this path must not.
+        """
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG])
+        _mock_models(page, ["yolo9-detector"])
+        preview_calls = _mock_preview_runs(page)
+
+        def handle_create(route: Route):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "configUuid": "cfg-1"}),
+            )
+
+        page.route("**/api/tasks/configs/create", handle_create)
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+            ),
+        )
+        page.route(
+            "**/api/tasks/instances/get",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "tasks": {
+                            "task-1": {
+                                "config": {
+                                    "uuid": "cfg-1",
+                                    "typename": "PreviewModelRelabelTask",
+                                    "name": "x",
+                                    "params": {},
+                                },
+                                "instance": {"uuid": "task-1", "status": "running"},
+                                "progress": 10.0,
+                                "statusMessage": "",
+                                "statusActions": [],
+                                "logLines": [],
+                                "isPausedInPlace": False,
+                            }
+                        },
+                    }
+                ),
+            ),
+        )
+        ok = lambda route: route.fulfill(  # noqa: E731
+            status=200, content_type="application/json", body=json.dumps({"status": "success"})
+        )
+        page.route("**/api/tasks/instances/cancel", ok)
+        page.route("**/api/tasks/instances/delete", ok)
+
+        _navigate_to_review(page, base_url)
+        _run_model_btn(page).click()
+
+        dialog = page.locator(".run-model-on-results-dialog")
+        expect(dialog).to_be_visible()
+        _check_model_in_dialog(dialog, "yolo9-detector")
+        dialog.locator("button", has_text="Run").click()
+
+        cancel_btn = dialog.get_by_test_id("run-model-progress-cancel")
+        expect(cancel_btn).to_be_visible(timeout=5000)
+        # Same barrier as the test above: "Processing…" is only written once the run
+        # has a uuid, which is the window this test needs the click to land in.
+        expect(dialog).to_contain_text("Processing", timeout=10000)
+        cancel_btn.click()
+
+        expect(page.locator(".preview-run-modal")).to_be_visible(timeout=10000)
+        assert not preview_calls["deleted"], f"a cancelled run must be kept, got: {preview_calls['deleted']}"
+
     def test_cancel_before_the_task_uuid_arrives_still_cancels_the_run(self, page: Page, base_url: str):
         """Cancelling during the start round-trip must not orphan the task.
 

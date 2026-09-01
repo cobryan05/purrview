@@ -1046,7 +1046,20 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   let imageScope = preResolvedImageScope;
 
   const { dialog, open, close } = createModalShell();
-  dialog.style.cssText = 'max-width:520px;max-height:85vh;display:flex;flex-direction:column;overflow-y:auto;';
+  // The dialog does not scroll at any ordinary window size. It used to scroll always
+  // (`overflow-y:auto` on the whole thing), which put the Run button below the fold on
+  // a laptop: the model list is the only part that grows without bound, so it is the
+  // only part that gets a scrollbar — see `modelListEl`, which flexes down to fit
+  // instead of pushing the footer off the bottom.
+  //
+  // ⚠️ `auto`, not `hidden`. On a viewport too short for even the collapsed layout,
+  // `hidden` does not degrade — the rows shrink past their own content and a label
+  // lands on top of the model list, where it silently swallows clicks on the
+  // checkboxes underneath (caught by the Playwright suite at its 720p viewport, after
+  // a *wording* change added one line to the note above the buttons). A scrollbar in
+  // the case where nothing else can fit is the honest failure mode.
+  dialog.style.cssText = 'width:min(560px,94vw);max-width:none;max-height:min(88vh,100%);'
+    + 'display:flex;flex-direction:column;gap:0.7em;overflow-y:auto;';
   dialog.classList.add('run-model-on-results-dialog');
 
   const title = document.createElement('h3');
@@ -1167,7 +1180,14 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
 
   // ── Model + inference-input pickers, side by side to keep this compact ──
   const pickerRow = document.createElement('div');
-  pickerRow.style.cssText = 'display:flex;gap:1em;';
+  // `flex:1;min-height:0` is what lets the model list absorb the leftover height
+  // rather than the dialog growing past the viewport. min-height:0 is required —
+  // without it a flex child refuses to shrink below its content.
+  // `1 0 auto`, not `1`: it grows into spare height, but never shrinks below the
+  // model list's own minimum. Allowing that shrink is what pushed the list out of its
+  // parent's box on a short window — where, the parent's overflow being visible, it
+  // was painted under the rows that follow it.
+  pickerRow.style.cssText = 'display:flex;gap:1em;flex:1 0 auto;min-height:0;';
   dialog.appendChild(pickerRow);
 
   const modelLabelRow = document.createElement('div');
@@ -1184,10 +1204,13 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   modelLabelRow.append(modelLabel, modelRefreshBtn);
 
   const modelRow = document.createElement('div');
-  modelRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;flex:1;';
+  modelRow.style.cssText = 'display:flex;flex-direction:column;gap:0.3em;flex:1;min-height:0;';
   const modelListEl = document.createElement('div');
   modelListEl.className = 'inference-model-list run-model-on-results-model-list';
-  modelListEl.style.cssText = 'max-height:180px;overflow-y:auto;border:1px solid #333;border-radius:4px;padding:0.3em;';
+  // Floor, not ceiling: it takes whatever height is left over (min 6rem) and scrolls
+  // inside that, so a box of forty models never lengthens the dialog.
+  modelListEl.style.cssText = 'flex:1;min-height:6rem;max-height:22rem;overflow-y:auto;'
+    + 'border:1px solid #333;border-radius:4px;padding:0.3em;';
   // ── Multi-model conflict policy ──────────────────────────────────────
   // Two models running over the same scope can each propose on the same bbox.
   // Until now the last one to run silently won (a bare `.set()` in the merge
@@ -1234,6 +1257,27 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   // `_renderModelList` can toggle it whether it runs at initial load or
   // from a later refresh click, without a temporal-dead-zone reference error.
   let runBtn = null;
+  /** Assigned beside the buttons below; same temporal-dead-zone reason as `runBtn`. */
+  let saveNote = null;
+
+  /**
+   * Say whether this run's output will be kept.
+   *
+   * Only detector runs are persisted (`createPreviewRun` below); a classifier run's
+   * "apply" is a free-form bulk image action chosen afterwards, which has nothing to
+   * persist a decision against. Saying "saved" for both would be a promise the
+   * classifier branch cannot keep.
+   */
+  function _syncSaveNote() {
+    if (!saveNote) return;
+    const isClassifier = selectedClassifier !== null;
+    saveNote.textContent = isClassifier
+      ? 'Results are held in this session only — triage them when the run finishes.'
+      : 'Every result is saved as the run goes, under the “Saved Previews” button on '
+        + 'the Review toolbar. Closing this window or cancelling part way through keeps '
+        + 'what has been found so far. Saved runs are swept automatically after a week — '
+        + 'or a day once everything in one has been triaged — so pin a run there to keep it.';
+  }
 
   async function _loadModels() {
     models = [];
@@ -1526,6 +1570,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     addNewRow.style.display = (isClassifier || cropMode === 'bbox') ? 'none' : 'flex';
     if (isClassifier || cropMode === 'bbox') newBoxModeSelect.value = 'none';
     _syncConflictRow();
+    _syncSaveNote();
   }
   cropModeSelect.addEventListener('change', _syncCropModeUI);
   newBoxModeSelect.addEventListener('change', _syncCropModeUI);
@@ -1558,6 +1603,18 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   dialog.appendChild(progressWrap);
 
   // ── Buttons ───────────────────────────────────────────────────────────
+  // What Run actually does with its output, said before it is pressed. A detector
+  // run is persisted the moment it starts, so it survives this dialog closing, a
+  // reload, and a cancel half way through — which is not guessable from a button
+  // labelled "Run", and is the difference between "I daren't close this" and
+  // "I'll triage it later".
+  saveNote = document.createElement('div');
+  saveNote.className = 'run-model-on-results-save-note';
+  saveNote.dataset.testid = 'run-model-save-note';
+  saveNote.style.cssText = 'font-size:0.8em;color:#aaa;';
+  dialog.appendChild(saveNote);
+  _syncSaveNote();
+
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:0.5em;justify-content:flex-end;';
   runBtn = document.createElement('button');
@@ -1573,17 +1630,35 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   let taskUuid = null;
   let pollTimer = null;
   let cancelled = false;
+  /**
+   * The persisted run this dialog is filling, once Run has created it.
+   *
+   * Dialog-scoped rather than local to the Run handler because Cancel needs it: the
+   * candidates found before the cancel are already in it, and the whole point of
+   * cancelling a long run is usually "this is enough, let me look at it".
+   */
+  let previewRun = null;
+  /** Settles the in-flight `_pollUntilDone` when polling is stopped from outside it. */
+  let resolvePoll = null;
 
   function _stopPolling() {
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    // Without this the run loop stays parked on a promise whose only wake-up was the
+    // timer just cleared.
+    resolvePoll?.(null);
+    resolvePoll = null;
   }
 
   progressCancelBtn.addEventListener('click', async () => {
     cancelled = true;
     progressCancelBtn.disabled = true;
+    progressLabel.textContent = 'Cancelling — keeping what has been found so far…';
     _stopPolling();
     if (taskUuid) {
       try {
+        // `cancelTasks` waits out the task's stop grace period, and the task flushes
+        // its buffered candidates into the run as it winds down — so once this
+        // resolves, everything found before the click is in the database.
         await cancelTasks({ taskUuids: [taskUuid] });
         await deleteTasks({ taskUuids: [taskUuid] });
       } catch (err) {
@@ -1591,6 +1666,21 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
       }
     }
     close();
+    // Cancel used to end here, leaving a run row full of candidates that nothing
+    // ever opened — indistinguishable, from the user's side, from having thrown the
+    // work away. Hand it to the triage panel exactly as a completed run does.
+    if (previewRun) {
+      const runUuid = previewRun.uuid;
+      previewRun = null;
+      toast('Run cancelled — the candidates found so far are under “Saved Previews”.', 4000);
+      try {
+        const { openPreviewRunModal } = await import('/app-static/js/app/review/previewPanel.js');
+        await openPreviewRunModal({ runUuid, labels: ctx.labels, onApplied: ctx.refresh });
+      } catch (err) {
+        Logger.error('Failed to open the cancelled run for triage:', err);
+        toast('The partial results were saved; open them from “Saved Previews”.', 5000, 'warning');
+      }
+    }
   });
 
   function _setModelListDisabled(disabled) {
@@ -1702,7 +1792,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     const runAddNew = cropMode === 'image' && _addNew();
     const runRelabelExisting = runAddNew ? _relabelExisting() : true;
 
-    let previewRun = null;
+    previewRun = null;
     if (!isClassifier) {
       try {
         previewRun = await createPreviewRun({
@@ -1903,6 +1993,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
 
   async function _pollUntilDone(uuid, totalImages, onUpdate) {
     return new Promise((resolve, reject) => {
+      resolvePoll = resolve;
       const _tick = async () => {
         if (cancelled) { resolve(null); return; }
         try {
