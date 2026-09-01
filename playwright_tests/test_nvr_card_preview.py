@@ -25,6 +25,13 @@ from playwright_tests.waits import wait_until
 
 SECOND_SOURCE = {"sourceUuid": "src-2", "sourceName": "Garden cam"}
 
+# One page holds MAX_TILES (9) tiles, so anything testing paging needs more than that.
+TILES_PER_PAGE = 9
+
+
+def _cams(count: int) -> list:
+    return [{"sourceUuid": f"src-{i}", "sourceName": f"Cam {i}"} for i in range(1, count + 1)]
+
 
 def _multi_source_profile() -> dict:
     """A profile whose second source is enabled — the wide-card case."""
@@ -235,6 +242,33 @@ class TestADeadSourceIsImpossibleToMiss:
         expect(page.locator("[data-testid='nvr-offline-pill']")).to_be_hidden()
         expect(page.locator(".nvr-preview-tile--stale")).to_have_count(0)
 
+    def test_a_slow_camera_within_its_own_cadence_is_not_reported_as_dead(self, page: Page, base_url: str):
+        """The Ring regression.
+
+        A 30 s-old frame is a fault on an RTSP stream and a normal Tuesday on a snapshot
+        camera, and the card judged both against one flat 15 s threshold — so a healthy
+        Ring camera showed NO SIGNAL across its picture for most of every cycle, which is
+        precisely how a card teaches its owner to ignore a real outage. `frameDueInS` is
+        the provider's own deadline and it settles the question; the drill-down's status
+        line had this right first.
+        """
+        _mock(page, preview=_preview(frameAgeS=30.0, frameDueInS=60.0))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-stat']").first).to_contain_text("1 track")
+        expect(page.locator(".nvr-preview-tile--stale")).to_have_count(0)
+        expect(page.locator("[data-testid='nvr-offline-pill']")).to_be_hidden()
+
+    def test_a_slow_camera_past_its_own_deadline_still_is(self, page: Page, base_url: str):
+        """The other half — otherwise the fix would simply have switched the alarm off.
+        The same age, and the only difference is that the provider's deadline has run
+        out."""
+        _mock(page, preview=_preview(frameAgeS=30.0, frameDueInS=0.0))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-stat']").first).to_contain_text("no signal")
+        expect(page.locator(".nvr-preview-tile--stale")).to_have_count(1)
+
     def test_a_source_still_connecting_is_not_reported_as_dead(self, page: Page, base_url: str):
         """Coming up is expected and bounded. Shouting about it is how a health signal
         teaches people to ignore it."""
@@ -247,7 +281,7 @@ class TestADeadSourceIsImpossibleToMiss:
 
 
 class TestTheCardCountsItsCameras:
-    """Only four sources get thumbnails, so on a bigger profile "no red tiles" stops
+    """Only one page of sources gets thumbnails, so on a bigger profile "no red tiles" stops
     meaning "no problems" — the strip is showing a subset and nothing says so. The
     counter is over every source the watcher has, tiled or not, and it reads its health
     from the status payload the pane already fetches."""
@@ -265,17 +299,17 @@ class TestTheCardCountsItsCameras:
         expect(page.locator("[data-testid='nvr-source-count']")).to_have_text("0/1 live")
 
     def test_a_source_with_no_tile_still_reaches_the_count(self, page: Page, base_url: str):
-        """The gap this closes: source six has no thumbnail, so before the counter
-        existed its being dark was not represented anywhere on the card."""
-        sources = [{"sourceUuid": f"src-{i}", "sourceName": f"Cam {i}"} for i in range(1, 7)]
-        sources[5]["health"] = "failed — no frames for 1h 2m, still retrying"
+        """The gap this closes: the last camera is on page two, so before the counter
+        existed its being dark was not represented anywhere on the visible card."""
+        sources = _cams(12)
+        sources[11]["health"] = "failed — no frames for 1h 2m, still retrying"
         _mock(page, profiles=[_multi_source_profile()], sources=sources)
         _open_live_pane(page, base_url)
 
-        expect(page.locator("[data-testid='nvr-source-count']")).to_have_text("5/6 live")
-        expect(page.locator("[data-testid='nvr-offline-pill']")).to_contain_text("Cam 6")
+        expect(page.locator("[data-testid='nvr-source-count']")).to_have_text("11/12 live")
+        expect(page.locator("[data-testid='nvr-offline-pill']")).to_contain_text("Cam 12")
         # And it is genuinely one of the untiled ones.
-        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(4)
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(TILES_PER_PAGE)
 
     def test_a_stopped_watcher_counts_nothing(self, page: Page, base_url: str):
         _mock(page, task_status="completed")
@@ -391,14 +425,101 @@ class TestMultiSourceCards:
         expect(page.locator("[data-testid='watch-live-dialog']")).to_be_visible()
         expect(page.locator("[data-testid='watch-live-source']")).to_have_value("src-2")
 
-    def test_only_a_subset_of_many_sources_is_shown(self, page: Page, base_url: str):
-        """A dozen postage stamps answers nothing; the rest are counted instead."""
-        sources = [{"sourceUuid": f"src-{i}", "sourceName": f"Cam {i}"} for i in range(1, 7)]
-        _mock(page, profiles=[_multi_source_profile()], sources=sources)
+    def test_only_a_page_of_many_sources_is_shown(self, page: Page, base_url: str):
+        """A dozen postage stamps answers nothing; the rest are one page away."""
+        _mock(page, profiles=[_multi_source_profile()], sources=_cams(11))
         _open_live_pane(page, base_url)
 
-        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(4)
-        expect(page.locator(".nvr-preview-more")).to_contain_text("+2 more")
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(TILES_PER_PAGE)
+        expect(page.locator("[data-testid='nvr-preview-page']")).to_have_text("1–9 of 11")
+        # The first page is the start of the list, so there is nowhere back to go.
+        expect(page.locator("[data-testid='nvr-preview-prev']")).to_be_disabled()
+
+    def test_the_pager_reaches_the_sources_the_first_page_hides(self, page: Page, base_url: str):
+        """The whole point of paging over counting: the hidden cameras are reachable."""
+        _mock(page, profiles=[_multi_source_profile()], sources=_cams(11))
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-10']")).to_have_count(0)
+        page.locator("[data-testid='nvr-preview-next']").click()
+
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(2)
+        expect(page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-10']")).to_have_count(1)
+        expect(page.locator("[data-testid='nvr-preview-page']")).to_have_text("10–11 of 11")
+        # Last page: forward is exhausted, back is not.
+        expect(page.locator("[data-testid='nvr-preview-next']")).to_be_disabled()
+        expect(page.locator("[data-testid='nvr-preview-prev']")).to_be_enabled()
+
+    def test_a_single_page_profile_gets_no_pager(self, page: Page, base_url: str):
+        """Chrome for a page that cannot exist is worse than no chrome."""
+        _mock(
+            page,
+            profiles=[_multi_source_profile()],
+            sources=[{"sourceUuid": "src-1", "sourceName": "Litter cam"}, SECOND_SOURCE],
+        )
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-tile']")).to_have_count(2)
+        expect(page.locator("[data-testid='nvr-preview-next']")).to_have_count(0)
+        # Arranging two cameras is still meaningful, so that control stays.
+        expect(page.locator("[data-testid='nvr-preview-arrange']")).to_have_count(1)
+
+
+class TestSourceArranging:
+    """Which cameras land on page one is the user's to decide, and must stick.
+
+    The pane rebuilds every card whenever any watcher starts or stops, so an order held
+    only in the DOM would be undone by an unrelated watcher — which is the same failure
+    the refresh-rate store exists to prevent.
+    """
+
+    SOURCES = _cams(11)
+
+    def _promote_from_page_two(self, page: Page):
+        """Move Cam 10 (first tile of page 2) one place earlier, into page 1."""
+        page.locator("[data-testid='nvr-preview-arrange']").click()
+        page.locator("[data-testid='nvr-preview-next']").click()
+        page.locator(
+            "[data-testid='nvr-preview-tile'][data-source-uuid='src-10'] " "[data-testid='nvr-preview-move-earlier']"
+        ).click()
+
+    def test_moving_a_camera_earlier_follows_it_onto_the_previous_page(self, page: Page, base_url: str):
+        """A pager that stayed put would make the moved tile appear to vanish."""
+        _mock(page, profiles=[_multi_source_profile()], sources=self.SOURCES)
+        _open_live_pane(page, base_url)
+
+        self._promote_from_page_two(page)
+
+        expect(page.locator("[data-testid='nvr-preview-page']")).to_have_text("1–9 of 11")
+        expect(page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-10']")).to_have_count(1)
+        # It took the place of the camera it passed, which is now on page two.
+        expect(page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-9']")).to_have_count(0)
+
+    def test_the_arranged_order_survives_a_reload(self, page: Page, base_url: str):
+        _mock(page, profiles=[_multi_source_profile()], sources=self.SOURCES)
+        _open_live_pane(page, base_url)
+        self._promote_from_page_two(page)
+
+        _open_live_pane(page, base_url)
+
+        # Page one on a fresh load, without arrange mode or the pager being touched.
+        expect(page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-10']")).to_have_count(1)
+        expect(page.locator("[data-testid='nvr-preview-tile'][data-source-uuid='src-9']")).to_have_count(0)
+
+    def test_the_move_buttons_are_hidden_until_arranging(self, page: Page, base_url: str):
+        """The card is a wall of pictures first; the buttons sit on top of the frames."""
+        _mock(page, profiles=[_multi_source_profile()], sources=self.SOURCES)
+        _open_live_pane(page, base_url)
+
+        expect(page.locator("[data-testid='nvr-preview-move-earlier']")).to_have_count(0)
+        page.locator("[data-testid='nvr-preview-arrange']").click()
+        expect(page.locator("[data-testid='nvr-preview-move-earlier']")).to_have_count(TILES_PER_PAGE)
+        # The first source cannot go earlier — a button that no-ops must say so.
+        expect(
+            page.locator(
+                "[data-testid='nvr-preview-tile'][data-source-uuid='src-1'] " "[data-testid='nvr-preview-move-earlier']"
+            )
+        ).to_be_disabled()
 
 
 class TestPreviewCost:

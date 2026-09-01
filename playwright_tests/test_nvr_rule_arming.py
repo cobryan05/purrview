@@ -113,11 +113,17 @@ def _mock(page: Page, *, running=True, rules_table=None):
     return commands
 
 
-def _open_live_pane(page: Page, base_url: str):
+def _open_live_pane(page: Page, base_url: str, *, expand_rules: bool = True):
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
     page.wait_for_selector("#nvr-live-box .nvr-profile-card")
+    # The list is a collapsed disclosure by default — the card is mostly camera
+    # thumbnails and the rule names would push them off the screen. Everything below is
+    # about what is *inside* it, so open it first.
+    if expand_rules:
+        page.locator("[data-testid='nvr-rule-summary']").first.click()
+        page.wait_for_selector("[data-testid='nvr-rule-row']", state="visible")
 
 
 class TestTheCardShowsArming:
@@ -164,6 +170,39 @@ class TestTheCardShowsArming:
 
         expect(page.locator("[data-testid='nvr-rule-row']")).to_have_count(2)
         expect(page.locator("[data-testid='nvr-rule-arm-toggle']")).to_have_count(0)
+
+
+class TestTheCollapsedRuleList:
+    """What a closed list still has to say.
+
+    Collapsing the rules buys the cameras their space, but a rule that will not fire is
+    exactly the thing nobody should have to expand nine cards to discover.
+    """
+
+    def test_the_summary_counts_disarmed_rules_while_closed(self, page: Page, base_url: str):
+        _mock(page, rules_table=_rules_table(armed_a=True, armed_b=False))
+        _open_live_pane(page, base_url, expand_rules=False)
+
+        summary = page.locator("[data-testid='nvr-rule-summary']")
+        expect(page.locator("[data-testid='nvr-rule-row']").first).not_to_be_visible()
+        expect(summary).to_have_text("2 rules · 1 disarmed")
+
+    def test_a_fully_armed_profile_says_nothing_alarming(self, page: Page, base_url: str):
+        """The negative half of the pair: a summary that always warned would be ignored."""
+        _mock(page, rules_table=_rules_table(armed_a=True, armed_b=True))
+        _open_live_pane(page, base_url, expand_rules=False)
+
+        expect(page.locator("[data-testid='nvr-rule-summary']")).to_have_text("2 rules")
+
+    def test_disarming_from_the_open_list_updates_the_summary(self, page: Page, base_url: str):
+        """The summary is the closed view of the list, so it cannot go stale when the
+        list is used — that would report "all armed" over a rule just disarmed."""
+        _mock(page, rules_table=_rules_table(armed_a=True, armed_b=True))
+        _open_live_pane(page, base_url)
+
+        page.locator("[data-testid='nvr-rule-row']").nth(1).locator("[data-testid='nvr-rule-arm-toggle']").click()
+
+        expect(page.locator("[data-testid='nvr-rule-summary']")).to_have_text("2 rules · 1 disarmed")
 
 
 class TestTogglingFromTheCard:

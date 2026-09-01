@@ -713,24 +713,47 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 }
 
 /* A multi-source profile earns a wider card: its thumbnails sit side by side, and
-   squeezing four cameras into one column track would make each unreadable. */
+   squeezing a 3-up camera grid into one column track would make each unreadable. On a
+   wide monitor it takes a third column rather than growing the tile count — the point
+   of the extra width is bigger pictures, not more of them. */
 .nvr-profile-card--multi-source {
   grid-column: span 2;
+}
+
+@media (min-width: 100rem) {
+  .nvr-profile-card--multi-source { grid-column: span 3; }
 }
 
 @media (max-width: 60rem) {
   .nvr-profile-card--multi-source { grid-column: span 1; }
 }
 
+/* A *fixed* 3-up grid, not auto-fit. auto-fit sized the tiles to how many were on the
+   page, so a seven-camera profile showed four big thumbnails on page one and three
+   bigger ones on page two — the pictures changed scale as you paged, which is exactly
+   what makes a camera wall unreadable. Fixed columns leave a gap on a partial page
+   instead, and every tile is the same size on every page. */
 .nvr-preview-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--space-2);
   margin-bottom: var(--space-2);
 }
 
+/* Two-up, then one, as the card narrows — the column count changes with the space, but
+   never with how many cameras happen to be on the page. */
+@media (max-width: 60rem) {
+  .nvr-preview-strip { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 34rem) {
+  .nvr-preview-strip { grid-template-columns: 1fr; }
+}
+
 .nvr-preview-tile {
   margin: 0;
+  /* Anchors the arrange buttons that sit over the frame. */
+  position: relative;
   border: 1px solid var(--pico-muted-border-color, #444);
   border-radius: var(--radius-sm, 4px);
   overflow: hidden;
@@ -795,10 +818,25 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   border-color: var(--color-warning, #fbbf24);
 }
 
+/* Fixed box, letterboxed picture. The canvas carries the camera's own pixel dimensions
+   — that is what lets the overlay draw boxes without rescaling them — so a 4:3 camera
+   beside a 16:9 one would otherwise make two different-height tiles out of one row. */
+.nvr-preview-tile__frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
 .nvr-preview-tile canvas {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  /* Fills the fixed box and letterboxes whatever does not match it, rather than
+     stretching a 4:3 camera into a widescreen one. */
+  object-fit: contain;
 }
 
 .nvr-preview-tile__caption {
@@ -828,10 +866,84 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .nvr-preview-tile__stat--error { color: var(--color-danger, #f87171); }
 .nvr-preview-tile__stat--warn { color: var(--color-warning, #fbbf24); }
 
-.nvr-preview-more {
-  align-self: center;
+/* The strip's own controls — paging through a profile's cameras, and the arrange
+   toggle. Right-aligned and muted, sitting with the thumbnail refresh control it lives
+   next to: all three change what this browser shows, and none of them touch the
+   watcher. */
+.nvr-preview-nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2, 0.5rem);
   font-size: var(--text-xs, 0.75rem);
   color: var(--text-faint);
+}
+
+.nvr-preview-nav__btn {
+  width: auto;
+  margin: 0;
+  padding: 0.05rem 0.45rem;
+  font-size: var(--text-xs, 0.75rem);
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--surface-raised, #1c1c1c);
+  border: 1px solid var(--pico-muted-border-color, #444);
+  border-radius: var(--radius-sm, 4px);
+}
+
+.nvr-preview-nav__btn:hover:not(:disabled) {
+  color: var(--pico-primary, #8fb8ff);
+  border-color: var(--pico-primary, #8fb8ff);
+  background: var(--surface-raised, #1c1c1c);
+}
+
+.nvr-preview-nav__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.nvr-preview-nav__arrange[aria-pressed='true'] {
+  color: var(--pico-primary, #8fb8ff);
+  border-color: var(--pico-primary, #8fb8ff);
+}
+
+/* tabular-nums so "1–4 of 9" does not shuffle its neighbours as the page changes. */
+.nvr-preview-nav__label {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Over the picture rather than in the caption: the caption is already a name and a
+   live count, and squeezing two buttons in there is what makes both unreadable on a
+   narrow card. */
+.nvr-preview-tile__arrange {
+  position: absolute;
+  top: var(--space-1, 0.25rem);
+  right: var(--space-1, 0.25rem);
+  display: flex;
+  gap: 0.15rem;
+}
+
+.nvr-preview-move {
+  width: auto;
+  margin: 0;
+  padding: 0.05rem 0.4rem;
+  font-size: var(--text-xs, 0.75rem);
+  line-height: 1.4;
+  color: #fff;
+  /* Its own scrim: these sit on top of camera frames, which are any colour at all. */
+  background: rgb(0 0 0 / 65%);
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: var(--radius-sm, 4px);
+}
+
+.nvr-preview-move:hover:not(:disabled) {
+  background: rgb(0 0 0 / 85%);
+  border-color: var(--pico-primary, #8fb8ff);
+}
+
+.nvr-preview-move:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .nvr-profile-card__body {
@@ -843,6 +955,34 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 .nvr-profile-card__meta {
   font-size: var(--text-xs);
   color: var(--text-faint);
+}
+
+/* The rules collapse so the cameras get the card. Pico styles `details` as an
+   accordion block with its own border and padding, which here would draw a box around a
+   list that is already inside one — this is a disclosure on a card, not a panel. */
+.nvr-rule-list {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.nvr-rule-list__summary {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.nvr-rule-list__summary:hover {
+  color: var(--text-muted);
+}
+
+/* A disarmed rule will not fire, and the whole point of collapsing the list is that
+   nobody has to open it to find that out. */
+.nvr-rule-list__summary--disarmed {
+  color: var(--color-warning, #fbbf24);
 }
 
 .nvr-rule-row {

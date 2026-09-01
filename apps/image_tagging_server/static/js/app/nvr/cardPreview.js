@@ -55,24 +55,40 @@ export const REFRESH_RATES = [
 export const DEFAULT_REFRESH_MS = 5000;
 
 /**
- * Thumbnails shown per card before the rest are collapsed into a "+N more" note.
+ * Thumbnails shown per card at once — one page of the profile's sources.
  *
  * A profile can watch a dozen cameras; a card showing all twelve would be a wall of
  * postage stamps that answers nothing. Four fits two-up on a narrow card and still shows
- * a multi-source profile as the multi-source thing it is.
+ * a multi-source profile as the multi-source thing it is. The rest are a page away
+ * rather than merely counted, and which ones land on page one is the user's to decide
+ * (see `onReorder`).
+ *
+ * Nine, in a 3×3 grid whose columns are fixed by CSS. Both halves of that matter: a
+ * page of four on a seven-camera profile meant every other page was a *different size*,
+ * because the grid was `auto-fit` and three tiles shared the width four had — the
+ * pictures changed scale as you paged, which is the one thing a wall of cameras must
+ * not do. A fixed 3-up grid makes a partial page leave a gap instead of stretching, and
+ * nine is what fits before the tiles stop being worth looking at.
  */
-export const MAX_TILES = 4;
+export const MAX_TILES = 9;
 
 /** Lower than the drill-down's: this is a thumbnail scaled down by CSS anyway. */
 const THUMB_QUALITY = 45;
 
 /**
- * Frame age past which a tile stops being treated as live.
+ * Frame age past which a tile stops being treated as live — *only* for a source whose
+ * provider offers no deadline of its own.
  *
  * Comfortably above one refresh interval, so an ordinary poll landing between two
- * frames of a slow camera never trips it, and well below the two minutes the backend
- * waits before calling a source failed — the picture should say something is wrong
- * before the task log does.
+ * frames of a moderately slow camera never trips it, and well below the two minutes the
+ * backend waits before calling a source failed — the picture should say something is
+ * wrong before the task log does.
+ *
+ * It is a *fallback*, not the rule. A flat threshold reported a perfectly healthy Ring
+ * camera as "no signal" for three quarters of every snapshot cycle, because 15 s is a
+ * fault on an RTSP stream and a normal Tuesday on a 30 s snapshot cadence. When
+ * `frameDueInS` is present it is the provider's own answer to "should a frame have
+ * arrived by now?", and it wins.
  */
 const STALE_AFTER_S = 15;
 
@@ -129,10 +145,17 @@ export function livenessOf(preview) {
   if (state === 'connecting') {
     return { level: 'connecting', ageS, label: age ? `connecting ${age}` : 'connecting' };
   }
-  // The state is authoritative when the watcher offers one; the age is the fallback
-  // for a payload that predates it, and the backstop for a source the watcher still
-  // believes is healthy while its frames have visibly stopped.
-  const dead = DEAD_STATES.has(state) || (ageS != null && ageS > STALE_AFTER_S);
+  // `frameDueInS` is the provider's own deadline for the next frame, so while it is
+  // still counting down the source is on schedule *by definition* and its age says
+  // nothing — a 30 s-old frame from a 90 s snapshot camera is not a fault. The flat
+  // age threshold is kept only for providers with no opinion. Same rule as the
+  // drill-down's status line, which had it right first.
+  const dueIn = preview?.frameDueInS ?? null;
+  const overdue = dueIn != null ? dueIn <= 0 : ageS != null && ageS > STALE_AFTER_S;
+  // The state is authoritative when the watcher offers one; the deadline is the
+  // backstop for a source the watcher still believes is healthy while its frames have
+  // visibly stopped.
+  const dead = DEAD_STATES.has(state) || overdue;
   if (!dead) return { level: 'ok', ageS, label: '' };
   return { level: 'dead', ageS, label: age ? `no signal · ${age}` : 'no signal' };
 }
@@ -159,6 +182,25 @@ export function stopAllCardPreviews() {
 }
 
 /**
+ * A small button for the strip's own chrome (pager, arrange toggle).
+ *
+ * Not `panel-btn`: those are the card's controls over the *watcher*, and a paging
+ * button that looked like "Stop" would be a mis-click waiting to happen.
+ *
+ * @returns {HTMLButtonElement}
+ */
+function _navButton(text, title, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'nvr-preview-nav__btn';
+  btn.textContent = text;
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+/**
  * Attach a live thumbnail strip for one running watcher to `host`.
  *
  * `sources` comes from the caller — one batched status-data call covers every card on
@@ -180,12 +222,18 @@ export function stopAllCardPreviews() {
  * closer look, and before this the only route was a card-level button that opened the
  * modal on whichever source happened to be first in the list.
  *
+ * `onReorder` is called with the full uuid order whenever the user moves a tile, so the
+ * caller can persist it. The order is the caller's to store — this module has no opinion
+ * on where — but it is the reason paging is worth having: on a nine-camera profile the
+ * four that matter are rarely the four the watcher happens to list first.
+ *
  * @param {HTMLElement} host - element the strip is appended to
  * @param {{taskUuid: string, sources: Array<{sourceUuid: string, sourceName?: string}>,
  *          refreshMs?: number, maxTiles?: number,
  *          onHealth?: (states: Array<{sourceUuid: string, sourceName: string,
  *                                     level: string, label: string}>) => void,
- *          onOpenSource?: (sourceUuid: string) => void}} opts
+ *          onOpenSource?: (sourceUuid: string) => void,
+ *          onReorder?: (sourceUuids: Array<string>) => void}} opts
  * @returns {{stop: () => void, setRefreshMs: (ms: number) => void}}
  *          `stop` is also registered for `stopAllCardPreviews`
  */
@@ -196,6 +244,7 @@ export function attachCardPreviews(host, {
   maxTiles = MAX_TILES,
   onHealth = null,
   onOpenSource = null,
+  onReorder = null,
 }) {
   // A watcher whose sources are not known yet gets no strip at all, rather than an
   // empty bordered box that reads as a broken camera.
@@ -204,16 +253,31 @@ export function attachCardPreviews(host, {
   /** Mutable: the card's dropdown changes it without tearing the strip down. */
   let currentRefreshMs = refreshMs;
 
+  /** The profile's sources in display order — mutated in place by `moveSource`. */
+  const order = [...sources];
+
+  /** Which page of `maxTiles` sources is on screen. */
+  let page = 0;
+
+  /** Whether the per-tile move buttons are showing. Deliberately not persisted. */
+  let arranging = false;
+
   const strip = document.createElement('div');
   strip.className = 'nvr-preview-strip';
   strip.dataset.testid = 'nvr-preview-strip';
   host.appendChild(strip);
+
+  const nav = document.createElement('div');
+  nav.className = 'nvr-preview-nav';
+  nav.dataset.testid = 'nvr-preview-nav';
+  host.appendChild(nav);
 
   const timers = new Set();
   let stopped = false;
 
   function stop() {
     stopped = true;
+    for (const tile of tiles) tile.stop();
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
     document.removeEventListener('visibilitychange', onVisibility);
@@ -231,10 +295,34 @@ export function attachCardPreviews(host, {
   }
   document.addEventListener('visibilitychange', onVisibility);
 
+  /**
+   * Gap between two tiles' polls, in ms.
+   *
+   * A flat step stopped working when a page grew to nine tiles: at 2 fps the last tile
+   * would be armed 2.25 s after the first, well past the moment the first was due
+   * again, so the stagger meant to spread the load became a source of drift. Spread the
+   * page across at most one interval instead.
+   */
+  function _staggerStep() {
+    return Math.min(STAGGER_MS, Math.max(40, currentRefreshMs / maxTiles));
+  }
+
+  /** The tiles currently on screen — one page's worth, rebuilt by `renderPage`. */
   const tiles = [];
 
   /** Latest level per source, so the card can be told without re-polling anything. */
   const health = new Map();
+
+  /**
+   * Last frame seen per source uuid, kept across page changes.
+   *
+   * Paging back to a camera must not show "…" for a whole refresh interval — the
+   * picture was on screen a second ago and throwing it away makes the pager feel like
+   * it reloaded the card. Carrying `frameSeq` with it also means the first poll after a
+   * page change usually transfers no image bytes at all. Bounded by the profile's
+   * source count, which is the same set the strip would hold if nothing were paged.
+   */
+  const lastFrames = new Map();
 
   function reportHealth(source, liveness) {
     if (!onHealth) return;
@@ -278,12 +366,20 @@ export function attachCardPreviews(host, {
       });
     }
 
+    // The canvas is sized to the camera's own frame, so left to itself a 4:3 camera
+    // next to a 16:9 one makes two different-height tiles and the row stops being a
+    // grid. The frame box is a fixed aspect ratio and the canvas is letterboxed inside
+    // it, which keeps every tile on the page the same size whatever the cameras do.
+    const frame = document.createElement('div');
+    frame.className = 'nvr-preview-tile__frame';
+
     const canvas = document.createElement('canvas');
     // Placeholder geometry only — replaced by the frame's own dimensions on the first
     // poll, so the overlay never needs to scale coordinates.
     canvas.width = 320;
     canvas.height = 180;
-    tile.appendChild(canvas);
+    frame.appendChild(canvas);
+    tile.appendChild(frame);
     const ctx = canvas.getContext('2d');
 
     const caption = document.createElement('figcaption');
@@ -301,9 +397,67 @@ export function attachCardPreviews(host, {
     caption.appendChild(statEl);
 
     tile.appendChild(caption);
+
+    // Move buttons rather than drag-and-drop: dragging is a mouse-only affordance with
+    // no keyboard equivalent and a miserable touch story, and the whole interaction here
+    // is "this camera matters more than that one", which two buttons say exactly. They
+    // are shown only in arrange mode so an ordinary card stays a wall of pictures.
+    if (arranging && order.length > 1) {
+      const position = order.findIndex(s => s.sourceUuid === source.sourceUuid);
+      const moves = document.createElement('div');
+      moves.className = 'nvr-preview-tile__arrange';
+      for (const [dir, glyph, word] of [[-1, '◀', 'earlier'], [1, '▶', 'later']]) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'nvr-preview-move';
+        btn.dataset.testid = dir < 0 ? 'nvr-preview-move-earlier' : 'nvr-preview-move-later';
+        btn.dataset.dir = String(dir);
+        btn.textContent = glyph;
+        const name = source.sourceName || source.sourceUuid || 'source';
+        btn.title = `Move ${name} ${word}`;
+        btn.setAttribute('aria-label', btn.title);
+        btn.disabled = dir < 0 ? position <= 0 : position >= order.length - 1;
+        btn.addEventListener('click', (ev) => {
+          // The tile itself opens the drill-down; a move must not also do that.
+          ev.stopPropagation();
+          moveSource(source.sourceUuid, dir);
+        });
+        // Enter/Space on the button would otherwise also reach the tile's own handler.
+        btn.addEventListener('keydown', ev => ev.stopPropagation());
+        moves.appendChild(btn);
+      }
+      tile.appendChild(moves);
+    }
+
     strip.appendChild(tile);
 
-    const state = { frameSeq: null, image: null, inFlight: false, preview: null, timer: null };
+    // Seeded from the cache so a page change repaints the last known picture at once,
+    // and asks the server only for what changed since.
+    const cached = lastFrames.get(source.sourceUuid) ?? null;
+    const state = {
+      frameSeq: cached?.frameSeq ?? null,
+      image: cached?.image ?? null,
+      inFlight: false,
+      preview: cached?.preview ?? null,
+      timer: null,
+      // Per tile, so paging away stops *this* tile without stopping the strip.
+      dead: false,
+    };
+
+    /**
+     * How wide the frame is *on screen*, in CSS pixels.
+     *
+     * Not `canvas.clientWidth`: the canvas fills a fixed 16:9 box with `object-fit:
+     * contain`, so for any camera that is not 16:9 the painted picture is narrower (or
+     * shorter) than the element. Overlay text and line weights are drawn in frame
+     * pixels and divided by this, so using the element's width would make captions on a
+     * 4:3 camera come out visibly smaller than its neighbours'.
+     */
+    function shownWidth() {
+      const boxW = canvas.clientWidth || canvas.width;
+      const boxH = canvas.clientHeight || canvas.height;
+      return Math.min(boxW, boxH * (canvas.width / canvas.height)) || boxW;
+    }
 
     function placeholder(text) {
       ctx.fillStyle = '#111';
@@ -312,7 +466,6 @@ export function attachCardPreviews(host, {
       ctx.font = '14px sans-serif';
       ctx.fillText(text, 10, 24);
     }
-    placeholder('…');
 
     /**
      * Stamp a dead or connecting source's frame so it cannot be read as live.
@@ -331,7 +484,7 @@ export function attachCardPreviews(host, {
       ctx.fillStyle = dead ? 'rgba(0, 0, 0, 0.55)' : 'rgba(0, 0, 0, 0.35)';
       ctx.fillRect(0, 0, width, height);
 
-      const shown = canvas.clientWidth || width;
+      const shown = shownWidth();
       const scale = width / shown;
       const bandH = Math.max(16, Math.round(18 * scale));
       const y = Math.round(height / 2 - bandH / 2);
@@ -377,7 +530,7 @@ export function attachCardPreviews(host, {
       // renders at 6px, and on a small analysis frame blown up to fill a wide card it
       // swamps the picture. Dividing by the *displayed* size makes both the caption and
       // the line weight land at the same apparent size whatever the camera's resolution.
-      const shown = canvas.clientWidth || width;
+      const shown = shownWidth();
       const scale = width / shown;
       const fontPx = Math.round(CAPTION_PX * scale);
 
@@ -438,6 +591,8 @@ export function attachCardPreviews(host, {
     }
 
     async function apply(preview) {
+      // `frameUnchanged` payloads carry no pixels, so the merge keeps the metadata from
+      // this poll and the image from the last one — the same thing the tile does.
       state.preview = preview;
       if (preview.frame) {
         try {
@@ -452,14 +607,19 @@ export function attachCardPreviews(host, {
         // frame already held, and decode nothing.
         state.frameSeq = preview.frameSeq ?? state.frameSeq;
       }
-      if (stopped) return;
+      lastFrames.set(source.sourceUuid, {
+        frameSeq: state.frameSeq,
+        image: state.image,
+        preview: state.preview,
+      });
+      if (stopped || state.dead) return;
       draw();
       renderCaption(preview);
       reportHealth(source, livenessOf(preview));
     }
 
     async function poll({ immediate = false } = {}) {
-      if (stopped) return;
+      if (stopped || state.dead) return;
       if (state.inFlight) { schedule(); return; }
       if (document.hidden && !immediate) { schedule(); return; }
       state.inFlight = true;
@@ -469,7 +629,7 @@ export function attachCardPreviews(host, {
           sinceSeq: state.frameSeq,
           quality: THUMB_QUALITY,
         });
-        if (stopped || !preview) return;
+        if (stopped || state.dead || !preview) return;
         await apply(preview);
       } catch (err) {
         Logger.warn('nvr: card preview poll failed', err);
@@ -504,8 +664,24 @@ export function attachCardPreviews(host, {
     }
 
     function schedule() {
-      if (stopped) return;
+      if (stopped || state.dead) return;
       armTimer(currentRefreshMs, () => void poll());
+    }
+
+    /**
+     * Retire this tile without touching the rest of the strip.
+     *
+     * Paging is the whole reason this exists: the sources you paged away from must stop
+     * costing the server a JPEG encode each interval, and a poll already in flight must
+     * not draw into a canvas that is no longer in the document.
+     */
+    function stopTile() {
+      state.dead = true;
+      if (state.timer !== null) {
+        clearTimeout(state.timer);
+        timers.delete(state.timer);
+        state.timer = null;
+      }
     }
 
     /**
@@ -514,23 +690,130 @@ export function attachCardPreviews(host, {
      * profile is a visible hitch.
      */
     function refreshSoon() {
-      if (stopped) return;
-      armTimer(index * STAGGER_MS, () => void poll({ immediate: true }));
+      if (stopped || state.dead) return;
+      armTimer(index * _staggerStep(), () => void poll({ immediate: true }));
     }
 
+    // Repaint whatever this source last showed before waiting on the network, so a page
+    // change is instant for a camera that has been seen once already.
+    if (state.preview) {
+      draw();
+      renderCaption(state.preview);
+    } else {
+      placeholder('…');
+    }
     refreshSoon();
 
-    return { poll, refreshSoon };
+    return { poll, refreshSoon, stop: stopTile };
   }
 
-  for (const [i, source] of sources.slice(0, maxTiles).entries()) tiles.push(makeTile(source, i));
-  if (sources.length > maxTiles) {
-    const hidden = sources.length - maxTiles;
-    const more = document.createElement('div');
-    more.className = 'nvr-preview-more';
-    more.textContent = `+${hidden} more source${hidden === 1 ? '' : 's'}`;
-    strip.appendChild(more);
+  const pageCount = () => Math.max(1, Math.ceil(order.length / maxTiles));
+
+  /**
+   * Rebuild the strip for the current page.
+   *
+   * Tiles are destroyed and recreated rather than retargeted: a tile owns a canvas
+   * sized to one camera's frames, a poll chain keyed to one source uuid, and a caption
+   * built from one name. Repointing all of that at a different camera is the same work
+   * as building a new tile, with an extra way to leave a stale frame on screen. What
+   * *is* preserved is the picture itself (`lastFrames`) and the health map, which are
+   * the two things a rebuild would otherwise visibly lose.
+   */
+  function renderPage() {
+    for (const tile of tiles) tile.stop();
+    tiles.length = 0;
+    strip.replaceChildren();
+    page = Math.min(Math.max(0, page), pageCount() - 1);
+    const start = page * maxTiles;
+    for (const [i, source] of order.slice(start, start + maxTiles).entries()) {
+      tiles.push(makeTile(source, i));
+    }
+    renderNav();
   }
+
+  function goToPage(next) {
+    const clamped = Math.min(Math.max(0, next), pageCount() - 1);
+    if (clamped === page) return;
+    page = clamped;
+    renderPage();
+  }
+
+  /**
+   * Move one source through the profile's order and tell the caller to persist it.
+   *
+   * The view follows the source rather than staying on the page: moving a camera off
+   * the end of page one is how you promote it *to* page one from page two, and a pager
+   * that stayed put would make the tile appear to vanish.
+   */
+  function moveSource(sourceUuid, delta) {
+    const from = order.findIndex(s => s.sourceUuid === sourceUuid);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    [order[from], order[to]] = [order[to], order[from]];
+    page = Math.floor(to / maxTiles);
+    renderPage();
+    // Keyboard users move a camera several places at a time; without this the focus
+    // lands back on <body> after the rebuild and the next press does nothing.
+    const moved = strip.querySelector(
+      `[data-source-uuid="${CSS.escape(sourceUuid)}"] .nvr-preview-move[data-dir="${delta}"]`,
+    );
+    if (moved && !moved.disabled) moved.focus();
+    else strip.querySelector(`[data-source-uuid="${CSS.escape(sourceUuid)}"] .nvr-preview-move:not(:disabled)`)?.focus();
+    onReorder?.(order.map(s => s.sourceUuid));
+  }
+
+  /**
+   * The pager and the arrange toggle.
+   *
+   * Rebuilt with the page rather than mutated in place — it is three controls and a
+   * label, and keeping "which buttons are disabled" in sync by hand is how a pager ends
+   * up offering a next page that does not exist.
+   */
+  function renderNav() {
+    nav.replaceChildren();
+    // Nothing to page and nothing to arrange: a single-source card gets no chrome.
+    if (order.length <= 1) {
+      nav.hidden = true;
+      return;
+    }
+    nav.hidden = false;
+
+    if (order.length > maxTiles) {
+      const prev = _navButton('‹', 'Previous sources', () => goToPage(page - 1));
+      prev.dataset.testid = 'nvr-preview-prev';
+      prev.disabled = page === 0;
+      nav.appendChild(prev);
+
+      const start = page * maxTiles;
+      const end = Math.min(order.length, start + maxTiles);
+      const label = document.createElement('span');
+      label.className = 'nvr-preview-nav__label';
+      label.dataset.testid = 'nvr-preview-page';
+      // Which sources, not which page: "5–6 of 6" answers "have I seen them all?",
+      // and "page 2 of 2" does not.
+      label.textContent = `${start + 1}–${end} of ${order.length}`;
+      nav.appendChild(label);
+
+      const next = _navButton('›', 'More sources', () => goToPage(page + 1));
+      next.dataset.testid = 'nvr-preview-next';
+      next.disabled = end >= order.length;
+      nav.appendChild(next);
+    }
+
+    const arrange = _navButton(arranging ? 'Done' : 'Arrange', 'Reorder these cameras', () => {
+      arranging = !arranging;
+      renderPage();
+      // The button is rebuilt by renderNav, so the focus has to be put back by hand or
+      // toggling arrange mode throws the keyboard user out of the card.
+      nav.querySelector('[data-testid="nvr-preview-arrange"]')?.focus();
+    });
+    arrange.dataset.testid = 'nvr-preview-arrange';
+    arrange.classList.add('nvr-preview-nav__arrange');
+    arrange.setAttribute('aria-pressed', String(arranging));
+    nav.appendChild(arrange);
+  }
+
+  renderPage();
 
   /**
    * Change the polling interval of every tile on this strip.

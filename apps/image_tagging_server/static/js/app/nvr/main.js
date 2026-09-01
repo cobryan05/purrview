@@ -65,6 +65,72 @@ function _storeRefreshMs(profileUuid, ms) {
   }
 }
 
+/** localStorage key prefix for one card's thumbnail order. */
+const ORDER_KEY_PREFIX = 'nvr.sourceOrder.';
+
+/**
+ * Put a profile's sources in the order this browser last arranged them.
+ *
+ * Stored here rather than on the watch profile for the same reason as the refresh rate:
+ * it is a property of how *you* look at the pane, not of what the watcher does. Two
+ * people watching the same house care about different cameras, and the order has no
+ * effect on analysis — changing the profile row to record it would make a view
+ * preference into shared configuration, and would need a write endpoint and a schema
+ * change to say something the browser can say for itself.
+ *
+ * The stored list is treated as a *hint*, never as the source list: cameras get added to
+ * and removed from a profile, and an order that dropped a new source or resurrected a
+ * deleted one would be worse than no order at all. Anything unknown to the store keeps
+ * its watcher-given position, after everything that was arranged.
+ *
+ * @param {Array<Object>} sources
+ * @param {string} profileUuid
+ * @returns {Array<Object>}
+ */
+function _orderedSources(sources, profileUuid) {
+  const list = sources ?? [];
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(ORDER_KEY_PREFIX + profileUuid) ?? 'null');
+  } catch {
+    // Corrupt or unavailable storage: the watcher's order is a fine answer.
+  }
+  if (!Array.isArray(stored) || !stored.length) return [...list];
+  const rank = new Map(stored.map((uuid, i) => [uuid, i]));
+  // Unranked sources sort after ranked ones and keep their relative order — a stable
+  // sort with a rank beyond the end of the stored list is exactly that.
+  return [...list].sort(
+    (a, b) => (rank.get(a.sourceUuid) ?? rank.size) - (rank.get(b.sourceUuid) ?? rank.size),
+  );
+}
+
+/** localStorage key prefix for whether one card's rule list is expanded. */
+const RULES_OPEN_KEY_PREFIX = 'nvr.rulesOpen.';
+
+function _storedRulesOpen(profileUuid) {
+  try {
+    return localStorage.getItem(RULES_OPEN_KEY_PREFIX + profileUuid) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function _storeRulesOpen(profileUuid, open) {
+  try {
+    localStorage.setItem(RULES_OPEN_KEY_PREFIX + profileUuid, open ? '1' : '0');
+  } catch {
+    // The disclosure still works for this session.
+  }
+}
+
+function _storeSourceOrder(profileUuid, sourceUuids) {
+  try {
+    localStorage.setItem(ORDER_KEY_PREFIX + profileUuid, JSON.stringify(sourceUuids));
+  } catch {
+    // The order still applies until this card is rebuilt; nothing worth a toast.
+  }
+}
+
 /**
  * Small local button helper.
  *
@@ -600,7 +666,9 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
   if (isRunning) {
     const previews = attachCardPreviews(body, {
       taskUuid: task.taskUuid,
-      sources,
+      // The pane re-renders whenever any watcher starts or stops, so the order has to be
+      // re-applied on every build — the strip holds it only for its own lifetime.
+      sources: _orderedSources(sources, profile.uuid),
       refreshMs: _storedRefreshMs(profile.uuid),
       onHealth: (states) => {
         for (const state of states) {
@@ -617,6 +685,7 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
         profileName: profile.name,
         sourceUuid,
       }),
+      onReorder: (sourceUuids) => _storeSourceOrder(profile.uuid, sourceUuids),
     });
     // Appended after the strip exists so it sits under the thumbnails it governs,
     // rather than in the bar with the controls that act on the watcher itself. This
@@ -627,8 +696,10 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
   const rules = profile.rules ?? profile.interactionRules ?? [];
   const meta = document.createElement('div');
   meta.className = 'nvr-profile-card__meta';
+  // The rule count moved to the rules section's own summary, which is where someone
+  // looks for it now that the list collapses — repeating it here would be two numbers
+  // saying the same thing a line apart.
   meta.textContent = [
-    `${rules.length} rule${rules.length === 1 ? '' : 's'}`,
     profile.trackerTypename || profile.tracker_typename,
     _analysisFpsText(profile, task),
   ].filter(Boolean).join(' · ');
@@ -642,7 +713,38 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
   // Not on the Watchers *editor*, which holds `enabled`. That is config, saved with a
   // form; this is a live control on a thing that is currently running, and a profile
   // being edited may not be running at all.
+  //
+  // Collapsed by default, because a nine-camera card is mostly pictures and a list of
+  // rule names underneath pushes them off the screen. What the summary must not do is
+  // hide the one thing that matters while closed: a *disarmed* rule is a rule that will
+  // not fire, and finding that out by expanding every card is how it goes unnoticed —
+  // so the count of them is on the summary itself.
   const armedRows = new Map();
+  const armedStates = new Map();
+
+  const rulesBox = document.createElement('details');
+  rulesBox.className = 'nvr-rule-list';
+  rulesBox.dataset.testid = 'nvr-rule-list';
+  // Persisted for the same reason as the refresh rate: this pane rebuilds every card
+  // whenever any watcher starts or stops, so an open list would snap shut under you
+  // because some unrelated profile changed state.
+  rulesBox.open = _storedRulesOpen(profile.uuid);
+  rulesBox.addEventListener('toggle', () => _storeRulesOpen(profile.uuid, rulesBox.open));
+
+  const rulesSummary = document.createElement('summary');
+  rulesSummary.className = 'nvr-rule-list__summary';
+  rulesSummary.dataset.testid = 'nvr-rule-summary';
+  rulesBox.appendChild(rulesSummary);
+
+  function renderRulesSummary() {
+    const disarmed = [...armedStates.values()].filter(armed => armed === false).length;
+    rulesSummary.textContent = [
+      `${rules.length} rule${rules.length === 1 ? '' : 's'}`,
+      disarmed ? `${disarmed} disarmed` : '',
+    ].filter(Boolean).join(' · ');
+    rulesSummary.classList.toggle('nvr-rule-list__summary--disarmed', disarmed > 0);
+  }
+
   for (const rule of rules) {
     const row = document.createElement('div');
     row.className = 'nvr-rule-row';
@@ -672,6 +774,8 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
         btn.textContent = armed ? 'Disarm' : 'Arm';
         btn.dataset.armed = String(armed);
         row.classList.toggle('nvr-rule-row--disarmed', !armed);
+        armedStates.set(rule.uuid, armed);
+        renderRulesSummary();
       };
       paint(arming.get(rule.uuid));
 
@@ -697,8 +801,12 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
       row.appendChild(btn);
       armedRows.set(rule.uuid, paint);
     }
-    body.appendChild(row);
+    rulesBox.appendChild(row);
   }
+  renderRulesSummary();
+  // A profile with no rules gets no section at all rather than an empty disclosure that
+  // opens onto nothing.
+  if (rules.length) body.appendChild(rulesBox);
   // Registered even when empty is pointless, and registering a card with no armed rows
   // would keep the poll alive for a card that cannot show its answer.
   if (task?.taskUuid && armedRows.size) {
