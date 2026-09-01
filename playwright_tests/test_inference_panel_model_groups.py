@@ -97,6 +97,8 @@ def _mock_model_groups(page: Page, initial_groups: list | None = None):
 
 def _reset_session(page: Page):
     page.evaluate("""() => {
+        localStorage.removeItem('ww_inference_selected_detectors');
+        localStorage.removeItem('ww_inference_selected_classifier');
         sessionStorage.removeItem('wtch_inference_selected_detectors');
         sessionStorage.removeItem('wtch_inference_selected_classifier');
     }""")

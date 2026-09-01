@@ -7,12 +7,20 @@ import { expandModelGroupMembers } from '/app-static/js/shared/modelGroups/expan
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
-import { sessionPrefs } from '/app-static/js/shared/prefs.js';
+import { prefs, sessionPrefs } from '/app-static/js/shared/prefs.js';
 import { clearUnmatched, verifyAllBboxes } from './canvas/image.js';
 import { registerCanvasAction } from './canvasActions.js';
 
-const SESSION_SELECTED_DETECTORS_KEY = 'wtch_inference_selected_detectors';
-const SESSION_SELECTED_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
+// localStorage, not sessionStorage: which models you run is a setting, not a scratch
+// value. sessionStorage is per-tab and dies with the tab, so every new window — and
+// every next day — started from an empty selection, which is the whole complaint.
+const SELECTED_DETECTORS_KEY = 'ww_inference_selected_detectors';
+const SELECTED_CLASSIFIER_KEY = 'ww_inference_selected_classifier';
+//: The sessionStorage keys this pref used to live in. Read once, as a fallback, so a
+//: tab that already has a selection keeps it across the upgrade rather than being
+//: silently reset — the cost renaming a storage key normally carries (see prefs.js).
+const LEGACY_SESSION_DETECTORS_KEY = 'wtch_inference_selected_detectors';
+const LEGACY_SESSION_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
 
 const MODEL_ID_PREFIX = 'model:';
 const GROUP_ID_PREFIX = 'group:';
@@ -146,15 +154,18 @@ export async function createInferencePanel(runtime, container) {
   // ── Persistence ───────────────────────────────────────────────────
 
   function _loadPersistedSelection() {
-    const arr = sessionPrefs.read(SESSION_SELECTED_DETECTORS_KEY, []);
+    const arr = prefs.read(SELECTED_DETECTORS_KEY, null)
+      ?? sessionPrefs.read(LEGACY_SESSION_DETECTORS_KEY, []);
     if (Array.isArray(arr)) _selectedItems = new Set(arr);
-    _selectedClassifier = sessionPrefs.readRaw(SESSION_SELECTED_CLASSIFIER_KEY) || null;
+    _selectedClassifier = prefs.readRaw(SELECTED_CLASSIFIER_KEY)
+      || sessionPrefs.readRaw(LEGACY_SESSION_CLASSIFIER_KEY)
+      || null;
   }
 
   function _persistSelection() {
-    sessionPrefs.write(SESSION_SELECTED_DETECTORS_KEY, [..._selectedItems]);
-    if (_selectedClassifier) sessionPrefs.writeRaw(SESSION_SELECTED_CLASSIFIER_KEY, _selectedClassifier);
-    else sessionPrefs.remove(SESSION_SELECTED_CLASSIFIER_KEY);
+    prefs.write(SELECTED_DETECTORS_KEY, [..._selectedItems]);
+    if (_selectedClassifier) prefs.writeRaw(SELECTED_CLASSIFIER_KEY, _selectedClassifier);
+    else prefs.remove(SELECTED_CLASSIFIER_KEY);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────

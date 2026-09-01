@@ -50,6 +50,8 @@ def _reset_session(page: Page):
     _make_panel() call — the latter simulates *reopening* the panel within a session,
     so it must not wipe the very persistence it's meant to exercise."""
     page.evaluate("""() => {
+        localStorage.removeItem('ww_inference_selected_detectors');
+        localStorage.removeItem('ww_inference_selected_classifier');
         sessionStorage.removeItem('wtch_inference_selected_detectors');
         sessionStorage.removeItem('wtch_inference_selected_classifier');
     }""")
@@ -243,11 +245,33 @@ class TestVerifyAllButton:
 
 class TestSessionPersistence:
     """
-    These set sessionStorage directly (rather than driving checkboxes + reopening
+    These set localStorage directly (rather than driving checkboxes + reopening
     the panel) so the assertions test reconciliation-against-live-models in
     isolation, without interaction from the "first-ever-load defaults to the first
     detector" fallback covered separately below.
     """
+
+    def test_the_selection_outlives_the_browser_session(self, shared_page: Page):
+        """Which models you run is a setting, not a scratch value.
+
+        It lived in sessionStorage, which is per-tab and dies with it, so opening the
+        app in a new window started from an empty selection every time. The barrier
+        here is the negative: sessionStorage is wiped *after* the panel persisted, and
+        the selection must survive that.
+        """
+        page = shared_page
+        _reset_session(page)
+        _mock_models(page, ["det-a", "det-b"], {})
+        _make_panel(page)
+
+        _check_model(page, "det-b", True)
+        _check_model(page, "det-a", False)
+
+        page.evaluate("() => sessionStorage.clear()")
+        _make_panel(page)
+
+        payload = _capture_run_event(page)
+        assert payload["modelNames"] == ["det-b"]
 
     def test_first_ever_load_with_nothing_persisted_defaults_to_first_detector(self, shared_page: Page):
         page = shared_page
@@ -261,7 +285,7 @@ class TestSessionPersistence:
     def test_persisted_selection_is_restored_on_next_load(self, shared_page: Page):
         page = shared_page
         _reset_session(page)
-        page.evaluate("() => sessionStorage.setItem('wtch_inference_selected_detectors', JSON.stringify(['det-b']))")
+        page.evaluate("() => localStorage.setItem('ww_inference_selected_detectors', JSON.stringify(['det-b']))")
         _mock_models(page, ["det-a", "det-b"], {})
         _make_panel(page)
 
@@ -272,7 +296,7 @@ class TestSessionPersistence:
         page = shared_page
         _reset_session(page)
         page.evaluate(
-            "() => sessionStorage.setItem('wtch_inference_selected_detectors', JSON.stringify(['det-a', 'det-b']))"
+            "() => localStorage.setItem('ww_inference_selected_detectors', JSON.stringify(['det-a', 'det-b']))"
         )
         # det-b no longer exists.
         _mock_models(page, ["det-a"], {})
@@ -284,7 +308,7 @@ class TestSessionPersistence:
     def test_newly_added_model_arrives_unchecked(self, shared_page: Page):
         page = shared_page
         _reset_session(page)
-        page.evaluate("() => sessionStorage.setItem('wtch_inference_selected_detectors', JSON.stringify(['det-a']))")
+        page.evaluate("() => localStorage.setItem('ww_inference_selected_detectors', JSON.stringify(['det-a']))")
 
         # det-new appears alongside the previously-selected det-a.
         _mock_models(page, ["det-a", "det-new"], {})

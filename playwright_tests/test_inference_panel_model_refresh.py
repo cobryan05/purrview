@@ -101,6 +101,8 @@ def _cleanup(shared_page: Page):
     shared_page.evaluate("""() => {
         window.__testPanelHandle?.destroy?.();
         document.getElementById('test-inference-panel')?.remove();
+        localStorage.removeItem('ww_inference_selected_detectors');
+        localStorage.removeItem('ww_inference_selected_classifier');
         sessionStorage.removeItem('wtch_inference_selected_detectors');
         sessionStorage.removeItem('wtch_inference_selected_classifier');
     }""")
