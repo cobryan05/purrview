@@ -1812,6 +1812,55 @@ def _payloads(fake, topic):
     return [c["payload"] for c in fake.calls if c["topic"] == topic]
 
 
+class TestPerCameraPresenceIsSeeded:
+    """A camera that has never seen the subject must still say so.
+
+    Per-camera state was published only for labels whose presence *changed* on that
+    camera, and a camera that has never seen a subject never changes: its topic was
+    never written at all. Six of seven sensors on a live device sat at `unknown`
+    indefinitely — not unavailable, which would at least be honest, but stateless — so
+    an automation testing `is_state(..., 'off')` could never match, and every restart
+    put them back there.
+    """
+
+    def test_a_camera_that_sees_nothing_still_publishes_off(self):
+        bridge, fake = _presence_bridge()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["OFF"]
+
+    def test_the_first_report_seeds_every_camera_it_covers(self):
+        """Seeded per source as that source first reports, so a subject present on one
+        camera is OFF on the other rather than blank."""
+        bridge, fake = _presence_bridge()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-2", label_uuids=[], source_name="Garage", at="T2")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON"]
+        assert _payloads(fake, "subject/luna/source/garage/state") == ["OFF"]
+
+    def test_seeding_happens_once_not_on_every_frame(self):
+        """Presence is evaluated several times a second per camera. Re-seeding each
+        time would make the retained-state topics the noisiest thing on the broker."""
+        bridge, fake = _presence_bridge()
+
+        for _ in range(5):
+            bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["OFF"]
+
+    def test_a_label_not_published_per_source_is_not_seeded(self):
+        """The gate the discovery side applies: a retained state on a topic no entity
+        reads sits on the broker for good."""
+        bridge, fake = _presence_bridge(per_source=False)
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == []
+
+
 class TestPerCameraPresencePublishing:
     def test_an_arrival_publishes_that_cameras_own_answer_and_the_union(self):
         bridge, fake = _presence_bridge()

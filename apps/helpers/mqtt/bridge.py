@@ -2144,7 +2144,23 @@ class MqttBridge:
         self._presence_by_source[source_uuid] = incoming
         for subject_uuid in was_present ^ self._present_subjects():
             self._publish_subject_presence(subject_uuid)
-        for subject_uuid in (previous or set()) ^ incoming:
+        # Changes only, except on this source's first report, which seeds *every*
+        # per-camera subject it covers.
+        #
+        # Without the seed a camera that has never seen a subject never publishes its
+        # topic at all — nothing ever "changed" there — so the entity has no state and
+        # HA reports `unknown` forever. Observed on a live device: six of seven
+        # per-camera sensors blank, indefinitely, and back to blank after every restart.
+        # `unknown` is worse than it looks: it is not `unavailable`, so it reads as a
+        # working sensor, while `is_state(..., "off")` never matches it.
+        #
+        # Once per source per connection, not per frame: presence is evaluated several
+        # times a second, and re-seeding each time would make retained state the
+        # noisiest thing on the broker. `previous is None` is exactly "this source has
+        # not reported since the bridge came up", which also re-seeds after a watcher
+        # restart drops it from the map.
+        seeding = previous is None
+        for subject_uuid in self._subject_slugs if seeding else (previous or set()) ^ incoming:
             self._publish_subject_source_presence(subject_uuid, source_uuid)
         if at is None:
             return
