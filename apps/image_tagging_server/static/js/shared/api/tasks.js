@@ -448,6 +448,23 @@ async function fetchTaskResultFromServer(taskUuids) {
 
 const taskResultFetcher = createCachedFetcher(fetchTaskResultFromServer);
 
+/**
+ * The payload a task returned, unwrapped from its envelope.
+ *
+ * `Task._results` is always `{ status, data }` (or `{ status, message }` on
+ * error) — never the bare dict `_run` returned. Reading `instance.result.foo`
+ * therefore silently yields `undefined` for every task in the app, which is
+ * how a finished harvest could report "no frames to review" while holding a
+ * preview run full of them.
+ *
+ * @param {object} [instanceOrResult] - a TaskInstanceRead, or its `result`.
+ * @returns {object} the task's own result dict; `{}` when there is none.
+ */
+export function taskResultData(instanceOrResult) {
+  const result = instanceOrResult?.result ?? instanceOrResult;
+  return result?.data ?? {};
+}
+
 export async function fetchTasksResult({ taskUuids, cacheResults = true }) {
   const results = new Map();
   for (const t of taskUuids) {

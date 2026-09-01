@@ -1,6 +1,6 @@
 import { Field } from './Field.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
-import { fetchTaskStatusSchemas, fetchTaskStatusData, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
+import { fetchTaskStatusSchemas, fetchTaskStatusData, sendTaskCommand, taskResultData } from '/app-static/js/shared/api/tasks.js';
 import { statusWidgets } from '/app-static/js/ui/utils/statusWidgets/index.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
 
@@ -191,7 +191,7 @@ export class ActiveTaskField extends Field {
     instance._logJoined = instance._logLines.join('\n');
     instance._typename = typename;
     // Merge live status actions (available while running) with completed-result actions.
-    const resultActions = instance._value.instance?.result?.actions ?? [];
+    const resultActions = taskResultData(instance._value.instance).actions ?? [];
     const statusActions = instance._value.statusActions ?? [];
     // Deduplicate by label: result actions win (they come from the completed final state).
     const seenLabels = new Set(resultActions.map(a => a.label));

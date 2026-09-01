@@ -1,7 +1,7 @@
 import {
   cancelTasks, createTaskConfig, deleteTaskConfigs, deleteTasks, fetchTaskConfigs, fetchTasksStatus,
   fetchTaskTypeAccents, pauseTasks, pauseTasksInPlace, resumeTasks, resumeTasksInPlace, startTask,
-  updateTaskConfig,
+  taskResultData, updateTaskConfig,
 } from '/app-static/js/shared/api/tasks.js';
 import {
   ActiveTaskField, FIELD_EDIT_EVENT, TaskConfigField, TERMINAL_STATUSES,
@@ -386,7 +386,7 @@ function _taskFingerprint(tasks) {
   return Object.entries(tasks || {})
     .map(([id, t]) => {
       const logs = t.logLines ?? [];
-      const actionCount = (t.statusActions ?? []).length + (t.instance?.result?.actions ?? []).length;
+      const actionCount = (t.statusActions ?? []).length + (taskResultData(t.instance).actions ?? []).length;
       const progressPart = (t.progress === null || t.progress === undefined) ? 'ind' : Math.round(t.progress);
       // The stopping flag is part of the fingerprint or the card would keep its
       // pre-click face until something else about the task happened to change —

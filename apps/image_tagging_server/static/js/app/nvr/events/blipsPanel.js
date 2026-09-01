@@ -25,7 +25,7 @@ import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { fetchEventBlips, setEventBlipStates } from '/app-static/js/shared/api/eventBlips.js';
 import { blipKindText, describeBlip, harvestBlocker } from '/app-static/js/shared/domain/blips.js';
-import { TaskStatus } from '/app-static/js/shared/api/tasks.js';
+import { TaskStatus, taskResultData } from '/app-static/js/shared/api/tasks.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 
 const HARVEST_TYPENAME = 'HarvestBlipFramesTask';
@@ -285,7 +285,10 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
           toast(`Harvest failed: ${taskInfo.instance?.errorMessage || 'unknown error'}`, 6000, 'error');
           return;
         }
-        const runUuid = taskInfo.instance?.result?.previewRunUuid;
+        // `.data`, not the result itself: the task's dict is wrapped in a
+        // `{ status, data }` envelope, and reading through it is why a harvest
+        // that filed frames announced that it had none.
+        const runUuid = taskResultData(taskInfo.instance).previewRunUuid;
         if (!runUuid) {
           toast('Harvest finished — no frames to review', 5000);
           return;

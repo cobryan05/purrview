@@ -1529,6 +1529,96 @@ class TestTheTrackingBlipsPanel:
         assert calls[0]["typename"] == "HarvestBlipFramesTask"
         assert calls[0]["params"]["blip_uuids"] == ["blip-uuid-0002"]
 
+    def _mock_harvest_completion(self, page: Page, result_data: dict, run_name: str = "Tracking blips"):
+        """Answer the task stream with one finished harvest, and serve the run it made.
+
+        `result_data` goes inside the `{status, data}` envelope every task result is
+        wrapped in — reading through that envelope is the whole point of the tests
+        below, so the mock must not flatten it.
+        """
+        page.route(
+            "**/api/tasks/stream",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                body="data: "
+                + json.dumps(
+                    {
+                        "tasks": {
+                            "task-harvest-1": {
+                                "instance": {
+                                    "uuid": "task-harvest-1",
+                                    "status": "completed",
+                                    "result": {"status": "completed", "data": result_data},
+                                },
+                            }
+                        }
+                    }
+                )
+                + "\n\n",
+            ),
+        )
+        page.route(
+            re.compile(r".*/api/preview-runs/[\w-]+$"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "run": {
+                            "uuid": "run-harvest-1",
+                            "name": run_name,
+                            "modelName": "",
+                            "pinned": False,
+                            "stats": {},
+                        },
+                    }
+                ),
+            ),
+        )
+        page.route(
+            re.compile(r".*/api/preview-runs/[\w-]+/candidates/query$"),
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "candidates": [], "totalCount": 0}),
+            ),
+        )
+
+    def test_a_finished_harvest_opens_the_run_it_produced(self, page: Page, base_url: str):
+        """The frames are three clicks deep in Saved Previews, so a harvest that files
+        them and says nothing is a harvest the user reports as never having finished —
+        which is exactly what happened. The uuid lives at `result.data.previewRunUuid`;
+        reading `result.previewRunUuid` yields undefined for *every* task in the app and
+        silently downgrades a successful run to "nothing to review"."""
+        self._mock_launch(page, [])
+        self._mock_harvest_completion(
+            page,
+            {"previewRunUuid": "run-harvest-1", "framesHarvested": 3},
+            run_name="Harvested frames",
+        )
+        self._open_modal(page, base_url, blips=[_blip()])
+
+        page.locator("[data-testid='event-blip-check']").check()
+        page.locator("[data-testid='event-blips-harvest']").click()
+
+        expect(page.locator("[data-testid='preview-run-title']")).to_have_text("Harvested frames")
+
+    def test_a_harvest_that_produced_nothing_opens_no_run(self, page: Page, base_url: str):
+        """The other half of the same branch. A run that proposed nothing has no preview
+        run to open, and a modal over an empty triage grid would be worse than the toast
+        — so the assertion above must be a consequence of the uuid, not of finishing."""
+        self._mock_launch(page, [])
+        self._mock_harvest_completion(page, {"previewRunUuid": None, "framesHarvested": 0})
+        self._open_modal(page, base_url, blips=[_blip()])
+
+        page.locator("[data-testid='event-blip-check']").check()
+        page.locator("[data-testid='event-blips-harvest']").click()
+
+        expect(page.locator("[data-testid='event-blips-title']")).to_be_visible()
+        expect(page.locator("[data-testid='preview-run-title']")).to_have_count(0)
+
     def test_harvest_is_dead_until_something_is_selected(self, page: Page, base_url: str):
         """A run over nothing is a task instance that exists only to fail."""
         self._open_modal(page, base_url, blips=[_blip()])
