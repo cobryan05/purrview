@@ -56,7 +56,10 @@ const DEFAULT_BINDINGS = {
   'shift+delete': 'action:deleteImage',
   'shift+backspace': 'action:deleteImage',
   '0': 'action:resetZoom',
-  'e': 'action:enhance',
+  // F, not the E it used to hold. E sits under the left hand next to Q/B/R/V,
+  // and enhancement is a view toggle you reach for mid-annotation rather than a
+  // tool switch, so it reads better one key further out.
+  'f': 'action:enhance',
   's': 'action:save',
   'i': 'action:runInference',
   'a': 'action:markAbsent',
