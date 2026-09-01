@@ -364,6 +364,31 @@ export async function fetchWatchEvent(uuid) {
   return data.event;
 }
 
+/**
+ * Correct one event's own record of what it saw.
+ *
+ * Deliberately narrow: this is the human-correction path, not a general row editor.
+ * The server accepts the subject/target pair (ref *and* name — see `WatchEventUpdate`,
+ * which explains why a ref without its name is worse than neither) and rejects the
+ * facts about what ran, which nobody should be rewriting after the fact.
+ *
+ * @param {string} uuid
+ * @param {{subjectRef?: ?string, subjectName?: ?string, targetRef?: ?string, targetName?: ?string}} patch
+ * @returns {Promise<Object>} the updated event, as the grid's rows are shaped
+ */
+export async function updateWatchEvent(uuid, patch) {
+  const res = await apiFetch(`/api/watch-events/${uuid}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to update that event');
+  }
+  return data.event;
+}
+
 export async function deleteWatchEvent(uuid) {
   const res = await apiFetch(`/api/watch-events/${uuid}`, { method: 'DELETE' });
   const data = await res.json();

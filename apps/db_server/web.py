@@ -1286,13 +1286,29 @@ class WatchEventCreate(Payload):
 
 
 class WatchEventUpdate(Payload):
-    """Only the fields an event's *closing* edge changes.
+    """The fields an event's *closing* edge changes, plus the ones a human can correct.
 
-    A closed event is history: the rule, source and start moment are not editable, so
-    they are absent here rather than optional-and-ignored.
+    A closed event is still mostly history: the rule, source and start moment are facts
+    about what ran and when, are not editable, and are absent here rather than
+    optional-and-ignored.
+
+    The subject and target are different in kind. They are the watcher's *opinion* —
+    which label it decided the moving thing was — and that opinion is exactly what a
+    reviewer opens the event to disagree with. Without these the label correction could
+    fix the training data and leave the row itself still reading "Maple drinks water"
+    for an event that was Luna, so every list, group and filter kept answering with the
+    mistake the user had just corrected.
+
+    Names travel with refs rather than being re-derived server-side: `subject_name` is a
+    denormalised copy the grid reads without joining, and a ref updated without its name
+    is worse than either — a row that filters as one label and reads as another.
     """
 
     ended_at: Optional[datetime] = None
+    subject_ref: Optional[str] = None
+    subject_name: Optional[str] = None
+    target_ref: Optional[str] = None
+    target_name: Optional[str] = None
     peak_confidence: Optional[float] = None
     truncated: Optional[bool] = None
     close_reason: Optional[str] = None

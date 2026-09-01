@@ -24,9 +24,10 @@ import json
 import re
 from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, Route, expect
 
 from playwright_tests.test_nvr_live_view import FRAME_B64
 from playwright_tests.waits import issues_a_request, wait_until
@@ -57,6 +58,13 @@ def _timelapse_summary(**overrides) -> dict:
 #: A real JPEG, so an <img> decodes something rather than taking the error path. Shared
 #: with the live-view tests so both exercise the same decode.
 PIXEL_JPEG = base64.b64decode(FRAME_B64)
+
+#: A one-second 64x48 WebM, for the tests that need a clip the browser will really
+#: decode (see `_mock(playable=True)`). Committed rather than generated at run time: it
+#: is 700 bytes, and building it needs ffmpeg with libvpx, which the test box is not
+#: required to have. Regenerate with:
+#:   ffmpeg -f lavfi -i "color=c=red:s=64x48:d=1:r=5" -c:v libvpx -b:v 50k tiny_clip.webm
+TINY_WEBM = (Path(__file__).parent / "fixtures" / "tiny_clip.webm").read_bytes()
 
 #: Does a serialised timestamp state its zone? Mirrors `HAS_OFFSET` in `shared/time.js`.
 _HAS_OFFSET = re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$")
@@ -243,6 +251,7 @@ def _mock(
     blips=None,
     sessions=None,
     review_states=None,
+    playable=False,
 ):
     """Route every call the Events page makes, and record the search queries.
 
@@ -347,7 +356,14 @@ def _mock(
             route.fulfill(status=200, content_type="application/json", body=json.dumps(overlay))
             return
         if "/file" in route.request.url:
-            # Not a real mp4; the tests assert the element and its src, never playback,
+            if playable:
+                # A real (tiny) WebM, for the handful of tests that need the browser to
+                # actually *decode* a frame — `captureVideoFrame` reads `videoWidth`, so
+                # everything downstream of "save this frame" is unreachable without one.
+                # WebM rather than H.264: Chromium ships no H.264 decoder.
+                route.fulfill(status=200, content_type="video/webm", body=TINY_WEBM)
+                return
+            # Not a real mp4; most tests assert the element and its src, never playback,
             # which would be a test of the browser's decoder rather than of this page.
             route.fulfill(status=200, content_type="video/mp4", body=b"")
             return
@@ -985,6 +1001,88 @@ class TestTheDetectionOverlay:
 
         expect(page.locator("[data-testid='event-detail-video']")).to_be_visible()
         expect(page.locator("[data-testid='event-detail-overlay-toggle']")).to_have_count(0)
+
+
+class TestSavingTheSameFrameTwice:
+    """Save, then Annotate, without moving the playhead.
+
+    That is the obvious way to do the obvious thing — keep this frame, now let me draw
+    on it — and it used to produce *two* dataset images of one instant, the second being
+    the one the canvas opened. The first was left in the annotation queue as a duplicate
+    nobody asked for and nobody would ever reconcile.
+
+    These are the only tests here that need the clip to really decode — `saveFrame`
+    stops at `captureVideoFrame`, which reads `videoWidth`. Hence `playable=True`.
+    """
+
+    def _open_with_uploads(self, page: Page, base_url: str):
+        """Open the modal on a decodable clip, capturing every image upload."""
+        uploads = []
+        _mock(page, overlay=_overlay(), playable=True)
+        _route_labels(page)
+
+        def _capture(route: Route):
+            uploads.append(route.request.url)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "status": "success",
+                        "results": [
+                            {"ok": True, "path": "captures/frame_0001.jpg", "uuid": "img-0001", "renamedFrom": None}
+                        ],
+                    }
+                ),
+            )
+
+        page.route("**/api/images/upload", _capture)
+        _open_events_pane(page, base_url)
+        page.locator("[data-testid='event-card']").first.click()
+        page.wait_for_selector("[data-testid='event-detail-modal']")
+        # The barrier the whole class rests on: until the browser has decoded a frame,
+        # every Save click takes the "not loaded yet" path and uploads nothing, which
+        # would make an assertion of "exactly one upload" pass for the wrong reason.
+        wait_until(
+            page,
+            lambda: page.locator("[data-testid='event-detail-video']").evaluate("v => v.videoWidth > 0"),
+            "the clip never decoded a frame",
+        )
+        return uploads
+
+    def test_annotating_after_saving_reuses_the_image_just_saved(self, page: Page, base_url: str):
+        uploads = self._open_with_uploads(page, base_url)
+
+        page.locator("[data-testid='event-detail-save-frame']").click()
+        wait_until(page, lambda: len(uploads) == 1, "the frame was never saved")
+
+        page.locator("[data-testid='event-detail-annotate-frame']").click()
+
+        # The event modal closes on its way to the canvas, which is the evidence that
+        # Annotate went somewhere rather than silently doing nothing.
+        expect(page.locator("[data-testid='event-detail-modal']")).to_have_count(0)
+        assert uploads == uploads[:1], f"the same frame must not be uploaded twice, saw {len(uploads)}"
+
+    def test_moving_the_playhead_makes_it_a_different_frame_again(self, page: Page, base_url: str):
+        """The other half, and the reason the memo is keyed on the playhead rather than
+        being a one-shot latch: a second Save after a seek is a genuinely different
+        picture and must still be saved."""
+        uploads = self._open_with_uploads(page, base_url)
+
+        page.locator("[data-testid='event-detail-save-frame']").click()
+        wait_until(page, lambda: len(uploads) == 1, "the frame was never saved")
+
+        # Played rather than seeked: `route.fulfill` serves the clip without Range
+        # support, so assigning `currentTime` is refused and the playhead never moves —
+        # which would make this pass or fail for a reason that has nothing to do with
+        # the memo. Playback advances it for real.
+        video = page.locator("[data-testid='event-detail-video']")
+        video.evaluate("v => v.play()")
+        wait_until(page, lambda: video.evaluate("v => v.currentTime") > 0.2, "the clip never advanced")
+        video.evaluate("v => v.pause()")
+        page.locator("[data-testid='event-detail-save-frame']").click()
+
+        wait_until(page, lambda: len(uploads) == 2, "a frame from a different moment must save on its own")
 
 
 class TestThePagerSurvivesAShrinkingResultSet:
@@ -1667,13 +1765,13 @@ class TestTheTimelineShowsWhenThingsHappened:
         wait_until(page, lambda: _opacity(page, "[data-testid='event-timeline-lane']", 1) < 1.0)
 
     def test_clicking_a_mark_opens_its_events_without_leaving_the_timeline(self, page: Page, base_url: str):
-        """A mark opens its bin in the detail modal, over a timeline that is still there.
+        """A mark opens its bin over a timeline that is still there.
 
         Clicking used to rewrite the page's filters into a grid drill-down. That answered
         the objection "opening one arbitrary event of the fifty in an hour is a guess at
         which" by opening none of them — at the cost of a one-way door, since getting back
         meant noticing the window chip, clearing it, re-picking the view and re-finding
-        the lane. Handing the modal the whole bin answers the objection properly.
+        the lane. Browsing the whole bin answers the objection properly.
         """
         _mock(page, events=_two_identities())
         _open_events_pane(page, base_url, view="timeline")
@@ -1681,7 +1779,7 @@ class TestTheTimelineShowsWhenThingsHappened:
 
         page.locator("[data-testid='event-timeline-mark']").first.click()
 
-        expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='bucket-browse-modal']")).to_be_visible()
         # The negative half, and the point of the change: the view underneath is
         # untouched, where the drill-down used to have replaced it with a filtered grid.
         expect(page.locator("[data-testid='event-view-timeline']")).to_have_class(
@@ -1690,14 +1788,15 @@ class TestTheTimelineShowsWhenThingsHappened:
         expect(page.locator("[data-testid='event-timeline']")).to_be_attached()
         expect(page.locator("[data-testid='event-window-chip']")).to_be_hidden()
 
-    def test_a_mark_hands_the_modal_the_whole_bin_to_walk(self, page: Page, base_url: str):
+    def test_a_mark_hands_the_player_the_whole_bin_to_walk(self, page: Page, base_url: str):
         """Opening one event of the bin with no way to the other three would be exactly
         the guess the drill-down existed to avoid.
 
         Two halves, because the mock answers any event query with its whole fixture and
         so cannot prove the *size* of the walk: that the request was scoped to this lane
-        and this hour, and that the modal came up with its navigation live — which it
-        hides for a lone event, so it is only there if siblings were passed.
+        and this hour, and that the player came up with its navigation live — which it
+        hides for a lone event, so it is only there if siblings were passed through the
+        browser.
         """
         queries = _mock(page, events=_two_identities())
         _open_events_pane(page, base_url, view="timeline")
@@ -1707,11 +1806,26 @@ class TestTheTimelineShowsWhenThingsHappened:
             "[data-testid='event-timeline-mark']"
         ).first.click()
 
+        page.locator("[data-testid='bucket-browse-modal'] [data-testid='event-card']").first.click()
+
         expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
         expect(page.locator("[data-testid='event-detail-nav']")).to_be_visible()
         wait_until(page, lambda: _query_values(queries[-1], "rule_uuids") == ["rule-water"])
         assert queries[-1].get("start_from"), "the clicked bin must scope the fetch"
         assert queries[-1].get("start_to")
+
+    def test_a_bin_of_one_skips_the_browser_and_plays_it(self, page: Page, base_url: str):
+        """The conditional half of the rule above. A grid of exactly one card is a click
+        spent on a question with one answer, so the single-event bin must go straight to
+        the player — which is also the behaviour the multi-event case must *not* have."""
+        _mock(page, events=[_event(uuid="lone-0000")])
+        _open_events_pane(page, base_url, view="timeline")
+        expect(page.locator("[data-testid='event-timeline-mark']").first).to_be_attached()
+
+        page.locator("[data-testid='event-timeline-mark']").first.click()
+
+        expect(page.locator("[data-testid='event-detail-modal']")).to_be_visible()
+        expect(page.locator("[data-testid='bucket-browse-modal']")).to_have_count(0)
 
     def test_the_hover_preview_shows_the_bin_before_it_is_opened(self, page: Page, base_url: str):
         """The preview is what makes a mark worth aiming at: a 3px block with a tooltip
@@ -2439,6 +2553,111 @@ class TestCorrectingAWrongLabel:
         # The frame tools are still there — this is the event action that is missing,
         # not the whole toolbar.
         expect(page.locator("[data-testid='event-detail-save-frame']")).to_be_visible()
+
+    def test_the_event_fix_is_offered_only_when_it_would_change_the_event(self, page: Page, base_url: str):
+        """Correcting the boxes and leaving the row saying "Tabby drinks water" is half a
+        correction — the row is what every list, group and filter answers with.
+
+        The conditional is the test: the offer appears when the corrected label *is* the
+        event's own subject, and stays away when it is the bowl standing beside her,
+        where "also fix this event" would be an offer to change nothing.
+        """
+        self._open_modal(
+            page, base_url, events=[_event(subjectRef="lbl-1", subjectName="Tabby")], overlay=_two_label_overlay()
+        )
+        page.locator("[data-testid='event-detail-relabel-event']").click()
+
+        fix_row = page.locator("[data-testid='label-correction-fix-event']")
+        expect(fix_row).to_be_hidden()
+
+        # The bowl is not this event's subject, so correcting it changes no slot.
+        page.locator("[data-testid='label-correction-select']").nth(1).select_option("lbl-3")
+        expect(fix_row).to_be_hidden()
+
+        # Tabby is.
+        page.locator("[data-testid='label-correction-select']").first.select_option("lbl-3")
+        expect(fix_row).to_be_visible()
+        expect(fix_row).to_contain_text("subject Tabby → Clover")
+
+    def test_confirming_writes_the_correction_to_the_event_row(self, page: Page, base_url: str):
+        """The database fix itself, which is the point of the offer above.
+
+        It is asserted *before* the frame harvest deliberately: the harvest cannot run
+        here (the mocked clip never decodes — see the class docstring), and the row
+        correction must not be conditional on it. That ordering is the behaviour, not a
+        convenience for the test.
+        """
+        self._open_modal(
+            page, base_url, events=[_event(subjectRef="lbl-1", subjectName="Tabby")], overlay=_two_label_overlay()
+        )
+
+        patched = []
+        page.route(
+            re.compile(r"/api/watch-events/[\w-]+$"),
+            lambda route: (
+                patched.append(json.loads(route.request.post_data or "{}")) if route.request.method == "PATCH" else None
+            )
+            or route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+        )
+
+        page.locator("[data-testid='event-detail-relabel-event']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("lbl-3")
+        page.locator("[data-testid='label-correction-confirm']").click()
+
+        wait_until(page, lambda: bool(patched), "the correction never reached the event row")
+        assert patched[0]["subjectRef"] == "lbl-3"
+        # The name travels with the ref: a row that filters as one label and reads as
+        # another is worse than either half being wrong on its own.
+        assert patched[0]["subjectName"] == "Clover"
+
+    def test_unchecking_the_offer_leaves_the_event_row_alone(self, page: Page, base_url: str):
+        """The other half — it is an opt-*out*, so opting out has to work. Someone
+        correcting the training data for a run of events they do not want re-grouped
+        must be able to say so."""
+        self._open_modal(
+            page, base_url, events=[_event(subjectRef="lbl-1", subjectName="Tabby")], overlay=_two_label_overlay()
+        )
+
+        patched = []
+        page.route(
+            re.compile(r"/api/watch-events/[\w-]+$"),
+            lambda route: (patched.append(route.request.method) if route.request.method == "PATCH" else None)
+            or route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"})),
+        )
+
+        page.locator("[data-testid='event-detail-relabel-event']").click()
+        page.locator("[data-testid='label-correction-select']").first.select_option("lbl-3")
+        page.locator("[data-testid='label-correction-fix-event-box']").uncheck()
+        page.locator("[data-testid='label-correction-confirm']").click()
+
+        # Barrier on the dialog closing, which the confirm handler does before any of the
+        # work — so this waits for the click to have been *processed*, not merely sent.
+        expect(page.locator("[data-testid='label-correction-modal']")).to_have_count(0)
+        assert patched == [], f"the event row must be left alone, saw {patched}"
+
+    def test_the_correction_touches_only_the_slots_the_remap_names(self, page: Page, base_url: str):
+        """Correcting the cat must not rewrite the litter box she was standing in.
+
+        A zone-kind rule's target is a *zone* uuid, so it can never be a key in a remap
+        of clip labels — the patch has to come out subject-only. And a remap that names
+        neither slot returns null rather than an empty patch, which is what keeps the
+        offer hidden instead of showing an offer to change nothing.
+        """
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        result = page.evaluate("""async () => {
+                const { eventCorrectionFor } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const labels = new Map([['lbl-3', { uuid: 'lbl-3', name: 'Clover' }]]);
+                const event = { subjectRef: 'lbl-1', subjectName: 'Tabby', targetRef: 'zone-box', targetName: 'litter box' };
+                return {
+                  patch: eventCorrectionFor(event, new Map([['lbl-1', 'lbl-3']]), labels).patch,
+                  untouched: eventCorrectionFor(event, new Map([['lbl-2', 'lbl-3']]), labels),
+                };
+            }""")
+
+        assert result["patch"] == {"subjectRef": "lbl-3", "subjectName": "Clover"}
+        assert result["untouched"] is None
 
     def test_the_remap_rewrites_only_the_labels_it_was_given(self, page: Page, base_url: str):
         """The multi-object case the per-label form exists for, asserted on the function

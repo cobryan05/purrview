@@ -52,6 +52,45 @@ export const MIN_FRAME_GAP_S = 0.75;
 /** The select option meaning "this label was right, leave its boxes alone". */
 const KEEP = '';
 
+/**
+ * What a remap would do to the event row's own subject and target.
+ *
+ * The event carries the watcher's verdict about the *whole* visit — "Maple drinks
+ * water" — as `subjectRef`/`targetRef`, which are label uuids (a zone-kind rule's
+ * target is a zone uuid, which no label remap can match, so it simply never appears
+ * here). Correcting the boxes without correcting these leaves every list, group and
+ * filter still answering with the mistake that was just corrected.
+ *
+ * Returns null when the remap touches neither slot — the common case of correcting a
+ * label that was never the event's own subject, where offering to "fix the event"
+ * would be offering to change nothing.
+ *
+ * @param {?Object} event - a watch event row
+ * @param {Map<string, string>} remap - old label uuid → new label uuid
+ * @param {Map<string, Object>} [labels] - uuid → label, for the new names
+ * @returns {?{patch: Object, changes: Array<{slot: string, from: string, to: string}>}}
+ */
+export function eventCorrectionFor(event, remap, labels) {
+  if (!event || !remap?.size) return null;
+  const nameOf = uuid => labels?.get(uuid)?.name || uuid;
+  const patch = {};
+  const changes = [];
+  for (const [slot, refKey, nameKey] of [
+    ['subject', 'subjectRef', 'subjectName'],
+    ['target', 'targetRef', 'targetName'],
+  ]) {
+    const ref = event[refKey];
+    if (!ref || !remap.has(ref)) continue;
+    const to = remap.get(ref);
+    patch[refKey] = to;
+    // The name goes with the ref, always — see `WatchEventUpdate` on why a row that
+    // filters as one label and reads as another is the worst of the three states.
+    patch[nameKey] = nameOf(to);
+    changes.push({ slot, from: event[nameKey] || nameOf(ref), to: nameOf(to) });
+  }
+  return changes.length ? { patch, changes } : null;
+}
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -189,12 +228,15 @@ export function applyLabelRemap(boxes, remap) {
  * @param {Array<{labelUuid: string, name: string, boxes: number, frames: number}>} opts.detected -
  *   from labelTallyAcrossClip
  * @param {Map<string, Object>} opts.labels - every label the DB knows, uuid → label
+ * @param {?Object} [opts.event] - the event being corrected. Given, the dialog can also
+ *   offer to fix the event's own subject/target — see `eventCorrectionFor`.
  * @param {(labelUuids: string[]) => number} [opts.estimateFrames] - how many frames a
  *   given selection would harvest, for the live count
- * @param {(remap: Map<string, string>) => (void | Promise<void>)} opts.onConfirm - non-empty remap
+ * @param {(remap: Map<string, string>, opts: {fixEvent: boolean}) => (void | Promise<void>)}
+ *   opts.onConfirm - non-empty remap, plus whether the event row itself should be corrected
  * @returns {{close: () => void}}
  */
-export function openLabelCorrectionModal({ detected, labels, estimateFrames, onConfirm }) {
+export function openLabelCorrectionModal({ detected, labels, event = null, estimateFrames, onConfirm }) {
   const shell = createModalShell();
   shell.dialog.classList.add('label-correction');
   shell.dialog.dataset.testid = 'label-correction-modal';
@@ -203,7 +245,7 @@ export function openLabelCorrectionModal({ detected, labels, estimateFrames, onC
   shell.dialog.appendChild(el('p', 'label-correction__note',
     'A spread of frames from across this clip is saved with these boxes relabelled and '
     + 'left unverified for review — not every frame, because consecutive frames of the '
-    + 'same animal are near-duplicates. The event is flagged so you can find it again.'));
+    + 'same subject are near-duplicates. The event is flagged so you can find it again.'));
 
   const rows = el('div', 'label-correction__rows');
   /** @type {Array<{from: string, select: HTMLSelectElement}>} */
@@ -250,6 +292,27 @@ export function openLabelCorrectionModal({ detected, labels, estimateFrames, onC
   estimate.dataset.testid = 'label-correction-estimate';
   shell.dialog.appendChild(estimate);
 
+  // ── Fix the event row itself ──────────────────────────────────────────────
+  // Training data is the long game; this is the short one. An event whose subject was
+  // wrong reads wrong in every list, groups under the wrong identity and answers the
+  // wrong filter, and until now the only correction on offer rewrote frames and left
+  // the row saying what it always said.
+  //
+  // Opt-*out*, not opt-in: someone who has just told the dialog the label was wrong
+  // has already made this decision. It appears only when the chosen remap actually
+  // touches the event's own subject or target — offering to change nothing is worse
+  // than not offering.
+  const fixRow = el('label', 'label-correction__fix-event');
+  fixRow.dataset.testid = 'label-correction-fix-event';
+  const fixBox = document.createElement('input');
+  fixBox.type = 'checkbox';
+  fixBox.checked = true;
+  fixBox.dataset.testid = 'label-correction-fix-event-box';
+  const fixText = el('span', null, '');
+  fixRow.append(fixBox, fixText);
+  fixRow.hidden = true;
+  shell.dialog.appendChild(fixRow);
+
   const actions = el('div', 'label-correction__actions');
   const confirm = el('button', 'panel-btn label-correction__confirm', 'Flag & save for review');
   confirm.type = 'button';
@@ -262,9 +325,29 @@ export function openLabelCorrectionModal({ detected, labels, estimateFrames, onC
 
   /** A correction with nothing corrected would flag the event and save duplicate frames
    * for no reason, so the button stays dead until something is actually chosen. */
+  /** The remap as it stands, which both the estimate and the event-fix row read. */
+  function currentRemap() {
+    const remap = new Map();
+    for (const { from, select } of pickers) {
+      if (select.value !== KEEP) remap.set(from, select.value);
+    }
+    return remap;
+  }
+
+  function syncFixEventRow() {
+    const correction = eventCorrectionFor(event, currentRemap(), labels);
+    fixRow.hidden = !correction;
+    if (!correction) return;
+    // Named per slot, because "subject" and "target" are not interchangeable and a
+    // rule like "Maple near Luna" can have both corrected at once.
+    fixText.textContent = 'Also fix this event: '
+      + correction.changes.map(c => `${c.slot} ${c.from} → ${c.to}`).join(', ');
+  }
+
   function syncConfirm() {
     const chosen = pickers.filter(p => p.select.value !== KEEP).map(p => p.from);
     confirm.disabled = !chosen.length;
+    syncFixEventRow();
     if (!chosen.length) {
       estimate.textContent = '';
       return;
@@ -278,16 +361,16 @@ export function openLabelCorrectionModal({ detected, labels, estimateFrames, onC
   syncConfirm();
 
   confirm.addEventListener('click', async () => {
-    const remap = new Map();
-    for (const { from, select } of pickers) {
-      if (select.value !== KEEP) remap.set(from, select.value);
-    }
+    const remap = currentRemap();
     if (!remap.size) return;
+    // A hidden row is not an unchecked one: the box stays checked while irrelevant, so
+    // the answer has to come from whether the row applies at all.
+    const fixEvent = !fixRow.hidden && fixBox.checked;
     // Closed before the work rather than after: saving uploads a frame and writes
     // boxes, and a dialog left open over it invites a second click on a button whose
     // first click is still in flight.
     shell.close();
-    await onConfirm?.(remap);
+    await onConfirm?.(remap, { fixEvent });
   });
 
   actions.appendChild(cancel);

@@ -433,7 +433,8 @@ export function buildTimeline({
       const until = new Date(at + bucketMs);
       mark.title = `${row.count} event${row.count === 1 ? '' : 's'} — ${
         when.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
-        + '\nClick to open them · Shift-click to narrow the page to this hour';
+        + `\n${row.count === 1 ? 'Click to play it' : 'Click to browse them'}`
+        + ' · Shift-click to narrow the page to this hour';
       // Open the events themselves rather than rewriting the page's filters. Drilling
       // down replaced the timeline with a filtered grid, which is a one-way door: the
       // way back is to notice the window chip, clear it, re-pick the view and re-find

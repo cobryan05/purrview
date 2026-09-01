@@ -36,9 +36,11 @@ import {
   foldGroups,
   groupDrilldownFilters,
   groupFacetSeeds,
+  groupHeadline,
   identityKey,
   sortGroups,
 } from './identity.js';
+import { openBucketBrowseModal } from './bucketBrowseModal.js';
 
 const PAGE_SIZE = 60;
 
@@ -517,12 +519,15 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   }
 
   /**
-   * Clicking a mark opens its events in the detail modal, over the timeline.
+   * Clicking a mark opens its events, over the timeline.
    *
-   * Handed the whole bin as `siblings` so the modal's prev/next walks the bin rather
-   * than dead-ending on the first event — a busy hour is the case you clicked into, and
-   * a modal that showed one of fifty and offered no way to the rest would send you back
-   * to the drill-down this exists to avoid.
+   * A bin holding exactly one event goes straight to the player — an intermediate modal
+   * listing a single card is pure friction. A bin holding several opens the browser
+   * first, because prev/next can only show you one picture at a time and picking which
+   * of fifty to watch is exactly the question a grid of cards answers.
+   *
+   * Either way the player is handed the whole bin as `siblings`, so prev/next still
+   * walks the bin rather than dead-ending on whichever event was opened.
    */
   async function openBucketEvents(group, win) {
     try {
@@ -535,11 +540,25 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         void search();
         return;
       }
-      openEventDetailModal(events[0], {
+      const openDetail = (event, siblings) => openEventDetailModal(event, {
         sourceNames,
-        siblings: events,
+        siblings,
         onDeleted: () => void search(),
       });
+      if (events.length > 1) {
+        const { primary, secondary } = groupHeadline(group, dimensions());
+        const span = `${win.from.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+          + ` – ${win.to.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        openBucketBrowseModal({
+          events,
+          sourceNames,
+          title: primary,
+          subtitle: secondary ? `${secondary} · ${span}` : span,
+          onOpenEvent: openDetail,
+        });
+        return;
+      }
+      openDetail(events[0], events);
     } catch (err) {
       Logger.error(err);
       toast(err.message || 'Could not open those events', 5000, 'error');

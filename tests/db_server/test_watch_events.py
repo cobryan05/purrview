@@ -152,6 +152,57 @@ class TestReviewStateFlagging:
         assert r.json()["event"]["reviewState"] == "unreviewed"
 
 
+class TestCorrectingTheWatchersVerdict:
+    """The event's subject/target are the watcher's *opinion*, and a human may overrule it.
+
+    Everything else the closing edge writes is a fact about what ran. These two are the
+    guess a reviewer opens the event to disagree with — "Maple drinks water" when it was
+    Luna — and a correction that only rewrote the training frames left every list, group
+    and filter still answering with the mistake.
+    """
+
+    async def test_a_corrected_subject_moves_between_the_filters(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(
+            http_client,
+            profile_uuid,
+            ruleName="cat drinks water",
+            subjectRef="maple-ref",
+            subjectName="Maple",
+        )
+
+        r = await http_client.patch(
+            f"/api/watch-events/{event['uuid']}",
+            json={"subjectRef": "luna-ref", "subjectName": "Luna"},
+        )
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["event"]["subjectName"] == "Luna"
+        # The facts about what ran are not the opinion being corrected.
+        assert body["event"]["ruleName"] == "cat drinks water"
+
+        # The half that makes it a correction rather than a cosmetic edit: the row has
+        # to answer the *new* filter and stop answering the old one.
+        assert {e["uuid"] for e in (await _list(http_client, subject_refs=["luna-ref"]))["events"]} == {event["uuid"]}
+        assert event["uuid"] not in {
+            e["uuid"] for e in (await _list(http_client, subject_refs=["maple-ref"]))["events"]
+        }
+
+    async def test_a_corrected_target_is_persisted(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid, targetRef="bowl-ref", targetName="water bowl")
+
+        r = await http_client.patch(
+            f"/api/watch-events/{event['uuid']}",
+            json={"targetRef": "fountain-ref", "targetName": "fountain"},
+        )
+        assert r.json()["status"] == "success", r.text
+
+        r = await http_client.get(f"/api/watch-events/{event['uuid']}")
+        assert r.json()["event"]["targetRef"] == "fountain-ref"
+        assert r.json()["event"]["targetName"] == "fountain"
+
+
 class TestBulkDelete:
     """The selection delete behind the event grid's "Delete N events".
 

@@ -32,6 +32,7 @@ import {
   fetchRecording,
   recordingFileUrl,
   setWatchEventReviewStates,
+  updateWatchEvent,
   watchEventSnapshotUrl,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
@@ -39,6 +40,7 @@ import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/a
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
 import {
   applyLabelRemap,
+  eventCorrectionFor,
   framesHoldingLabels,
   labelTallyAcrossClip,
   openLabelCorrectionModal,
@@ -358,6 +360,10 @@ export function openEventDetailModal(
    */
   async function showMedia(row) {
     const seq = loadSeq;
+    // Whatever was saved described the pane that is being replaced. A clip and a
+    // timelapse both start at t=0, so a memo carried across the switch would call a
+    // different picture "already saved" — see `alreadySavedFrame`.
+    lastSavedFrame = null;
     try {
       const recording = await fetchRecording(row.uuid);
       // Navigated away while this was in flight — the modal is showing a different
@@ -655,7 +661,7 @@ export function openEventDetailModal(
     box.dataset.testid = 'event-detail-overlay-toggle';
     box.addEventListener('change', () => overlay.setVisible(box.checked));
     label.appendChild(box);
-    label.appendChild(el('span', null, 'Show what the watcher saw'));
+    label.appendChild(el('span', null, 'Show Overlays'));
     tools.appendChild(label);
 
     tools.appendChild(_fullscreenButton());
@@ -797,9 +803,41 @@ export function openEventDetailModal(
     openLabelCorrectionModal({
       detected,
       labels,
+      // Handed the event so the dialog can offer to correct the row itself, not just
+      // the training data harvested from it.
+      event,
       estimateFrames: labelUuids => pickTrainingFrames(framesHoldingLabels(overlayDoc, labelUuids)).length,
-      onConfirm: remap => saveCorrectedFrames(remap, labels),
+      onConfirm: (remap, { fixEvent } = {}) => saveCorrectedFrames(remap, labels, { fixEvent }),
     });
+  }
+
+  /**
+   * Rewrite the event's own subject/target to what the correction says they were.
+   *
+   * The row, not the frames: an event whose subject was wrong reads wrong in the grid,
+   * groups under the wrong identity and answers the wrong filter, and the correction
+   * that fixed the training data used to leave all of that untouched.
+   *
+   * The local copy is patched from the server's answer rather than from what was sent,
+   * so the modal cannot drift from the row — and `onDeleted` is the grid's only "your
+   * data changed" hook, so it is reused here to re-run the search behind us. Failure is
+   * reported and swallowed: the frame harvest that follows is independently valuable
+   * and must still run.
+   */
+  async function correctEventRow(remap, labels) {
+    const correction = eventCorrectionFor(event, remap, labels);
+    if (!correction) return;
+    try {
+      const updated = await updateWatchEvent(event.uuid, correction.patch);
+      Object.assign(event, updated || correction.patch);
+      renderHeader();
+      renderSidebar();
+      toast(`Event corrected: ${correction.changes.map(c => `${c.from} → ${c.to}`).join(', ')}`, 4000);
+      onDeleted?.();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not correct this event', 5000, 'error');
+    }
   }
 
   /**
@@ -865,7 +903,12 @@ export function openEventDetailModal(
    * frame is an independent training image, and eight-of-eight is better than nothing
    * when the ninth 500s. The count reported at the end is what actually landed.
    */
-  async function saveCorrectedFrames(remap, labels) {
+  async function saveCorrectedFrames(remap, labels, { fixEvent = false } = {}) {
+    // Before the harvest, and before the early return below it. The row correction is
+    // the half the user sees immediately — the headline, the sidebar, the grouping —
+    // and it must not be conditional on eight video seeks succeeding, nor skipped
+    // entirely for a clip whose sidecar yields no frames worth saving.
+    if (fixEvent) await correctEventRow(remap, labels);
     const times = pickTrainingFrames(framesHoldingLabels(overlayDoc, remap.keys()));
     if (!times.length) return;
     saveBtn.disabled = true;
@@ -964,8 +1007,46 @@ export function openEventDetailModal(
     await openOnCanvas(saved);
   }
 
+  /**
+   * The frame most recently saved from this clip, so the same one is never saved twice.
+   *
+   * "Save For Annotation" then "Annotate Image" is the obvious way to do the obvious
+   * thing — save it, now let me draw on it — and it used to produce *two* dataset
+   * images of one instant, the second of which is what the canvas opened. The first was
+   * left behind in the queue as a duplicate nobody asked for.
+   *
+   * Keyed on the event *and* the playhead: a different event, or a seek to a different
+   * moment, is a genuinely different picture. Cleared on navigation (`loadEvent`) and
+   * whenever the media pane changes what is on screen, since neither leaves the memo
+   * describing anything that is still visible.
+   *
+   * @type {?{eventUuid: string, at: number, result: Object}}
+   */
+  let lastSavedFrame = null;
+
+  /** The saved image for what is on screen right now, or null if this frame is new. */
+  function alreadySavedFrame() {
+    if (!lastSavedFrame || !video) return null;
+    if (lastSavedFrame.eventUuid !== event.uuid) return null;
+    // Exact, not approximate: a paused `currentTime` does not drift, and while the clip
+    // is *playing* every read is a different moment — which is a different frame and
+    // must be saved as one.
+    return lastSavedFrame.at === video.currentTime ? lastSavedFrame.result : null;
+  }
+
   async function saveFrame({ openCanvas = false } = {}) {
     if (!video) return;
+    const already = alreadySavedFrame();
+    if (already) {
+      // Both buttons land here. Annotate opens the image that already exists; a second
+      // Save says so rather than silently doing nothing, which reads as a dead button.
+      if (openCanvas) {
+        await openOnCanvas(already);
+      } else {
+        toast('This frame is already saved for annotation', 4000);
+      }
+      return;
+    }
     // Captured off the `<video>`, which is the raw clip — the boxes live on a canvas
     // above it and are never composited in. That is what makes this safe to feed
     // straight into the dataset: a training image with rectangles burnt into it is
@@ -996,6 +1077,10 @@ export function openEventDetailModal(
         },
       });
       savedHint.textContent = `Saved ${result.path}`;
+      // Recorded before the canvas opens: opening it tears this modal down and rebuilds
+      // it through `navContext.onClose`, and a memo written afterwards would be written
+      // onto the modal that is going away.
+      lastSavedFrame = { eventUuid: event.uuid, at: video.currentTime, result };
       if (openCanvas) {
         await openOnCanvas(result);
       } else {
@@ -1143,8 +1228,9 @@ export function openEventDetailModal(
     event = walk[index];
     started = parseApiDate(event.startedAt);
     mediaRows = [findRecording(event, 'clip'), findRecording(event, 'timelapse')].filter(Boolean);
-    // Belongs to the frame that was saved, not to the modal.
+    // Both belong to the frame that was saved, not to the modal.
     savedHint.textContent = '';
+    lastSavedFrame = null;
     renderHeader();
     renderSidebar();
     // Fire and forget, like the overlay: the findings are a second opinion about the

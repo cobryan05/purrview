@@ -1331,6 +1331,33 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   display: block;
 }
 
+/* ----- bucket browse modal (app/nvr/events/bucketBrowseModal.js) -----
+   The cards reuse .event-search__grid, so only the frame around them is new: a fixed
+   header and a scroller, so a bin of fifty cards scrolls under a heading that stays. */
+.bucket-browse__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.bucket-browse__title {
+  margin: 0;
+}
+
+.bucket-browse__count,
+.bucket-browse__subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  margin: 0;
+}
+
+.bucket-browse__scroll {
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: var(--space-2);
+}
+
 /* ----- identity focus -----
    One class on the root dims everything, one class per member undims it. Doing it this
    way round means a hover costs two class flips total rather than a style write per
@@ -1341,10 +1368,15 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
    "Maple → Tupperware" tiles is interleaved with everything else, and the timeline, where
    a lane must be isolated from twenty others. The grouped view draws exactly one card per
    identity, so dimming there would grey out every other card to point at the one already
-   under the pointer: all cost, no answer. They keep the `is-focused` highlight below. */
+   under the pointer: all cost, no answer. They keep the `is-focused` highlight below.
+
+   ⚠️ The dim is deliberately mild. It was 0.25, which did pick the hovered identity out
+   — by making every other lane's label unreadable, so the one thing you could not do
+   while pointing at a lane was compare it with its neighbours. Dimming only has to say
+   "these are the other ones"; it does not have to hide them. */
 .event-focus-active .event-card:not(.is-focused),
 .event-focus-active .event-timeline__lane:not(.is-focused) {
-  opacity: 0.25;
+  opacity: 0.6;
 }
 
 .event-focus-active .event-card,
@@ -1773,6 +1805,21 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
 
 .label-correction__to {
   /* Pico gives form elements a bottom margin that would space the rows unevenly. */
+  margin: 0;
+}
+
+/* The "also fix the event row" opt-out. Sits between the estimate and the buttons,
+   which is the reading order it belongs in: what will be saved, what else will change,
+   then the button that does both. */
+.label-correction__fix-event {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.label-correction__fix-event input {
+  /* Same reason as .label-correction__to: Pico's form margin would misalign the row. */
   margin: 0;
 }
 
