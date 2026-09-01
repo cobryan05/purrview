@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -45,6 +45,17 @@ SNAPSHOT_PRESENCE_MIN_CONFIDENCE = 0.5
 
 #: How many cadences a snapshot's verdict stands for before it is treated as stale.
 SNAPSHOT_PRESENCE_CADENCE_SLACK = 2.0
+
+#: How far back the cadence estimate looks, and how finely it is bucketed.
+#:
+#: Ten minutes because that is comfortably longer than a Ring camera's live escalation:
+#: the window has to still contain the slow snapshot gaps while the camera is streaming,
+#: or the estimate collapses to the live frame rate and the *next* snapshot — thirty to
+#: ninety seconds later — arrives after the verdict has already gone stale. That is
+#: precisely the flap this window exists to prevent, and it repeats on every motion
+#: event for as long as the camera is up.
+PRESENCE_CADENCE_WINDOW_S = 600.0
+PRESENCE_CADENCE_BUCKET_S = 60.0
 
 
 def downscale_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
@@ -254,6 +265,12 @@ class WatchPipeline:
     #: when nothing is happening, without its tier ever changing.
     _last_analysis_at: Optional[float] = None
     _last_analysis_gap_s: float = 0.0
+    #: Sliding per-minute maxima of the analysed-frame gap, as (bucket_start, max_gap),
+    #: newest last. Presence staleness is measured against the *worst* recent gap, not
+    #: the latest one — see `_presence_hold_s`, which explains why the difference is the
+    #: whole bug. Bucketed rather than a raw list so a 20fps stream costs ten entries
+    #: over ten minutes instead of twelve thousand.
+    _cadence_buckets: List[Tuple[float, float]] = field(default_factory=list)
     #: track_ids live as of the previous `step()`, so the next call can tell which
     #: ones vanished. A vanished id is the only reliable "this track just died"
     #: signal the tracker exposes — it never fires a callback, and a track simply
@@ -385,6 +402,7 @@ class WatchPipeline:
         """Advance the tracker and rule engine for one analysed frame."""
         if self._last_analysis_at is not None:
             self._last_analysis_gap_s = max(0.0, now - self._last_analysis_at)
+            self._note_analysis_gap(self._last_analysis_gap_s, now)
         self._last_analysis_at = now
         surviving = self.apply_masks(detections)
         # `_last_detections` is what the tracker actually saw, so the live view shows the
@@ -512,6 +530,30 @@ class WatchPipeline:
             return False
         return now - self._last_analysis_at <= self._presence_hold_s()
 
+    def _note_analysis_gap(self, gap_s: float, now: float) -> None:
+        """Fold one frame gap into the sliding per-minute maxima."""
+        bucket_start = now - (now % PRESENCE_CADENCE_BUCKET_S)
+        if self._cadence_buckets and self._cadence_buckets[-1][0] == bucket_start:
+            start, worst = self._cadence_buckets[-1]
+            self._cadence_buckets[-1] = (start, max(worst, gap_s))
+        else:
+            self._cadence_buckets.append((bucket_start, gap_s))
+        cutoff = now - PRESENCE_CADENCE_WINDOW_S
+        self._cadence_buckets = [b for b in self._cadence_buckets if b[0] >= cutoff]
+
+    def _observed_cadence_s(self) -> float:
+        """The worst analysed-frame gap seen recently, or 0 before any second frame.
+
+        The *worst*, not the latest, and that choice is the whole point. A camera that
+        alternates between tiers — a Ring camera streams at 20fps while motion holds it
+        live, then returns to a snapshot every 30-90s — has a "current" gap that says
+        nothing about how long to wait for the next frame. Taking the latest one made
+        the hold collapse to a fraction of a second during every live burst, so the
+        first snapshot after the burst always arrived late, and the camera's presence
+        entities went unavailable and back on every motion event.
+        """
+        return max((worst for _, worst in self._cadence_buckets), default=0.0)
+
     def _presence_hold_s(self) -> float:
         """How long this camera's verdict stands before it goes stale.
 
@@ -520,7 +562,7 @@ class WatchPipeline:
         reason — cloud snapshot intervals jitter, and a deadline at exactly one cadence
         would call a healthy camera stale constantly.
         """
-        cadence = self._last_analysis_gap_s or SNAPSHOT_MODE_FRAME_GAP_S
+        cadence = self._observed_cadence_s() or self._last_analysis_gap_s or SNAPSHOT_MODE_FRAME_GAP_S
         hold = cadence * SNAPSHOT_PRESENCE_CADENCE_SLACK
         if self.presence_mode() == "tracks":
             max_age = getattr(self.tracker, "max_age_s", None)

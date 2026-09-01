@@ -18,6 +18,8 @@ from types import SimpleNamespace
 
 from apps.helpers.tracking.tracker import Detection, Track
 from apps.tasks_server.tasks._watch_pipeline import (
+    PRESENCE_CADENCE_BUCKET_S,
+    PRESENCE_CADENCE_WINDOW_S,
     SNAPSHOT_MODE_FRAME_GAP_S,
     WatchPipeline,
 )
@@ -34,6 +36,7 @@ def _pipeline(**overrides) -> WatchPipeline:
     pipeline._last_detections = []
     pipeline._last_analysis_at = 1000.0
     pipeline._last_analysis_gap_s = 0.2
+    pipeline._cadence_buckets = []
     for key, value in overrides.items():
         setattr(pipeline, key, value)
     return pipeline
@@ -130,3 +133,57 @@ class TestBeforeAnyFrame:
     def test_a_source_that_has_never_produced_a_frame_reports_nothing(self):
         pipeline = _pipeline(_last_analysis_at=None)
         assert pipeline.presence_labels(now=1000.0) == set()
+
+
+class TestPresenceStalenessSurvivesAChangeOfPace:
+    """A camera that speeds up must not be called stale when it slows back down.
+
+    The hold was scaled off the *latest* frame gap. A Ring camera escalating to live
+    video drove that to a fraction of a second, so the first cloud snapshot after the
+    burst — thirty to ninety seconds later, exactly on time — arrived long after the
+    verdict had expired. The per-camera presence entities went unavailable and back
+    again on every motion event, which is what a user sees as constant flapping.
+    """
+
+    @staticmethod
+    def _feed(pipeline, gaps, start=1000.0):
+        """Replay a series of frame gaps through the cadence estimator."""
+        now = start
+        for gap in gaps:
+            now += gap
+            pipeline._note_analysis_gap(gap, now)
+            pipeline._last_analysis_gap_s = gap
+            pipeline._last_analysis_at = now
+        return now
+
+    def test_a_burst_of_live_frames_does_not_shorten_the_hold(self):
+        pipeline = _pipeline()
+        # Two snapshots 90s apart, then a minute of 20fps live video.
+        now = self._feed(pipeline, [90.0, 90.0])
+        now = self._feed(pipeline, [0.05] * 1200, start=now)
+
+        # The next snapshot is 90s out — on time for this camera, and the moment the
+        # old rule had already declared the verdict stale.
+        assert pipeline.presence_is_known(now + 90.0) is True
+
+    def test_a_camera_that_actually_stops_still_goes_unknown(self):
+        """The other half. A hold that never expired would pin a parked car in the
+        garage forever off a feed that died — which is the failure the staleness rule
+        exists for, and it must survive the fix for the flap."""
+        pipeline = _pipeline()
+        now = self._feed(pipeline, [90.0, 90.0])
+
+        # Well past two cadences with nothing arriving.
+        assert pipeline.presence_is_known(now + 400.0) is False
+
+    def test_the_estimate_forgets_a_gap_that_has_aged_out(self):
+        """Bounded, or one stalled morning would keep a camera's hold enormous for the
+        rest of the run."""
+        pipeline = _pipeline()
+        # From the frame's own arrival, not the start of the replay: the bucket is
+        # stamped when the gap *ended*.
+        now = self._feed(pipeline, [300.0])
+        far_later = now + PRESENCE_CADENCE_WINDOW_S + PRESENCE_CADENCE_BUCKET_S * 2
+        pipeline._note_analysis_gap(1.0, far_later)
+
+        assert pipeline._observed_cadence_s() == 1.0
