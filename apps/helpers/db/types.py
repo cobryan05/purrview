@@ -1788,6 +1788,40 @@ class RuleRelation(str, Enum):
     MOTION = "motion"
 
 
+class RuleTrigger(str, Enum):
+    """*When* a rule fires, as opposed to `RuleRelation`, which is *what it compares*.
+
+    `WHILE` is the original and stays the default: the event spans the predicate, from
+    the moment it has held for `min_duration_s` to the moment it has been clear for
+    `rearm_delay_s`. Everything the watcher recorded before this enum existed is this.
+
+    The other two are *impulses* — a zero-length event, START and END at the same
+    instant — and they exist because the interesting moment is often an edge, not a
+    span. "Record the last 15 seconds before the car leaves the garage, but only if it
+    was there at least 15 minutes" has no duration to record: it is one instant, and the
+    footage that matters is on either side of it, which is exactly what an action's
+    `preroll_s`/`postroll_s` already express.
+
+    Both edges reuse the guards a `while` rule already has rather than inventing their
+    own, which is what keeps them cheap to reason about:
+
+    * `min_duration_s` is the *dwell*: how long the predicate must have held before
+      either edge counts. On `ON_EXIT` this is the "only if it was there at least 15
+      minutes" clause, for free.
+    * `rearm_delay_s` is the *debounce*: on `ON_EXIT` how long the subject must be gone
+      before its departure is believed (a tracker dropping a car for two frames must not
+      fire "car left"), and on `ON_ENTER` how long it must stay gone before an arrival
+      can fire again.
+    * `max_duration_s` does not apply at all. There is no span to cap, and applying it
+      would break the headline case outright — a 15-minute dwell under the default
+      300 s cap would be truncated before it could ever fire.
+    """
+
+    WHILE = "while"
+    ON_ENTER = "on_enter"
+    ON_EXIT = "on_exit"
+
+
 class ZoneKind(str, Enum):
     BOX = "box"
     POLYGON = "polygon"
@@ -2006,7 +2040,15 @@ class InteractionRule(SQLModel, table=True):
     # change — a noisy IR camera needs a higher sensitivity *and* the same area, and one
     # number cannot say both. 0 means "use the default" (see `watch.motion`).
     motion_sensitivity: float = Field(default=0.0)
-    # The predicate must hold continuously this long before the event STARTS.
+    # Whether the event spans the predicate or is an impulse at one of its edges. See
+    # `RuleTrigger`; `server_default` so the created and migrated schemas agree, and so
+    # every rule written before this column existed keeps the only behaviour it had.
+    trigger: str = Field(
+        default=RuleTrigger.WHILE.value,
+        sa_column=Column(sa.String(), nullable=False, server_default=sa.text("'while'")),
+    )
+    # The predicate must hold continuously this long before the event STARTS — or, for
+    # an impulse trigger, the dwell it must have served before either edge counts.
     min_duration_s: float = Field(default=2.0)
     # ...and be continuously false this long before it ENDS, which is what stops one
     # visit becoming twelve events.
@@ -2481,6 +2523,7 @@ class InteractionRuleRead(OrmModel):
     threshold: float = 0.5
     margin: float = 0.0
     motion_sensitivity: float = 0.0
+    trigger: str = RuleTrigger.WHILE.value
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -2511,6 +2554,7 @@ class InteractionRuleWrite(ApiModel):
     # mean something. 1.0 demands a full black-to-white swing on a pixel and can never
     # fire; 0 is not "most sensitive" but "use the default", so the floor is above it.
     motion_sensitivity: float = Field(default=0.0, ge=0.0, le=1.0)
+    trigger: RuleTrigger = RuleTrigger.WHILE
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0

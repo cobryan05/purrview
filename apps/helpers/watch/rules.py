@@ -35,6 +35,22 @@ is still true — so a car parked in the garage under a 30 s cap did not produce
 runaway the cap exists to prevent. After a capped close the subject must genuinely go
 away — predicate false for `rearm_delay_s`, the same window the normal close uses —
 before anything can open again.
+
+`RuleSpec.trigger` moves *where* on that path the event is. The states and the three
+guards are unchanged; what differs is which transition emits:
+
+* ``while`` (default, and everything written before triggers existed) — the event spans
+  the predicate, exactly as drawn above.
+* ``on_enter`` — a zero-length event at the moment the subject appeared, emitted when
+  PENDING clears `min_duration_s`, then straight to SPENT. One per arrival.
+* ``on_exit`` — nothing is emitted on the way in; PENDING→ACTIVE only *arms* the rule,
+  and the zero-length event fires at the moment the subject stopped matching, once
+  `rearm_delay_s` has confirmed it really left.
+
+An impulse carries no duration, so the footage around it comes from an action's
+`preroll_s`/`postroll_s`: "the last 15 seconds before the car leaves the garage, but
+only if it was there 15 minutes" is `on_exit` + `min_duration_s=900` + `preroll_s=15`.
+The cap does not apply to either impulse — see the guard in `step`.
 """
 
 from dataclasses import dataclass, field, replace
@@ -46,6 +62,13 @@ from .events import EventCloseReason, EventPhase, WatchEventSignal
 from .geometry import Zone, centroid, containment, inflate, iou, margin_pad, normalised_distance, overlap_ratio
 from .motion import DEFAULT_SENSITIVITY as MOTION_DEFAULT_SENSITIVITY
 from .motion import MotionField
+
+#: Trigger values, mirrored from `db.types.RuleTrigger`. Strings rather than that enum
+#: because this module is pure — it holds no DB types, and a spec can be built from a
+#: plain dict in a test with no database anywhere near it.
+TRIGGER_WHILE = "while"
+TRIGGER_ON_ENTER = "on_enter"
+TRIGGER_ON_EXIT = "on_exit"
 
 
 class RuleState(str, Enum):
@@ -91,6 +114,12 @@ class RuleSpec:
     #: they are the two independent halves of "did anything move", and one value cannot
     #: express both. 0 means "use the module default" — see `motion.DEFAULT_SENSITIVITY`.
     motion_sensitivity: float = 0.0
+    #: When the rule fires: `while` (the event spans the predicate), `on_enter` or
+    #: `on_exit` (a zero-length impulse at that edge). The guards are shared rather than
+    #: duplicated — see `RuleTrigger` in `db.types` for what each one means per trigger.
+    #: A plain string, like `relation`, because the engine is pure and holds no enums
+    #: from the DB layer.
+    trigger: str = "while"
     min_duration_s: float = 2.0
     rearm_delay_s: float = 10.0
     max_duration_s: float = 300.0
@@ -141,6 +170,7 @@ class RuleSpec:
             threshold=get("threshold", 0.5),
             margin=get("margin", 0.0) or 0.0,
             motion_sensitivity=get("motion_sensitivity", 0.0) or 0.0,
+            trigger=get("trigger", "while") or "while",
             min_duration_s=get("min_duration_s", 2.0),
             rearm_delay_s=get("rearm_delay_s", 10.0),
             max_duration_s=get("max_duration_s", 300.0),
@@ -456,6 +486,34 @@ class RuleMachine:
             metadata={"eventLabel": self.spec.event_label} if self.spec.event_label else {},
         )
 
+    def _impulse(self, at: Optional[float]) -> List[WatchEventSignal]:
+        """One edge as a zero-length event: START and END at the same instant.
+
+        Both phases rather than a phase of its own, because every consumer downstream —
+        the recorder's open map, the MQTT publisher, the actions' `event_started` /
+        `event_ended` triggers — is built on the pair, and a third phase would mean
+        teaching all of them a case that carries no information they do not already
+        have. The pair arrives in one step and in order, so the recorder opens and
+        closes the row without ever holding it, and an `event_ended` clip action sees a
+        span of zero: its length comes entirely from `preroll_s` and `postroll_s`, which
+        is the point of an impulse.
+
+        `_event_started_at` is set to the anchor first so both signals carry it, and so
+        `duration_s` on the END is exactly 0 rather than the dwell that preceded it.
+        """
+        self._event_started_at = at
+        moment = at if at is not None else 0.0
+        return [
+            self._signal(EventPhase.START, moment),
+            self._signal(EventPhase.END, moment, EventCloseReason.PREDICATE),
+        ]
+
+    def _spend(self, false_since: Optional[float]) -> None:
+        """Drop everything but the latch: nothing may open until the subject is gone."""
+        self._reset()
+        self.state = RuleState.SPENT
+        self._false_since = false_since
+
     def _reset(self) -> None:
         self.state = RuleState.IDLE
         self._true_since = None
@@ -471,19 +529,21 @@ class RuleMachine:
     def step(self, result: PredicateResult, now: float) -> List[WatchEventSignal]:
         """Advance the machine one frame; return any transitions to dispatch."""
         if not self.spec.active:
-            # SPENT holds no event, so there is nothing to close — emitting an END for it
-            # would file a second closing edge against an event already capped.
-            if self.state is RuleState.SPENT:
+            # Nothing open means nothing to close. That covers SPENT (whose event was
+            # already capped, and a second closing edge against it would be filed against
+            # a row that has one) and an impulse machine mid-dwell (whose event does not
+            # exist yet, and disarming a rule is not the subject leaving).
+            # It also covers PENDING, which never had an event either — that branch used
+            # to emit an END whose `started_at` was the moment of disarming.
+            if not self.is_open:
                 self._reset()
                 return []
-            if self.state != RuleState.IDLE:
-                # Disabling *or disarming* a rule mid-event must close it, not strand it
-                # open forever. Forced, not predicate: the subject may still be right
-                # there, and the span stops short of whatever it was actually doing.
-                signals = [self._signal(EventPhase.END, now, EventCloseReason.FORCED)]
-                self._reset()
-                return signals
-            return []
+            # Disabling *or disarming* a rule mid-event must close it, not strand it open
+            # forever. Forced, not predicate: the subject may still be right there, and
+            # the span stops short of whatever it was actually doing.
+            signals = [self._signal(EventPhase.END, now, EventCloseReason.FORCED)]
+            self._reset()
+            return signals
 
         signals: List[WatchEventSignal] = []
 
@@ -544,7 +604,24 @@ class RuleMachine:
                 if now - self._true_since >= self.spec.min_duration_s:
                     self.state = RuleState.ACTIVE
                     self._event_started_at = self._true_since
-                    signals.append(self._signal(EventPhase.START, now))
+                    if self.spec.trigger == TRIGGER_ON_ENTER:
+                        # The arrival itself, as a zero-length event anchored at the
+                        # moment the subject appeared rather than at the moment the
+                        # dwell confirmed it — a clip's preroll reaches back from the
+                        # anchor, and anchoring at confirmation would cut `min_duration`
+                        # off the front of the footage the user asked for.
+                        signals.extend(self._impulse(self._true_since))
+                        # Nothing is open, and the subject is still there. SPENT is
+                        # exactly the right latch: no second arrival until it has gone.
+                        self._spend(false_since=None)
+                    elif self.spec.trigger == TRIGGER_ON_EXIT:
+                        # Armed, not open: the dwell is being served and the event, if
+                        # there is ever one, happens when the subject leaves. No START
+                        # is emitted, so `is_open` stays false and no consumer sees an
+                        # event it will never get a matching END for.
+                        pass
+                    else:
+                        signals.append(self._signal(EventPhase.START, now))
             elif self.state is RuleState.CLOSING:
                 # Re-fired inside the rearm window: rejoin the open event rather than
                 # opening a second one. This is what stops one visit becoming twelve.
@@ -560,13 +637,29 @@ class RuleMachine:
             elif self.state is RuleState.CLOSING:
                 assert self._false_since is not None
                 if now - self._false_since >= self.spec.rearm_delay_s:
-                    signals.append(self._signal(EventPhase.END, now))
+                    if self.spec.trigger == TRIGGER_ON_EXIT:
+                        # The departure, anchored at the moment the subject stopped
+                        # matching rather than at the end of the debounce. The delay is
+                        # there to decide whether it *really* left — a tracker dropping
+                        # a car for two frames must not fire "car left" — not to move
+                        # when it left, and a clip's preroll is measured back from the
+                        # anchor. Anchoring at the end of the window would slide a 15 s
+                        # preroll to cover the empty garage instead of the departure.
+                        signals.extend(self._impulse(self._false_since))
+                    else:
+                        signals.append(self._signal(EventPhase.END, now))
                     self._reset()
 
         # The runaway cap applies regardless of the predicate: a stuck detection would
         # otherwise hold an event — and a recording — open indefinitely.
         if (
-            self.state in (RuleState.ACTIVE, RuleState.CLOSING)
+            # ...but only to a rule that has a span to cap. An impulse has none, and an
+            # `on_exit` machine sitting ACTIVE is serving a *dwell*, not holding an event
+            # open: capping it would emit an END for an event that never started, and
+            # would break the headline case outright — "in the garage for 15 minutes"
+            # under the default 300 s cap could never fire.
+            self.spec.trigger == TRIGGER_WHILE
+            and self.state in (RuleState.ACTIVE, RuleState.CLOSING)
             and self._event_started_at is not None
             # Zero (or negative) means "no cap", the same reading the recording retention
             # settings give it. Without this the comparison is trivially true the instant
@@ -585,10 +678,7 @@ class RuleMachine:
             # Capping out of CLOSING goes the same way rather than straight to IDLE: the
             # countdown it was already serving carries over, so a subject that has in
             # fact left is released on the very next step and nothing waits twice.
-            false_since = self._false_since
-            self._reset()
-            self.state = RuleState.SPENT
-            self._false_since = false_since
+            self._spend(false_since=self._false_since)
 
         return signals
 
@@ -620,7 +710,10 @@ class RuleMachine:
         gone dark, and those read very differently on an event card — see
         `EventCloseReason`.
         """
-        if self.state in (RuleState.ACTIVE, RuleState.CLOSING):
+        # `is_open`, not the raw state: an impulse rule mid-dwell has nothing open, and
+        # a watcher stopping is not the subject leaving — an `on_exit` rule must not fire
+        # "the car left" because someone pressed Stop.
+        if self.is_open:
             signal = self._signal(EventPhase.END, now, reason)
             self._reset()
             return signal
@@ -629,4 +722,13 @@ class RuleMachine:
 
     @property
     def is_open(self) -> bool:
-        return self.state in (RuleState.ACTIVE, RuleState.CLOSING)
+        """Whether an event is open *right now* — i.e. a START has been emitted with no
+        END yet.
+
+        Only a `while` rule can be. An impulse emits both edges in one step and is never
+        between them, and an `on_exit` machine in ACTIVE is serving its dwell with no
+        event to show for it yet. Getting this wrong would put a phantom row in the
+        status panel's "Open events" table and, worse, make `force_close` emit an END
+        on shutdown for an event that was never started.
+        """
+        return self.spec.trigger == TRIGGER_WHILE and self.state in (RuleState.ACTIVE, RuleState.CLOSING)

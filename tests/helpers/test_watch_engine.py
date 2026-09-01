@@ -8,6 +8,8 @@ max-duration a raw threshold flaps many times per second, and the visible sympto
 an MQTT storm plus a dozen three-second clips for one litter-box visit.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from apps.helpers.tracking.tracker import Track
@@ -1591,3 +1593,140 @@ class TestRuntimeArming:
         engine.step(inside, now=0.0)
         signals = engine.step(inside, now=1.5)
         assert [s.rule_uuid for s in signals] == ["rule-2"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Impulse triggers
+# ─────────────────────────────────────────────────────────────────────────────
+class TestImpulseTriggers:
+    """`on_enter` / `on_exit`: a zero-length event at one edge of the predicate.
+
+    The interesting moment is often an edge rather than a span — "the car left the
+    garage" has no duration, and the footage worth keeping is on either side of it,
+    which is what an action's preroll and postroll already express. What must hold is
+    that the impulse is anchored at the *real* edge (a preroll is measured back from
+    it), that the existing guards keep their meaning, and that nothing downstream is
+    ever shown half an event.
+    """
+
+    @staticmethod
+    def _run(machine, sequence):
+        from apps.helpers.watch.rules import PredicateResult
+
+        emitted = []
+        for holds, now in sequence:
+            emitted.extend(machine.step(PredicateResult(holds=holds, track_ids=[1] if holds else []), now))
+        return emitted
+
+    # ---------------------------------------------------------------- on_enter
+
+    def test_on_enter_fires_one_zero_length_event_at_the_arrival(self):
+        machine = RuleMachine(_rule(trigger="on_enter", min_duration_s=2.0, rearm_delay_s=10.0))
+        signals = self._run(machine, [(True, 100.0), (True, 101.0), (True, 102.5)])
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
+        assert signals[-1].duration_s == 0
+        # Anchored at when the subject appeared, not at when the dwell confirmed it —
+        # otherwise a 15s preroll starts 2s late and misses the approach.
+        assert signals[0].started_at == 100.0
+        assert signals[0].at == 100.0
+
+    def test_on_enter_does_not_fire_again_while_the_subject_stays(self):
+        """The failure this shares with the cap: a still-true predicate must not be read
+        as a fresh arrival on every frame."""
+        machine = RuleMachine(_rule(trigger="on_enter", min_duration_s=1.0, rearm_delay_s=10.0))
+        signals = self._run(machine, [(True, 0.0), (True, 2.0)] + [(True, t) for t in range(3, 400, 5)])
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
+
+    def test_on_enter_fires_again_after_the_subject_leaves_and_returns(self):
+        machine = RuleMachine(_rule(trigger="on_enter", min_duration_s=1.0, rearm_delay_s=10.0))
+        signals = self._run(
+            machine,
+            [(True, 0.0), (True, 2.0), (False, 10.0), (False, 25.0), (True, 30.0), (True, 32.0)],
+        )
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END, EventPhase.START, EventPhase.END]
+        assert signals[2].started_at == 30.0
+
+    def test_on_enter_ignores_a_blip_shorter_than_the_dwell(self):
+        machine = RuleMachine(_rule(trigger="on_enter", min_duration_s=5.0))
+        assert self._run(machine, [(True, 0.0), (True, 2.0), (False, 3.0)]) == []
+
+    # ----------------------------------------------------------------- on_exit
+
+    def test_on_exit_emits_nothing_on_the_way_in(self):
+        """Half the point: an arrival is not an exit, and a rule that opened on arrival
+        would leave a row nothing ever closes."""
+        machine = RuleMachine(_rule(trigger="on_exit", min_duration_s=1.0, rearm_delay_s=10.0))
+        signals = self._run(machine, [(True, 0.0), (True, 5.0), (True, 500.0)])
+
+        assert signals == []
+        # And nothing downstream may believe an event is open — the status panel's
+        # "Open events" table and `force_close` on shutdown both read this.
+        assert machine.is_open is False
+
+    def test_on_exit_fires_at_the_departure_once_it_is_confirmed(self):
+        machine = RuleMachine(_rule(trigger="on_exit", min_duration_s=1.0, rearm_delay_s=10.0))
+        signals = self._run(machine, [(True, 0.0), (True, 5.0), (False, 60.0), (False, 65.0), (False, 71.0)])
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
+        assert signals[-1].duration_s == 0
+        # 60.0, when it stopped matching — not 71.0, when the debounce agreed. The delay
+        # decides *whether* it left, not *when*, and a 15s preroll anchored at 71 would
+        # record the empty garage instead of the departure.
+        assert signals[0].started_at == 60.0
+        assert signals[0].at == 60.0
+
+    def test_on_exit_ignores_a_dropout_inside_the_debounce(self):
+        """A tracker losing a car for two frames is not the car leaving."""
+        machine = RuleMachine(_rule(trigger="on_exit", min_duration_s=1.0, rearm_delay_s=10.0))
+        signals = self._run(
+            machine,
+            [(True, 0.0), (True, 5.0), (False, 20.0), (False, 21.0), (True, 22.0), (True, 30.0)],
+        )
+
+        assert signals == []
+
+    def test_on_exit_requires_the_dwell_before_a_departure_counts(self):
+        """ "only if the car was in the garage for at least 15 minutes" — a car that
+        turned around in the driveway must fire nothing."""
+        machine = RuleMachine(_rule(trigger="on_exit", min_duration_s=900.0, rearm_delay_s=10.0))
+        brief = self._run(machine, [(True, 0.0), (True, 60.0), (False, 61.0), (False, 80.0)])
+        assert brief == []
+
+        stayed = self._run(
+            machine,
+            [(True, 100.0), (True, 1100.0), (False, 1200.0), (False, 1215.0)],
+        )
+        assert [s.phase for s in stayed] == [EventPhase.START, EventPhase.END]
+
+    def test_the_cap_does_not_truncate_a_long_dwell(self):
+        """The regression that would gut the headline case: a 15-minute dwell under the
+        default 300s cap. The cap bounds a *recording*, and an impulse has none."""
+        machine = RuleMachine(_rule(trigger="on_exit", min_duration_s=900.0, rearm_delay_s=10.0, max_duration_s=300.0))
+        signals = self._run(
+            machine,
+            [(True, 0.0), (True, 950.0), (True, 2000.0), (False, 3000.0), (False, 3011.0)],
+        )
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
+        assert signals[0].started_at == 3000.0
+        assert signals[-1].truncated is False
+
+    def test_stopping_the_watcher_does_not_fire_an_exit(self):
+        """Shutdown is not the subject leaving. `force_close` exists to close what is
+        open, and a rule mid-dwell has nothing open."""
+        machine = RuleMachine(_rule(trigger="on_exit", min_duration_s=1.0))
+        self._run(machine, [(True, 0.0), (True, 5.0)])
+
+        assert machine.force_close(now=6.0) is None
+
+    def test_disarming_mid_dwell_fires_nothing(self):
+        """Same reasoning as shutdown, by the other route into the machine."""
+        spec = _rule(trigger="on_exit", min_duration_s=1.0)
+        machine = RuleMachine(spec)
+        self._run(machine, [(True, 0.0), (True, 5.0)])
+
+        machine.spec = replace(spec, armed=False)
+        assert self._run(machine, [(True, 6.0)]) == []

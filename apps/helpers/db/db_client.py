@@ -7094,6 +7094,7 @@ class DbClient:
                     threshold=rule.threshold,
                     margin=rule.margin,
                     motion_sensitivity=rule.motion_sensitivity,
+                    trigger=rule.trigger.value,
                     min_duration_s=rule.min_duration_s,
                     rearm_delay_s=rule.rearm_delay_s,
                     max_duration_s=rule.max_duration_s,

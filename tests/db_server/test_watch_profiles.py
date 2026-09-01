@@ -486,6 +486,50 @@ class TestReferentialIntegrity:
         assert r.json()["status"] == "failure", "deleting an in-use source must not silently succeed"
 
 
+class TestRuleTrigger:
+    """Whether the event spans the rule or is an instant at one of its edges.
+
+    The round trip is what matters: a trigger that saved but read back as `while` would
+    silently turn "record the moment the car leaves" into "record the whole time it is
+    parked", which is a very expensive difference in disk.
+    """
+
+    async def _save(self, http_client, rule) -> dict:
+        """A profile whose zone is genuinely drawn, so the only thing under test is the
+        trigger — an undrawn zone is refused before the trigger is ever looked at."""
+        source_uuid = await _make_source(http_client)
+        await _set_regions(http_client, source_uuid, [_zone()])
+        return await _create_profile(
+            http_client,
+            "House cams",
+            sources=[{"sourceUuid": source_uuid}],
+            rules=[rule],
+        )
+
+    async def test_an_impulse_trigger_survives_the_round_trip(self, http_client):
+        body = await self._save(http_client, _rule(trigger="on_exit"))
+
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["trigger"] == "on_exit"
+
+    async def test_a_rule_that_names_no_trigger_spans_its_predicate(self, http_client):
+        """Every rule written before triggers existed has to keep the only behaviour it
+        ever had, so the default cannot be an edge."""
+        rule = _rule()
+        rule.pop("trigger", None)
+        body = await self._save(http_client, rule)
+
+        assert body["status"] == "success", body
+        assert body["profile"]["rules"][0]["trigger"] == "while"
+
+    async def test_an_unknown_trigger_is_refused(self, http_client):
+        """Not coerced to a default: a typo that silently became `while` would record
+        continuously and look like the rule working."""
+        body = await self._save(http_client, _rule(trigger="on_departure"))
+
+        assert body["status"] == "failure"
+
+
 class TestRuleValidation:
     async def test_two_subject_relation_requires_a_second_subject(self, http_client):
         body = await _create_profile(

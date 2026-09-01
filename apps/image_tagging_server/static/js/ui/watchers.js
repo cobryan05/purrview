@@ -40,6 +40,15 @@ const RELATIONS = [
   { key: 'motion', text: 'motion is detected' },
 ];
 
+// Whether the event spans the rule or is an instant at one of its edges. Worded as the
+// tail of the row's sentence rather than as `while / on_enter / on_exit`, which name the
+// implementation and not the choice: what the user is picking is how much gets recorded.
+const RULE_TRIGGERS = [
+  { key: 'while', text: 'Records the whole time' },
+  { key: 'on_enter', text: 'Records the moment it starts' },
+  { key: 'on_exit', text: 'Records the moment it ends' },
+];
+
 /** Fraction of a region that must change for a motion rule to hold, by default.
  *  2% of the frame is roughly a person at mid-distance; the geometric relations' 0.6
  *  would demand most of the picture change and could never fire. */
@@ -1547,6 +1556,27 @@ function buildRuleRow(rule, ctx) {
   }
   buildSourceScope();
 
+  // *When* the rule fires, as opposed to what it compares.
+  //
+  // It lives on the summary line rather than in the sentence above, and that is a
+  // layout decision as much as an editorial one: the sentence was already full at this
+  // pane's width, so a sixth control wrapped it onto a second line. Putting the choice
+  // at the head of the sentence that explains its consequence costs one line instead of
+  // two, and reads better than either half alone — "Records the moment it ends — fires
+  // when this stops being true, if it had held for 2 seconds."
+  const ruleTrigger = select(RULE_TRIGGERS, rule.trigger || 'while', () => {
+    syncTrigger();
+    ctx.onAnyChange();
+  });
+  ruleTrigger.dataset.testid = 'watch-rule-trigger';
+  ruleTrigger.title =
+    'Whether the event covers the whole time the rule holds, or is a single instant at one '
+    + 'edge of it. An instant has no length, so what gets recorded around it comes entirely '
+    + 'from an action’s pre-roll and post-roll — which is how “the last 15 seconds before the '
+    + 'car leaves” is expressed. “the moment it ends” also waits out the clear delay before '
+    + 'believing the subject really left, and only fires if it had been there for the start '
+    + 'delay first.';
+
   const motionInWord = el('span', null, 'in');
   sentence.append(el('span', null, 'When'), subjectAHost, relation, motionInWord, motionZoneHost, subjectBKind, subjectBHost);
   sentence.append(el('span', null, 'on'), sourceScopeHost);
@@ -1623,8 +1653,21 @@ function buildRuleRow(rule, ctx) {
     // 'starts'/'ends' rather than 'starts after'/'ends after': the row gained a fifth
     // field and the preview button, and the two long labels alone were what pushed the
     // button onto a line of its own. Both keep the sentence-length tooltip.
-    ['starts', minDuration, 'Seconds the relation must hold before the event starts'],
-    ['ends', rearm, 'Seconds the relation must stay clear before the event ends'],
+    // Both read differently under an impulse trigger, so the tooltips name the guard
+    // rather than the transition: the same number is the event's start delay, or the
+    // dwell an instant demands before it counts.
+    [
+      'starts',
+      minDuration,
+      'Seconds the relation must hold before it counts — the event’s start when recording the '
+      + 'whole time, and the dwell required first when recording an instant.',
+    ],
+    [
+      'ends',
+      rearm,
+      'Seconds the relation must stay clear — before the event ends when recording the whole '
+      + 'time, and before a departure is believed when recording the moment it ends.',
+    ],
     [
       'max',
       maxDuration,
@@ -1650,6 +1693,7 @@ function buildRuleRow(rule, ctx) {
   ];
   const marginField = [];
   const sensitivityField = [];
+  const maxDurationField = [];
   let thresholdField = null;
   let thresholdLabel = null;
   for (const [label, input, title] of tuningFields) {
@@ -1670,6 +1714,10 @@ function buildRuleRow(rule, ctx) {
     if (input === sensitivity) {
       field.dataset.testid = 'watch-rule-sensitivity-field';
       sensitivityField.push(field);
+    }
+    if (input === maxDuration) {
+      field.dataset.testid = 'watch-rule-max-duration-field';
+      maxDurationField.push(field);
     }
     tuning.appendChild(field);
   }
@@ -1709,9 +1757,71 @@ function buildRuleRow(rule, ctx) {
   tuning.appendChild(previewBtn);
   row.appendChild(tuning);
 
+  // What the six numbers above actually *do*, in a sentence, recomputed as they change.
+  //
+  // Worth the space because the row without it is five 3.8rem boxes labelled "match /
+  // nearby / starts / ends / max / sens", with every explanation hidden in a tooltip.
+  // That is how a 30 s cap on a `present` rule came to file an event every thirty
+  // seconds for an evening: the behaviour was on screen the whole time, spelled as two
+  // numbers whose interaction nothing stated.
+  const summary = el('div', 'watch-rule-summary');
+  summary.append(ruleTrigger);
+  const summaryText = el('span', 'watch-rule-summary__text');
+  summaryText.dataset.testid = 'watch-rule-summary';
+  summary.append(summaryText);
+
+  function renderSummary() {
+    const start = num(minDuration, 2);
+    const clear = num(rearm, 10);
+    const cap = num(maxDuration, 300);
+    // Terse on purpose. It has to fit one line beside the select at this pane's width,
+    // and the row is already at the height the density tests bound — the tooltips carry
+    // the long form. Seconds are "2s" for the same reason.
+    if (ruleTrigger.value === 'on_enter') {
+      summaryText.textContent =
+        `— fires ${start}s after this becomes true, then not again until ${clear}s clear. `
+        + 'Length comes from the action.';
+    } else if (ruleTrigger.value === 'on_exit') {
+      summaryText.textContent =
+        `— fires when this stops, if it had held ${start}s; ${clear}s clear confirms it. `
+        + 'Length comes from the action.';
+    } else {
+      // The cap's whole subtlety is what happens *after* it fires, which is the part
+      // that was invisible — and the reason a parked car recorded all evening.
+      summaryText.textContent = cap > 0
+        ? `— starts after ${start}s true, ends after ${clear}s clear, at most ${cap}s `
+          + 'then waits for the subject to leave.'
+        : `— starts after ${start}s true, ends after ${clear}s clear. No length limit.`;
+    }
+  }
+
+  for (const input of [minDuration, rearm, maxDuration]) {
+    input.addEventListener('input', renderSummary);
+  }
+
+  // Remove button first, summary last, and the order matters: the summary takes a whole
+  // flex line, so anything appended after it is pushed onto a *third* line. Appending it
+  // before the button cost the row 48px instead of 25 — one line for the summary and
+  // another for a button that had been sharing the tuning line quite happily.
   row.appendChild(removeButton(() => ctx.onDelete(), 'Remove rule'));
+  row.appendChild(summary);
+
+  /**
+   * Show only the tuning fields the chosen trigger actually uses.
+   *
+   * The cap is hidden rather than disabled for an impulse, and `getRule` sends the
+   * stored value untouched: an impulse has no span to cap, and leaving the box on
+   * screen would invite someone to set the very thing that would break the headline
+   * case — a 15-minute dwell under a 300 s cap.
+   */
+  function syncTrigger() {
+    const isImpulse = ruleTrigger.value !== 'while';
+    for (const field of maxDurationField) field.hidden = isImpulse;
+    renderSummary();
+  }
 
   syncArity();
+  syncTrigger();
 
   return {
     element: row,
@@ -1768,6 +1878,7 @@ function buildRuleRow(rule, ctx) {
         // Zero for every other relation, which is also the backend's "use the default"
         // value — so a sensitivity typed under motion cannot leak into a geometric rule.
         motionSensitivity: isMotion ? num(sensitivity, MOTION_DEFAULT_SENSITIVITY) : 0,
+        trigger: ruleTrigger.value,
         // These three defaults are not arbitrary: without them a raw threshold flaps
         // into an MQTT storm and a dozen clips for one visit.
         minDurationS: num(minDuration, 2),

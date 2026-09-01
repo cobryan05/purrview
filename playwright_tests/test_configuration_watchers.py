@@ -1046,9 +1046,18 @@ class TestWatcherEditorDensity:
         assert max(tops) - min(tops) <= 6, f"the rule sentence wrapped onto several lines: tops={tops}"
 
     def test_a_rule_row_does_not_fill_the_screen(self, page: Page, base_url: str):
+        """175px, up from 150: the row now carries a summary line that states what its
+        tuning numbers do, and a line of prose is 25px whichever way it is written.
+
+        That is a deliberate purchase, not drift. The numbers alone hid a real behaviour
+        — a 30s cap on a `present` rule recorded a clip every thirty seconds while the
+        car stayed parked, and nothing on screen connected the two fields that produced
+        it. The bound still catches what it was written for: a control going full-width
+        and stacking costs ~35px and would clear this on its own.
+        """
         self._open_profile(page, base_url)
         box = page.locator("[data-testid='watch-rule-row']").first.bounding_box()
-        assert box["height"] < 150, f"a single rule row is {box['height']}px tall"
+        assert box["height"] < 175, f"a single rule row is {box['height']}px tall"
 
     def test_source_and_action_rows_are_single_line(self, page: Page, base_url: str):
         self._open_profile(page, base_url)
@@ -1059,7 +1068,7 @@ class TestWatcherEditorDensity:
     def test_a_small_profile_fits_without_scrolling(self, page: Page, base_url: str):
         """One source, one rule and one action used to overflow the editor pane.
 
-        The allowance was 2px, then 30px, and is now 50px. Two deliberate additions
+        The allowance was 2px, then 30px, then 50px, and is now 80px. Two deliberate additions
         spent the first rise: the MQTT topic template is a real new control in the
         action row, and the subject slots became multi-select dropdowns, whose trigger
         is a few pixels taller than the `<select>` it replaced.
@@ -1074,9 +1083,13 @@ class TestWatcherEditorDensity:
         visible. (Half of it was then reclaimed by dropping a duplicated
         `padding-bottom` — 78px measured, 46px after.)
 
+        The rise to 80px is the rule row's summary line — one line of prose per rule,
+        stating what its tuning numbers do. See
+        `test_a_rule_row_does_not_fill_the_screen` for why that line is worth its 25px.
+
         Every row is still one line per control group, which is the regression this
         test actually exists to catch — a control going full-width and stacking, which
-        costs ~35px each and hundreds in total, and would clear 50px on its own.
+        costs ~35px each and hundreds in total, and would clear this on its own.
 
         Note the viewport: Playwright's default is 720px tall, which is the tightest
         window anyone would realistically use, so this is the worst case rather than
@@ -1085,7 +1098,7 @@ class TestWatcherEditorDensity:
         self._open_profile(page, base_url)
         body = page.locator("#watcher-management-box .le-editor-body").first
         overflow = body.evaluate("e => e.scrollHeight - e.clientHeight")
-        assert overflow <= 50, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
+        assert overflow <= 80, f"the editor scrolls by {overflow}px for a 1/1/1 profile"
 
     def test_checkboxes_keep_their_box(self, page: Page, base_url: str):
         """Overriding Pico's explicit checkbox width collapses it to a thin bar."""
@@ -2923,3 +2936,95 @@ class TestEveryRegisteredActionKindIsOffered:
         registered = {schema["kind"] for schema in ACTION_SCHEMAS}
 
         assert registered <= offered, f"registered but not offered: {sorted(registered - offered)}"
+
+
+class TestRuleTrigger:
+    """Whether the rule records the whole time it holds, or one instant at an edge.
+
+    The engine half is covered in `tests/helpers/test_watch_engine.py`; what needs a
+    browser is that the choice reaches the payload, that a saved impulse loads back as
+    one, and that the cap — which does not apply to an instant — leaves the row.
+    """
+
+    def _open(self, page: Page, base_url: str, profile=None):
+        _mock_watch_apis(page, profiles=[profile or FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_a_rule_records_the_whole_time_by_default(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        expect(page.locator("[data-testid='watch-rule-trigger']").first).to_have_value("while")
+
+    def test_choosing_an_edge_is_saved(self, page: Page, base_url: str):
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-rule-trigger']").first.select_option("on_exit")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["trigger"] == "on_exit", saved["rules"][0]
+
+    def test_the_cap_leaves_the_row_for_an_instant(self, page: Page, base_url: str):
+        """An instant has no span to cap, and leaving the field on screen invites the one
+        setting that would stop an `on_exit` rule firing at all — a 15-minute dwell under
+        a 300s cap."""
+        self._open(page, base_url)
+        cap = page.locator("[data-testid='watch-rule-max-duration-field']").first
+        expect(cap).to_be_visible()
+
+        page.locator("[data-testid='watch-rule-trigger']").first.select_option("on_enter")
+        expect(cap).to_be_hidden()
+
+        page.locator("[data-testid='watch-rule-trigger']").first.select_option("while")
+        expect(cap).to_be_visible()
+
+
+class TestRuleSummary:
+    """The sentence under the tuning row, restating what its numbers do.
+
+    It exists because the numbers alone hid a real behaviour for an evening: a 30s cap
+    on a `present` rule recorded a clip every thirty seconds while the car was parked,
+    and nothing on screen connected the two fields that produced that.
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+    def test_it_states_what_the_delays_do(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        summary = page.locator("[data-testid='watch-rule-summary']").first
+        expect(summary).to_contain_text("starts after 2s true")
+        expect(summary).to_contain_text("ends after 10s clear")
+        # The part that was invisible: what happens *after* the cap fires.
+        expect(summary).to_contain_text("waits for the subject to leave")
+
+    def test_it_follows_a_changed_delay(self, page: Page, base_url: str):
+        """A summary that only rendered once would describe the saved rule while the user
+        typed a different one — worse than no summary."""
+        self._open(page, base_url)
+        summary = page.locator("[data-testid='watch-rule-summary']").first
+        expect(summary).not_to_contain_text("47s")
+
+        # nth(2) is the start delay: threshold, nearby, starts, ends, max, sens.
+        page.locator(".watch-rule-tuning input").nth(2).fill("47")
+        expect(summary).to_contain_text("starts after 47s true")
+
+    def test_it_describes_an_instant_differently(self, page: Page, base_url: str):
+        """The surprising part of an impulse is that it records nothing by itself, so the
+        summary has to say where the footage comes from."""
+        self._open(page, base_url)
+        page.locator("[data-testid='watch-rule-trigger']").first.select_option("on_exit")
+
+        summary = page.locator("[data-testid='watch-rule-summary']").first
+        expect(summary).to_contain_text("fires when this stops")
+        # An instant records nothing by itself, which is the surprising part.
+        expect(summary).to_contain_text("Length comes from the action")
+        # The cap belongs to a span, and repeating it would describe a field the row no
+        # longer shows.
+        expect(summary).not_to_contain_text("at most")
