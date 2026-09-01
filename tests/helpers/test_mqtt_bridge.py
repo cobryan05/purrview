@@ -16,6 +16,7 @@ import json
 from apps.helpers.mqtt.bridge import (
     APP_CONFIG_TOPIC,
     APP_DEVICE_ID,
+    PRESENCE_ANY_AVAILABILITY_TOPIC,
     RULES_CONFIG_TOPIC,
     DiscoveryState,
     MqttBridge,
@@ -1316,7 +1317,10 @@ class TestEntityBudget:
             build_all_discovery([profile], PREFIX, {"subj-a": SubjectView("subj-a", "Luna", publish_per_source=True)})
         )
 
-        assert rich == lean + 2  # one counter per source, for the one rule
+        # Per camera: one presence sensor, plus one counter for each rule naming this
+        # label. Two cameras and one rule, so four. The presence half is the term that
+        # grows with the *camera* count alone and is why the gate has to stay.
+        assert rich == lean + 4
 
 
 class TestAnOptedOutCameraStillFeedsTheRulesDevice:
@@ -1695,3 +1699,312 @@ class TestEveryLabelGetsADevice:
 
         subject_topics = {t for t in desired if "subject" in t}
         assert subject_topics == {subject_config_topic("subj-a"), subject_config_topic("subj-b")}
+
+
+class TestPerCameraPresenceDiscovery:
+    """The per-camera split is what "where is it" is actually asked of, and it has to
+    work for a label no rule mentions.
+
+    The rest of the per-source tier hangs off `subjects_in_scope`, so it is built inside
+    a loop over the label's rules. A label with no rules therefore got *nothing* from
+    ticking the flag — which is the case the tracker signal exists to cover, and the one
+    that made the toggle look broken.
+    """
+
+    CAMERAS = (SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Garage"))
+
+    def _cmps(self, profile, per_source):
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna", publish_per_source=per_source)}
+        return build_all_discovery([profile], PREFIX, subjects)[subject_config_topic("subj-a")]["cmps"]
+
+    def test_a_label_with_no_rules_still_gets_one_presence_sensor_per_camera(self):
+        ruleless = _profile(sources=self.CAMERAS, rules=())
+
+        assert not [k for k in self._cmps(ruleless, per_source=False) if k.startswith("source_")]
+
+        on = self._cmps(ruleless, per_source=True)
+        assert {"source_src-1_detected", "source_src-2_detected"} <= set(on)
+        assert on["source_src-1_detected"]["p"] == "binary_sensor"
+        # Enabled, for the same reason the counters are: an entity HA creates disabled
+        # carries no state and no history, so the opt-in would again do nothing visible.
+        assert on["source_src-1_detected"].get("enabled_by_default") is not False
+
+    def test_an_opted_out_camera_contributes_no_presence_sensor(self):
+        """The camera's own flag still wins — a camera with no device of its own must
+        not acquire one sideways through a label's breakdown."""
+        profile = _profile(
+            sources=(
+                SourceView(uuid="src-1", name="Kitchen"),
+                SourceView(uuid="src-2", name="Garage", publish_to_ha=False),
+            ),
+            rules=(),
+        )
+
+        cmps = self._cmps(profile, per_source=True)
+
+        assert "source_src-1_detected" in cmps
+        assert "source_src-2_detected" not in cmps
+
+    def test_presence_sensors_survive_a_label_rename(self):
+        profile = _profile(sources=self.CAMERAS, rules=())
+        before = build_all_discovery(
+            [profile], PREFIX, {"subj-a": SubjectView(uuid="subj-a", name="Luna", publish_per_source=True)}
+        )[subject_config_topic("subj-a")]["cmps"]
+        after = build_all_discovery(
+            [profile], PREFIX, {"subj-a": SubjectView(uuid="subj-a", name="Renamed", publish_per_source=True)}
+        )[subject_config_topic("subj-a")]["cmps"]
+
+        assert before["source_src-1_detected"]["unique_id"] == after["source_src-1_detected"]["unique_id"]
+        assert before["source_src-1_detected"]["state_topic"] != after["source_src-1_detected"]["state_topic"]
+
+
+def _presence_bridge(per_source=True, name="Luna"):
+    """A bridge primed as a reconcile leaves it, for one subject and two cameras."""
+    profile = _profile(
+        sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Garage")),
+        rules=(),
+    )
+    bridge, fake = _connected_bridge([profile])
+    bridge._subject_slugs = {"subj-a": slugify(name)}
+    bridge._label_publish = {"subj-a": (True, per_source)}
+    return bridge, fake
+
+
+def _payloads(fake, topic):
+    return [c["payload"] for c in fake.calls if c["topic"] == topic]
+
+
+class TestPerCameraPresencePublishing:
+    def test_an_arrival_publishes_that_cameras_own_answer_and_the_union(self):
+        bridge, fake = _presence_bridge()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        assert _payloads(fake, "subject/luna/state") == ["ON"]
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON"]
+
+    def test_a_second_camera_updates_the_location_while_the_first_still_sees_it(self):
+        """The reason the stamp is gated on a *camera* arrival rather than on the union
+        flipping. Something that walks from one room into the next while still visible
+        in the first never changes the union, so a union-gated stamp would leave the
+        location pinned to the room it left."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        bridge.publish_presence(source_uuid="src-2", label_uuids=["subj-a"], source_name="Garage", at="T2")
+
+        assert _payloads(fake, "subject/luna/attributes")[-1] == {"lastSeen": "T2", "lastSource": "Garage"}
+        assert _payloads(fake, "subject/luna/source/garage/state") == ["ON"]
+        # The union did not change, so the device-level sensor must not be republished —
+        # a retained ON per frame is the noise this whole path is gated to avoid.
+        assert _payloads(fake, "subject/luna/state") == ["ON"]
+
+    def test_a_label_with_no_rules_gets_a_location(self):
+        """The original complaint. `Last location` was written only by
+        `publish_subject_event`, which fires only on a rule event, so a label no rule
+        named was detectable but permanently locationless."""
+        bridge, fake = _presence_bridge()
+
+        bridge.publish_presence(source_uuid="src-2", label_uuids=["subj-a"], source_name="Garage", at="T1")
+
+        assert _payloads(fake, "subject/luna/attributes") == [{"lastSeen": "T1", "lastSource": "Garage"}]
+
+    def test_leaving_one_camera_turns_only_that_camera_off(self):
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-2", label_uuids=["subj-a"], source_name="Garage", at="T2")
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T3")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON", "OFF"]
+        assert _payloads(fake, "subject/luna/source/garage/state") == ["ON"]
+        # Still visible in the garage, so the device-level answer stands.
+        assert _payloads(fake, "subject/luna/state") == ["ON"]
+
+    def test_departure_does_not_stamp_a_sighting(self):
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2")
+
+        assert _payloads(fake, "subject/luna/attributes") == [{"lastSeen": "T1", "lastSource": "Kitchen"}]
+
+    def test_an_unchanged_view_publishes_nothing(self):
+        """Presence is evaluated every analysed frame, several times a second per
+        camera. Without this the bridge would be the noisiest thing on the broker."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        before = len(fake.calls)
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T2")
+
+        assert len(fake.calls) == before
+
+    def test_a_label_that_did_not_ask_for_the_breakdown_gets_no_per_camera_topics(self):
+        """The cardinality gate, applied to the publish as well as to discovery: a
+        retained state on a topic no entity reads sits on the broker for good, and
+        re-ticking the flag later would replay a stale ON into a fresh entity."""
+        bridge, fake = _presence_bridge(per_source=False)
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        assert not [c for c in fake.calls if "/source/" in c["topic"]]
+        # The device-level answer and the location are not per-camera entities, so they
+        # are unaffected by the gate.
+        assert _payloads(fake, "subject/luna/state") == ["ON"]
+        assert _payloads(fake, "subject/luna/attributes") == [{"lastSeen": "T1", "lastSource": "Kitchen"}]
+
+    def test_a_stopped_watcher_clears_its_cameras_but_records_no_sighting(self):
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        bridge.forget_source_presence("src-1")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON", "OFF"]
+        assert _payloads(fake, "subject/luna/state") == ["ON", "OFF"]
+        assert _payloads(fake, "subject/luna/attributes") == [{"lastSeen": "T1", "lastSource": "Kitchen"}]
+
+
+class TestSubjectAttributesSurviveAPartialWrite:
+    """The attributes topics are retained, and a retained publish replaces. Three
+    writers know three different subsets of the payload, so any of them writing a whole
+    payload drops the keys it does not know."""
+
+    def test_a_writer_that_knows_only_the_timestamp_does_not_blank_the_location(self):
+        """This is the reseed (`_seed_counters`), which reads its rows from the DB —
+        `build_subject_seed` has no camera to report. Before the merge, every reconnect
+        blanked `Last location` app-wide until each subject's next event."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-2", label_uuids=["subj-a"], source_name="Garage", at="T1")
+
+        bridge._publish_subject_attributes("subject/luna", lastSeen="T0")
+
+        assert _payloads(fake, "subject/luna/attributes")[-1] == {"lastSeen": "T0", "lastSource": "Garage"}
+
+    def test_a_nameless_camera_stamps_the_time_and_leaves_the_location_alone(self):
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-2", label_uuids=["subj-a"], source_name="Garage", at="T1")
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name=None, at="T2")
+
+        assert _payloads(fake, "subject/luna/attributes")[-1] == {"lastSeen": "T2", "lastSource": "Garage"}
+
+
+class TestAStaleCameraAbstainsRatherThanReportingAbsence:
+    """A camera that has stopped reporting must not be allowed to say "not here".
+
+    `presence_labels` returns an empty set both when a camera looked and saw nothing and
+    when it has not looked recently enough to say. Publishing OFF for the second makes a
+    stationary object — a parked car — appear to leave when its feed stutters and to
+    arrive again when it recovers, which an automation triggering on arrival cannot
+    distinguish from the real thing.
+    """
+
+    def test_going_stale_marks_the_camera_unavailable_rather_than_off(self):
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        assert _payloads(fake, "presence/kitchen/status") == ["online", "offline"]
+        # Still ON, deliberately: the entity is unavailable so nobody reads it, and
+        # keeping the last real answer means recovery shows the truth at once instead
+        # of a stale OFF that flips ON a frame later.
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON"]
+
+    def test_recovery_with_the_subject_still_there_is_not_a_fresh_arrival(self):
+        """The whole point. Across a feed outage the per-camera sensor must go
+        unavailable and come back ON — never OFF then ON, which reads as a departure
+        and an arrival."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T3")
+
+        # Never OFF. A repeated retained ON is idempotent — HA records no state change
+        # and fires no trigger — but a single OFF in here is the departure the sensor
+        # exists to not invent.
+        assert "OFF" not in _payloads(fake, "subject/luna/source/kitchen/state")
+        assert _payloads(fake, "presence/kitchen/status") == ["online", "offline", "online"]
+
+    def test_a_stale_camera_is_dropped_from_the_union_not_counted_as_absent(self):
+        """Two cameras, one stale. The fresh one decides — the stale one neither pins
+        the subject present nor votes it absent."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-2", label_uuids=[], source_name="Garage", at="T1")
+        assert _payloads(fake, "subject/luna/state") == ["ON"]
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        # Kitchen abstained, Garage says no — so the union over cameras that can still
+        # speak is OFF, and it is available because Garage is reporting.
+        assert _payloads(fake, "subject/luna/state") == ["ON", "OFF"]
+        assert _payloads(fake, PRESENCE_ANY_AVAILABILITY_TOPIC) == ["online"]
+
+    def test_the_device_level_answer_goes_unavailable_only_when_every_camera_is_quiet(self):
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-2", label_uuids=["subj-a"], source_name="Garage", at="T1")
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+        assert _payloads(fake, PRESENCE_ANY_AVAILABILITY_TOPIC) == ["online"]
+
+        bridge.publish_presence(source_uuid="src-2", label_uuids=[], source_name="Garage", at="T2", known=False)
+        assert _payloads(fake, PRESENCE_ANY_AVAILABILITY_TOPIC) == ["online", "offline"]
+
+    def test_availability_is_change_gated(self):
+        """Called from the per-frame path with `known=True` for essentially every frame,
+        and again from the loop sweep for every stale camera on every pass."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1", known=False)
+        before = len(fake.calls)
+
+        for _ in range(5):
+            bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        assert len(fake.calls) == before
+
+    def test_a_stopped_watcher_makes_its_cameras_unavailable_too(self):
+        """A watcher that stopped is not a camera reporting "nothing here" either."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+
+        bridge.forget_source_presence("src-1")
+
+        assert _payloads(fake, "presence/kitchen/status") == ["online", "offline"]
+
+
+class TestPresenceEntitiesDeclareTheirAvailability:
+    """Discovery has to name the topics above, or the bridge publishes availability
+    nothing reads — the silent half of this failure."""
+
+    def _cmps(self):
+        profile = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen"), SourceView(uuid="src-2", name="Garage")),
+            rules=(),
+        )
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna", publish_per_source=True)}
+        return build_all_discovery([profile], PREFIX, subjects)[subject_config_topic("subj-a")]["cmps"]
+
+    def test_a_per_camera_sensor_tracks_its_own_cameras_freshness(self):
+        cmps = self._cmps()
+
+        topics = {a["topic"] for a in cmps["source_src-2_detected"]["availability"]}
+        assert f"{PREFIX}/presence/garage/status" in topics
+        # Not another camera's, or one stale feed would blank every camera's sensor.
+        assert f"{PREFIX}/presence/kitchen/status" not in topics
+        assert cmps["source_src-2_detected"]["availability_mode"] == "all"
+
+    def test_the_device_level_sensor_tracks_the_any_camera_flag(self):
+        topics = {a["topic"] for a in self._cmps()["detected"]["availability"]}
+        assert topics == {f"{PREFIX}/status", f"{PREFIX}/{PRESENCE_ANY_AVAILABILITY_TOPIC}"}
+
+    def test_component_availability_repeats_the_app_topic(self):
+        """A component's own `availability` replaces the device's rather than adding to
+        it, so dropping the app-level LWT here would leave these two entities reading as
+        available after the whole app went down."""
+        for key in ("detected", "source_src-1_detected"):
+            topics = {a["topic"] for a in self._cmps()[key]["availability"]}
+            assert f"{PREFIX}/status" in topics

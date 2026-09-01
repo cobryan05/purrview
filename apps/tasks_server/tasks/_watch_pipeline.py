@@ -479,18 +479,41 @@ class WatchPipeline:
             return {t.label_uuid for t in self._last_tracks if t.confirmed and t.label_uuid}
 
         # A still is a point sample, so it stays true until the next one is overdue.
-        # Past that the honest answer is "no idea", which reads as absent here and is
-        # surfaced separately by the source's health.
-        if self._last_analysis_at is None:
-            return set()
-        if now - self._last_analysis_at > self._snapshot_presence_hold_s():
+        # Past that the answer is "no idea" — which is `presence_is_known`'s business,
+        # not a value this method can express. Callers must check it; the empty set here
+        # is the "camera is fine and sees nothing" answer, and a stale camera must not
+        # be allowed to say that.
+        if not self.presence_is_known(now):
             return set()
         floor = getattr(self.tracker, "track_thresh", None)
         floor = SNAPSHOT_PRESENCE_MIN_CONFIDENCE if floor is None else float(floor)
         return {d.label_uuid for d in self._last_detections if d.label_uuid and d.confidence >= floor}
 
-    def _snapshot_presence_hold_s(self) -> float:
-        """How long a snapshot's verdict stands before it goes stale.
+    def presence_is_known(self, now: float) -> bool:
+        """Whether this camera currently has an opinion about what it can see.
+
+        The distinction `presence_labels` cannot make on its own: "I can see nothing"
+        and "I have not looked recently enough to say" are the same empty set, and
+        collapsing them is what makes a car in a garage appear to leave and come back
+        every time the cloud snapshot feed hiccups. An automation firing on that arrival
+        is firing on a network glitch.
+
+        Consumers should treat `False` as *abstain*, not as absent — see
+        `MqttBridge.publish_presence`, which drops the camera out of the union entirely
+        and marks its entities unavailable rather than publishing OFF.
+
+        Tracks mode is held to the tracker's own `max_age_s` rather than to the frame
+        cadence: that is already the tuned answer to "how long does a sighting stand
+        without fresh evidence", and a second number here would drift from it. The
+        cadence bound still applies on top, so a stream analysed more slowly than its
+        tracks expire is bounded by whichever is longer.
+        """
+        if self._last_analysis_at is None:
+            return False
+        return now - self._last_analysis_at <= self._presence_hold_s()
+
+    def _presence_hold_s(self) -> float:
+        """How long this camera's verdict stands before it goes stale.
 
         Scaled off the observed cadence rather than fixed: the same slack the Ring
         provider applies when deciding whether a snapshot is overdue, for the same
@@ -498,7 +521,12 @@ class WatchPipeline:
         would call a healthy camera stale constantly.
         """
         cadence = self._last_analysis_gap_s or SNAPSHOT_MODE_FRAME_GAP_S
-        return cadence * SNAPSHOT_PRESENCE_CADENCE_SLACK
+        hold = cadence * SNAPSHOT_PRESENCE_CADENCE_SLACK
+        if self.presence_mode() == "tracks":
+            max_age = getattr(self.tracker, "max_age_s", None)
+            if max_age:
+                hold = max(hold, float(max_age))
+        return hold
 
     def status_row(self, now: float) -> Dict[str, Any]:
         """One row of the status panel's Sources table."""

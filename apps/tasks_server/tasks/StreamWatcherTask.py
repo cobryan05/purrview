@@ -1324,6 +1324,10 @@ class StreamWatcherTask(Task):
                 # disarm has to close what it closes even when no source is due, and
                 # "stop recording now that everyone is home" must not wait on a frame.
                 await self._apply_rule_arming(now)
+                # Third loop-level pass with the same justification: the case it exists
+                # for is a camera that has stopped producing frames, so the per-frame
+                # presence publish is precisely the thing that will not run.
+                self._expire_stale_presence(now)
                 # A source already being read is not due again, however long it has
                 # been: `due()` only knows about pacing, and a source blocked on a
                 # slow frame has not been rescheduled yet.
@@ -2097,9 +2101,45 @@ class StreamWatcherTask(Task):
             self._manager.get_mqtt_bridge().publish_presence(
                 source_uuid=pipeline.source_uuid,
                 label_uuids=sorted(pipeline.presence_labels(now)),
+                source_name=pipeline.source_name,
+                at=self._wall_iso(now),
+                known=pipeline.presence_is_known(now),
             )
         except Exception:
             logger.debug("MQTT bridge presence publish failed", exc_info=True)
+
+    def _expire_stale_presence(self, now: float) -> None:
+        """Withdraw a camera's presence verdict once it is too old to believe.
+
+        The counterpart to `_publish_bridge_presence`, and it has to live on the loop
+        rather than on the frame path because they fail in opposite directions: the
+        per-frame publish only runs when a frame arrives, and a camera whose feed has
+        died produces no frames at all. Without this its last verdict would stay
+        retained and *available* indefinitely — a car that parked in the garage before
+        the feed dropped would read as still there for as long as the feed stayed down,
+        and then appear to arrive all over again on recovery.
+
+        Cheap to call every pass: `publish_presence` early-returns unless the camera's
+        availability actually changed, so the steady state is one dict lookup per
+        source.
+        """
+        try:
+            bridge = self._manager.get_mqtt_bridge()
+        except Exception:
+            return
+        for pipeline in self._pipelines:
+            if pipeline.presence_is_known(now):
+                continue
+            try:
+                bridge.publish_presence(
+                    source_uuid=pipeline.source_uuid,
+                    label_uuids=(),
+                    source_name=pipeline.source_name,
+                    at=self._wall_iso(now),
+                    known=False,
+                )
+            except Exception:
+                logger.debug("MQTT bridge presence expiry failed", exc_info=True)
 
     def _publish_bridge_telemetry(self, pipeline: WatchPipeline, now: float) -> None:
         """Throttled per-source diagnostics for the bridge's HA sensors.

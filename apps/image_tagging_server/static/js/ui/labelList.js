@@ -291,9 +291,11 @@ function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
     'Per-camera breakdown',
     label.publishPerSource === true,
     'label-publish-per-source',
-    'Adds one counter per (rule × camera) for this label. This is the tier that multiplies '
-      + 'out, so it is off unless you want the per-camera statistics specifically. The Rules '
-      + 'device already reports which camera fired a rule, as an attribute.',
+    'Splits this label per camera: a "detected now" sensor for each one, plus a counter per '
+      + '(rule × camera). The presence sensors need no rules — they answer "is it in the '
+      + 'garage right now" straight off the tracker. This is the tier that multiplies out '
+      + '(labels × cameras), so it is off unless you want the breakdown specifically; the '
+      + 'label\'s own device already reports where it was last seen.',
   );
   // The breakdown lives inside the device, so it cannot apply without one.
   const syncEnabled = () => {

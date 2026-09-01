@@ -500,10 +500,27 @@ def subject_base_topic(subject_slug: str) -> str:
     return f"subject/{subject_slug}"
 
 
+def presence_availability_topic(source_slug: str) -> str:
+    """Whether one camera's presence verdict is current enough to believe.
+
+    Per *camera*, not per (subject, camera): staleness is a property of the camera's
+    feed, so one topic serves every subject's sensor for it. The alternative multiplies
+    with the label tree for no extra information.
+    """
+    return f"presence/{source_slug}/status"
+
+
+#: Whether *any* camera's presence verdict is current. The device-level `Detected now`
+#: is a union across cameras, so it has an answer while even one of them is reporting;
+#: it is only unknowable when they have all gone quiet.
+PRESENCE_ANY_AVAILABILITY_TOPIC = "presence/status"
+
+
 def build_subject_discovery(
     subject: SubjectView,
     rules: Sequence[Tuple[RuleView, Sequence[SourceView]]],
     prefix: str,
+    cameras: Sequence[SourceView] = (),
 ) -> Dict[str, Any]:
     """One subject label's HA device: a fixed core, plus a breakdown per rule and per
     (rule, source).
@@ -532,6 +549,18 @@ def build_subject_discovery(
             "state_topic": f"{base}/state",
             "payload_on": "ON",
             "payload_off": "OFF",
+            # Unavailable rather than OFF when every camera has gone quiet. OFF is a
+            # claim — "I looked and it is not there" — and publishing it on a feed
+            # outage makes a stationary object appear to leave and come back, which an
+            # automation triggering on arrival cannot tell from the real thing.
+            #
+            # Repeats the app-level topic because a component's own `availability`
+            # replaces the device's rather than adding to it.
+            "availability": [
+                {"topic": f"{prefix}/status"},
+                {"topic": f"{prefix}/{PRESENCE_ANY_AVAILABILITY_TOPIC}"},
+            ],
+            "availability_mode": "all",
         },
         "count": {
             "p": "sensor",
@@ -556,6 +585,42 @@ def build_subject_discovery(
             "value_template": "{{ value_json.lastSource }}",
         },
     }
+
+    # Per-camera presence — the per-source tier that answers "where is it", and the
+    # only one that needs no rule.
+    #
+    # It reads the same tracker signal as `Detected now`, split by the camera that saw
+    # it rather than unioned across all of them. That split is free at the source: the
+    # bridge already keeps presence per camera (`_presence_by_source`) because removing
+    # a stopped camera's contribution requires knowing what it was contributing, and
+    # until now it reduced that to a union and discarded the detail.
+    #
+    # Gated on `publish_per_source` with the rule-count breakdown below because it is
+    # the same cardinality problem — subjects x cameras — even though it is not the same
+    # entities. What the flag means is "give me this label broken down per camera",
+    # and a per-camera breakdown that omitted presence would answer the statistics
+    # question while leaving the one people actually ask unanswered.
+    if subject.publish_per_source:
+        for source in cameras:
+            source_slug = _topic_source(source)
+            cmps[f"source_{source.uuid}_detected"] = {
+                "p": "binary_sensor",
+                "unique_id": f"{subject_device_id(subject.uuid)}_source_{source.uuid}_detected",
+                "name": source.name,
+                "device_class": "occupancy",
+                "state_topic": f"{base}/source/{source_slug}/state",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                # This camera's own freshness, not the union's: a per-camera sensor
+                # should go unavailable when *that* camera stops reporting, even while
+                # others carry on. Same reason as `detected` above, and it matters more
+                # here — the per-camera sensor is the one an automation binds to.
+                "availability": [
+                    {"topic": f"{prefix}/status"},
+                    {"topic": f"{prefix}/{presence_availability_topic(source_slug)}"},
+                ],
+                "availability_mode": "all",
+            }
 
     for rule, sources in rules:
         rule_slug = slugify(rule.name)
@@ -897,11 +962,22 @@ def build_all_discovery(
     # works for any label a model can detect and needs no rule at all. Requiring a rule
     # meant inventing one purely to see whether the cat was in the room.
     rule_scopes = subjects_in_scope(profiles)
+    # Every camera that has a device of its own, deduplicated across profiles. Passed
+    # separately from `rule_scopes` because per-camera *presence* is rule-independent:
+    # taking its camera list from the rule scopes would give a label with no rules no
+    # presence sensors at all, which is exactly the case the tracker signal exists to
+    # cover. First profile wins on a shared camera, matching `SlugIndex.source_slug`.
+    cameras: Dict[str, SourceView] = {}
+    for profile in profiles:
+        for source in profile.sources:
+            if source.enabled and source.publish_to_ha:
+                cameras.setdefault(source.uuid, source)
+    camera_list = list(cameras.values())
     for subject_uuid, subject in (subjects or {}).items():
         if not subject.publish_to_ha:
             continue
         messages[subject_config_topic(subject_uuid)] = build_subject_discovery(
-            subject, rule_scopes.get(subject_uuid, []), prefix
+            subject, rule_scopes.get(subject_uuid, []), prefix, camera_list
         )
 
     rules_device = build_rules_discovery(profiles, prefix)
@@ -1271,8 +1347,23 @@ class MqttBridge:
         # rather than reduced on arrival: removing a camera's contribution requires
         # knowing what it was contributing.
         self._presence_by_source: Dict[str, Set[str]] = {}
+        #: source uuid → whether that camera's verdict is current enough to believe.
+        #: A camera that is not "known" is dropped from `_presence_by_source` entirely
+        #: rather than contributing an empty set — abstaining, not voting absent.
+        self._presence_known: Dict[str, bool] = {}
         #: subject label uuid → topic slug, refreshed with the profile snapshot.
         self._subject_slugs: Dict[str, str] = {}
+        #: topic → the attributes payload last published there, so a writer that knows
+        #: one key can update it without erasing the others.
+        #:
+        #: The attributes topics are retained and a retained publish *replaces*, so a
+        #: whole-payload write from any one writer silently drops every key it does not
+        #: happen to know. There are three writers with three different subsets:
+        #: `publish_subject_event` knows `lastSeen` and `lastSource`, the presence path
+        #: knows both but for a different reason, and the reseed knows only `lastSeen`
+        #: (`build_subject_seed` has no camera to report). Before this dict, a reconnect
+        #: blanked `Last location` for every subject until its next event.
+        self._subject_attributes: Dict[str, Dict[str, Any]] = {}
         #: Rolled-up subject counters, keyed shortest-tuple-first exactly as
         #: `build_subject_seed` produces them: (subject,), (subject, rule),
         #: (subject, rule, source).
@@ -1727,7 +1818,10 @@ class MqttBridge:
                 continue
             self._publisher.publish(f"{topic}/count", count, retain=True)
             if last_seen:
-                self._publisher.publish(f"{topic}/attributes", {"lastSeen": last_seen}, retain=True)
+                # Merged, not replaced: this runs on every reconnect, and the DB rows it
+                # reads carry no camera. A plain publish here would blank `Last location`
+                # app-wide every time the broker dropped.
+                self._publish_subject_attributes(topic, lastSeen=last_seen)
 
     # ── Live state, published as events happen ────────────────────────────────────
     #
@@ -1937,41 +2031,101 @@ class MqttBridge:
                 # Only the device-level topic carries location: at rule or source
                 # granularity the camera is already implied by the topic itself.
                 attributes["lastSource"] = source_name
-            self._publisher.publish(f"{topic}/attributes", attributes, retain=True)
+            self._publish_subject_attributes(topic, **attributes)
 
-    def publish_presence(self, *, source_uuid: str, label_uuids: Sequence[str]) -> None:
-        """Report which labels one camera can currently see, and republish any subject
-        whose overall answer changed.
+    def publish_presence(
+        self,
+        *,
+        source_uuid: str,
+        label_uuids: Sequence[str],
+        source_name: Optional[str] = None,
+        at: Optional[str] = None,
+        known: bool = True,
+    ) -> None:
+        """Report which labels one camera can currently see: the app-wide answer, this
+        camera's own answer, and where each newly-arrived subject was seen.
 
-        The union across cameras is the published answer: a cat in front of *any*
+        The union across cameras is the device-level answer: a cat in front of *any*
         camera is present. Taken here rather than in the watcher because no watcher can
         see the others — and they all share this one bridge instance, so the union is a
         plain dictionary read rather than anything that needs coordinating.
 
-        Only changes are published. Presence is evaluated every analysed frame, several
-        times a second per source, and a retained publish per frame would be the
-        noisiest thing on the broker while saying nothing new.
+        `Last seen` / `Last location` are stamped here as well as from
+        `publish_subject_event`, and that is the point: an event stamp requires a rule
+        naming this label as its subject, so a label nobody has written a rule for was
+        detectable but permanently locationless — the device said "yes, somewhere". The
+        tracker knows exactly which camera, and did already.
+
+        **Stamped per *camera* arrival, not per union transition.** Gating on the union
+        would mean a cat that walks from one room into the next while still visible in
+        the first never updates its location, because the union never changed. The cost
+        is one extra retained publish per camera-arrival, which is far below the event
+        rate this bridge already carries.
+
+        Only changes are published, and that is load-bearing rather than an
+        optimisation: presence is evaluated every analysed frame, several times a second
+        per source, and a retained publish per frame would be the noisiest thing on the
+        broker while saying nothing new.
         """
         if self._publisher is None:
             return
+        self._publish_presence_availability(source_uuid, known)
+        if not known:
+            # Abstain. Dropping the camera from the union is the whole point: left in
+            # with an empty set it would actively assert "not here", and a stationary
+            # object would appear to leave the moment its feed stuttered and to arrive
+            # again when it recovered. Its per-camera retained state is deliberately
+            # *not* set to OFF either — the entity is unavailable, so nobody reads it,
+            # and leaving the last real answer means recovery shows the truth
+            # immediately instead of a stale OFF that flips ON a frame later.
+            #
+            # The union still has to be recomputed without it, or a subject seen only
+            # by this camera stays pinned ON forever off a camera that has stopped
+            # talking — the same failure `forget_source_presence` exists to prevent.
+            # While *every* camera is stale that publish is invisible anyway, because
+            # `detected` is unavailable; while only some are, the union over the ones
+            # still reporting is the honest answer.
+            was_present = self._present_subjects()
+            if self._presence_by_source.pop(source_uuid, None) is None:
+                return
+            for subject_uuid in was_present ^ self._present_subjects():
+                self._publish_subject_presence(subject_uuid)
+            return
         incoming = set(label_uuids)
-        if self._presence_by_source.get(source_uuid) == incoming:
+        previous = self._presence_by_source.get(source_uuid)
+        if previous == incoming:
             return
         was_present = self._present_subjects()
         self._presence_by_source[source_uuid] = incoming
         for subject_uuid in was_present ^ self._present_subjects():
             self._publish_subject_presence(subject_uuid)
+        for subject_uuid in (previous or set()) ^ incoming:
+            self._publish_subject_source_presence(subject_uuid, source_uuid)
+        if at is None:
+            return
+        for subject_uuid in incoming - (previous or set()):
+            self._stamp_subject_seen(subject_uuid, at=at, source_name=source_name)
 
     def forget_source_presence(self, source_uuid: str) -> None:
         """Drop a stopped source's contribution. Without this its last sighting would
         pin a subject present forever — the watcher is gone, so nothing will ever
-        arrive to contradict it."""
+        arrive to contradict it.
+
+        Deliberately does *not* stamp `Last seen`. A watcher stopping is the observer
+        leaving, not the subject leaving, and recording it as a sighting would put a
+        timestamp on something nobody saw.
+        """
+        # A stopped watcher is not a camera reporting "nothing here" either, so its
+        # presence entities go unavailable exactly as a stale one's do.
+        self._publish_presence_availability(source_uuid, False)
         if source_uuid not in self._presence_by_source:
             return
         was_present = self._present_subjects()
-        self._presence_by_source.pop(source_uuid, None)
+        departed = self._presence_by_source.pop(source_uuid, None) or set()
         for subject_uuid in was_present ^ self._present_subjects():
             self._publish_subject_presence(subject_uuid)
+        for subject_uuid in departed:
+            self._publish_subject_source_presence(subject_uuid, source_uuid)
 
     def _present_subjects(self) -> Set[str]:
         return set().union(*self._presence_by_source.values()) if self._presence_by_source else set()
@@ -1984,6 +2138,66 @@ class MqttBridge:
             return
         state = "ON" if subject_uuid in self._present_subjects() else "OFF"
         self._publisher.publish(f"{subject_base_topic(slug)}/state", state, retain=True)
+
+    def _publish_subject_source_presence(self, subject_uuid: str, source_uuid: str) -> None:
+        """One camera's own answer for one subject.
+
+        Gated on the label's `publish_per_source`, which is the same gate
+        `build_subject_discovery` applies: publishing a retained state to a topic no
+        entity reads leaves it on the broker for good, and re-ticking the flag later
+        would replay a stale ON into a freshly created entity.
+        """
+        if self._publisher is None or not self._label_publish.get(subject_uuid, (False, False))[1]:
+            return
+        slug = self._subject_slugs.get(subject_uuid)
+        source_slug = self._slugs.source_slug(source_uuid)
+        if slug is None or source_slug is None:
+            return
+        state = "ON" if subject_uuid in self._presence_by_source.get(source_uuid, set()) else "OFF"
+        self._publisher.publish(f"{subject_base_topic(slug)}/source/{source_slug}/state", state, retain=True)
+
+    def _stamp_subject_seen(self, subject_uuid: str, *, at: str, source_name: Optional[str]) -> None:
+        slug = self._subject_slugs.get(subject_uuid)
+        if slug is None:
+            return
+        # A nameless camera stamps the time and leaves the location alone. Writing
+        # `None` over a good value would turn "seen in the garage" into "seen nowhere",
+        # which is worse than the stale answer it replaced.
+        updates: Dict[str, Any] = {"lastSeen": at}
+        if source_name is not None:
+            updates["lastSource"] = source_name
+        self._publish_subject_attributes(subject_base_topic(slug), **updates)
+
+    def _publish_presence_availability(self, source_uuid: str, known: bool) -> None:
+        """Mark one camera's presence verdict believable or not, and keep the app-wide
+        "any camera reporting" flag in step.
+
+        Change-gated like the presence states themselves: this is called from the
+        per-frame path, and `known` is `True` for essentially every call.
+        """
+        if self._publisher is None or self._presence_known.get(source_uuid) == known:
+            return
+        was_any = any(self._presence_known.values())
+        self._presence_known[source_uuid] = known
+        payload = "online" if known else "offline"
+        source_slug = self._slugs.source_slug(source_uuid)
+        if source_slug is not None:
+            self._publisher.publish(presence_availability_topic(source_slug), payload, retain=True)
+        is_any = any(self._presence_known.values())
+        if was_any != is_any:
+            self._publisher.publish(PRESENCE_ANY_AVAILABILITY_TOPIC, "online" if is_any else "offline", retain=True)
+
+    def _publish_subject_attributes(self, topic: str, **updates: Any) -> None:
+        """Merge into a subject attributes payload and republish the whole of it.
+
+        Every writer of an attributes topic goes through here. See
+        `_subject_attributes` for why a plain publish is not safe.
+        """
+        if self._publisher is None:
+            return
+        payload = self._subject_attributes.setdefault(topic, {})
+        payload.update(updates)
+        self._publisher.publish(f"{topic}/attributes", dict(payload), retain=True)
 
     async def publish_system(self, *, watchers_running: int) -> None:
         """The `purrview_system` device's sensors — app-wide figures owned by no
