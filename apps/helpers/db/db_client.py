@@ -8516,8 +8516,20 @@ class DbClient:
         clauses: List[Any] = [PreviewCandidate.run_uuid == run_uuid]
         if q.decisions:
             clauses.append(PreviewCandidate.decision.in_(q.decisions))
+        if q.exclude_decisions:
+            clauses.append(PreviewCandidate.decision.notin_(q.exclude_decisions))
         if q.proposed_label_uuids:
             clauses.append(PreviewCandidate.proposed_label_uuid.in_(q.proposed_label_uuids))
+        if q.exclude_proposed_label_uuids:
+            # NULL-safe: a candidate with no proposed label is not "excluded by" a label
+            # it does not have, and a bare NOT IN would drop it — SQL's three-valued
+            # logic makes `NULL NOT IN (...)` unknown, which filters as false.
+            clauses.append(
+                or_(
+                    PreviewCandidate.proposed_label_uuid.is_(None),
+                    PreviewCandidate.proposed_label_uuid.notin_(q.exclude_proposed_label_uuids),
+                )
+            )
         if q.confidence_min is not None:
             clauses.append(PreviewCandidate.confidence >= q.confidence_min)
         if q.confidence_max is not None:

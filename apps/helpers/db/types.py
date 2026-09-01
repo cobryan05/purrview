@@ -1180,6 +1180,14 @@ class PreviewCandidateQuery(ApiModel):
 
     decisions: List[PreviewDecision] = Field(default_factory=list)
     proposed_label_uuids: List[str] = Field(default_factory=list)
+    #: The "≠" half of the same two dropdowns. Separate lists rather than a mode flag,
+    #: because include and exclude are routinely used *together* — "every cat except
+    #: Willow" is one filter, not two passes — and that is the contract every other
+    #: multi-select in the app already offers (`createMultiSelectDropdown`'s
+    #: `allowExclude`). Exclusion wins where the two overlap, which is what the widget
+    #: enforces on its own side too.
+    exclude_decisions: List[PreviewDecision] = Field(default_factory=list)
+    exclude_proposed_label_uuids: List[str] = Field(default_factory=list)
     confidence_min: Optional[float] = None
     confidence_max: Optional[float] = None
     is_new: Optional[bool] = None

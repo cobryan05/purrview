@@ -354,6 +354,58 @@ class TestQueryPreviewCandidates:
         pending, total_pending = await _query_candidates(http_client, run["uuid"], decisions=["pending"])
         assert total_pending == 2
 
+    async def test_excluding_a_label_keeps_everything_else(self, http_client, image_file, label_uuid, other_label_uuid):
+        """The "≠" half of the label filter — how a twelve-thousand-candidate run is
+        triaged by taking classes away rather than naming the ones you want."""
+        run = await self._seed_run(http_client, label_uuid, other_label_uuid)
+
+        candidates, total = await _query_candidates(http_client, run["uuid"], excludeProposedLabelUuids=[label_uuid])
+
+        assert total == 1
+        assert candidates[0]["proposedLabelUuid"] == other_label_uuid
+
+    async def test_include_and_exclude_apply_together(self, http_client, image_file, label_uuid, other_label_uuid):
+        """ "Every cat except Willow" is one filter, not two passes — which is why the two
+        lists travel together rather than being a mode. Excluding everything that was
+        included is the case that proves they are both being applied: the answer is
+        empty, not "the include won"."""
+        run = await self._seed_run(http_client, label_uuid, other_label_uuid)
+
+        _, total = await _query_candidates(
+            http_client,
+            run["uuid"],
+            proposedLabelUuids=[label_uuid, other_label_uuid],
+            excludeProposedLabelUuids=[label_uuid],
+        )
+        assert total == 1
+
+        _, none_left = await _query_candidates(
+            http_client,
+            run["uuid"],
+            proposedLabelUuids=[label_uuid],
+            excludeProposedLabelUuids=[label_uuid],
+        )
+        assert none_left == 0
+
+    async def test_excluding_a_decision_leaves_the_undecided(
+        self, http_client, image_file, label_uuid, other_label_uuid
+    ):
+        """The filter someone reaches for after an hour of triage: "show me everything I
+        have not already dealt with"."""
+        run = await self._seed_run(http_client, label_uuid, other_label_uuid)
+        candidates, _ = await _query_candidates(http_client, run["uuid"])
+        target = candidates[0]["uuid"]
+        r = await http_client.patch(
+            f"/api/preview-runs/{run['uuid']}/candidates",
+            json={"candidateUuids": [target], "decision": "accepted"},
+        )
+        assert r.json()["status"] == "success"
+
+        rest, total = await _query_candidates(http_client, run["uuid"], excludeDecisions=["accepted"])
+
+        assert total == 2
+        assert target not in {c["uuid"] for c in rest}
+
     async def test_total_count_reflects_filtered_not_run_total(
         self, http_client, image_file, label_uuid, other_label_uuid
     ):

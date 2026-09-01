@@ -287,6 +287,15 @@ class FakePreviewApi:
             label_uuids = body.get("proposedLabelUuids") or []
             if label_uuids:
                 cands = [c for c in cands if c.get("proposedLabelUuid") in label_uuids]
+            # Exclusion mirrors `_preview_candidate_filters`: it applies *alongside* the
+            # include list rather than instead of it, so "every cat except the kitten"
+            # narrows here the same way it does against the real server.
+            exclude_decisions = body.get("excludeDecisions") or []
+            if exclude_decisions:
+                cands = [c for c in cands if c.get("decision") not in exclude_decisions]
+            exclude_labels = body.get("excludeProposedLabelUuids") or []
+            if exclude_labels:
+                cands = [c for c in cands if c.get("proposedLabelUuid") not in exclude_labels]
             conf_min = body.get("confidenceMin")
             if conf_min is not None:
                 cands = [c for c in cands if (c.get("confidence") or 0) >= conf_min]
@@ -709,6 +718,34 @@ class TestPagination:
         last_query = [b for (_, b) in api.query_bodies][-1]
         assert last_query["offset"] == 0
 
+    def test_the_page_size_is_selectable(self, page: Page, base_url: str):
+        """A run over a whole filter returns five figures, and at a fixed 60 the pager
+        reads "page 1 / 500" — which is not navigation, it is scrolling with extra
+        steps. The size has to reach the *server*, not just re-slice a page."""
+        api = self._setup_big_run(page, base_url, count=65)
+        expect(page.get_by_test_id("preview-page-label")).to_have_text("Page 1 / 2")
+
+        page.get_by_test_id("preview-page-size").select_option("120")
+
+        expect(page.get_by_test_id("preview-page-label")).to_have_text("Page 1 / 1")
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(65)
+        _, last_query = api.query_bodies[-1]
+        assert last_query["limit"] == 120
+        assert last_query["offset"] == 0
+
+    def test_a_chosen_page_size_is_remembered(self, page: Page, base_url: str):
+        """It is a working preference, not a property of the run — being asked to
+        re-pick it on every run is the same complaint one step later."""
+        self._setup_big_run(page, base_url, count=65)
+        page.get_by_test_id("preview-page-size").select_option("30")
+        expect(page.get_by_test_id("preview-page-label")).to_have_text("Page 1 / 3")
+
+        page.get_by_test_id("preview-run-close").click()
+        _open_panel(page, "run-big")
+
+        expect(page.get_by_test_id("preview-page-size")).to_have_value("30")
+        expect(page.get_by_test_id("preview-page-label")).to_have_text("Page 1 / 3")
+
 
 # ---------------------------------------------------------------------------
 # 6. Filtering
@@ -737,6 +774,36 @@ class TestFiltering:
         last_run_uuid, last_query = api.query_bodies[-1]
         assert last_query["decisions"] == ["accepted"]
         assert last_query["offset"] == 0
+
+    def test_a_decision_can_be_excluded_as_well_as_included(self, page: Page, base_url: str):
+        """ "Show me everything I have not already dealt with" is the filter an hour into
+        triage, and it has no expression without exclusion.
+
+        The conditional is the point: the same click on the same row, in its "≠" state,
+        has to return the *complement* of what selecting it returns."""
+        _setup_common(page, base_url)
+        api = FakePreviewApi()
+        candidates = [_make_candidate(f"c{i}", run_uuid="run-x") for i in range(5)]
+        candidates[0]["decision"] = "accepted"
+        candidates[1]["decision"] = "accepted"
+        api.add_run(_make_run(uuid="run-x"), candidates)
+        api.install(page)
+        _open_panel(page, "run-x")
+
+        page.get_by_test_id("preview-filter-decision").locator(".ms-dropdown__trigger").click()
+        panel = page.locator(".ms-dropdown[data-filter-key='preview-decision']")
+        panel.locator("input[value='accepted']").click()
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(2)
+
+        # Same row, the "≠" toggle beside it: the two accepted ones are what is left out
+        # now, not what is kept.
+        panel.locator("label:has(input[value='accepted']) .ms-item__not-btn").click()
+
+        expect(page.get_by_test_id("preview-candidate-card")).to_have_count(3)
+        _, q = api.query_bodies[-1]
+        assert q["excludeDecisions"] == ["accepted"]
+        assert q["decisions"] == [], "excluding a value must not leave it included as well"
+        assert q["offset"] == 0, "a filter change starts again at page 1"
 
     def test_label_filter_is_hierarchical_and_expands_children_on_demand(self, page: Page, base_url: str):
         """The Label dropdown mirrors the review filter panel: the vocabulary is

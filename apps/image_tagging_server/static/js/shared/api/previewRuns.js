@@ -92,6 +92,11 @@ export async function deletePreviewRun(uuid) {
 export async function queryPreviewCandidates(runUuid, {
   decisions = [],
   proposedLabelUuids = [],
+  // The "≠" half of the same two filters. Include and exclude travel together rather
+  // than as a mode, because "every cat except Willow" is one filter — see
+  // `PreviewCandidateQuery` for the server's side of the same contract.
+  excludeDecisions = [],
+  excludeProposedLabelUuids = [],
   confidenceMin = null,
   confidenceMax = null,
   isNew = null,
@@ -105,7 +110,8 @@ export async function queryPreviewCandidates(runUuid, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      decisions, proposedLabelUuids, confidenceMin, confidenceMax,
+      decisions, proposedLabelUuids, excludeDecisions, excludeProposedLabelUuids,
+      confidenceMin, confidenceMax,
       isNew, sourceModels, sortBy, sortOrder, limit, offset,
     }),
   });

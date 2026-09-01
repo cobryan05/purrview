@@ -48,14 +48,30 @@ import { labelChip } from '/app-static/js/app/review/labelChip.js';
 import { createHoverPreview } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
 import { createMultiSelectDropdown } from '/app-static/js/ui/utils/createMultiSelectDropdown.js';
+import { prefs } from '/app-static/js/shared/prefs.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 // Shared with the event modal, which names the same findings from the other end of the
 // pipeline. Two spellings of "detector dropout" read as two different problems.
 import { blipKindText } from '/app-static/js/shared/domain/blips.js';
 
-/** Candidates per page. Matches the review grid's feel on a full-width modal. */
-const PAGE_SIZE = 60;
+/** Candidates per page, until the user says otherwise. Matches the review grid's feel
+ * on a full-width modal. */
+const DEFAULT_PAGE_SIZE = 60;
+
+/** The page sizes on offer.
+ *
+ * A run over a whole filter routinely returns five figures, and at a fixed 60 that is
+ * "page 1 / 500" — a number that makes the pager useless as navigation and the grid
+ * useless as a survey. The big sizes are there to be *chosen*, not defaulted to: 500
+ * cards is a real scroll and a real number of thumbnails, which is exactly why the
+ * default stays where it was.
+ */
+const PAGE_SIZES = [30, 60, 120, 250, 500];
+
+/** Remembered across runs and sessions: a page size is a working preference, not a
+ * property of the run being triaged. */
+const PAGE_SIZE_KEY = 'ww_preview_page_size';
 
 /** How long a decision sits in the pending-write buffer before it is flushed. */
 const PATCH_DEBOUNCE_MS = 400;
@@ -105,6 +121,11 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
 
   let run = await fetchPreviewRun(runUuid);
   let page = 0;
+  // Read once here rather than on every render: a stored value that is no longer on
+  // offer (an older build's size) falls back rather than putting the select into a
+  // state its own options cannot express.
+  const _storedSize = prefs.read(PAGE_SIZE_KEY, DEFAULT_PAGE_SIZE);
+  let pageSize = PAGE_SIZES.includes(_storedSize) ? _storedSize : DEFAULT_PAGE_SIZE;
   let totalCount = 0;
   /** @type {object[]} candidates on the current page, in render order. */
   let candidates = [];
@@ -183,6 +204,12 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   const filterState = {
     decisions: [],
     proposedLabelUuids: [],
+    // The "≠" halves. Every other multi-select in the app offers exclusion, and its
+    // absence here was felt hardest in exactly the place it is most useful: a run of
+    // twelve thousand candidates is triaged by taking classes *away*, and "everything
+    // except the ones I have already accepted" had no expression at all.
+    excludeDecisions: [],
+    excludeProposedLabelUuids: [],
     confidenceMin: null,
     confidenceMax: null,
     isNew: null,
@@ -216,9 +243,12 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     label: 'Decision',
     items: DECISION_FILTER_ITEMS,
     showModeToggle: false,
-    allowExclude: false,
     filterKey: 'preview-decision',
-    onChange: (selected) => { filterState.decisions = selected; _reload(0); },
+    onChange: (selected, excluded) => {
+      filterState.decisions = selected;
+      filterState.excludeDecisions = excluded;
+      _reload(0);
+    },
   });
   decisionDd.element.dataset.testid = 'preview-filter-decision';
   toolbar.appendChild(decisionDd.element);
@@ -232,11 +262,18 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   // expanded set. `expandLabelFilterSet` is the same helper the review grid's
   // predicate uses, so the two can't drift on what "include children" means.
   let _labelSelection = [];
+  let _labelExclusion = [];
   let _labelIncludeChildren = false;
 
   function _applyLabelFilter() {
+    // Both halves expand the same way. "Not this parent" has to mean "not its children
+    // either" when the toggle is on, or excluding "Cat" would leave every named cat
+    // behind and read as having done nothing.
     filterState.proposedLabelUuids = _labelSelection.length > 0
       ? [...expandLabelFilterSet(_labelSelection, _labels, _labelIncludeChildren)]
+      : [];
+    filterState.excludeProposedLabelUuids = _labelExclusion.length > 0
+      ? [...expandLabelFilterSet(_labelExclusion, _labels, _labelIncludeChildren)]
       : [];
     _reload(0);
   }
@@ -251,7 +288,6 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
       parentUuid: l.parentUuid ?? null,
     })),
     showModeToggle: false,
-    allowExclude: false,
     searchable: true,
     filterKey: 'preview-proposed-label',
     hierarchyToggle: {
@@ -259,7 +295,11 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
       default: false,
       onChange: (val) => { _labelIncludeChildren = val; _applyLabelFilter(); },
     },
-    onChange: (selected) => { _labelSelection = selected; _applyLabelFilter(); },
+    onChange: (selected, excluded) => {
+      _labelSelection = selected;
+      _labelExclusion = excluded;
+      _applyLabelFilter();
+    },
   });
   labelDd.element.dataset.testid = 'preview-filter-label';
   toolbar.appendChild(labelDd.element);
@@ -582,7 +622,33 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   nextBtn.addEventListener('click', () => _reload(page + 1));
   const pageLabel = document.createElement('span');
   pageLabel.dataset.testid = 'preview-page-label';
-  pager.append(prevBtn, pageLabel, nextBtn);
+
+  // How many cards a page holds. A run over a whole filter can return five figures,
+  // and at a fixed 60 the pager reads "page 1 / 500" — at which point paging is not
+  // navigation, it is scrolling with extra steps.
+  //
+  // The page is reset to the first on every change rather than trying to keep the
+  // user's position: card 4,000 is on page 67 at 60 and page 8 at 500, and a "clever"
+  // remap would land somewhere neither number predicts.
+  const sizeSelect = document.createElement('select');
+  sizeSelect.className = 'preview-panel__page-size';
+  sizeSelect.dataset.testid = 'preview-page-size';
+  sizeSelect.title = 'How many candidates to show per page';
+  sizeSelect.setAttribute('aria-label', 'Candidates per page');
+  for (const size of PAGE_SIZES) {
+    const opt = document.createElement('option');
+    opt.value = String(size);
+    opt.textContent = `${size} / page`;
+    opt.selected = size === pageSize;
+    sizeSelect.appendChild(opt);
+  }
+  sizeSelect.addEventListener('change', () => {
+    pageSize = Number(sizeSelect.value) || DEFAULT_PAGE_SIZE;
+    prefs.write(PAGE_SIZE_KEY, pageSize);
+    void _reload(0);
+  });
+
+  pager.append(prevBtn, pageLabel, nextBtn, sizeSelect);
   toolbar.appendChild(pager);
 
   // ── Candidate editing (context menu + canvas editor) ───────────────────
@@ -840,10 +906,10 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
       header._countEl.textContent = `${n} on this page`;
     }
 
-    const first = totalCount === 0 ? 0 : page * PAGE_SIZE + 1;
-    const last = Math.min(totalCount, (page + 1) * PAGE_SIZE);
+    const first = totalCount === 0 ? 0 : page * pageSize + 1;
+    const last = Math.min(totalCount, (page + 1) * pageSize);
     countLabel.textContent = totalCount === 0 ? 'No candidates' : `${first}–${last} of ${totalCount.toLocaleString()}`;
-    pageLabel.textContent = `Page ${page + 1} / ${Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}`;
+    pageLabel.textContent = `Page ${page + 1} / ${Math.max(1, Math.ceil(totalCount / pageSize))}`;
     prevBtn.disabled = page === 0;
     nextBtn.disabled = last >= totalCount;
     _updateDecisionButtons();
@@ -859,7 +925,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
     try {
       page = Math.max(0, nextPage);
       const [{ candidates: rows, totalCount: total }, freshRun] = await Promise.all([
-        queryPreviewCandidates(runUuid, { ..._queryState(), limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+        queryPreviewCandidates(runUuid, { ..._queryState(), limit: pageSize, offset: page * pageSize }),
         fetchPreviewRun(runUuid).catch(() => run),
       ]);
       if (destroyed) return;
@@ -870,7 +936,7 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
       // away) should not strand the user on a blank grid past the end.
       if (candidates.length === 0 && page > 0 && totalCount > 0) {
         _loading = false;
-        return _reload(Math.min(page - 1, Math.ceil(totalCount / PAGE_SIZE) - 1));
+        return _reload(Math.min(page - 1, Math.ceil(totalCount / pageSize) - 1));
       }
       cardGrid.selected.clear();
       _renderPage();
