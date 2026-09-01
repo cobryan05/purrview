@@ -90,9 +90,19 @@ class ClassifierRuntime:
 
         `image_classifier` models are binary present/absent (softmax, single
         configured label_uuid); `multi_label_classifier` models score each
-        label independently (sigmoid, one label_uuid per output unit).
+        label independently (sigmoid, one label_uuid per output unit);
+        `crop_classifier` models pick one of N competing classes for the crop
+        they were handed (softmax across label_uuids).
         """
         logits = await self.run_batch(tensors)
+
+        if self.model_kind == "crop_classifier":
+            # Softmax, not sigmoid: the classes compete for a single crop. Falling
+            # through to the multi-label branch below would score each class
+            # independently and quietly return numbers that don't sum to 1.
+            crop_label_uuids: List[str] = self.config.get("label_uuids") or []
+            crop_probs = softmax(logits, axis=-1)
+            return [list(zip(crop_label_uuids, (float(p) for p in row))) for row in crop_probs]
 
         if self.model_kind == "image_classifier":
             class_names = self.config.get("class_names") or ["absent", "present"]

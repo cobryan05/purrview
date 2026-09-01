@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import register_trainer
+from ._backbone import create_classifier_backbone
 from .base import STOP_CANCELLED, STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
 from .onnx_validation import export_and_validate_onnx
 
@@ -72,7 +73,6 @@ class BinaryImageClassifier(Trainer):
         cancel_event: asyncio.Event,
     ) -> dict[str, Any]:
         # Defer heavy imports — torch / timm are only in the training container.
-        import timm
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader
@@ -143,10 +143,9 @@ class BinaryImageClassifier(Trainer):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info("Training on device: %s (timm model: %s)", device, timm_model)
 
-        model = timm.create_model(timm_model, pretrained=True, num_classes=0)
-        in_features = model.num_features
-        model.classifier = nn.Linear(in_features, len(class_names))
-        model = model.to(device)
+        # See _backbone.py for why the head is built there and not inline — the
+        # hand-rolled version was silently wrong on resnet and raised on mobilenet.
+        model = create_classifier_backbone(timm_model, len(class_names)).to(device)
 
         try:
             class_weights = ds_train.class_weights().to(device)

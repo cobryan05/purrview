@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 from apps import APPS, CACHE_DIR
+from apps.helpers.classifier_utils import DEFAULT_CROP_PADDING
 from apps.helpers.imageUtils import annotate_image
 from apps.helpers.inferenceProviders.inferenceProvider import (
     InferenceProvider,
@@ -637,30 +638,13 @@ class Manager:
             del self._pinned_models[model_name]
             logger.info(f"Model '{model_name}' unloaded from memory.")
 
-    async def recognize(
-        self,
-        model_name: str,
-        image: np.ndarray,
-        conf_thresh: float,
-        return_annotated_img: bool = False,
-        pin_id: Optional[str] = None,
-        shared_pre: Optional["_SharedPreprocess"] = None,
-        **kwargs,
-    ) -> InferenceResult:
-        """
-        Recognize objects in an image using a specified model.
+    async def _ensure_loaded(self, model_name: str, pin_id: Optional[str] = None) -> "InferenceModel":
+        """Resolve *model_name* to a loaded, pinned model, refreshing the caller's pin.
 
-        Args:
-            model_name (str): Name of the model to use for recognition.
-            image (np.ndarray): The input image in BGR format.
-            conf_thresh (float): Confidence threshold for detections.
-            pin_id (str): pin_id to refresh if using a pinned model
-            return_annotated_img (bool): Whether to return the annotated image.
-            **kwargs: Additional parameters to pass to the inference backend.
-
-        Returns:
-            Tuple[InferenceResult, Optional[np.ndarray]]:
-                - An InferenceResult with information from the recognition
+        Extracted from ``recognize`` so every entry point that runs a session
+        (``recognize``, ``classify_crops``) shares one pin/staleness policy — a
+        second copy of this would be a second place for a retrained model to keep
+        serving stale weights.
         """
         if model_name not in self._avail_models:
             raise ValueError(f"Model '{model_name}' is not available. Please check the model name.")
@@ -699,6 +683,71 @@ class Manager:
         model = self._pinned_models.get(model_name)
         if not model or not model.inference:
             raise ValueError(f"Model '{model_name}' is not properly loaded or initialized.")
+        return model
+
+    async def classify_crops(
+        self,
+        model_name: str,
+        image: np.ndarray,
+        boxes: List[Dict[str, float]],
+        pin_id: Optional[str] = None,
+    ) -> List[List[Tuple[str, float]]]:
+        """Classify each *relative* box of one image with a crop classifier.
+
+        The second pass of a hierarchical model config. Returns one
+        ``[(label_uuid, confidence), ...]`` list per input box, highest first,
+        in the caller's box order.
+
+        The image is decoded once and every crop goes through a single batched
+        session run — the whole reason this is a server-side endpoint rather than
+        the caller cutting crops and posting each one back.
+
+        Crops are cut with the model's OWN sidecar ``crop_padding``, never a
+        caller-supplied one: serve-time framing that differs from train-time
+        framing degrades accuracy silently, and the sidecar is the only record of
+        what the model actually saw.
+        """
+        config = self.get_model_config(model_name) or {}
+        model_kind = config.get("model_kind")
+        if model_kind != "crop_classifier":
+            raise ValueError(f"Model '{model_name}' is a {model_kind!r}, not a crop_classifier")
+        if not boxes:
+            return []
+
+        model = await self._ensure_loaded(model_name, pin_id)
+        provider = model.inference
+        if not hasattr(provider, "processCrops"):
+            raise ValueError(f"Model '{model_name}' loaded a provider that cannot classify crops")
+
+        padding = float(config.get("crop_padding", DEFAULT_CROP_PADDING))
+        return await provider.processCrops(image, boxes, padding=padding)
+
+    async def recognize(
+        self,
+        model_name: str,
+        image: np.ndarray,
+        conf_thresh: float,
+        return_annotated_img: bool = False,
+        pin_id: Optional[str] = None,
+        shared_pre: Optional["_SharedPreprocess"] = None,
+        **kwargs,
+    ) -> InferenceResult:
+        """
+        Recognize objects in an image using a specified model.
+
+        Args:
+            model_name (str): Name of the model to use for recognition.
+            image (np.ndarray): The input image in BGR format.
+            conf_thresh (float): Confidence threshold for detections.
+            pin_id (str): pin_id to refresh if using a pinned model
+            return_annotated_img (bool): Whether to return the annotated image.
+            **kwargs: Additional parameters to pass to the inference backend.
+
+        Returns:
+            Tuple[InferenceResult, Optional[np.ndarray]]:
+                - An InferenceResult with information from the recognition
+        """
+        model = await self._ensure_loaded(model_name, pin_id)
 
         # Only meaningful in a recognize_many batch: several models over one
         # frame letterbox it to the same tensor, so the first to arrive computes

@@ -95,6 +95,16 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
         label_uuids: list[str] = metadata.get("label_uuids") or []
         return MultiLabelClassifierInferenceProvider(model_path, label_uuids, providers=providers)
 
+    if model_kind == "crop_classifier":
+        from apps.helpers.inferenceProviders.cropClassifierInferenceProvider import (
+            CropClassifierInferenceProvider,
+        )
+
+        # The caller crops before calling; this provider only classifies what it is
+        # handed. See the provider's docstring.
+        crop_label_uuids: list[str] = metadata.get("label_uuids") or []
+        return CropClassifierInferenceProvider(model_path, crop_label_uuids, providers=providers)
+
     classes: list[str] = metadata.get("classes", None)
     model_family: str = metadata.get("model_family") or metadataUtils.resolve_legacy_model_family(metadata)
     provider_cls = inference_provider_registry.get(model_family)

@@ -3812,6 +3812,20 @@ class Manager:
             return None
         return await self._apply_negative_ratio_cap(result, negative_ratio, negative_ratio_floor)
 
+    async def get_training_target_crop_dataset(
+        self,
+        model_config_uuid: str,
+        node_uuid: str,
+        dataset_uuids: list[str],
+        label_uuids: Optional[list[str]] = None,
+        class_remap: Optional[dict[str, str]] = None,
+    ) -> Optional[dict]:
+        # No negative-ratio cap: a crop dataset has no negative images to cap. Every
+        # sample is a verified box that belongs to exactly one class.
+        return await self._db_client.get_training_target_crop_dataset(
+            model_config_uuid, node_uuid, dataset_uuids, label_uuids=label_uuids, class_remap=class_remap
+        )
+
     # Default cap for a detection dataset's negative (no-annotation) images, expressed
     # as a multiple of the positive count. Bulk-verifying "absent" across a whole dataset
     # (e.g. tagging every indoor photo as dog-absent right after adding a few outdoor dog

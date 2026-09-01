@@ -41,6 +41,8 @@ from db_client.api.watch_profiles_api import WatchProfilesApi
 from db_client.models.get_source_regions_payload import GetSourceRegionsPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
+from inference_client.models.classify_crops_payload import ClassifyCropsPayload
+from inference_client.models.crop_box import CropBox
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.actions.action import ActionContext
@@ -48,6 +50,14 @@ from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings,
 from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
 from apps.helpers.actions.recordEventTimelapseAction import sweep_frame_buffers
 from apps.helpers.actions.Registry import create_action
+from apps.helpers.cascade import (
+    CROP_CLASSIFIER_KIND,
+    CropSubModel,
+    order_sub_models,
+    refinable_indices,
+    resolve_refinement,
+    split_model_stack,
+)
 from apps.helpers.consts import JsonValues, TaskAccent, TaskStatus
 from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
@@ -144,6 +154,14 @@ class StreamWatcherTask(Task):
     # the loss would be invisible (fewer track ids, no error). Each tracker applies its
     # own real threshold, exposed through `params_schema()` and tunable in the UI.
     _INFERENCE_CONF_FLOOR: float = 0.1
+    # How sure a sub-model must be to overwrite the coarse label the detector gave.
+    # NOT the same kind of number as the floor above: that one is deliberately low
+    # because the tracker wants weak boxes, whereas this one decides whether to
+    # replace a true statement ("a cat") with a more specific claim ("Willow"). A
+    # wrong specific label is worse than a right vague one — it names the wrong
+    # animal in a notification — so an unsure second pass declines and leaves the
+    # detection alone.
+    _SUB_MODEL_MIN_CONFIDENCE: float = 0.6
     # Ceiling on how long the loop sleeps when nothing is due. Short enough that a
     # newly-due source is serviced promptly, long enough that an idle watcher costs
     # nothing measurable.
@@ -900,6 +918,9 @@ class StreamWatcherTask(Task):
         on a slow-fps watcher, so every inference call would pay a model load.
         """
         models_api = ModelsApi(self._manager.get_inference_api_client())
+        # Pins are taken over the configured stack, before the cascade split below
+        # moves crop classifiers out of `model_names`: a sub-model is loaded on the
+        # same frames as the detector that feeds it, so it wants a pin just as much.
         names = {name for p in self._pipelines for name in p.model_names}
         for name in sorted(names):
             try:
@@ -914,9 +935,68 @@ class StreamWatcherTask(Task):
             except Exception:
                 logger.exception("Failed to pin model %s", name)
                 self._pin_ids[name] = None
-        await self._check_analysis_width(models_api, names)
+        metas = await self._load_model_metas(models_api, names)
+        # Split before the width check: a crop classifier's 224px input must not be
+        # read as "this source could be analysed wider", and it must be out of
+        # `model_names` before the first frame sends that list to detect-batch.
+        self._split_model_stacks(metas)
+        self._check_analysis_width(metas)
 
-    async def _check_analysis_width(self, models_api: ModelsApi, names: set) -> None:
+    async def _load_model_metas(self, models_api: ModelsApi, names: set) -> dict:
+        """One `get_model_meta` per distinct model, at startup.
+
+        Best-effort by design: a model whose meta cannot be read is simply treated
+        as a detector with no sub-model wiring, which is what every model was
+        before crop classifiers existed. A watcher must never fail to start over
+        metadata it only uses for hints and cascade wiring.
+        """
+        metas: dict = {}
+        for name in sorted(names):
+            try:
+                metas[name] = await asyncio.to_thread(models_api.get_model_meta, name)
+            except Exception:
+                logger.debug("Could not read meta for model %s", name, exc_info=True)
+        return metas
+
+    def _split_model_stacks(self, metas: dict) -> None:
+        """Move each pipeline's crop classifiers out of `model_names` into `sub_models`.
+
+        After this, `model_names` is the first-pass detector stack — which is what
+        gets sent to detect-batch, and what the FIRST_WINS merge orders by — and
+        `sub_models` is the second pass, applied per detection in `_run_inference`.
+
+        Leaving a crop classifier in `model_names` would send a classifier through
+        the detection endpoint every frame: it answers, so nothing errors, and the
+        boxes it produces are meaningless.
+        """
+        model_kinds = {name: getattr(m, "model_kind", None) for name, m in metas.items()}
+        parent_labels = {name: getattr(m, "parent_label_uuid", None) for name, m in metas.items()}
+
+        for pipeline in self._pipelines:
+            detectors, sub_models = split_model_stack(pipeline.model_names, model_kinds, parent_labels)
+            dropped = [
+                n
+                for n in pipeline.model_names
+                if model_kinds.get(n) == CROP_CLASSIFIER_KIND and not parent_labels.get(n)
+            ]
+            pipeline.model_names = detectors
+            pipeline.sub_models = sub_models
+            for name in dropped:
+                self.log(
+                    f"Source '{pipeline.source_name}': crop classifier '{name}' has no parent label in its "
+                    "sidecar, so there is nothing to aim it at — skipping it. Retrain it from a model "
+                    "config sub-model node."
+                )
+            if sub_models:
+                self.log(
+                    f"Source '{pipeline.source_name}': second pass active — "
+                    + ", ".join(f"{s.model_name} refines {self._label_name(s.parent_label_uuid)}" for s in sub_models)
+                )
+
+    def _label_name(self, label_uuid: str) -> str:
+        return (self._label_meta.get(label_uuid) or {}).get("name") or label_uuid
+
+    def _check_analysis_width(self, metas: dict) -> None:
         """Warn when a source is analysed below what its own models could use.
 
         The §2.3b freebie off the exposed `input_shape`: `analysis_width` exists to
@@ -929,14 +1009,10 @@ class StreamWatcherTask(Task):
         read, and a watcher must never fail to start over a tuning hint.
         """
         widths: dict[str, int] = {}
-        for name in sorted(names):
-            try:
-                meta = await asyncio.to_thread(models_api.get_model_meta, name)
-                shape = getattr(meta, "input_shape", None)
-                if shape and len(shape) == 2 and shape[1]:
-                    widths[name] = int(shape[1])  # (height, width)
-            except Exception:
-                logger.debug("Could not read input_shape for model %s", name, exc_info=True)
+        for name, meta in metas.items():
+            shape = getattr(meta, "input_shape", None)
+            if shape and len(shape) == 2 and shape[1]:
+                widths[name] = int(shape[1])  # (height, width)
 
         self._analysis_width_hints = []
         for pipeline in self._pipelines:
@@ -987,6 +1063,7 @@ class StreamWatcherTask(Task):
         base64_img: str,
         model_names: List[str],
         frame_size: Tuple[int, int],
+        sub_models: Optional[List[CropSubModel]] = None,
     ) -> List[Detection]:
         """Run a source's model stack and merge the results.
 
@@ -1029,6 +1106,11 @@ class StreamWatcherTask(Task):
             overlap_iou_threshold=0.5,
             policy=MergePolicy.FIRST_WINS,
         )
+
+        # Second pass, before the relative→pixel conversion below: the crop
+        # endpoint takes relative boxes, the same space the detections are still in.
+        if sub_models:
+            await self._apply_sub_models(inference_api, base64_img, merged, sub_models)
         # ⚠️ The client model has x/y/width/height only, and they are RELATIVE.
         # There is no x1/y1/x2/y2 on it — reading those raised AttributeError out
         # of the first frame of every watcher (the caller's try/except covers only
@@ -1050,6 +1132,82 @@ class StreamWatcherTask(Task):
             )
             for det in merged
         ]
+
+    async def _apply_sub_models(
+        self,
+        inference_api: InferenceApi,
+        base64_img: str,
+        merged: List[Any],
+        sub_models: List[CropSubModel],
+    ) -> None:
+        """Refine merged detections in place with each configured crop classifier.
+
+        For every sub-model, find the detections sitting at (or under) its boundary
+        label, send those boxes in one call, and rewrite the label of each box the
+        classifier was confident about. Detections it wasn't confident about keep
+        their coarse label — "a cat, unsure which" is still true and still useful.
+
+        Failures are swallowed to a log line on purpose. This runs on every frame of
+        a live camera; a second pass that can take the watcher down is worse than a
+        second pass that occasionally doesn't happen, and the first pass's result is
+        always a valid answer on its own.
+        """
+        # Outermost boundary first, so Animal -> Cat -> Willow resolves all the way
+        # down in one frame regardless of the order the models sit in the stack.
+        for sub in order_sub_models(sub_models, self._label_ancestry):
+            indices = refinable_indices(
+                [getattr(d.bbox, "label_uuid", None) for d in merged],
+                sub.parent_label_uuid,
+                self._label_ancestry,
+            )
+            if not indices:
+                continue
+
+            boxes = [
+                CropBox(
+                    x=merged[i].bbox.x,
+                    y=merged[i].bbox.y,
+                    width=merged[i].bbox.width,
+                    height=merged[i].bbox.height,
+                )
+                for i in indices
+            ]
+            try:
+                resp = await asyncio.to_thread(
+                    inference_api.classify_crops,
+                    sub.model_name,
+                    ClassifyCropsPayload(
+                        image_base64=base64_img,
+                        boxes=boxes,
+                        pin_id=self._pin_ids.get(sub.model_name),
+                    ),
+                )
+            except Exception:
+                logger.exception("Second pass %s failed on this frame", sub.model_name)
+                continue
+            if getattr(resp, "status", None) != "success":
+                self.log(f"Second pass '{sub.model_name}' failed: {getattr(resp, 'message', 'unknown error')}")
+                continue
+
+            # Paired back by position — the endpoint documents that its results are
+            # in the order the boxes were sent.
+            for idx, result in zip(indices, resp.results or []):
+                det = merged[idx]
+                refined = resolve_refinement(
+                    getattr(det, "confidence", 0.0) or 0.0,
+                    [(p.label_uuid, p.confidence) for p in (result.predictions or [])],
+                    self._SUB_MODEL_MIN_CONFIDENCE,
+                    current_label_uuid=getattr(det.bbox, "label_uuid", None),
+                )
+                if refined is None:
+                    continue
+                label_uuid, confidence = refined
+                det.bbox.label_uuid = label_uuid
+                # class_str is what _label_display_name falls back to when a label has
+                # no DB row. Clearing it stops the OLD class name ("cat") being shown
+                # beside the NEW label uuid, which reads as a labelling bug.
+                det.bbox.class_str = None
+                det.confidence = confidence
 
     def _label_display_name(self, bbox: Any) -> Optional[str]:
         """A human name for one inference bbox.
@@ -1546,7 +1704,11 @@ class StreamWatcherTask(Task):
         # space the zones were scaled to by prepare_frame() just above.
         analysed_h, analysed_w = analysed.shape[:2]
         detections = await self._run_inference(
-            inference_api, base64_img, pipeline.model_names, frame_size=(analysed_w, analysed_h)
+            inference_api,
+            base64_img,
+            pipeline.model_names,
+            frame_size=(analysed_w, analysed_h),
+            sub_models=pipeline.sub_models,
         )
 
         # Everything from here on either emits event signals or dispatches them, so it

@@ -364,7 +364,17 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
 
 // ── Readiness panel ───────────────────────────────────────────────────────────
 
-function renderReadinessPanel(config) {
+/** The model type of the node a training config points at, or null if unresolvable. */
+function nodeModelType(modelConfigsMap, nodeUuid) {
+  if (!nodeUuid) return null;
+  for (const mc of modelConfigsMap.values()) {
+    const node = (mc.nodes ?? []).find(n => n.uuid === nodeUuid);
+    if (node) return node.modelType ?? null;
+  }
+  return null;
+}
+
+function renderReadinessPanel(config, modelType = null) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'margin-top: 0.75em; padding: 0.6em 0.75em; border: 1px solid var(--pico-border-color, #444); border-radius: 4px; font-size: 0.85em;';
 
@@ -390,6 +400,22 @@ function renderReadinessPanel(config) {
   // ── Content area (replaced on each refresh) ───────────────────
   const content = document.createElement('div');
   wrap.appendChild(content);
+
+  // Readiness counts whole-image annotation coverage: an image is "ready" once
+  // every label in scope has been explicitly marked present or absent on it. A
+  // crop classifier never sees the rest of the image — it trains on one verified
+  // box at a time — so those counts describe nothing it cares about, and would
+  // read "0 of 1,500 ready" for a dataset that trains perfectly well.
+  if (modelType === 'crop_classifier') {
+    refreshBtn.remove();
+    const note = document.createElement('div');
+    note.style.cssText = 'color: var(--pico-muted-color, #888);';
+    note.textContent =
+      'Not applicable to crop classifiers — they train on verified bounding boxes, not on ' +
+      'whole-image label coverage. Every verified box of this sub-model’s labels is used.';
+    content.appendChild(note);
+    return wrap;
+  }
 
   async function _doLoad() {
     content.innerHTML = '';
@@ -627,7 +653,8 @@ export async function renderTrainingConfigManager({ target = 'training-config-bo
 
         // Readiness panel (only for existing configs with datasets and a node)
         if (config?.uuid && (config.datasetUuids?.length ?? 0) > 0 && config.modelConfigNodeUuid) {
-          editorBody.appendChild(renderReadinessPanel(config));
+          editorBody.appendChild(
+            renderReadinessPanel(config, nodeModelType(modelConfigsMap, config.modelConfigNodeUuid)));
         }
 
         // Label stats panel (only for existing configs with datasets selected)

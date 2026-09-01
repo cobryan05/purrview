@@ -102,6 +102,10 @@ def _harness():
         provider=_Provider(),
         health=SourceHealth(),
         model_names=["cat-model"],
+        # No second pass on this source. Present rather than omitted because the real
+        # WatchPipeline always has the field, and a fake that is *less* complete than
+        # the thing it stands in for fails on wiring instead of on behaviour.
+        sub_models=[],
         detections=[],
         tracks=[],
     )

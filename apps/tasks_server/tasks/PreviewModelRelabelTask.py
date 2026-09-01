@@ -60,19 +60,29 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps import FILES_ROOT
 from apps.helpers.bboxUtils import iou_xywh
+from apps.helpers.cascade import (
+    CROP_CLASSIFIER_KIND,
+    CropSubModel,
+    order_sub_models,
+    refinable_indices,
+    resolve_refinement,
+)
+from apps.helpers.classifier_utils import DEFAULT_CROP_PADDING
 from apps.helpers.consts import TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
-from apps.helpers.metadataUtils import validate_bare_model_name
+from apps.helpers.metadataUtils import get_model_metadata, validate_bare_model_name
 
 from ._filter_chain_runner import Detection
 from ._image_loading import load_image_bytes
 from .ApplyFilterChainTask import (
     _CLASSIFIER_KINDS,
+    _MODELS_ROOT,
     _HttpInferenceBackend,
     _read_model_kind,
 )
 from .Registry import register_task
 from .Task import Task
+from .utils.labelHelper import build_label_ancestry_map
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
@@ -105,6 +115,34 @@ _CANDIDATE_FLUSH_SIZE = 500
 # inference server, not this task, is the limit.
 _DEFAULT_CONCURRENCY = 4
 
+# NOTE: the crop-classifier kind is `cascade.CROP_CLASSIFIER_KIND`, deliberately NOT
+# a member of ApplyFilterChainTask._CLASSIFIER_KINDS — that set means "scores the
+# whole image, so it drives an image-level action", which is the opposite of this.
+
+
+def _read_parent_label_uuid(model_name: str) -> Optional[str]:
+    """The boundary label a crop classifier refines, from its sidecar."""
+    validate_bare_model_name(model_name)
+    try:
+        metadata = get_model_metadata(str(_MODELS_ROOT / f"{model_name}.onnx"), create_json_if_missing=False)
+    except FileNotFoundError:
+        return None
+    return metadata.get("parent_label_uuid") or None
+
+
+def _read_crop_padding(model_name: str) -> float:
+    """The context padding a crop classifier was trained with, from its sidecar.
+
+    Serve-time framing has to match train-time framing or accuracy quietly drops,
+    so this is read per model rather than assumed.
+    """
+    validate_bare_model_name(model_name)
+    try:
+        metadata = get_model_metadata(str(_MODELS_ROOT / f"{model_name}.onnx"), create_json_if_missing=False)
+    except FileNotFoundError:
+        return DEFAULT_CROP_PADDING
+    return float(metadata.get("crop_padding", DEFAULT_CROP_PADDING))
+
 
 @register_task()
 class PreviewModelRelabelTask(Task):
@@ -128,6 +166,20 @@ class PreviewModelRelabelTask(Task):
         self._crop_mode: str = str(params.get("crop_mode") or "image")
         if self._crop_mode not in ("image", "bbox"):
             raise ValueError(f"crop_mode must be 'image' or 'bbox', got {self._crop_mode!r}")
+
+        # Second-pass crop classifiers to run on this detector's output, turning one
+        # run into both passes of a hierarchical config: the detector finds "Cat",
+        # these say which cat, and the candidate that lands in review is already
+        # named. Empty (the default) leaves the run exactly as it was.
+        self._sub_model_names: List[str] = list(params.get("sub_model_names") or [])
+        for name in self._sub_model_names:
+            validate_bare_model_name(name)
+        if self._sub_model_names and self._crop_mode != "image":
+            raise ValueError(
+                "sub_model_names applies to whole-image crop_mode only — in bbox mode the "
+                "crop classifier IS the model to run, so pass it as model_name instead"
+            )
+        self._sub_model_min_confidence: float = float(params.get("sub_model_min_confidence", 0.6))
 
         # When set (whole-image crop_mode only), detections that overlap *no*
         # existing bbox on the image are also proposed as brand-new boxes — the
@@ -200,6 +252,14 @@ class PreviewModelRelabelTask(Task):
         # Populated in _run() once label names are fetched; defaults to empty so
         # _process_image can be exercised directly in tests without a full _run().
         self._name_to_label_uuid: Dict[str, str] = {}
+        # Resolved from the model sidecar in _run(); the defaults keep a detector
+        # model's behaviour identical to before crop classifiers existed.
+        self._is_crop_classifier: bool = False
+        self._crop_padding: float = 0.0
+        # Resolved in _run() from each sub-model's sidecar + the label tree.
+        self._sub_models: List[CropSubModel] = []
+        self._label_ancestry: Dict[str, set] = {}
+        self._refined_count: int = 0
 
     async def _run(self) -> Dict[str, Any]:
         db_api_client = self._manager.get_db_api_client()
@@ -211,9 +271,29 @@ class PreviewModelRelabelTask(Task):
         if model_kind in _CLASSIFIER_KINDS:
             self.log(
                 f"Model {self._model_name!r} is a {model_kind}; relabel preview only supports "
-                "detector models — nothing to do"
+                "detector and crop-classifier models — nothing to do"
             )
             return self._build_result()
+
+        # A crop classifier is the second pass of a hierarchical config: it answers
+        # "which child label is this box" and has no opinion about anything outside
+        # the box, so it only makes sense in bbox mode. In image mode it would be
+        # handed whole frames and would confidently mislabel every one of them.
+        self._is_crop_classifier = model_kind == CROP_CLASSIFIER_KIND
+        if self._is_crop_classifier:
+            if self._crop_mode != "bbox":
+                self.log(
+                    f"Model {self._model_name!r} is a crop classifier; it classifies one box at a "
+                    f"time and cannot run in {self._crop_mode!r} mode — re-run with crop_mode='bbox'"
+                )
+                return self._build_result()
+            self._crop_padding = await asyncio.to_thread(_read_crop_padding, self._model_name)
+            self.log(
+                f"Model {self._model_name!r} is a crop classifier "
+                f"(crop padding {self._crop_padding:.0%}, matching how it was trained)"
+            )
+
+        await self._resolve_sub_models(labels_api)
 
         label_names = await self._build_label_name_map(labels_api)
         # Reverse (name -> uuid) lookup for the unmapped-class fallback: first
@@ -445,6 +525,12 @@ class PreviewModelRelabelTask(Task):
             self._no_detection_count += len(image_bboxes)
             return
 
+        # Second pass runs here, before anything reads a detection's label: both the
+        # relabel matching below and _collect_new_boxes then see the refined name, so
+        # one run really does produce "Willow" rather than "Cat" plus a follow-up run.
+        if self._sub_models:
+            await self._refine_detections(backend, image_bytes, detections)
+
         # batch_images_by_uuids serializes with by_alias=True (alias_generator=to_camel),
         # so nested bbox dicts use camelCase keys ("labelUuid", not "label_uuid") — see
         # the same trap documented/fixed in DeduplicateOverlappingBBoxesTask.
@@ -506,6 +592,92 @@ class PreviewModelRelabelTask(Task):
             )
             self._new_boxes_found += 1
 
+    async def _resolve_sub_models(self, labels_api: LabelsApi) -> None:
+        """Turn the requested sub-model names into aimed CropSubModels.
+
+        A name that isn't a crop classifier, or is one with no `parent_label_uuid`,
+        is reported and skipped rather than failing the run: the first pass is still
+        worth previewing, and a run that refuses to start over one misconfigured
+        second-pass model is the less useful failure.
+        """
+        if not self._sub_model_names:
+            return
+
+        self._label_ancestry = await build_label_ancestry_map(labels_api)
+        for name in self._sub_model_names:
+            kind = await asyncio.to_thread(_read_model_kind, name)
+            if kind != CROP_CLASSIFIER_KIND:
+                self.log(f"Skipping second-pass model {name!r}: it is a {kind}, not a crop classifier")
+                continue
+            parent = await asyncio.to_thread(_read_parent_label_uuid, name)
+            if not parent:
+                self.log(
+                    f"Skipping second-pass model {name!r}: its sidecar names no parent label, so there "
+                    "is nothing to aim it at"
+                )
+                continue
+            self._sub_models.append(CropSubModel(model_name=name, parent_label_uuid=parent))
+
+        if self._sub_models:
+            self.log(
+                "Second pass: "
+                + ", ".join(f"{s.model_name} refines {s.parent_label_uuid}" for s in self._sub_models)
+                + f" (min confidence {self._sub_model_min_confidence})"
+            )
+
+    async def _refine_detections(
+        self,
+        backend: _HttpInferenceBackend,
+        image_bytes: bytes,
+        detections: List[Detection],
+    ) -> None:
+        """Replace each detection's coarse label with its sub-model's verdict, in place.
+
+        A detection the sub-model wasn't confident about keeps its coarse label —
+        the preview then proposes "Cat", which is still a correct answer and still
+        reviewable, rather than dropping the box or guessing a cat's name.
+        """
+        # Outermost boundary first — see order_sub_models. Sorted here rather than at
+        # resolve time so a hierarchy edit between runs can't leave a stale order.
+        for sub in order_sub_models(self._sub_models, self._label_ancestry):
+            indices = refinable_indices([d.label_uuid for d in detections], sub.parent_label_uuid, self._label_ancestry)
+            if not indices:
+                continue
+            boxes = [
+                {
+                    "x": detections[i].x,
+                    "y": detections[i].y,
+                    "width": detections[i].width,
+                    "height": detections[i].height,
+                }
+                for i in indices
+            ]
+            try:
+                per_box = await backend.classify_crops(sub.model_name, image_bytes, boxes)
+            except Exception as e:
+                logger.exception("Second pass %s failed", sub.model_name)
+                if len(self._sample_errors) < 5:
+                    self._sample_errors.append(f"second pass {sub.model_name}: {e}")
+                continue
+
+            for idx, predictions in zip(indices, per_box):
+                refined = resolve_refinement(
+                    detections[idx].confidence,
+                    predictions,
+                    self._sub_model_min_confidence,
+                    current_label_uuid=detections[idx].label_uuid,
+                )
+                if refined is None:
+                    continue
+                label_uuid, confidence = refined
+                detections[idx].label_uuid = label_uuid
+                # Clear the detector's class name so _resolve_label_uuid's
+                # name-based fallback can't resolve the refined box back to the
+                # coarse label it just moved away from.
+                detections[idx].class_str = None
+                detections[idx].confidence = confidence
+                self._refined_count += 1
+
     async def _process_image_bbox_crop(
         self,
         image_bboxes: List[Dict[str, Any]],
@@ -534,10 +706,15 @@ class PreviewModelRelabelTask(Task):
         for bbox in image_bboxes:
             x, y = bbox.get("x", 0.0), bbox.get("y", 0.0)
             width, height = bbox.get("width", 0.0), bbox.get("height", 0.0)
-            left = max(0, int(x * img_w))
-            top = max(0, int(y * img_h))
-            right = min(img_w, int((x + width) * img_w))
-            bottom = min(img_h, int((y + height) * img_h))
+            # Context padding, zero for detectors (which see the bare box, as they
+            # always have) and the sidecar's value for a crop classifier, which was
+            # trained on padded crops and must be served the same framing.
+            pad_x = width * self._crop_padding
+            pad_y = height * self._crop_padding
+            left = max(0, int((x - pad_x) * img_w))
+            top = max(0, int((y - pad_y) * img_h))
+            right = min(img_w, int((x + width + pad_x) * img_w))
+            bottom = min(img_h, int((y + height + pad_y) * img_h))
             if right <= left or bottom <= top:
                 self._no_detection_count += 1
                 continue
@@ -549,6 +726,27 @@ class PreviewModelRelabelTask(Task):
                 if len(self._sample_errors) < 5:
                     self._sample_errors.append(f"{filename} bbox {bbox.get('uuid')}: {e}")
                 self._no_detection_count += 1
+                continue
+
+            if self._is_crop_classifier:
+                # A classifier returns scores, not boxes: take the top-scoring class
+                # above the threshold and propose it for this bbox unchanged. No
+                # geometry — the model localised nothing, so the existing box stands.
+                predictions = await backend.classify_labels(self._model_name, crop_bytes)
+                top = next(((lu, c) for lu, c in predictions if c >= self._conf_thresh), None)
+                if top is None:
+                    self._no_detection_count += 1
+                    continue
+                label_uuid, confidence = top
+                self._maybe_add_candidate(
+                    bbox,
+                    image_uuid,
+                    filename,
+                    label_names,
+                    Detection(x=x, y=y, width=width, height=height, confidence=confidence, label_uuid=label_uuid),
+                    label_uuid,
+                    None,
+                )
                 continue
 
             detections = await backend.detect(self._model_name, crop_bytes, self._conf_thresh)
@@ -653,6 +851,10 @@ class PreviewModelRelabelTask(Task):
             "no_detection_count": self._no_detection_count,
             "no_op_count": self._no_op_count,
             "new_boxes_found": self._new_boxes_found,
+            # How many detections the second pass renamed. Zero with sub-models
+            # configured is the signal that the cascade ran but never cleared its
+            # confidence bar — a different problem from "the detector found nothing".
+            "refined_count": self._refined_count,
         }
         if self._preview_run_uuid:
             # The candidates live in the DB now; shipping them through the

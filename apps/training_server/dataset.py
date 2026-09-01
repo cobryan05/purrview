@@ -19,6 +19,8 @@ import logging
 import shutil
 from pathlib import Path
 
+from apps.helpers.classifier_utils import DEFAULT_CROP_PADDING, crop_region
+
 logger = logging.getLogger(__name__)
 
 
@@ -323,6 +325,183 @@ class MultiLabelDataset:
                 elif val == 0:
                     n_absent[i] += 1
         return n_absent / (n_present + 1e-8)
+
+
+# ---------------------------------------------------------------------------
+# Crop classification dataset
+# ---------------------------------------------------------------------------
+
+
+def build_crop_dataset_from_manifest(
+    manifest: list[dict],
+    crop_targets: dict[str, list[dict]],
+    num_classes: int,
+    cache_dir: str,
+    split: str = "train",
+    val_fraction: float = 0.2,
+    crop_padding: float = DEFAULT_CROP_PADDING,
+) -> "CropDataset":
+    """Build a ``CropDataset`` from a pushed manifest + per-image crop boxes.
+
+    Args:
+        manifest:     List of ``{image_uuid, filename, status}`` dicts (unique images —
+                      the same shape every other builder takes, so image push is
+                      unchanged). ``status`` is ignored; a crop's class is its own.
+        crop_targets: ``{image_uuid: [{class_idx, x, y, width, height}]}``, relative
+                      coords. Images absent from this map contribute no samples.
+        num_classes:  Number of output classes (defines the label space).
+        cache_dir:    Path to UUID-keyed image cache.
+        split:        ``"train"`` or ``"val"``.
+        val_fraction: Fraction of *images* held out for validation.
+        crop_padding: Fraction of box size added as context on each side.
+
+    The split is by **image**, not by crop. Splitting crops directly would put two
+    boxes of the same animal from the same frame — and, with a stream collector
+    feeding the dataset, near-identical boxes from adjacent frames of the same
+    image — on both sides of the split, which inflates val accuracy without
+    improving the model.
+
+    Raises:
+        ValueError: When no manifest rows are provided, the cache is incomplete, or
+                    the split contains no crops at all.
+    """
+    if not manifest:
+        raise ValueError("Empty manifest — no images to train on")
+
+    cache = Path(cache_dir)
+    missing = [r["image_uuid"] for r in manifest if not (cache / r["image_uuid"]).exists()]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} images required by the manifest are missing from the cache: "
+            f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
+        )
+
+    uuids_sorted = sorted(r["image_uuid"] for r in manifest)
+    n_val = max(1, int(len(uuids_sorted) * val_fraction))
+    n_train = len(uuids_sorted) - n_val
+    split_uuids = uuids_sorted[:n_train] if split == "train" else uuids_sorted[n_train:]
+
+    # Flatten to one row per crop. Degenerate boxes (zero/negative extent) are
+    # dropped here rather than at __getitem__ time so len() is honest and a
+    # DataLoader worker can't die mid-epoch on a box that was never usable.
+    rows: list[dict] = []
+    for image_uuid in split_uuids:
+        for crop in crop_targets.get(image_uuid, []):
+            if crop["width"] <= 0 or crop["height"] <= 0:
+                continue
+            if not (0 <= int(crop["class_idx"]) < num_classes):
+                continue
+            rows.append({"image_uuid": image_uuid, **crop})
+
+    if not rows:
+        raise ValueError(f"No usable crops in the {split!r} split — check that the in-scope bboxes are verified")
+
+    return CropDataset(rows=rows, num_classes=num_classes, cache_dir=cache_dir, split=split, crop_padding=crop_padding)
+
+
+class CropDataset:
+    """Torch Dataset returning ``(image_tensor [3,224,224], class_idx)`` pairs, one
+    sample per bounding box rather than per image.
+
+    Each sample is the box's region cut out of its source image, padded by
+    ``crop_padding`` on each side for context (a tight box on a curled-up cat is
+    mostly cat, but the ears/tail just outside it carry a lot of the signal), then
+    put through the same augmentation pipeline as the whole-image datasets.
+
+    Unlike ``MultiLabelDataset`` this is single-label: a crop is exactly one class,
+    so the head is softmax/cross-entropy, not per-label sigmoid.
+    """
+
+    INPUT_SIZE = (224, 224)
+
+    def __init__(
+        self,
+        rows: list[dict],
+        num_classes: int,
+        cache_dir: str,
+        split: str,
+        crop_padding: float = DEFAULT_CROP_PADDING,
+    ):
+        import albumentations as A
+        import numpy as np
+        import torch
+        from albumentations.pytorch import ToTensorV2
+
+        self._torch = torch
+        self._np = np
+        self._rows = rows
+        self._num_classes = num_classes
+        self._cache_dir = Path(cache_dir)
+        self._crop_padding = crop_padding
+
+        h, w = self.INPUT_SIZE
+        if split == "train":
+            self._transform = A.Compose(
+                [
+                    A.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0)),
+                    A.HorizontalFlip(p=0.5),
+                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
+                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                    ToTensorV2(),
+                ]
+            )
+        else:
+            # No 1.14x resize + centre crop here (unlike the whole-image datasets):
+            # the region is already the subject, and centre-cropping it would shave
+            # off the context padding this dataset deliberately added.
+            self._transform = A.Compose(
+                [
+                    A.Resize(height=h, width=w),
+                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                    ToTensorV2(),
+                ]
+            )
+
+    @property
+    def image_uuids(self) -> list[str]:
+        """Unique source images backing this split, in first-seen order."""
+        seen: dict[str, None] = {}
+        for row in self._rows:
+            seen.setdefault(row["image_uuid"], None)
+        return list(seen)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, idx: int):
+        import cv2
+
+        row = self._rows[idx]
+        image_bytes = (self._cache_dir / row["image_uuid"]).read_bytes()
+
+        buf = self._np.frombuffer(image_bytes, dtype=self._np.uint8)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError(f"Failed to decode image uuid={row['image_uuid']}")
+
+        crop = crop_region(img, row["x"], row["y"], row["width"], row["height"], self._crop_padding)
+        crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+        augmented = self._transform(image=crop)
+        return augmented["image"], int(row["class_idx"])
+
+    def class_weights(self):
+        """Per-class weight for ``CrossEntropyLoss(weight=...)``, inverse-frequency
+        normalised so the mean weight is 1. Classes with no samples get weight 1
+        (they contribute no loss anyway)."""
+        import torch
+
+        counts = torch.zeros(self._num_classes)
+        for row in self._rows:
+            counts[int(row["class_idx"])] += 1
+        weights = torch.where(counts > 0, len(self._rows) / (self._num_classes * counts.clamp(min=1)), torch.ones(1))
+        return weights.float()
+
+    def class_counts(self) -> list[int]:
+        counts = [0] * self._num_classes
+        for row in self._rows:
+            counts[int(row["class_idx"])] += 1
+        return counts
 
 
 # ---------------------------------------------------------------------------

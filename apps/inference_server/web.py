@@ -90,10 +90,47 @@ class ClassifyResponse(StatusResponse):
     result: Optional[ClassifyResult] = None
 
 
+class CropBox(Payload):
+    """One box to classify, in the same relative coordinates detections use."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class ClassifyCropsPayload(Payload):
+    image_base64: str
+    boxes: List[CropBox] = Field(default_factory=list)
+    pin_id: Optional[str] = None
+
+
+class CropPrediction(Payload):
+    label_uuid: str
+    confidence: float
+
+
+class CropResult(Payload):
+    """Predictions for one input box, highest confidence first."""
+
+    predictions: List[CropPrediction] = Field(default_factory=list)
+
+
+class ClassifyCropsResponse(StatusResponse):
+    # One entry per input box, in the order they were sent — that ordering is how
+    # a caller pairs a result back to the detection it came from.
+    results: List[CropResult] = Field(default_factory=list)
+
+
 class ModelMetaResponse(StatusResponse):
     model_kind: Optional[str] = None
     label_uuid: Optional[str] = None
     label_uuids: Optional[List[str]] = None
+    # crop_classifier only: the boundary label whose detections this sub-model
+    # refines. A cascade reads it to decide which boxes to hand this model, so it
+    # is served here rather than requiring filesystem access to the sidecar —
+    # inference_server can be a remote host (see the split-container topology).
+    parent_label_uuid: Optional[str] = None
     device: str = "auto"
     # (height, width) the model's ONNX graph declares; None if the model isn't
     # found or its graph declares a dynamic shape. Lets a caller compute
@@ -454,6 +491,7 @@ class WebApp:
                     model_kind=model_kind,
                     label_uuid=config.get("label_uuid"),
                     label_uuids=config.get("label_uuids"),
+                    parent_label_uuid=config.get("parent_label_uuid"),
                     device=config.get("device", "auto"),
                     input_shape=input_shape,
                 )
@@ -603,7 +641,10 @@ class WebApp:
                     return ClassifyResponse(status=JsonValues.FAILURE, message=f"Model '{model_name}' not found")
 
                 model_kind = config.get("model_kind")
-                if model_kind not in ("image_classifier", "multi_label_classifier"):
+                # crop_classifier is served here too, but the caller must have already
+                # cut the region out (see CropClassifierInferenceProvider) — this
+                # endpoint classifies whatever image it is given, whole frame or crop.
+                if model_kind not in ("image_classifier", "multi_label_classifier", "crop_classifier"):
                     return ClassifyResponse(
                         status=JsonValues.FAILURE,
                         message=f"Model '{model_name}' is not a classifier (kind={model_kind!r})",
@@ -629,6 +670,46 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return ClassifyResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/{model_name}/classify-crops",
+            response_model=ClassifyCropsResponse,
+            tags=[ApiTags.INFERENCE],
+            operation_id="classify_crops",
+        )
+        async def classify_crops_api(model_name: str, payload: ClassifyCropsPayload) -> ClassifyCropsResponse:
+            """Second pass of a hierarchical config: classify N boxes of one frame.
+
+            The image is decoded once here and all N crops go through one batched
+            session run, which is the point of doing this server-side rather than
+            having the caller cut crops and post each one back through /classify.
+            """
+            try:
+                image_bgr: np.ndarray = base64_decode_image(payload.image_base64)
+                scored = await self._manager.classify_crops(
+                    model_name,
+                    image_bgr,
+                    [b.model_dump() for b in payload.boxes],
+                    pin_id=payload.pin_id,
+                )
+                return ClassifyCropsResponse(
+                    status=JsonValues.SUCCESS,
+                    results=[
+                        CropResult(
+                            predictions=[
+                                CropPrediction(label_uuid=label_uuid, confidence=confidence)
+                                for label_uuid, confidence in per_box
+                            ]
+                        )
+                        for per_box in scored
+                    ],
+                )
+            except ValueError as e:
+                # Wrong model kind / not available — a caller error, not a crash.
+                return ClassifyCropsResponse(status=JsonValues.FAILURE, message=str(e))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ClassifyCropsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/models/{model_name}/classes",

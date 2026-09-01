@@ -18,7 +18,7 @@ import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import NAMESPACE_OID, uuid5
 
 from db_client.api.datasets_api import DatasetsApi
@@ -39,7 +39,9 @@ from db_client.models.tag_kind import TagKind as ApiTagKind
 from db_client.models.terms_inner import TermsInner
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi as InferenceModelsApi
+from inference_client.models.classify_crops_payload import ClassifyCropsPayload
 from inference_client.models.classify_payload import ClassifyPayload
+from inference_client.models.crop_box import CropBox
 from inference_client.models.inference_payload import InferencePayload
 from inference_client.models.pin_model_payload import PinModelPayload
 
@@ -105,12 +107,49 @@ class _HttpInferenceBackend:
         return self._kind_cache[model_name]
 
     async def classify_whole_image(self, model_name: str, image_bytes: bytes) -> float:
+        preds = await self.classify_labels(model_name, image_bytes)
+        return max((conf for _, conf in preds), default=0.0)
+
+    async def classify_labels(self, model_name: str, image_bytes: bytes) -> List[Tuple[str, float]]:
+        """Every (label_uuid, confidence) the classifier scored, highest first.
+
+        `classify_whole_image` reduces this to a single number for filter-chain
+        threshold checks; a crop classifier needs the winning *label*, not just how
+        confident the model was, so it reads the pairs.
+        """
         b64 = base64.b64encode(image_bytes).decode()
         resp = await asyncio.to_thread(self._inference_api.classify, model_name, ClassifyPayload(image_base64=b64))
         if resp.status != "success" or resp.result is None:
-            return 0.0
+            return []
         preds = resp.result.predictions or []
-        return max((p.confidence for p in preds), default=0.0)
+        pairs = [(p.label_uuid, p.confidence) for p in preds if p.label_uuid]
+        pairs.sort(key=lambda pair: pair[1], reverse=True)
+        return pairs
+
+    async def classify_crops(
+        self, model_name: str, image_bytes: bytes, boxes: List[Dict[str, float]]
+    ) -> List[List[Tuple[str, float]]]:
+        """Second-pass crop classification: N relative boxes of one image, one call.
+
+        Returns per-box ``[(label_uuid, confidence), ...]`` in the order the boxes
+        were sent. The server cuts the crops (with the model's own training-time
+        padding) so this never has to know the model's framing.
+        """
+        if not boxes:
+            return []
+        b64 = base64.b64encode(image_bytes).decode()
+        resp = await asyncio.to_thread(
+            self._inference_api.classify_crops,
+            model_name,
+            ClassifyCropsPayload(
+                image_base64=b64,
+                boxes=[CropBox(**b) for b in boxes],
+                pin_id=self._pin_ids.get(model_name),
+            ),
+        )
+        if resp.status != "success":
+            return [[] for _ in boxes]
+        return [[(p.label_uuid, p.confidence) for p in (r.predictions or [])] for r in (resp.results or [])]
 
     async def detect(self, model_name: str, image_bytes: bytes, conf_thresh: float) -> List[Detection]:
         b64 = base64.b64encode(image_bytes).decode()

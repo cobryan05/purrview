@@ -760,6 +760,31 @@ class DetectionDatasetResponse(StatusResponse):
     images: List[DetectionImageEntry] = Field(default_factory=list)
 
 
+class CropEntry(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    bbox_uuid: str
+    class_idx: int
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class CropImageEntry(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    image_uuid: str
+    filename: str
+    crops: List[CropEntry] = Field(default_factory=list)
+
+
+class CropDatasetResponse(StatusResponse):
+    class_names: List[str] = Field(default_factory=list)
+    class_label_uuids: List[str] = Field(default_factory=list)
+    images: List[CropImageEntry] = Field(default_factory=list)
+
+
 class CoLabelGapBreakdownEntry(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
@@ -832,6 +857,13 @@ class TrainingTargetDetectionDatasetPayload(Payload):
     # None = Manager's defaults (see Manager.NEGATIVE_RATIO_DEFAULT / _FLOOR_DEFAULT).
     negative_ratio: Optional[float] = None
     negative_ratio_floor: Optional[int] = None
+
+
+class TrainingTargetCropDatasetPayload(Payload):
+    dataset_uuids: List[str] = Field(default_factory=list)
+    # Same pre-resolved-scope contract as TrainingTargetDetectionDatasetPayload.
+    label_uuids: Optional[List[str]] = None
+    class_remap: Dict[str, str] = Field(default_factory=dict)
 
 
 class ImageGapEntry(BaseModel):
@@ -3822,6 +3854,46 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return DetectionDatasetResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/model-configs/{uuid}/training-targets/{node_uuid}/crop-dataset",
+            response_model=CropDatasetResponse,
+            tags=[ApiTags.MODEL_CONFIGS],
+            operation_id="get_training_target_crop_dataset",
+        )
+        async def get_training_target_crop_dataset(
+            uuid: str,
+            node_uuid: str,
+            payload: TrainingTargetCropDatasetPayload,
+        ) -> CropDatasetResponse:
+            try:
+                result = await self._manager.get_training_target_crop_dataset(
+                    uuid,
+                    node_uuid,
+                    payload.dataset_uuids,
+                    label_uuids=payload.label_uuids,
+                    class_remap=payload.class_remap,
+                )
+                if result is None:
+                    return CropDatasetResponse(
+                        status=JsonValues.FAILURE, message="Model config or training target not found"
+                    )
+                return CropDatasetResponse(
+                    status=JsonValues.SUCCESS,
+                    class_names=result["class_names"],
+                    class_label_uuids=result["class_label_uuids"],
+                    images=[
+                        CropImageEntry(
+                            image_uuid=img["image_uuid"],
+                            filename=img["filename"],
+                            crops=[CropEntry(**c) for c in img["crops"]],
+                        )
+                        for img in result["images"]
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return CropDatasetResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.patch(
             "/api/model-configs/{uuid}",

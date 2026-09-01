@@ -26,12 +26,16 @@ from db_client.api.datasets_api import DatasetsApi
 from db_client.api.images_api import ImagesApi
 from db_client.api.model_configs_api import ModelConfigsApi
 from db_client.api.training_configs_api import TrainingConfigsApi
+from db_client.models.training_target_crop_dataset_payload import (
+    TrainingTargetCropDatasetPayload,
+)
 from db_client.models.training_target_detection_dataset_payload import (
     TrainingTargetDetectionDatasetPayload,
 )
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.apiCall import LONG_TIMEOUT, bind_default_timeout
+from apps.helpers.classifier_utils import DEFAULT_CROP_PADDING
 from apps.helpers.consts import TaskAccent
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.model_type_map import resolve_trainer_type
@@ -187,6 +191,25 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 role=role,
                 model_config_uuid=model_config_uuid,
                 node_uuid=node_uuid,
+                target_label_uuids=target_label_uuids,
+                class_remap=class_remap,
+                dataset_uuids=dataset_uuids,
+                record_image_manifest=record_image_manifest,
+            )
+
+        # Crop classifiers are also bbox-based (one sample per verified box), so they
+        # dispatch here rather than falling through to the whole-image classifier
+        # paths below, which key off image_labels.
+        if model_type == "crop_classifier":
+            return self._resolve_crop_classifier(
+                mc_api=mc_api,
+                model_name=model_name,
+                architecture=architecture,
+                hyperparams=hyperparams,
+                role=role,
+                model_config_uuid=model_config_uuid,
+                node_uuid=node_uuid,
+                label_uuid=label_uuid,
                 target_label_uuids=target_label_uuids,
                 class_remap=class_remap,
                 dataset_uuids=dataset_uuids,
@@ -398,6 +421,95 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             "architecture": architecture,
             "class_names": class_names,
             "annotations": annotations,
+            "role": role,
+            "model_config_uuid": model_config_uuid,
+            "model_config_node_uuid": node_uuid,
+            "label_uuids": target_label_uuids,
+            **hyperparams,
+            "record_image_manifest": record_image_manifest,
+        }
+        return model_name, manifest, job_config
+
+    def _resolve_crop_classifier(
+        self,
+        mc_api,
+        model_name: str,
+        architecture: str,
+        hyperparams: dict,
+        role: str,
+        model_config_uuid: str,
+        node_uuid: str,
+        label_uuid: str,
+        target_label_uuids: list[str],
+        class_remap: dict[str, str],
+        dataset_uuids: list[str],
+        record_image_manifest: bool = True,
+    ) -> tuple[str, list[dict], dict]:
+        """Resolve a crop_classifier training config to a crop-classification job.
+
+        Same target-scoped contract as ``_resolve_object_detection``: class index is
+        the position in ``target_label_uuids``, which is also the order written to the
+        sidecar's ``label_uuids``, so output unit *i* always means label *i*.
+
+        The manifest stays one row per *image* — that's what the image push protocol
+        moves — while the boxes ride in ``crop_targets`` keyed by image uuid, the same
+        split ``multi_label_classifier`` uses for ``label_targets``.
+        """
+        crop_padding = hyperparams.pop("crop_padding", DEFAULT_CROP_PADDING)
+
+        payload = TrainingTargetCropDatasetPayload(
+            dataset_uuids=dataset_uuids,
+            label_uuids=target_label_uuids,
+            class_remap=class_remap,
+        )
+        result = mc_api.get_training_target_crop_dataset(model_config_uuid, node_uuid, payload)
+        if getattr(result, "status", None) != "success":
+            raise RuntimeError(
+                f"Could not assemble crop dataset for node={node_uuid!r}: "
+                f"{getattr(result, 'message', 'unknown error')}"
+            )
+
+        class_names = list(result.class_names or [])
+        images = list(result.images or [])
+
+        if not images:
+            raise RuntimeError(
+                f"No verified bboxes found for crop_classifier node={node_uuid!r}. "
+                f"A crop classifier trains on verified boxes of its sibling labels "
+                f"({', '.join(class_names) or 'none assigned'}) — verify some first."
+            )
+
+        manifest = [{"image_uuid": img.image_uuid, "filename": img.filename, "status": "present"} for img in images]
+        crop_targets = {
+            img.image_uuid: [
+                {
+                    "class_idx": c.class_idx,
+                    "x": c.x,
+                    "y": c.y,
+                    "width": c.width,
+                    "height": c.height,
+                }
+                for c in (img.crops or [])
+            ]
+            for img in images
+        }
+        total_crops = sum(len(v) for v in crop_targets.values())
+
+        self.log(
+            f"Resolved crop_classifier config: {len(class_names)} classes "
+            f"({', '.join(class_names)}), {total_crops} crops across {len(manifest)} images, "
+            f"arch={architecture}"
+        )
+
+        job_config = {
+            "trainer_type": resolve_trainer_type("crop_classifier", architecture),
+            "model_name": model_name,
+            "architecture": architecture,
+            "class_names": class_names,
+            "crop_targets": crop_targets,
+            "crop_padding": crop_padding,
+            # The boundary label whose detections this model refines.
+            "parent_label_uuid": label_uuid,
             "role": role,
             "model_config_uuid": model_config_uuid,
             "model_config_node_uuid": node_uuid,

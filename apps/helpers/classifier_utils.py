@@ -23,6 +23,60 @@ def sigmoid(logits: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-logits))
 
 
+#: Fraction of a box's size added as context on each side before classifying it.
+#: Written into the crop classifier's sidecar at train time and read back at
+#: inference time, so a model trained with one padding is never served with another.
+DEFAULT_CROP_PADDING = 0.1
+
+
+def crop_region(
+    img_bgr: np.ndarray,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    padding: float = DEFAULT_CROP_PADDING,
+) -> np.ndarray:
+    """Cut a *relative* (x, y, width, height) box out of a BGR array, padded by
+    ``padding`` of the box size on each side and clamped to the image.
+
+    Shared by the crop-classifier trainer and every caller that runs one, because
+    train/serve crop geometry that drifts apart degrades accuracy silently — there
+    is no error, the model just sees a differently-framed animal than it learned on.
+
+    Always returns at least a 1x1 region: a box that clamps to nothing would
+    otherwise reach cv2.resize as an empty array and raise from inside a
+    DataLoader worker.
+    """
+    img_h, img_w = img_bgr.shape[:2]
+    pad_x = width * padding
+    pad_y = height * padding
+
+    x1 = int(round(max(0.0, x - pad_x) * img_w))
+    y1 = int(round(max(0.0, y - pad_y) * img_h))
+    x2 = int(round(min(1.0, x + width + pad_x) * img_w))
+    y2 = int(round(min(1.0, y + height + pad_y) * img_h))
+
+    x1 = min(x1, max(0, img_w - 1))
+    y1 = min(y1, max(0, img_h - 1))
+    x2 = max(x2, x1 + 1)
+    y2 = max(y2, y1 + 1)
+    return img_bgr[y1:y2, x1:x2]
+
+
+def preprocess_crop(
+    img_bgr: np.ndarray,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    input_size: tuple[int, int],
+    padding: float = DEFAULT_CROP_PADDING,
+) -> np.ndarray:
+    """``crop_region`` + ``preprocess_bgr_array`` — one box → one (3, H, W) tensor."""
+    return preprocess_bgr_array(crop_region(img_bgr, x, y, width, height, padding), input_size)
+
+
 def preprocess_image_bytes(img_bytes: bytes, input_size: tuple[int, int]) -> np.ndarray | None:
     """Decode raw image bytes → normalised (3, H, W) float32 tensor, or None on failure."""
     buf = np.frombuffer(img_bytes, dtype=np.uint8)

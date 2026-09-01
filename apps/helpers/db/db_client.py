@@ -5135,6 +5135,127 @@ class DbClient:
 
         return {"class_names": class_names, "images": image_entries}
 
+    async def get_training_target_crop_dataset(
+        self,
+        model_config_uuid: str,
+        node_uuid: str,
+        dataset_uuids: list[str],
+        label_uuids: Optional[list[str]] = None,
+        class_remap: Optional[dict[str, str]] = None,
+    ) -> Optional[dict]:
+        """Assemble a crop-classification dataset for one training target.
+
+        The crop_classifier counterpart to ``get_training_target_detection_dataset``:
+        scoped by ``derive_training_targets`` (or a caller-held snapshot of it, same
+        contract as the detection variant) and returning one entry per image with the
+        in-scope verified bboxes to cut out of it.
+
+        Returns None if the config doesn't exist or no target matches node_uuid.
+        """
+        if label_uuids is not None:
+            return await self._assemble_crop_dataset(label_uuids, dict(class_remap or {}), dataset_uuids)
+
+        targets = await self.derive_training_targets(model_config_uuid)
+        if targets is None:
+            return None
+        target = next((t for t in targets if t["node_uuid"] == node_uuid), None)
+        if target is None:
+            return None
+
+        return await self._assemble_crop_dataset(target["label_uuids"], target["class_remap"], dataset_uuids)
+
+    async def _assemble_crop_dataset(
+        self, class_label_uuids: list[str], remap: dict[str, str], dataset_uuids: list[str]
+    ) -> dict:
+        """Shared core: given an ordered class list + {in-scope label -> class label}
+        remap, collect the verified bboxes to train a crop classifier on.
+
+        Returns:
+            class_names:       ordered class names (index = the model's output unit)
+            class_label_uuids: the same classes as label UUIDs
+            images:            [{image_uuid, filename, crops: [{bbox_uuid, class_idx,
+                               x, y, width, height}]}] — relative coords, as stored.
+
+        Unlike ``_assemble_detection_dataset`` this applies **no image-level readiness
+        gate**. A detection model has to know that everything unboxed in an image is
+        background, so it can only train on images where every in-scope label was
+        explicitly decided. A crop classifier never sees the rest of the image: each
+        sample is one already-verified box, and its class is that box's own label. The
+        readiness threshold would only discard usable crops — on the live DB it drops
+        ~1500 verified cat boxes to a few dozen, because nobody ever marks the rare
+        sibling labels explicitly absent (see the readiness note in NOTES.md).
+
+        Images with no in-scope verified bbox are omitted entirely rather than emitted
+        as negatives: there is no "background" class to assign them to.
+        """
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Label).where(Label.uuid.in_(class_label_uuids)))
+            labels_by_uuid = {lbl.uuid: lbl for lbl in result.all()}
+
+        label_uuid_to_class_idx: dict[str, int] = {lu: i for i, lu in enumerate(class_label_uuids)}
+        for child_uuid, parent_uuid in remap.items():
+            if parent_uuid in label_uuid_to_class_idx:
+                label_uuid_to_class_idx[child_uuid] = label_uuid_to_class_idx[parent_uuid]
+
+        class_names = [labels_by_uuid[lu].name if lu in labels_by_uuid else lu for lu in class_label_uuids]
+        empty = {"class_names": class_names, "class_label_uuids": list(class_label_uuids), "images": []}
+
+        if not class_label_uuids:
+            return empty
+
+        # Only labels that actually resolve to a class index are in scope. A remap
+        # entry pointing outside this target's class set (the top model's collapse
+        # map, handed to a sub-model) must not drag its labels in.
+        in_scope_label_uuids = list(label_uuid_to_class_idx)
+
+        all_images = await self._enumerate_dataset_union_stubs(dataset_uuids)
+        if not all_images:
+            return empty
+
+        raw_bboxes: list = []
+        async with self._async_session_maker() as session:
+            for chunk in _chunked([img.uuid for img in all_images]):
+                result = await session.exec(
+                    select(
+                        BBox.image_uuid,
+                        BBox.uuid,
+                        BBox.label_uuid,
+                        BBox.x,
+                        BBox.y,
+                        BBox.width,
+                        BBox.height,
+                    ).where(
+                        BBox.image_uuid.in_(chunk),
+                        BBox.label_uuid.in_(in_scope_label_uuids),
+                        BBox.uuid.in_(select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)),
+                    )
+                )
+                raw_bboxes.extend(result.all())
+
+        crops_by_image: dict[str, list] = {}
+        for image_uuid, bbox_uuid, lbl_uuid, x, y, w, h in raw_bboxes:
+            crops_by_image.setdefault(image_uuid, []).append(
+                {
+                    "bbox_uuid": bbox_uuid,
+                    "class_idx": label_uuid_to_class_idx[lbl_uuid],
+                    "x": x,
+                    "y": y,
+                    "width": w,
+                    "height": h,
+                }
+            )
+
+        image_entries = [
+            {"image_uuid": img.uuid, "filename": img.filename, "crops": crops_by_image[img.uuid]}
+            for img in all_images
+            if img.uuid in crops_by_image
+        ]
+        return {
+            "class_names": class_names,
+            "class_label_uuids": list(class_label_uuids),
+            "images": image_entries,
+        }
+
     async def _derive_co_label_shape(self, model_config_node_uuid: Optional[str]):
         """Resolve a model-config node into the rollup-aware "co-label shape" used by
         every co-label computation.

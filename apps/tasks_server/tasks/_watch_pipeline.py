@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 import numpy as np
 
+from apps.helpers.cascade import CropSubModel
 from apps.helpers.imageProviders.imageProvider import ImageProvider
 from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, Tracker
 from apps.helpers.watch.engine import WatchEngine
@@ -211,7 +212,14 @@ class WatchPipeline:
     #: replacing it, because logs, the status table and snapshot filenames should keep
     #: naming the camera the way the Sources pane does — only the topic changes.
     mqtt_name: Optional[str] = None
+    #: First-pass detectors only. The configured stack starts here whole and is
+    #: split by StreamWatcherTask._split_model_stacks once model metadata is read,
+    #: which moves any crop classifier into `sub_models` below.
     model_names: List[str] = field(default_factory=list)
+    #: Second pass: crop classifiers that refine detections at their boundary label
+    #: (e.g. "Cat" -> which cat). Empty for every stack that has none, which is the
+    #: overwhelming majority — the cascade costs nothing when unused.
+    sub_models: List[CropSubModel] = field(default_factory=list)
     analysis_fps: float = 5.0
     analysis_width: int = 640
     #: Reported by the relay's ensure response — drives the UI's buffer badge and the

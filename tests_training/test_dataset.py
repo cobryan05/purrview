@@ -99,3 +99,101 @@ def test_build_dataset_train_val_split():
 
     assert len(ds_train) == 8
     assert len(ds_val) == 2
+
+
+# ─── CropDataset ─────────────────────────────────────────────────────────────
+
+
+def _crop_manifest(n_images: int, crops_per_image: int, num_classes: int = 2):
+    """A manifest + crop_targets pair with `crops_per_image` boxes on every image."""
+    manifest = [{"image_uuid": f"img-{i:03d}", "filename": f"{i}.jpg", "status": "present"} for i in range(n_images)]
+    crop_targets = {
+        m["image_uuid"]: [
+            {"class_idx": j % num_classes, "x": 0.1 * j, "y": 0.1, "width": 0.2, "height": 0.2}
+            for j in range(crops_per_image)
+        ]
+        for m in manifest
+    }
+    return manifest, crop_targets, _make_cache_for_rows(manifest)
+
+
+def test_crop_dataset_yields_one_sample_per_box():
+    """Unlike the image-level datasets, length is counted in boxes, not images."""
+    from apps.training_server.dataset import build_crop_dataset_from_manifest
+
+    manifest, crop_targets, cache_dir = _crop_manifest(n_images=10, crops_per_image=3)
+    ds = build_crop_dataset_from_manifest(manifest, crop_targets, 2, cache_dir, split="train")
+
+    assert len(ds) == 8 * 3  # 8 train images x 3 boxes
+    tensor, label = ds[0]
+    assert tensor.shape == (3, 224, 224)
+    assert label in (0, 1)
+
+
+def test_crop_dataset_splits_by_image_not_by_box():
+    """No source image may appear in both splits.
+
+    Boxes from one frame are near-duplicates of each other — and, with a stream
+    collector feeding the dataset, of the neighbouring frames' boxes too. Splitting
+    the flattened box list would put those on both sides and report a validation
+    accuracy the model has not earned.
+    """
+    from apps.training_server.dataset import build_crop_dataset_from_manifest
+
+    manifest, crop_targets, cache_dir = _crop_manifest(n_images=10, crops_per_image=4)
+    ds_train = build_crop_dataset_from_manifest(manifest, crop_targets, 2, cache_dir, split="train")
+    ds_val = build_crop_dataset_from_manifest(manifest, crop_targets, 2, cache_dir, split="val")
+
+    assert set(ds_train.image_uuids).isdisjoint(ds_val.image_uuids)
+    assert len(ds_train) + len(ds_val) == 10 * 4
+
+
+def test_crop_dataset_drops_degenerate_and_out_of_range_boxes():
+    """A zero-extent box or an out-of-range class index is dropped at build time,
+    so len() is honest and no DataLoader worker dies partway through an epoch."""
+    from apps.training_server.dataset import build_crop_dataset_from_manifest
+
+    manifest = [{"image_uuid": f"img-{i:03d}", "filename": f"{i}.jpg", "status": "present"} for i in range(5)]
+    cache_dir = _make_cache_for_rows(manifest)
+    crop_targets = {
+        m["image_uuid"]: [
+            {"class_idx": 0, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},  # keep
+            {"class_idx": 0, "x": 0.1, "y": 0.1, "width": 0.0, "height": 0.2},  # zero width
+            {"class_idx": 7, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},  # class out of range
+        ]
+        for m in manifest
+    }
+
+    ds = build_crop_dataset_from_manifest(manifest, crop_targets, 2, cache_dir, split="train")
+    assert len(ds) == 4  # 4 train images x 1 usable box
+    for i in range(len(ds)):
+        tensor, _ = ds[i]
+        assert tensor.shape == (3, 224, 224)
+
+
+def test_crop_dataset_class_weights_favour_the_rarer_class():
+    """Inverse-frequency weighting: the class with fewer crops gets the larger
+    weight, so a lopsided cat gets real gradient instead of being predicted away."""
+    from apps.training_server.dataset import build_crop_dataset_from_manifest
+
+    manifest = [{"image_uuid": f"img-{i:03d}", "filename": f"{i}.jpg", "status": "present"} for i in range(10)]
+    cache_dir = _make_cache_for_rows(manifest)
+    # Class 0 on every image, class 1 on only the first two.
+    crop_targets = {
+        m["image_uuid"]: (
+            [{"class_idx": 0, "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}]
+            + (
+                [{"class_idx": 1, "x": 0.5, "y": 0.5, "width": 0.2, "height": 0.2}]
+                if int(m["image_uuid"].split("-")[1]) < 2
+                else []
+            )
+        )
+        for m in manifest
+    }
+
+    ds = build_crop_dataset_from_manifest(manifest, crop_targets, 2, cache_dir, split="train")
+    counts = ds.class_counts()
+    weights = ds.class_weights()
+
+    assert counts[1] < counts[0]
+    assert weights[1] > weights[0]

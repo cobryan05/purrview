@@ -53,6 +53,13 @@ import { attachContext } from '/app-static/js/ui/contextMenu/index.js';
 
 const _CLASSIFIER_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
 
+// A crop classifier is the second pass of a hierarchical model config: it names
+// which child label a box holds, from that box's crop alone. It is deliberately
+// NOT in _CLASSIFIER_KINDS above — that set means "scores the whole image, so it
+// drives image-level tagging", which is the opposite of this. Crop classifiers
+// run through the same preview-relabel path as detectors, in bbox crop mode.
+const _CROP_CLASSIFIER_KIND = 'crop_classifier';
+
 const MODEL_ID_PREFIX = 'model:';
 const GROUP_ID_PREFIX = 'group:';
 
@@ -1250,6 +1257,24 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
     return names;
   }
 
+  /**
+   * Split the selection into first-pass detectors and second-pass crop classifiers.
+   *
+   * Selecting a detector *and* a crop classifier means "run both passes": the
+   * detector finds the boxes and the classifier names them, within one run, so the
+   * candidate that lands in review is already "Willow" rather than "Cat" plus a
+   * second run to rename it. A crop classifier selected on its own still runs
+   * standalone over existing boxes (bbox crop mode).
+   */
+  function _resolvePasses() {
+    const selected = _resolveSelectedModelNames();
+    const subModels = selected.filter(m => modelKinds.get(m) === _CROP_CLASSIFIER_KIND);
+    const detectors = selected.filter(m => modelKinds.get(m) !== _CROP_CLASSIFIER_KIND);
+    return detectors.length > 0
+      ? { modelNames: detectors, subModelNames: subModels }
+      : { modelNames: selected, subModelNames: [] };
+  }
+
   function _makeListItem({ id, label, badgeText, isSelected, onToggle }) {
     const item = document.createElement('label');
     item.className = 'inference-model-item' + (isSelected ? ' selected' : '');
@@ -1295,7 +1320,9 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
       return;
     }
 
-    const detectorNames = models.filter(m => !_CLASSIFIER_KINDS.has(modelKinds.get(m)));
+    const detectorNames = models.filter(
+      m => !_CLASSIFIER_KINDS.has(modelKinds.get(m)) && modelKinds.get(m) !== _CROP_CLASSIFIER_KIND);
+    const cropClassifierNames = models.filter(m => modelKinds.get(m) === _CROP_CLASSIFIER_KIND);
     const classifierNames = models.filter(m => _CLASSIFIER_KINDS.has(modelKinds.get(m)));
     const groups = [...groupsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
 
@@ -1325,6 +1352,23 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
         _syncCropModeUI();
       },
     }));
+    // Selected with MODEL_ID_PREFIX like a detector, on purpose: everything
+    // downstream (scope resolution, the preview run, conflict policy) is shared.
+    // The only difference is that crop mode is pinned to 'bbox' — see
+    // _syncCropModeUI.
+    const cropClfSection = _makeSectionEl('Crop classifiers', cropClassifierNames, m => _makeListItem({
+      id: MODEL_ID_PREFIX + m,
+      label: m,
+      badgeText: 'crop',
+      isSelected: selectedItems.has(MODEL_ID_PREFIX + m),
+      onToggle: (checked) => {
+        if (checked) selectedItems.add(MODEL_ID_PREFIX + m);
+        else selectedItems.delete(MODEL_ID_PREFIX + m);
+        selectedClassifier = null;
+        _renderModelList();
+        _syncCropModeUI();
+      },
+    }));
     const clfSection = _makeSectionEl('Classifiers', classifierNames, m => _makeListItem({
       id: 'classifier:' + m,
       label: m,
@@ -1340,6 +1384,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
 
     if (detSection) modelListEl.appendChild(detSection);
     if (groupSection) modelListEl.appendChild(groupSection);
+    if (cropClfSection) modelListEl.appendChild(cropClfSection);
     if (clfSection) modelListEl.appendChild(clfSection);
 
     if (runBtn) runBtn.disabled = models.length === 0;
@@ -1443,7 +1488,33 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
   const _addNew = () => newBoxModeSelect.value !== 'none';
   const _relabelExisting = () => newBoxModeSelect.value !== 'only';
 
+  /**
+   * True when a crop classifier is selected with no detector to feed it.
+   *
+   * Only then is the mode forced: paired with a detector it is the *second* pass,
+   * and the run's crop mode belongs to the detector, which wants the whole image.
+   */
+  function _isCropClassifierStandalone() {
+    const { modelNames, subModelNames } = _resolvePasses();
+    return subModelNames.length === 0 && modelNames.some(m => modelKinds.get(m) === _CROP_CLASSIFIER_KIND);
+  }
+
   function _syncCropModeUI() {
+    // A crop classifier has nothing to say about a whole frame — it would be
+    // handed the entire image and would confidently name a cat in it. Pin the
+    // mode rather than letting the user pick one the server will refuse: the
+    // task logs the refusal and completes with zero candidates, which reads as
+    // "the model found nothing" instead of "you chose the wrong mode".
+    const hasCropClassifier = _isCropClassifierStandalone();
+    if (hasCropClassifier) {
+      cropModeBboxOpt.hidden = false;
+      cropModeSelect.value = 'bbox';
+    }
+    cropModeSelect.disabled = hasCropClassifier;
+    cropModeSelect.title = hasCropClassifier
+      ? 'A crop classifier only reads one box at a time, so it always runs per bbox.'
+      : '';
+
     cropMode = cropModeSelect.value;
     const isClassifier = selectedClassifier !== null;
     // Crop mode, IoU matching, and "add new boxes" are all detector-only
@@ -1538,7 +1609,9 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
 
   runBtn.addEventListener('click', async () => {
     const isClassifier = selectedClassifier !== null;
-    const modelNames = isClassifier ? [selectedClassifier] : _resolveSelectedModelNames();
+    const passes = isClassifier ? { modelNames: [selectedClassifier], subModelNames: [] } : _resolvePasses();
+    const modelNames = passes.modelNames;
+    const subModelNames = passes.subModelNames;
 
     if (modelNames.length === 0) {
       toast(isClassifier ? 'Please select a classifier' : 'Please select at least one model or group', 3000, 'warning');
@@ -1643,6 +1716,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
             iou_thresh: iouThresh,
             conflict_policy: conflictPolicy,
             model_names: modelNames,
+            ...(subModelNames.length ? { sub_model_names: subModelNames } : {}),
           },
           scope: {
             kind: activeScopeKind,
@@ -1681,6 +1755,9 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
               iou_thresh: iouThresh,
               image_uuids: runImageUuids,
               bbox_uuids: runBboxUuids,
+              // Second pass, applied to this detector's own output before any
+              // candidate is emitted — so both passes happen in this one run.
+              ...(subModelNames.length ? { sub_model_names: subModelNames } : {}),
               // All models in the sequence share one run, so their proposals
               // merge server-side under the chosen conflict policy.
               ...(previewRun ? { preview_run_uuid: previewRun.uuid, conflict_policy: conflictPolicy } : {}),

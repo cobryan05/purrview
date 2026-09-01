@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from apps.helpers.cascade import CropSubModel
 from apps.tasks_server.tasks._filter_chain_runner import Detection
 from apps.tasks_server.tasks.PreviewModelRelabelTask import PreviewModelRelabelTask
 
@@ -480,6 +481,191 @@ class TestBboxCropMode:
         assert geom["y"] == pytest.approx(0.8, abs=0.01)
         assert geom["width"] == pytest.approx(0.2, abs=0.01)
         assert geom["height"] == pytest.approx(0.2, abs=0.01)
+
+
+class TestTwoPassRun:
+    """A detector and a crop classifier in ONE run: the detector finds the box, the
+    sub-model names it, and the candidate that lands in review is already specific.
+
+    Exercises `_refine_detections` against the detection list `_process_image`
+    builds, which is where the chaining has to happen — after that point the label
+    has already been read into a candidate.
+    """
+
+    ANCESTRY = {"willow": {"cat"}, "maple": {"cat"}, "cat": set(), "dog": set()}
+
+    class _FakeCascadeBackend:
+        def __init__(self, per_box_predictions):
+            self._per_box = per_box_predictions
+            self.crop_calls = []
+
+        async def classify_crops(self, model_name, image_bytes, boxes):
+            self.crop_calls.append((model_name, boxes))
+            return self._per_box[: len(boxes)]
+
+    def _task(self, min_confidence=0.6):
+        task = _make_task(_base_params(crop_mode="image"))
+        task._sub_models = [CropSubModel(model_name="cat_namer", parent_label_uuid="cat")]
+        task._label_ancestry = self.ANCESTRY
+        task._sub_model_min_confidence = min_confidence
+        task._sample_errors = []
+        task._refined_count = 0
+        return task
+
+    async def test_coarse_detection_is_renamed_by_the_sub_model(self):
+        task = self._task()
+        backend = self._FakeCascadeBackend([[("willow", 0.9), ("maple", 0.1)]])
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.8, label_uuid="cat")]
+
+        await task._refine_detections(backend, b"img", detections)
+
+        assert detections[0].label_uuid == "willow"
+        assert detections[0].confidence == pytest.approx(0.8 * 0.9)
+        assert task._refined_count == 1
+
+    async def test_unrelated_detections_are_never_sent_to_the_sub_model(self):
+        """Sending a dog crop to a cat classifier gets a confident cat name back, so
+        the filtering is what keeps the second pass honest — not a later threshold."""
+        task = self._task()
+        backend = self._FakeCascadeBackend([[("willow", 0.99)]])
+        detections = [
+            Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.8, label_uuid="dog"),
+            Detection(x=0.5, y=0.5, width=0.2, height=0.2, confidence=0.7, label_uuid="cat"),
+        ]
+
+        await task._refine_detections(backend, b"img", detections)
+
+        assert len(backend.crop_calls) == 1
+        _model, boxes = backend.crop_calls[0]
+        assert len(boxes) == 1, "only the cat box should have been sent"
+        assert boxes[0]["x"] == pytest.approx(0.5)
+        assert detections[0].label_uuid == "dog", "the dog must be untouched"
+        assert detections[1].label_uuid == "willow"
+
+    async def test_unsure_sub_model_leaves_the_coarse_label(self):
+        task = self._task(min_confidence=0.8)
+        backend = self._FakeCascadeBackend([[("willow", 0.55), ("maple", 0.45)]])
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.9, label_uuid="cat")]
+
+        await task._refine_detections(backend, b"img", detections)
+
+        assert detections[0].label_uuid == "cat"
+        assert detections[0].confidence == 0.9
+        assert task._refined_count == 0
+
+    async def test_second_pass_failure_leaves_the_first_pass_intact(self):
+        """The detector's answer is valid on its own. A failing second pass must
+        degrade to it, not lose the run."""
+
+        class _Boom:
+            async def classify_crops(self, *a, **kw):
+                raise RuntimeError("inference server down")
+
+        task = self._task()
+        detections = [Detection(x=0.1, y=0.1, width=0.2, height=0.2, confidence=0.8, label_uuid="cat")]
+
+        await task._refine_detections(_Boom(), b"img", detections)
+
+        assert detections[0].label_uuid == "cat"
+        assert task._sample_errors, "the failure should be reported, not silent"
+
+
+class TestCropClassifierSecondPass:
+    """A crop classifier scores the crop's classes instead of detecting boxes.
+
+    Same `_process_image_bbox_crop` path as a detector, but it calls
+    `classify_labels` rather than `detect`, pads the crop the way it was trained,
+    and proposes no geometry — it localised nothing, so the existing box stands.
+    """
+
+    @staticmethod
+    def _image_bytes(width=200, height=200):
+        from io import BytesIO
+
+        from PIL import Image as PILImage
+
+        buf = BytesIO()
+        PILImage.new("RGB", (width, height), color=(10, 20, 30)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    class _FakeClassifierBackend:
+        """Records the crops it was asked to classify, and answers with fixed scores."""
+
+        def __init__(self, predictions):
+            self._predictions = predictions
+            self.classified = []
+            self.detect_calls = 0
+
+        async def classify_labels(self, model_name, image_bytes):
+            self.classified.append(image_bytes)
+            return self._predictions
+
+        async def detect(self, model_name, image_bytes, conf_thresh):
+            self.detect_calls += 1
+            return []
+
+    async def _run(self, task, backend, bbox=None, crop_padding=0.0):
+        await task._init(task._params, None)
+        task._is_crop_classifier = True
+        task._crop_padding = crop_padding
+        task._name_to_label_uuid = {}
+        task._load_image_bytes = AsyncMock(return_value=self._image_bytes())
+        img = _image(bboxes=[bbox or _bbox(uuid="bbox-1", label_uuid="cat")])
+        await task._process_image(
+            images_api=MagicMock(),
+            backend=backend,
+            img=img,
+            label_names={"cat": "Cat", "willow": "Willow"},
+        )
+        return task._candidates
+
+    async def test_top_class_becomes_the_proposal_without_geometry(self):
+        task = _make_task(_base_params(crop_mode="bbox"))
+        backend = self._FakeClassifierBackend([("willow", 0.91), ("cat", 0.09)])
+        candidates = await self._run(task, backend)
+
+        assert backend.detect_calls == 0, "a classifier must not be asked to detect"
+        assert len(candidates) == 1
+        assert candidates[0]["proposedLabelUuid"] == "willow"
+        assert candidates[0]["confidence"] == 0.91
+        # The box is unchanged: a classifier proposes a name, not a rectangle.
+        assert candidates[0]["geometry"] is None
+
+    async def test_below_threshold_class_produces_no_candidate(self):
+        """The threshold still gates: an unsure classifier proposes nothing rather
+        than relabelling a box on a coin-flip."""
+        task = _make_task(_base_params(crop_mode="bbox", conf_thresh=0.8))
+        backend = self._FakeClassifierBackend([("willow", 0.51), ("cat", 0.49)])
+        assert await self._run(task, backend) == []
+
+    async def test_agreeing_with_the_existing_label_is_a_no_op(self):
+        task = _make_task(_base_params(crop_mode="bbox"))
+        backend = self._FakeClassifierBackend([("cat", 0.99)])
+        assert await self._run(task, backend) == []
+
+    async def test_padding_enlarges_the_classified_crop(self):
+        """The crop handed to the model must grow with the sidecar's padding —
+        serving a tighter crop than training used is a silent accuracy loss, so
+        the padding has to reach the actual cut, not just the config."""
+        from io import BytesIO
+
+        from PIL import Image as PILImage
+
+        sizes = {}
+        for padding in (0.0, 0.25):
+            task = _make_task(_base_params(crop_mode="bbox"))
+            backend = self._FakeClassifierBackend([("willow", 0.9)])
+            await self._run(
+                task,
+                backend,
+                bbox=_bbox(uuid="bbox-1", label_uuid="cat", x=0.4, y=0.4, width=0.2, height=0.2),
+                crop_padding=padding,
+            )
+            assert len(backend.classified) == 1
+            sizes[padding] = PILImage.open(BytesIO(backend.classified[0])).size
+
+        assert sizes[0.25][0] > sizes[0.0][0]
+        assert sizes[0.25][1] > sizes[0.0][1]
 
 
 class TestCropModeGuard:
