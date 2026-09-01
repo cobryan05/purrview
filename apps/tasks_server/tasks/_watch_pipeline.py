@@ -634,13 +634,42 @@ class WatchPipeline:
         reason — cloud snapshot intervals jitter, and a deadline at exactly one cadence
         would call a healthy camera stale constantly.
         """
-        cadence = self._observed_cadence_s() or self._last_analysis_gap_s or SNAPSHOT_MODE_FRAME_GAP_S
+        cadence = self._observed_cadence_s() or self._last_analysis_gap_s or self._expected_cadence_s()
         hold = cadence * SNAPSHOT_PRESENCE_CADENCE_SLACK
         if self.presence_mode() == "tracks":
             max_age = getattr(self.tracker, "max_age_s", None)
             if max_age:
                 hold = max(hold, float(max_age))
         return hold
+
+    def _expected_cadence_s(self) -> float:
+        """The cadence to assume before one has been *measured*.
+
+        A gap is only recorded between two analysed frames, so a source that has
+        produced exactly one — every source, for the first stretch after a restart —
+        has no measured cadence at all. Falling back to `SNAPSHOT_MODE_FRAME_GAP_S`
+        there assumes the streaming threshold, which for a snapshot camera is wrong by
+        an order of magnitude: it makes the hold 6 s, so a Ring camera on a 30-90 s
+        cadence went stale six seconds after its first frame and its presence entities
+        dropped to unavailable until the second snapshot arrived. That is one guaranteed
+        flap per restart, per camera, and it was visible in Home Assistant as an
+        `unavailable` exactly 6 s into every one.
+
+        The provider already answers this — `next_frame_expected_by` is its own deadline
+        for the next frame, and is what the drill-down and card previews use to decide
+        whether a source is overdue. Measured from the frame we have rather than from
+        `now`, because this is a *cadence*, and the caller multiplies it by the slack.
+        """
+        try:
+            deadline = self.provider.next_frame_expected_by()
+        except Exception:
+            logger.debug("next_frame_expected_by() failed for %r", self.provider, exc_info=True)
+            deadline = None
+        if deadline is None or self._last_analysis_at is None:
+            return SNAPSHOT_MODE_FRAME_GAP_S
+        # Never *shorter* than the streaming threshold: a deadline already in the past
+        # would otherwise yield a zero hold and call the source stale immediately.
+        return max(SNAPSHOT_MODE_FRAME_GAP_S, deadline - self._last_analysis_at)
 
     def status_row(self, now: float) -> Dict[str, Any]:
         """One row of the status panel's Sources table."""

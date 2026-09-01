@@ -288,3 +288,73 @@ class TestTheHandoverBetweenModes:
 
         pipeline._last_analysis_at = 1009.0
         assert pipeline.presence_labels(now=1009.0) == set(), "past max_age_s, not a whole cadence"
+
+
+class TestTheFirstFrameAfterAStart:
+    """Before a *second* frame there is no measured cadence, and assuming one is wrong.
+
+    A gap is only recorded between two analysed frames, so every source spends its first
+    stretch after a restart with no cadence at all. The fallback was
+    `SNAPSHOT_MODE_FRAME_GAP_S` — the threshold that *defines* streaming — which put the
+    hold at six seconds. A Ring camera on a 30-90s cadence therefore went stale six
+    seconds after its first frame, and its presence entities dropped to `unavailable`
+    until the second snapshot arrived, once per restart per camera. It was visible in
+    Home Assistant as an `unavailable` landing 6.2-6.6s into every restart.
+
+    The provider already knows better: `next_frame_expected_by` is its own deadline for
+    the next frame, and is what the live view and card previews already use to decide
+    whether a source is overdue.
+    """
+
+    @staticmethod
+    def _first_frame(deadline):
+        """One analysed frame at t=1000, with the provider's next-frame deadline."""
+        pipeline = _pipeline(_last_analysis_at=1000.0, _last_analysis_gap_s=0.0, _cadence_buckets=[])
+        pipeline.provider = SimpleNamespace(next_frame_expected_by=lambda: deadline)
+        return pipeline
+
+    def test_a_snapshot_camera_is_not_stale_six_seconds_in(self):
+        """The regression, at the exact timing observed: the next snapshot is 90s out,
+        and the camera must still be believed a few seconds after its first frame."""
+        pipeline = self._first_frame(deadline=1090.0)
+
+        assert pipeline.presence_is_known(now=1006.5) is True
+        assert pipeline.presence_is_known(now=1080.0) is True
+
+    def test_a_provider_with_no_opinion_keeps_the_old_fallback(self):
+        """`None` means "no opinion", and those providers must behave exactly as before
+        rather than inheriting a snapshot camera's patience."""
+        pipeline = self._first_frame(deadline=None)
+
+        assert pipeline.presence_is_known(now=1005.0) is True
+        assert pipeline.presence_is_known(now=1007.0) is False
+
+    def test_a_deadline_already_past_does_not_collapse_the_hold(self):
+        """A provider can report a deadline in the past — it means "overdue", not "zero
+        patience", and a zero hold would call the source stale on the very next check."""
+        pipeline = self._first_frame(deadline=995.0)
+
+        assert pipeline.presence_is_known(now=1005.0) is True
+
+    def test_a_provider_that_raises_does_not_break_presence(self):
+        """This runs on the frame path. A provider bug must not take presence with it."""
+        pipeline = self._first_frame(deadline=None)
+
+        def _boom():
+            raise RuntimeError("provider is confused")
+
+        pipeline.provider = SimpleNamespace(next_frame_expected_by=_boom)
+        assert pipeline.presence_is_known(now=1005.0) is True
+
+    def test_a_measured_cadence_still_wins_once_there_is_one(self):
+        """The deadline is a stand-in until the source has shown its own pace, not a
+        replacement for it — otherwise a provider's estimate would override ten minutes
+        of observed behaviour."""
+        pipeline = self._first_frame(deadline=1090.0)
+        pipeline._note_analysis_gap(0.05, 1000.05)
+        pipeline._last_analysis_gap_s = 0.05
+        pipeline._last_analysis_at = 1000.05
+
+        # Measured at 0.05s, so the hold is a fraction of a second — not the provider's
+        # ninety. A source that is genuinely streaming and stops must be noticed quickly.
+        assert pipeline.presence_is_known(now=1010.0) is False
