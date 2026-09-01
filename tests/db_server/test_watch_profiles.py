@@ -587,12 +587,12 @@ class TestRuleValidation:
         assert body["status"] == "failure"
 
     async def test_max_duration_zero_is_accepted_as_no_cap(self, http_client):
-        """0 is the only way to say "this event lasts as long as its subject is there".
+        """0 is the way to say "this event lasts as long as its subject is there".
 
-        Any positive cap closes the event and immediately opens another while the subject
-        is still present, so a two-hour visit becomes a chain of events — and a chain of
-        separate timelapses. This used to be refused as "the runaway-event cap", which
-        left no spelling for the case at all.
+        A positive cap bounds the recording and then holds the rule shut until the
+        subject has gone, so it cannot express a two-hour nap in the window as one event.
+        This used to be refused as "the runaway-event cap", which left no spelling for
+        the case at all.
         """
         source_uuid = await _make_source(http_client)
         await _set_regions(http_client, source_uuid, [_zone()])

@@ -2581,9 +2581,11 @@ class InteractionRuleWrite(ApiModel):
         if self.min_duration_s < 0 or self.rearm_delay_s < 0:
             raise ValueError("min_duration_s and rearm_delay_s must not be negative")
         # 0 is "no cap", the same reading the recording retention settings give it, and
-        # the only way to say "this event should last exactly as long as its subject is
-        # there" — a cat asleep in a window for two hours is one visit, and any positive
-        # cap chops it into a chain of events with a separate timelapse each. Negative is
+        # the way to say "this event should last exactly as long as its subject is
+        # there" — a cat asleep in a window for two hours is one visit, and a positive cap
+        # would cut the recording short of it. A positive cap now bounds the *recording*
+        # rather than slicing the visit: it closes the event and the rule stays shut until
+        # the subject has actually gone (see `RuleState.SPENT`). Negative is
         # still refused: it is not a spelling of anything, and accepting it would leave
         # two values meaning "off" with nothing to choose between them.
         if self.max_duration_s < 0:

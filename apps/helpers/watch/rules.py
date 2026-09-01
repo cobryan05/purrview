@@ -17,14 +17,24 @@ States::
       ^                         │                              │
       │                    predicate false                predicate false
       │                         v                              v
-      └───────────────────── IDLE                          CLOSING
-                                                               │
-                                          ┌────false for rearm_delay────> IDLE (END)
-                                          └────true again────> ACTIVE (no new event)
+      ├───────────────────── IDLE                          CLOSING
+      │                                                        │
+      │                                   ┌────false for rearm_delay────> IDLE (END)
+      │                                   └────true again────> ACTIVE (no new event)
+      │                                                        │
+      └──false for rearm_delay── SPENT <───hit max_duration────┘ (END, cap)
 
 The `CLOSING` state is what coalesces a flapping predicate into one event: a
 re-fire inside the rearm window rejoins the event in progress rather than opening a
 new one.
+
+`SPENT` is what stops the cap from becoming a metronome. A cap that reset straight to
+IDLE re-opened the moment it was checked again, because the predicate that tripped it
+is still true — so a car parked in the garage under a 30 s cap did not produce one
+30 s clip, it produced one every thirty seconds until the car left, which is the exact
+runaway the cap exists to prevent. After a capped close the subject must genuinely go
+away — predicate false for `rearm_delay_s`, the same window the normal close uses —
+before anything can open again.
 """
 
 from dataclasses import dataclass, field, replace
@@ -43,6 +53,9 @@ class RuleState(str, Enum):
     PENDING = "pending"  # predicate true, waiting out min_duration_s
     ACTIVE = "active"  # event open
     CLOSING = "closing"  # predicate false, waiting out rearm_delay_s
+    #: Closed by the cap while the predicate was still true. Nothing is open and nothing
+    #: can open until the subject goes away for `rearm_delay_s`.
+    SPENT = "spent"
 
 
 @dataclass
@@ -458,6 +471,11 @@ class RuleMachine:
     def step(self, result: PredicateResult, now: float) -> List[WatchEventSignal]:
         """Advance the machine one frame; return any transitions to dispatch."""
         if not self.spec.active:
+            # SPENT holds no event, so there is nothing to close — emitting an END for it
+            # would file a second closing edge against an event already capped.
+            if self.state is RuleState.SPENT:
+                self._reset()
+                return []
             if self.state != RuleState.IDLE:
                 # Disabling *or disarming* a rule mid-event must close it, not strand it
                 # open forever. Forced, not predicate: the subject may still be right
@@ -468,6 +486,21 @@ class RuleMachine:
             return []
 
         signals: List[WatchEventSignal] = []
+
+        # Waiting out a capped event. The subject is still there as far as this rule is
+        # concerned, so nothing is measured and nothing is latched — the only question
+        # is whether it has been gone long enough to allow a new event.
+        if self.state is RuleState.SPENT:
+            if result.holds:
+                self._false_since = None
+                return signals
+            if self._false_since is None:
+                self._false_since = now
+            # Not `elif`: a rule with no rearm delay is asking to be free again as soon
+            # as the subject is gone, not one frame later.
+            if now - self._false_since >= self.spec.rearm_delay_s:
+                self._reset()
+            return signals
 
         if result.holds:
             self._track_ids = sorted(set(self._track_ids) | set(result.track_ids))
@@ -546,7 +579,16 @@ class RuleMachine:
             and now - self._event_started_at >= self.spec.max_duration_s
         ):
             signals.append(self._signal(EventPhase.END, now, EventCloseReason.CAP))
+            # Deliberately *not* a reset to IDLE. The predicate that tripped the cap is
+            # usually still true — that is what "stuck" means — and an IDLE machine would
+            # re-open on the next frame and cap again one max_duration later, forever.
+            # Capping out of CLOSING goes the same way rather than straight to IDLE: the
+            # countdown it was already serving carries over, so a subject that has in
+            # fact left is released on the very next step and nothing waits twice.
+            false_since = self._false_since
             self._reset()
+            self.state = RuleState.SPENT
+            self._false_since = false_since
 
         return signals
 

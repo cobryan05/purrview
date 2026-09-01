@@ -394,6 +394,65 @@ class TestRuleMachine:
         assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
         assert signals[-1].truncated is True
 
+    def test_a_capped_event_does_not_reopen_while_the_subject_is_still_there(self):
+        """The cap must not become a metronome.
+
+        Observed on a real "Car Arrives" rule (present, 30 s cap): every event closed
+        with reason `cap` and another opened seconds later, so a car parked in the
+        garage produced a clip every half minute all evening. Resetting to IDLE put the
+        machine back in front of the same still-true predicate, which is the runaway the
+        cap exists to prevent rather than a way of serving it.
+        """
+        machine = RuleMachine(_rule(min_duration_s=1.0, rearm_delay_s=10.0, max_duration_s=30.0))
+        # The subject never leaves, for ten minutes after the cap fires.
+        sequence = [(True, 0.0), (True, 2.0), (True, 40.0)] + [(True, t) for t in range(41, 600, 5)]
+        signals = self._run(machine, sequence)
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END]
+        assert signals[-1].close_reason is EventCloseReason.CAP
+
+    def test_a_capped_rule_fires_again_once_the_subject_leaves_and_returns(self):
+        """The other half: latching after a cap must not disable the rule for good."""
+        machine = RuleMachine(_rule(min_duration_s=1.0, rearm_delay_s=10.0, max_duration_s=30.0))
+        signals = self._run(
+            machine,
+            [
+                (True, 0.0),
+                (True, 2.0),
+                (True, 40.0),  # cap closes it while the car is still there
+                (True, 50.0),  # still there — nothing may open
+                (False, 60.0),  # gone
+                (False, 75.0),  # gone long enough to rearm
+                (True, 80.0),  # comes back
+                (True, 82.0),
+            ],
+        )
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END, EventPhase.START]
+
+    def test_a_cap_that_fires_while_closing_carries_the_countdown_over(self):
+        """A subject that has already left must not serve the rearm delay twice.
+
+        Capping out of CLOSING is the one case where the wait is already part-served, and
+        restarting it would hold the rule shut for a second window after the garage is
+        empty.
+        """
+        machine = RuleMachine(_rule(min_duration_s=1.0, rearm_delay_s=10.0, max_duration_s=30.0))
+        signals = self._run(
+            machine,
+            [
+                (True, 0.0),
+                (True, 2.0),
+                (False, 25.0),  # left; rearm countdown starts here
+                (False, 31.0),  # cap fires first, mid-countdown
+                (False, 36.0),  # 11s since it left — the carried countdown has elapsed
+                (True, 40.0),
+                (True, 42.0),
+            ],
+        )
+
+        assert [s.phase for s in signals] == [EventPhase.START, EventPhase.END, EventPhase.START]
+
     def test_a_zero_max_duration_disables_the_cap(self):
         """0 means "never expire", for a rule whose event should last as long as its
         subject is there — a timelapse of a cat asleep in the window, say.

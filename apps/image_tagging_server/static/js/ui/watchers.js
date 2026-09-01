@@ -1629,10 +1629,11 @@ function buildRuleRow(rule, ctx) {
       'max',
       maxDuration,
       'Hard cap on event length, in seconds, so a stuck detection cannot hold an event open '
-      + 'forever. Reaching it closes the event and immediately starts a new one while the '
-      + 'subject is still there, which chops a long visit into a chain of events — and a '
-      + 'chain of separate timelapses. 0 disables the cap, for an event that should last '
-      + 'exactly as long as its subject does.',
+      + 'forever. Reaching it closes the event, and nothing opens again until the subject '
+      + 'has been gone for the clear delay — so a car parked in the garage under a 30s cap '
+      + 'gives you one 30s clip of it arriving, not one every thirty seconds until it '
+      + 'leaves. 0 disables the cap, for an event that should last exactly as long as its '
+      + 'subject does.',
     ],
     // Appended last on purpose. The four fields above are indexed positionally by the
     // Playwright defaults test, so a motion-only field inserted beside the threshold it
