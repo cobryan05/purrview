@@ -153,13 +153,19 @@ class TestDiscoveryReconciliation:
         assert not any(k.startswith("rule-1_") for k in follow_up[topic]["cmps"])
 
     def test_an_unchanged_rule_is_never_tombstoned(self):
-        """The tombstone must key off disappearance, not off being republished — every
-        desired topic is republished every pass."""
-        profile = _profile()
+        """The tombstone must key off disappearance, not off a republish.
+
+        Read through a pass that *does* publish — a second rule appearing — because a
+        silent pass would satisfy this trivially and prove nothing about the tombstone.
+        """
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
+        grown = _profile(
+            rules=(RuleView(uuid="rule-1", name="cat at bowl"), RuleView(uuid="rule-2", name="cat at door"))
+        )
         topic = source_config_topic("src-1")
 
         _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([profile], PREFIX))
-        again, _ = reconcile_discovery(state, build_all_discovery([profile], PREFIX))
+        again, _ = reconcile_discovery(state, build_all_discovery([grown], PREFIX))
 
         assert all(set(v) != {"p"} for v in again[topic]["cmps"].values())
 
@@ -260,11 +266,43 @@ class TestDiscoveryReconciliation:
         assert to_publish[topic] is None
         assert topic not in remaining.topics
 
-    def test_an_unchanged_profile_produces_no_retractions(self):
+    def test_an_unchanged_profile_publishes_nothing_at_all(self):
+        """Not merely "no retractions": nothing.
+
+        The reconcile runs on a timer, and a device config republished with identical
+        content is not a no-op at the other end — Home Assistant reprocesses the device
+        and its entities drop to unavailable and come back with no state. Publishing
+        every desired topic every pass made every entity on every device flap between
+        `unknown` and `unavailable` once a minute, for config nobody had touched.
+        """
         profile = [_profile()]
         _, previous_topics = reconcile_discovery(DiscoveryState(), build_all_discovery(profile, PREFIX))
         to_publish, _ = reconcile_discovery(previous_topics, build_all_discovery(profile, PREFIX))
-        assert all(payload is not None for payload in to_publish.values())
+        assert to_publish == {}
+
+    def test_a_changed_config_still_publishes(self):
+        """The other half — silence must come from nothing having changed, not from the
+        reconcile having stopped working."""
+        before = [_profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))]
+        after = [_profile(rules=(RuleView(uuid="rule-1", name="cat at the water bowl"),))]
+
+        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery(before, PREFIX))
+        to_publish, _ = reconcile_discovery(state, build_all_discovery(after, PREFIX))
+
+        assert source_config_topic("src-1") in to_publish
+
+    def test_a_config_already_on_the_broker_is_not_republished_after_a_restart(self):
+        """The seeded half. The bridge adopts the broker's retained configs at connect,
+        so a restart that changes nothing must not churn every entity in HA — which is
+        the same flap, once per restart instead of once per minute."""
+        profile = [_profile()]
+        desired = build_all_discovery(profile, PREFIX)
+        retained = {topic: json.dumps(payload).encode() for topic, payload in desired.items()}
+
+        adopted = state_from_retained(retained)
+        to_publish, _ = reconcile_discovery(adopted, desired)
+
+        assert to_publish == {}
 
     def test_two_profiles_sharing_one_source_merge_rather_than_clobber(self):
         shared_source = SourceView(uuid="src-1", name="Kitchen cam")

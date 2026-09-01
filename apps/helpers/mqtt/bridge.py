@@ -992,22 +992,46 @@ def build_all_discovery(
 
 @dataclass(frozen=True)
 class DiscoveryState:
-    """What the last reconcile published: component ids and their platforms, per config
-    topic. The platforms are the part that matters — removing a component requires
-    naming its platform back to HA, so it cannot be reconstructed from the new config
-    once the component is gone.
+    """What the last reconcile published: component ids and their platforms, plus the
+    payload itself, per config topic.
 
-    In memory only. A component deleted while the app is *down* is therefore not
-    detected on the next start (previous state is empty, so nothing reads as removed)
-    and its entity survives in HA until something else republishes that device. Worth
-    knowing; not worth a state file yet.
+    The platforms are what removal needs — taking a component out requires naming its
+    platform back to HA, so it cannot be reconstructed from the new config once the
+    component is gone.
+
+    `payloads` is what *silence* needs. A device config republished with identical
+    content is not free: Home Assistant reprocesses the device on every config message,
+    and its entities drop out and come back with no state — so a reconcile pass that
+    republished everything every minute made every entity flap between `unknown` and
+    `unavailable` on a sixty-second cycle, for a device nothing had changed about.
+    Canonical JSON rather than the dict, so the comparison survives the round trip
+    through the broker in `state_from_retained` and cannot be defeated by key order or
+    by a tuple that serialises like a list.
+
+    In memory only, but seeded from the broker's retained configs at connect, which is
+    what stops a restart republishing the world. A component deleted while the app is
+    *down* is still not detected (it is absent from the retained config too, so nothing
+    reads as removed) and its entity survives in HA until something else republishes
+    that device. Worth knowing; not worth a state file yet.
     """
 
     components: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    payloads: Dict[str, str] = field(default_factory=dict)
 
     @property
     def topics(self) -> FrozenSet[str]:
         return frozenset(self.components)
+
+
+def canonical_config(payload: Dict[str, Any]) -> str:
+    """A discovery payload as a comparable string.
+
+    `default=str` rather than letting a stray non-JSON value raise: this is only ever
+    used for equality, and a payload that cannot be canonicalised must fall back to
+    "looks different" — republishing once too often — never to an exception on the
+    reconcile path.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
@@ -1031,6 +1055,7 @@ def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
     worse trade.
     """
     components: Dict[str, Dict[str, str]] = {}
+    payloads: Dict[str, str] = {}
     for topic, payload in retained.items():
         if not owns_config_topic(topic):
             continue
@@ -1038,9 +1063,13 @@ def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
             config = json.loads(payload)
             cmps = config.get("cmps") or {}
             components[topic] = {cid: str(comp.get("p", "")) for cid, comp in cmps.items() if isinstance(comp, dict)}
+            # Re-canonicalised from the parsed config rather than kept as the raw bytes,
+            # so it is comparable with a payload built fresh this pass — the broker's
+            # copy came from `json.dumps` with different separators and key order.
+            payloads[topic] = canonical_config(config)
         except Exception:
             logger.debug("Skipping unparseable retained discovery config on %s", topic, exc_info=True)
-    return DiscoveryState(components=components)
+    return DiscoveryState(components=components, payloads=payloads)
 
 
 def reconcile_discovery(
@@ -1057,8 +1086,9 @@ def reconcile_discovery(
     entity; the component must first be republished as an empty config carrying only
     its platform, and omitted only on a subsequent update. So a pass that notices a
     component has gone re-inserts it as `{"p": <platform>}` — a tombstone — and the
-    next pass publishes the clean message, which happens by itself because every
-    desired topic is republished every pass.
+    next pass publishes the clean message. That follow-up is not automatic any more:
+    passes are silent when nothing changed, so it happens because the tombstoned payload
+    is recorded as what the broker holds, and the clean config differs from it.
 
     Getting this wrong is invisible from here: the payload looks correct, and the
     entity simply stays in HA forever with no way to remove it but hand-editing the
@@ -1091,16 +1121,31 @@ def reconcile_discovery(
                 **payload,
                 "cmps": {**payload["cmps"], **{cid: {"p": previous_components[cid]} for cid in removed}},
             }
-        to_publish[topic] = payload
+        # Only what actually changed. Republishing an identical device config is not a
+        # no-op at the other end: HA reprocesses the device and its entities go
+        # momentarily unavailable, then return with no state — so an unconditional
+        # republish every pass flapped every entity on the reconcile's own period.
+        if previous.payloads.get(topic) != canonical_config(payload):
+            to_publish[topic] = payload
 
     # Records what was *desired*, never the tombstones — otherwise the next pass would
     # see them as components that had just disappeared and tombstone them again,
     # forever.
+    #
+    # The payload side records what is now *on the broker*: this pass's message where
+    # one was sent, and the untouched previous one where it was not. That is also what
+    # keeps two-step removal working now that a pass can be silent — a tombstone leaves
+    # a payload that differs from the clean config, so the next pass publishes the clean
+    # one and settles.
     new_state = DiscoveryState(
         components={
             topic: {cid: str(component.get("p", "")) for cid, component in payload["cmps"].items()}
             for topic, payload in desired.items()
-        }
+        },
+        payloads={
+            topic: (canonical_config(to_publish[topic]) if topic in to_publish else previous.payloads.get(topic, ""))
+            for topic in desired
+        },
     )
     return to_publish, new_state
 
