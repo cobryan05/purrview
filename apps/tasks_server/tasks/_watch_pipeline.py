@@ -271,6 +271,17 @@ class WatchPipeline:
     #: whole bug. Bucketed rather than a raw list so a 20fps stream costs ten entries
     #: over ten minutes instead of twelve thousand.
     _cadence_buckets: List[Tuple[float, float]] = field(default_factory=list)
+    #: label uuid → when a snapshot-sourced sighting stops standing on its own.
+    #:
+    #: Only snapshot sightings go in here, and only because the two presence modes hand
+    #: over badly: the first frame of a Ring escalation is still judged as a snapshot
+    #: (its gap is the idle one), and the very next frame is judged as tracks, where the
+    #: same object has one hit of the three it needs. Presence went on, off and on again
+    #: inside four seconds. This carries the snapshot's answer across the switch until
+    #: the tracker can speak for itself.
+    _presence_held_until: Dict[str, float] = field(default_factory=dict)
+    #: The mode the last `presence_labels` call ran in, so the switch can be noticed.
+    _presence_last_mode: Optional[str] = None
     #: track_ids live as of the previous `step()`, so the next call can tell which
     #: ones vanished. A vanished id is the only reliable "this track just died"
     #: signal the tracker exposes — it never fires a callback, and a track simply
@@ -492,20 +503,81 @@ class WatchPipeline:
         The two are an either/or, never a union: in streaming mode a union would let a
         single unconfirmed frame flip presence on, which is the exact flicker the
         tracker exists to absorb.
+
+        **The handover between them is the one place neither guarantee holds**, and it
+        is a real bounce rather than a theoretical one. A Ring camera escalating on
+        motion delivers its first fast frame while `_last_analysis_gap_s` is still the
+        idle gap, so that frame is read as a snapshot and one detection turns presence
+        on. The next frame arrives sub-second later, the mode flips, and the tracker has
+        one hit of the three it needs — an empty set, and a `Clear` four seconds after
+        the `Detected`, followed immediately by another `Detected` once the third hit
+        lands. So a snapshot sighting is *held* across the switch: see
+        `_presence_held_until`, and `_carry_snapshot_sightings` for the bounds on it.
         """
-        if self.presence_mode() == "tracks":
-            return {t.label_uuid for t in self._last_tracks if t.confirmed and t.label_uuid}
+        mode = self.presence_mode()
+        self._age_snapshot_sightings(mode, now)
+
+        if mode == "tracks":
+            fresh = {t.label_uuid for t in self._last_tracks if t.confirmed and t.label_uuid}
+            # A confirmed track supersedes the snapshot that was standing in for it —
+            # from here the tracker's own expiry is the authority, and leaving the hold
+            # in place would add its remaining tail to every departure afterwards.
+            for label in fresh:
+                self._presence_held_until.pop(label, None)
+            return fresh | self._carry_snapshot_sightings(now)
 
         # A still is a point sample, so it stays true until the next one is overdue.
         # Past that the answer is "no idea" — which is `presence_is_known`'s business,
         # not a value this method can express. Callers must check it; the empty set here
         # is the "camera is fine and sees nothing" answer, and a stale camera must not
         # be allowed to say that.
+        #
+        # The holds are deliberately left untouched rather than cleared: the camera is
+        # unavailable, so nothing is reading this, and recovery should find the last
+        # real answer rather than a blank.
         if not self.presence_is_known(now):
             return set()
         floor = getattr(self.tracker, "track_thresh", None)
         floor = SNAPSHOT_PRESENCE_MIN_CONFIDENCE if floor is None else float(floor)
-        return {d.label_uuid for d in self._last_detections if d.label_uuid and d.confidence >= floor}
+        fresh = {d.label_uuid for d in self._last_detections if d.label_uuid and d.confidence >= floor}
+        # One cadence's worth of standing, the same bound `presence_is_known` uses for
+        # the camera as a whole — a still says nothing about the moment after it, so its
+        # answer stands exactly as long as the next still is not yet overdue.
+        stands_until = now + self._presence_hold_s()
+        for label in fresh:
+            self._presence_held_until[label] = stands_until
+        return fresh | self._carry_snapshot_sightings(now)
+
+    def _age_snapshot_sightings(self, mode: str, now: float) -> None:
+        """Shorten outstanding snapshot holds when the source starts streaming.
+
+        A snapshot's answer stands for a cadence — 60-180 s on these cameras — which is
+        right while that is the only evidence there is, and far too long once frames are
+        arriving twenty times a second. Entering tracks mode therefore caps every
+        outstanding hold at the tracker's own `max_age_s`: comfortably longer than the
+        `min_hits` frames a real subject needs to confirm (a fraction of a second at
+        stream rate), and short enough that a subject which left *before* the escalation
+        clears in seconds rather than minutes.
+        """
+        previous, self._presence_last_mode = self._presence_last_mode, mode
+        if mode != "tracks" or previous == "tracks" or not self._presence_held_until:
+            return
+        # Floored at the gap that *defines* streaming, so a tracker exposing no
+        # `max_age_s` gets a grace of a few frames rather than a grace of zero — which
+        # would cap every hold to the instant of the switch and delete the carry
+        # entirely, silently restoring the bounce.
+        grace = max(float(getattr(self.tracker, "max_age_s", 0.0) or 0.0), SNAPSHOT_MODE_FRAME_GAP_S)
+        limit = now + grace
+        self._presence_held_until = {label: min(at, limit) for label, at in self._presence_held_until.items()}
+
+    def _carry_snapshot_sightings(self, now: float) -> Set[str]:
+        """Snapshot sightings still standing, pruning the ones that are not.
+
+        A hold, never a latch: an entry that lapses with nothing to renew it disappears,
+        so a subject that actually left is reported gone.
+        """
+        self._presence_held_until = {label: at for label, at in self._presence_held_until.items() if at > now}
+        return set(self._presence_held_until)
 
     def presence_is_known(self, now: float) -> bool:
         """Whether this camera currently has an opinion about what it can see.

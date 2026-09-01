@@ -31,12 +31,16 @@ DOG = "label-dog"
 def _pipeline(**overrides) -> WatchPipeline:
     """A pipeline carrying only what presence reporting reads."""
     pipeline = WatchPipeline.__new__(WatchPipeline)
-    pipeline.tracker = SimpleNamespace(track_thresh=0.5)
+    # max_age_s as well as the floor: the handover carry is bounded by it, and a stub
+    # without one would exercise a fallback rather than the real configuration.
+    pipeline.tracker = SimpleNamespace(track_thresh=0.5, max_age_s=6.0)
     pipeline._last_tracks = []
     pipeline._last_detections = []
     pipeline._last_analysis_at = 1000.0
     pipeline._last_analysis_gap_s = 0.2
     pipeline._cadence_buckets = []
+    pipeline._presence_held_until = {}
+    pipeline._presence_last_mode = None
     for key, value in overrides.items():
         setattr(pipeline, key, value)
     return pipeline
@@ -187,3 +191,100 @@ class TestPresenceStalenessSurvivesAChangeOfPace:
         pipeline._note_analysis_gap(1.0, far_later)
 
         assert pipeline._observed_cadence_s() == 1.0
+
+
+class TestTheHandoverBetweenModes:
+    """The gap the either/or leaves: neither mode's guarantee spans the switch.
+
+    Observed on a Ring camera escalating on motion. The first frame of the escalation
+    still carries the idle gap, so it is judged in snapshot mode and one detection turns
+    presence on. The next frame arrives sub-second later, so the mode flips to tracks —
+    where that same object has one hit of the three it needs, and the set is empty. The
+    sensor read Detected / Clear / Detected inside four seconds, with the last two in
+    the same second, for a cat that had simply walked in.
+
+    Each mode is right on its own; the switch between them is what has no rule.
+    """
+
+    def _escalating(self) -> WatchPipeline:
+        """Idle at 90s snapshots, with the cat detected but no track yet confirmed."""
+        return _pipeline(
+            _last_analysis_gap_s=90.0,
+            _cadence_buckets=[(0.0, 90.0)],
+            _last_detections=[_detection(CAT, 0.8)],
+            _last_tracks=[_track(CAT, confirmed=False)],
+            _last_analysis_at=1000.0,
+        )
+
+    def test_presence_survives_the_escalation_into_tracks_mode(self):
+        pipeline = self._escalating()
+        assert pipeline.presence_labels(now=1000.0) == {CAT}, "the snapshot sees the cat"
+
+        # Motion escalates the camera: frames now arrive sub-second apart, so the mode
+        # flips — but the track still has one hit of three and reports nothing.
+        pipeline._last_analysis_gap_s = 0.2
+        pipeline._last_analysis_at = 1004.0
+        assert pipeline.presence_mode() == "tracks"
+
+        assert pipeline.presence_labels(now=1004.0) == {CAT}, "must not clear mid-handover"
+
+    def test_the_track_then_confirms_without_a_gap(self):
+        """The third reading in the bounce. Once the track confirms, presence continues
+        from the tracker with no interruption to paper over."""
+        pipeline = self._escalating()
+        pipeline.presence_labels(now=1000.0)
+        pipeline._last_analysis_gap_s = 0.2
+        pipeline.presence_labels(now=1004.0)
+
+        pipeline._last_tracks = [_track(CAT, confirmed=True)]
+        assert pipeline.presence_labels(now=1004.1) == {CAT}
+
+    def test_the_hold_expires_so_a_departure_is_still_reported(self):
+        """The hold must not become a latch. Once it lapses with nothing seeing the cat,
+        the answer is absence — otherwise a subject that left is pinned present."""
+        pipeline = self._escalating()
+        assert pipeline.presence_labels(now=1000.0) == {CAT}
+
+        pipeline._last_detections = []
+        pipeline._last_tracks = []
+        pipeline._last_analysis_at = 1400.0
+        assert pipeline.presence_labels(now=1400.0) == set()
+
+    def test_a_streaming_source_is_not_given_an_extra_tail(self):
+        """A confirmed track that ends has already served `max_age_s` inside the tracker.
+        Holding it again here would double the tail on every departure a camera reports
+        properly, to fix a handover that never happens on a source that only streams.
+        """
+        pipeline = _pipeline(
+            _last_analysis_gap_s=0.2,
+            _cadence_buckets=[(0.0, 0.2)],
+            _last_tracks=[_track(CAT)],
+            _last_analysis_at=1000.0,
+        )
+        assert pipeline.presence_labels(now=1000.0) == {CAT}
+
+        pipeline._last_tracks = []
+        pipeline._last_analysis_at = 1000.5
+        assert pipeline.presence_labels(now=1000.5) == set()
+
+    def test_a_stale_snapshot_is_capped_once_frames_start_arriving(self):
+        """The bound that stops the carry becoming a long false positive.
+
+        A snapshot's answer stands for a cadence — up to three minutes on these cameras
+        — which is right when it is the only evidence, and wrong the moment twenty
+        frames a second are contradicting it. So entering tracks mode caps the carry at
+        the tracker's `max_age_s`: a cat that left *before* the escalation clears in
+        seconds rather than being pinned present for the rest of the cadence.
+        """
+        pipeline = self._escalating()
+        assert pipeline.presence_labels(now=1000.0) == {CAT}
+
+        # Escalated, and the cat is not there — it left before the camera woke up.
+        pipeline._last_detections = []
+        pipeline._last_tracks = []
+        pipeline._last_analysis_gap_s = 0.2
+        pipeline._last_analysis_at = 1002.0
+        assert pipeline.presence_labels(now=1002.0) == {CAT}, "inside max_age_s, still standing"
+
+        pipeline._last_analysis_at = 1009.0
+        assert pipeline.presence_labels(now=1009.0) == set(), "past max_age_s, not a whole cadence"
