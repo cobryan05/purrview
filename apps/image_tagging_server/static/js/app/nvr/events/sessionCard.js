@@ -42,7 +42,7 @@ export function formatSessionSpan(start, end) {
 /**
  * @param {Object} session - a WatchEventSession
  * @param {Object} ctx
- * @param {(session: Object) => void} ctx.onOpen - show the events behind it
+ * @param {(session: Object) => void} ctx.onOpen - the events behind it, or its one event
  * @param {Map<string, string>} [ctx.sourceNames]
  * @returns {HTMLElement}
  */
@@ -53,7 +53,10 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
   card.setAttribute('role', 'button');
 
   const start = parseApiDate(session.startedAt);
-  const end = parseApiDate(session.endedAt);
+  // An open visit's `endedAt` is its last event's *start* — see the field's note on the
+  // API model. Treating it as an end would caption a session that is still running as a
+  // finished one, and a one-event open session as an instantaneous one.
+  const end = session.isOpen ? null : parseApiDate(session.endedAt);
   const headline = eventHeadline(session);
   card.setAttribute('aria-label', `${headline}, ${session.count} events from ${formatEventTime(start)}`);
 
@@ -81,6 +84,14 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
     badge.dataset.testid = 'event-session-repeat-badge';
     media.appendChild(badge);
   }
+  // The same badge the flat grid's card carries, for the same reason: an open event's
+  // clip does not exist yet and its duration is still growing. Folding repeats into
+  // visits must not be the thing that hides that.
+  if (session.isOpen) {
+    const live = el('span', 'event-card__badge event-card__badge--live', 'In progress');
+    live.dataset.testid = 'event-session-live-badge';
+    media.appendChild(live);
+  }
   card.appendChild(media);
 
   const body = el('div', 'event-card__body');
@@ -101,13 +112,14 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
   if (camera) meta.appendChild(el('span', 'event-card__meta-item', camera));
   // The span of the whole visit, which is the number a session exists to report — the
   // sum of its events' durations would leave out the gaps and understate the visit.
-  const duration = formatDuration(session.startedAt, session.endedAt);
+  const duration = formatDuration(session.startedAt, end?.toISOString() ?? null);
   if (duration) meta.appendChild(el('span', 'event-card__meta-item', duration));
   if (meta.childElementCount) body.appendChild(meta);
   card.appendChild(body);
 
-  // A session has no single clip to play, so opening it shows its events rather than
-  // guessing which of the seven the user meant.
+  // What "open" means depends on how much this card folded — a visit of seven has no
+  // single clip to play — so the decision belongs to the caller, which is the only side
+  // that can act on either answer.
   card.addEventListener('click', () => onOpen?.(session));
   card.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') {

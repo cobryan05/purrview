@@ -7655,6 +7655,13 @@ class DbClient:
                     func.count().label("count"),
                     func.min(sessioned.c.started_at).label("started_at"),
                     func.max(func.coalesce(sessioned.c.ended_at, sessioned.c.started_at)).label("ended_at"),
+                    # `ended_at` above is coalesced, so an in-progress visit is
+                    # indistinguishable from one that ended the instant it began — which
+                    # is exactly what a one-event open session looks like. The card needs
+                    # to say "in progress" rather than "0s", and the drill-down needs an
+                    # open-ended window rather than a zero-width one, so the openness is
+                    # reported separately instead of inferred from the two timestamps.
+                    func.max(case((sessioned.c.ended_at == None, 1), else_=0)).label("is_open"),  # noqa: E711
                     # `rn` is 1 on exactly one row per session, so a max() over this
                     # picks that row's uuid without a second pass over the table.
                     func.max(case((sessioned.c.rn == 1, sessioned.c.uuid))).label("representative_uuid"),
@@ -7679,6 +7686,7 @@ class DbClient:
                     agg.c.count,
                     agg.c.started_at,
                     agg.c.ended_at,
+                    agg.c.is_open,
                     agg.c.representative_uuid,
                 )
                 .order_by(agg.c.started_at.desc())
@@ -7700,6 +7708,7 @@ class DbClient:
                 count,
                 started_at,
                 ended_at,
+                is_open,
                 representative_uuid,
             ) in rows:
                 sessions.append(
@@ -7715,6 +7724,7 @@ class DbClient:
                         "count": int(count),
                         "started_at": started_at.isoformat() if hasattr(started_at, "isoformat") else started_at,
                         "ended_at": ended_at.isoformat() if hasattr(ended_at, "isoformat") else ended_at,
+                        "is_open": bool(is_open),
                         "representative_uuid": representative_uuid,
                     }
                 )

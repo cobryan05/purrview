@@ -1188,6 +1188,70 @@ class TestWatchEventSessions:
         assert session["startedAt"].startswith("2026-01-01T12:00:00")
         assert session["endedAt"].startswith("2026-01-01T12:01:10")
 
+    async def test_a_visit_still_running_says_so(self, http_client):
+        """`endedAt` cannot answer this, which is why `isOpen` exists.
+
+        A session always reports an extent, so an open event's missing end is coalesced
+        to its start — and a visit of one open event therefore reports `startedAt ==
+        endedAt`, indistinguishable from one that ended the instant it began. The card
+        read that as a finished, zero-length visit: no "In progress" badge, and a
+        drill-down window of zero width that resolved to no events at all.
+        """
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=base.isoformat(),
+            endedAt=(base + timedelta(seconds=10)).isoformat(),
+        )
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="dog",
+            startedAt=base.isoformat(),
+            endedAt=None,
+        )
+
+        sessions = {s["subjectRef"]: s for s in (await _sessions(http_client, gap_s=120))["sessions"]}
+        assert sessions["dog"]["isOpen"] is True
+        assert sessions["cat"]["isOpen"] is False
+        # The coalesced end is still reported — the card needs an extent to draw — so
+        # `isOpen` is the only thing separating the two.
+        assert sessions["dog"]["endedAt"] == sessions["dog"]["startedAt"]
+
+    async def test_one_open_event_does_not_make_a_closed_visit_open(self, http_client):
+        """An event that closed after the open one must not clear the flag, and an open
+        event anywhere in the visit must set it — the fold is over the whole session, not
+        its last row."""
+        base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        profile_uuid = await _make_profile(http_client)
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=base.isoformat(),
+            endedAt=None,
+        )
+        resume = base + timedelta(seconds=30)
+        await _make_event(
+            http_client,
+            profile_uuid,
+            ruleUuid="rule-a",
+            subjectRef="cat",
+            startedAt=resume.isoformat(),
+            endedAt=(resume + timedelta(seconds=10)).isoformat(),
+        )
+
+        body = await _sessions(http_client, gap_s=120)
+        assert body["total"] == 1
+        assert body["sessions"][0]["count"] == 2
+        assert body["sessions"][0]["isOpen"] is True
+
     async def test_sessions_honour_the_same_filters_as_the_grid(self, http_client):
         profile_uuid = await _make_profile(http_client)
         cam_a, cam_b = await _make_source(http_client), await _make_source(http_client)

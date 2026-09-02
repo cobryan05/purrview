@@ -248,7 +248,10 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     const state = filters.getState();
     if (windowOverride) {
       state.startFrom = windowOverride.from.toISOString();
-      state.startTo = windowOverride.to.toISOString();
+      // A null `to` is an open-ended window — "from here on", which is what a visit that
+      // has not finished yet actually spans. Sending no bound is not the same as sending
+      // one equal to `from`: the latter is a zero-width window that matches nothing.
+      if (windowOverride.to) state.startTo = windowOverride.to.toISOString();
     }
     return state;
   }
@@ -448,8 +451,12 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     windowChip.hidden = !windowOverride;
     if (!windowOverride) return;
     const { from, to } = windowOverride;
-    const sameDay = from.toDateString() === to.toDateString();
     const time = d => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (!to) {
+      windowChip.textContent = `Since ${from.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time(from)} ✕`;
+      return;
+    }
+    const sameDay = from.toDateString() === to.toDateString();
     windowChip.textContent = sameDay
       ? `${from.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time(from)}–${time(to)} ✕`
       : `${from.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} → `
@@ -938,6 +945,53 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   }
 
   /**
+   * The upper bound of the window that resolves a session back to its own events.
+   *
+   * Two traps, both of which produced an empty grid from a card that plainly showed
+   * events behind it:
+   *
+   * 1. **A visit still in progress has no end.** Its `endedAt` is the last event's
+   *    *start* (the backend coalesces, so a session always has an extent to draw), so a
+   *    one-event open session reports `from === to`. Left alone that asks the server for
+   *    events starting at exactly one instant. `null` means "no upper bound", which is
+   *    what an unfinished visit actually spans.
+   * 2. **`Date` is millisecond-resolution; the column is microsecond.** `started_at` is
+   *    written by `datetime.now()`, so an event at `…04.098861` round-trips through
+   *    `parseApiDate().toISOString()` as `…04.098` — *below* its own value. As
+   *    `start_to` that is a bound the event itself fails, so any session whose extent
+   *    collapses onto a single event's start (an event closed by a restart is the other
+   *    way to get one) resolved to nothing. Rounding the bound up a millisecond puts the
+   *    truncated instant back inside the window.
+   *
+   * @param {Object} session
+   * @returns {?Date}
+   */
+  function sessionWindowEnd(session) {
+    if (session.isOpen) return null;
+    const end = parseApiDate(session.endedAt);
+    return end ? new Date(end.getTime() + 1) : null;
+  }
+
+  /**
+   * Open the one event behind a session that folded nothing.
+   *
+   * The session row carries a `representativeUuid` but not the event itself, so this
+   * costs a fetch — paid on the click, never while browsing, the same bargain the group
+   * card's "Latest" makes.
+   *
+   * @param {Object} session
+   */
+  async function openSessionEvent(session) {
+    try {
+      const event = await fetchWatchEvent(session.representativeUuid);
+      openEventDetailModal(event, { sourceNames, onDeleted: () => void search() });
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not open that event', 5000, 'error');
+    }
+  }
+
+  /**
    * The flat view with repeats folded into visits.
    *
    * Paged over sessions rather than events, which is why it has its own branch: the
@@ -979,12 +1033,21 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       for (const session of sessions) {
         const card = buildSessionCard(session, {
           sourceNames,
-          // A visit has no single clip to play, so it drills into its own events and
-          // its own minutes rather than guessing which of the seven was meant.
-          onOpen: s => drilldown(s, {
-            window: { from: parseApiDate(s.startedAt), to: parseApiDate(s.endedAt) },
-            ungroupSessions: true,
-          }),
+          // A visit of several events has no single clip to play, so it drills into its
+          // own events and its own minutes rather than guessing which of the seven was
+          // meant. A visit of *one* has exactly one, and an intermediate grid holding a
+          // single card is pure friction — the same bargain the timeline strikes for a
+          // bin holding one event.
+          onOpen: s => {
+            if (s.count === 1 && s.representativeUuid) {
+              void openSessionEvent(s);
+              return;
+            }
+            drilldown(s, {
+              window: { from: parseApiDate(s.startedAt), to: sessionWindowEnd(s) },
+              ungroupSessions: true,
+            });
+          },
         });
         focus.register(identityKey(session, { dimensions: dimensions(), splitByCamera }), card);
         grid.appendChild(card);

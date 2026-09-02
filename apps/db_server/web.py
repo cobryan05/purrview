@@ -1245,7 +1245,12 @@ class WatchEventSession(ApiModel):
     session_ix: int = 0
     count: int = 0
     started_at: Optional[str] = None
+    #: The last event's end, or — when the visit is still going — the last event's
+    #: *start*, because a session has to have an extent to be drawn. `is_open` is what
+    #: tells the two apart; do not read a zero-length span as "it ended immediately".
     ended_at: Optional[str] = None
+    #: At least one event in this visit has not closed yet.
+    is_open: bool = False
     representative_uuid: Optional[str] = None
 
 
