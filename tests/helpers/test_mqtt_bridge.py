@@ -31,12 +31,16 @@ from apps.helpers.mqtt.bridge import (
     build_source_discovery,
     build_subject_discovery,
     build_subject_seed,
+    component_config_topic,
     count_entities,
+    flatten_discovery,
+    legacy_bundle_topics,
     reconcile_discovery,
     source_config_topic,
     source_device_id,
     state_from_retained,
     subject_config_topic,
+    subject_device_id,
     subjects_in_scope,
 )
 from apps.helpers.watch.templating import slugify
@@ -53,6 +57,73 @@ def _profile(**overrides) -> ProfileView:
     )
     kwargs.update(overrides)
     return ProfileView(**kwargs)
+
+
+def _desired(profiles, subjects=None):
+    """The component set `publish_all_discovery` actually reconciles against.
+
+    Flattened, because that is what the production path feeds `reconcile_discovery`.
+    Passing raw bundles here would still "work" — the reconcile treats payloads as
+    opaque — while testing a shape nothing publishes.
+    """
+    return flatten_discovery(build_all_discovery(profiles, PREFIX, subjects))
+
+
+def _as_retained(desired):
+    """`desired` as the broker replays it back on a fresh connection."""
+    return {topic: json.dumps(payload).encode() for topic, payload in desired.items()}
+
+
+def _topic_for(topics, device_id, key):
+    """The one component topic for `key` on `device_id`, whatever platform it lands on.
+
+    Looked up rather than spelled out so these tests do not pin which platform a
+    component uses — that is `build_*_discovery`'s business and has its own tests.
+    """
+    matches = [t for t in topics if t.split("/")[2] == device_id and t.split("/")[3] == key]
+    assert len(matches) == 1, f"expected one topic for {device_id}/{key}, got {matches}"
+    return matches[0]
+
+
+def _keys_on(topics, device_id):
+    """Component keys addressed on one device, out of a set of component topics."""
+    return {t.split("/")[3] for t in topics if t.split("/")[2] == device_id}
+
+
+class TestComponentTopicLayout:
+    """Discovery is published one component per topic rather than as a device bundle,
+    because HA reprocesses a whole bundle on any change to it — see
+    `component_config_topic`. The device block is what still groups them."""
+
+    def test_a_component_carries_the_device_block_so_grouping_survives(self):
+        desired = _desired([_profile()])
+        topic = _topic_for(desired, source_device_id("src-1"), "camera")
+        assert desired[topic]["dev"]["ids"] == source_device_id("src-1")
+        assert desired[topic]["dev"]["via_device"] == "purrview_system"
+
+    def test_the_platform_moves_into_the_topic_and_out_of_the_payload(self):
+        """A payload carrying a platform the topic could contradict is exactly the kind
+        of duplicated fact that rots. HA reads it from the topic."""
+        desired = _desired([_profile()])
+        topic = _topic_for(desired, source_device_id("src-1"), "camera")
+        assert topic.split("/")[1] == "camera"
+        assert "p" not in desired[topic]
+
+    def test_a_component_keeps_its_own_availability_over_the_devices(self):
+        """A per-camera presence sensor names its own camera's freshness topic, and a
+        component's availability *replaces* the device's in HA rather than adding to it.
+        Inheriting the device's over the top would make it go unavailable only when the
+        whole app did."""
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna", publish_per_source=True)}
+        desired = _desired([_profile()], subjects)
+        device = subject_device_id("subj-a")
+        own = desired[_topic_for(desired, device, "source_src-1_detected")]["availability"]
+        assert any("presence" in entry["topic"] for entry in own)
+
+    def test_every_component_of_a_device_lands_on_its_own_topic(self):
+        desired = _desired([_profile()])
+        bundle = build_all_discovery([_profile()], PREFIX)[source_config_topic("src-1")]
+        assert _keys_on(desired, source_device_id("src-1")) == set(bundle["cmps"])
 
 
 class TestSourceDiscoveryShape:
@@ -128,59 +199,82 @@ class TestRuleUniqueIdSurvivesRename:
 class TestDiscoveryReconciliation:
     """Rule/source deletion must retract, not just stop updating."""
 
-    def test_a_deleted_rule_is_tombstoned_before_it_is_omitted(self):
-        """Omitting a component from `cmps` does not remove its entity — HA requires it
-        be republished as an empty config naming only its platform first, and omitted
-        only on a later update. Publishing the clean message straight away leaves an
-        entity in HA that nothing can remove but hand-editing the entity registry.
+    def test_a_deleted_rule_is_retracted_on_its_own_topics(self):
+        """Removal is now a single empty payload per component topic. The bundle scheme
+        needed a two-step tombstone here — republish the component naming only its
+        platform, omit it on a later pass — because omitting it from `cmps` did not
+        reliably remove the entity. A component owning its topic makes that unnecessary.
         """
         with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
         without_rule = _profile(rules=())
-        topic = source_config_topic("src-1")
+        device = source_device_id("src-1")
 
-        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([with_rule], PREFIX))
-        removal_pass, state = reconcile_discovery(state, build_all_discovery([without_rule], PREFIX))
+        _, state = reconcile_discovery(DiscoveryState(), _desired([with_rule]))
+        to_publish, state = reconcile_discovery(state, _desired([without_rule]))
 
-        tombstones = {k: v for k, v in removal_pass[topic]["cmps"].items() if k.startswith("rule-1_")}
-        assert tombstones, "the deleted rule's components must still be named, as tombstones"
-        # Each carries its platform and nothing else — that is what makes it a removal
-        # rather than a malformed entity.
-        assert all(set(v) == {"p"} and v["p"] for v in tombstones.values())
+        retracted = {t for t, payload in to_publish.items() if payload is None}
+        assert _keys_on(retracted, device), "the deleted rule's components must be retracted"
+        assert all(k.startswith("rule-1_") for k in _keys_on(retracted, device))
 
-        # …and the pass after that publishes clean, which is the second half HA asks
-        # for. Without this the tombstones would be re-sent forever.
-        follow_up, _ = reconcile_discovery(state, build_all_discovery([without_rule], PREFIX))
-        assert not any(k.startswith("rule-1_") for k in follow_up[topic]["cmps"])
+        # And it settles: a retracted topic is gone from the state, so the next pass has
+        # nothing to retract and says nothing at all.
+        follow_up, _ = reconcile_discovery(state, _desired([without_rule]))
+        assert follow_up == {}
 
-    def test_an_unchanged_rule_is_never_tombstoned(self):
-        """The tombstone must key off disappearance, not off a republish.
-
-        Read through a pass that *does* publish — a second rule appearing — because a
-        silent pass would satisfy this trivially and prove nothing about the tombstone.
+    def test_deleting_a_rule_leaves_the_rest_of_the_camera_untouched(self):
+        """The point of per-component discovery. Under the bundle scheme this
+        republished the camera's whole config, so every entity on it — the camera feed,
+        telemetry, every other rule — was torn down and rebuilt to delete one rule.
         """
-        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
-        grown = _profile(
+        with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
+        without_rule = _profile(rules=())
+        device = source_device_id("src-1")
+
+        _, state = reconcile_discovery(DiscoveryState(), _desired([with_rule]))
+        to_publish, _ = reconcile_discovery(state, _desired([without_rule]))
+
+        republished = {t for t, payload in to_publish.items() if payload is not None}
+        assert "camera" not in _keys_on(republished, device)
+        assert republished == set(), "nothing but the deleted rule should be written"
+
+    def test_renaming_a_rule_republishes_only_that_rule(self):
+        """The same guarantee for an edit rather than a deletion, which is the case that
+        actually happens while working on a watcher."""
+        before = _profile(
             rules=(RuleView(uuid="rule-1", name="cat at bowl"), RuleView(uuid="rule-2", name="cat at door"))
         )
-        topic = source_config_topic("src-1")
+        after = _profile(
+            rules=(RuleView(uuid="rule-1", name="cat at the water bowl"), RuleView(uuid="rule-2", name="cat at door"))
+        )
+        device = source_device_id("src-1")
 
-        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([profile], PREFIX))
-        again, _ = reconcile_discovery(state, build_all_discovery([grown], PREFIX))
+        _, state = reconcile_discovery(DiscoveryState(), _desired([before]))
+        to_publish, _ = reconcile_discovery(state, _desired([after]))
 
-        assert all(set(v) != {"p"} for v in again[topic]["cmps"].values())
+        touched = _keys_on(set(to_publish), device)
+        assert touched, "the renamed rule must be republished"
+        assert all(k.startswith("rule-1_") for k in touched), f"rule-2 and the camera must be left alone: {touched}"
 
-    def test_deleting_a_rule_does_not_retract_the_device_it_was_on(self):
-        """Only the rule went away, not the camera. Retracting the whole device would
-        take the camera, telemetry and every other rule down with it."""
-        with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
-        without_rule = _profile(rules=())
+    def test_renaming_a_camera_does_not_rebuild_every_subject_entity(self):
+        """`build_subject_discovery` embeds the whole camera list, so under the bundle
+        scheme renaming one camera rewrote every subject device in the app and rebuilt
+        every entity on it — `Detected now`, every counter, for every label. Only the
+        per-camera components actually mention the camera."""
+        subjects = {"subj-a": SubjectView(uuid="subj-a", name="Luna", publish_per_source=True)}
+        before = _profile(rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),))
+        after = _profile(
+            sources=(SourceView(uuid="src-1", name="Kitchen camera"),),
+            rules=(RuleView(uuid="rule-1", name="bowl", subject_uuids=("subj-a",)),),
+        )
+        device = subject_device_id("subj-a")
 
-        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery([with_rule], PREFIX))
-        to_publish, _ = reconcile_discovery(state, build_all_discovery([without_rule], PREFIX))
+        _, state = reconcile_discovery(DiscoveryState(), _desired([before], subjects))
+        to_publish, _ = reconcile_discovery(state, _desired([after], subjects))
 
-        topic = source_config_topic("src-1")
-        assert to_publish[topic] is not None
-        assert "camera" in to_publish[topic]["cmps"]
+        touched = _keys_on(set(to_publish), device)
+        assert "detected" not in touched, "the label's own presence entity has nothing to do with a camera rename"
+        assert "count" not in touched
+        assert "rule-1_count" not in touched
 
     def test_state_read_back_from_the_broker_can_retract_across_a_restart(self):
         """The bug the retained read-back exists to fix. With an in-memory state, a
@@ -191,24 +285,22 @@ class TestDiscoveryReconciliation:
         """
         with_rule = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))
         without_rule = _profile(rules=())
-        topic = source_config_topic("src-1")
-
-        # What the broker is holding, published by a previous run of the process.
-        published = build_all_discovery([with_rule], PREFIX)
-        retained = {t: json.dumps(p).encode() for t, p in published.items()}
+        device = source_device_id("src-1")
 
         # A fresh process: no memory at all, only what the broker replays.
-        adopted = state_from_retained(retained)
-        to_publish, _ = reconcile_discovery(adopted, build_all_discovery([without_rule], PREFIX))
+        adopted = state_from_retained(_as_retained(_desired([with_rule])))
+        to_publish, _ = reconcile_discovery(adopted, _desired([without_rule]))
 
-        tombstones = {k: v for k, v in to_publish[topic]["cmps"].items() if k.startswith("rule-1_")}
-        assert tombstones, "a rule deleted while the process was down must still be retracted"
-        assert all(set(v) == {"p"} for v in tombstones.values())
+        retracted = {t for t, payload in to_publish.items() if payload is None}
+        gone = _keys_on(retracted, device)
+        assert gone, "a rule deleted while the process was down must still be retracted"
+        assert all(k.startswith("rule-1_") for k in gone)
 
     def test_an_empty_retained_payload_is_not_adopted_as_a_live_config(self):
         """Empty payloads are retractions someone already published. Adopting one would
         resurrect the entity it removed, on the very next reconcile."""
-        assert state_from_retained({source_config_topic("src-1"): b""}).components == {}
+        topic = component_config_topic("sensor", source_device_id("src-1"), "fps")
+        assert state_from_retained({topic: b""}).payloads == {}
 
     def test_another_integrations_device_config_is_neither_adopted_nor_retracted(self):
         """The read-back subscribes to `homeassistant/device/+/config`, which is every
@@ -221,50 +313,52 @@ class TestDiscoveryReconciliation:
         retraction, so the only symptom is somebody else's devices silently
         disappearing.
         """
-        retained = {t: json.dumps(p).encode() for t, p in build_all_discovery([_profile()], PREFIX).items()}
-        foreign = "homeassistant/device/0x00124b0022ab1234/config"
-        retained[foreign] = json.dumps(
-            {"dev": {"ids": "0x00124b0022ab1234"}, "cmps": {"temperature": {"p": "sensor"}}}
-        ).encode()
+        desired = _desired([_profile()])
+        retained = _as_retained(desired)
+        foreign = "homeassistant/sensor/0x00124b0022ab1234/temperature/config"
+        retained[foreign] = json.dumps({"dev": {"ids": "0x00124b0022ab1234"}, "name": "Temperature"}).encode()
 
         adopted = state_from_retained(retained)
         assert foreign not in adopted.topics, "a device we did not publish must not be adopted"
 
-        to_publish, _ = reconcile_discovery(adopted, build_all_discovery([_profile()], PREFIX))
+        to_publish, _ = reconcile_discovery(adopted, desired)
         assert foreign not in to_publish, "a device we did not publish must never be retracted"
 
     def test_our_own_configs_are_still_adopted_across_a_rename_of_nothing(self):
         """The ownership filter must not throw the baby out: configs carrying our own
         device-id namespace are exactly what the read-back exists to recover."""
-        retained = {t: json.dumps(p).encode() for t, p in build_all_discovery([_profile()], PREFIX).items()}
+        desired = _desired([_profile()])
 
-        adopted = state_from_retained(retained)
+        adopted = state_from_retained(_as_retained(desired))
 
-        assert source_config_topic("src-1") in adopted.topics
-        assert adopted.topics == set(retained)
+        assert _topic_for(adopted.topics, source_device_id("src-1"), "camera") in adopted.topics
+        assert adopted.topics == set(desired)
 
     def test_an_unparseable_retained_config_is_skipped_not_fatal(self):
         """One malformed retained message must not stop the bridge coming up — and the
         configs around it must still be adopted."""
-        good = build_all_discovery([_profile()], PREFIX)
-        retained = {t: json.dumps(p).encode() for t, p in good.items()}
-        retained["homeassistant/device/purrview_junk/config"] = b"{not json"
+        desired = _desired([_profile()])
+        retained = _as_retained(desired)
+        junk = component_config_topic("sensor", "purrview_junk", "broken")
+        retained[junk] = b"{not json"
 
         state = state_from_retained(retained)
 
-        assert source_config_topic("src-1") in state.topics
-        assert "homeassistant/device/purrview_junk/config" not in state.topics
+        assert _topic_for(state.topics, source_device_id("src-1"), "camera") in state.topics
+        assert junk not in state.topics
 
     def test_a_deleted_source_is_retracted_with_an_empty_payload(self):
         with_source = [_profile()]
         without_source = [_profile(sources=(), rules=())]
 
-        _, previous_topics = reconcile_discovery(DiscoveryState(), build_all_discovery(with_source, PREFIX))
-        to_publish, remaining = reconcile_discovery(previous_topics, build_all_discovery(without_source, PREFIX))
+        before = _desired(with_source)
+        _, previous_topics = reconcile_discovery(DiscoveryState(), before)
+        to_publish, remaining = reconcile_discovery(previous_topics, _desired(without_source))
 
-        topic = source_config_topic("src-1")
-        assert to_publish[topic] is None
-        assert topic not in remaining.topics
+        device = source_device_id("src-1")
+        assert _keys_on(set(before), device), "sanity: the camera had components to begin with"
+        assert all(to_publish[t] is None for t in before if t.split("/")[2] == device)
+        assert not _keys_on(remaining.topics, device)
 
     def test_an_unchanged_profile_publishes_nothing_at_all(self):
         """Not merely "no retractions": nothing.
@@ -276,8 +370,8 @@ class TestDiscoveryReconciliation:
         `unknown` and `unavailable` once a minute, for config nobody had touched.
         """
         profile = [_profile()]
-        _, previous_topics = reconcile_discovery(DiscoveryState(), build_all_discovery(profile, PREFIX))
-        to_publish, _ = reconcile_discovery(previous_topics, build_all_discovery(profile, PREFIX))
+        _, previous_topics = reconcile_discovery(DiscoveryState(), _desired(profile))
+        to_publish, _ = reconcile_discovery(previous_topics, _desired(profile))
         assert to_publish == {}
 
     def test_a_changed_config_still_publishes(self):
@@ -286,20 +380,18 @@ class TestDiscoveryReconciliation:
         before = [_profile(rules=(RuleView(uuid="rule-1", name="cat at bowl"),))]
         after = [_profile(rules=(RuleView(uuid="rule-1", name="cat at the water bowl"),))]
 
-        _, state = reconcile_discovery(DiscoveryState(), build_all_discovery(before, PREFIX))
-        to_publish, _ = reconcile_discovery(state, build_all_discovery(after, PREFIX))
+        _, state = reconcile_discovery(DiscoveryState(), _desired(before))
+        to_publish, _ = reconcile_discovery(state, _desired(after))
 
-        assert source_config_topic("src-1") in to_publish
+        assert _keys_on(set(to_publish), source_device_id("src-1"))
 
     def test_a_config_already_on_the_broker_is_not_republished_after_a_restart(self):
         """The seeded half. The bridge adopts the broker's retained configs at connect,
         so a restart that changes nothing must not churn every entity in HA — which is
         the same flap, once per restart instead of once per minute."""
-        profile = [_profile()]
-        desired = build_all_discovery(profile, PREFIX)
-        retained = {topic: json.dumps(payload).encode() for topic, payload in desired.items()}
+        desired = _desired([_profile()])
 
-        adopted = state_from_retained(retained)
+        adopted = state_from_retained(_as_retained(desired))
         to_publish, _ = reconcile_discovery(adopted, desired)
 
         assert to_publish == {}
@@ -319,6 +411,82 @@ class TestDiscoveryReconciliation:
         assert any(k.startswith("rule-b_") for k in cmps)
 
 
+class TestTheOldDeviceBundlesAreCleanedUp:
+    """Moving off `homeassistant/device/<id>/config` leaves the previous scheme's
+    messages retained on the broker. Left there, Home Assistant re-creates a full
+    duplicate set of entities from them on every restart, forever — and there is no
+    later version of the app that can clean them up once it has stopped claiming them.
+    """
+
+    OURS = "homeassistant/device/purrview_source_src-1/config"
+
+    def test_our_own_bundles_are_claimed(self):
+        retained = {self.OURS: b"{}", "homeassistant/device/encounterwatch_rules/config": b"{}"}
+        assert legacy_bundle_topics(retained) == set(retained)
+
+    def test_another_integrations_bundle_is_left_alone(self):
+        """Same trap as `owns_config_topic`: retracting a foreign bundle is a correct,
+        effective deletion of someone else's devices, with no error anywhere."""
+        assert legacy_bundle_topics({"homeassistant/device/0x00124b0022ab1234/config": b"{}"}) == frozenset()
+
+    async def _pass(self, bridge):
+        await bridge.publish_all_discovery()
+
+    def _bridge(self, legacy=()):
+        bridge = MqttBridge(db_api_client=None)
+        fake = _ArmingPublisher()
+        bridge._publisher = fake
+        bridge._prefix = PREFIX
+        bridge._legacy_bundles = frozenset(legacy)
+        # Non-empty so `_restore_armed_state` short-circuits; it is not what is under
+        # test here and it needs a real broker read.
+        bridge._armed = {"rule-1": True}
+
+        async def _profiles():
+            return [_profile()]
+
+        bridge._load_profiles = _profiles
+        return bridge, fake
+
+    async def test_the_retraction_pass_publishes_no_component_configs(self):
+        """The load-bearing assertion. Every entity in a bundle shares its `unique_id`
+        with its per-component replacement, so if both reach HA before it has finished
+        removing the old device, the new entity collides with the live old one and is
+        uniquified to `sensor.<name>_2` — permanently. Ordering them within one pass
+        makes that a race; separating the passes removes it."""
+        bridge, fake = self._bridge(legacy=[self.OURS])
+
+        await self._pass(bridge)
+
+        # Only discovery configs are at stake; the presence-availability writes that
+        # share this pass are on our own prefix and touch no entity registry.
+        configs = [c for c in fake.calls if c["topic"].startswith("homeassistant/")]
+        assert [c["topic"] for c in configs] == [self.OURS]
+        assert configs[0]["payload"] == "", "a retraction is an empty payload"
+        assert configs[0]["retain"] is True, "a non-retained retraction leaves the old config on the broker"
+
+    async def test_the_next_pass_publishes_the_components(self):
+        """And the cleanup does not repeat — a second retraction every minute would keep
+        HA rebuilding forever."""
+        bridge, fake = self._bridge(legacy=[self.OURS])
+        await self._pass(bridge)
+        fake.calls.clear()
+
+        await self._pass(bridge)
+
+        topics = [c["topic"] for c in fake.calls]
+        assert self.OURS not in topics
+        assert any(t.startswith("homeassistant/") and t.endswith("/config") for t in topics)
+
+    async def test_a_broker_that_never_saw_the_old_scheme_loses_no_pass(self):
+        """The overwhelmingly common case, and it must not cost a reconcile interval."""
+        bridge, fake = self._bridge()
+
+        await self._pass(bridge)
+
+        assert any(t["topic"].endswith("/config") for t in fake.calls)
+
+
 class TestCounterSeeding:
     def test_seeded_counter_matches_the_grouped_count(self):
         profiles = [_profile()]
@@ -333,6 +501,61 @@ class TestCounterSeeding:
         profiles = [_profile(rules=())]
         counts = [{"source_uuid": "src-1", "rule_uuid": "rule-1", "count": 5}]
         assert build_seed_publishes(profiles, counts) == {}
+
+
+class TestARuleThatHasNeverFiredStillGetsAState:
+    """Seeding only what history knows about left every never-fired rule `unknown` in
+    Home Assistant — permanently, not as a blip. Discovery creates the entity, nothing
+    ever publishes its state topic, and `unknown` is not `unavailable`: it reads as a
+    working sensor while numeric comparisons against it silently fail.
+
+    Zero is not a guess. `get_watch_event_counts` returns a row per pair that has fired,
+    so a pair's absence *is* a count of zero.
+    """
+
+    TOPIC = "living-room-watcher/kitchen-cam/rule/cat-at-bowl/count"
+
+    def test_a_pair_with_no_history_seeds_zero_rather_than_being_omitted(self):
+        assert build_seed_publishes([_profile()], []) == {self.TOPIC: 0}
+
+    def test_history_still_wins_over_the_zero(self):
+        """The zero is a floor for pairs nothing is known about, never an overwrite —
+        seeding a real counter back to 0 would read as a counter reset to a
+        `total_increasing` sensor and dent its long-term statistics."""
+        counts = [{"source_uuid": "src-1", "rule_uuid": "rule-1", "count": 42}]
+        assert build_seed_publishes([_profile()], counts) == {self.TOPIC: 42}
+
+    def test_an_opted_out_camera_gets_no_zero_either(self):
+        """The zero follows the same gate as discovery. A retained payload on a topic no
+        entity reads never expires — it sits on the broker for good, and re-enabling the
+        camera later would replay it into a freshly created entity."""
+        profile = _profile(sources=(SourceView(uuid="src-1", name="Kitchen cam", publish_to_ha=False),))
+        assert build_seed_publishes([profile], []) == {}
+
+    def test_a_subject_tier_with_no_history_seeds_a_count_but_no_timestamp(self):
+        """`Car Leaves` on the live device: the rule counter, its per-camera breakdown
+        and its `last seen` all blank, for a rule that worked and had simply not
+        happened yet. The count is knowable and the timestamp is not — and a `sensor`
+        with `device_class: timestamp` rejects anything that is not a real one, so the
+        honest answer to "when did this last happen" stays `None`."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="car leaves", subject_uuids=("subj-a",)),))
+        seed = build_subject_seed([], [profile])
+        assert seed[("subj-a",)] == (0, None)
+        assert seed[("subj-a", "rule-1")] == (0, None)
+        assert seed[("subj-a", "rule-1", "src-1")] == (0, None)
+
+    def test_a_subject_tier_with_history_keeps_its_count_and_timestamp(self):
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="car leaves", subject_uuids=("subj-a",)),))
+        counts = [
+            {
+                "source_uuid": "src-1",
+                "rule_uuid": "rule-1",
+                "subject_ref": "subj-a",
+                "count": 7,
+                "last_seen": "2026-01-02T00:00:00+00:00",
+            }
+        ]
+        assert build_subject_seed(counts, [profile])[("subj-a", "rule-1")] == (7, "2026-01-02T00:00:00+00:00")
 
 
 class TestDefaultVisibility:
@@ -490,20 +713,102 @@ class TestSubjectTiersAgree:
     ]
 
     def test_each_tier_is_the_sum_of_the_one_below(self):
-        seed = build_subject_seed(self.COUNTS)
+        seed = build_subject_seed(self.COUNTS, ())
         assert seed[("subj-a",)][0] == 12
         assert seed[("subj-a", "rule-1")][0] == 8
         assert seed[("subj-a", "rule-1", "src-1")][0] == 5
 
     def test_last_seen_rolls_up_as_the_most_recent_not_the_last_row(self):
-        seed = build_subject_seed(self.COUNTS)
+        seed = build_subject_seed(self.COUNTS, ())
         assert seed[("subj-a",)][1] == "2026-01-03T00:00:00+00:00"
         assert seed[("subj-a", "rule-2")][1] == "2026-01-01T00:00:00+00:00"
 
     def test_events_with_no_subject_are_not_counted_against_a_subject(self):
         """A rule with no subject slot still produces events; they belong to the
         rule-level counters, which seed separately."""
-        assert build_subject_seed([{**self.COUNTS[0], "subject_ref": None}]) == {}
+        assert build_subject_seed([{**self.COUNTS[0], "subject_ref": None}], ()) == {}
+
+
+class TestARuleThatHasNeverFiredHasAStateOnTheRulesDevice:
+    """`_publish_rule_global` only runs on a transition, so every entity on the Rules
+    device sat `unknown` until its rule first fired. Observed live on `Car Leaves`: six
+    blank entities for a rule that worked and had simply not happened yet.
+
+    Seeded where the broker holds nothing, never over a real value — this runs on every
+    reconcile, and an unconditional publish would blank a rule that is currently open
+    each time a watcher started.
+    """
+
+    def _seeded(self, profiles, retained=(), **primed):
+        bridge, fake = _connected_bridge(profiles)
+        bridge._published_rule_globals = set(retained)
+        for attr, value in primed.items():
+            setattr(bridge, f"_{attr}", value)
+        bridge._seed_rule_globals(profiles)
+        return bridge, fake
+
+    def test_a_never_fired_rule_seeds_off_and_zero(self):
+        _bridge, fake = self._seeded([_profile()])
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/state") == ["OFF"]
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/count") == [0]
+
+    def test_the_count_comes_from_history_not_from_zero(self):
+        _bridge, fake = self._seeded([_profile()], counts={("profile-1", "src-1", "rule-1"): 9})
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/count") == [9]
+
+    def test_a_topic_the_broker_already_holds_is_left_alone(self):
+        """The load-bearing half. A rule mid-event has a retained ON, and seeding OFF
+        over it would close the event as far as every automation is concerned."""
+        retained = ["living-room-watcher/rules/cat-at-bowl/state"]
+        _bridge, fake = self._seeded([_profile()], retained=retained)
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/state") == []
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/count") == [0]
+
+    def test_a_rule_open_right_now_seeds_on_not_off(self):
+        """Renaming a rule moves its topics, so the new ones are blank and get seeded
+        mid-event. Seeding a constant OFF there would report the open event closed."""
+        _bridge, fake = self._seeded([_profile()], open_rules={("profile-1", "src-1", "rule-1")})
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/state") == ["ON"]
+
+    def test_seeding_is_once_not_once_per_reconcile(self):
+        bridge, fake = self._seeded([_profile()])
+        before = len(fake.calls)
+
+        for _ in range(3):
+            bridge._seed_rule_globals([_profile()])
+
+        assert len(fake.calls) == before
+
+    def test_the_event_topic_is_never_seeded(self):
+        """HA's event entity fires on every message it receives, including a retained one
+        replayed on reconnect — so a seeded event would re-trigger every automation bound
+        to it on each restart. `unknown` until it happens is the correct state."""
+        _bridge, fake = self._seeded([_profile()])
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/event") == []
+
+    def test_the_attribute_backed_entities_are_not_given_a_fabricated_sighting(self):
+        """`last seen`, `last subject` and `last camera` all read out of one attributes
+        payload. Seeding them means asserting a sighting that did not happen — and
+        `last seen` is a `device_class: timestamp`, which HA rejects unless it is real."""
+        _bridge, fake = self._seeded([_profile()])
+        assert _payloads(fake, "living-room-watcher/rules/cat-at-bowl/attributes") == []
+
+    def test_a_failed_retained_read_seeds_nothing(self):
+        """`None` means the broker could not be asked which topics are blank. Seeding
+        blind would overwrite exactly the live values the read exists to protect."""
+        bridge, fake = _connected_bridge([_profile()])
+        bridge._published_rule_globals = None
+
+        bridge._seed_rule_globals([_profile()])
+
+        assert fake.calls == []
+
+    def test_a_rule_opted_out_of_ha_gets_no_retained_state(self):
+        """A retained payload on a topic no entity reads never expires. Re-enabling the
+        rule later would replay a stale state into a freshly created entity."""
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", publish_to_ha=False),))
+        _bridge, fake = self._seeded([profile])
+        assert fake.calls == []
 
 
 class _FakePublisher:
@@ -2069,6 +2374,38 @@ class TestAStaleCameraAbstainsRatherThanReportingAbsence:
         assert "OFF" not in _payloads(fake, "subject/luna/source/kitchen/state")
         assert _payloads(fake, "presence/kitchen/status") == ["online", "offline", "online"]
 
+    def test_recovering_to_an_empty_view_clears_the_per_camera_sensor(self):
+        """The other half of "recovery shows the truth immediately". Leaving the stale
+        ON in place is only safe if the report back actually corrects it — and it did
+        not, because the withdrawal dropped the camera from `_presence_by_source`, so
+        the first report diffed an empty view against nothing and found no change.
+
+        The device-level union recomputes from scratch and was always right, which is
+        exactly what hid this: `Detected now` said no while the camera's own sensor
+        underneath it still said yes, indefinitely.
+        """
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        # Back, and the subject left while the feed was down.
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T3")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON", "OFF"]
+
+    def test_recovering_with_the_subject_still_there_republishes_nothing(self):
+        """The complement, and the reason the correction above has to be a diff rather
+        than an unconditional republish: a repeated retained ON is harmless in HA but a
+        blanket re-seed on every stutter is what overwrote good retained values with a
+        single mid-escalation frame last time."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T3")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["ON"]
+
     def test_a_stale_camera_is_dropped_from_the_union_not_counted_as_absent(self):
         """Two cameras, one stale. The fresh one decides — the stale one neither pins
         the subject present nor votes it absent."""
@@ -2115,6 +2452,80 @@ class TestAStaleCameraAbstainsRatherThanReportingAbsence:
         bridge.forget_source_presence("src-1")
 
         assert _payloads(fake, "presence/kitchen/status") == ["online", "offline"]
+
+
+class TestAvailabilityIsRestoredAfterTheStateItMakesReadable:
+    """Home Assistant keeps applying state messages to an entity that is unavailable —
+    it renders `unavailable` but remembers the value — and paints whatever it is holding
+    the instant the availability topic flips to `online`.
+
+    So publishing `online` before the new state makes HA show the *previous* answer
+    first and correct itself a message later. The window is a millisecond, which is what
+    makes it dangerous: invisible in the UI, and a complete state transition to the
+    automation engine. On the live device this was six of the seven sub-second flips a
+    Ring camera's presence sensor recorded in a day — `unavailable`, the stale value,
+    then the true value 0-8 ms later, each one a spurious `Detected`/`Clear` pair.
+    """
+
+    def _order(self, fake, topic):
+        return next(i for i, call in enumerate(fake.calls) if call["topic"] == topic)
+
+    def test_recovery_publishes_the_new_state_before_marking_the_camera_believable(self):
+        """The subject was there, the feed went stale, and it is gone by the time the
+        camera speaks again. HA must never be told the camera is readable while it still
+        holds the ON from before the outage."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+        fake.calls.clear()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T3")
+
+        assert _payloads(fake, "subject/luna/source/kitchen/state") == ["OFF"]
+        assert self._order(fake, "subject/luna/source/kitchen/state") < self._order(fake, "presence/kitchen/status")
+
+    def test_the_arrival_stamp_lands_before_the_camera_becomes_believable_too(self):
+        """`Last location` is read off the attributes topic and blanked the same way —
+        it went to empty on the live device on every recovery, for the same reason."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T1", known=False)
+        fake.calls.clear()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T2")
+
+        assert self._order(fake, "subject/luna/attributes") < self._order(fake, "presence/kitchen/status")
+        # The device-level pair needs the same order for the same reason, and this is
+        # the case that exercises it: the union genuinely changes on the way back.
+        assert self._order(fake, "subject/luna/state") < self._order(fake, PRESENCE_ANY_AVAILABILITY_TOPIC)
+
+    def test_withdrawal_still_masks_the_camera_before_recomputing_the_union(self):
+        """The mirror image, and it must not be "fixed" to match the restore. Going out,
+        masking first is what stops HA rendering the intermediate union; the entity has
+        to be unreadable *before* anything about it changes."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        fake.calls.clear()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+
+        assert self._order(fake, "presence/kitchen/status") < self._order(fake, "subject/luna/state")
+
+    def test_a_camera_reporting_no_change_still_reports_itself_believable(self):
+        """Moving the restore past the state publishes must not put it behind the
+        unchanged-set early return: a camera whose first frame back sees exactly what it
+        saw before would stay `unavailable` forever."""
+        bridge, fake = _presence_bridge()
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T1")
+        bridge.publish_presence(source_uuid="src-1", label_uuids=[], source_name="Kitchen", at="T2", known=False)
+        # Not a fresh set from the bridge's point of view — the withdrawal dropped the
+        # source, so this re-reports what it already had.
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T3")
+        fake.calls.clear()
+
+        bridge.publish_presence(source_uuid="src-1", label_uuids=["subj-a"], source_name="Kitchen", at="T4")
+
+        assert _payloads(fake, "presence/kitchen/status") == []
+        assert bridge._presence_known["src-1"] is True
 
 
 class TestPresenceEntitiesDeclareTheirAvailability:

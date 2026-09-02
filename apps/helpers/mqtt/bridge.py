@@ -82,6 +82,90 @@ RULES_DEVICE_ID = f"{DEVICE_ID_PREFIX}rules"
 RULES_CONFIG_TOPIC = f"{HA_DISCOVERY_PREFIX}/device/{RULES_DEVICE_ID}/config"
 
 
+def component_config_topic(platform: str, device_id: str, key: str) -> str:
+    """One component's discovery topic: `homeassistant/<platform>/<device>/<key>/config`.
+
+    Single-component discovery rather than the device bundle at
+    `homeassistant/device/<id>/config`, and the reason is blast radius. A bundle is
+    processed by Home Assistant as a unit: any change to it tears down and rebuilds
+    *every* entity on that device, which is observable as each one dropping to
+    `unknown` and back. That made a one-line config edit rebuild far more than it
+    touched — a camera rename rebuilt every subject device in the app, because
+    `build_subject_discovery` embeds the whole camera list, and a rule rename rebuilt
+    every rule entity, because they all share one device.
+
+    Per component, only what actually changed is republished. Grouping is unaffected:
+    `dev.ids` is what puts entities on one device page, and HA validates the `device`
+    block with the same schema either way — `via_device` included, so the app device
+    still lists every camera as "Connected via PurrView".
+
+    Both segments must match `[a-zA-Z0-9_-]`. Device ids are `purrview_<kind>_<uuid>`
+    and component keys are uuid- or identifier-derived, so both already do; a slug is
+    never interpolated here, which is what keeps a renamed rule from moving its *config*
+    topic and orphaning a retained payload nobody will ever retract.
+    """
+    return f"{HA_DISCOVERY_PREFIX}/{platform}/{device_id}/{key}/config"
+
+
+def owns_component_topic(topic: str) -> bool:
+    """Whether a `homeassistant/<platform>/<device>/<key>/config` topic is one of ours.
+
+    Same argument as `owns_config_topic`, which see: the read-back subscription cannot
+    express "device ids starting with `purrview_`", so it stays wide and the narrowing
+    happens here. Adopting a foreign topic is a licence to delete it.
+    """
+    parts = topic.split("/")
+    if len(parts) != 5 or parts[0] != HA_DISCOVERY_PREFIX or parts[4] != "config":
+        return False
+    return any(parts[2].startswith(prefix) for prefix in (DEVICE_ID_PREFIX, *LEGACY_DEVICE_ID_PREFIXES))
+
+
+def flatten_discovery(bundles: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Device bundles → one discovery message per component.
+
+    The builders keep producing bundles because that is the shape the payloads are
+    naturally written in — the device block, origin and availability are stated once
+    per device — and this is the only place that shape is undone. Splitting the
+    builders themselves would mean repeating those three keys in twenty dict literals.
+
+    Each component inherits the device's `dev`, `o` and `availability`, and overrides
+    any of them it declares itself. That override is load-bearing for `availability`:
+    a per-camera presence sensor names its own camera's freshness topic, and a
+    component's own availability *replaces* the device's in HA rather than adding to
+    it, so the inherited one must not win.
+
+    `p` is dropped from the payload because the platform is the topic's second segment
+    now. HA ignores unknown keys rather than rejecting them, so leaving it would be
+    harmless — but a payload carrying a platform that the topic could contradict is
+    exactly the kind of thing that silently rots.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for bundle in bundles.values():
+        device_id = str((bundle.get("dev") or {}).get("ids") or "")
+        if not device_id:
+            continue
+        shared = {key: value for key, value in bundle.items() if key != "cmps"}
+        for key, component in (bundle.get("cmps") or {}).items():
+            platform = str(component.get("p") or "")
+            if not platform:
+                continue
+            payload = {k: v for k, v in component.items() if k != "p"}
+            out[component_config_topic(platform, device_id, key)] = {**shared, **payload}
+    return out
+
+
+def legacy_bundle_topics(retained: Dict[str, bytes]) -> FrozenSet[str]:
+    """Our own device-bundle config topics still retained on the broker.
+
+    These are the previous scheme's messages. They have to be retracted or Home
+    Assistant re-creates a full duplicate set of entities from them on every restart,
+    forever — the same trap `LEGACY_DEVICE_ID_PREFIXES` exists for, one level up.
+    Retracting them is what makes the switch to `component_config_topic` leave nothing
+    behind.
+    """
+    return frozenset(topic for topic in retained if owns_config_topic(topic))
+
+
 def owns_config_topic(topic: str) -> bool:
     """Whether a `homeassistant/device/<id>/config` topic is one of ours.
 
@@ -892,6 +976,7 @@ def subjects_in_scope(profiles: Sequence[ProfileView]) -> Dict[str, List[Tuple[R
 
 def build_subject_seed(
     counts: Sequence[Dict[str, Any]],
+    profiles: Sequence[ProfileView],
 ) -> Dict[Tuple[str, ...], Tuple[int, Optional[str]]]:
     """Roll the finest-grain counts up into every tier the bridge publishes.
 
@@ -903,8 +988,26 @@ def build_subject_seed(
     for afterwards, and three separate `GROUP BY`s can produce one across a concurrent
     write. Rows with no subject are skipped: they belong to rule-level counters, which
     seed separately.
+
+    `profiles` pre-loads every tier current config gives an entity to at zero, for the
+    reason spelled out in `build_seed_publishes`: a subject/rule pairing that has never
+    fired otherwise has no retained state at all and sits `unknown` in Home Assistant
+    indefinitely. Observed live on `Car Leaves` — the rule, its per-camera breakdown and
+    its `last seen` all blank, for a rule that was working perfectly and had simply not
+    happened yet.
+
+    **`last_seen` stays `None` for those**, deliberately. The count is a fact the
+    database knows (no rows means zero); a timestamp is not, and `sensor` entities with
+    `device_class: timestamp` reject anything that is not a real one. `unknown` is the
+    honest answer to "when did this last happen" when it never has.
     """
     out: Dict[Tuple[str, ...], Tuple[int, Optional[str]]] = {}
+    for subject_uuid, pairs in subjects_in_scope(profiles).items():
+        out[(subject_uuid,)] = (0, None)
+        for rule, sources in pairs:
+            out[(subject_uuid, rule.uuid)] = (0, None)
+            for source in sources:
+                out[(subject_uuid, rule.uuid, source.uuid)] = (0, None)
 
     def _add(key: Tuple[str, ...], count: int, last_seen: Optional[str]) -> None:
         previous_count, previous_seen = out.get(key, (0, None))
@@ -992,14 +1095,16 @@ def build_all_discovery(
 
 @dataclass(frozen=True)
 class DiscoveryState:
-    """What the last reconcile published: component ids and their platforms, plus the
-    payload itself, per config topic.
+    """What the last reconcile published: the payload, per component config topic.
 
-    The platforms are what removal needs — taking a component out requires naming its
-    platform back to HA, so it cannot be reconstructed from the new config once the
-    component is gone.
+    Keyed per *component* since the move to `component_config_topic`. The previous
+    scheme additionally tracked each component's platform, because removing a component
+    from a device bundle required naming its platform back to HA as a tombstone. A
+    component now owns its topic, so removal is an empty payload on that topic and the
+    platform is in the topic already — the whole two-step dance, and the field that
+    existed to serve it, are gone.
 
-    `payloads` is what *silence* needs. A device config republished with identical
+    `payloads` is what *silence* needs. A config republished with identical
     content is not free: Home Assistant reprocesses the device on every config message,
     and its entities drop out and come back with no state — so a reconcile pass that
     republished everything every minute made every entity flap between `unknown` and
@@ -1015,12 +1120,11 @@ class DiscoveryState:
     that device. Worth knowing; not worth a state file yet.
     """
 
-    components: Dict[str, Dict[str, str]] = field(default_factory=dict)
     payloads: Dict[str, str] = field(default_factory=dict)
 
     @property
     def topics(self) -> FrozenSet[str]:
-        return frozenset(self.components)
+        return frozenset(self.payloads)
 
 
 def canonical_config(payload: Dict[str, Any]) -> str:
@@ -1054,94 +1158,74 @@ def state_from_retained(retained: Dict[str, bytes]) -> DiscoveryState:
     refusing to start the bridge over one malformed retained message would be a far
     worse trade.
     """
-    components: Dict[str, Dict[str, str]] = {}
     payloads: Dict[str, str] = {}
     for topic, payload in retained.items():
-        if not owns_config_topic(topic):
+        if not owns_component_topic(topic):
+            continue
+        if not payload:
+            # A retracted component: the broker keeps the topic with an empty payload
+            # until it expires it. Adopting that as state would make the next pass see a
+            # topic it does not desire and retract it again, every pass, forever.
             continue
         try:
-            config = json.loads(payload)
-            cmps = config.get("cmps") or {}
-            components[topic] = {cid: str(comp.get("p", "")) for cid, comp in cmps.items() if isinstance(comp, dict)}
             # Re-canonicalised from the parsed config rather than kept as the raw bytes,
             # so it is comparable with a payload built fresh this pass — the broker's
             # copy came from `json.dumps` with different separators and key order.
-            payloads[topic] = canonical_config(config)
+            payloads[topic] = canonical_config(json.loads(payload))
         except Exception:
             logger.debug("Skipping unparseable retained discovery config on %s", topic, exc_info=True)
-    return DiscoveryState(components=components, payloads=payloads)
+    return DiscoveryState(payloads=payloads)
 
 
 def reconcile_discovery(
     previous: DiscoveryState, desired: Dict[str, Dict[str, Any]]
 ) -> Tuple[Dict[str, Optional[Dict[str, Any]]], DiscoveryState]:
-    """What to publish this pass: every desired message, plus the two kinds of removal.
+    """What to publish this pass: every changed component, plus a retraction for every
+    one that has gone.
 
-    **A whole device that disappeared** gets an empty payload (`None`, published as
-    `""`) on its config topic — a deleted source or profile.
+    `desired` is the **flattened** set from `flatten_discovery` — one entry per
+    component config topic, not per device. Anything no longer desired gets an empty
+    payload (`None`, published as `""`) on its own topic, which is the whole of removal
+    now: a deleted rule, a disabled camera and a deleted profile are all just topics
+    that stopped being desired.
 
-    **A single component that disappeared** — a deleted or disabled rule, on a device
-    that still exists — needs more than omission. HA's device-discovery docs are
-    explicit that dropping a component from `cmps` does *not* reliably remove its
-    entity; the component must first be republished as an empty config carrying only
-    its platform, and omitted only on a subsequent update. So a pass that notices a
-    component has gone re-inserts it as `{"p": <platform>}` — a tombstone — and the
-    next pass publishes the clean message. That follow-up is not automatic any more:
-    passes are silent when nothing changed, so it happens because the tombstoned payload
-    is recorded as what the broker holds, and the clean config differs from it.
-
-    Getting this wrong is invisible from here: the payload looks correct, and the
-    entity simply stays in HA forever with no way to remove it but hand-editing the
-    entity registry.
+    The device-bundle scheme needed a two-step tombstone here, because dropping a
+    component from `cmps` did not reliably remove its entity — it had to be republished
+    as `{"p": <platform>}` first and omitted only on a later pass. A component owning
+    its own topic makes that unnecessary, and the failure it guarded against (an entity
+    stuck in HA with no way to remove it but hand-editing the registry) is not reachable
+    any more.
 
     Returns `(to_publish, new_state)` rather than mutating anything, so the caller
     decides when — and whether — to persist the second value.
     """
     # ⚠️ Retractions are inserted **first**, and the caller publishes in iteration order.
     #
-    # It looks like housekeeping and it is not. When a device's id changes — the whole
-    # `encounterwatch_` → `purrview_` rename is one such pass — the same camera is
-    # retracted under one id and published under another in a single reconcile. Publish
-    # the new one first and both exist in HA at once: the device names and entity names
-    # are identical (only the *id* changed), so every new entity collides with a live old
-    # one and HA uniquifies it to `sensor.<name>_2`. The old is retracted a moment later
-    # and its entity_id freed, but the new entity keeps the `_2` for good — breaking every
-    # automation and dashboard that referenced it, and orphaning the long-term statistics,
-    # which are keyed on entity_id. Retract first and the id is free before its
-    # replacement asks for it, so the entity_id — and its history — carry across.
+    # It looks like housekeeping and it is not. When an entity's config topic changes —
+    # the `encounterwatch_` → `purrview_` device rename was one such pass, and so is the
+    # move off device bundles — the same entity is retracted under one topic and
+    # published under another in a single reconcile. Publish the new one first and both
+    # exist in HA at once: the device and entity names are identical, so every new entity
+    # collides with a live old one and HA uniquifies it to `sensor.<name>_2`. The old is
+    # retracted a moment later and its entity_id freed, but the new entity keeps the `_2`
+    # for good — breaking every automation and dashboard that referenced it. Retract
+    # first and the id is free before its replacement asks for it.
     to_publish: Dict[str, Optional[Dict[str, Any]]] = {}
     for gone_topic in previous.topics - desired.keys():
         to_publish[gone_topic] = None
 
     for topic, payload in desired.items():
-        previous_components = previous.components.get(topic, {})
-        removed = set(previous_components) - set(payload["cmps"])
-        if removed:
-            payload = {
-                **payload,
-                "cmps": {**payload["cmps"], **{cid: {"p": previous_components[cid]} for cid in removed}},
-            }
-        # Only what actually changed. Republishing an identical device config is not a
-        # no-op at the other end: HA reprocesses the device and its entities go
-        # momentarily unavailable, then return with no state — so an unconditional
-        # republish every pass flapped every entity on the reconcile's own period.
+        # Only what actually changed. Republishing an identical config is not a no-op at
+        # the other end: HA reprocesses the entity and it goes momentarily unavailable,
+        # then returns with no state — so an unconditional republish every pass flapped
+        # every entity on the reconcile's own period.
         if previous.payloads.get(topic) != canonical_config(payload):
             to_publish[topic] = payload
 
-    # Records what was *desired*, never the tombstones — otherwise the next pass would
-    # see them as components that had just disappeared and tombstone them again,
-    # forever.
-    #
-    # The payload side records what is now *on the broker*: this pass's message where
-    # one was sent, and the untouched previous one where it was not. That is also what
-    # keeps two-step removal working now that a pass can be silent — a tombstone leaves
-    # a payload that differs from the clean config, so the next pass publishes the clean
-    # one and settles.
+    # What is now *on the broker*: this pass's message where one was sent, and the
+    # untouched previous one where it was not. Retracted topics are simply absent, which
+    # is what stops the next pass seeing them as gone and retracting them again forever.
     new_state = DiscoveryState(
-        components={
-            topic: {cid: str(component.get("p", "")) for cid, component in payload["cmps"].items()}
-            for topic, payload in desired.items()
-        },
         payloads={
             topic: (canonical_config(to_publish[topic]) if topic in to_publish else previous.payloads.get(topic, ""))
             for topic in desired
@@ -1151,21 +1235,37 @@ def reconcile_discovery(
 
 
 def build_seed_publishes(profiles: Sequence[ProfileView], counts: Sequence[Dict[str, Any]]) -> Dict[str, int]:
-    """Topic → lifetime count, for every (source, rule) count both present in history
-    and still known to current config. A count for a uuid no longer in any profile
-    (a deleted rule or source) has no topic to seed onto — its retained state, if any,
-    goes away with the rest of that entity's discovery retraction, not through here.
+    """Topic → lifetime count, for every (source, rule) pair current config gives an
+    entity to. A count for a uuid no longer in any profile (a deleted rule or source)
+    has no topic to seed onto — its retained state, if any, goes away with the rest of
+    that entity's discovery retraction, not through here.
+
+    **Pairs with no history seed `0`, they are not skipped.** History-only seeding was
+    the reason a rule that had never fired sat `unknown` in Home Assistant forever:
+    discovery creates the entity, nothing ever publishes its state topic, and `unknown`
+    is not `unavailable` — it reads as a working sensor while every numeric comparison
+    and `is_state(..., "0")` against it silently fails. Zero is not a guess here, it is
+    what the database says: `get_watch_event_counts` returns a row per pair that has
+    fired, so absence *is* the count. Seeding it also gives HA a retained value to
+    re-read whenever an entity is rebuilt, which is what stops the same entities
+    blipping back to `unknown` on every discovery republish.
 
     Resolved per profile rather than against one flat uuid→slug map, because the source
     slug is profile-scoped: `mqtt_name` lives on the profile↔source link, so one camera
     watched by two profiles can legitimately have a different slug under each.
     """
     index = build_slug_index(profiles)
+    seeded = build_counter_seed(profiles, counts)
     out: Dict[str, int] = {}
-    for (profile_uuid, source_uuid, rule_uuid), count in build_counter_seed(profiles, counts).items():
-        topic = index.count_topic(profile_uuid, source_uuid, rule_uuid)
-        if topic is not None:
-            out[topic] = count
+    for profile in profiles:
+        for source in profile.sources:
+            for rule in profile.rules:
+                # `count_topic` returns None for anything opted out of HA, which is the
+                # same gate discovery applies — so this never invents a topic no entity
+                # reads, and a retained zero can never be stranded on the broker.
+                topic = index.count_topic(profile.uuid, source.uuid, rule.uuid)
+                if topic is not None:
+                    out[topic] = seeded.get((profile.uuid, source.uuid, rule.uuid), 0)
     return out
 
 
@@ -1396,6 +1496,21 @@ class MqttBridge:
         #: A camera that is not "known" is dropped from `_presence_by_source` entirely
         #: rather than contributing an empty set — abstaining, not voting absent.
         self._presence_known: Dict[str, bool] = {}
+        #: source uuid → what it was reporting when it was withdrawn from the union.
+        #: Kept because the withdrawal drops it from `_presence_by_source`, so the next
+        #: report has nothing to diff against and a camera that recovers seeing *nothing*
+        #: publishes nothing — leaving its per-camera sensor retained ON indefinitely
+        #: while the camera is available and plainly reporting an empty view. Consumed
+        #: on the first report back; see `_publish_changed_presence`.
+        self._presence_withdrawn: Dict[str, Set[str]] = {}
+        #: Device-bundle config topics from the previous discovery scheme, still retained
+        #: on this broker. Retracted on the first discovery pass and then cleared — see
+        #: `publish_all_discovery`. Empty on any broker that never saw the old scheme.
+        self._legacy_bundles: FrozenSet[str] = frozenset()
+        #: Rule-global topics the broker already holds a retained value for. Same
+        #: contract as `_published_source_states`: only the blanks are seeded, and `None`
+        #: (the read failed) means seed nothing. See `_seed_rule_globals`.
+        self._published_rule_globals: Optional[Set[str]] = None
         #: Per-camera state topics the broker already holds a retained value for, read
         #: back at connect. Only the blanks are seeded — see `_unpublished_subjects`.
         #: `None` means the read failed and nothing may be seeded this run.
@@ -1496,9 +1611,17 @@ class MqttBridge:
         # drops the ones we do not own; do not "fix" this by writing `purrview_+`, which
         # matches nothing and would silently disable the read-back entirely.
         try:
-            retained = await publisher.read_retained(f"{HA_DISCOVERY_PREFIX}/device/+/config", absolute=True)
+            retained = await publisher.read_retained(f"{HA_DISCOVERY_PREFIX}/+/+/+/config", absolute=True)
             self._last_discovery = state_from_retained(retained)
-            logger.info("MQTT bridge adopted %s retained discovery config(s)", len(self._last_discovery.components))
+            logger.info("MQTT bridge adopted %s retained discovery config(s)", len(self._last_discovery.payloads))
+            # The previous scheme's bundles, if this broker still holds any. Read
+            # separately because they live at a different topic depth — four levels, not
+            # five — so no single wildcard covers both. Retracted on the next discovery
+            # pass; see `publish_all_discovery`.
+            legacy = await publisher.read_retained(f"{HA_DISCOVERY_PREFIX}/device/+/config", absolute=True)
+            self._legacy_bundles = legacy_bundle_topics(legacy)
+            if self._legacy_bundles:
+                logger.info("MQTT bridge found %s legacy device bundle(s) to retract", len(self._legacy_bundles))
         except Exception:
             # Starting with an empty state is the pre-existing behaviour: additive
             # only, no retraction this pass. Worth a warning, not worth refusing to
@@ -1530,6 +1653,17 @@ class MqttBridge:
             # value with a guess.
             self._published_source_states = None
             logger.warning("Could not read retained per-camera states; not seeding this run", exc_info=True)
+        # The same question for the Rules device's own tier. Read together as one
+        # subtree — `<profile>/rules/<rule>/<leaf>` is four levels, and the leaf is
+        # matched with a wildcard rather than enumerated so `_seed_rule_globals` decides
+        # which leaves it seeds without a second read here to keep in step with it.
+        try:
+            existing_rules = await publisher.read_retained("+/rules/+/+")
+            self._published_rule_globals = {self._strip_prefix(topic) for topic in existing_rules}
+            logger.info("MQTT bridge adopted %s retained rule-global state(s)", len(self._published_rule_globals))
+        except Exception:
+            self._published_rule_globals = None
+            logger.warning("Could not read retained rule-global states; not seeding this run", exc_info=True)
         try:
             await self.seed_counters()
         except Exception:
@@ -1719,11 +1853,33 @@ class MqttBridge:
         # unchanged config publishes nothing, and a budget that read zero whenever
         # nothing moved would be useless.
         self._entity_count = count_entities(desired)
-        to_publish, self._last_discovery = reconcile_discovery(self._last_discovery, desired)
+        # ⚠️ The legacy bundles are retracted on a pass of their own, and nothing else is
+        # published while they are outstanding.
+        #
+        # Every entity in a bundle has the same `unique_id` as its per-component
+        # replacement — that is what carries the entity over — so if both configs reach
+        # Home Assistant before it has finished tearing the old device down, the new
+        # entity collides with the live old one and is uniquified to `sensor.<name>_2`
+        # permanently. Ordering the retraction first within one pass makes that a race
+        # rather than a guarantee, because HA's registry removal is asynchronous and the
+        # two messages arrive back to back. Splitting the passes costs one reconcile
+        # interval, once, on one deployment, and removes the race entirely.
+        if self._legacy_bundles:
+            for topic in sorted(self._legacy_bundles):
+                self._publisher.publish(topic, "", retain=True, absolute=True)
+            logger.info("MQTT bridge retracted %s legacy device bundle(s)", len(self._legacy_bundles))
+            self._legacy_bundles = frozenset()
+            return
+        to_publish, self._last_discovery = reconcile_discovery(self._last_discovery, flatten_discovery(desired))
         for topic, payload in to_publish.items():
             self._publisher.publish(topic, "" if payload is None else payload, retain=True, absolute=True)
         # After discovery, so the switch entity exists before its first state arrives.
         self._publish_armed_states(profiles)
+        # Same reasoning, and the same placement: the Rules device's other entities need
+        # a state for exactly the reason the switch does. Kept separate because arming is
+        # in-memory truth republished unconditionally, while these are seeded only where
+        # the broker holds nothing — see `_seed_rule_globals`.
+        self._seed_rule_globals(profiles)
 
     # ---------------------------------------------------------------- rule arming
 
@@ -1744,6 +1900,63 @@ class MqttBridge:
                 if base is None:
                     continue
                 self._publisher.publish(f"{base}/armed", "ON" if self.is_rule_armed(rule.uuid) else "OFF", retain=True)
+
+    def _seed_rule_globals(self, profiles: Sequence[ProfileView]) -> None:
+        """Give the Rules device's entities a state before their rule has ever fired.
+
+        `_publish_rule_global` only runs on a transition, so a rule that has not happened
+        yet had no retained value on any of its topics and every entity on the Rules
+        device read `unknown` — observed live on `Car Leaves`: state, count, last seen,
+        last subject, last camera and the event, all blank, for a rule that was working
+        and had simply not fired. `unknown` is not `unavailable`, so it reads as a
+        working sensor while `is_state(..., "off")` never matches it.
+
+        **Only the two that are knowable.** State is `OFF` because a rule that has never
+        fired is not firing, and the count is what the database says. The other four are
+        left blank on purpose:
+
+        - `last seen` is a `device_class: timestamp` sensor. There is no honest
+          timestamp for something that never happened, and HA rejects anything that is
+          not a real one — `unknown` *is* the correct answer here.
+        - `last subject` and `last camera` read out of the same attributes payload, so
+          seeding them means publishing an attributes document asserting a sighting that
+          did not occur.
+        - the event topic must never be seeded, and never retained: HA's event entity
+          fires on every message it receives, so a retained one would re-trigger every
+          automation bound to it on each reconnect. That is the reason
+          `_publish_rule_global` publishes it with `retain=False`.
+
+        **Only topics with no retained value**, the same contract as
+        `_unpublished_subjects`. This runs on every reconcile, and an unconditional
+        publish would blank a rule that is currently open every time a watcher started.
+        It also means a *renamed* rule seeds its new topics: the slug is in the topic
+        path, so a rename moves them, and the fresh ones would otherwise be `unknown`
+        until the rule next fired — indefinitely, for a rule that fires twice a day.
+        Seeded from in-memory truth (`_open_rules`, `_counts`) rather than a constant,
+        so a rename mid-event carries the open state across instead of closing it.
+        """
+        if self._publisher is None or self._published_rule_globals is None:
+            return
+        for profile in profiles:
+            for rule in profile.rules:
+                if not rule.enabled or not rule.publish_to_ha:
+                    continue
+                base = self._slugs.rule_global_base(profile.uuid, rule.uuid)
+                if base is None:
+                    continue
+                state_topic = f"{base}/state"
+                if state_topic not in self._published_rule_globals:
+                    self._published_rule_globals.add(state_topic)
+                    open_now = any(p == profile.uuid and r == rule.uuid for p, _s, r in self._open_rules)
+                    self._publisher.publish(state_topic, "ON" if open_now else "OFF", retain=True)
+                count_topic = f"{base}/count"
+                if count_topic not in self._published_rule_globals:
+                    self._published_rule_globals.add(count_topic)
+                    # Summed the same way `_publish_rule_global` sums it, so the seeded
+                    # value and the first live one cannot disagree. An empty selection
+                    # sums to 0, which is the never-fired case.
+                    total = sum(c for (p, _s, r), c in self._counts.items() if p == profile.uuid and r == rule.uuid)
+                    self._publisher.publish(count_topic, total, retain=True)
 
     async def _restore_armed_state(self) -> None:
         """Re-read the armed flags this app itself retained, once per process.
@@ -1886,7 +2099,7 @@ class MqttBridge:
         # Subject tiers, all rolled up from the same rows the rule counters used, so a
         # subject's total is the sum of its rules by construction rather than by two
         # queries happening to agree.
-        seed = build_subject_seed(counts)
+        seed = build_subject_seed(counts, profiles)
         self._subject_counts = {key: count for key, (count, _seen) in seed.items()}
         for key, (count, last_seen) in seed.items():
             topic = self._subject_topic(key)
@@ -2145,8 +2358,11 @@ class MqttBridge:
         """
         if self._publisher is None:
             return
-        self._publish_presence_availability(source_uuid, known)
         if not known:
+            # Withdrawn *before* the union is recomputed, and restored *after* — see the
+            # note at the bottom of this method. Masking first is the safe order going
+            # out: the entity is unreadable before anything about it changes.
+            self._publish_presence_availability(source_uuid, False)
             # Abstain. Dropping the camera from the union is the whole point: left in
             # with an empty set it would actively assert "not here", and a stationary
             # object would appear to leave the moment its feed stuttered and to arrive
@@ -2162,15 +2378,50 @@ class MqttBridge:
             # `detected` is unavailable; while only some are, the union over the ones
             # still reporting is the honest answer.
             was_present = self._present_subjects()
-            if self._presence_by_source.pop(source_uuid, None) is None:
+            withdrawn = self._presence_by_source.pop(source_uuid, None)
+            if withdrawn is None:
                 return
+            # Remembered rather than discarded, so the first report back can tell
+            # "still there" from "gone while the feed was down" — see the field's note.
+            self._presence_withdrawn[source_uuid] = withdrawn
             for subject_uuid in was_present ^ self._present_subjects():
                 self._publish_subject_presence(subject_uuid)
             return
         incoming = set(label_uuids)
         previous = self._presence_by_source.get(source_uuid)
-        if previous == incoming:
-            return
+        if previous != incoming:
+            self._publish_changed_presence(source_uuid, previous, incoming, at=at, source_name=source_name)
+        # ⚠️ **Last, after every state this camera contributes.** Home Assistant keeps
+        # applying state messages to an entity that is unavailable — it just renders
+        # `unavailable` instead of the value — and paints the value it is *already*
+        # holding the instant the availability topic flips to `online`. So an `online`
+        # published before the new state makes HA show the previous run's answer for as
+        # long as the next publish takes to arrive, then correct itself.
+        #
+        # That window is a millisecond or two, which is precisely what makes it
+        # damaging: it is invisible in the UI and a fully-fledged state transition to
+        # the automation engine. Measured on a live device over one day, six of the
+        # seven sub-second flips on a Ring camera's presence sensor were this and
+        # nothing else — `unavailable` → the stale value → the true value, 0-8 ms apart,
+        # every one of them a spurious `Detected`/`Clear` pair for anything triggering
+        # on the entity. Restoring availability last makes the first thing HA paints the
+        # right thing.
+        #
+        # Free in the steady state: `_publish_presence_availability` is change-gated, so
+        # a per-frame call with the camera already believable is one dict lookup.
+        self._publish_presence_availability(source_uuid, True)
+
+    def _publish_changed_presence(
+        self,
+        source_uuid: str,
+        previous: Optional[Set[str]],
+        incoming: Set[str],
+        *,
+        at: Optional[str],
+        source_name: Optional[str],
+    ) -> None:
+        """The state half of `publish_presence`, split out only so the availability
+        restore can sit after all of it without duplicating the early returns."""
         was_present = self._present_subjects()
         self._presence_by_source[source_uuid] = incoming
         for subject_uuid in was_present ^ self._present_subjects():
@@ -2198,7 +2449,16 @@ class MqttBridge:
         # noisiest thing on the broker. `previous is None` is exactly "this source has
         # not reported since the bridge came up", which also re-runs after a watcher
         # restart drops it from the map.
-        changed = (previous or set()) ^ incoming
+        # Diffed against what this camera last *said*, which after a withdrawal is not
+        # what `_presence_by_source` holds — the withdrawal deliberately drops it. With
+        # `previous` alone a camera that goes stale holding ON and recovers seeing an
+        # empty room computes an empty `changed` and publishes nothing, so its
+        # per-camera sensor stays retained ON while it is available and reporting
+        # nothing. The union is unaffected (it is recomputed from scratch), which is
+        # what made this hide: the device-level answer was right and the per-camera
+        # breakdown under it was not.
+        baseline = previous if previous is not None else self._presence_withdrawn.pop(source_uuid, None)
+        changed = (baseline or set()) ^ incoming
         subjects = (changed | self._unpublished_subjects(source_uuid)) if previous is None else changed
         for subject_uuid in subjects:
             self._publish_subject_source_presence(subject_uuid, source_uuid)
