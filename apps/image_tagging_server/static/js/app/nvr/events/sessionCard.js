@@ -10,9 +10,8 @@
  * (1277 → 653 on live history), where identity grouping cuts it by sixty. It makes the
  * flat view honest about what one visit is; it does not make the page comprehensible.
  */
-import { watchEventSnapshotUrl } from '/app-static/js/shared/api/watchProfiles.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
-import { eventHeadline, formatDuration, formatEventTime } from './eventCard.js';
+import { eventHeadline, formatDuration, formatEventTime, setEventCardArt } from './eventCard.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -66,10 +65,13 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
     img.className = 'event-card__image';
     img.loading = 'lazy';
     img.alt = '';
-    img.src = watchEventSnapshotUrl(session.representativeUuid);
-    img.addEventListener('error', () => {
-      img.remove();
-      media.classList.add('event-card__media--empty');
+    // Crop first, wide shot as the fallback — a session card is a grid card and asks
+    // the grid's question. It carries no `hasCrop`, so it takes the two-step path.
+    setEventCardArt(img, session.representativeUuid, {
+      onGone: () => {
+        img.remove();
+        media.classList.add('event-card__media--empty');
+      },
     });
     media.appendChild(img);
   } else {

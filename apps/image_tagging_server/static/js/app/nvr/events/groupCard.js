@@ -7,9 +7,8 @@
  * first, then who did what to what — with the count taking the place the timestamp
  * holds there, because for a group the count *is* the headline fact.
  */
-import { watchEventSnapshotUrl } from '/app-static/js/shared/api/watchProfiles.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
-import { formatEventTime } from './eventCard.js';
+import { formatEventTime, setEventCardArt } from './eventCard.js';
 import { groupHeadline } from './identity.js';
 
 function el(tag, className, text) {
@@ -132,12 +131,13 @@ export function buildGroupCard(group, {
     img.className = 'event-group-card__image';
     img.loading = 'lazy';
     img.alt = '';
-    img.src = watchEventSnapshotUrl(group.representativeUuid);
-    // Same reasoning as the event card: card art can be reaped out from under a row,
-    // and a broken-image icon reads as a bug where the placeholder reads as "no picture".
-    img.addEventListener('error', () => {
-      img.remove();
-      media.classList.add('event-group-card__media--empty');
+    // Same reasoning as the event card, including the crop-then-snapshot fallback: a
+    // group has no `hasCrop` of its own, so it takes the two-step path.
+    setEventCardArt(img, group.representativeUuid, {
+      onGone: () => {
+        img.remove();
+        media.classList.add('event-group-card__media--empty');
+      },
     });
     media.appendChild(img);
   } else {

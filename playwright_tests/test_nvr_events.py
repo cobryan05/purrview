@@ -293,7 +293,12 @@ def _mock(
                 body=json.dumps({"status": "success", **(facets if facets is not None else _facets())}),
             )
             return
-        if "/snapshot" in url:
+        # ⚠️ Both image endpoints, and both before the list handler at the bottom. This
+        # route matches on the `/api/watch-events` *prefix*, so an unhandled per-event
+        # path does not 404 — it falls through and is answered with the events list,
+        # which appends to `queries`. Every "the page asked for X" assertion in this file
+        # then sees one bogus query per card, and the card gets JSON for its picture.
+        if "/snapshot" in url or "/crop" in url:
             route.fulfill(status=200, content_type="image/jpeg", body=PIXEL_JPEG)
             return
         # ⚠️ Both derived from `rows`, never hand-written. The three endpoints answer the

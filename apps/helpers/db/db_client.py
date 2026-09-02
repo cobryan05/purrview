@@ -7230,6 +7230,7 @@ class DbClient:
         """
         read = WatchEventRead.model_validate(event)
         read.has_snapshot = bool(event.snapshot_path)
+        read.has_crop = bool(event.crop_path)
         return read
 
     async def _attach_event_recordings(self, session: Any, events: List[WatchEventRead]) -> List[WatchEventRead]:
@@ -7510,7 +7511,13 @@ class DbClient:
         of them do. The fallback matters more than it looks: 1 event in 1277 has no card
         art, and a group whose representative happened to be that one would render as an
         empty tile for no cause the user could see.
+
+        A croppable event outranks a merely snapshotted one for the same reason, one
+        step further on: the group card shows the crop, so a representative picked
+        without regard to it can leave a whole group rendering the wide shot while a
+        sibling event two rows down has the close-up.
         """
+        has_crop = case((WatchEvent.crop_path != None, 1), else_=0)  # noqa: E711
         has_snapshot = case((WatchEvent.snapshot_path != None, 1), else_=0)  # noqa: E711
         ranked = self._apply_watch_event_filters(
             select(
@@ -7519,7 +7526,7 @@ class DbClient:
                 func.row_number()
                 .over(
                     partition_by=list(self._IDENTITY_COLUMNS),
-                    order_by=[has_snapshot.desc(), WatchEvent.started_at.desc()],
+                    order_by=[has_crop.desc(), has_snapshot.desc(), WatchEvent.started_at.desc()],
                 )
                 .label("rn"),
             ),
@@ -7590,6 +7597,7 @@ class DbClient:
                     WatchEvent.started_at,
                     WatchEvent.ended_at,
                     WatchEvent.snapshot_path,
+                    WatchEvent.crop_path,
                     starts_session.label("starts_session"),
                 ),
                 **filters,
@@ -7631,6 +7639,7 @@ class DbClient:
                         sessioned.c.session_ix,
                     ],
                     order_by=[
+                        case((sessioned.c.crop_path != None, 1), else_=0).desc(),  # noqa: E711
                         case((sessioned.c.snapshot_path != None, 1), else_=0).desc(),  # noqa: E711
                         sessioned.c.started_at.desc(),
                     ],
@@ -8044,6 +8053,12 @@ class DbClient:
             event = await session.get(WatchEvent, uuid)
             return None if event is None else event.snapshot_path
 
+    async def get_watch_event_crop_path(self, uuid: str) -> Optional[str]:
+        """The cropped card art's path. Same contract as the snapshot's."""
+        async with self._async_session_maker() as session:
+            event = await session.get(WatchEvent, uuid)
+            return None if event is None else event.crop_path
+
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
         async with self._async_session_maker() as session:
             session.add(event)
@@ -8113,8 +8128,8 @@ class DbClient:
         per file on disk and the answer does not change during a sweep.
 
         Deliberately covers every column that can name a file — a clip, its thumbnail,
-        its detection-overlay sidecar, and an event's snapshot. Missing one would make
-        the sweep delete live files, which is the failure mode that makes
+        its detection-overlay sidecar, and an event's snapshot and crop. Missing one
+        would make the sweep delete live files, which is the failure mode that makes
         directory-walking sweeps dangerous.
         """
         paths: Set[str] = set()
@@ -8122,8 +8137,9 @@ class DbClient:
             result = await session.exec(select(Recording.file_path, Recording.thumbnail_path, Recording.overlay_path))
             for file_path, thumbnail_path, overlay_path in result.all():
                 paths.update(p for p in (file_path, thumbnail_path, overlay_path) if p)
-            result = await session.exec(select(WatchEvent.snapshot_path))
-            paths.update(p for p in result.all() if p)
+            result = await session.exec(select(WatchEvent.snapshot_path, WatchEvent.crop_path))
+            for snapshot_path, crop_path in result.all():
+                paths.update(p for p in (snapshot_path, crop_path) if p)
         return paths
 
     async def rows_naming_recording_files(self) -> List[Dict[str, Any]]:
@@ -8167,24 +8183,30 @@ class DbClient:
                             "at": created_at,
                         }
                     )
+            # ⚠️ An event's two images get a row each, never one row naming both. The
+            # caller keeps a row when *any* of its paths still exists, so pairing them
+            # would make a surviving snapshot hold a deleted crop's column open forever
+            # — the card would then keep asking for a file nobody can produce again.
             result = await session.exec(
-                select(WatchEvent.uuid, WatchEvent.snapshot_path, WatchEvent.started_at).where(
-                    WatchEvent.snapshot_path.is_not(None)
+                select(WatchEvent.uuid, WatchEvent.snapshot_path, WatchEvent.crop_path, WatchEvent.started_at).where(
+                    or_(WatchEvent.snapshot_path.is_not(None), WatchEvent.crop_path.is_not(None))
                 )
             )
-            for uuid, snapshot_path, started_at in result.all():
-                if snapshot_path:
-                    rows.append(
-                        {
-                            "kind": "event_snapshot",
-                            "uuid": uuid,
-                            "paths": [snapshot_path],
-                            # A snapshot is written synchronously when the event opens, so
-                            # there is no in-progress state to exempt the way a clip has.
-                            "status": None,
-                            "at": started_at,
-                        }
-                    )
+            for uuid, snapshot_path, crop_path, started_at in result.all():
+                for kind, path in (("event_snapshot", snapshot_path), ("event_crop", crop_path)):
+                    if path:
+                        rows.append(
+                            {
+                                "kind": kind,
+                                "uuid": uuid,
+                                "paths": [path],
+                                # Both images are written synchronously when the event
+                                # opens, so there is no in-progress state to exempt the
+                                # way a clip has.
+                                "status": None,
+                                "at": started_at,
+                            }
+                        )
         return rows
 
     async def close_watch_event(

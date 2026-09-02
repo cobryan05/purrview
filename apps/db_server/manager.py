@@ -4306,6 +4306,19 @@ class Manager:
         path = Path(path_str)
         return path if path.is_file() else None
 
+    async def watch_event_crop_file(self, uuid: str) -> Optional[Path]:
+        """Resolve an event's cropped card art to a file that actually exists.
+
+        Same contract as `watch_event_snapshot_file`, including the deliberate blurring
+        of "never had one" and "the path is stale" — the caller serves a 404 either way,
+        and the card falls back to the wide shot for both.
+        """
+        path_str = await self._db_client.get_watch_event_crop_path(uuid)
+        if not path_str:
+            return None
+        path = Path(path_str)
+        return path if path.is_file() else None
+
     async def delete_watch_event(self, uuid: str) -> bool:
         """Delete an event, its card art, and every recording it owns.
 
@@ -4314,23 +4327,32 @@ class Manager:
         event that no longer exists — invisible in the UI and swept only by the orphan
         pass, an hour later at best.
 
-        The snapshot is the event's own file (not a curated training image), so it goes
-        with the row. A `save_snapshot` action's output lives under `image_datasets` and
-        is deliberately left alone — the user curates that. So does a `save_timelapse`
-        action's, which is not an event's property at all.
+        The snapshot and its crop are the event's own files (not curated training
+        images), so they go with the row. A `save_snapshot` action's output lives under
+        `image_datasets` and is deliberately left alone — the user curates that. So does
+        a `save_timelapse` action's, which is not an event's property at all.
         """
         event = await self._db_client.get_watch_event(uuid)
         if event is None:
             return False
-        snapshot = await self._db_client.get_watch_event_snapshot_path(uuid)
+        # Both paths are read before the row goes: afterwards there is nothing left to
+        # ask, and a crop whose row was deleted first is an orphan the sweep has to find
+        # an hour later.
+        images = [
+            await self._db_client.get_watch_event_snapshot_path(uuid),
+            await self._db_client.get_watch_event_crop_path(uuid),
+        ]
         for recording_uuid in await self._db_client.recording_uuids_for_event(uuid):
             await self.delete_recording(recording_uuid)
         deleted = await self._db_client.delete_watch_event(uuid)
-        if deleted and snapshot:
-            try:
-                Path(snapshot).unlink(missing_ok=True)
-            except OSError as e:
-                logger.warning("Could not remove snapshot %s: %s", snapshot, e)
+        if deleted:
+            for path_str in images:
+                if not path_str:
+                    continue
+                try:
+                    Path(path_str).unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning("Could not remove event image %s: %s", path_str, e)
         return deleted
 
     async def delete_watch_events(self, uuids: Sequence[str]) -> int:
@@ -4563,7 +4585,7 @@ class Manager:
         return size_by_path.get(os.path.realpath(path), 0)
 
     async def _event_disk_usage(self, uuid: str, size_by_path: Dict[str, int]) -> int:
-        """Bytes one event will free: its snapshot plus every recording it owns.
+        """Bytes one event will free: its two images plus every recording it owns.
 
         Undercounting here is not cosmetic — eviction decrements a running total by this
         figure and stops when it is back under the cap, so missing an event's second
@@ -4571,6 +4593,7 @@ class Manager:
         than it needed to.
         """
         total = self._path_size(await self._db_client.get_watch_event_snapshot_path(uuid), size_by_path)
+        total += self._path_size(await self._db_client.get_watch_event_crop_path(uuid), size_by_path)
         for recording_uuid in await self._db_client.recording_uuids_for_event(uuid):
             recording = await self._db_client.get_recording(recording_uuid)
             total += self._path_size(getattr(recording, "file_path", None), size_by_path)
@@ -4745,7 +4768,10 @@ class Manager:
         A recording row is deleted outright — the row exists to index a file, and an
         index entry for a file nobody can produce again is worth nothing. An *event* is
         not: it is the record that something happened, which stays true after its
-        snapshot is gone, so only `snapshot_path` is cleared and the event survives.
+        pictures are gone, so only the path column is cleared and the event survives.
+        Snapshot and crop are cleared independently — an event that lost one still shows
+        the other, and the db client hands them over as a row each so this can tell them
+        apart.
 
         Three exemptions, all of which stop this from eating live data:
 
@@ -4813,6 +4839,12 @@ class Manager:
                 if row["kind"] == "recording":
                     if await self.delete_recording(row["uuid"]):
                         recordings += 1
+                elif row["kind"] == "event_crop":
+                    # Only the crop's column: an event whose crop a user deleted still
+                    # has its wide shot, and clearing both would blank a card that has a
+                    # perfectly good picture to fall back to.
+                    await self._db_client.update_watch_event(row["uuid"], crop_path=None)
+                    snapshots += 1
                 else:
                     await self._db_client.update_watch_event(row["uuid"], snapshot_path=None)
                     snapshots += 1
@@ -4821,7 +4853,7 @@ class Manager:
                 logger.exception("Reconcile could not clear %s %s", row["kind"], row["uuid"])
 
         logger.info(
-            "Recording reconcile: dropped %s row(s) for deleted clips and cleared %s missing snapshot(s)",
+            "Recording reconcile: dropped %s row(s) for deleted clips and cleared %s missing event image(s)",
             recordings,
             snapshots,
         )

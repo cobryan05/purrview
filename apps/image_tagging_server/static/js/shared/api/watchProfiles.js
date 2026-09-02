@@ -447,6 +447,24 @@ export function watchEventSnapshotUrl(uuid) {
 }
 
 /**
+ * The event's *cropped* card art — the same moment as the snapshot, cut to the boxes
+ * the event fired on and taken from the camera's own frame.
+ *
+ * A separate URL rather than a parameter on the snapshot so the browser caches the two
+ * independently: the grid asks for crops all day and the detail modal asks for the wide
+ * shot occasionally.
+ *
+ * 404s are ordinary — an event with nothing to frame has no crop. Use `setEventCardArt`
+ * rather than this directly unless you are handling that fallback yourself.
+ *
+ * @param {string} uuid
+ * @returns {string}
+ */
+export function watchEventCropUrl(uuid) {
+  return `/api/watch-events/${uuid}/crop`;
+}
+
+/**
  * The clip, as a `<video>` src. Served through this port like everything else — the
  * proxy forwards Range requests, which is what makes seeking work.
  *

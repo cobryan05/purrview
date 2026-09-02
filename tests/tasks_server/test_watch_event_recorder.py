@@ -130,14 +130,24 @@ def _signal(phase=EventPhase.START, *, at=100.0, started_at=100.0, **overrides) 
     return WatchEventSignal(**kwargs)
 
 
-def _context(*, frame=None, detections=()) -> ActionContext:
+def _context(*, frame=None, detections=(), tracks=(), full_frame=None, label_colours=None) -> ActionContext:
+    """`tracks` and `full_frame` are what the *crop* reads — see `test_watch_event_crop`.
+
+    Both default to empty rather than mirroring `frame`/`detections`: a source that never
+    supplies a full-resolution frame, and a frame with no confirmed tracks on it, are
+    both ordinary states, and a helper that quietly filled them in would hide the paths
+    that handle them.
+    """
     return ActionContext(
         profile_uuid=PROFILE,
         profile_name="House cams",
         source_uuid="src-1",
         source_name="Litter cam",
         frame=frame,
+        full_frame=full_frame,
         detections=list(detections),
+        tracks=list(tracks),
+        label_colours=dict(label_colours or {}),
         wallclock_offset=WALLCLOCK_OFFSET,
     )
 

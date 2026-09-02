@@ -7,7 +7,7 @@
  * background rather than a thumbnail beside text, because at a glance the picture *is*
  * the answer and the text only qualifies it.
  */
-import { watchEventSnapshotUrl } from '/app-static/js/shared/api/watchProfiles.js';
+import { watchEventCropUrl, watchEventSnapshotUrl } from '/app-static/js/shared/api/watchProfiles.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
 
 function el(tag, className, text) {
@@ -114,6 +114,50 @@ export function eventHeadline(event) {
 }
 
 /**
+ * Point an `<img>` at the best card art an event has, and keep it pointed there.
+ *
+ * The grid wants the **crop** — a wide shot of a room is the same picture on every card
+ * for that camera, so the picture carries no information and the user ends up reading
+ * the text. The wide shot is still the right answer for the detail modal and the
+ * timeline hover, which ask "where in the room?", so both files exist and this is what
+ * chooses between them.
+ *
+ * Degrades in two steps, because there are two different ways to have no crop:
+ *
+ *  1. **Known absent** (`hasCrop === false`) — the event had nothing to frame. Ask for
+ *     the snapshot directly; requesting a crop we know is missing is a 404 per card.
+ *  2. **Gone since** — the row says there is one but the file was deleted (retention,
+ *     or a user in a file manager, before the reconcile pass has run). The crop 404s
+ *     and we fall back to the snapshot, which is very likely still there.
+ *
+ * Only when both fail does `onGone` fire: a broken-image icon in a grid reads as a bug,
+ * whereas the empty-media placeholder reads as "no picture for this one".
+ *
+ * `hasCrop` is `null`/undefined for the group and session cards, which are keyed by a
+ * representative event uuid and never carry the flag. Those take the two-step path,
+ * which is correct — just one wasted request per card in the rare no-crop case.
+ *
+ * @param {HTMLImageElement} img
+ * @param {string} uuid
+ * @param {{hasCrop?: ?boolean, onGone?: () => void}} [options]
+ */
+export function setEventCardArt(img, uuid, { hasCrop = null, onGone } = {}) {
+  const sources = hasCrop === false
+    ? [watchEventSnapshotUrl(uuid)]
+    : [watchEventCropUrl(uuid), watchEventSnapshotUrl(uuid)];
+  let ix = 0;
+  img.addEventListener('error', () => {
+    ix += 1;
+    if (ix < sources.length) {
+      img.src = sources[ix];
+      return;
+    }
+    onGone?.();
+  });
+  img.src = sources[0];
+}
+
+/**
  * @param {Object} event - a WatchEventRead
  * @param {Object} ctx
  * @param {(event: Object) => void} ctx.onOpen
@@ -152,12 +196,12 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
     img.className = 'event-card__image';
     img.loading = 'lazy';
     img.alt = '';
-    img.src = watchEventSnapshotUrl(event.uuid);
-    // Card art can be reaped out from under a row; a broken-image icon in a grid reads
-    // as a bug, whereas the placeholder reads as "no picture for this one".
-    img.addEventListener('error', () => {
-      img.remove();
-      media.classList.add('event-card__media--empty');
+    setEventCardArt(img, event.uuid, {
+      hasCrop: event.hasCrop ?? null,
+      onGone: () => {
+        img.remove();
+        media.classList.add('event-card__media--empty');
+      },
     });
     media.appendChild(img);
   } else {

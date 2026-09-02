@@ -17,7 +17,7 @@ knowable only after the actions have run. Two gates, one layer up in
 compiled nothing — a legitimate outcome for a visit below its frame minimum, reported
 as success — from leaving a card that points at no media.
 
-Two artifacts per event:
+Three artifacts per event:
 
 * **The row.** Created when the first thing is written to the event, from material held
   since the opening edge, and patched at the close with the ending time, peak confidence
@@ -31,6 +31,14 @@ Two artifacts per event:
   curates and which must never have boxes burnt into it. This one is thumbnail-sized,
   has the boxes drawn on deliberately (the whole point of the card is to show what acted
   on what), lives outside the image datasets, and is deleted with its event.
+* **The crop.** The same moment again, cut to the boxes the event fired on and taken
+  from the camera's own frame rather than the analysis downscale — this is the card's
+  picture, and the wide snapshot above is what the detail modal and timeline hover keep
+  showing. Written under the same rules as the snapshot (encoded at the opening edge,
+  flushed with the row, deleted with the event) and skipped whenever there is nothing to
+  frame or the rect is barely a crop. Unlike the snapshot it carries **no boxes**: at
+  this magnification a drawn rectangle covers the animal it is pointing at. See
+  `apps.helpers.recordings.eventCrop` for the geometry, which the backfill shares.
 
 Nothing else in the system closes an event, so this module owns that invariant at both
 ends: `close_all` closes what a clean stop leaves open, and `close_stranded` closes what
@@ -60,6 +68,13 @@ from apps import RECORDINGS_SNAPSHOT_DIR
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.consts import JsonValues
 from apps.helpers.imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
+from apps.helpers.recordings.eventCrop import (
+    CROP_QUALITY,
+    crop_to_rect,
+    focus_rect,
+    is_worth_cropping,
+    normalise_boxes,
+)
 from apps.helpers.timeUtils import parse_iso_utc
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
 
@@ -140,10 +155,15 @@ class _PendingEvent:
     event began, and its card art already encoded (destination and bytes). Held in RAM
     until an action writes something, then flushed by `ensure_event` — or dropped at the
     closing edge, having cost one jpg encode and nothing on disk.
+
+    `crop` is None whenever there was nothing to frame — no tracks, no full-resolution
+    frame, or a rect so close to the whole picture that it would duplicate `snapshot`.
+    That is an ordinary outcome, not a failure, and the card falls back to the wide shot.
     """
 
     started_at: Optional[datetime] = None
     snapshot: Optional[Tuple[Path, bytes]] = None
+    crop: Optional[Tuple[Path, bytes]] = None
 
 
 def _event_key(signal: WatchEventSignal) -> EventKey:
@@ -264,6 +284,7 @@ class WatchEventRecorder:
         self._pending[_event_key(signal)] = _PendingEvent(
             started_at=self._wallclock(signal.started_at, context),
             snapshot=await self._encode_snapshot(signal, context),
+            crop=await self._encode_crop(signal, context),
         )
 
     async def _open_event(self, signal: WatchEventSignal, pending: "_PendingEvent") -> str:
@@ -271,6 +292,7 @@ class WatchEventRecorder:
         # card that pops into existence without art and gains it a moment later flickers
         # in a list that polls. A failure here costs the art, not the event.
         snapshot_path = await self._flush_snapshot(signal, pending)
+        crop_path = await self._flush_crop(signal, pending)
 
         WatchEventCreate, _, _ = _payload_models()
         api = WatchProfilesApi(self._api_client_factory())
@@ -288,6 +310,7 @@ class WatchEventRecorder:
             target_ref=signal.target_ref,
             target_name=signal.target_name,
             snapshot_path=str(snapshot_path) if snapshot_path else None,
+            crop_path=str(crop_path) if crop_path else None,
             metadata_json=dict(signal.metadata or {}),
         )
         response = await asyncio.to_thread(api.create_watch_event, payload)
@@ -611,6 +634,90 @@ class WatchEventRecorder:
             self._log(f"Event snapshot not written ({signal.rule_name}): {e}")
             return None
 
+    async def _encode_crop(self, signal: WatchEventSignal, context: ActionContext) -> Optional[Tuple[Path, bytes]]:
+        """Render the event's *cropped* card art, without touching the disk.
+
+        Cut from `full_frame` — the camera's own resolution — which is the entire reason
+        this is a second file rather than a zoom applied to the snapshot in CSS. The
+        boxes that decide *where* to cut come from the analysis frame, but they are
+        normalised before use, so the two pixel spaces never have to agree.
+
+        Falls back to the analysis frame only when the source never provided a
+        full-resolution one; a softer crop still beats a card that shows the same room as
+        every other card.
+
+        Returns None for every ordinary "nothing to frame" case — no frame, no tracks
+        matching the event, or a rect barely smaller than the whole picture.
+        """
+        frame = context.full_frame if context.full_frame is not None else context.frame
+        if frame is None:
+            return None
+
+        rect = self._focus_rect(signal, context)
+        if not is_worth_cropping(rect):
+            return None
+
+        when = self._wallclock(signal.started_at, context) or datetime.now(timezone.utc)
+        dest = self._crop_path(signal, context, when)
+        try:
+            payload = await asyncio.to_thread(self._encode_crop_bytes, frame, rect)
+            return dest, payload
+        except Exception as e:
+            # Same contract as the snapshot: the row outranks the picture.
+            logger.warning("Event crop failed for %s: %s", signal.rule_name, e)
+            self._log(f"Event crop failed ({signal.rule_name}): {e}")
+            return None
+
+    async def _flush_crop(self, signal: WatchEventSignal, pending: "_PendingEvent") -> Optional[Path]:
+        """Write the held crop now that the event has earned a row."""
+        if pending.crop is None:
+            return None
+        dest, payload = pending.crop
+        try:
+            await asyncio.to_thread(self._write_bytes, dest, payload)
+            return dest
+        except Exception as e:
+            logger.warning("Event crop not written for %s: %s", signal.rule_name, e)
+            self._log(f"Event crop not written ({signal.rule_name}): {e}")
+            return None
+
+    @staticmethod
+    def _focus_rect(signal: WatchEventSignal, context: ActionContext) -> Optional[Tuple[float, float, float, float]]:
+        """The normalised region this event is about.
+
+        Built from **the event's own tracks**, matched by the ids the signal carries —
+        not from every detection on the frame. That distinction is the feature: a rect
+        around everything the detector saw is a rect around the room, which is the
+        picture this replaces.
+
+        Falls back to every track on the frame when the ids match nothing. A signal can
+        carry ids the tracker has already retired by the time an action runs, and a crop
+        of the wrong-but-plausible thing beats no crop at all — but a rule that fired on
+        a subject and a static anchor still gets both, because both are tracks.
+
+        The analysis frame is what `tracks` are measured in, so its dimensions are what
+        normalises them — `full_frame`'s would scale every box by the downscale factor
+        and put the rect in the top-left quadrant.
+        """
+        analysis = context.frame
+        if analysis is None:
+            return None
+        height, width = analysis.shape[:2]
+
+        wanted = {int(t) for t in (signal.track_ids or []) if isinstance(t, (int, float))}
+        tracks = list(context.tracks or [])
+        mine = [t for t in tracks if getattr(t, "track_id", None) in wanted] if wanted else []
+        # The analysis frame's aspect, which the full-resolution frame shares — the
+        # downscale preserves it — so the rect is the card's shape whichever is cropped.
+        return focus_rect(normalise_boxes(mine or tracks, width, height), width / max(height, 1))
+
+    @staticmethod
+    def _encode_crop_bytes(frame: Any, rect: Tuple[float, float, float, float]) -> bytes:
+        # No `annotate_detections` here, unlike the snapshot. The crop's whole job is to
+        # show the animal large, and a box drawn at this magnification sits on top of
+        # the thing it identifies — the label alone can be taller than the subject.
+        return encode_jpg_bytes(crop_to_rect(frame, rect), quality=CROP_QUALITY)
+
     @staticmethod
     def _encode(frame: Any, context: ActionContext) -> bytes:
         # Annotate the *analysis* frame, not `full_frame`: detections are in the
@@ -644,6 +751,22 @@ class WatchEventRecorder:
         discriminator = hashlib.sha1("\x1f".join(_event_key(signal)).encode()).hexdigest()[:6]
         stamp = when.strftime("%H-%M-%S")
         return self._snapshot_root / when.strftime("%Y-%m-%d") / f"{stamp}_{source}_{rule}_{discriminator}.jpg"
+
+    def _crop_path(self, signal: WatchEventSignal, context: ActionContext, when: datetime) -> Path:
+        """The crop sits beside its snapshot, with a suffix.
+
+        Derived from `_snapshot_path` rather than composed again so the two can never
+        disagree about the discriminator — which is what stops two rules opening on the
+        same frame for the same camera from overwriting each other's art. The suffix
+        goes before the extension so the retention sweep, which matches on `.jpg`, sees
+        it as the image it is.
+
+        Note this is a *naming* convention, not a lookup one: nothing derives one path
+        from the other at read time. Both are stored, and an event can legitimately have
+        the snapshot without the crop.
+        """
+        snapshot = self._snapshot_path(signal, context, when)
+        return snapshot.with_name(f"{snapshot.stem}_crop{snapshot.suffix}")
 
     # ── clocks ───────────────────────────────────────────────────────────────
 

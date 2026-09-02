@@ -2325,6 +2325,23 @@ class WatchEvent(SQLModel, table=True):
     # from whatever a `save_snapshot` action wrote: that one is a training image the user
     # curates, this one is the review page's card art and is deleted with the event.
     snapshot_path: Optional[str] = Field(default=None)
+    # Absolute path to the *cropped* card art: the same moment as `snapshot_path`, cut
+    # down to the boxes the event actually fired on and taken from the camera's own
+    # frame rather than the analysis downscale.
+    #
+    # A second file rather than a replacement for the snapshot, because the two answer
+    # different questions. The card asks "what was this event?", which a wide shot of a
+    # room cannot answer — every card on a camera looks the same. The detail modal (for
+    # an event with no clip), the timeline hover and the group/session cards ask "where
+    # in the room?", which the crop cannot answer. Neither is a downscale of the other.
+    #
+    # Deliberately un-annotated, unlike the snapshot: at this zoom a drawn box covers
+    # the animal it is pointing at. That also means it never needs the label palette.
+    #
+    # Null for an event whose boxes were never recorded, whose frame was unavailable, or
+    # that predates this column — `has_crop` is what the UI checks, and the wide
+    # snapshot is the fallback.
+    crop_path: Optional[str] = Field(default=None)
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
     __table_args__ = (
@@ -2820,6 +2837,12 @@ class WatchEventRead(OrmModel):
     # exposed: it is a server filesystem path, and the browser fetches the image from
     # `/api/watch-events/{uuid}/snapshot` instead.
     has_snapshot: bool = False
+    # Whether the event has a *cropped* card too, served from
+    # `/api/watch-events/{uuid}/crop`. Separate from `has_snapshot` rather than implied
+    # by it: an event can have the wide shot and no crop (no boxes were recorded, or it
+    # predates the crop), and a card that assumed otherwise would show a broken image
+    # instead of falling back to the picture it does have.
+    has_crop: bool = False
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
     #: How many blips the analyser found, by kind — `{"identity_flip": 2, ...}`. Filled
     #: in by the db client alongside `recordings`, so the events grid can badge a card

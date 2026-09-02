@@ -1287,6 +1287,7 @@ class WatchEventCreate(Payload):
     truncated: bool = False
     close_reason: Optional[str] = None
     snapshot_path: Optional[str] = None
+    crop_path: Optional[str] = None
     metadata_json: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1319,6 +1320,11 @@ class WatchEventUpdate(Payload):
     close_reason: Optional[str] = None
     review_state: Optional[str] = None
     snapshot_path: Optional[str] = None
+    # Present so the reconcile pass can clear a crop whose file a user deleted by hand.
+    # It cannot be *set* to null through the generic update — see the manager's
+    # `{k: v for ... if v is not None}` idiom — so clearing goes through the db client
+    # directly, exactly as the snapshot's does.
+    crop_path: Optional[str] = None
     metadata_json: Optional[Dict[str, Any]] = None
 
     @field_validator("review_state")
@@ -5181,6 +5187,26 @@ class WebApp:
             path = await self._manager.watch_event_snapshot_file(uuid)
             if path is None:
                 raise HTTPException(status_code=404, detail="No snapshot for this event")
+            return FileResponse(path, media_type="image/jpeg")
+
+        @self._app.get(
+            "/api/watch-events/{uuid}/crop",
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_watch_event_crop",
+        )
+        async def get_watch_event_crop(uuid: str):
+            """Serve the event's *cropped* card art — the grid's picture.
+
+            A sibling of the snapshot endpoint rather than a query parameter on it, so
+            the two files keep separate URLs and the browser caches them independently.
+
+            404 is an ordinary answer here, not an error: an event with nothing to frame
+            never gets a crop, and the card is expected to fall back to the wide shot.
+            Clients should prefer `hasCrop` on the event over probing this.
+            """
+            path = await self._manager.watch_event_crop_file(uuid)
+            if path is None:
+                raise HTTPException(status_code=404, detail="No crop for this event")
             return FileResponse(path, media_type="image/jpeg")
 
     def _register_recording_routes(self) -> None:
