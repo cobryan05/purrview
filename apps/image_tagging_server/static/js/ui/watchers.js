@@ -42,11 +42,19 @@ const RELATIONS = [
 
 // Whether the event spans the rule or is an instant at one of its edges. Worded as the
 // tail of the row's sentence rather than as `while / on_enter / on_exit`, which name the
-// implementation and not the choice: what the user is picking is how much gets recorded.
+// implementation and not the choice.
+//
+// ⚠️ These say **event**, never "records". A rule does not record anything and cannot
+// know whether it ever will — recording is one of several actions, scoped separately,
+// and a rule may well have none attached. The wording used to promise "Records the whole
+// time", which is wrong twice over: it claims an action the rule does not own, and for
+// the two impulses it is not even true of the action, whose footage comes entirely from
+// its own pre-roll and post-roll (see the tooltip, and `RuleSpec.trigger` in
+// `apps/helpers/watch/rules.py`). What the user is picking is how long the *event* lasts.
 const RULE_TRIGGERS = [
-  { key: 'while', text: 'Records the whole time' },
-  { key: 'on_enter', text: 'Records the moment it starts' },
-  { key: 'on_exit', text: 'Records the moment it ends' },
+  { key: 'while', text: 'Event the whole time' },
+  { key: 'on_enter', text: 'Event the moment it starts' },
+  { key: 'on_exit', text: 'Event the moment it ends' },
 ];
 
 /** Fraction of a region that must change for a motion rule to hold, by default.
@@ -1562,7 +1570,7 @@ function buildRuleRow(rule, ctx) {
   // layout decision as much as an editorial one: the sentence was already full at this
   // pane's width, so a sixth control wrapped it onto a second line. Putting the choice
   // at the head of the sentence that explains its consequence costs one line instead of
-  // two, and reads better than either half alone — "Records the moment it ends — fires
+  // two, and reads better than either half alone — "Event the moment it ends — fires
   // when this stops being true, if it had held for 2 seconds."
   const ruleTrigger = select(RULE_TRIGGERS, rule.trigger || 'while', () => {
     syncTrigger();
