@@ -1423,6 +1423,14 @@ class ModelConfigNode(SQLModel, table=True):
     model_type: str
     architecture: str
     roll_up_unchecked: bool = Field(default=False)
+    #: True when a separate sub-model starts at this label: the top model rolls this
+    #: label's descendants up into it, and a second-pass model trained here tells them
+    #: apart. Explicit since it used to be *inferred* from "spec differs from the
+    #: inherited spec", which silently tied nesting depth to architecture choice —
+    #: efficientnet_b0 under efficientnet_b0 read as one model, not two, so a tree
+    #: could not repeat an architecture down a chain. Backfilled from that old rule
+    #: (migration 995286dce2d9), so existing configs keep the targets they had.
+    is_boundary: bool = Field(default=False)
     config: "ModelConfig" = Relationship(back_populates="nodes")
 
 
@@ -1444,6 +1452,7 @@ class ModelConfigNodeRead(OrmModel):
     model_type: str
     architecture: str
     roll_up_unchecked: bool = False
+    is_boundary: bool = False
 
 
 class ModelConfigRead(OrmModel):
@@ -1460,6 +1469,12 @@ class ModelConfigNodeWrite(ApiModel):
     model_type: str
     architecture: str
     roll_up_unchecked: bool = False
+    # Where a sub-model starts. Ignored on the root node, which is the top model by
+    # definition. None (the default) means "not stated", and is resolved by the old
+    # spec-differs rule so a client written before this field keeps producing the tree
+    # it always did — a plain `False` default would silently flatten every such config
+    # to a single top model.
+    is_boundary: Optional[bool] = None
 
 
 class ModelConfigCreate(ApiModel):

@@ -427,8 +427,15 @@ _SUB_SPEC = {"model_type": "crop_classifier", "architecture": "resnet_18"}
 _SUB_SPEC_2 = {"model_type": "crop_classifier", "architecture": "efficientnet_b0"}
 
 
-def _node(label_uuid, spec, roll_up_unchecked=False):
-    return {"label_uuid": label_uuid, "roll_up_unchecked": roll_up_unchecked, **spec}
+def _node(label_uuid, spec, roll_up_unchecked=False, is_boundary=None):
+    """A node payload. `is_boundary=None` means "unstated", which is what a client
+    written before the column sends — the server then falls back to the old
+    spec-differs inference. Most tests below deliberately leave it unstated: that is
+    the compatibility path, and it has to keep deriving the same targets."""
+    node = {"label_uuid": label_uuid, "roll_up_unchecked": roll_up_unchecked, **spec}
+    if is_boundary is not None:
+        node["is_boundary"] = is_boundary
+    return node
 
 
 async def _fetch_targets(http_client, config_uuid: str) -> list:
@@ -542,6 +549,88 @@ async def test_targets_nested_boundaries_collapse_to_outermost(http_client):
     assert sub_cat["labelUuid"] == cat
     assert sub_cat["labelUuids"] == [cat_a]
     assert sub_cat["classRemap"] == {}
+
+
+async def test_targets_nest_with_a_repeated_architecture(http_client):
+    """A sub-model may reuse its parent sub-model's architecture and stay a sub-model.
+
+    This is the whole point of the is_boundary column. Under the old spec-differs rule
+    Cat would have inherited Animal's spec, stopped being a boundary, and collapsed into
+    Animal's classifier as a flat sibling class of Willow — two targets instead of three,
+    silently, with the visible symptom appearing only much later as detections that stop
+    at Animal.
+    """
+    animal = await _create_label(http_client, "Animal")
+    cat = await _create_label(http_client, "Cat", parent_uuid=animal)
+    willow = await _create_label(http_client, "Willow", parent_uuid=cat)
+    cfg = await _create_config(
+        http_client,
+        "TargetsRepeatedArch",
+        nodes=[
+            _node(None, _ROOT_SPEC),
+            _node(animal, _SUB_SPEC_2, is_boundary=True),
+            _node(cat, _SUB_SPEC_2, is_boundary=True),  # SAME spec as Animal
+            _node(willow, _SUB_SPEC_2),  # a class of Cat, not a boundary
+        ],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert [t["role"] for t in targets] == ["top", "submodel", "submodel"]
+    top, sub_animal, sub_cat = targets
+
+    assert top["labelUuids"] == [animal]
+    assert sub_animal["labelUuid"] == animal
+    assert sub_animal["labelUuids"] == [cat]
+    assert sub_cat["labelUuid"] == cat
+    assert sub_cat["labelUuids"] == [willow]
+
+
+async def test_targets_boundary_false_overrides_a_differing_spec(http_client):
+    """Stated wins over inferred in the other direction too: a node carrying a spec
+    unlike its parent's is NOT a boundary if it says it isn't, so its labels stay
+    classes of the model above."""
+    cat = await _create_label(http_client, "Cat")
+    cat_a = await _create_label(http_client, "CatA", parent_uuid=cat)
+    cfg = await _create_config(
+        http_client,
+        "TargetsBoundaryFalse",
+        nodes=[
+            _node(None, _ROOT_SPEC),
+            _node(cat, _SUB_SPEC, is_boundary=False),  # differs from root, but declared flat
+            _node(cat_a, _SUB_SPEC, is_boundary=False),
+        ],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert [t["role"] for t in targets] == ["top"]
+    assert targets[0]["labelUuids"] == [cat, cat_a]
+
+
+async def test_boundary_survives_an_edit_that_does_not_mention_it(http_client):
+    """Re-saving a config through a client that omits is_boundary must not flatten it.
+
+    The editor sends the whole node list on every save, so an omitted field is
+    indistinguishable from "make it false" unless unstated means "infer" — and a
+    flattened tree here would quietly retarget every training config under it.
+    """
+    cat = await _create_label(http_client, "Cat")
+    cat_a = await _create_label(http_client, "CatA", parent_uuid=cat)
+    cfg = await _create_config(
+        http_client,
+        "BoundaryEditSurvival",
+        nodes=[_node(None, _ROOT_SPEC), _node(cat, _SUB_SPEC, is_boundary=True), _node(cat_a, _SUB_SPEC)],
+    )
+    assert len(await _fetch_targets(http_client, cfg["uuid"])) == 2
+
+    r = await http_client.patch(
+        f"/api/model-configs/{cfg['uuid']}",
+        json={"nodes": [_node(None, _ROOT_SPEC), _node(cat, _SUB_SPEC), _node(cat_a, _SUB_SPEC)]},
+    )
+    assert r.status_code == 200, r.text
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert [t["role"] for t in targets] == ["top", "submodel"]
+    assert targets[1]["labelUuid"] == cat
 
 
 async def test_targets_rollup_unchecked_descendants_remap(http_client):

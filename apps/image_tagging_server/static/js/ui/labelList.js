@@ -1978,7 +1978,10 @@ async function mountModelConfigMode(container, {
       if (subToggle) {
         subToggle.addEventListener('change', () => {
           if (subToggle.checked) {
-            // Enabling submodel auto-selects the label and seeds the default spec.
+            // Enabling submodel auto-selects the label and seeds a starting spec. The
+            // spec is now only a default the user can change to anything, including
+            // its parent's — membership of this Map is what makes it a sub-model, and
+            // it round-trips as the node's own isBoundary flag.
             cb.checked = true;
             selected.add(label.uuid);
             submodels.set(label.uuid, defaultSpec ?? { modelType: 'crop_classifier', architecture: 'efficientnet_b0' });

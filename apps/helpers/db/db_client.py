@@ -4731,11 +4731,13 @@ class DbClient:
         class remapping (the frontend heuristic in ``ui/modelSpec.js`` mirrors the
         boundary rule for display only).
 
-        A non-root node is a sub-model *boundary* when its (model_type, architecture)
-        differs from its inherited spec — the nearest boundary ancestor's spec in the
-        label tree, else the root node's spec. Ancestors are classified before
-        descendants so nested boundaries inherit from the boundary above them, not
-        from the root.
+        A non-root node is a sub-model *boundary* when it says so: ``is_boundary``.
+        That used to be inferred from "(model_type, architecture) differs from the
+        inherited spec", which tied nesting depth to architecture choice — a sub-model
+        could not reuse its parent's architecture without dissolving back into it, so
+        `Animal(efficientnet_b0) → Cat(efficientnet_b0)` silently produced one model
+        rather than two. The column is backfilled from that rule, so configs predating
+        it derive exactly the targets they always did.
 
         Returns None if the model config doesn't exist. Otherwise a list of targets
         (top model first, then sub-models in hierarchical label order), each:
@@ -4788,23 +4790,22 @@ class DbClient:
                 p = _parent(p)
             return depth
 
-        boundary_spec: dict[str, tuple[str, str]] = {}
+        # Boundaries are declared, not inferred. `is_boundary` is backfilled from the
+        # old "spec differs from inherited" rule, so this is the same set for every
+        # config that predates the column — but architecture is now free to repeat down
+        # a chain, which that rule made impossible (a sub-model could never use its
+        # parent's architecture without dissolving into it).
+        boundaries = {n.label_uuid for n in non_root if n.is_boundary}
+        # Sorted for the depth walk below, which needs ancestors before descendants.
+        non_root.sort(key=lambda n: _depth(n.label_uuid))
 
         def _boundary_ancestor(uuid: str) -> Optional[str]:
             p = _parent(uuid)
             while p is not None:
-                if p in boundary_spec:
+                if p in boundaries:
                     return p
                 p = _parent(p)
             return None
-
-        # Ancestors first: a node's inherited spec depends on boundaries above it.
-        non_root.sort(key=lambda n: _depth(n.label_uuid))
-        for n in non_root:
-            ancestor = _boundary_ancestor(n.label_uuid)
-            inherited = boundary_spec[ancestor] if ancestor is not None else (root.model_type, root.architecture)
-            if (n.model_type, n.architecture) != inherited:
-                boundary_spec[n.label_uuid] = (n.model_type, n.architecture)
 
         assigned = [n.label_uuid for n in non_root]
         node_by_label = {n.label_uuid: n for n in non_root}
@@ -4847,7 +4848,7 @@ class DbClient:
 
         top_classes = [a for a in assigned if _boundary_ancestor(a) is None]
         targets = [_build_target(root, "top", top_classes)]
-        for b_uuid in self._sort_labels_hierarchically(list(boundary_spec), all_labels):
+        for b_uuid in self._sort_labels_hierarchically(list(boundaries), all_labels):
             sub_classes = [a for a in assigned if a != b_uuid and _boundary_ancestor(a) == b_uuid]
             targets.append(_build_target(node_by_label[b_uuid], "submodel", sub_classes))
         return targets
@@ -6470,6 +6471,7 @@ class DbClient:
                             model_type=model_type,
                             architecture=architecture,
                             roll_up_unchecked=node.get("roll_up_unchecked", False),
+                            is_boundary=node.get("is_boundary", False),
                         )
                     )
                 count += 1
@@ -6500,6 +6502,61 @@ class DbClient:
                 return None
             return ModelConfigNodeRead.model_validate(node)
 
+    @staticmethod
+    def _resolve_node_boundaries(nodes, parent_of: dict) -> dict:
+        """Decide `is_boundary` for each written node: stated wins, unstated is inferred.
+
+        *nodes* is an iterable of ``(label_uuid, model_type, architecture, is_boundary)``
+        — a tuple rather than the write model because the create path holds Pydantic
+        objects and the update path holds dumped dicts. Returns {label_uuid: bool} for
+        the non-root nodes of one written config.
+
+        Unstated (None) nodes fall back to the rule this column replaced — spec differs
+        from the nearest boundary ancestor's spec, else the root's. That keeps a client
+        written before the field, or a config dump restored from before it, producing
+        the tree it always produced; defaulting them to False instead would silently
+        collapse every sub-model into its top model, which is a data-shaped bug that
+        only shows up much later as detections stopping at a parent label.
+
+        Nodes are walked shallowest-first because a node's inherited spec depends on
+        which of its ancestors are boundaries.
+        """
+        nodes = list(nodes)
+        non_root = [n for n in nodes if n[0] is not None]
+        if not non_root:
+            return {}
+        root = next((n for n in nodes if n[0] is None), None)
+
+        def depth(label_uuid: str) -> int:
+            d, p = 0, parent_of.get(label_uuid)
+            while p is not None:
+                d += 1
+                p = parent_of.get(p)
+            return d
+
+        root_spec = (root[1], root[2]) if root is not None else None
+        boundary_spec: dict = {}
+        resolved: dict = {}
+        for label_uuid, model_type, architecture, stated in sorted(non_root, key=lambda n: depth(n[0])):
+            if stated is not None:
+                is_boundary = bool(stated)
+            elif root_spec is None:
+                # No root in the payload, so there is no inherited spec to differ from.
+                is_boundary = False
+            else:
+                ancestor, p = None, parent_of.get(label_uuid)
+                while p is not None:
+                    if p in boundary_spec:
+                        ancestor = p
+                        break
+                    p = parent_of.get(p)
+                inherited = boundary_spec[ancestor] if ancestor is not None else root_spec
+                is_boundary = (model_type, architecture) != inherited
+            if is_boundary:
+                boundary_spec[label_uuid] = (model_type, architecture)
+            resolved[label_uuid] = is_boundary
+        return resolved
+
     async def create_model_config(self, data: ModelConfigCreate) -> ModelConfigRead:
         # Validate uniqueness of label_uuid within the node list
         seen: set = set()
@@ -6508,6 +6565,13 @@ class DbClient:
             if key in seen:
                 raise ValueError(f"Duplicate label_uuid in nodes: {key!r}")
             seen.add(key)
+
+        async with self._async_session_maker() as session:
+            labels = (await session.exec(select(Label))).all()
+        boundaries = self._resolve_node_boundaries(
+            [(n.label_uuid, n.model_type, n.architecture, n.is_boundary) for n in data.nodes],
+            {lbl.uuid: lbl.parent_uuid for lbl in labels},
+        )
 
         async with self._async_session_maker() as session:
             mc = ModelConfig(name=data.name, description=data.description)
@@ -6521,6 +6585,8 @@ class DbClient:
                         model_type=node.model_type,
                         architecture=node.architecture,
                         roll_up_unchecked=node.roll_up_unchecked,
+                        # Root is the top model by definition, never a sub-model boundary.
+                        is_boundary=boundaries.get(node.label_uuid, False),
                     )
                 )
             await session.commit()
@@ -6568,6 +6634,15 @@ class DbClient:
                 ).all()
                 by_label: Dict[Optional[str], ModelConfigNode] = {n.label_uuid: n for n in existing_nodes}
 
+                labels = (await session.exec(select(Label))).all()
+                boundaries = self._resolve_node_boundaries(
+                    [
+                        (n.get("label_uuid"), n["model_type"], n["architecture"], n.get("is_boundary"))
+                        for n in nodes_data
+                    ],
+                    {lbl.uuid: lbl.parent_uuid for lbl in labels},
+                )
+
                 for node in nodes_data:
                     label_uuid = node.get("label_uuid")
                     row = by_label.pop(label_uuid, None)
@@ -6576,6 +6651,8 @@ class DbClient:
                     row.model_type = node["model_type"]
                     row.architecture = node["architecture"]
                     row.roll_up_unchecked = node.get("roll_up_unchecked", False)
+                    # Root is the top model by definition, never a sub-model boundary.
+                    row.is_boundary = boundaries.get(label_uuid, False)
                     session.add(row)
 
                 # Whatever is left was dropped from the shape. These genuinely go

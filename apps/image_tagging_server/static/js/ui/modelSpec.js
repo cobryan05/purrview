@@ -3,8 +3,8 @@
  * for hierarchical model configs. Pure data + functions, no DOM.
  *
  * A model config's `nodes` array encodes the sub-model hierarchy: one root
- * node (labelUuid=null) plus one node per assigned label; a label node whose
- * spec differs from its inherited spec is a sub-model boundary.
+ * node (labelUuid=null) plus one node per assigned label; a label node with
+ * `isBoundary` is where a sub-model starts.
  */
 
 /**
@@ -141,9 +141,20 @@ export function parseNodes(nodes, labelsMap) {
   const selected = new Set();
   const rollUpUnchecked = new Set();
 
-  for (const { labelUuid, modelType, architecture, rollUpUnchecked: rup } of nonRoot) {
+  // `isBoundary` is authoritative. It is backfilled from the old "spec differs from
+  // inherited" rule, so saved configs parse to the same tree they always did — but a
+  // boundary may now carry the same spec as its parent, which that rule read as "not a
+  // boundary at all". The fallback keeps an unsaved/legacy node array (one built by a
+  // caller that predates the field) parsing the old way rather than flattening to no
+  // sub-models at all.
+  const declaresBoundary = nonRoot.some(n => n.isBoundary !== undefined);
+  for (const { labelUuid, modelType, architecture, rollUpUnchecked: rup, isBoundary } of nonRoot) {
     selected.add(labelUuid);
     if (rup) rollUpUnchecked.add(labelUuid);
+    if (declaresBoundary) {
+      if (isBoundary) submodels.set(labelUuid, { modelType, architecture });
+      continue;
+    }
     const inh = inheritedModelSpec(labelUuid, labelsMap, submodels, rootSpec);
     if (modelType !== inh.modelType || architecture !== inh.architecture) {
       submodels.set(labelUuid, { modelType, architecture });
@@ -164,7 +175,15 @@ export function computeNodes(selected, submodels, rollUpUnchecked, rootSpec, lab
     const spec = submodels.has(uuid)
       ? submodels.get(uuid)
       : inheritedModelSpec(uuid, labelsMap, submodels, rootSpec);
-    nodes.push({ labelUuid: uuid, ...spec, rollUpUnchecked: rollUpUnchecked.has(uuid) });
+    nodes.push({
+      labelUuid: uuid,
+      ...spec,
+      rollUpUnchecked: rollUpUnchecked.has(uuid),
+      // Sent explicitly rather than left to be re-inferred from the spec: a sub-model
+      // is allowed to match its parent's architecture now, and inference would read
+      // that as "not a sub-model" and silently drop a level off the tree.
+      isBoundary: submodels.has(uuid),
+    });
   }
   return nodes;
 }
