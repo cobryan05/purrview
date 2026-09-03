@@ -4010,6 +4010,18 @@ button.filter-active {
   color: var(--color-info);
 }
 
+/* A row shown for context but not pickable (item.disabled) — an option that does not
+ * exist server-side yet. Kept legible rather than nearly invisible: the whole point is
+ * that the user reads it and understands why it cannot be ticked. */
+.ms-item--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ms-item--disabled input[type="checkbox"] {
+  cursor: not-allowed;
+}
+
 .ms-item__name {
   flex: 1;
   min-width: 0;

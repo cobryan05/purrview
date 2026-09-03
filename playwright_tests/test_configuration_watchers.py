@@ -1528,6 +1528,110 @@ class TestActionScoping:
         expect(trigger).to_contain_text("Litter cam")
 
 
+class TestUnsavedRulesAreNotYetScopeable:
+    """A rule added but not saved cannot be scoped to — and must say so.
+
+    An action's rule scope is a list of rule uuids, and a rule has no uuid until the
+    backend gives it one, so a just-added rule genuinely cannot be picked. The failure
+    mode this guards is silence: the rule used to be dropped from the picker entirely,
+    which reads as a bug rather than as "not yet".
+    """
+
+    def _open(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-action-row']").first).to_be_visible()
+
+    def test_an_unsaved_rule_is_listed_but_not_pickable(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        scope = page.locator("[data-testid='watch-action-rule-scope']").first
+        scope.locator(".ms-dropdown__trigger").click()
+        # The saved rule is the baseline: whatever the new row does, this one stays
+        # selectable, or the fix has broken scoping outright.
+        saved_row = scope.locator(".ms-item", has_text="cat using litter box")
+        expect(saved_row.locator("input[type='checkbox']")).to_be_enabled()
+
+        page.locator("[data-testid='watch-add-rule']").click()
+        page.locator("[data-testid='watch-rule-name']").last.fill("dog at the door")
+        # Tab out rather than dispatching `change`: committing the name rebuilds every
+        # scope picker, and a rebuild triggered by the blur of the *next* click detaches
+        # the control that click was aimed at.
+        page.locator("[data-testid='watch-rule-name']").last.press("Tab")
+
+        scope.locator(".ms-dropdown__trigger").click()
+        new_row = scope.locator(".ms-item", has_text="dog at the door")
+        expect(new_row).to_be_visible()
+        expect(new_row.locator("input[type='checkbox']")).to_be_disabled()
+        expect(saved_row.locator("input[type='checkbox']")).to_be_enabled()
+
+    def test_select_all_cannot_pick_an_unsaved_rule(self, page: Page, base_url: str):
+        """The greyed row must not be a uuid the save then rejects."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        page.locator("[data-testid='watch-add-rule']").click()
+        page.locator("[data-testid='watch-rule-name']").last.fill("dog at the door")
+        # Tab out rather than dispatching `change`: committing the name rebuilds every
+        # scope picker, and a rebuild triggered by the blur of the *next* click detaches
+        # the control that click was aimed at.
+        page.locator("[data-testid='watch-rule-name']").last.press("Tab")
+
+        scope = page.locator("[data-testid='watch-action-rule-scope']").first
+        scope.locator(".ms-dropdown__trigger").click()
+        scope.locator(".ms-select-all-btn", has_text="Select All").click()
+        expect(scope.locator(".ms-dropdown__trigger")).to_contain_text("cat using litter box")
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("actions")))
+        # Only the rule that has an id. A synthetic placeholder reaching the payload is
+        # a 422 from a control the user cannot see anything wrong with.
+        assert saved["actions"][0]["ruleUuidsJson"] == ["rule-1"], saved["actions"][0]
+
+    def test_renaming_a_rule_does_not_swallow_the_next_click(self, page: Page, base_url: str):
+        """Rename a rule, then scope an action to it — in one go, as a user would.
+
+        A rule name commits on blur, and the first click that actually moves focus is
+        the one *inside* the picker. Relabelling used to rebuild the whole dropdown, so
+        that blur destroyed the very checkbox being clicked, between its mousedown and
+        its mouseup: no click event was ever dispatched and the box stayed unticked.
+        Nothing about it looked broken — the click simply did nothing.
+        """
+        self._open(page, base_url)
+        # Typed, not filled: `fill` sets the value without the browser's dirty flag, so
+        # blur never fires `change` and the commit this test is about never happens.
+        name = page.locator("[data-testid='watch-rule-name']").first
+        name.click()
+        name.press("Control+a")
+        page.keyboard.type("dog at the door")
+
+        scope = page.locator("[data-testid='watch-action-rule-scope']").first
+        # Opening the panel does not blur the field — the trigger preventDefaults its
+        # mousedown to keep the panel from closing — so the commit is still pending here.
+        scope.locator(".ms-dropdown__trigger").click()
+        # By id, not by name: the rename has not been committed yet, so the row still
+        # reads by its old one at the moment this click is aimed.
+        box = scope.locator("input[type='checkbox'][value='rule-1']")
+        box.click()
+
+        expect(box).to_be_checked()
+        expect(scope.locator(".ms-dropdown__trigger")).to_contain_text("dog at the door")
+
+    def test_the_rules_header_warns_only_while_a_rule_is_unsaved(self, page: Page, base_url: str):
+        """Conditional by design: a watcher whose rules all came from the server is not
+        in this state, and a hint that is always on is a hint nobody reads."""
+        self._open(page, base_url)
+        hint = page.locator("[data-testid='watch-rules-unsaved-hint']")
+        expect(hint).to_be_hidden()
+
+        page.locator("[data-testid='watch-add-rule']").click()
+        expect(hint).to_be_visible()
+
+        page.locator("[data-testid='watch-rule-row']").last.locator(".watch-row-remove").click()
+        expect(hint).to_be_hidden()
+
+
 class TestRuleSourceScope:
     """Per-source *rule* scope — the sharper sibling of action scope.
 

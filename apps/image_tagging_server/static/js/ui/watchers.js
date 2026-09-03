@@ -1326,8 +1326,10 @@ function buildRuleRow(rule, ctx) {
   // the pair overflowed the row by a handful of pixels and cost a whole extra line.
   row.appendChild(wfield('Rule', nameInput, {
     width: '10rem',
-    help: 'What this rule is called. Actions are scoped to rules by this name, and it is '
-      + 'what {rule_name} renders as in a topic or folder template.',
+    help: 'What this rule is called — how it reads in an action’s Rules picker, and what '
+      + '{rule_name} renders as in a topic or folder template. Scoping follows the rule itself, '
+      + 'not its name, so renaming it keeps every action pointed at it. A rule added here can '
+      + 'only be picked in an action once the watcher has been saved.',
   }));
 
   // The sentence: [subject A] [relation] [subject B]. Each subject is a *list* — "any of
@@ -1971,8 +1973,9 @@ function buildActionRow(action, ctx) {
   const ruleScopeField = el('div', 'watch-action-scope');
   ruleScopeField.dataset.testid = 'watch-action-rule-scope';
   ruleScopeField.title =
-    'Which rules’ events this action responds to. Empty means all of them. Only rules that '
-    + 'have been saved can be picked — a new rule has no id until then.';
+    'Which rules’ events this action responds to. Empty means all of them, including rules you '
+    + 'have just added. Only saved rules can be picked individually — a new rule is listed here '
+    + 'greyed out, and becomes selectable once you save the watcher.';
   const sourceScopeField = el('div', 'watch-action-scope');
   sourceScopeField.dataset.testid = 'watch-action-source-scope';
   sourceScopeField.title =
@@ -2010,9 +2013,9 @@ function buildActionRow(action, ctx) {
       // really does fire for every rule, so "None selected" would read as the opposite
       // of what it does.
       emptySummary: 'All',
-      // A rule has no uuid until the watcher has been saved once, so it cannot be
-      // referenced yet. Saying so beats an empty panel that looks broken.
-      emptyText: 'No saved rules yet — save the watcher first',
+      // Only reached when the watcher has no rules at all — an unsaved rule still gets a
+      // greyed row of its own, which says more than this line can.
+      emptyText: 'No rules yet — add one above',
       onChange: (selected) => { ruleScope = [...selected]; ctx.onAnyChange(); },
     });
     sourceDropdown = createMultiSelectDropdown({
@@ -2434,6 +2437,16 @@ function buildActionRow(action, ctx) {
   return {
     element: row,
     refreshScopes: buildScopes,
+    /**
+     * Relabel one rule in this action's scope picker, without rebuilding it.
+     *
+     * A rename is not a structural change, and rebuilding for one costs a swallowed
+     * click: committing the new name happens on blur, so the rebuild fires *during* the
+     * very click that moved focus away — often the click on this dropdown — detaching
+     * its trigger between mousedown and mouseup. Returns false if the rule is unknown
+     * here, leaving the caller to rebuild.
+     */
+    renameScopeItem: (uuid, name) => !!ruleDropdown?.renameItem(uuid, name),
     destroy: () => {
       ruleDropdown?.destroy();
       sourceDropdown?.destroy();
@@ -2784,7 +2797,21 @@ export async function renderWatchProfileManager({ target }) {
         + 'something happened; the actions below decide what is done about it.';
       const rulesBox = el('div', 'watch-rows');
       rulesBox.dataset.testid = 'watch-rules-box';
-      screen.editorBody.appendChild(sectionPanel(sectionHeader('Rules', addRuleBtn, SECTION_HELP.rules), rulesBox));
+      // A rule has no uuid until the backend gives it one, and an action's rule scope is
+      // a list of uuids — so a rule typed in just now cannot be scoped to until the
+      // watcher is saved. Said here, at the moment the rule is added, rather than leaving
+      // the user to notice the gap in the Actions pane's picker.
+      const unsavedRuleHint = el('span', 'watch-hint', '⚠ save to use in actions');
+      unsavedRuleHint.dataset.testid = 'watch-rules-unsaved-hint';
+      unsavedRuleHint.title =
+        'Some rules here have not been saved yet. An action is scoped to rules by their saved '
+        + 'id, so a new rule is listed but greyed out in an action’s Rules picker until you '
+        + 'save the watcher. Until then, an unscoped action still applies to it — "All" means '
+        + 'every rule, including the new ones.';
+      unsavedRuleHint.hidden = true;
+      const rulesHead = sectionHeader('Rules', addRuleBtn, SECTION_HELP.rules);
+      rulesHead.appendChild(unsavedRuleHint);
+      screen.editorBody.appendChild(sectionPanel(rulesHead, rulesBox));
 
       // Zones on offer come from the sources this watcher actually uses, so a rule can
       // only ever reference a zone the watcher will have loaded at runtime. Prefixed
@@ -2807,14 +2834,46 @@ export async function renderWatchProfileManager({ target }) {
       /**
        * The rules an action can be scoped to.
        *
-       * Only saved rules: a rule gets its uuid from the backend on first save, and
-       * offering an unsaved one would let the user pick a scope that cannot be stored.
+       * Only *saved* rules are selectable: a rule gets its uuid from the backend on
+       * first save, and offering an unsaved one would let the user pick a scope that
+       * cannot be stored.
+       *
+       * Unsaved ones are still listed, greyed and unpickable. Dropping them silently was
+       * the whole confusion this addresses: a rule the user had just typed in simply was
+       * not in the list, which reads as a bug rather than as "not yet". A row that is
+       * present, named and marked "unsaved" says which rules exist, which can be scoped,
+       * and what to do about the difference.
        */
       function ruleScopeItems() {
-        return ruleRows
-          .map(r => r.getRule())
-          .filter(rule => rule.uuid)
-          .map(rule => ({ uuid: rule.uuid, name: rule.name }));
+        return ruleRows.map((entry, i) => {
+          const rule = entry.getRule();
+          // `getRule` already substitutes "Unnamed rule" for a blank name, so every row
+          // reads as something.
+          const name = rule.name;
+          if (rule.uuid) return { uuid: rule.uuid, name };
+          return {
+            // Synthetic key: unsaved rules have no uuid, and the dropdown needs a unique
+            // one per row. It never reaches a payload — the row cannot be ticked, and
+            // `buildScopes` drops any selected uuid that is not in this list.
+            uuid: `unsaved:${i}`,
+            name,
+            disabled: true,
+            badge: { text: 'unsaved' },
+            disabledTitle: 'This rule has not been saved yet, so nothing can be scoped to it. '
+              + 'Save the watcher and it becomes selectable here.',
+          };
+        });
+      }
+
+      /**
+       * Show or hide the Rules-header warning that some rule is not yet scopeable.
+       *
+       * Deliberately in the section header, beside the existing hints, rather than as its
+       * own line: the editor's "a small profile does not scroll" budget is spent (see the
+       * event hint below), and this one appears exactly when the user is mid-edit.
+       */
+      function syncUnsavedRuleHint() {
+        unsavedRuleHint.hidden = !ruleRows.some(entry => !entry.getRule().uuid);
       }
 
       /** The sources an action can be scoped to — the ones this watcher actually uses. */
@@ -2836,6 +2895,31 @@ export async function renderWatchProfileManager({ target }) {
       function refreshScopes() {
         for (const entry of ruleRows) entry.refreshScopes?.();
         for (const entry of actionRows) entry.refreshScopes?.();
+        syncUnsavedRuleHint();
+      }
+
+      /**
+       * A rule was renamed: relabel it wherever it is offered, in place.
+       *
+       * Not `refreshScopes`. A name is committed on blur, so the rebuild that used to
+       * follow ran *inside* the click that moved focus — and when that click was aimed
+       * at an action's Rules picker, it landed on a button the rebuild then replaced
+       * before mouseup, so no click event was dispatched and the picker stayed shut. The
+       * user's first click after renaming a rule simply did nothing.
+       *
+       * Falls back to a full rebuild if any action does not know this rule yet — better
+       * a lost click than a picker showing a name that no longer exists.
+       */
+      function renameRuleInScopes(entry) {
+        const rule = entry.getRule();
+        // Unsaved rules are keyed by row position (see `ruleScopeItems`), which a rename
+        // does not change.
+        const key = rule.uuid || `unsaved:${ruleRows.indexOf(entry)}`;
+        let allKnown = true;
+        for (const action of actionRows) {
+          if (!action.renameScopeItem?.(key, rule.name)) allKnown = false;
+        }
+        if (!allKnown) refreshScopes();
       }
 
       /** Re-read regions from the server and push them into every row that shows them. */
@@ -2860,9 +2944,9 @@ export async function renderWatchProfileManager({ target }) {
             onAnyChange();
           },
           // A renamed rule should read by its new name in the scope pickers. On
-          // `change` (commit), not `input` — rebuilding a dropdown on every keystroke
-          // would fight the user for focus.
-          onNameCommitted: refreshScopes,
+          // `change` (commit), not `input` — relabelling on every keystroke is wasted
+          // work, and the rebuild this used to do fought the user for focus.
+          onNameCommitted: () => renameRuleInScopes(entry),
         });
         ruleRows.push(entry);
         rulesBox.appendChild(entry.element);

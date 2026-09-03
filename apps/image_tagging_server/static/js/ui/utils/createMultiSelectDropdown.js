@@ -25,7 +25,8 @@ import { prefs } from '/app-static/js/shared/prefs.js';
  * @param {{
  *   label: string,
  *   items: Array<{uuid: string, name: string, color?: string|null, depth?: number,
- *                 badge?: {text: string, title?: string, className?: string}|null}>,
+ *                 badge?: {text: string, title?: string, className?: string}|null,
+ *                 disabled?: boolean, disabledTitle?: string}>,
  *   defaultSelected?: string[],
  *   defaultMode?: 'any'|'all',
  *   showModeToggle?: boolean,    // default true
@@ -51,6 +52,7 @@ import { prefs } from '/app-static/js/shared/prefs.js';
  *   getExcluded: () => string[],
  *   getMode: () => 'any'|'all',
  *   getHierarchyToggle: () => boolean,
+ *   renameItem: (uuid: string, name: string) => boolean,
  *   setState: (selected?: string[]|null, mode?: 'any'|'all'|null, hierarchyToggle?: boolean|null, excluded?: string[]|null) => void,
  *   destroy: () => void,
  * }}
@@ -192,8 +194,10 @@ export function createMultiSelectDropdown({
   selectAllBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     _excluded.clear();
-    checkboxMap.forEach((cb) => { cb.checked = true; });
-    _selected = [...checkboxMap.keys()];
+    // Disabled rows are shown for context, not offered — "Select All" must not be the
+    // back door that picks one anyway.
+    checkboxMap.forEach((cb) => { if (!cb.disabled) cb.checked = true; });
+    _selected = [...checkboxMap.entries()].filter(([, cb]) => !cb.disabled).map(([uuid]) => uuid);
     _syncTrigger();
     _syncExcluded();
     _syncImplied();
@@ -251,6 +255,8 @@ export function createMultiSelectDropdown({
   const notBtnMap = new Map();
   /** @type {Map<string, HTMLLabelElement>} uuid → item label element */
   const itemElMap = new Map();
+  /** @type {Map<string, HTMLSpanElement>} uuid → the item's name span, for renameItem() */
+  const nameSpanMap = new Map();
 
   // Placeholder for an empty list — without it the panel opens on nothing and
   // reads as broken rather than as "there is nothing to pick yet".
@@ -291,12 +297,21 @@ export function createMultiSelectDropdown({
       lbl.classList.add('ms-item--child');
     }
 
+    // A row the caller wants visible but not pickable — e.g. an option that does not
+    // exist server-side yet. Showing it greyed beats omitting it: an absent row reads as
+    // a bug, a greyed one with a reason reads as "not yet".
+    if (item.disabled) {
+      lbl.classList.add('ms-item--disabled');
+      if (item.disabledTitle) lbl.title = item.disabledTitle;
+    }
+
     // Checkbox first, then swatch: the click targets line up in one column
     // instead of alternating position with whether an item has a colour.
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = item.uuid;
-    cb.checked = defaultSelected.includes(item.uuid);
+    cb.disabled = !!item.disabled;
+    cb.checked = !item.disabled && defaultSelected.includes(item.uuid);
     checkboxMap.set(item.uuid, cb);
     itemElMap.set(item.uuid, lbl);
     lbl.appendChild(cb);
@@ -311,6 +326,7 @@ export function createMultiSelectDropdown({
     const nameSpan = document.createElement('span');
     nameSpan.className = 'ms-item__name';
     nameSpan.textContent = ' ' + item.name;
+    nameSpanMap.set(item.uuid, nameSpan);
     lbl.appendChild(nameSpan);
 
     // Optional trailing pill — a per-row annotation the caller supplies
@@ -327,7 +343,7 @@ export function createMultiSelectDropdown({
     // Per-row "not" toggle: excludes this item from results. Query-building
     // only — a plain "pick some items" widget passes allowExclude: false.
     let notBtn = null;
-    if (allowExclude) {
+    if (allowExclude && !item.disabled) {
       notBtn = document.createElement('button');
       notBtn.type = 'button';
       notBtn.className = 'ms-item__not-btn';
@@ -573,6 +589,36 @@ export function createMultiSelectDropdown({
     },
 
     /**
+     * Relabel one existing item in place, keeping its DOM node.
+     *
+     * The alternative — rebuilding the whole dropdown because one option was renamed —
+     * destroys the trigger button, and a rebuild fired by the blur of the click *aimed
+     * at that button* swallows the click: mousedown lands on a node that is detached
+     * before mouseup, so no click event is ever dispatched. Renaming in place is also
+     * simply cheaper.
+     *
+     * @returns {boolean} false when this dropdown has no such item, so the caller can
+     *   fall back to a full rebuild rather than silently showing a stale name.
+     */
+    renameItem(uuid, name) {
+      const span = nameSpanMap.get(uuid);
+      if (!span) return false;
+      span.textContent = ' ' + name;
+      const item = _items.find(i => i.uuid === uuid);
+      if (item) item.name = name;
+      const notBtn = notBtnMap.get(uuid);
+      if (notBtn) {
+        notBtn.title = `Exclude — match everything except ${name}`;
+        notBtn.setAttribute('aria-label', notBtn.title);
+      }
+      // The trigger summarises a single selection by name, so a rename has to reach it.
+      _syncTrigger();
+      // A stale search term hides rows by their old name until it is re-applied.
+      _applySearch();
+      return true;
+    },
+
+    /**
      * Programmatically update selection, mode, hierarchy toggle, and/or
      * exclusions without firing onChange. Pass null/undefined to leave a
      * field unchanged.
@@ -580,7 +626,8 @@ export function createMultiSelectDropdown({
     setState(selected, mode, includeDescendants, excluded) {
       if (selected != null) {
         _selected = [...selected];
-        checkboxMap.forEach((cb, uuid) => { cb.checked = _selected.includes(uuid); });
+        checkboxMap.forEach((cb, uuid) => { cb.checked = !cb.disabled && _selected.includes(uuid); });
+        _selected = _selected.filter(uuid => !checkboxMap.get(uuid)?.disabled);
       }
       if (excluded != null) {
         _excluded = new Set(excluded);
