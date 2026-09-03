@@ -7,6 +7,7 @@ Unverified and false-positive bboxes produce no image_label rows.
 
 import asyncio
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -1172,6 +1173,46 @@ class TestBulkApplyImagesRemovalActions:
         body = r.json()
         assert body["modifiedCount"] == 0
         assert body["failCount"] == 1
+
+    async def test_an_unremovable_sidecar_keeps_its_record_and_spares_the_batch(
+        self, http_client, files_root, db_client, monkeypatch
+    ):
+        """A record whose sidecar survives must survive with it — and only it.
+
+        The batch path removes a whole page in one DELETE, so the failure has to
+        pull that one uuid out of the batch rather than abort the page or, worse,
+        delete the row anyway. A row deleted while its sidecar is still on disk is
+        resurrected by the next reconcile, which is the bug this ordering exists
+        to prevent.
+        """
+        doomed, spared = "sidecar_ok.png", "sidecar_stuck.png"
+        uuids = {name: await self._make_image(http_client, files_root, name) for name in (doomed, spared)}
+        stuck_sidecar = (files_root / spared).with_suffix(".json")
+        assert stuck_sidecar.exists()
+
+        real_unlink = Path.unlink
+
+        def flaky_unlink(self, *args, **kwargs):
+            if self == stuck_sidecar:
+                raise OSError("sidecar is stuck")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        r = await http_client.post(
+            "/api/images/bulk-apply",
+            json={"filter": {"terms": [{"kind": "filename", "patterns": ["sidecar_"]}]}, "action": "delete"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["modifiedCount"] == 1
+        assert body["failCount"] == 1
+
+        assert await db_client.get_image_by_uuid(uuids[doomed]) is None
+        assert not (files_root / doomed).exists()
+
+        assert await db_client.get_image_by_uuid(uuids[spared]) is not None, "record must outlive its sidecar"
+        assert (files_root / spared).exists(), "the file must not be deleted out from under a surviving record"
 
     async def test_remove_from_db_by_filter_keeps_the_files(self, http_client, files_root, db_client):
         matching = ["remdb_match_a.png", "remdb_match_b.png"]
