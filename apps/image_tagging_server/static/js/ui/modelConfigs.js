@@ -10,7 +10,9 @@ import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-static/js/ui/modelSpec.js';
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
-import { NEW_ITEM_SELECTION, takePendingSelection } from '/app-static/js/app/utils/tabs.js';
+import { NEW_ITEM_SELECTION, takePendingSelection, navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
+import { fetchModelUnits } from '/app-static/js/shared/api/inference.js';
 
 let _rendering = false;
 let _navGuardController = null; // AbortController for the tab-navigation guard
@@ -142,6 +144,8 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
 
   // Default spec seeded when the user first enables a sub-model toggle on a label.
   // Crop classifier is the most common sub-model type (refining a detected parent).
+  // Purely a convenience default: the sub-model stays a sub-model whatever spec it
+  // ends up with, including one identical to its parent's.
   const defaultSubSpec = { modelType: 'crop_classifier', architecture: 'efficientnet_b0' };
 
   // Submodel panels (populated dynamically by tree callbacks)
@@ -223,6 +227,77 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   treeSummaryBox.className = 'mtp-box';
   el.appendChild(treeSummaryBox);
 
+  // ── Train the whole tree ──────────────────────────────────────────────────
+  // The primary way to train a hierarchy, sitting under the tree it trains. One run
+  // per node, in dependency order, creating a training config for any node that lacks
+  // one. Training the parts individually is still possible from the Training tab; it is
+  // the "retrain one node" path, not the way to build the thing in the first place —
+  // which it used to be, and which left every sub-model untrained.
+  if (config?.uuid) {
+    const trainRow = document.createElement('div');
+    trainRow.className = 'training-start-run';
+
+    const trainBtn = document.createElement('button');
+    trainBtn.type = 'button';
+    trainBtn.className = 'panel-btn';
+    trainBtn.textContent = '▶ Train hierarchy';
+    trainBtn.dataset.testid = 'model-config-train-hierarchy';
+    trainBtn.dataset.tour = 'config.modelShapes.trainHierarchy';
+    trainBtn.title = 'Train every part of this model tree, top model first';
+    trainBtn.addEventListener('click', async () => {
+      trainBtn.disabled = true;
+      try {
+        await launchRun({
+          typename: 'TrainHierarchyTask',
+          name: `Train ${config.name}`,
+          params: { model_config_uuid: config.uuid },
+          // Same reason TrainModelTask is persistent: the jobs run on the training
+          // server, so a tasks_server restart only detaches the thing watching them.
+          persistent: true,
+        });
+        toast(`Started Train ${config.name}`, 3000);
+        navigateTabs('tab-runs', 'tab-runs-active');
+      } catch (err) {
+        toast(err.message || 'Could not start the training run', 5000, 'error');
+      } finally {
+        trainBtn.disabled = false;
+      }
+    });
+
+    const trainHint = document.createElement('span');
+    trainHint.className = 'training-start-run__hint';
+    trainHint.textContent = 'Runs one training job per part, in order. Progress and cancel live in Jobs.';
+
+    trainRow.append(trainBtn, trainHint);
+    el.appendChild(trainRow);
+  }
+
+  // Which parts of THIS config have a trained artifact, from the inference server's
+  // view of its own models directory. Null until it answers (and if it never does),
+  // because "we don't know yet" must not render as "not trained" — that would cry wolf
+  // on every open and teach the warning away.
+  /** @type {?{top: boolean, subLabelUuids: Set<string>}} */
+  let _trained = null;
+  if (config?.uuid) {
+    fetchModelUnits()
+      .then(units => {
+        const unit = units.find(u => u.modelConfigUuid === config.uuid);
+        if (!unit) {
+          // No artifacts at all for this config: nothing has ever been trained, which is
+          // exactly what a freshly designed hierarchy looks like and worth saying.
+          _trained = { top: false, subLabelUuids: new Set() };
+        } else {
+          const parts = unit.parts || [];
+          _trained = {
+            top: parts.some(p => p.role === 'top'),
+            subLabelUuids: new Set(parts.filter(p => p.role === 'submodel' && p.labelUuid).map(p => p.labelUuid)),
+          };
+        }
+        refreshTreeSummary();
+      })
+      .catch(() => { /* inference server unreachable — say nothing rather than lie */ });
+  }
+
   let _treeRefreshQueued = false;
   function refreshTreeSummary() {
     if (_treeRefreshQueued) return; // coalesce bursts (e.g. submodel change → markDirty)
@@ -236,7 +311,7 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
         rootSpecHandle.getSpec(),
         labelsMap,
       );
-      treeSummaryBox.replaceChildren(renderModelTreePanel({ nodes, labelsMap }));
+      treeSummaryBox.replaceChildren(renderModelTreePanel({ nodes, labelsMap, trained: _trained }));
     });
   }
 

@@ -5610,6 +5610,15 @@ button.filter-active {
   color: var(--color-danger);
 }
 
+/* A hierarchy that is missing parts, or whose parts could not all be used. It still
+   runs — it just answers with the parent label — so this marks the badge rather than
+   disabling the row. Without it, a half-trained hierarchy is indistinguishable from a
+   working one until you notice the labels are less specific than they should be. */
+.inference-model-item--warn .inference-model-badge {
+  color: var(--color-warning, var(--text-muted));
+  border-color: var(--color-warning, var(--border-strong));
+}
+
 .inference-model-badge {
   flex-shrink: 0;
   font-size: 0.75em;
@@ -7676,6 +7685,11 @@ button.filter-active {
 }
 
 .mtp-detail--warn { color: var(--pico-del-color, var(--color-warning)); }
+/* A part of the tree with no trained artifact. Same colour as --warn, separate class:
+   "not trained" and "nothing to distinguish" are different problems, and sharing a
+   selector makes neither assertable on its own. */
+.mtp-detail--untrained { color: var(--pico-del-color, var(--color-warning)); }
+.mtp-detail--ok { color: var(--color-success, var(--text-muted)); }
 
 .mtp-chip {
   display: inline-flex;

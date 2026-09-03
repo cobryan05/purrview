@@ -51,6 +51,25 @@ function _chipRow(prefixText, uuids, labelsMap, compact, compactNoun) {
 }
 
 /**
+ * "trained" / "not trained yet" marker for one node of the tree.
+ *
+ * An untrained part is the failure this panel exists to make visible: the hierarchy
+ * still runs, the top model still detects, and the only symptom is that detections stop
+ * at the parent label — indistinguishable from a model that simply wasn't sure. Stated
+ * per node rather than as one summary line so it names WHICH part is missing.
+ */
+function _trainedChip(isTrained) {
+  const chip = document.createElement('div');
+  // Its own modifier rather than the shared --warn: "not trained" and "nothing to
+  // distinguish" are different problems with different fixes, and one selector matching
+  // both makes each impossible to assert on independently.
+  chip.className = 'mtp-detail' + (isTrained ? ' mtp-detail--ok' : ' mtp-detail--untrained');
+  chip.dataset.testid = isTrained ? 'model-tree-trained' : 'model-tree-untrained';
+  chip.textContent = isTrained ? 'trained ✓' : '⚠ not trained yet — this part will not run';
+  return chip;
+}
+
+/**
  * Render the model tree summary.
  *
  * @param {object} opts
@@ -58,9 +77,19 @@ function _chipRow(prefixText, uuids, labelsMap, compact, compactNoun) {
  * @param {Map<string, object>} opts.labelsMap
  * @param {boolean} [opts.compact]  Counts instead of chip lists (Training tab preview).
  * @param {?string} [opts.highlightNodeUuid]  Node uuid to mark as the training target.
+ * @param {?{top: boolean, subLabelUuids: Set<string>}} [opts.trained]
+ *   Which parts have a trained artifact. Omit (the default) to say nothing about
+ *   training state — every caller that only describes the *shape* of the tree should,
+ *   since "no marker" and "not trained" must not look the same.
  * @returns {HTMLElement}
  */
-export function renderModelTreePanel({ nodes, labelsMap, compact = false, highlightNodeUuid = null }) {
+export function renderModelTreePanel({
+  nodes,
+  labelsMap,
+  compact = false,
+  highlightNodeUuid = null,
+  trained = null,
+}) {
   const panel = document.createElement('div');
   panel.className = 'model-tree-panel' + (compact ? ' model-tree-panel--compact' : '');
 
@@ -97,6 +126,7 @@ export function renderModelTreePanel({ nodes, labelsMap, compact = false, highli
     rootTitle.textContent += '  (training target)';
   }
   rootRow.appendChild(rootTitle);
+  if (trained) rootRow.appendChild(_trainedChip(trained.top));
   rootRow.appendChild(_chipRow('detects:', [...topClasses], labelsMap, compact, 'class'));
   panel.appendChild(rootRow);
 
@@ -120,6 +150,7 @@ export function renderModelTreePanel({ nodes, labelsMap, compact = false, highli
       title.appendChild(document.createTextNode('  (training target)'));
     }
     row.appendChild(title);
+    if (trained) row.appendChild(_trainedChip(trained.subLabelUuids.has(uuid)));
 
     // Labels this sub-model distinguishes: assigned labels that roll up to it.
     const children = [...selected].filter(
@@ -135,13 +166,21 @@ export function renderModelTreePanel({ nodes, labelsMap, compact = false, highli
     panel.appendChild(row);
   }
 
-  // ── Artifact summary (the "one run → many artifacts" contract) ────────────
+  // ── Artifact summary ──────────────────────────────────────────────────────
+  // One training config trains exactly one node (TrainModelTask resolves a single
+  // model_config_node_uuid), so this counts *runs*, not artifacts of one run. The
+  // wording here used to describe a whole-tree run, left over from the removed
+  // "Train all → bundle" path, and read as a promise that training the root would
+  // produce the sub-models too — it doesn't, and the tree silently stops one level
+  // short at inference with no error to point at.
+  const artifactCount = 1 + submodels.size;
   const footer = document.createElement('div');
   footer.className = 'mtp-footer';
-  const artifactCount = 1 + submodels.size;
   footer.textContent = submodels.size === 0
-    ? 'A full training run produces 1 model artifact.'
-    : `A full training run produces ${artifactCount} model artifacts (1 top model + ${submodels.size} sub-model${submodels.size === 1 ? '' : 's'}), each trained separately.`;
+    ? 'Training this tree is 1 training run, producing 1 model artifact.'
+    : `Training this tree takes ${artifactCount} separate training runs — one per node ` +
+      `(1 top model + ${submodels.size} sub-model${submodels.size === 1 ? '' : 's'}). ` +
+      'Each node needs its own training config; a run trains only its selected node.';
   panel.appendChild(footer);
 
   return panel;

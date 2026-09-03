@@ -122,6 +122,80 @@ class ClassifyCropsResponse(StatusResponse):
     results: List[CropResult] = Field(default_factory=list)
 
 
+class DetectUnitPayload(Payload):
+    """Run a whole model config — top model plus its sub-models — over one image.
+
+    Takes exactly one of `modelConfigUuid` (a trained hierarchy) or `modelNames` (an
+    explicitly assembled stack). Both cascade identically: which models run is a
+    selection question, and the second pass must not depend on how they were chosen.
+    """
+
+    model_config_uuid: Optional[str] = None
+    #: An explicit stack, in priority order. Crop classifiers in it are aimed at their
+    #: own sidecar's boundary label, exactly as a hierarchy's sub-models are.
+    model_names: List[str] = Field(default_factory=list)
+    image_base64: str
+    conf_thresh: float = 0.5
+    #: Floor a sub-model's verdict must clear to replace the coarse label. 0 keeps the
+    #: server's default of always taking the classifier's best guess; a detection that
+    #: keeps its parent label ("a cat, not sure which") is a correct answer, so where to
+    #: draw this line is the caller's policy.
+    min_sub_confidence: float = 0.0
+    #: {label_uuid: [ancestor label uuids]}. Optional and additive — the unit's own
+    #: artifacts already describe the labels it can emit. A caller holding the real label
+    #: tree passes it so detections from FOREIGN models in the same stack are eligible
+    #: for refinement too. inference_server never fetches this; it stays db-free.
+    label_ancestry: Dict[str, List[str]] = Field(default_factory=dict)
+    pin_ids: Dict[str, str] = Field(default_factory=dict)
+    #: Runner-up classes per detection, as on detect-batch. Note these are the FIRST
+    #: pass's alternates: they are the detector's next-best classes for the box, not the
+    #: sub-model's, and a refined detection's winner therefore does not come from this
+    #: list. The training collector's cross-model ambiguity scan needs them, and they
+    #: describe exactly the decision it is scanning — which detector saw what.
+    top_k: Union[int, Dict[str, int]] = 0
+
+
+class UnitPartModel(Payload):
+    """One trained artifact that was found for the config."""
+
+    model_name: str
+    role: str
+    node_uuid: Optional[str] = None
+    label_uuid: Optional[str] = None
+    trained_at: Optional[str] = None
+
+
+class ModelUnitModel(Payload):
+    """One model config that has trained artifacts on this server."""
+
+    model_config_uuid: str
+    detector_names: List[str] = Field(default_factory=list)
+    sub_model_names: List[str] = Field(default_factory=list)
+    parts: List[UnitPartModel] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class ModelUnitListResponse(StatusResponse):
+    units: List[ModelUnitModel] = Field(default_factory=list)
+
+
+class DetectUnitResponse(StatusResponse):
+    # Keyed by detector name, exactly like detect-batch, and with the second pass
+    # already applied to the detections inside — a caller applies these the same way it
+    # applies any detections, which is the point of the unit.
+    results: Dict[str, InferenceResultModel] = Field(default_factory=dict)
+    errors: Dict[str, str] = Field(default_factory=dict)
+    # What this server actually found and ran. The caller owns the config and diffs
+    # this against it to report an untrained part — inference_server cannot know how
+    # many parts there *should* be, and guessing would report a half-trained hierarchy
+    # as healthy.
+    parts: List[UnitPartModel] = Field(default_factory=list)
+    detector_names: List[str] = Field(default_factory=list)
+    sub_model_names: List[str] = Field(default_factory=list)
+    # Artifacts found but not run, and sub-models that failed mid-request.
+    notes: List[str] = Field(default_factory=list)
+
+
 class ModelMetaResponse(StatusResponse):
     model_kind: Optional[str] = None
     label_uuid: Optional[str] = None
@@ -455,6 +529,40 @@ class WebApp:
                 return ModelListResponse(status=JsonValues.SUCCESS, models=model_list)
             except Exception as e:
                 return ModelListResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/models/units",
+            response_model=ModelUnitListResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="list_model_units",
+        )
+        async def list_model_units_api():
+            """Every model config this server holds trained artifacts for.
+
+            What makes a hierarchy selectable as one entry in a picker: the SPA lists
+            these, joins the names from its own model-configs API, and sends back a
+            `modelConfigUuid` to `detect-unit`. Deliberately does NOT name the configs —
+            inference_server has no database and a name it invented here would be one
+            more thing that can disagree with the config editor.
+            """
+            try:
+                units = await self._manager.list_model_units()
+                return ModelUnitListResponse(
+                    status=JsonValues.SUCCESS,
+                    units=[
+                        ModelUnitModel(
+                            model_config_uuid=u.model_config_uuid,
+                            detector_names=u.detector_names,
+                            sub_model_names=[s.model_name for s in u.sub_models],
+                            parts=[UnitPartModel(**vars(p)) for p in u.parts],
+                            notes=u.problems,
+                        )
+                        for u in units
+                    ],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ModelUnitListResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/classes/bulk",
@@ -819,6 +927,59 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return BatchInferenceResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/detect-unit",
+            tags=[ApiTags.INFERENCE],
+            operation_id="detect_unit",
+            response_model=DetectUnitResponse,
+        )
+        async def detect_unit_api(payload: DetectUnitPayload) -> DetectUnitResponse:
+            """Run one model config as a single model: detect, then refine, in one call.
+
+            Registered BEFORE /api/models/{model_name}/detect for the same reason
+            detect-batch is: FastAPI matches in declaration order, and "detect-unit"
+            would otherwise be captured as a model named "detect-unit".
+
+            This is the only place the cascade runs. Callers — the SPA's inference panel,
+            the watcher, the review preview — hand over a config uuid and get back
+            detections that are already as specific as the hierarchy can make them, so
+            none of them reimplements the second pass (and none of them can drift).
+            """
+            try:
+                image_array: np.ndarray = base64_decode_image(payload.image_base64)
+                results, unit, notes = await self._manager.detect_unit(
+                    model_config_uuid=payload.model_config_uuid or None,
+                    model_names=payload.model_names or None,
+                    image=image_array,
+                    conf_thresh=payload.conf_thresh,
+                    label_ancestry={k: set(v) for k, v in payload.label_ancestry.items()},
+                    min_sub_confidence=payload.min_sub_confidence,
+                    pin_ids=payload.pin_ids,
+                    top_k=payload.top_k,
+                )
+
+                ok: dict = {}
+                errors: dict = {}
+                for name, outcome in results.items():
+                    if isinstance(outcome, str):
+                        errors[name] = outcome
+                        continue
+                    # Same as detect-batch: never echo the source image back per model.
+                    outcome.source_image = None
+                    ok[name] = InferenceResultModel.model_validate(outcome)
+
+                return DetectUnitResponse(
+                    results=ok,
+                    errors=errors,
+                    parts=[UnitPartModel(**vars(p)) for p in unit.parts],
+                    detector_names=unit.detector_names,
+                    sub_model_names=[s.model_name for s in unit.sub_models],
+                    notes=notes,
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return DetectUnitResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/{model_name}/detect",

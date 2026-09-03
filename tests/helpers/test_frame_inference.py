@@ -32,7 +32,7 @@ class _FakeInferenceApi:
         self._exceptions = list(exceptions or [])
         self.calls = 0
 
-    def detect_batch(self, payload):
+    def detect_unit(self, payload):
         self.payloads.append(payload)
         self.calls += 1
         if self._exceptions:

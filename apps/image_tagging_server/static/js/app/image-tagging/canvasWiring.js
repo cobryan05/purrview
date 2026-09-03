@@ -26,7 +26,7 @@
 
 import { parseToolUuid } from './canvas/tools.js';
 import { addInferenceResults } from './canvas/image.js';
-import { runDetectionBatch } from '/app-static/js/shared/api/inference.js';
+import { runDetectionBatch, runDetectionUnit } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
@@ -57,15 +57,31 @@ export function wireInferenceRunner(runtime, { logPrefix = '' } = {}) {
   return events.subscribeToCanvas(
     runtime.id,
     EventTypes.RUN_INFERENCE_ON_CANVAS,
-    async ({ modelNames, confThresh, replaceExisting }) => {
+    async ({ modelNames, unitUuids = [], confThresh, replaceExisting }) => {
       const img = runtime.state?.image?.img;
       if (!img) {
         Logger.error(`${logPrefix}Failed to run inference: no image loaded`);
         return;
       }
-      let outcomes;
+      let outcomes = [];
       try {
-        outcomes = await runDetectionBatch(modelNames, img, confThresh);
+        // Loose models go in one batch; each hierarchy is one request that runs its own
+        // cascade server-side. Issued together because they are independent, then
+        // applied in a fixed order below — no cascade is orchestrated here, which is the
+        // point: the canvas, the watcher and the review preview must all get identically
+        // refined detections, so only one implementation may exist.
+        const [batch, ...units] = await Promise.all([
+          modelNames.length ? runDetectionBatch(modelNames, img, confThresh) : Promise.resolve([]),
+          ...unitUuids.map(uuid => runDetectionUnit(uuid, img, confThresh)),
+        ]);
+        // Models first, then hierarchies. `replaceExisting` makes application order
+        // observable, and a hierarchy's verdict is the more specific one, so it should
+        // land on top of a loose detector's rather than under it.
+        outcomes = [...batch];
+        for (const unit of units) {
+          for (const note of unit.notes) Logger.warn(`${logPrefix}${note}`);
+          outcomes.push(...unit.outcomes);
+        }
       } catch (err) {
         // The whole request failed (inference server down, bad image). Per-model
         // failures do not come through here — they arrive as `error` below, so

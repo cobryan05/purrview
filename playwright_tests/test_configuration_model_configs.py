@@ -520,11 +520,11 @@ class TestModelTreePanel:
         # Kitten isn't assigned, so the sub-model has nothing to distinguish
         expect(sub_row.locator(".mtp-detail--warn")).to_contain_text("nothing to distinguish")
 
-        # One run = top model + 1 sub-model, each trained on its own. (No live
-        # model shape has sub-models today, so this mocked case is the only
-        # coverage the multi-artifact wording gets.)
-        expect(panel.locator(".mtp-footer")).to_contain_text("2 model artifacts")
-        expect(panel.locator(".mtp-footer")).to_contain_text("each trained separately")
+        # Two nodes = two separate runs, one per node. The footer must not imply a
+        # single run produces both: training the root leaves the sub-model untrained,
+        # and the only symptom is detections stopping at the boundary label.
+        expect(panel.locator(".mtp-footer")).to_contain_text("2 separate training runs")
+        expect(panel.locator(".mtp-footer")).to_contain_text("its own training config")
 
     def test_tree_updates_live_when_child_label_checked(self, page: Page, base_url: str):
         """Checking Kitten in the label tree immediately replaces the sub-model warning
@@ -546,3 +546,78 @@ class TestModelTreePanel:
         expect(sub_row.locator(".mtp-detail--warn")).to_have_count(0)
         expect(sub_row).to_contain_text("distinguishes:")
         expect(sub_row).to_contain_text("Kitten")
+
+
+def _mock_model_units(page: Page, units: list):
+    page.route(
+        lambda url: url.split("?")[0].endswith("/api/models/units"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "units": units}),
+        ),
+    )
+
+
+class TestTrainedState:
+    """Which parts of a hierarchy actually exist as trained artifacts.
+
+    An untrained sub-model is invisible at inference time — the hierarchy still runs and
+    the answer simply stops at the parent label, which looks identical to a model that
+    was unsure. The tree is where that has to be legible, because it is where you decide
+    to train.
+    """
+
+    def test_untrained_sub_model_is_called_out_per_node(self, page: Page, base_url: str):
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+        # The top model is trained; the cat sub-model never was — exactly the state that
+        # produced "it just recognises cat".
+        _mock_model_units(
+            page,
+            [
+                {
+                    "modelConfigUuid": "cfg-1",
+                    "detectorNames": ["animal_detector"],
+                    "subModelNames": [],
+                    "parts": [{"modelName": "animal_detector", "role": "top", "labelUuid": None}],
+                    "notes": [],
+                }
+            ],
+        )
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(600)
+
+        panel = _tree_panel(page)
+        expect(panel.get_by_test_id("model-tree-root-node").get_by_test_id("model-tree-trained")).to_be_visible()
+        expect(panel.get_by_test_id("model-tree-sub-node").get_by_test_id("model-tree-untrained")).to_be_visible()
+
+    def test_a_fully_trained_hierarchy_shows_no_warning(self, page: Page, base_url: str):
+        """The negative case: with both parts trained the panel must be quiet, or the
+        warning means nothing and gets ignored when it matters."""
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+        _mock_model_units(
+            page,
+            [
+                {
+                    "modelConfigUuid": "cfg-1",
+                    "detectorNames": ["animal_detector"],
+                    "subModelNames": ["cat_namer"],
+                    "parts": [
+                        {"modelName": "animal_detector", "role": "top", "labelUuid": None},
+                        {"modelName": "cat_namer", "role": "submodel", "labelUuid": "lbl-cat"},
+                    ],
+                    "notes": [],
+                }
+            ],
+        )
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(600)
+
+        expect(_tree_panel(page).get_by_test_id("model-tree-untrained")).to_have_count(0)
+        expect(_tree_panel(page).get_by_test_id("model-tree-trained")).to_have_count(2)

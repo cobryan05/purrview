@@ -57,7 +57,7 @@ class _FakeInferenceApi:
         self._detections = detections
         self.payloads: List[Any] = []
 
-    def detect_batch(self, payload: Any) -> SimpleNamespace:
+    def detect_unit(self, payload: Any) -> SimpleNamespace:
         # One request carries the whole model stack now, so the fake answers in
         # that shape: results keyed by model name, plus errors for any that
         # failed. The task rebuilds its per-model list from its own model_names,
@@ -119,195 +119,68 @@ class TestRunInference:
         """A failing model must yield no detections, not kill the frame loop."""
 
         class _Boom:
-            def detect_batch(self, payload: Any):
+            def detect_unit(self, payload: Any):
                 raise RuntimeError("model exploded")
 
         assert await _task()._run_inference(_Boom(), "base64-image", ["cat-model"], frame_size=(100, 100)) == []
 
 
-class TestSecondPass:
-    """The cascade: a crop classifier refines the detector's boxes on the same frame.
+class TestSubModelsRideAlongInTheRequest:
+    """What the watcher still owns of the cascade: the request it builds.
 
-    `_run_inference` must return the REFINED label, because everything downstream —
-    the tracker, the rules engine, notifications — reads only what comes back here.
+    The cascade itself moved into inference_server's detect-unit — one implementation,
+    shared with the canvas and the review preview — and is tested there
+    (tests/inference_server/test_detect_unit.py). Duplicating the refinement assertions
+    here would cover one rule at two layers, which CLAUDE.md rules out.
+
+    These pin the wiring whose loss is silent: send the sub-models with the detectors, or
+    no cascade happens at all; send the confidence floor, or the endpoint's default
+    overwrites a true "a cat" with a hesitant "probably Willow".
     """
 
-    WILLOW = "label-willow"
-
-    class _FakeCascadeApi(_FakeInferenceApi):
-        """Adds the crop endpoint on top of the detect fake."""
-
-        def __init__(self, detections, per_box_predictions):
-            super().__init__(detections)
-            self._per_box = per_box_predictions
-            self.crop_payloads = []
-
-        def classify_crops(self, model_name, payload):
-            self.crop_payloads.append((model_name, payload))
-            return SimpleNamespace(
-                status="success",
-                results=[
-                    SimpleNamespace(
-                        predictions=[SimpleNamespace(label_uuid=label, confidence=conf) for label, conf in per_box]
-                    )
-                    for per_box in self._per_box[: len(payload.boxes)]
-                ],
-            )
+    CAT_L, WILLOW = "label-cat", "label-willow"
 
     def _task_with_ancestry(self):
         task = _task()
-        task._label_ancestry = {self.WILLOW: {CAT}, CAT: set()}
-        task._label_meta = {**task._label_meta, self.WILLOW: {"text": "Willow", "color": "#00ff00"}}
+        task._label_ancestry = {self.WILLOW: {self.CAT_L}, self.CAT_L: set()}
         return task
 
-    async def test_detection_comes_back_with_the_refined_label(self):
-        api = self._FakeCascadeApi(
-            [SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.8)],
-            [[(self.WILLOW, 0.9), (CAT, 0.1)]],
-        )
-        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=CAT)
-
-        detections = await self._task_with_ancestry()._run_inference(
-            api, "base64-image", ["cat-model"], frame_size=(100, 100), sub_models=[sub]
-        )
-
-        assert len(detections) == 1
-        assert detections[0].label_uuid == self.WILLOW
-        # Joint confidence: 0.8 that it's a cat, times 0.9 that it's this cat.
-        assert detections[0].confidence == pytest.approx(0.8 * 0.9)
-
-    async def test_crop_boxes_are_sent_in_relative_coordinates(self):
-        """The cascade runs before the relative→pixel conversion. Sending pixels to
-        an endpoint documented in relative coords would crop a sliver of the corner
-        of every frame, and still return a confident answer about it."""
-        api = self._FakeCascadeApi(
-            [SimpleNamespace(bbox=_bbox(0.2, 0.3, 0.6, 0.7), confidence=0.8)],
-            [[(self.WILLOW, 0.95)]],
-        )
-        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=CAT)
+    async def test_sub_models_are_sent_with_the_detectors(self):
+        """One request, one frame decode — and the refinement happens before the answer
+        comes back, so there is no coarse intermediate for this task to see."""
+        api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.8)])
+        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=self.CAT_L)
 
         await self._task_with_ancestry()._run_inference(
-            api, "base64-image", ["cat-model"], frame_size=(1920, 1080), sub_models=[sub]
-        )
-
-        _model, payload = api.crop_payloads[0]
-        assert len(payload.boxes) == 1
-        assert payload.boxes[0].x == pytest.approx(0.2)
-        assert payload.boxes[0].width == pytest.approx(0.4)
-
-    async def test_unsure_second_pass_keeps_the_coarse_detection(self):
-        """Every class below the bar: the box keeps its label AND its confidence."""
-        api = self._FakeCascadeApi(
-            [SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.8)],
-            [[(self.WILLOW, 0.4), ("label-maple", 0.35)]],
-        )
-        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=CAT)
-
-        detections = await self._task_with_ancestry()._run_inference(
             api, "base64-image", ["cat-model"], frame_size=(100, 100), sub_models=[sub]
         )
 
-        assert detections[0].label_uuid == CAT
-        assert detections[0].confidence == pytest.approx(0.8)
+        assert len(api.payloads) == 1, "the second pass must not cost a second round trip"
+        assert api.payloads[0].model_names == ["cat-model", "cat_namer"]
 
-    async def test_second_pass_failure_does_not_lose_the_frame(self):
-        """This runs on every frame of a live camera. A broken second pass must cost
-        the refinement, not the detection."""
+    async def test_the_watchers_confidence_floor_is_sent_not_defaulted(self):
+        """Now that the refinement runs server-side, this floor only applies if it
+        travels with the request. Left off, the endpoint takes every classifier's best
+        guess and a 0.2-confidence "Willow" silently replaces a true "Cat"."""
+        api = _FakeInferenceApi([])
+        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=self.CAT_L)
+        task = self._task_with_ancestry()
 
-        class _BrokenCropApi(_FakeInferenceApi):
-            def classify_crops(self, model_name, payload):
-                raise RuntimeError("inference server unreachable")
+        await task._run_inference(api, "base64-image", ["cat-model"], frame_size=(100, 100), sub_models=[sub])
 
-        api = _BrokenCropApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.8)])
-        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=CAT)
+        assert api.payloads[0].min_sub_confidence == task._SUB_MODEL_MIN_CONFIDENCE
 
-        detections = await self._task_with_ancestry()._run_inference(
+    async def test_the_label_tree_is_sent_so_foreign_detections_qualify(self):
+        """A unit describes the labels it can emit, but not one emitted by another model
+        in the same stack. That case exists only if the real ancestry is sent."""
+        api = _FakeInferenceApi([])
+        sub = CropSubModel(model_name="cat_namer", parent_label_uuid=self.CAT_L)
+
+        await self._task_with_ancestry()._run_inference(
             api, "base64-image", ["cat-model"], frame_size=(100, 100), sub_models=[sub]
         )
 
-        assert len(detections) == 1
-        assert detections[0].label_uuid == CAT
-
-
-class TestNestedSecondPass:
-    """Three levels deep, in one frame: animal -> cat -> willow.
-
-    Each sub-model reads the label the previous one wrote, so nesting depth is
-    bounded only by how many sub-models are configured. Asserted through
-    `_run_inference` rather than the helpers, because the chain depends on the
-    passes sharing one mutable detection list — a refactor that copied it would
-    pass the helper tests and stop the chain dead here.
-    """
-
-    ANIMAL, CAT_L, WILLOW = "label-animal", "label-cat", "label-willow"
-
-    class _PerModelCropApi(_FakeInferenceApi):
-        """Answers classify_crops differently per model, like real sub-models."""
-
-        def __init__(self, detections, by_model):
-            super().__init__(detections)
-            self._by_model = by_model
-            self.calls = []
-
-        def classify_crops(self, model_name, payload):
-            self.calls.append((model_name, [b.x for b in payload.boxes]))
-            label, conf = self._by_model[model_name]
-            return SimpleNamespace(
-                status="success",
-                results=[
-                    SimpleNamespace(predictions=[SimpleNamespace(label_uuid=label, confidence=conf)])
-                    for _ in payload.boxes
-                ],
-            )
-
-    def _task(self):
-        task = _task()
-        task._label_ancestry = {
-            self.CAT_L: {self.ANIMAL},
-            self.WILLOW: {self.CAT_L, self.ANIMAL},
-            self.ANIMAL: set(),
-        }
-        task._label_meta = {}
-        return task
-
-    async def test_three_levels_resolve_in_one_frame(self):
-        api = self._PerModelCropApi(
-            [SimpleNamespace(bbox=_bbox(0, 0, 10, 10, label_uuid=self.ANIMAL), confidence=1.0)],
-            {"animal_sub": (self.CAT_L, 1.0), "cat_sub": (self.WILLOW, 1.0)},
-        )
-        # Deliberately configured INNERMOST first — the ordering fix is what makes
-        # this resolve. Before it, the cat sub-model ran while the box still said
-        # "animal", matched nothing, and the frame stopped at "cat".
-        subs = [
-            CropSubModel(model_name="cat_sub", parent_label_uuid=self.CAT_L),
-            CropSubModel(model_name="animal_sub", parent_label_uuid=self.ANIMAL),
-        ]
-
-        detections = await self._task()._run_inference(
-            api, "base64-image", ["det"], frame_size=(100, 100), sub_models=subs
-        )
-
-        assert [c[0] for c in api.calls] == ["animal_sub", "cat_sub"], "passes ran inner-first"
-        assert detections[0].label_uuid == self.WILLOW
-
-    async def test_a_stalled_level_stops_the_chain_without_breaking_it(self):
-        """If the middle pass declines, the deepest one has nothing matching its own
-        boundary and the detection rests at the last confident level."""
-        api = self._PerModelCropApi(
-            [SimpleNamespace(bbox=_bbox(0, 0, 10, 10, label_uuid=self.ANIMAL), confidence=1.0)],
-            {"animal_sub": (self.CAT_L, 0.1), "cat_sub": (self.WILLOW, 1.0)},
-        )
-        subs = [
-            CropSubModel(model_name="animal_sub", parent_label_uuid=self.ANIMAL),
-            CropSubModel(model_name="cat_sub", parent_label_uuid=self.CAT_L),
-        ]
-
-        detections = await self._task()._run_inference(
-            api, "base64-image", ["det"], frame_size=(100, 100), sub_models=subs
-        )
-
-        assert detections[0].label_uuid == self.ANIMAL
-        assert api.calls == [("animal_sub", [0.0])], "the deeper pass had nothing to refine"
+        assert api.payloads[0].label_ancestry[self.WILLOW] == [self.CAT_L]
 
 
 class TestSplitModelStacks:

@@ -61,8 +61,9 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
     # Epochs can take minutes each — extend heartbeat tolerance.
     HEARTBEAT_INTERVAL = 60
 
-    async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
-        # ── API client setup ────────────────────────────────────────────────
+    def _setup_clients(self) -> None:
+        """Bind the db and training-server clients this task (and TrainHierarchyTask,
+        which runs several of these jobs back to back) needs."""
         db_cfg = APPS_CONFIG[APPS.DB_SERVER]
         db_base_url = f"http://{db_cfg.host}:{db_cfg.port}"
         self._db_api_client = bind_default_timeout(db_client.ApiClient(db_client.Configuration(host=db_base_url)))
@@ -72,14 +73,14 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         self._training_base_url: str = self._manager.get_training_base_url()
         tc_config = training_client.Configuration(host=self._training_base_url)
         # Every call this client makes is to the training server, and the training
-
         # server does slow work — submitting a job with a large manifest, ingesting
-
         # images, converting a model. Bound as a whole rather than per call, so no
-
         # caller has to know about the client library's timeout parameter.
-
         self._api_client = bind_default_timeout(training_client.ApiClient(tc_config), timeout=LONG_TIMEOUT)
+
+    async def _init(self, params: dict[str, Any], resume_data: Optional[dict[str, Any]]) -> None:
+        # ── API client setup ────────────────────────────────────────────────
+        self._setup_clients()
 
         # ── Per-epoch metric history (drives the training-curve widgets) ─────
         # Seeded from resume_data so a job that is interrupted and resumed keeps

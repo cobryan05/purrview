@@ -1,5 +1,6 @@
 import { fetchModelsList, fetchModelsKinds, clearModelsCache } from '/app-static/js/shared/api/models.js';
-import { runClassify } from '/app-static/js/shared/api/inference.js';
+import { runClassify, fetchModelUnits } from '/app-static/js/shared/api/inference.js';
+import { fetchModelConfigs, clearModelConfigsCache } from '/app-static/js/shared/api/modelConfigs.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchModelGroups, createModelGroup, clearModelGroupsCache } from '/app-static/js/shared/api/modelGroups.js';
@@ -24,6 +25,10 @@ const LEGACY_SESSION_CLASSIFIER_KEY = 'wtch_inference_selected_classifier';
 
 const MODEL_ID_PREFIX = 'model:';
 const GROUP_ID_PREFIX = 'group:';
+//: A trained hierarchical model config, run as ONE model. Not a stack: its parts are
+//: not listed here and cannot be reordered, because which sub-model refines what — and
+//: in which order — is a property of the hierarchy, not of this selection.
+const UNIT_ID_PREFIX = 'unit:';
 
 /**
  * Creates a self-contained inference panel: detector + classifier model lists and Run button.
@@ -48,6 +53,7 @@ export async function createInferencePanel(runtime, container) {
   /** @type {string[]} */ let _classifiers = [];
   /** @type {Array<{uuid: string, name: string}>} */ let _groups = [];
   /** @type {Map<string, Object>} */ let _groupsMap = new Map();
+  /** @type {Array<{uuid: string, name: string, subCount: number, notes: string[]}>} */ let _units = [];
   /** @type {Set<string>} tagged ids: "model:<name>" or "group:<uuid>"; insertion order = run order */
   let _selectedItems = new Set();
   /** @type {string|null} */ let _selectedClassifier = null;
@@ -231,6 +237,24 @@ export async function createInferencePanel(runtime, container) {
     return _makeToggleItem({ id: GROUP_ID_PREFIX + group.uuid, label: group.name, badgeText: 'stack' });
   }
 
+  function _makeUnitItem(unit) {
+    const item = _makeToggleItem({
+      id: UNIT_ID_PREFIX + unit.uuid,
+      label: unit.name,
+      // Not "yolo"/"stack": running this runs a top model plus N sub-models, and the
+      // count is the one number that tells you whether the hierarchy is actually there.
+      badgeText: unit.subCount ? `+${unit.subCount} sub` : 'top only',
+    });
+    item.title = unit.notes.length
+      ? `${unit.name}\n\n${unit.notes.join('\n')}`
+      : `${unit.name} — runs the whole hierarchy in one pass`;
+    // A hierarchy whose sub-models are missing still runs; it just answers with the
+    // parent label. Saying so here is the difference between "this is what the model
+    // knows" and the silent shallow result that is impossible to distinguish from it.
+    if (!unit.subCount || unit.notes.length) item.classList.add('inference-model-item--warn');
+    return item;
+  }
+
   function _makeClassifierItem(model, kind) {
     const item = document.createElement('div');
     item.className = 'inference-model-item' + (_selectedClassifier === model ? ' selected' : '');
@@ -273,7 +297,7 @@ export async function createInferencePanel(runtime, container) {
 
   function renderList() {
     listEl.innerHTML = '';
-    if (_detectors.length === 0 && _classifiers.length === 0 && _groups.length === 0) {
+    if (_detectors.length === 0 && _classifiers.length === 0 && _groups.length === 0 && _units.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'inference-model-empty';
       empty.textContent = 'No models found';
@@ -282,9 +306,14 @@ export async function createInferencePanel(runtime, container) {
     }
 
     if (_kindMap) {
+      // Hierarchies first: a trained model config is the thing you almost always want,
+      // and its parts also appear below under Detectors/Crop classifiers, where picking
+      // them individually is the deliberate "run one piece" path.
+      const unitSection = _makeSection('Hierarchies', _units, _makeUnitItem);
       const detSection = _makeSection('Detectors', _detectors, _makeDetectorItem);
       const clfSection = _makeSection('Classifiers', _classifiers, m => _makeClassifierItem(m, _kindMap.get(m)));
       const groupSection = _makeSection('Groups', _groups, _makeGroupItem);
+      if (unitSection) listEl.appendChild(unitSection);
       if (detSection) listEl.appendChild(detSection);
       if (clfSection) listEl.appendChild(clfSection);
       if (groupSection) listEl.appendChild(groupSection);
@@ -309,6 +338,26 @@ export async function createInferencePanel(runtime, container) {
     _groupsMap = await fetchModelGroups();
     _groups = [..._groupsMap.values()].sort((a, b) => a.name.localeCompare(b.name));
 
+    // Units come back from the inference server as bare uuids — it has no database, so
+    // the display name is joined here from the config that defines the hierarchy rather
+    // than duplicated into the sidecars, where it would drift the first time a config is
+    // renamed. A unit whose config has been deleted is dropped: its artifacts still
+    // exist, but there is nothing left to call it, and inventing a name would offer a
+    // hierarchy nobody can edit.
+    const [rawUnits, configs] = await Promise.all([
+      fetchModelUnits().catch(() => []),
+      fetchModelConfigs().catch(() => new Map()),
+    ]);
+    _units = rawUnits
+      .map(u => ({
+        uuid: u.modelConfigUuid,
+        name: configs.get?.(u.modelConfigUuid)?.name ?? null,
+        subCount: (u.subModelNames || []).length,
+        notes: u.notes || [],
+      }))
+      .filter(u => u.name)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
     // Drop persisted selections for models/groups that no longer exist, without disturbing
     // selections that are still present (new models/groups simply arrive unchecked).
     for (const id of [..._selectedItems]) {
@@ -316,6 +365,9 @@ export async function createInferencePanel(runtime, container) {
         if (!_detectors.includes(id.slice(MODEL_ID_PREFIX.length))) _selectedItems.delete(id);
       } else if (id.startsWith(GROUP_ID_PREFIX)) {
         if (!_groupsMap.has(id.slice(GROUP_ID_PREFIX.length))) _selectedItems.delete(id);
+      } else if (id.startsWith(UNIT_ID_PREFIX)) {
+        const uuid = id.slice(UNIT_ID_PREFIX.length);
+        if (!_units.some(u => u.uuid === uuid)) _selectedItems.delete(id);
       } else {
         // Pre-groups-feature sessionStorage held bare model names — migrate them to
         // the tagged form so existing persisted selections survive the upgrade.
@@ -339,6 +391,9 @@ export async function createInferencePanel(runtime, container) {
     try {
       clearModelsCache();
       clearModelGroupsCache();
+      // Refresh is how you pick up a hierarchy you just finished training, and that
+      // arrives as a new *config* name as often as a new artifact.
+      clearModelConfigsCache();
       await _loadModels();
       renderList();
       _updateRunBtn();
@@ -379,6 +434,13 @@ export async function createInferencePanel(runtime, container) {
     return names;
   }
 
+  /** Selected hierarchies, in the order they were checked. */
+  function _resolveSelectedUnitUuids() {
+    return [..._selectedItems]
+      .filter(id => id.startsWith(UNIT_ID_PREFIX))
+      .map(id => id.slice(UNIT_ID_PREFIX.length));
+  }
+
   async function handleRun() {
     if (_selectedClassifier) {
       await handleClassify();
@@ -388,6 +450,11 @@ export async function createInferencePanel(runtime, container) {
 
     events.publish(EventTypes.RUN_INFERENCE_ON_CANVAS, {
       modelNames: _resolveSelectedModelNames(),
+      // Kept separate from modelNames rather than expanded into it: a unit is run by
+      // uuid in ONE request that does its own cascade, and flattening it to its part
+      // names here would put the second pass back in the caller — the exact split this
+      // feature exists to remove.
+      unitUuids: _resolveSelectedUnitUuids(),
       runtimeId: runtime.id,
       confThresh: _confThresh,
       replaceExisting: _replaceExisting,

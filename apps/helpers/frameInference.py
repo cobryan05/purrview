@@ -1,10 +1,16 @@
-"""Shared per-frame inference call — one detect_batch, several consumers.
+"""Shared per-frame inference call — one detect-unit, several consumers.
+
+⚠️ The detections this returns are **final**, not first-pass. Any crop classifier in the
+stack has already been applied server-side, so a consumer must never run a second pass of
+its own: the cascade is part of the model, and a hierarchy has no intermediate output.
+`StreamWatcherTask` used to refine *after* its own cross-model merge; that made the coarse
+label observable and gave two consumers of the same frame different answers.
 
 Phase 3 of COLLECTOR_UNIFICATION_PLAN.md (repo root). Both `StreamWatcherTask`
 and `TrainingCollector` used to hand-roll their own `BatchInferencePayload` +
 retry/timeout loop against the same endpoint. This extracts that into one
 call so a future consumer sharing a frame with another (a training collector
-attached to a watcher) gets a real union — one `detect_batch`, one
+attached to a watcher) gets a real union — one `detect_unit`, one
 server-side decode+letterbox — instead of two round trips over the same JPEG.
 
 Phase 4 landed that attachment but **deliberately kept the two calls
@@ -45,7 +51,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
-from inference_client.models.batch_inference_payload import BatchInferencePayload
+from inference_client.models.detect_unit_payload import DetectUnitPayload
 from inference_client.models.topk import Topk
 
 logger = logging.getLogger(__file__)
@@ -59,6 +65,18 @@ class FrameInferenceRequest:
     conf_floor: float
     top_k: Union[int, Dict[str, int]] = 0
     pin_ids: Dict[str, str] = field(default_factory=dict)
+    #: {label_uuid: [ancestor label uuids]}, for the cascade the endpoint runs. Optional
+    #: and additive: a hierarchy already describes the labels it can emit, and this only
+    #: adds the case where a detection from a FOREIGN model in the same stack is a
+    #: descendant of some sub-model's boundary. Unioned across requests, since a label's
+    #: ancestors are a fact about the label tree and cannot differ per consumer.
+    label_ancestry: Dict[str, list] = field(default_factory=dict)
+    #: Confidence a sub-model's verdict must clear to replace the coarser label. Unlike
+    #: `conf_floor` this is NOT recoverable downstream: a consumer handed a rewritten
+    #: label cannot get the coarse one back, so the union takes the STRICTEST value
+    #: rather than the loosest. Two consumers that genuinely disagree here therefore
+    #: cannot share one call — see the module docstring on single-requester calls.
+    sub_model_min_confidence: float = 0.0
 
 
 @dataclass
@@ -91,6 +109,8 @@ def _union_requests(requests: Sequence[FrameInferenceRequest]) -> Dict[str, Any]
     conf_floor = 1.0
     top_k: Dict[str, int] = {}
     pin_ids: Dict[str, str] = {}
+    ancestry: Dict[str, set] = {}
+    sub_min = 0.0
 
     for req in requests:
         conf_floor = min(conf_floor, req.conf_floor)
@@ -102,12 +122,17 @@ def _union_requests(requests: Sequence[FrameInferenceRequest]) -> Dict[str, Any]
             if resolved > top_k.get(name, 0):
                 top_k[name] = resolved
         pin_ids.update(req.pin_ids)
+        for label, ancestors in (req.label_ancestry or {}).items():
+            ancestry.setdefault(label, set()).update(ancestors)
+        sub_min = max(sub_min, req.sub_model_min_confidence)
 
     return {
         "model_names": model_names,
         "conf_thresh": conf_floor,
         "top_k": top_k,
         "pin_ids": {n: p for n, p in pin_ids.items() if n in seen},
+        "label_ancestry": {label: sorted(ancestors) for label, ancestors in ancestry.items()},
+        "sub_model_min_confidence": sub_min,
     }
 
 
@@ -120,7 +145,7 @@ async def run_frame_inference(
     max_retries: int,
     log: Optional[Callable[[str], None]] = None,
 ) -> FrameInferenceResult:
-    """Union *requests* into one BatchInferencePayload and run it, with retries.
+    """Union *requests* into one detect-unit call and run it, with retries.
 
     Retries are per-batch, not per-model: a timeout here means the inference
     server isn't keeping up with the frame, which every model in the stack
@@ -137,28 +162,42 @@ async def run_frame_inference(
     if not union["model_names"]:
         return FrameInferenceResult(results={}, errors={})
 
-    payload = BatchInferencePayload(
+    # detect_unit, not detect_batch: a crop classifier in the stack is applied here,
+    # server-side, and the detections that come back are already as specific as the
+    # models can make them. That is deliberate and load-bearing — the cascade IS the
+    # model, so there is no intermediate coarse output for any consumer to see, merge or
+    # re-refine, and no consumer reimplements a second pass.
+    payload = DetectUnitPayload(
         image_base64=base64_img,
         model_names=union["model_names"],
         conf_thresh=union["conf_thresh"],
-        pin_ids=union["pin_ids"],
-        # The generated client models top_k's Union[int, Dict[str, int]] as an
-        # anyOf wrapper (`Topk`) rather than a plain field — passing a bare
-        # dict straight through silently produces actual_instance=None (no
-        # error, no top_k on the wire) instead of raising. Must be wrapped.
+        # The generated client models top_k's Union[int, Dict[str, int]] as an anyOf
+        # wrapper (`Topk`) rather than a plain field — passing a bare dict straight
+        # through silently produces actual_instance=None (no error, no top_k on the wire)
+        # instead of raising. Must be wrapped.
         top_k=Topk(union["top_k"]),
+        pin_ids=union["pin_ids"],
+        label_ancestry=union["label_ancestry"],
+        min_sub_confidence=union["sub_model_min_confidence"],
     )
 
     for attempt in range(max_retries):
         try:
             resp = await asyncio.wait_for(
-                asyncio.to_thread(inference_api.detect_batch, payload),
+                asyncio.to_thread(inference_api.detect_unit, payload),
                 timeout=timeout_s,
             )
             results = resp.results or {}
             errors = resp.errors or {}
             for name, message in errors.items():
                 logger.error("Inference error on model %s: %s", name, message)
+            for note in getattr(resp, "notes", None) or []:
+                # A sub-model that could not run leaves detections at their parent label,
+                # which is indistinguishable from a confident coarse answer. Logged every
+                # time rather than once: it is per-frame state, not startup state.
+                logger.warning("Cascade note: %s", note)
+                if log is not None:
+                    log(f"Cascade: {note}")
             return FrameInferenceResult(results=results, errors=errors)
         except asyncio.TimeoutError:
             if attempt < max_retries - 1:

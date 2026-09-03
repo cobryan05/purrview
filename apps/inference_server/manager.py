@@ -9,11 +9,16 @@ import uuid
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from apps import APPS, CACHE_DIR
+from apps.helpers.cascade import (
+    order_sub_models,
+    refinable_indices,
+    resolve_refinement,
+)
 from apps.helpers.classifier_utils import DEFAULT_CROP_PADDING
 from apps.helpers.imageUtils import annotate_image
 from apps.helpers.inferenceProviders.inferenceProvider import (
@@ -34,6 +39,12 @@ from apps.helpers.modelFormat import (
     is_conversion_candidate,
 )
 from apps.helpers.modelStaging import STAGING_SUBDIR
+from apps.helpers.modelUnit import (
+    ModelUnit,
+    intra_unit_ancestry,
+    resolve_stack,
+    resolve_unit,
+)
 from apps.helpers.serviceStatus import fmt_bytes, fmt_duration, row, section
 from apps.helpers.yoloUtils import get_input_shape_from_file, load_yolo_onnx
 
@@ -849,6 +860,157 @@ class Manager:
 
         results = await asyncio.gather(*(_one(n) for n in model_names))
         return dict(zip(model_names, results))
+
+    async def resolve_model_unit(self, model_config_uuid: str) -> ModelUnit:
+        """Find the trained artifacts implementing one model config.
+
+        Reads sidecars only — see `helpers/modelUnit` for why this must not need the
+        database. Cheap enough to do per request: `get_model_config` is a cached sidecar
+        read, and a models directory holds tens of files, not thousands.
+        """
+        names = await self.list_models()
+        sidecars = {name: (self.get_model_config(name) or {}) for name in names}
+        return resolve_unit(sidecars, model_config_uuid)
+
+    async def list_model_units(self) -> List[ModelUnit]:
+        """Every model config with at least one trained artifact here, uuid-sorted.
+
+        One sidecar sweep for all of them rather than `resolve_model_unit` per config:
+        the sidecars are the only source, and a picker asking "what hierarchies exist"
+        would otherwise re-read every file once per config.
+        """
+        names = await self.list_models()
+        sidecars = {name: (self.get_model_config(name) or {}) for name in names}
+        config_uuids = sorted(
+            {str(meta.get("model_config_uuid")) for meta in sidecars.values() if meta.get("model_config_uuid")}
+        )
+        return [resolve_unit(sidecars, uuid_) for uuid_ in config_uuids]
+
+    async def detect_unit(
+        self,
+        image: np.ndarray,
+        conf_thresh: float,
+        model_config_uuid: Optional[str] = None,
+        model_names: Optional[Sequence[str]] = None,
+        label_ancestry: Optional[Dict[str, set]] = None,
+        min_sub_confidence: float = 0.0,
+        pin_ids: Optional[Dict[str, str]] = None,
+        top_k: Union[int, Dict[str, int]] = 0,
+    ) -> Tuple[Dict[str, Union[InferenceResult, str]], ModelUnit, List[str]]:
+        """Run a whole hierarchy over one image: detect, then refine, in one call.
+
+        Takes EITHER a `model_config_uuid` (a trained hierarchy, resolved from sidecars)
+        or an explicit `model_names` stack (the hand-assembled equivalent). Both go
+        through the same cascade — the second pass must not depend on how the models were
+        chosen, or the two paths drift and only one of them ever gets fixed.
+
+        Returns ``(results_by_detector, unit, notes)``. The detections in *results* have
+        already been rewritten in place by the second pass, so a caller applies them the
+        same way it applies any detection — which is the entire point of the unit: no
+        caller anywhere needs to know the model was hierarchical. In particular the
+        refined labels are the ONLY output; there is no intermediate coarse result for a
+        caller to merge, order or second-guess.
+
+        *min_sub_confidence* is the floor a sub-model's verdict must clear to replace the
+        coarse label. It defaults to 0.0 — "always take the classifier's best guess" —
+        because a detection that keeps its parent label is a *correct* answer ("a cat,
+        not sure which"), so the floor is a caller's policy, not this layer's.
+
+        *label_ancestry* is optional and additive. Without it the ancestry derived from
+        the unit's own artifacts is used, which covers every label the unit can emit; a
+        caller holding the real label tree (the watcher) passes it so detections emitted
+        by *foreign* models in the same stack are eligible for refinement too.
+
+        Passes run outermost-boundary first (`order_sub_models`), because each pass reads
+        the labels the previous one wrote — run inner-first and a deep hierarchy silently
+        stops one level short.
+        """
+        if bool(model_config_uuid) == bool(model_names):
+            raise ValueError("detect_unit takes exactly one of model_config_uuid or model_names")
+
+        if model_config_uuid:
+            unit = await self.resolve_model_unit(model_config_uuid)
+        else:
+            names = await self.list_models()
+            sidecars = {name: (self.get_model_config(name) or {}) for name in names}
+            unit = resolve_stack(sidecars, list(model_names or []))
+        notes = list(unit.problems)
+        if unit.is_empty:
+            return {}, unit, notes
+
+        results = await self.recognize_many(
+            model_names=unit.detector_names,
+            image=image,
+            conf_thresh=conf_thresh,
+            pin_ids=pin_ids or {},
+            top_k=top_k,
+        )
+        if not unit.sub_models:
+            return results, unit, notes
+
+        # Ancestry from the artifacts themselves: a sub-model's classes are exactly its
+        # boundary's descendants, so its own class list reconstructs the tree.
+        sub_classes: Dict[str, List[str]] = {}
+        for sub in unit.sub_models:
+            meta = self.get_model_config(sub.model_name) or {}
+            sub_classes[sub.model_name] = list(meta.get("label_uuids") or [])
+        ancestry = intra_unit_ancestry(
+            sub_classes,
+            {s.model_name: s.parent_label_uuid for s in unit.sub_models},
+            base=label_ancestry,
+        )
+
+        for sub in order_sub_models(unit.sub_models, ancestry):
+            for outcome in results.values():
+                if isinstance(outcome, str):
+                    continue
+                detections = getattr(outcome, "detections", None) or []
+                indices = refinable_indices(
+                    [d.bbox.label_uuid for d in detections],
+                    sub.parent_label_uuid,
+                    ancestry,
+                )
+                if not indices:
+                    continue
+                boxes = [
+                    {
+                        "x": detections[i].bbox.x,
+                        "y": detections[i].bbox.y,
+                        "width": detections[i].bbox.width,
+                        "height": detections[i].bbox.height,
+                    }
+                    for i in indices
+                ]
+                try:
+                    scored = await self.classify_crops(
+                        sub.model_name, image, boxes, pin_id=(pin_ids or {}).get(sub.model_name)
+                    )
+                except Exception as e:
+                    # One broken sub-model costs its own refinement, not the detections
+                    # the first pass already found. Reported rather than swallowed: a
+                    # silently coarse label is what this whole feature exists to prevent.
+                    logger.error("detect_unit: sub-model '%s' failed", sub.model_name, exc_info=True)
+                    notes.append(f"Sub-model '{sub.model_name}' failed: {e}")
+                    continue
+                for position, index in enumerate(indices):
+                    if position >= len(scored):
+                        break
+                    detection = detections[index]
+                    refined = resolve_refinement(
+                        detection.confidence,
+                        scored[position],
+                        min_sub_confidence,
+                        current_label_uuid=detection.bbox.label_uuid,
+                    )
+                    if refined is None:
+                        continue
+                    detection.bbox.label_uuid, detection.confidence = refined
+                    # class_str named the FIRST pass's class ("Cat"). Leaving it would
+                    # let any consumer that displays or matches on it disagree with the
+                    # label_uuid beside it, which reads as the cascade not having run.
+                    detection.bbox.class_str = None
+
+        return results, unit, notes
 
     def _cleanup_expired_pins(self):
         """
