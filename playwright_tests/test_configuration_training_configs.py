@@ -254,11 +254,14 @@ class TestTrainingConfigPaneStructure:
         config_sel = _editor_body(page).locator("select").first
         config_sel.select_option("mc-1")
 
-        # Node selector (second select) should now have "Root" option. `expect` retries
-        # until the dependent select has been repopulated; the 300ms sleep it replaces
-        # was a bet on that round trip fitting in 300ms.
+        # The node selector (second select) should now offer this shape's top model.
+        # `expect` retries until the dependent select has been repopulated; the 300ms
+        # sleep it replaces was a bet on that round trip fitting in 300ms.
+        #
+        # Matched on "Top model" rather than the old "Root": the options are named for
+        # what a run produces now, and the root option no longer says "Root" anywhere.
         node_sel = _editor_body(page).locator("select").nth(1)
-        expect(node_sel.locator("option").filter(has_text="Root").first).to_be_attached()
+        expect(node_sel.locator("option").filter(has_text="Top model").first).to_be_attached()
 
 
 # ---------------------------------------------------------------------------
@@ -966,6 +969,74 @@ MODEL_CFG_WITH_SUB = {
 
 def _preview(page: Page):
     return _box(page).locator(".mtp-box--preview .model-tree-panel")
+
+
+def _mock_training_targets(page: Page, targets: list):
+    page.route(
+        lambda url: url.split("?")[0].endswith("/training-targets"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "targets": targets}),
+        ),
+    )
+
+
+def _node_options(page: Page):
+    """Option texts of the NODE select — `select` index 1, as the other tests here use.
+
+    Deliberately not a `:nth-of-type` selector: the two selects sit in separate field
+    rows, so `nth-of-type(1)` matches the first select inside *each* row and silently
+    returns both lists concatenated — which passes an "X is absent" assertion even when
+    the node select is empty.
+    """
+    return _editor_body(page).locator("select").nth(1).locator("option").all_text_contents()
+
+
+class TestNodeSelectorOffersTrainingTargets:
+    """The node picker lists the parts a run can produce — not every node in the shape.
+
+    A shape assigns a node to every label it covers (27 of them for a modest real
+    hierarchy) while only the top model and the sub-model boundaries are training
+    targets. Listing all of them buried the two that matter and let a training config
+    be aimed at a node that is not a target, which trains nothing and reports nothing.
+    """
+
+    TARGETS = [
+        {"nodeUuid": "n-root", "role": "top", "labelUuid": None},
+        {"nodeUuid": "n-cat", "role": "submodel", "labelUuid": "lbl-cat"},
+    ]
+
+    def _open(self, page: Page, base_url: str):
+        _mock_datasets(page, [])
+        _mock_model_configs(page, [MODEL_CFG_WITH_SUB])
+        _mock_training_configs_list(page, [])
+        _mock_labels(page, [PREVIEW_CAT, PREVIEW_KITTEN])
+        _navigate_to_training_configs(page, base_url)
+        _editor_body(page).locator("select").first.select_option("mc-2")
+        page.wait_for_timeout(500)
+
+    def test_non_target_nodes_are_not_offered(self, page: Page, base_url: str):
+        """n-kitten is an assigned label but not a boundary, so no run produces it."""
+        _mock_training_targets(page, self.TARGETS)
+        self._open(page, base_url)
+
+        options = [o for o in _node_options(page) if o and "select a node" not in o]
+        assert any("Top model" in o for o in options), options
+        assert any("Cat" in o for o in options), options
+        assert not any("Kitten" in o for o in options), options
+
+    def test_falls_back_to_every_node_when_targets_cannot_be_fetched(self, page: Page, base_url: str):
+        """A degraded picker beats an empty one: if the targets call fails the form must
+        still let you choose something, rather than becoming unusable."""
+        page.route(
+            lambda url: url.split("?")[0].endswith("/training-targets"),
+            lambda route: route.fulfill(status=500, content_type="application/json", body="{}"),
+        )
+        self._open(page, base_url)
+
+        options = [o for o in _node_options(page) if o and "select a node" not in o]
+        assert any("Kitten" in o for o in options), options
 
 
 class TestModelTreePreview:

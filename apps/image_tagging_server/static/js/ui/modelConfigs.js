@@ -227,50 +227,10 @@ function renderConfigForm({ config, labelsMap, onDirtyChange }) {
   treeSummaryBox.className = 'mtp-box';
   el.appendChild(treeSummaryBox);
 
-  // ── Train the whole tree ──────────────────────────────────────────────────
-  // The primary way to train a hierarchy, sitting under the tree it trains. One run
-  // per node, in dependency order, creating a training config for any node that lacks
-  // one. Training the parts individually is still possible from the Training tab; it is
-  // the "retrain one node" path, not the way to build the thing in the first place —
-  // which it used to be, and which left every sub-model untrained.
-  if (config?.uuid) {
-    const trainRow = document.createElement('div');
-    trainRow.className = 'training-start-run';
-
-    const trainBtn = document.createElement('button');
-    trainBtn.type = 'button';
-    trainBtn.className = 'panel-btn';
-    trainBtn.textContent = '▶ Train hierarchy';
-    trainBtn.dataset.testid = 'model-config-train-hierarchy';
-    trainBtn.dataset.tour = 'config.modelShapes.trainHierarchy';
-    trainBtn.title = 'Train every part of this model tree, top model first';
-    trainBtn.addEventListener('click', async () => {
-      trainBtn.disabled = true;
-      try {
-        await launchRun({
-          typename: 'TrainHierarchyTask',
-          name: `Train ${config.name}`,
-          params: { model_config_uuid: config.uuid },
-          // Same reason TrainModelTask is persistent: the jobs run on the training
-          // server, so a tasks_server restart only detaches the thing watching them.
-          persistent: true,
-        });
-        toast(`Started Train ${config.name}`, 3000);
-        navigateTabs('tab-runs', 'tab-runs-active');
-      } catch (err) {
-        toast(err.message || 'Could not start the training run', 5000, 'error');
-      } finally {
-        trainBtn.disabled = false;
-      }
-    });
-
-    const trainHint = document.createElement('span');
-    trainHint.className = 'training-start-run__hint';
-    trainHint.textContent = 'Runs one training job per part, in order. Progress and cancel live in Jobs.';
-
-    trainRow.append(trainBtn, trainHint);
-    el.appendChild(trainRow);
-  }
+  // "Train hierarchy" is NOT here, deliberately: it lives in the editor bar at the top
+  // (see the `actions` passed to buildPanelEditorBar). Below the label tree it sat under
+  // 26 label rows of scrolling on a real shape, which is where an action nobody finds
+  // goes to die — and this one is the whole point of designing a tree.
 
   // Which parts of THIS config have a trained artifact, from the inference server's
   // view of its own models directory. Null until it answers (and if it never does),
@@ -428,6 +388,31 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
             await refreshList();
             await _showForm(null, { force: true });
           } : undefined,
+          // The primary way to train a hierarchy: one run per part, in dependency
+          // order, creating a training config for any part that lacks one. Retraining
+          // a single part is still possible under Configuration → Training; that is
+          // the "one part in isolation" path, not the way to build the thing — which
+          // it used to be, and which is how a shape ended up with its top model
+          // trained and every sub-model missing.
+          actions: [{
+            label: '▶ Train hierarchy',
+            title: 'Train every part of this model shape, top model first',
+            testid: 'model-config-train-hierarchy',
+            tour: 'config.modelShapes.trainHierarchy',
+            onClick: async () => {
+              await launchRun({
+                typename: 'TrainHierarchyTask',
+                name: `Train ${config.name}`,
+                params: { model_config_uuid: config.uuid },
+                // Same reason TrainModelTask is persistent: the jobs run on the
+                // training server, so a tasks_server restart only detaches the thing
+                // watching them.
+                persistent: true,
+              });
+              toast(`Started Train ${config.name}`, 3000);
+              navigateTabs('tab-runs', 'tab-runs-active');
+            },
+          }],
         });
         screen.setBarHandle(barHandle);
         const { setDirty, setSaving } = barHandle;

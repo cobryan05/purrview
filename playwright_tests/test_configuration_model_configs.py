@@ -523,8 +523,8 @@ class TestModelTreePanel:
         # Two nodes = two separate runs, one per node. The footer must not imply a
         # single run produces both: training the root leaves the sub-model untrained,
         # and the only symptom is detections stopping at the boundary label.
-        expect(panel.locator(".mtp-footer")).to_contain_text("2 separate training runs")
-        expect(panel.locator(".mtp-footer")).to_contain_text("its own training config")
+        expect(panel.locator(".mtp-footer")).to_contain_text("2 training runs")
+        expect(panel.locator(".mtp-footer")).to_contain_text("Train hierarchy")
 
     def test_tree_updates_live_when_child_label_checked(self, page: Page, base_url: str):
         """Checking Kitten in the label tree immediately replaces the sub-model warning
@@ -557,6 +557,36 @@ def _mock_model_units(page: Page, units: list):
             body=json.dumps({"status": "success", "units": units}),
         ),
     )
+
+
+class TestTrainHierarchyAction:
+    """Training a whole shape is the primary action, so it has to be findable.
+
+    It first shipped at the bottom of this form — below the label tree, which is 26 rows
+    tall on a real shape — where it was effectively invisible. It belongs in the editor
+    bar with Save and Delete, which is on screen without scrolling.
+    """
+
+    def test_train_hierarchy_sits_in_the_editor_bar(self, page: Page, base_url: str):
+        _mock_model_configs(page, [EXISTING_CONFIG])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+
+        _navigate_to_model_configs(page, base_url)
+        page.locator("#model-config-box [data-config-uuid='cfg-1']").click()
+        page.wait_for_timeout(400)
+
+        bar_button = page.locator("#model-config-box .panel-box__bar [data-testid='model-config-train-hierarchy']")
+        expect(bar_button).to_be_visible()
+
+    def test_absent_until_the_shape_is_saved(self, page: Page, base_url: str):
+        """It trains a shape by uuid, so there is nothing to train before one exists."""
+        _mock_model_configs(page, [])
+        _mock_labels(page, [LABEL_CAT, LABEL_KITTEN, LABEL_DOG])
+
+        _navigate_to_model_configs(page, base_url)
+        page.wait_for_timeout(400)
+
+        expect(page.get_by_test_id("model-config-train-hierarchy")).to_have_count(0)
 
 
 class TestTrainedState:

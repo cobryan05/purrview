@@ -13,6 +13,11 @@ import { toast } from '/app-static/js/ui/utils/logging.js';
  *   deleteTitle: string,        confirm-modal title, e.g. 'Delete dataset'
  *   onSave: () => void,         called when the Save/Create button is clicked
  *   onDelete?: () => Promise<void>,  called after the user confirms deletion
+ *   actions?: Array<{label, title?, testid?, tour?, onClick: () => Promise<void>|void}>,
+ *     extra buttons for THIS editor, shown left of Delete/Save. For actions on the
+ *     thing being edited that would otherwise sit at the bottom of a long form —
+ *     which is where an action nobody scrolls to goes to die. Only rendered for a
+ *     saved item: they act on something that must exist first.
  * }} opts
  * @returns {{
  *   setDirty(v: boolean): void,
@@ -21,7 +26,7 @@ import { toast } from '/app-static/js/ui/utils/logging.js';
  *   updateTitle(name: string): void,
  * }}
  */
-export function buildPanelEditorBar({ container, item, newTitle, deleteTitle, onSave, onDelete }) {
+export function buildPanelEditorBar({ container, item, newTitle, deleteTitle, onSave, onDelete, actions = [] }) {
   container.innerHTML = '';
   let _dirty = false;
   let _saving = false;
@@ -67,6 +72,29 @@ export function buildPanelEditorBar({ container, item, newTitle, deleteTitle, on
   const updateTitle = (name) => { titleSpan.textContent = name; };
 
   container.append(dirtyDot, titleSpan, dirtyLabel);
+
+  if (item) {
+    for (const action of actions) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'panel-btn secondary';
+      btn.textContent = action.label;
+      if (action.title) btn.title = action.title;
+      if (action.testid) btn.dataset.testid = action.testid;
+      if (action.tour) btn.dataset.tour = action.tour;
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          await action.onClick();
+        } catch (err) {
+          toast(err.message || 'Action failed', 5000, 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      container.appendChild(btn);
+    }
+  }
 
   if (item && onDelete) {
     const deleteBtn = document.createElement('button');

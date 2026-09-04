@@ -15,7 +15,7 @@
  */
 
 import { fetchDatasets } from '/app-static/js/shared/api/datasets.js';
-import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
+import { fetchModelConfigs, fetchModelConfigTrainingTargets } from '/app-static/js/shared/api/modelConfigs.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import {
   fetchTrainingConfigs,
@@ -231,38 +231,78 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   if (modelConfigsMap.size === 0) {
     el.appendChild(makeNavHint(
       'No model shapes exist yet — a training run needs one.',
-      'Create one in the Model Shapes tab →', 'tab-model-management'));
+      'Create one in Configuration → Model Shapes →', 'tab-model-management'));
   }
 
   // Step 2: pick the node within that config
   const nodeSel = document.createElement('select');
   nodeSel.style.cssText = 'margin-bottom: 0; width: auto; flex: none;';
 
+  // Cache of {configUuid -> targets}, so re-rendering the form doesn't refetch.
+  const _targetsByConfig = new Map();
+
   function nodeOptionLabel(node) {
     const arch = [node.modelType ?? node.modelTypename ?? '?', node.architecture].filter(Boolean).join(' / ');
     if (!node.labelUuid) {
-      return `All labels (Root) — ${arch}`;
+      return `Top model (all labels) — ${arch}`;
     }
     const labelName = labelsMap?.get(node.labelUuid)?.name ?? node.labelUuid;
-    return `${labelName} — ${arch}`;
+    return `Sub-model: ${labelName} — ${arch}`;
   }
 
-  function refreshNodeSel() {
+  /**
+   * The nodes worth training, from the backend's own list of training targets.
+   *
+   * NOT every node of the shape. A shape assigns a node to every label it covers —
+   * 27 of them for a modest hierarchy — while only the root and the sub-model
+   * boundaries are things a run can produce. Offering all of them buried the two
+   * that matter in a flat list of 27 and let you aim a training config at a node
+   * that is not a target at all, which trains nothing and says nothing.
+   *
+   * Falls back to the full node list if the targets can't be fetched: a degraded
+   * picker beats an empty one that makes the form unusable.
+   */
+  async function _nodesToOffer(configUuid) {
+    const mc = modelConfigsMap.get(configUuid);
+    const allNodes = mc?.nodes ?? [];
+    if (!configUuid || allNodes.length === 0) return allNodes;
+
+    let targets = _targetsByConfig.get(configUuid);
+    if (targets === undefined) {
+      targets = await fetchModelConfigTrainingTargets(configUuid).catch(() => null);
+      _targetsByConfig.set(configUuid, targets);
+    }
+    if (!targets) return allNodes;
+
+    const targetUuids = new Set(targets.map(t => t.nodeUuid));
+    // Keep whatever this config already points at, even if it has stopped being a
+    // target (a boundary can be turned off after the fact). Dropping it would make
+    // the select silently show a different node than the one that will be trained.
+    const kept = allNodes.filter(n => targetUuids.has(n.uuid) || n.uuid === config?.modelConfigNodeUuid);
+    return kept.length ? kept : allNodes;
+  }
+
+  async function refreshNodeSel() {
+    const configUuid = configSel.value;
+    const nodes = await _nodesToOffer(configUuid);
+    // The select may have been re-rendered (or the config changed again) while the
+    // targets were in flight; only paint the answer to the question still being asked.
+    if (configSel.value !== configUuid) return;
+
     nodeSel.innerHTML = '';
     const blankOpt = document.createElement('option');
     blankOpt.value = '';
     blankOpt.textContent = '— select a node —';
     nodeSel.appendChild(blankOpt);
 
-    const mc = modelConfigsMap.get(configSel.value);
-    for (const node of (mc?.nodes ?? [])) {
+    for (const node of nodes) {
       const o = document.createElement('option');
       o.value = node.uuid;
       o.textContent = nodeOptionLabel(node);
       if (node.uuid === config?.modelConfigNodeUuid) o.selected = true;
       nodeSel.appendChild(o);
     }
-    nodeSel.disabled = (mc?.nodes?.length ?? 0) === 0;
+    nodeSel.disabled = nodes.length === 0;
   }
 
   refreshNodeSel();
@@ -271,8 +311,10 @@ function renderTrainingConfigForm({ config, datasetsMap, modelConfigsMap, labels
   const nodeHelp = document.createElement('span');
   nodeHelp.textContent = ' (?)';
   nodeHelp.title =
-    'Root node ("All labels"): trains the top-level model over every label in the config. Labels that belong to a sub-model are rolled up into their parent (e.g. cat-A, cat-B count as cat). Use this for normal training.\n\n' +
-    'Labeled node: trains that label’s dedicated sub-model on boxes under its label sub-tree, learning to distinguish the child labels from each other. Use this to (re)train one sub-model in isolation.';
+    'Which part of the model shape this run trains. Only the shape’s training targets are listed — the top model and one per sub-model — not every label it covers.\n\n' +
+    'Top model: trained over every label in the shape, with labels belonging to a sub-model rolled up into their parent (e.g. cat-A, cat-B count as cat).\n\n' +
+    'Sub-model: trained on boxes under that label’s sub-tree, learning to tell its child labels apart.\n\n' +
+    'To train the whole shape at once, use “Train hierarchy” in Model Shapes — it runs every part in order. This form is for (re)training one part on its own.';
   nodeHelp.style.cssText = 'cursor: help; opacity: 0.55; font-size: 0.85em;';
   nodeRow.querySelector('label').appendChild(nodeHelp);
   el.appendChild(nodeRow);

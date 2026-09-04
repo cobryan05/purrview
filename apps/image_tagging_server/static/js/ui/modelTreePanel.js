@@ -75,7 +75,7 @@ function _trainedChip(isTrained) {
  * @param {object} opts
  * @param {Array<object>} opts.nodes  Model config nodes (saved or computeNodes() output).
  * @param {Map<string, object>} opts.labelsMap
- * @param {boolean} [opts.compact]  Counts instead of chip lists (Training tab preview).
+ * @param {boolean} [opts.compact]  Counts instead of chip lists (Configuration → Training preview).
  * @param {?string} [opts.highlightNodeUuid]  Node uuid to mark as the training target.
  * @param {?{top: boolean, subLabelUuids: Set<string>}} [opts.trained]
  *   Which parts have a trained artifact. Omit (the default) to say nothing about
@@ -178,9 +178,10 @@ export function renderModelTreePanel({
   footer.className = 'mtp-footer';
   footer.textContent = submodels.size === 0
     ? 'Training this tree is 1 training run, producing 1 model artifact.'
-    : `Training this tree takes ${artifactCount} separate training runs — one per node ` +
+    : `Training this tree takes ${artifactCount} training runs — one per part ` +
       `(1 top model + ${submodels.size} sub-model${submodels.size === 1 ? '' : 's'}). ` +
-      'Each node needs its own training config; a run trains only its selected node.';
+      '“Train hierarchy” (top of this editor) runs them all in order; ' +
+      'Configuration → Training retrains one part on its own.';
   panel.appendChild(footer);
 
   return panel;
