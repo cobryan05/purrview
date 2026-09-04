@@ -5,6 +5,7 @@ browsing request with nothing ever reclaiming it.
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -197,3 +198,101 @@ class TestSelectivityCacheEviction:
         # The oldest of the "fresh" entries went first.
         assert "fresh-0" not in db_client._selectivity_cache
         assert f"fresh-{ceiling + 9}" in db_client._selectivity_cache
+
+
+class TestThumbCacheTrimHysteresis:
+    """The trim triggers at the cap but runs down past it.
+
+    Evicting to exactly the cap leaves the cache full, so the very next write trims
+    again — and the file it just evicted is usually the one the next request
+    regenerates. The live cache sat at 99.98% of its 100 MB limit doing precisely
+    that, evicting and re-encoding continuously while never being over its bound.
+    """
+
+    @staticmethod
+    def _fill(cache_dir, count: int, size: int, suffix: str = ".jpg"):
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(count):
+            p = cache_dir / f"img_fill{i:03d}_200{suffix}"
+            p.write_bytes(b"x" * size)
+            os.utime(p, (1_000_000 + i, 1_000_000 + i))  # deterministic LRU order
+
+    def test_trim_leaves_headroom_below_the_cap(self, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+        cache_dir = tmp_path / "thumb_cache"
+        self._fill(cache_dir, 20, 1000)
+
+        cap = 15_000
+        manager._trim_thumb_cache_sync(cap)
+
+        remaining = sum(p.stat().st_size for p in cache_dir.glob("*.jpg"))
+        assert remaining <= cap * 0.85, "trim stopped at the cap instead of trimming past it"
+        # ...but it is a trim, not a purge.
+        assert remaining > 0
+
+    def test_a_cache_under_the_cap_is_left_alone(self, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+        cache_dir = tmp_path / "thumb_cache"
+        self._fill(cache_dir, 5, 1000)
+
+        manager._trim_thumb_cache_sync(100_000)
+
+        assert len(list(cache_dir.glob("*.jpg"))) == 5
+
+    def test_oldest_are_evicted_first(self, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+        cache_dir = tmp_path / "thumb_cache"
+        self._fill(cache_dir, 10, 1000)
+
+        manager._trim_thumb_cache_sync(5_000)
+
+        survivors = sorted(p.name for p in cache_dir.glob("*.jpg"))
+        assert survivors and all(name >= "img_fill005" for name in survivors)
+
+
+class TestLegacyPngThumbnailsStillCount:
+    """Thumbnails are JPEG now, but the cache is full of PNGs written before the switch.
+
+    Globbing only the current suffix would make that set invisible: not counted by the
+    storage readout, and — the part that matters — never evicted, so it would sit on
+    disk forever while the cache "stayed under" its cap by ignoring it.
+    """
+
+    def test_usage_counts_both_formats(self, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+        cache_dir = tmp_path / "thumb_cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "img_old_200.png").write_bytes(b"x" * 700)
+        (cache_dir / "img_new_200.jpg").write_bytes(b"x" * 300)
+
+        files, total = manager._thumb_cache_usage()
+
+        assert (files, total) == (2, 1000)
+
+    def test_trim_evicts_legacy_files_too(self, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+        cache_dir = tmp_path / "thumb_cache"
+        cache_dir.mkdir(parents=True)
+        old = cache_dir / "img_old_200.png"
+        old.write_bytes(b"x" * 5000)
+        os.utime(old, (1_000_000, 1_000_000))
+        new = cache_dir / "img_new_200.jpg"
+        new.write_bytes(b"x" * 1000)
+        os.utime(new, (2_000_000, 2_000_000))
+
+        manager._trim_thumb_cache_sync(2_000)
+
+        assert not old.exists(), "a pre-switch PNG was never a candidate for eviction"
+        assert new.exists()
+
+    async def test_clearing_the_cache_removes_both_formats(self, manager, monkeypatch, tmp_path):
+        monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
+        cache_dir = tmp_path / "thumb_cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "img_old_200.png").write_bytes(b"x" * 700)
+        (cache_dir / "img_new_200.jpg").write_bytes(b"x" * 300)
+
+        result = await manager.clear_thumbnail_cache()
+
+        assert result == {"files": 2, "bytes": 1000}
+        assert list(cache_dir.iterdir()) == []

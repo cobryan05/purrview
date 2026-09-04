@@ -159,17 +159,17 @@ async def test_delete_bbox_recomputes_image_labels(http_client, image_file, labe
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def test_thumbnail_returns_png_bytes(http_client, setup_image_with_bbox, monkeypatch, tmp_path):
-    """Thumbnail endpoint returns PNG image data for a valid bbox."""
+async def test_thumbnail_returns_jpeg_bytes(http_client, setup_image_with_bbox, monkeypatch, tmp_path):
+    """Thumbnail endpoint returns JPEG image data for a valid bbox."""
     # Point cache dir at a writable temp location
     monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
 
     bid = setup_image_with_bbox
     r = await http_client.get(f"/api/images/bbox_test.png/bbox/{bid}/thumbnail")
     assert r.status_code == 200
-    assert r.headers["content-type"] == "image/png"
-    # PNG magic bytes
-    assert r.content[:4] == b"\x89PNG"
+    assert r.headers["content-type"] == "image/jpeg"
+    # JPEG magic bytes (SOI + first marker)
+    assert r.content[:3] == b"\xff\xd8\xff"
 
 
 async def test_thumbnail_is_cached(http_client, setup_image_with_bbox, monkeypatch, tmp_path):
@@ -183,7 +183,7 @@ async def test_thumbnail_is_cached(http_client, setup_image_with_bbox, monkeypat
     assert r1.status_code == 200
 
     # Cache file should exist
-    cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.png"))
+    cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.jpg"))
     assert len(cache_files) == 1
 
     # Second request returns identical bytes (from cache)
@@ -206,12 +206,12 @@ async def test_thumbnail_nonexistent_bbox_returns_404(http_client, monkeypatch, 
 REGION_QS = "x=0.1&y=0.1&width_frac=0.3&height_frac=0.3"
 
 
-async def test_region_thumbnail_returns_png_bytes(http_client, image_file, monkeypatch, tmp_path):
+async def test_region_thumbnail_returns_jpeg_bytes(http_client, image_file, monkeypatch, tmp_path):
     monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
     r = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}")
     assert r.status_code == 200, r.text
-    assert r.headers["content-type"] == "image/png"
-    assert r.content[:4] == b"\x89PNG"
+    assert r.headers["content-type"] == "image/jpeg"
+    assert r.content[:3] == b"\xff\xd8\xff"
 
 
 async def test_region_thumbnail_is_cached_per_region(http_client, image_file, monkeypatch, tmp_path):
@@ -222,22 +222,22 @@ async def test_region_thumbnail_is_cached_per_region(http_client, image_file, mo
     url = f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}"
     r1 = await http_client.get(url)
     assert r1.status_code == 200
-    cache_files = list((tmp_path / "thumb_cache").glob("rgn_*.png"))
+    cache_files = list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))
     assert len(cache_files) == 1
 
     r2 = await http_client.get(url)
     assert r2.content == r1.content
-    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 1
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))) == 1
 
     moved = await http_client.get(
         "/api/images/bbox_test.png/region/thumbnail?x=0.5&y=0.5&width_frac=0.3&height_frac=0.3"
     )
     assert moved.status_code == 200
-    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))) == 2
 
 
 async def test_region_thumbnail_is_cached_per_outline_color(http_client, image_file, monkeypatch, tmp_path):
-    """The outline colour is baked into the PNG, so it has to be part of the key.
+    """The outline colour is baked into the image, so it has to be part of the key.
 
     Relabelling a proposed box re-points the <img> at the same region with a new
     colour; keyed on region alone, the second request serves the crop outlined
@@ -253,7 +253,7 @@ async def test_region_thumbnail_is_cached_per_outline_color(http_client, image_f
     assert blue.status_code == 200
 
     assert blue.content != red.content, "Re-colouring the outline must not serve the cached crop"
-    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))) == 2
 
 
 async def test_region_thumbnail_can_return_the_bare_region(http_client, image_file, monkeypatch, tmp_path):
@@ -268,27 +268,27 @@ async def test_region_thumbnail_can_return_the_bare_region(http_client, image_fi
     padded = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}")
     bare = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&pad=0&outline=false")
     assert bare.status_code == 200, bare.text
-    assert bare.headers["content-type"] == "image/png"
-    assert bare.content[:4] == b"\x89PNG"
+    assert bare.headers["content-type"] == "image/jpeg"
+    assert bare.content[:3] == b"\xff\xd8\xff"
     assert bare.content != padded.content
 
 
 async def test_region_thumbnail_is_cached_per_crop_variant(http_client, image_file, monkeypatch, tmp_path):
-    """Padding and the outline flag are baked into the PNG, so both must be keyed —
+    """Padding and the outline flag are baked into the image, so both must be keyed —
     otherwise a tight crop is served whatever the padded request left behind."""
     monkeypatch.setattr("apps.db_server.manager.CACHE_DIR", tmp_path)
 
     await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}")
-    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 1
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))) == 1
 
     bare = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&pad=0&outline=false")
     assert bare.status_code == 200
-    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))) == 2
 
     # And the tight crop is itself cached rather than regenerated per request.
     again = await http_client.get(f"/api/images/bbox_test.png/region/thumbnail?{REGION_QS}&pad=0&outline=false")
     assert again.content == bare.content
-    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.png"))) == 2
+    assert len(list((tmp_path / "thumb_cache").glob("rgn_*.jpg"))) == 2
 
 
 async def test_region_thumbnail_missing_image_returns_404(http_client, monkeypatch, tmp_path):
@@ -311,7 +311,7 @@ async def test_invalidate_thumbnails(http_client, setup_image_with_bbox, monkeyp
     bid = setup_image_with_bbox
     # Generate the thumbnail first
     await http_client.get(f"/api/images/bbox_test.png/bbox/{bid}/thumbnail")
-    cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.png"))
+    cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.jpg"))
     assert len(cache_files) == 1
 
     # Invalidate
@@ -321,7 +321,7 @@ async def test_invalidate_thumbnails(http_client, setup_image_with_bbox, monkeyp
     )
     assert r.status_code == 200
 
-    cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.png"))
+    cache_files = list((tmp_path / "thumb_cache").glob(f"{bid}_*.jpg"))
     assert len(cache_files) == 0
 
 

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 from sqlalchemy.exc import IntegrityError
 
-from apps.db_server.manager import Manager
+from apps.db_server.manager import _THUMB_MEDIA_TYPE, Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
 from apps.helpers.db.types import (
     DEFAULT_SESSION_GAP_S,
@@ -2711,10 +2711,10 @@ class WebApp:
             operation_id="get_bbox_thumbnail",
         )
         async def get_bbox_thumbnail(image_path: str, bbox_uuid: str, width: int = 200) -> Response:
-            png_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
-            if png_bytes is None:
+            thumb_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
+            if thumb_bytes is None:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
-            return Response(content=png_bytes, media_type="image/png")
+            return Response(content=thumb_bytes, media_type=_THUMB_MEDIA_TYPE)
 
         @self._app.get(
             "/api/images/by-uuid/{image_uuid}/thumbnail",
@@ -2725,10 +2725,10 @@ class WebApp:
             filename = await self._manager.get_image_filename_by_uuid(image_uuid)
             if filename is None:
                 raise HTTPException(status_code=404, detail="Image not found")
-            png_bytes = await self._manager.get_image_thumbnail(filename, width=width)
-            if png_bytes is None:
+            thumb_bytes = await self._manager.get_image_thumbnail(filename, width=width)
+            if thumb_bytes is None:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
-            return Response(content=png_bytes, media_type="image/png")
+            return Response(content=thumb_bytes, media_type=_THUMB_MEDIA_TYPE)
 
         @self._app.get(
             "/api/images/bboxes/{bbox_uuid}/thumbnail",
@@ -2736,10 +2736,10 @@ class WebApp:
             operation_id="get_bbox_thumbnail_by_uuid",
         )
         async def get_bbox_thumbnail_by_uuid(bbox_uuid: str, width: int = 200) -> Response:
-            png_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
-            if png_bytes is None:
+            thumb_bytes = await self._manager.get_bbox_thumbnail(bbox_uuid, width=width)
+            if thumb_bytes is None:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
-            return Response(content=png_bytes, media_type="image/png")
+            return Response(content=thumb_bytes, media_type=_THUMB_MEDIA_TYPE)
 
         # Same greedy-path caveat as the bbox route above: this must precede the
         # generic image thumbnail route or {image_path:path} eats "/region/thumbnail".
@@ -2765,7 +2765,7 @@ class WebApp:
 
             `pad=0&outline=false` returns the bare contents of the region, for a
             caller whose own frame is already the box."""
-            png_bytes = await self._manager.get_region_thumbnail(
+            thumb_bytes = await self._manager.get_region_thumbnail(
                 image_path,
                 x=x,
                 y=y,
@@ -2776,9 +2776,9 @@ class WebApp:
                 pad_frac=pad,
                 outline=outline,
             )
-            if png_bytes is None:
+            if thumb_bytes is None:
                 raise HTTPException(status_code=404, detail="Thumbnail not available")
-            return Response(content=png_bytes, media_type="image/png")
+            return Response(content=thumb_bytes, media_type=_THUMB_MEDIA_TYPE)
 
         @self._app.get(
             "/api/images/{image_path:path}/thumbnail",
@@ -2786,10 +2786,10 @@ class WebApp:
             operation_id="get_image_thumbnail",
         )
         async def get_image_thumbnail(image_path: str, width: int = 640) -> Response:
-            png_bytes = await self._manager.get_image_thumbnail(image_path, width=width)
-            if png_bytes is None:
+            thumb_bytes = await self._manager.get_image_thumbnail(image_path, width=width)
+            if thumb_bytes is None:
                 raise HTTPException(status_code=404, detail="Image not found")
-            return Response(content=png_bytes, media_type="image/png")
+            return Response(content=thumb_bytes, media_type=_THUMB_MEDIA_TYPE)
 
         ################################################################################
         # Image Reconciliation API

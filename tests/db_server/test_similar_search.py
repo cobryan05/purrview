@@ -275,11 +275,11 @@ class TestImageMetaByUuid:
 
 
 class TestImageThumbnailByUuid:
-    async def test_returns_png(self, http_client, written_image):
+    async def test_returns_jpeg(self, http_client, written_image):
         image_uuid, _ = written_image
         r = await http_client.get(f"/api/images/by-uuid/{image_uuid}/thumbnail")
         assert r.status_code == 200
-        assert r.headers["content-type"] == "image/png"
+        assert r.headers["content-type"] == "image/jpeg"
         assert len(r.content) > 0
 
     async def test_unknown_uuid_returns_404(self, http_client):
@@ -293,11 +293,11 @@ class TestImageThumbnailByUuid:
 
 
 class TestBboxThumbnailByUuid:
-    async def test_returns_png(self, http_client, written_image):
+    async def test_returns_jpeg(self, http_client, written_image):
         _, bbox_uuid = written_image
         r = await http_client.get(f"/api/images/bboxes/{bbox_uuid}/thumbnail")
         assert r.status_code == 200
-        assert r.headers["content-type"] == "image/png"
+        assert r.headers["content-type"] == "image/jpeg"
         assert len(r.content) > 0
 
     async def test_unknown_uuid_returns_404(self, http_client):

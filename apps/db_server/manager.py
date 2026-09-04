@@ -243,6 +243,30 @@ REMOVAL_IMAGE_BULK_ACTIONS = ("delete", "removeFromDb")
 _OUTLINE_WIDTH_RATIO = 0.01
 _OUTLINE_MIN_PX = 2
 
+# ── Thumbnail encoding ──────────────────────────────────────────────────────────
+#
+# JPEG, not PNG. These are photographic crops, and PNG was storing them at ~57 KB
+# apiece — 1,833 files filling the whole 100 MB cache, which then sat permanently at
+# its cap evicting on every write and regenerating whatever it had just dropped. The
+# same images at this quality land around 8-12 KB, so the working set stops touching
+# the cap at all and the thrash disappears rather than being tuned around.
+_THUMB_FORMAT = "JPEG"
+_THUMB_SUFFIX = ".jpg"
+_THUMB_MEDIA_TYPE = "image/jpeg"
+_THUMB_QUALITY = 82
+
+# Every suffix the cache has ever written. New files are always _THUMB_SUFFIX, but the
+# accounting and eviction still have to see the PNGs written before the switch —
+# glob only the new suffix and the old set becomes invisible: uncounted by the storage
+# readout and, worse, never evicted, so it would sit there forever.
+_THUMB_SUFFIXES = (".jpg", ".png")
+
+# Evict down to this fraction of the cap rather than to just under it. Trimming to
+# exactly the limit guarantees the very next write trips the trim again, which is what
+# turned a bounded cache into a continuous evict-and-regenerate loop; the headroom
+# means one scan buys many writes.
+_THUMB_TRIM_TARGET = 0.85
+
 #: Candidate-geometry keys that describe where a proposal *came from* rather than where
 #: its box sits. Matched by prefix rather than listed exactly, so a producer that starts
 #: recording one more `source*` fact does not silently lose it at apply — the failure
@@ -3379,16 +3403,42 @@ class Manager:
         return CACHE_DIR / "thumb_cache"
 
     def _thumb_cache_path(self, bbox_uuid: str, width: int) -> Path:
-        return self._thumb_cache_dir() / f"{bbox_uuid}_{width}.png"
+        return self._thumb_cache_dir() / f"{bbox_uuid}_{width}{_THUMB_SUFFIX}"
+
+    @staticmethod
+    def _thumb_cache_files(cache_dir: Path, stem: str = "*"):
+        """Every cached thumbnail matching *stem*, in any format the cache has used."""
+        for suffix in _THUMB_SUFFIXES:
+            yield from cache_dir.glob(f"{stem}{suffix}")
+
+    @staticmethod
+    def _encode_thumb(image: "PILImage.Image") -> bytes:
+        """Encode a thumbnail for the cache and the wire.
+
+        The mode conversion is load-bearing, not defensive: JPEG has no alpha channel,
+        and a source PNG or a palette image reaches here as RGBA/LA/P, which Pillow
+        refuses to write as JPEG.
+        """
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        buf = io.BytesIO()
+        image.save(buf, format=_THUMB_FORMAT, quality=_THUMB_QUALITY, optimize=True)
+        return buf.getvalue()
 
     def _trim_thumb_cache_sync(self, max_bytes: int) -> None:
-        """Evict least-recently-used thumbnail files until total cache size is under max_bytes."""
+        """Evict least-recently-used thumbnails until the cache is under its target.
+
+        Note the two different bounds: the trim is *triggered* at max_bytes but *runs*
+        down to _THUMB_TRIM_TARGET of it. Evicting to exactly the cap left the cache
+        full, so the next write trimmed again, and the file it had just evicted was
+        usually the one the next request regenerated.
+        """
         cache_dir = self._thumb_cache_dir()
         if not cache_dir.exists():
             return
         entries = []
         total = 0
-        for p in cache_dir.glob("*.png"):
+        for p in self._thumb_cache_files(cache_dir):
             try:
                 st = p.stat()
                 entries.append((st.st_mtime, st.st_size, p))
@@ -3397,9 +3447,10 @@ class Manager:
                 pass
         if total <= max_bytes:
             return
+        target = int(max_bytes * _THUMB_TRIM_TARGET)
         entries.sort()  # oldest mtime first — evict these first
         for _, size, path in entries:
-            if total <= max_bytes:
+            if total <= target:
                 break
             try:
                 path.unlink(missing_ok=True)
@@ -3515,9 +3566,7 @@ class Manager:
             )
             del draw
 
-        buf = io.BytesIO()
-        cropped.save(buf, format="PNG")
-        return buf.getvalue()
+        return Manager._encode_thumb(cropped)
 
     async def get_bbox_thumbnail(self, bbox_uuid: str, width: int = 200) -> Optional[bytes]:
         """
@@ -3598,7 +3647,7 @@ class Manager:
 
         def _remove_files() -> None:
             for uuid in bbox_uuids:
-                for path in cache_dir.glob(f"{uuid}_*.png"):
+                for path in Manager._thumb_cache_files(cache_dir, stem=f"{uuid}_*"):
                     try:
                         path.unlink(missing_ok=True)
                     except Exception as e:
@@ -3628,7 +3677,7 @@ class Manager:
 
     def _image_thumb_cache_path(self, image_path: str, width: int, source: Optional[Path] = None) -> Path:
         key = hashlib.sha1(f"{image_path}|{self._source_version(source)}".encode()).hexdigest()
-        return self._thumb_cache_dir() / f"img_{key}_{width}.png"
+        return self._thumb_cache_dir() / f"img_{key}_{width}{_THUMB_SUFFIX}"
 
     def _region_thumb_cache_path(
         self,
@@ -3651,7 +3700,7 @@ class Manager:
         region_key = f"{region[0]:.6f},{region[1]:.6f},{region[2]:.6f},{region[3]:.6f}"
         variant = f"{pad_frac:.4f}|{'o' if outline else 'n'}"
         key = hashlib.sha1(f"{image_path}|{region_key}|{color or ''}|{variant}|{self._source_version(source)}".encode())
-        return self._thumb_cache_dir() / f"rgn_{key.hexdigest()}_{width}.png"
+        return self._thumb_cache_dir() / f"rgn_{key.hexdigest()}_{width}{_THUMB_SUFFIX}"
 
     async def get_region_thumbnail(
         self,
@@ -3772,9 +3821,7 @@ class Manager:
                     aspect = img.width / img.height if img.height else 1
                     height = max(1, round(width / aspect))
                     resized = img.resize((width, height), PILImage.LANCZOS)
-                    buf = io.BytesIO()
-                    resized.save(buf, format="PNG")
-                    return buf.getvalue()
+                    return self._encode_thumb(resized)
             except Exception as e:
                 logger.warning(f"Failed to generate image thumbnail for {image_path}: {e}")
                 return None
@@ -5298,7 +5345,7 @@ class Manager:
         total = 0
         if not cache_dir.is_dir():
             return (0, 0)
-        for path in cache_dir.glob("*.png"):
+        for path in self._thumb_cache_files(cache_dir):
             try:
                 total += path.stat().st_size
                 files += 1
@@ -5321,7 +5368,7 @@ class Manager:
             freed = 0
             if not cache_dir.is_dir():
                 return {"files": 0, "bytes": 0}
-            for path in cache_dir.glob("*.png"):
+            for path in Manager._thumb_cache_files(cache_dir):
                 try:
                     size = path.stat().st_size
                     path.unlink()
