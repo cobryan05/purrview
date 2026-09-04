@@ -17,6 +17,8 @@
  * is reporting on. A header line summarises the notices and collapses them.
  */
 
+import { suspendWhileHidden } from '/app-static/js/shared/visibility.js';
+
 const LEVEL_ICONS = {
   info: 'ℹ',
   warning: '⚠',
@@ -143,8 +145,10 @@ export function mountNoticesBar(containerId = 'notices-bar') {
   }
 
   let _source = null;
+  let _destroyed = false;
 
   function _connect() {
+    if (_destroyed) return;
     _source?.close();
     _source = new EventSource('/api/notices/stream');
     _source.onmessage = (e) => {
@@ -153,12 +157,25 @@ export function mountNoticesBar(containerId = 'notices-bar') {
     // EventSource reconnects automatically on error — no explicit handler needed.
   }
 
+  function _disconnect() {
+    _source?.close();
+    _source = null;
+  }
+
   _connect();
+
+  // This bar is built once per page and never torn down, so without a gate its
+  // stream is the one connection every open tab holds forever — the cheapest of
+  // the lot individually, and the most numerous. A notice is state, not an event:
+  // each frame carries the whole current list, so reconnecting repaints the bar
+  // correctly no matter what was published while the tab was away.
+  const _stopVisibilityGate = suspendWhileHidden({ open: _connect, close: _disconnect });
 
   return {
     destroy() {
-      _source?.close();
-      _source = null;
+      _destroyed = true;
+      _stopVisibilityGate();
+      _disconnect();
     },
   };
 }

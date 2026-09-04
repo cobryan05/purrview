@@ -3,6 +3,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { fetchTaskStatusSchemas, fetchTaskStatusData, sendTaskCommand, taskResultData } from '/app-static/js/shared/api/tasks.js';
 import { statusWidgets } from '/app-static/js/ui/utils/statusWidgets/index.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
+import { skipWhileHidden } from '/app-static/js/shared/visibility.js';
 
 /** Statuses that mean "this task is no longer doing anything". */
 export const TERMINAL_STATUSES = new Set(['completed', 'error']);
@@ -535,7 +536,12 @@ export class ActiveTaskField extends Field {
               console.error('Status widget mount failed:', err));
           }
           refresh();
-          if (!isTerminal && pollTimer === null) pollTimer = setInterval(refresh, STATUS_DATA_POLL_MS);
+          // Gated on visibility: an expanded card on a backgrounded tab was
+          // re-fetching status data every 5s at nobody. The tick is dropped, not
+          // the timer, so coming back resumes within one interval.
+          if (!isTerminal && pollTimer === null) {
+            pollTimer = setInterval(skipWhileHidden(refresh), STATUS_DATA_POLL_MS);
+          }
         } else {
           stopPolling();
           teardown();

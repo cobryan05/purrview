@@ -17,7 +17,17 @@
  * comes back — that is what the browser gives you when the endpoint answers 502
  * or a wrong content type, i.e. whenever the service restarts. Left alone it is
  * a dead handle that this module would hand to every later subscriber as well.
+ *
+ * A hidden tab holds no connection either. Subscribers stay subscribed — the Jobs
+ * badge deliberately outlives tab focus while something is running — but a tab
+ * parked in the background for the afternoon should not keep costing a round trip
+ * twice a second, which is the whole reason that stream is expensive. Everything
+ * downstream re-derives from the full payload on each frame, so the only cost of
+ * the gap is that the badge is as old as the tab is stale, and it is correct again
+ * on the first frame after the user comes back.
  */
+
+import { suspendWhileHidden } from '/app-static/js/shared/visibility.js';
 
 // Retry backoff for a fatally closed stream. The last entry repeats: a server
 // that is down for an hour should be polled every 30s, not abandoned, because
@@ -36,6 +46,8 @@ const _subscribers = new Set();
 let _retryTimer = null;
 let _retryAttempt = 0;
 let _outageReported = false;
+/** True while the tab has been hidden long enough that we dropped the stream. */
+let _suspended = false;
 
 function _fanout(method, arg) {
   // Copy first: a handler may unsubscribe (or subscribe) while we iterate.
@@ -90,6 +102,9 @@ function _onFatalClose(es) {
 function _open() {
   _cancelRetry();
   if (_source !== null) return;
+  // A subscriber arriving while the tab is hidden must not reopen what the
+  // visibility gate just closed — it will be opened for them on the way back.
+  if (_suspended) return;
 
   const es = new EventSource('/api/tasks/stream');
   _source = es;
@@ -112,6 +127,20 @@ function _open() {
     _onFatalClose(es);
   };
 }
+
+// Installed once, for the life of the page. Suspending drops the socket but keeps
+// every subscriber, so the set is still there to reopen for on the way back — and
+// `_closeIfIdle` stays the only thing that decides nobody wants the stream at all.
+suspendWhileHidden({
+  close: () => {
+    _suspended = true;
+    _teardown();
+  },
+  open: () => {
+    _suspended = false;
+    if (_subscribers.size > 0) _open();
+  },
+});
 
 /**
  * Subscribes to task-state frames.

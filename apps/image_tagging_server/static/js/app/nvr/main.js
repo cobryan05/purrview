@@ -19,6 +19,7 @@ import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
 import { cancelTasks, fetchTaskStatusData, fetchTasksStatus, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
+import { skipWhileHidden } from '/app-static/js/shared/visibility.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { NEW_ITEM_SELECTION, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
@@ -285,7 +286,10 @@ function _stopArmingPoll() {
 
 function _startArmingPoll(taskUuids) {
   if (!taskUuids.length || !_armingUpdaters.size) return;
-  _armingTimer = setInterval(async () => {
+  // skipWhileHidden for the same reason the card previews check document.hidden:
+  // this repaints arming state onto cards nobody is looking at, and a backgrounded
+  // NVR tab was polling watcher status for the life of the tab.
+  _armingTimer = setInterval(skipWhileHidden(async () => {
     // Re-read the registry each tick rather than closing over it: a render that lands
     // between ticks replaces the updaters, and a stale closure would repaint cards that
     // are no longer on the page.
@@ -295,7 +299,7 @@ function _startArmingPoll(taskUuids) {
       const byRule = arming.get(taskUuid);
       if (byRule) update(byRule);
     }
-  }, ARMING_POLL_MS);
+  }), ARMING_POLL_MS);
 }
 
 /** Guards renderLive against overlapping calls — see the note there. */
