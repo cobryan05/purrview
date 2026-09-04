@@ -26,7 +26,7 @@
 
 import { parseToolUuid } from './canvas/tools.js';
 import { addInferenceResults } from './canvas/image.js';
-import { runDetectionBatch, runDetectionUnit } from '/app-static/js/shared/api/inference.js';
+import { runDetectionUnit } from '/app-static/js/shared/api/inference.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/index.js';
 import { createLabelList } from '/app-static/js/ui/labelList.js';
@@ -36,7 +36,7 @@ import { createTagPanel } from '/app-static/js/ui/inspector.js';
  * Subscribe this runtime's canvas to RUN_INFERENCE_ON_CANVAS and apply the
  * results to it.
  *
- * The models are inferred in ONE request (see `runDetectionBatch`) rather than
+ * The models are inferred in ONE request (see `runDetectionUnit`) rather than
  * one request each: they all run over the same canvas image, and sending it
  * per model made the server base64-decode and letterbox the identical image
  * once per model. Selecting four models used to mean four uploads and four
@@ -70,17 +70,22 @@ export function wireInferenceRunner(runtime, { logPrefix = '' } = {}) {
         // applied in a fixed order below — no cascade is orchestrated here, which is the
         // point: the canvas, the watcher and the review preview must all get identically
         // refined detections, so only one implementation may exist.
-        const [batch, ...units] = await Promise.all([
-          modelNames.length ? runDetectionBatch(modelNames, img, confThresh) : Promise.resolve([]),
-          ...unitUuids.map(uuid => runDetectionUnit(uuid, img, confThresh)),
+        const [loose, ...units] = await Promise.all([
+          // Loose models go through detect-unit too, as an explicit stack. They used to
+          // go to detect-batch, which runs whatever it is given through the DETECTION
+          // path — so a crop classifier picked from the model list came back as a
+          // confident full-image box instead of refining anything.
+          modelNames.length
+            ? runDetectionUnit({ modelNames }, img, confThresh)
+            : Promise.resolve({ outcomes: [], notes: [] }),
+          ...unitUuids.map(uuid => runDetectionUnit({ modelConfigUuid: uuid }, img, confThresh)),
         ]);
         // Models first, then hierarchies. `replaceExisting` makes application order
         // observable, and a hierarchy's verdict is the more specific one, so it should
         // land on top of a loose detector's rather than under it.
-        outcomes = [...batch];
-        for (const unit of units) {
-          for (const note of unit.notes) Logger.warn(`${logPrefix}${note}`);
-          outcomes.push(...unit.outcomes);
+        for (const result of [loose, ...units]) {
+          for (const note of result.notes || []) Logger.warn(`${logPrefix}${note}`);
+          outcomes.push(...result.outcomes);
         }
       } catch (err) {
         // The whole request failed (inference server down, bad image). Per-model

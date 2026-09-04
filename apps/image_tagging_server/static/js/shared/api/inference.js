@@ -53,65 +53,6 @@ export async function runDetection(model_name, image, confThresh = 0.25) {
 }
 
 /**
- * Runs several models over ONE image in a single request.
- *
- * The per-model {@link runDetection} uploads its own copy of the image, and the
- * server then base64-decodes and letterboxes that identical image once per
- * model. Running a four-model stack that way costs four uploads and ~13.7 ms of
- * duplicated CPU per frame; this sends the image once and the server shares the
- * decode and (where the models agree on input size and letterboxing) the
- * preprocessing.
- *
- * Results are returned **in the order the models were requested**, not in the
- * order they finished. Callers merge overlapping detections by position —
- * first-model-wins — so a result order that depended on which model happened to
- * finish first would silently change which model's label survives.
- *
- * @param {string[]} modelNames
- * @param {HTMLImageElement} image - base64 image element to run inference on.
- * @param {number} [confThresh]
- * @returns {Promise<Array<{modelName: string, result: ?import('@web_api').InferenceResultModel, error: ?string}>>}
- */
-export async function runDetectionBatch(modelNames, image, confThresh = 0.25) {
-  if (!image.src.startsWith('data:')) {
-    throw new Error('Image is not a base64 data URI');
-  }
-  const base64String = image.src.split(',')[1];
-
-  toast(`Sending recognition request for ${modelNames.length} model(s)...`);
-  const res = await apiFetch('/api/models/detect-batch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ modelNames, confThresh, imageBase64: base64String }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Recognition request failed: ${res.statusText}`);
-  }
-
-  const recRes = await res.json();
-  Logger.debug('Batch recognize response:', recRes);
-  if (recRes.status !== 'success') {
-    throw new Error(`Recognition failed: ${recRes.message}`);
-  }
-
-  const results = recRes.results || {};
-  const errors = recRes.errors || {};
-  // Rebuilt from the caller's own list rather than by iterating the response:
-  // that makes the order a property of the request, not of JSON object key
-  // ordering across a proxy and two serializers.
-  const ordered = modelNames.map(modelName => ({
-    modelName,
-    result: results[modelName] ?? null,
-    error: errors[modelName] ?? (results[modelName] ? null : 'no result returned'),
-  }));
-
-  const total = ordered.reduce((n, r) => n + (r.result?.detections?.length ?? 0), 0);
-  toast(`${total} objects detected`);
-  return ordered;
-}
-
-/**
  * Run a whole hierarchical model config over one image, as a single model.
  *
  * One request runs the top model AND every sub-model beneath it, and the detections
@@ -120,9 +61,9 @@ export async function runDetectionBatch(modelNames, image, confThresh = 0.25) {
  * watcher and the review preview, so it lives in exactly one place — inference_server's
  * `detect-unit` — and this is a thin call into it.
  *
- * Returns the same `{ modelName, result, error }` shape as {@link runDetectionBatch} so
- * callers apply unit results and plain model results through the same code path, plus
- * `notes` for anything the server found but could not run (an untrained or broken
+ * Returns the same `{ modelName, result, error }` shape a batch of plain models would,
+ * so callers apply unit results and plain model results through the same code path,
+ * plus `notes` for anything the server found but could not run (an untrained or broken
  * sub-model). Ignoring `notes` is what turns a half-trained hierarchy into detections
  * that silently stop at a parent label.
  *
@@ -131,7 +72,7 @@ export async function runDetectionBatch(modelNames, image, confThresh = 0.25) {
  * @param {number} confThresh
  * @returns {Promise<{outcomes: Array<{modelName: string, result: object|null, error: string|null}>, notes: string[], subModelNames: string[]}>}
  */
-export async function runDetectionUnit(modelConfigUuid, image, confThresh = 0.25) {
+export async function runDetectionUnit({ modelConfigUuid = null, modelNames = [] }, image, confThresh = 0.25) {
   if (!image.src.startsWith('data:')) {
     throw new Error('Image is not a base64 data URI');
   }
@@ -140,7 +81,15 @@ export async function runDetectionUnit(modelConfigUuid, image, confThresh = 0.25
   const res = await apiFetch('/api/models/detect-unit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ modelConfigUuid, confThresh, imageBase64: base64String }),
+    // Either a trained hierarchy or an explicit stack — the endpoint cascades both the
+    // same way. Loose models come here rather than to detect-batch so that a crop
+    // classifier among them is AIMED at its boundary label instead of being run as a
+    // detector, which answers with a full-image box rather than failing.
+    body: JSON.stringify({
+      ...(modelConfigUuid ? { modelConfigUuid } : { modelNames }),
+      confThresh,
+      imageBase64: base64String,
+    }),
   });
 
   if (!res.ok) {

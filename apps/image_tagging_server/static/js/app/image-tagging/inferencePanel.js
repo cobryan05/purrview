@@ -1,6 +1,8 @@
 import { fetchModelsList, fetchModelsKinds, clearModelsCache } from '/app-static/js/shared/api/models.js';
 import { runClassify, fetchModelUnits } from '/app-static/js/shared/api/inference.js';
 import { fetchModelConfigs, clearModelConfigsCache } from '/app-static/js/shared/api/modelConfigs.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { parseNodes } from '/app-static/js/ui/modelSpec.js';
 import { setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { fetchLabelByUuid } from '/app-static/js/shared/api/labels.js';
 import { fetchModelGroups, createModelGroup, clearModelGroupsCache } from '/app-static/js/shared/api/modelGroups.js';
@@ -54,6 +56,7 @@ export async function createInferencePanel(runtime, container) {
   /** @type {Array<{uuid: string, name: string}>} */ let _groups = [];
   /** @type {Map<string, Object>} */ let _groupsMap = new Map();
   /** @type {Array<{uuid: string, name: string, subCount: number, notes: string[]}>} */ let _units = [];
+  /** @type {string[]} */ let _cropClassifiers = [];
   /** @type {Set<string>} tagged ids: "model:<name>" or "group:<uuid>"; insertion order = run order */
   let _selectedItems = new Set();
   /** @type {string|null} */ let _selectedClassifier = null;
@@ -297,7 +300,8 @@ export async function createInferencePanel(runtime, container) {
 
   function renderList() {
     listEl.innerHTML = '';
-    if (_detectors.length === 0 && _classifiers.length === 0 && _groups.length === 0 && _units.length === 0) {
+    if (_detectors.length === 0 && _classifiers.length === 0 && _groups.length === 0
+        && _units.length === 0 && _cropClassifiers.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'inference-model-empty';
       empty.textContent = 'No models found';
@@ -311,10 +315,16 @@ export async function createInferencePanel(runtime, container) {
       // them individually is the deliberate "run one piece" path.
       const unitSection = _makeSection('Hierarchies', _units, _makeUnitItem);
       const detSection = _makeSection('Detectors', _detectors, _makeDetectorItem);
+      // Selectable, but on their own: a crop classifier refines another model's boxes,
+      // so running one by itself finds nothing. It is now aimed rather than run as a
+      // detector, so "nothing" is the honest answer instead of a full-image box.
+      const cropSection = _makeSection('Sub-models (refine a detector)', _cropClassifiers, m =>
+        _makeToggleItem({ id: MODEL_ID_PREFIX + m, label: m, badgeText: 'crop' }));
       const clfSection = _makeSection('Classifiers', _classifiers, m => _makeClassifierItem(m, _kindMap.get(m)));
       const groupSection = _makeSection('Groups', _groups, _makeGroupItem);
       if (unitSection) listEl.appendChild(unitSection);
       if (detSection) listEl.appendChild(detSection);
+      if (cropSection) listEl.appendChild(cropSection);
       if (clfSection) listEl.appendChild(clfSection);
       if (groupSection) listEl.appendChild(groupSection);
     }
@@ -326,10 +336,16 @@ export async function createInferencePanel(runtime, container) {
   async function _loadModels({ isInitial = false } = {}) {
     const allModels = await fetchModelsList();
     _kindMap = await fetchModelsKinds(allModels);
+    // Crop classifiers are NOT detectors. Listed as one, picking it sent it through
+    // detect-batch's detection path, where an EfficientNet head decodes into a single
+    // box covering the whole image — a confident-looking answer that means nothing.
+    // They get their own section below, and running one is only meaningful alongside
+    // the detector whose boxes it refines.
     _detectors = allModels.filter(m => {
       const k = _kindMap.get(m);
-      return k !== 'image_classifier' && k !== 'multi_label_classifier';
+      return k !== 'image_classifier' && k !== 'multi_label_classifier' && k !== 'crop_classifier';
     });
+    _cropClassifiers = allModels.filter(m => _kindMap.get(m) === 'crop_classifier');
     _classifiers = allModels.filter(m => {
       const k = _kindMap.get(m);
       return k === 'image_classifier' || k === 'multi_label_classifier';
@@ -344,25 +360,37 @@ export async function createInferencePanel(runtime, container) {
     // renamed. A unit whose config has been deleted is dropped: its artifacts still
     // exist, but there is nothing left to call it, and inventing a name would offer a
     // hierarchy nobody can edit.
-    const [rawUnits, configs] = await Promise.all([
+    const [rawUnits, configs, labelsForShapes] = await Promise.all([
       fetchModelUnits().catch(() => []),
       fetchModelConfigs().catch(() => new Map()),
+      // fetchLabels returns a Map keyed by uuid and parseNodes looks labels up by uuid,
+      // so it must NOT be flattened to an array on the way here.
+      fetchLabels().catch(() => new Map()),
     ]);
-    _units = rawUnits
-      .map(u => ({
-        uuid: u.modelConfigUuid,
-        name: configs.get?.(u.modelConfigUuid)?.name ?? null,
-        subCount: (u.subModelNames || []).length,
-        notes: u.notes || [],
+    const unitsByConfig = new Map(rawUnits.map(u => [u.modelConfigUuid, u]));
+    _units = [...(configs.values?.() ?? [])]
+      // A hierarchy is a shape that DEFINES sub-models — not one whose artifacts happen
+      // to include them. Keyed off the trained artifacts instead, every flat shape showed
+      // up as a "hierarchy" that is really just its one top model (a duplicate of the
+      // detector below it), and a real hierarchy whose sub-model has never been trained
+      // would vanish from the list exactly when it most needs saying so.
+      .filter(mc => parseNodes(mc.nodes, labelsForShapes).submodels.size > 0)
+      .map(mc => ({
+        uuid: mc.uuid,
+        name: mc.name,
+        subCount: (unitsByConfig.get(mc.uuid)?.subModelNames || []).length,
+        notes: unitsByConfig.get(mc.uuid)?.notes || [],
       }))
-      .filter(u => u.name)
       .sort((a, b) => a.name.localeCompare(b.name));
 
     // Drop persisted selections for models/groups that no longer exist, without disturbing
     // selections that are still present (new models/groups simply arrive unchecked).
     for (const id of [..._selectedItems]) {
       if (id.startsWith(MODEL_ID_PREFIX)) {
-        if (!_detectors.includes(id.slice(MODEL_ID_PREFIX.length))) _selectedItems.delete(id);
+        // Both lists: a crop classifier is selected with the same MODEL_ID_PREFIX, and
+        // checking only _detectors would silently uncheck it on every reload.
+        const name = id.slice(MODEL_ID_PREFIX.length);
+        if (!_detectors.includes(name) && !_cropClassifiers.includes(name)) _selectedItems.delete(id);
       } else if (id.startsWith(GROUP_ID_PREFIX)) {
         if (!_groupsMap.has(id.slice(GROUP_ID_PREFIX.length))) _selectedItems.delete(id);
       } else if (id.startsWith(UNIT_ID_PREFIX)) {

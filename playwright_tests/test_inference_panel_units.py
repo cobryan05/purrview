@@ -77,6 +77,48 @@ def _mock_model_configs(page: Page, configs: list):
     )
 
 
+# A shape that genuinely defines a sub-model. Three non-root nodes on purpose: parseNodes
+# sorts them by label depth, and Array.sort skips its comparator for a single element — a
+# one-node fixture never runs the label lookup that walks the tree.
+HIER_NODES = [
+    {"uuid": "n-root", "labelUuid": None, "modelType": "object_detection", "architecture": "yolo_v9_s"},
+    {
+        "uuid": "n-cat",
+        "labelUuid": "lbl-cat",
+        "modelType": "crop_classifier",
+        "architecture": "efficientnet_b0",
+        "isBoundary": True,
+    },
+    {
+        "uuid": "n-willow",
+        "labelUuid": "lbl-willow",
+        "modelType": "crop_classifier",
+        "architecture": "efficientnet_b0",
+        "isBoundary": False,
+    },
+]
+
+HIER_LABELS = [
+    {"uuid": "lbl-cat", "name": "Cat", "color": "#ff8800", "parentUuid": None},
+    {"uuid": "lbl-willow", "name": "Willow", "color": "#ff0000", "parentUuid": "lbl-cat"},
+]
+
+
+def _hier_config(uuid=CFG_UUID, name="Test Nest"):
+    return {"uuid": uuid, "name": name, "description": "", "nodes": HIER_NODES}
+
+
+def _mock_labels(page: Page, labels=None):
+    page.route(
+        lambda url: url.split("?")[0].endswith("/api/labels"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "labels": HIER_LABELS if labels is None else labels}),
+        ),
+    )
+
+
 def _unit(uuid=CFG_UUID, detectors=("test_nest",), subs=("test_nest__cat",), notes=()):
     return {
         "modelConfigUuid": uuid,
@@ -169,7 +211,8 @@ class TestHierarchyUnits:
         _reset_session(page)
         _mock_models(page, ["test_nest", "test_nest__cat"], {"test_nest__cat": "crop_classifier"})
         _mock_units(page, [_unit()])
-        _mock_model_configs(page, [{"uuid": CFG_UUID, "name": "Test Nest", "nodes": []}])
+        _mock_model_configs(page, [_hier_config()])
+        _mock_labels(page)
         _make_panel(page)
 
         by_name = {i["name"]: i for i in _items(page)}
@@ -187,7 +230,8 @@ class TestHierarchyUnits:
         _reset_session(page)
         _mock_models(page, ["test_nest"])
         _mock_units(page, [_unit(subs=())])
-        _mock_model_configs(page, [{"uuid": CFG_UUID, "name": "Test Nest", "nodes": []}])
+        _mock_model_configs(page, [_hier_config()])
+        _mock_labels(page)
         _make_panel(page)
 
         by_name = {i["name"]: i for i in _items(page)}
@@ -201,7 +245,8 @@ class TestHierarchyUnits:
         _reset_session(page)
         _mock_models(page, ["test_nest", "test_nest__cat"], {"test_nest__cat": "crop_classifier"})
         _mock_units(page, [_unit()])
-        _mock_model_configs(page, [{"uuid": CFG_UUID, "name": "Test Nest", "nodes": []}])
+        _mock_model_configs(page, [_hier_config()])
+        _mock_labels(page)
         _make_panel(page)
 
         _check_item(page, "test_nest", checked=False)  # clear the default first-detector pick
@@ -224,3 +269,81 @@ class TestHierarchyUnits:
         names = [i["name"] for i in _items(page)]
         assert "cfg-deleted" not in names
         assert names == ["test_nest"]
+
+    def test_a_crop_classifier_is_never_listed_as_a_detector(self, shared_page: Page):
+        """Reported for real: running the hierarchy's sub-model produced a single box
+        filling the whole image, labelled with the parent.
+
+        A crop classifier listed among detectors goes through the DETECTION path, where
+        an EfficientNet head decodes into one full-image box. It answers instead of
+        failing, so the result looks like a confident detection rather than a mistake.
+        """
+        page = shared_page
+        _reset_session(page)
+        _mock_models(page, ["test_nest", "test_nest__cat"], {"test_nest__cat": "crop_classifier"})
+        _mock_units(page, [_unit(subs=("test_nest__cat",))])
+        _mock_model_configs(page, [_hier_config()])
+        _mock_labels(page)
+        _make_panel(page)
+
+        sections = page.eval_on_selector_all(
+            "#test-inference-panel .inference-model-section",
+            """els => els.map(s => ({
+                header: s.querySelector('.inference-model-section-header')?.textContent,
+                items: [...s.querySelectorAll('.inference-model-name')].map(n => n.textContent),
+            }))""",
+        )
+        by_header = {s["header"]: s["items"] for s in sections}
+        assert "test_nest__cat" not in by_header.get("Detectors", []), by_header
+        assert "test_nest" in by_header.get("Detectors", []), by_header
+        assert "test_nest__cat" in by_header.get("Sub-models (refine a detector)", []), by_header
+
+    def test_a_flat_shape_is_not_listed_as_a_hierarchy(self, shared_page: Page):
+        """Every shape with a trained artifact used to appear under Hierarchies, so each
+        flat shape showed up as a "hierarchy" duplicating the detector right below it."""
+        page = shared_page
+        _reset_session(page)
+        _mock_models(page, ["flat_model"])
+        _mock_units(page, [_unit(uuid="cfg-flat", detectors=("flat_model",), subs=())])
+        _mock_model_configs(
+            page,
+            [
+                {
+                    "uuid": "cfg-flat",
+                    "name": "Flat Shape",
+                    "description": "",
+                    # No sub-model nodes: this shape defines no hierarchy.
+                    "nodes": [
+                        {
+                            "uuid": "n-root",
+                            "labelUuid": None,
+                            "modelType": "object_detection",
+                            "architecture": "yolo_v9_s",
+                        }
+                    ],
+                }
+            ],
+        )
+        _mock_labels(page)
+        _make_panel(page)
+
+        names = [i["name"] for i in _items(page)]
+        assert "Flat Shape" not in names, names
+        assert "flat_model" in names, names
+
+    def test_a_hierarchy_with_untrained_sub_models_is_still_listed(self, shared_page: Page):
+        """The counterpart to the filter above: "defines sub-models" is the test, not
+        "has trained ones". Filtering on the artifacts would hide a hierarchy exactly
+        when it most needs to say its sub-model is missing."""
+        page = shared_page
+        _reset_session(page)
+        _mock_models(page, ["test_nest"])
+        _mock_units(page, [_unit(subs=())])
+        _mock_model_configs(page, [_hier_config()])
+        _mock_labels(page)
+        _make_panel(page)
+
+        by_name = {i["name"]: i for i in _items(page)}
+        assert "Test Nest" in by_name, by_name
+        assert by_name["Test Nest"]["badge"] == "top only"
+        assert by_name["Test Nest"]["warn"]
