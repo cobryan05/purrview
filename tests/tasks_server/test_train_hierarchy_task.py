@@ -214,6 +214,34 @@ class TestRunningEveryPart:
         assert result["parts_trained"] == 1
         assert result["cancelled"] is True
 
+    async def test_a_part_stopped_mid_job_is_not_counted_as_trained(self):
+        """Observed for real: the container went down during part 1 and the run reported
+        parts_trained: 1 having produced no model at all.
+
+        A cancelled job leaves no artifact, so counting it both overstates the result and
+        advances target_index past a part that still needs training — a resume would then
+        skip it and call a half-trained hierarchy complete.
+        """
+        harness = _Harness(
+            targets=[_target("node-root", "top"), _target("node-cat", "submodel", "label-cat")],
+            existing=[_training_config("tc-top", "node-root"), _training_config("tc-cat", "node-cat")],
+        )
+        task = _make_task()
+        await _init_task(task, harness)
+
+        async def _cancelled_job():
+            return {"job_id": "job-1", "cancelled": True}
+
+        task._run_one_job = _cancelled_job
+        task._resolve_training_config = lambda tc: (f"model_for_{tc}", [], {})
+        result = await task._run()
+
+        assert result["parts_trained"] == 0, "a cancelled job trained nothing"
+        assert result["trained"] == []
+        assert result["cancelled"] is True
+        # Still pointing at the part that did not finish, so a resume retries it.
+        assert task._target_index == 0
+
     async def test_finishing_a_part_clears_its_job_id(self):
         """The job id in resume data belongs to the part at target_index. Left behind, a
         resume reconnects to the finished job and reports the next part as complete."""

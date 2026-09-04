@@ -174,8 +174,19 @@ class TrainHierarchyTask(TrainModelTask):
                 self._epoch_history = []
 
             self.log(f"Training part {self._target_index + 1} of {total}: {self._model_name}")
-            result = await self._run_one_job()
-            self._completed.append({"model_name": self._model_name, **(result or {})})
+            result = await self._run_one_job() or {}
+
+            # A cancelled job produced no model, so it is not a trained part. Counting
+            # it anyway reported "parts_trained: 1" for a run that trained nothing —
+            # observed for real when the container went down mid-run — and left
+            # target_index pointing past a part that still needs doing. Break rather
+            # than advance: the index is where a resume picks up, and this part is
+            # exactly where it should pick up.
+            if result.get("cancelled"):
+                self.log(f"Part {self._target_index + 1} of {total} stopped before it finished")
+                break
+
+            self._completed.append({"model_name": self._model_name, **result})
 
             self._target_index += 1
             self._job_id = None
