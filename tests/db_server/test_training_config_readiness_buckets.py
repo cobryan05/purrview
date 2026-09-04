@@ -598,3 +598,54 @@ class TestReadinessForImages:
         )
         body = r.json()
         assert body["status"] == "failure"
+
+
+class TestReadinessIsAnAggregateNotAnEnumeration:
+    """The counts above are all this endpoint owes anyone, and SQLite can produce
+    them directly.
+
+    It used to enumerate the dataset union into memory — a stub row per image —
+    fetch verification counts, and bucket them in a Python loop. That produces
+    identical numbers, so every test in this file passed throughout; what it cost
+    was ~0.6s of event-loop CPU per call, paid twice per training config by the
+    launcher. Reverting to it would be invisible to correctness tests, which is
+    exactly why this one asserts on the read instead of the answer.
+    """
+
+    @staticmethod
+    def _capture_sql(db_client) -> list:
+        from sqlalchemy import event
+
+        statements: list = []
+        event.listen(
+            db_client._engine.sync_engine,
+            "before_cursor_execute",
+            lambda conn, cursor, statement, parameters, context, executemany: statements.append(statement),
+        )
+        return statements
+
+    async def test_readiness_never_fetches_image_rows(self, http_client, db_client, files_root):
+        ds = await _create_dataset(http_client, "agg-ds")
+        cfg, parent_label, _child = await _make_two_label_tc(http_client, "agg-tc", ds["uuid"])
+        for i in range(6):
+            name = await _register_image(http_client, files_root, f"agg_{i}.png")
+            if i % 2 == 0:
+                await _verify_label(http_client, name, parent_label)
+
+        statements = self._capture_sql(db_client)
+        body = await _readiness(http_client, cfg["uuid"])
+
+        # The answer still has to be right, or the assertions below prove nothing.
+        assert body["readyCount"] + body["needsReviewCount"] + body["notStartedCount"] == 6
+
+        # The enumeration selected filename/created_at/updated_at per image. The
+        # aggregate only ever needs images.uuid, so a fetch of any other image
+        # column means the row-by-row path is back.
+        fetched_image_rows = [s for s in statements if "images.filename" in s]
+        assert not fetched_image_rows, "readiness fetched image rows:\n" + "\n".join(fetched_image_rows)
+
+        # ...and the counting really is happening in SQL, so the negative above
+        # cannot be satisfied by simply not doing the work.
+        assert any(
+            "count(" in s.lower() and "image_labels" in s and "group by" in s.lower() for s in statements
+        ), "no aggregate over image_labels was issued:\n" + "\n".join(statements)

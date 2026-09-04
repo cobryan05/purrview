@@ -20,7 +20,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
-from sqlalchemy import Select, and_, case, delete, event, exists, func, or_, text, true
+from sqlalchemy import Select, and_, case, delete, event, exists, func, or_, text, true, union
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -3924,35 +3924,51 @@ class DbClient:
         log_json: Optional[List[str]] = None,
         status_data_json: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Each field is written only when supplied, so a caller that sends just one
+        # (e.g. the start-of-run started_at write) can't blank the others. Built as a
+        # values dict rather than mutating a loaded row for the same reason
+        # update_task_heartbeat does: the row carries the checkpoint, and none of these
+        # writes need to read it.
+        values: Dict[str, Any] = {}
+        if started_at is not None:
+            values["started_at"] = started_at
+            # A resume/auto-restart reuses the same row, and only the start of a run
+            # writes started_at. Without this, the previous run's ended_at outlives it
+            # and the instance reads as running while claiming to have ended *before*
+            # it started. Callers never send both in one call, so this can't discard an
+            # end being recorded — and if one ever does, the explicit ended_at below
+            # still wins.
+            values["ended_at"] = None
+        if ended_at is not None:
+            values["ended_at"] = ended_at
+        if log_json is not None:
+            values["log_json"] = log_json
+        if status_data_json is not None:
+            values["status_data_json"] = status_data_json
+        if not values:
+            return
         async with self._async_session_maker() as session:
-            instance = await session.get(TaskInstance, task_uuid)
-            if instance:
-                if started_at is not None:
-                    instance.started_at = started_at
-                    # A resume/auto-restart reuses the same row, and only the start
-                    # of a run writes started_at. Without this, the previous run's
-                    # ended_at outlives it and the instance reads as running while
-                    # claiming to have ended *before* it started. Callers never send
-                    # both in one call, so this can't discard an end being recorded.
-                    instance.ended_at = None
-                if ended_at is not None:
-                    instance.ended_at = ended_at
-                if log_json is not None:
-                    instance.log_json = log_json
-                # Each field is written only when supplied, so a caller that sends just
-                # one (e.g. the start-of-run started_at write) can't blank the others.
-                if status_data_json is not None:
-                    instance.status_data_json = status_data_json
-                session.add(instance)
-                await session.commit()
+            await session.exec(sa_update(TaskInstance).where(TaskInstance.uuid == task_uuid).values(**values))
+            await session.commit()
 
     async def update_task_heartbeat(self, task_uuid: str) -> None:
+        """Write the liveness timestamp without reading the row.
+
+        session.get() loads the whole TaskInstance to write one column — including
+        resume_data_json, which on a running training task is the largest value in the
+        schema and grows with every checkpoint. This fires once per HEARTBEAT_INTERVAL
+        per running task, so it was re-decoding a megabyte of checkpoint on a timer to
+        record that the task was still alive. An UPDATE reads nothing; a missing row is
+        a no-op either way, and updated_at still moves because its onupdate lives on the
+        column rather than in the ORM layer.
+        """
         async with self._async_session_maker() as session:
-            instance = await session.get(TaskInstance, task_uuid)
-            if instance:
-                instance.heartbeat_at = datetime.now(timezone.utc)
-                session.add(instance)
-                await session.commit()
+            await session.exec(
+                sa_update(TaskInstance)
+                .where(TaskInstance.uuid == task_uuid)
+                .values(heartbeat_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
 
     async def set_task_status(self, task_uuid: str, new_status: str, error_message: Optional[str] = None) -> None:
         """Set an instance's status, and the message explaining an ERROR.
@@ -3973,15 +3989,15 @@ class DbClient:
         the evidence for why — clearing it there would destroy state the resumability
         logic reasons about, which is the failure mode NOTES.md warns about.
         """
+        values: Dict[str, Any] = {
+            "status": new_status,
+            "error_message": error_message if new_status == TaskStatus.ERROR else None,
+        }
+        if new_status == TaskStatus.COMPLETED:
+            values["resume_data_json"] = None
         async with self._async_session_maker() as session:
-            instance = await session.get(TaskInstance, task_uuid)
-            if instance:
-                instance.status = new_status
-                instance.error_message = error_message if new_status == TaskStatus.ERROR else None
-                if new_status == TaskStatus.COMPLETED:
-                    instance.resume_data_json = None
-                session.add(instance)
-                await session.commit()
+            await session.exec(sa_update(TaskInstance).where(TaskInstance.uuid == task_uuid).values(**values))
+            await session.commit()
 
     async def insert_new_active_task(self, config_uuid: str) -> TaskInstance:
         instance = TaskInstance(config_uuid=config_uuid, status=TaskStatus.NEW)
@@ -4949,61 +4965,156 @@ class DbClient:
                 "roll_up_active": False,
             }
 
-        # Collect all image uuids across all linked datasets (union, de-duped).
-        all_images = await self._enumerate_dataset_union_stubs(dataset_uuids)
-
-        if not all_images:
-            return {
-                "ready_count": 0,
-                "ready_positive_count": 0,
-                "ready_negative_count": 0,
-                "needs_review_count": 0,
-                "not_started_count": 0,
-                "dataset_uuids": dataset_uuids,
-                "label_uuids": label_uuids,
-                "roll_up_active": is_rollup,
-            }
-
-        image_uuids = [img.uuid for img in all_images]
-        if restrict_to_image_uuids is not None:
-            _restrict = set(restrict_to_image_uuids)
-            image_uuids = [u for u in image_uuids if u in _restrict]
-
-        n_labels = len(label_uuids)
         # With rollup, any one verified label means the image is ready.
-        readiness_threshold = 1 if is_rollup else n_labels
+        readiness_threshold = 1 if is_rollup else len(label_uuids)
 
-        verified_by_image, present_by_image = await self._get_image_label_verification_counts(image_uuids, label_uuids)
-
-        ready_count = 0
-        ready_positive_count = 0
-        ready_negative_count = 0
-        needs_review_count = 0
-        not_started_count = 0
-        for img_uuid in image_uuids:
-            verified_count = verified_by_image.get(img_uuid, 0)
-            present_count = present_by_image.get(img_uuid, 0)
-            if verified_count >= readiness_threshold:
-                ready_count += 1
-                if present_count > 0:
-                    ready_positive_count += 1
-                else:
-                    ready_negative_count += 1
-            elif verified_count > 0 and present_count > 0:
-                needs_review_count += 1
-            else:
-                not_started_count += 1
-
+        counts = await self._readiness_counts(
+            dataset_uuids,
+            label_uuids,
+            readiness_threshold,
+            restrict_to_image_uuids,
+        )
         return {
-            "ready_count": ready_count,
-            "ready_positive_count": ready_positive_count,
-            "ready_negative_count": ready_negative_count,
-            "needs_review_count": needs_review_count,
-            "not_started_count": not_started_count,
+            **counts,
             "dataset_uuids": dataset_uuids,
             "label_uuids": label_uuids,
             "roll_up_active": is_rollup,
         }
+
+    async def _readiness_scope_selects(self, dataset_uuids: List[str]) -> List[Select]:
+        """One `SELECT images.uuid` per dataset, carrying that dataset's filters.
+
+        A dataset is a saved search rather than a membership table, so its images
+        can only be named by re-running its filter — which is why this cannot be a
+        join against a link table.
+        """
+        selects: List[Select] = []
+        for ds_uuid in dataset_uuids:
+            dataset = await self.get_dataset(ds_uuid)
+            if dataset is None:
+                continue
+            params = self.build_dataset_search_params(dataset, sort_by="uuid", sort_order="asc")
+            # use_exists=False deliberately. The correlated-EXISTS shape exists so an
+            # ORDER BY + LIMIT scan can stop early, and an aggregate over the whole
+            # union has no LIMIT to stop at — the IN form is the safe one here.
+            selects.append(
+                _apply_image_search_filters(
+                    select(ImageRecord.uuid),
+                    params,
+                    use_exists=False,
+                    files_root=self._files_root,
+                )
+            )
+        return selects
+
+    async def _readiness_counts(
+        self,
+        dataset_uuids: List[str],
+        label_uuids: List[str],
+        readiness_threshold: int,
+        restrict_to_image_uuids: Optional[list[str]] = None,
+    ) -> Dict[str, int]:
+        """The five readiness buckets, counted by SQLite rather than in Python.
+
+        This used to enumerate the whole dataset union into memory, fetch a
+        verification count per image, and bucket the result in a Python loop. That
+        is a `GROUP BY` written out by hand: it materialised ~2,200 stub rows and
+        re-read ~88,000 image_label rows per call, and cost ~0.6s of event-loop CPU
+        — paid twice per training config by the launcher, which on a page with ten
+        configs pointing at one dataset meant the same work twenty times over.
+
+        The bucket definitions are unchanged and deliberately mirror the list
+        endpoints one for one:
+
+        - ready         verified >= threshold, split by whether anything is PRESENT
+        - needs_review  partially verified AND something PRESENT (an image whose
+                        only verifications are ABSENT has surfaced no in-scope
+                        label yet, so it is not started)
+        - not_started   everything else, including images with no image_label rows
+                        at all — hence the OUTER join
+
+        `not_started` is derived as the remainder rather than counted, so the
+        buckets cannot drift apart from the total no matter what the predicates do.
+        """
+        empty = {
+            "ready_count": 0,
+            "ready_positive_count": 0,
+            "ready_negative_count": 0,
+            "needs_review_count": 0,
+            "not_started_count": 0,
+        }
+
+        scope_selects = await self._readiness_scope_selects(dataset_uuids)
+        if not scope_selects:
+            return empty
+        if restrict_to_image_uuids is not None and not restrict_to_image_uuids:
+            return empty
+
+        # UNION (not UNION ALL) de-duplicates across datasets; a single dataset's
+        # filter can still fan out over a join, so that case needs DISTINCT itself.
+        scope = (scope_selects[0].distinct() if len(scope_selects) == 1 else union(*scope_selects)).subquery()
+
+        # The label restriction belongs in the JOIN condition, not a WHERE: an image
+        # with no matching image_label rows must survive as verified=0, and a WHERE
+        # would filter it out of the scope entirely.
+        per_image = (
+            select(
+                scope.c.uuid.label("uuid"),
+                func.count(case((ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]), 1))).label(
+                    "verified"
+                ),
+                func.count(case((ImageLabel.status == ImageItemStatus.PRESENT, 1))).label("present"),
+            )
+            .select_from(
+                scope.outerjoin(
+                    ImageLabel,
+                    and_(
+                        ImageLabel.image_uuid == scope.c.uuid,
+                        ImageLabel.label_uuid.in_(label_uuids),
+                    ),
+                )
+            )
+            .group_by(scope.c.uuid)
+        )
+
+        # Chunked for the same reason _get_image_label_verification_counts is: a
+        # restrict list can exceed SQLite's bind-variable cap. Chunks are disjoint
+        # and every image lands in exactly one bucket, so the per-chunk totals add.
+        chunks: List[Optional[Sequence[str]]] = (
+            [None] if restrict_to_image_uuids is None else list(_chunked(list(restrict_to_image_uuids)))
+        )
+
+        totals = dict(empty)
+        for chunk in chunks:
+            stmt = per_image if chunk is None else per_image.where(scope.c.uuid.in_(chunk))
+            sq = stmt.subquery()
+            is_ready = sq.c.verified >= readiness_threshold
+            agg = select(
+                func.count().label("total"),
+                func.sum(case((is_ready, 1), else_=0)).label("ready"),
+                func.sum(case((and_(is_ready, sq.c.present > 0), 1), else_=0)).label("ready_positive"),
+                func.sum(case((and_(is_ready, sq.c.present == 0), 1), else_=0)).label("ready_negative"),
+                func.sum(
+                    case(
+                        (and_(sq.c.verified < readiness_threshold, sq.c.verified > 0, sq.c.present > 0), 1),
+                        else_=0,
+                    )
+                ).label("needs_review"),
+            ).select_from(sq)
+
+            async with self._async_session_maker() as session:
+                row = (await session.exec(agg)).one()
+
+            total = row.total or 0
+            ready = row.ready or 0
+            needs_review = row.needs_review or 0
+            totals["ready_count"] += ready
+            totals["ready_positive_count"] += row.ready_positive or 0
+            totals["ready_negative_count"] += row.ready_negative or 0
+            totals["needs_review_count"] += needs_review
+            totals["not_started_count"] += total - ready - needs_review
+
+        return totals
 
     async def get_training_config_detection_dataset(self, uuid: str) -> Optional[dict]:
         """Assemble a YOLO-format detection dataset for an object_detection training config.
