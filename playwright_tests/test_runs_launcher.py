@@ -156,6 +156,93 @@ def _mock_launchables(page: Page):
     )
 
 
+# ⚠️ Every shape here has MORE THAN ONE non-root node, deliberately. parseNodes sorts
+# its non-root nodes by label depth, and Array.prototype.sort skips the comparator
+# entirely for a single element — so a one-node fixture never executes the label lookup
+# that walks the tree. A version of this file with one node per shape passed while the
+# live launcher threw "labelsMap.get is not a function" on the first real shape.
+MODEL_SHAPES = [
+    {
+        "uuid": "mc-hier",
+        "name": "Test Nest",
+        "description": "",
+        "nodes": [
+            {"uuid": "n-root", "labelUuid": None, "modelType": "object_detection", "architecture": "yolo_v9_s"},
+            {
+                "uuid": "n-cat",
+                "labelUuid": "lbl-cat",
+                "modelType": "crop_classifier",
+                "architecture": "efficientnet_b0",
+                "isBoundary": True,
+            },
+            {
+                "uuid": "n-willow",
+                "labelUuid": "lbl-willow",
+                "modelType": "crop_classifier",
+                "architecture": "efficientnet_b0",
+                "isBoundary": False,
+            },
+            {
+                "uuid": "n-bowl",
+                "labelUuid": "lbl-bowl",
+                "modelType": "object_detection",
+                "architecture": "yolo_v9_s",
+                "isBoundary": False,
+            },
+        ],
+    },
+    {
+        "uuid": "mc-flat",
+        "name": "Flat Shape",
+        "description": "",
+        "nodes": [
+            {"uuid": "n-flat-root", "labelUuid": None, "modelType": "object_detection", "architecture": "yolo_v9_s"},
+            {
+                "uuid": "n-flat-dog",
+                "labelUuid": "lbl-dog",
+                "modelType": "object_detection",
+                "architecture": "yolo_v9_s",
+                "isBoundary": False,
+            },
+            {
+                "uuid": "n-flat-bowl",
+                "labelUuid": "lbl-bowl",
+                "modelType": "object_detection",
+                "architecture": "yolo_v9_s",
+                "isBoundary": False,
+            },
+        ],
+    },
+]
+
+SHAPE_LABELS = [
+    {"uuid": "lbl-cat", "name": "Cat", "color": "#ff8800", "parentUuid": None},
+    # Nested, so depth sorting actually has something to order.
+    {"uuid": "lbl-willow", "name": "Willow", "color": "#ff0000", "parentUuid": "lbl-cat"},
+    {"uuid": "lbl-dog", "name": "Dog", "color": "#0088ff", "parentUuid": None},
+    {"uuid": "lbl-bowl", "name": "Bowl", "color": "#00ff88", "parentUuid": None},
+]
+
+
+def _mock_model_shapes(page: Page, configs=None, labels=None):
+    page.route(
+        lambda url: url.split("?")[0].endswith("/api/model-configs"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "configs": MODEL_SHAPES if configs is None else configs}),
+        ),
+    )
+    page.route(
+        lambda url: url.split("?")[0].endswith("/api/labels"),
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "labels": SHAPE_LABELS if labels is None else labels}),
+        ),
+    )
+
+
 def _training_instance(status: str, config_uuid: str = "tc-1", typename: str = "TrainModelTask") -> dict:
     """One entry of the task-status payload, shaped like a run the launcher
     started: a throwaway task config carrying the recipe's uuid."""
@@ -230,6 +317,65 @@ def _config(page: Page, name: str):
 def _active_row(page: Page, task_uuid: str):
     """A run's card on Runs > Active, where a live launch card sends you."""
     return page.locator(f"#active-tasks-list [data-task-uuid='{task_uuid}']")
+
+
+class TestHierarchyLaunch:
+    """Starting a whole hierarchy from the launcher.
+
+    Every card in the Training group launches TrainModelTask, which trains exactly ONE
+    part. For a shape with sub-models that means a card named after the hierarchy trains
+    only its top model — which is how a shape ends up detecting "Cat" with its
+    sub-model never trained and nothing saying so.
+    """
+
+    def test_a_shape_with_sub_models_can_be_trained_whole(self, page: Page, base_url: str):
+        _mock_model_shapes(page)
+        _open_launcher(page, base_url)
+
+        card = _card(page, "Test Nest")
+        expect(card).to_be_visible()
+        expect(card).to_contain_text("top model + 1 sub-model")
+
+    def test_a_flat_shape_is_not_offered_here(self, page: Page, base_url: str):
+        """It has one part, and the Training group already launches it. Listing it
+        twice under two names would make them look like different runs."""
+        _mock_model_shapes(page)
+        _open_launcher(page, base_url)
+
+        expect(_card(page, "Flat Shape")).to_have_count(0)
+
+    def test_starting_it_launches_the_hierarchy_task_not_a_single_run(self, page: Page, base_url: str):
+        payloads: list[dict] = []
+        page.route(
+            "**/api/tasks/configs/create",
+            lambda route: (
+                payloads.append(route.request.post_data_json),
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"status": "success", "configUuid": "tmp-cfg"}),
+                ),
+            ),
+        )
+        page.route(
+            "**/api/tasks/instances/start",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success", "taskUuid": "task-1"}),
+            ),
+        )
+
+        _mock_model_shapes(page)
+        _open_launcher(page, base_url)
+        _start(page, "Test Nest").click()
+
+        wait_until(page, lambda: bool(payloads), "Expected the hierarchy run to start")
+        assert payloads[0]["typename"] == "TrainHierarchyTask"
+        assert payloads[0]["params"]["model_config_uuid"] == "mc-hier"
+        # Same reason TrainModelTask opts in: the jobs run on the training server, so a
+        # tasks_server restart must reattach rather than wait for a click.
+        assert payloads[0]["persistent"] is True
 
 
 class TestLauncherContents:
@@ -508,7 +654,12 @@ class TestTrainingCardDelta:
         expect(self._detail(page, "Primary Model")).to_contain_text("12 pos · 28 neg")
 
         positives["count"] = 13
-        page.locator("#runs-launcher-box .runs-launch-group").first.get_by_test_id("runs-launch-group-action").click()
+        # Named rather than positional (".first"): the recount button belongs to the
+        # Training group specifically, and group order is a layout decision that has
+        # already changed once — a positional selector silently retargets when it does.
+        page.locator("#runs-launcher-box .runs-launch-group", has_text="Training").get_by_test_id(
+            "runs-launch-group-action"
+        ).click()
 
         expect(self._detail(page, "Primary Model")).to_contain_text("13 pos · 28 neg")
 

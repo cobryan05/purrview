@@ -11,6 +11,9 @@
  * defined in Configuration; runs start and are watched here.
  */
 import { fetchTrainingConfigs } from '/app-static/js/shared/api/trainingConfigs.js';
+import { fetchModelConfigs } from '/app-static/js/shared/api/modelConfigs.js';
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { parseNodes } from '/app-static/js/ui/modelSpec.js';
 import { fetchFilterChains } from '/app-static/js/shared/api/filterChains.js';
 import { fetchWatchProfiles } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchTaskConfigs, fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
@@ -610,14 +613,29 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
   _rendering = true;
 
   try {
-    const [trainings, chains, watchers, taskConfigs] = await Promise.all([
+    const [trainings, chains, watchers, taskConfigs, modelConfigs, launcherLabels] = await Promise.all([
       settle(fetchTrainingConfigs),
       settle(fetchFilterChains),
       settle(fetchWatchProfiles),
       // Temporary configs are launcher scaffolding, not things to launch —
       // filtered server-side rather than in JS so the payload stays small.
       settle(() => fetchTaskConfigs(null, { excludeTemporary: true })),
+      settle(fetchModelConfigs),
+      // NOT settle(): it normalises through asRows(), which turns the labels Map into
+      // an array of values. parseNodes needs the Map — it looks labels up by uuid to
+      // walk the tree — and an array silently satisfies nothing until the first lookup.
+      fetchLabels().catch(() => new Map()),
     ]);
+
+    // Model shapes with sub-models, which are the ones "train every part" means
+    // anything for. A flat shape has exactly one part, and the Training group below
+    // already launches it — listing it here too would offer the same run twice under
+    // two names. Sub-models are read with parseNodes, the same derivation the shape
+    // editor draws its tree from.
+    const hierarchies = (modelConfigs ?? [])
+      .map(mc => ({ mc, subCount: parseNodes(mc.nodes, launcherLabels).submodels.size }))
+      .filter(({ subCount }) => subCount > 0)
+      .sort((a, b) => a.mc.name.localeCompare(b.mc.name));
 
     const frag = document.createDocumentFragment();
 
@@ -626,11 +644,36 @@ export async function renderRunsLauncher({ target = 'runs-launcher-box', onStart
     /** Replaced wholesale, so a stream message can never paint a stale card. */
     const runStateSetters = new Map();
 
+    // Above Training on purpose: for a shape with sub-models this is the run you
+    // almost always want, and the per-recipe cards below each train ONE part. A card
+    // there named after a hierarchy trains only its top model, which is precisely how
+    // a shape ends up detecting "Cat" with its sub-model never trained.
+    frag.appendChild(group(
+      'Hierarchies',
+      hierarchies.map(({ mc, subCount }) => launchCard({
+        name: mc.name,
+        hint: `Train every part — top model + ${subCount} sub-model${subCount === 1 ? '' : 's'}`,
+        start: () => launchRun({
+          typename: 'TrainHierarchyTask',
+          name: `Train ${mc.name}`,
+          params: { model_config_uuid: mc.uuid },
+          // Same reason as TrainModelTask: the jobs run on the training server, so a
+          // tasks_server restart only detaches the thing watching them.
+          persistent: true,
+        }),
+        configTab: 'tab-model-management',
+        configUuid: mc.uuid,
+        onStarted,
+      })),
+      modelConfigs === null ? 'Could not load model shapes.' : 'No model shapes with sub-models —',
+      modelConfigs === null ? null : { label: 'design one', tab: 'tab-model-management' },
+    ));
+
     frag.appendChild(group(
       'Training',
       (trainings ?? []).map(cfg => launchCard({
         name: cfg.name,
-        hint: 'Train a model from this recipe',
+        hint: 'Train one part from this recipe',
         start: () => launchRun({
           typename: 'TrainModelTask',
           name: `Train ${cfg.name}`,
