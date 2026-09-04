@@ -1,6 +1,7 @@
 """Manager for Image Tagging Server"""
 
 import asyncio
+import hmac
 import logging
 import sys
 import threading
@@ -14,6 +15,7 @@ import tasks_client
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers import serviceStatus
+from apps.helpers.authSettings import read_auth_config
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.reverseProxy import ReverseProxy
 from apps.helpers.serverUrls import (
@@ -86,12 +88,20 @@ class Manager:
         self._probe_tasks: Dict[str, asyncio.Task] = {}
         self._probe_started_at: Dict[str, float] = {}
 
+        # Off by default. See Settings → Security / AuthGate in web.py.
+        self._require_auth: bool = False
+        self._auth_token: str = ""
+
     async def start(self) -> None:
-        """Load URL overrides from DB settings on startup."""
+        """Load URL overrides and auth settings from DB on startup."""
         try:
             await self._reload_url_overrides()
         except Exception as e:
             logger.warning(f"Could not load server URL overrides from DB: {e}")
+        try:
+            await self._reload_auth_config()
+        except Exception as e:
+            logger.warning(f"Could not load auth settings from DB: {e}")
 
     async def _reload_url_overrides(self) -> None:
         """Re-read URL overrides from DB and rebuild proxies."""
@@ -133,6 +143,42 @@ class Manager:
                 logger.warning(f"tasks_server rejected server-config reload: HTTP {res.status_code}")
         except Exception as e:
             logger.warning(f"Could not notify tasks_server of server-config change: {e}")
+
+    async def _reload_auth_config(self) -> None:
+        """Re-read the Security setting from the DB."""
+        self._require_auth, self._auth_token = await read_auth_config(self._test_client, self._db_server_url)
+
+    async def reload_auth_config(self) -> None:
+        """Public method called after Settings → Security is saved.
+
+        Unlike the server-URL overrides this doesn't need to notify tasks_server —
+        the auth gate lives entirely in `image_tagging_server`'s `AuthGate` middleware,
+        the only externally reachable port (see `HA_INTEGRATION_PLAN.md` WP-3).
+        """
+        await self._reload_auth_config()
+
+    @property
+    def require_auth(self) -> bool:
+        """Whether `AuthGate` should be enforcing.
+
+        Deliberately fails open if the toggle is on but no token was ever saved,
+        rather than locking the operator out of their own UI with no recovery path
+        short of editing the SQLite settings row by hand. The Settings → Security
+        panel refuses to save `require_auth=true` with an empty token, so this is
+        only a defense-in-depth backstop, not the normal path.
+        """
+        return self._require_auth and bool(self._auth_token)
+
+    def check_token(self, candidate: Optional[str]) -> bool:
+        """Constant-time comparison against the configured token.
+
+        `hmac.compare_digest` over `==` because this is the one string in the app
+        that's actually a secret — everything else here has never needed to care
+        about a timing side-channel.
+        """
+        if not candidate or not self._auth_token:
+            return False
+        return hmac.compare_digest(candidate, self._auth_token)
 
     @property
     def effective_inference_url(self) -> str:

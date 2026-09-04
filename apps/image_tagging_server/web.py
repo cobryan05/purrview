@@ -5,9 +5,10 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -198,6 +199,68 @@ class RevalidatedStaticFiles(StaticFiles):
         return response
 
 
+#: Name deliberately namespaced — this cookie only ever means "presented the shared
+#: token once", not a real session, and the prefix keeps it from colliding with
+#: anything a reverse-proxied backend might someday set.
+AUTH_COOKIE_NAME = "pv_auth"
+
+#: `/login` itself must stay reachable while logged out, or a wrong token becomes a
+#: permanent lockout with no way to even see the form again.
+_AUTH_EXEMPT_PATHS = frozenset({"/login"})
+
+
+class AuthGate:
+    """ASGI middleware gating every request behind Settings → Security's shared token.
+
+    Deliberately **not** `starlette.middleware.base.BaseHTTPMiddleware`. That class
+    reconstructs every response — including the `Range`/`206` responses `ReverseProxy`
+    streams straight through from `db_server` for recording playback — as its own
+    re-streamed `StreamingResponse`. That is exactly the class of bug
+    `HA_INTEGRATION_PLAN.md` WP-4 warns about for clip scrubbing ("omit this and clips
+    play but never scrub"), and there is no reason to risk it here: an authenticated
+    request below only ever needs to be let through, never rewritten. A pure ASGI
+    middleware does that by calling straight through to `self._app`, untouched.
+    """
+
+    def __init__(self, app, manager: Manager):
+        self._app = app
+        self._manager = manager
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or not self._manager.require_auth:
+            await self._app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        if request.url.path in _AUTH_EXEMPT_PATHS:
+            await self._app(scope, receive, send)
+            return
+
+        if self._manager.check_token(self._extract_token(request)):
+            await self._app(scope, receive, send)
+            return
+
+        # A `<video>`/`<img>` tag and HA's proxy calls can't follow a redirect into an
+        # HTML login form and would just render it as a broken image — only send one to
+        # something that actually asked for a page.
+        if "text/html" in request.headers.get("accept", ""):
+            next_q = quote(request.url.path, safe="")
+            response = RedirectResponse(url=f"/login?next={next_q}", status_code=303)
+        else:
+            response = JSONResponse(content={"detail": "Unauthorized"}, status_code=401)
+        await response(scope, receive, send)
+
+    @staticmethod
+    def _extract_token(request: Request) -> Optional[str]:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            return auth[7:]
+        query_token = request.query_params.get("token")
+        if query_token:
+            return query_token
+        return request.cookies.get(AUTH_COOKIE_NAME)
+
+
 class WebApp:
     SUCCESS_KEY = "success"
     FAILURE_KEY = "failure"
@@ -208,6 +271,10 @@ class WebApp:
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
         self._templates: Jinja2Templates = Jinja2Templates(directory=os.path.join(SCRIPT_DIR, "templates"))
         self._manager: Manager = manager
+
+        # Wraps every route and both static mounts below — see AuthGate's docstring
+        # for why this is a plain ASGI middleware rather than BaseHTTPMiddleware.
+        self._app.add_middleware(AuthGate, manager=self._manager)
 
         # Mount static files
         self._app.mount("/static", RevalidatedStaticFiles(directory="/app/static", check_dir=False), name="static")
@@ -223,6 +290,19 @@ class WebApp:
     def app(self) -> FastAPI:
         """Return the FastAPI application instance"""
         return self._app
+
+    @staticmethod
+    def _safe_next(candidate: str) -> str:
+        """Confine a post-login redirect target to this app.
+
+        `//evil.example.com/x` is not caught by a bare `startswith("/")` check —
+        browsers treat a leading `//` as protocol-relative and will happily follow it
+        off-site. `next` only ever needs to survive round-tripping through our own
+        `<form>` and query string, so anything else just falls back to `/`.
+        """
+        if candidate and candidate.startswith("/") and not candidate.startswith("//"):
+            return candidate
+        return "/"
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
@@ -246,6 +326,58 @@ class WebApp:
         async def get_home(request: Request):
             """Render the home page"""
             return self._templates.TemplateResponse(request=request, name="index.html")
+
+        @self._app.get("/login", response_class=HTMLResponse)
+        async def login_form(request: Request, next: str = "/", error: Optional[str] = None):
+            """Render the login form.
+
+            Reachable even with auth off — a direct visit just doesn't matter then,
+            since AuthGate never redirects here in the first place.
+            """
+            return self._templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={"next": self._safe_next(next), "error": error},
+            )
+
+        @self._app.post("/login")
+        async def login_submit(request: Request):
+            """Check the submitted token and, if it matches, set the auth cookie.
+
+            Compares with the same `hmac.compare_digest` path AuthGate itself uses —
+            there's exactly one secret in this app, and both callers go through
+            `Manager.check_token` rather than each rolling their own comparison.
+            """
+            form = await request.form()
+            token = str(form.get("token", ""))
+            next_path = self._safe_next(str(form.get("next", "/")))
+
+            if not self._manager.check_token(token):
+                return RedirectResponse(url=f"/login?next={quote(next_path, safe='')}&error=1", status_code=303)
+
+            response = RedirectResponse(url=next_path, status_code=303)
+            response.set_cookie(
+                AUTH_COOKIE_NAME,
+                token,
+                max_age=60 * 60 * 24 * 30,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+            return response
+
+        @self._app.get("/logout")
+        async def logout(request: Request):
+            """Clear the auth cookie and bounce back to the login form.
+
+            GET rather than a form POST: the only thing it can do is discard the
+            caller's own cookie, so the usual "state changes need POST" reasoning
+            doesn't buy anything here, and a plain link is simpler for Settings to
+            offer than a form.
+            """
+            response = RedirectResponse(url="/login", status_code=303)
+            response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+            return response
 
         @self._app.get(
             "/server-config",
@@ -519,6 +651,22 @@ class WebApp:
                 await self._manager.reload_url_overrides()
                 config = await self._manager.get_server_config()
                 return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "config": config})
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})
+
+        @self._app.post("/api/reload-auth-config", response_class=JSONResponse)
+        async def reload_auth_config() -> JSONResponse:
+            """Reload the Security setting from the DB.
+
+            Called by the Settings → Security "Save" button so a toggled `require_auth`
+            or a freshly-generated token takes effect immediately, rather than waiting
+            for the next process restart — `AuthGate` reads `Manager` state live on
+            every request, so nothing else needs to change once this returns.
+            """
+            try:
+                await self._manager.reload_auth_config()
+                return JSONResponse(content={"status": WebApp.SUCCESS_KEY, "requireAuth": self._manager.require_auth})
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return JSONResponse(content={"status": WebApp.FAILURE_KEY, "message": str(e)})

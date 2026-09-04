@@ -40,14 +40,16 @@ export async function init() {
   // The settings panels load their values concurrently — each awaits its
   // own settings reads, so building them in sequence would serialise round-trips
   // that have nothing to do with each other.
-  const [serverPanel, mqttPanel, retentionPanel, timelapsePanel, dedupPanel, uiPanel] = await Promise.all([
-    _buildServerSection(),
-    _buildMqttSection(),
-    _buildRetentionSection(),
-    _buildTimelapseRetentionSection(),
-    _buildDedupSection(),
-    _buildUiSettingsSection(),
-  ]);
+  const [serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, dedupPanel, uiPanel] =
+    await Promise.all([
+      _buildServerSection(),
+      _buildSecuritySection(),
+      _buildMqttSection(),
+      _buildRetentionSection(),
+      _buildTimelapseRetentionSection(),
+      _buildDedupSection(),
+      _buildUiSettingsSection(),
+    ]);
 
   // Not in that Promise.all: the usage figures come from a directory walk, and
   // making the whole Settings tab wait on it would put a visible delay in front of
@@ -65,7 +67,7 @@ export async function init() {
   wrap.append(
     _buildServiceStatusSection(),
     _buildHotkeySection(),
-    serverPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
+    serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
   );
   container.appendChild(wrap);
 }
@@ -942,6 +944,133 @@ async function _buildMqttSection() {
     clientId.row,
     actionRow
   );
+  return section;
+}
+
+/* ── Security ─────────────────────────────────────────────────────────────── */
+
+/**
+ * One shared secret gates both the web UI (a login cookie, see `/login` in
+ * `image_tagging_server/web.py`) and the API (`Authorization: Bearer` or `?token=`,
+ * for the purrview_ha integration and anything an `<img>`/`<video>` tag can't attach
+ * a header to). See `HA_INTEGRATION_PLAN.md` WP-3 for why one secret does both jobs
+ * instead of two separate systems.
+ */
+export const SECURITY_SETTING_KEY = 'auth_config';
+
+const SECURITY_DEFAULTS = { require_auth: false, token: '' };
+
+async function _loadSecurityConfig() {
+  let stored = null;
+  try {
+    stored = await getSetting(SECURITY_SETTING_KEY);
+  } catch (_) {}
+  if (!stored) return { ...SECURITY_DEFAULTS };
+  try {
+    const parsed = JSON.parse(stored);
+    if (parsed && typeof parsed === 'object') return { ...SECURITY_DEFAULTS, ...parsed };
+  } catch (_) {}
+  return { ...SECURITY_DEFAULTS };
+}
+
+/**
+ * 256 bits from the platform CSPRNG, base64url-encoded. Plenty for a token that's
+ * typed by hand exactly once, into Home Assistant's config flow.
+ */
+function _generateToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function _buildSecuritySection() {
+  const { section, body } = _panel('Security', { id: 'settings-section-security' });
+
+  const config = await _loadSecurityConfig();
+
+  const warning = document.createElement('p');
+  warning.className = 'settings-dedup-warning';
+  warning.textContent =
+    'Off by default. Once on, this token is required for every request: the web UI (via a ' +
+    'login page) and the API alike (as an Authorization: Bearer header, or ?token= for ' +
+    'things like <video> tags that cannot send a header). Paste the same token into the ' +
+    'PurrView integration\'s setup form in Home Assistant. Stored unencrypted in the ' +
+    'settings database, the same as the MQTT broker password above.';
+  body.appendChild(warning);
+
+  const requireInput = document.createElement('input');
+  requireInput.type = 'checkbox';
+  requireInput.checked = Boolean(config.require_auth);
+  requireInput.dataset.testid = 'settings-security-require';
+  const { row: requireRow } = _buildRow({
+    label: 'Require a token',
+    controls: [requireInput],
+  });
+
+  const tokenInput = document.createElement('input');
+  tokenInput.type = 'password';
+  tokenInput.className = 'settings-server-input';
+  tokenInput.placeholder = 'Generate one, or paste your own';
+  tokenInput.value = config.token;
+  tokenInput.dataset.testid = 'settings-security-token';
+
+  const generateBtn = _rowButton('Generate', { secondary: true });
+  generateBtn.dataset.testid = 'settings-security-generate';
+  generateBtn.addEventListener('click', () => {
+    tokenInput.type = 'text';
+    tokenInput.value = _generateToken();
+  });
+
+  const { row: tokenRow } = _buildRow({
+    label: 'Access token',
+    controls: [tokenInput, generateBtn],
+  });
+
+  const saveBtn = _rowButton('Save');
+  saveBtn.dataset.testid = 'settings-security-save';
+  const logoutBtn = _rowButton('Log out of this browser', { secondary: true });
+  logoutBtn.dataset.testid = 'settings-security-logout';
+  logoutBtn.addEventListener('click', () => {
+    window.location.href = '/logout';
+  });
+
+  const { row: actionRow, setStatus } = _buildRow({
+    label: 'Access control',
+    controls: [saveBtn, logoutBtn],
+  });
+  actionRow.dataset.testid = 'settings-security-actions';
+
+  setStatus(
+    config.require_auth ? 'Token required.' : 'Open — no token required.',
+    config.require_auth ? 'info' : 'muted'
+  );
+
+  saveBtn.addEventListener('click', async () => {
+    const values = { require_auth: requireInput.checked, token: tokenInput.value.trim() };
+    if (values.require_auth && !values.token) {
+      setStatus('Enter or generate a token before requiring one.', 'error');
+      return;
+    }
+    await _withSaveFeedback(
+      saveBtn,
+      async () => {
+        await setSetting(SECURITY_SETTING_KEY, JSON.stringify(values));
+        const res = await apiFetch('/api/reload-auth-config', { method: 'POST' });
+        const data = await res.json();
+        if (data.status !== 'success') {
+          throw new Error(`Save failed: ${data.message ?? 'unknown error'}`);
+        }
+        setStatus(
+          values.require_auth ? 'Token required.' : 'Open — no token required.',
+          values.require_auth ? 'info' : 'muted'
+        );
+      },
+      (msg) => setStatus(`✗ ${msg}`, 'error')
+    );
+  });
+
+  body.append(requireRow, tokenRow, actionRow);
   return section;
 }
 

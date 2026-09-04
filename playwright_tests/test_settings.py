@@ -277,9 +277,9 @@ class TestSettingsLayout:
 
         wrap = page.locator("#tab-settings .settings-wrap")
         expect(wrap).to_have_css("display", "grid")
-        # Servers, MQTT Broker, Recording Retention, Timelapse Retention, Storage,
-        # Deduplication, Interface, Keyboard Shortcuts
-        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(8)
+        # Servers, Security, MQTT Broker, Recording Retention, Timelapse Retention,
+        # Storage, Deduplication, Interface, Keyboard Shortcuts
+        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(9)
 
         # At a desktop width the grid resolves to more than one column.
         columns = page.evaluate(
@@ -393,7 +393,7 @@ class TestMqttSettings:
         _navigate_to_settings(page, base_url)
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
-        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(8)
+        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(9)
 
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
         _mock_server_config(page)
