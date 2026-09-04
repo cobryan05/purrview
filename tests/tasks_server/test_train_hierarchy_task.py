@@ -10,6 +10,7 @@ The training server and db_client are mocked; no real servers needed.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -59,6 +60,10 @@ class _Harness:
     def __init__(self, targets, existing):
         self.created: list = []
         self.existing = list(existing)
+        # No labels by default: a part whose label cannot be read must still get a
+        # usable name rather than failing the run.
+        self.labels_api = MagicMock()
+        self.labels_api.list_labels.return_value = SimpleNamespace(labels=[])
 
         self.mc_api = MagicMock()
         self.mc_api.get_model_config_training_targets.return_value = SimpleNamespace(targets=targets)
@@ -82,17 +87,19 @@ class _Harness:
 
 
 def _patched(harness):
-    """Patch the task's clients and the two API classes it constructs."""
+    """Patch the task's clients and the API classes it constructs."""
     return (
         patch.object(TrainHierarchyTask, "_setup_clients", lambda self: setattr(self, "_db_api_client", MagicMock())),
         patch("apps.tasks_server.tasks.TrainHierarchyTask.ModelConfigsApi", return_value=harness.mc_api),
         patch("apps.tasks_server.tasks.TrainHierarchyTask.TrainingConfigsApi", return_value=harness.tc_api),
+        patch("apps.tasks_server.tasks.TrainHierarchyTask.LabelsApi", return_value=harness.labels_api),
     )
 
 
 async def _init_task(task, harness, resume_data=None):
-    p1, p2, p3 = _patched(harness)
-    with p1, p2, p3:
+    with contextlib.ExitStack() as stack:
+        for patcher in _patched(harness):
+            stack.enter_context(patcher)
         await task._init(task._params if hasattr(task, "_params") else {"model_config_uuid": "mc-1"}, resume_data)
 
 
@@ -110,6 +117,31 @@ class TestResolvingTargets:
         assert task._training_config_uuids == ["tc-top", "tc-new-1"]
         assert len(harness.created) == 1
         assert harness.created[0].model_config_node_uuid == "node-cat"
+
+    async def test_created_config_is_named_for_its_label_with_a_safe_artifact_name(self):
+        """The display name is for humans; the artifact name is a path segment twice
+        over — a file in MODELS_ROOT and part of /api/models/{model_name}/...
+
+        The first real run produced `test_nest_—_3572cc86`: an em-dash in a filename,
+        plus the label's uuid prefix, because the artifact name was derived from the
+        display name and the label was identified by uuid.
+        """
+        harness = _Harness(
+            targets=[_target("node-root", "top"), _target("node-cat", "submodel", "label-cat")],
+            existing=[_training_config("tc-top", "node-root")],
+        )
+        harness.labels_api = MagicMock()
+        harness.labels_api.list_labels.return_value = SimpleNamespace(
+            labels=[SimpleNamespace(uuid="label-cat", name="Cat")]
+        )
+        task = _make_task()
+        await _init_task(task, harness)
+
+        created = harness.created[0]
+        assert created.name == "Test Nest — Cat", "the display name should name the label"
+        artifact = created.hyperparams_json["model_name"]
+        assert artifact == "test_nest__cat"
+        assert artifact.isascii() and all(c.isalnum() or c == "_" for c in artifact)
 
     async def test_created_sub_model_config_inherits_the_top_models_datasets(self):
         """A sub-model refines what the top model detects, so it trains on the same

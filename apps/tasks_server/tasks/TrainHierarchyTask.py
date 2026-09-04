@@ -36,6 +36,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from db_client.api.labels_api import LabelsApi
 from db_client.api.model_configs_api import ModelConfigsApi
 from db_client.api.training_configs_api import TrainingConfigsApi
 from db_client.models.training_config_create import TrainingConfigCreate
@@ -49,6 +50,26 @@ from .TrainModelTask import TrainModelTask
 logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(LOG_LEVEL)
+
+
+def _artifact_name(config_name: str, part_name: str) -> str:
+    """A filesystem- and URL-safe model name, e.g. ("Test Nest", "Cat") -> test_nest__cat.
+
+    Model names are path segments twice over: a file in MODELS_ROOT and a segment of
+    /api/models/{model_name}/... So everything outside [a-z0-9_] collapses to an
+    underscore rather than being carried through from a human-written display name.
+    """
+
+    def _slug(text: str) -> str:
+        out = "".join(ch if ch.isascii() and (ch.isalnum() or ch == "_") else "_" for ch in text.lower())
+        while "__" in out:
+            out = out.replace("__", "_")
+        return out.strip("_")
+
+    parts = [p for p in (_slug(config_name), _slug(part_name)) if p]
+    # Double underscore between the two, so the boundary stays readable when either
+    # half contains one of its own.
+    return "__".join(parts) or "model"
 
 
 @register_task()
@@ -114,6 +135,18 @@ class TrainHierarchyTask(TrainModelTask):
         existing = list(getattr(tc_api.list_training_configs(), "configs", None) or [])
         by_node = {c.model_config_node_uuid: c for c in existing if c.model_config_node_uuid}
 
+        # Sub-models are named after the label they refine ("Test Nest — Cat"), which is
+        # the only name an operator can recognise. Best-effort: a uuid prefix is a poor
+        # name but a far better outcome than failing the run over a label lookup.
+        label_names: dict = {}
+        try:
+            label_names = {
+                lbl.uuid: lbl.name
+                for lbl in (getattr(LabelsApi(self._db_api_client).list_labels(), "labels", None) or [])
+            }
+        except Exception:
+            logger.warning("Could not read label names for hierarchy part naming", exc_info=True)
+
         # Datasets for an auto-created sub-model config come from the top model's,
         # because a sub-model refines what the top model detects and therefore trains on
         # the same images. An empty dataset list would train on nothing and "succeed".
@@ -128,9 +161,9 @@ class TrainHierarchyTask(TrainModelTask):
                 uuids.append(found.uuid)
                 continue
 
-            label_part = getattr(target, "label_uuid", None)
-            suffix = "top" if target.role == "top" else (label_part or target.node_uuid)[:8]
-            name = f"{config_name} — {suffix}"
+            label_uuid = getattr(target, "label_uuid", None)
+            part_name = "top" if target.role == "top" else (label_names.get(label_uuid) or (label_uuid or "")[:8])
+            name = f"{config_name} — {part_name}"
             # Names are unique across training configs, so a collision here is a real
             # one (two configs of the same name) rather than something to overwrite.
             if any(c.name == name for c in existing):
@@ -142,7 +175,13 @@ class TrainHierarchyTask(TrainModelTask):
                     description=f"Auto-created by Train hierarchy for {config_name}",
                     model_config_node_uuid=target.node_uuid,
                     dataset_uuids=inherited_datasets,
-                    hyperparams_json={},
+                    # The artifact name is set explicitly rather than left to be derived
+                    # from the config's display name. That derivation is
+                    # `name.replace(" ", "_").lower()`, which happily carries the em-dash
+                    # in "Test Nest — Cat" into a FILENAME — and that name is also a path
+                    # segment in /api/models/{model_name}/... Keeping the two separate
+                    # lets the config read nicely and the file stay ASCII.
+                    hyperparams_json={"model_name": _artifact_name(config_name, part_name)},
                 )
             )
             new_config = getattr(created, "config", None)
