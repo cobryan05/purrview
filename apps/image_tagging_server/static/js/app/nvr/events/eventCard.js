@@ -236,8 +236,10 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
   // that stayed silent while its detail view listed three problems would be a lie.
   const blipTotal = Object.values(event.blipCounts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
   if (blipTotal) {
-    const badge = el('span', 'event-card__badge event-card__badge--blips',
-      `⚠ ${blipTotal} tracking issue${blipTotal === 1 ? '' : 's'}`);
+    // Count only, with the wording in the tooltip: spelled out, the badge ran most of
+    // the width of the thumbnail and hid the thing the card exists to show.
+    const badge = el('span', 'event-card__badge event-card__badge--blips', `⚠ ${blipTotal}`);
+    badge.title = `${blipTotal} tracking issue${blipTotal === 1 ? '' : 's'} the analyser flagged.`;
     badge.dataset.testid = 'event-card-blip-badge';
     badges.appendChild(badge);
   }
