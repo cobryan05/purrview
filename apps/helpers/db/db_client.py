@@ -25,7 +25,8 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import selectinload, sessionmaker
+from sqlalchemy.orm import defer, selectinload, sessionmaker
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -3839,8 +3840,25 @@ class DbClient:
         typename: Optional[Union[str, List[str]]] = None,
         status: Optional[Union[str, List[str]]] = None,
         resumable: Optional[bool] = None,
+        include_resume_data: bool = False,
     ) -> List[TaskInstance]:
+        """Task instances, without their checkpoints unless asked for.
+
+        ``resume_data_json`` is by far the heaviest column on the table — ~1 MB on a
+        finished TrainModelTask — and this listing is polled twice a second by the task
+        SSE stream. Omitting it from the *response* (see ``list_task_instances`` in
+        db_server/web.py) was never enough on its own: the ORM still loaded every blob
+        and ran ``json.loads`` over it on the event loop before the response model threw
+        it away. Measured at ~60 ms of pure event-loop CPU per call against six finished
+        training runs, which pegged db_server's loop at ~98% and made every other
+        request queue behind it.
+
+        Deferring it here is what actually stops the read. The filter below still works:
+        a WHERE clause on a deferred column is evaluated by SQLite, not by the ORM.
+        """
         stmt = select(TaskInstance).options(selectinload(TaskInstance.config))
+        if not include_resume_data:
+            stmt = stmt.options(defer(TaskInstance.resume_data_json))
         if task_uuid is not None:
             uuids = [task_uuid] if isinstance(task_uuid, str) else task_uuid
             stmt = stmt.where(TaskInstance.uuid.in_(uuids))
@@ -3860,6 +3878,15 @@ class DbClient:
         async with self._async_session_maker() as session:
             result = await session.exec(stmt)
             instances = result.all()
+            if not include_resume_data:
+                # These rows detach when the session closes, and reading a deferred
+                # column on a detached instance raises DetachedInstanceError — which
+                # TaskInstanceRead would walk straight into, since it reads
+                # resume_data by its `resume_data_json` alias. Seed the attribute as
+                # an already-loaded None so the read model sees the same shape it did
+                # before, without a per-row SELECT to fetch what we just refused to load.
+                for instance in instances:
+                    set_committed_value(instance, "resume_data_json", None)
         return list(instances)
 
     async def get_task_results(self, task_uuids: Union[List[str], str]) -> Optional[Dict[str, Any]]:
@@ -3933,12 +3960,26 @@ class DbClient:
         error_message is written on every call, not just when one is supplied:
         leaving a previous failure's text behind on a task that has since been
         resumed and is running again would misreport the live state.
+
+        Completing a task drops its checkpoint. A checkpoint exists to restart an
+        interrupted run, and only two statuses ever consult it: an interrupted RUNNING
+        instance (its presence is what makes recovery choose paused-and-resumable over
+        error) and a PAUSED one (resume_tasks only ever resumes those). A COMPLETED run
+        has nothing left to resume, so keeping ~1 MB of dead checkpoint per finished
+        training run only costs disk and decode time.
+
+        Deliberately *not* cleared on ERROR: recovery marks an interrupted task error
+        precisely when it had no checkpoint, and an errored row that does carry one is
+        the evidence for why — clearing it there would destroy state the resumability
+        logic reasons about, which is the failure mode NOTES.md warns about.
         """
         async with self._async_session_maker() as session:
             instance = await session.get(TaskInstance, task_uuid)
             if instance:
                 instance.status = new_status
                 instance.error_message = error_message if new_status == TaskStatus.ERROR else None
+                if new_status == TaskStatus.COMPLETED:
+                    instance.resume_data_json = None
                 session.add(instance)
                 await session.commit()
 

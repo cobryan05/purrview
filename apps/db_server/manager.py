@@ -3307,8 +3307,13 @@ class Manager:
         self,
         task_uuids: Optional[List[str]] = None,
         resumable: Optional[bool] = None,
+        include_resume_data: bool = False,
     ) -> List[TaskInstance]:
-        return await self._db_client.get_tasks(task_uuid=task_uuids, resumable=resumable)
+        return await self._db_client.get_tasks(
+            task_uuid=task_uuids,
+            resumable=resumable,
+            include_resume_data=include_resume_data,
+        )
 
     async def delete_task_instances(self, task_uuids: List[str]) -> None:
         await self._db_client.delete_active_tasks(task_uuids)
