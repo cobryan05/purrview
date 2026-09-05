@@ -1313,6 +1313,20 @@ function buildRuleRow(rule, ctx) {
   });
   row.appendChild(checkTag(publishBox, 'HA'));
 
+  // Independent of publishBox, and off by default unlike it - a snapshot is a
+  // meaningfully bigger MQTT payload than everything else this rule publishes, so
+  // it's opt-in rather than inherited "free" the way the rest of the entities are.
+  const snapshotBox = document.createElement('input');
+  snapshotBox.type = 'checkbox';
+  snapshotBox.checked = rule.publishSnapshotToHa === true;
+  snapshotBox.className = 'watch-row-publish';
+  snapshotBox.dataset.testid = 'watch-rule-publish-snapshot';
+  snapshotBox.title = 'Also publish a snapshot of the rule\'s last event as a Home Assistant camera '
+    + 'entity - the same picture the events grid shows, updated each time the rule fires. Has no '
+    + 'effect while "HA" above is unticked, since there is no device for it to appear on.';
+  snapshotBox.addEventListener('change', ctx.onAnyChange);
+  row.appendChild(checkTag(snapshotBox, 'Photo'));
+
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.value = rule.name || '';
@@ -1865,6 +1879,7 @@ function buildRuleRow(rule, ctx) {
         name: nameInput.value.trim() || 'Unnamed rule',
         enabled: enabledBox.checked,
         publishToHa: publishBox.checked,
+        publishSnapshotToHa: snapshotBox.checked,
         // Always sent: a watch profile saves as a whole-list replace, so a field the
         // editor omits is a field the save resets to its default.
         sourceUuidsJson: [...sourceScope],

@@ -144,6 +144,34 @@ class TestSourceDiscoveryShape:
             "rule-1_event",
         }
 
+    def test_publish_snapshot_to_ha_adds_a_camera_component(self):
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", publish_snapshot_to_ha=True),))
+        cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+        state_topic = cmps["rule-1_state"]["state_topic"]
+        assert cmps["rule-1_snapshot"]["p"] == "camera"
+        # Same rule_base as every other per-rule topic, minus "/state" - derived from
+        # a real sibling topic rather than a hand-typed slug, so this doesn't silently
+        # stop meaning anything if slugify's own output format ever changes.
+        assert cmps["rule-1_snapshot"]["topic"] == state_topic.removesuffix("/state") + "/snapshot"
+
+    def test_publish_snapshot_to_ha_off_by_default(self):
+        """Opt-in, unlike publish_to_ha - a snapshot is a meaningfully bigger MQTT
+        payload than the sensors/counters a rule already publishes for free."""
+        cmps = build_source_discovery(_profile(), _profile().sources[0], PREFIX)["cmps"]
+
+        assert "rule-1_snapshot" not in cmps
+
+    def test_publish_snapshot_to_ha_has_no_effect_when_publish_to_ha_is_off(self):
+        """Meaningless without a device to hang off - the outer publish_to_ha gate
+        already excludes the whole rule, snapshot flag or not."""
+        profile = _profile(
+            rules=(RuleView(uuid="rule-1", name="cat at bowl", publish_to_ha=False, publish_snapshot_to_ha=True),)
+        )
+        cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+        assert not any(k.startswith("rule-1_") for k in cmps)
+
     def test_a_rule_scoped_to_another_source_is_excluded(self):
         """Empty source_uuids means "every source"; a non-empty list is a real scope,
         and a source outside it must not get that rule's entities."""
@@ -917,6 +945,58 @@ class TestLivePublishingMatchesDiscovery:
         bridge.publish_telemetry(profile_uuid="profile-1", source_uuid="src-1", payload={"analysisFps": 5})
 
         assert f"{PREFIX}/{fake.calls[0]['topic']}" == cmps["fps"]["state_topic"]
+
+
+class TestPublishRuleSnapshot:
+    """publish_rule_snapshot: the live counterpart to the rule-1_snapshot camera
+    component TestSourceDiscoveryShape covers. Two independent gates, both checked
+    here rather than trusted to the caller - see the method's own docstring."""
+
+    def test_publishes_retained_bytes_to_the_topic_discovery_advertised(self):
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", publish_snapshot_to_ha=True),))
+        bridge, fake = _connected_bridge([profile])
+        cmps = build_source_discovery(profile, profile.sources[0], PREFIX)["cmps"]
+
+        bridge.publish_rule_snapshot(
+            profile_uuid="profile-1", source_uuid="src-1", rule_uuid="rule-1", jpeg_bytes=b"\xff\xd8fake-jpeg"
+        )
+
+        assert len(fake.calls) == 1
+        call = fake.calls[0]
+        assert f"{PREFIX}/{call['topic']}" == cmps["rule-1_snapshot"]["topic"]
+        assert call["payload"] == b"\xff\xd8fake-jpeg"
+        assert call["retain"] is True
+
+    def test_a_rule_that_never_opted_in_gets_nothing_published(self):
+        """The opt-in itself, not just the topic no entity reads - bytes must not be
+        queued at all for a rule that never ticked the box, transiently or not."""
+        profile = _profile()  # publish_snapshot_to_ha defaults to False
+        bridge, fake = _connected_bridge([profile])
+
+        bridge.publish_rule_snapshot(profile_uuid="profile-1", source_uuid="src-1", rule_uuid="rule-1", jpeg_bytes=b"x")
+
+        assert fake.calls == []
+
+    def test_an_unknown_rule_is_a_silent_no_op(self):
+        """A rule the bridge has not reconciled discovery for yet (or a stale
+        signal for one since removed) has no entity waiting - same reasoning
+        publish_rule_transition's own `rule_base is None` check documents."""
+        bridge, fake = _connected_bridge([_profile()])
+
+        bridge.publish_rule_snapshot(
+            profile_uuid="profile-1", source_uuid="src-1", rule_uuid="no-such-rule", jpeg_bytes=b"x"
+        )
+
+        assert fake.calls == []
+
+    def test_without_a_connected_publisher_it_is_a_silent_no_op(self):
+        profile = _profile(rules=(RuleView(uuid="rule-1", name="cat at bowl", publish_snapshot_to_ha=True),))
+        bridge = MqttBridge(db_api_client=None)
+        bridge._slugs = build_slug_index([profile])
+
+        bridge.publish_rule_snapshot(
+            profile_uuid="profile-1", source_uuid="src-1", rule_uuid="rule-1", jpeg_bytes=b"x"
+        )  # must not raise
 
 
 class TestTopicsAreProfileScoped:

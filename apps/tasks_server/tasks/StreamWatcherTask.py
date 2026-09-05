@@ -2004,6 +2004,10 @@ class StreamWatcherTask(Task):
             # nothing: whether the event earns a row is not known until an action reports
             # what it wrote.
             await self._recorder.record(signal, context)
+            # Reuses that same encode - see publish_snapshot_to_ha. Gated on `logged`
+            # like the encode itself: a rule with no in-scope action never holds a
+            # pending snapshot to publish, opt-in flag or not.
+            self._publish_bridge_snapshot(signal)
 
         media, wrote = await self._run_actions(self._actions_for(signal, trigger), signal, context)
 
@@ -2069,6 +2073,30 @@ class StreamWatcherTask(Task):
                 )
         except Exception:
             logger.debug("MQTT bridge event publish failed", exc_info=True)
+
+    def _publish_bridge_snapshot(self, signal) -> None:
+        """A rule's card-art snapshot, mirrored to MQTT for `publish_snapshot_to_ha`.
+
+        Called once, at the opening edge, alongside `_publish_bridge_transition` -
+        the card art is only ever encoded there (`WatchEventRecorder._hold_event`),
+        never re-encoded at a rule's closing edge, so there is nothing new to publish
+        on END. `publish_rule_snapshot` itself checks the opt-in flag; this only needs
+        to avoid the cost of asking the recorder when there plainly is no bytes yet.
+        """
+        if not signal.source_uuid:
+            return
+        try:
+            snapshot_bytes = self._recorder.pending_snapshot_bytes(signal)
+            if snapshot_bytes is None:
+                return
+            self._manager.get_mqtt_bridge().publish_rule_snapshot(
+                profile_uuid=self._profile.uuid,
+                source_uuid=signal.source_uuid,
+                rule_uuid=signal.rule_uuid,
+                jpeg_bytes=snapshot_bytes,
+            )
+        except Exception:
+            logger.debug("MQTT bridge snapshot publish failed", exc_info=True)
 
     def _wall_iso(self, monotonic_at: float) -> str:
         """A signal's timestamp as a wallclock ISO 8601 string.

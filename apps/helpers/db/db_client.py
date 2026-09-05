@@ -7312,6 +7312,7 @@ class DbClient:
                     name=rule.name,
                     enabled=rule.enabled,
                     publish_to_ha=rule.publish_to_ha,
+                    publish_snapshot_to_ha=rule.publish_snapshot_to_ha,
                     source_uuids_json=[str(s) for s in (rule.source_uuids_json or [])],
                     subject_a_kind=rule.subject_a_kind.value,
                     subject_a_refs_json=[str(r) for r in (rule.subject_a_refs_json or [])],

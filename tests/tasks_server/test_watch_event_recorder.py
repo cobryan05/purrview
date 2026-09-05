@@ -593,6 +593,37 @@ class TestCardArt:
         assert len(list((tmp_path / "snapshots").rglob("*.jpg"))) == 2
 
 
+class TestPendingSnapshotBytes:
+    """The MQTT bridge's per-rule snapshot hook (publish_snapshot_to_ha) reads this
+    to reuse the encode _hold_event already did, rather than a second encode or a
+    disk read - these bytes are what it gets."""
+
+    def _frame(self):
+        return np.zeros((64, 96, 3), dtype=np.uint8)
+
+    async def test_bytes_are_available_right_after_the_opening_edge_is_held(self, recorder):
+        signal = _signal(EventPhase.START)
+        await recorder.record(signal, _context(frame=self._frame()))
+
+        snapshot = recorder.pending_snapshot_bytes(signal)
+
+        assert snapshot is not None
+        # A real JPEG, not a stand-in - matches the bytes written to snapshot_path
+        # (TestCardArt), just not yet flushed to disk.
+        assert snapshot.startswith(b"\xff\xd8")
+
+    async def test_no_frame_means_no_bytes_not_a_crash(self, recorder):
+        signal = _signal(EventPhase.START)
+        await recorder.record(signal, _context(frame=None))
+
+        assert recorder.pending_snapshot_bytes(signal) is None
+
+    async def test_an_event_never_opened_has_nothing_pending(self, recorder):
+        """A signal for a rule the recorder never saw a START for - the ordinary
+        answer, not an error, the same way a stopped watcher's UPDATE/END would be."""
+        assert recorder.pending_snapshot_bytes(_signal(EventPhase.START)) is None
+
+
 class _Trk(_Det):
     """A stand-in for `apps.helpers.tracking.Track`, which is also read by attribute."""
 

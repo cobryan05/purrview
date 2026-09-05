@@ -240,6 +240,17 @@ class WatchEventRecorder:
         """The row a still-open signal belongs to, for callers linking artifacts to it."""
         return self._open.get(_event_key(signal))
 
+    def pending_snapshot_bytes(self, signal: WatchEventSignal) -> Optional[bytes]:
+        """The card-art bytes already encoded for this event's opening edge, if any.
+
+        Lets a caller (the MQTT bridge's per-rule snapshot hook, StreamWatcherTask)
+        reuse the same encode `_hold_event` already did, rather than a second encode
+        or a disk read — the same bytes `_open_event` will eventually write to
+        `snapshot_path`, just before the event is known to be worth a row at all.
+        """
+        pending = self._pending.get(_event_key(signal))
+        return pending.snapshot[1] if pending and pending.snapshot else None
+
     async def ensure_event(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
         """The event's row, creating it if this is the first thing written to it.
 

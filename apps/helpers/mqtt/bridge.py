@@ -277,6 +277,10 @@ class RuleView:
     #: keep history while publishing nothing. False removes it from every device it
     #: appears on and retracts what it had.
     publish_to_ha: bool = True
+    #: Whether this rule also gets a `camera` entity carrying a snapshot of its last
+    #: event. Independent of `publish_to_ha` and off by default unlike it - see
+    #: InteractionRule.publish_snapshot_to_ha for why.
+    publish_snapshot_to_ha: bool = False
     #: Empty means "every source in the profile" — matches `InteractionRule`.
     source_uuids: Tuple[str, ...] = ()
     #: Label uuids this rule can match as its subject, already expanded through the
@@ -479,6 +483,19 @@ def build_source_discovery(profile: ProfileView, source: SourceView, prefix: str
             "state_topic": f"{rule_base}/attributes",
             "value_template": "{{ value_json.lastSeen }}",
         }
+        if rule.publish_snapshot_to_ha:
+            # Retained like the live `camera` component below - a viewer opening HA
+            # should see the last occurrence immediately, not a blank camera entity
+            # until the rule happens to fire again. Raw JPEG bytes published to this
+            # topic by `publish_rule_snapshot` (StreamWatcherTask, on event close),
+            # not a URL - the same reasoning `MqttPublishImageAction` already applies
+            # to the live camera entity above, minus the HTTP round trip.
+            cmps[f"{rule.uuid}_snapshot"] = {
+                "p": "camera",
+                "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_snapshot",
+                "name": f"{rule_label} snapshot",
+                "topic": f"{rule_base}/snapshot",
+            }
         cmps[f"{rule.uuid}_last_duration"] = {
             "p": "sensor",
             "unique_id": f"{source_device_id(source.uuid)}_{rule.uuid}_last_duration",
@@ -1303,6 +1320,13 @@ class SlugIndex:
 
     #: profile_uuid → (profile_slug, {source_uuid: slug}, {rule_uuid: slug})
     profiles: Dict[str, Tuple[str, Dict[str, str], Dict[str, str]]]
+    #: Rule uuids with `publish_snapshot_to_ha` on - checked by `publish_rule_snapshot`
+    #: so a rule that never opted in never has JPEG bytes queued for it, not just
+    #: bytes queued to a topic no entity reads (that part `rule_base` already covers).
+    snapshot_rule_uuids: FrozenSet[str] = field(default_factory=frozenset)
+
+    def wants_snapshot(self, rule_uuid: str) -> bool:
+        return rule_uuid in self.snapshot_rule_uuids
 
     def rule_base(self, profile_uuid: str, source_uuid: str, rule_uuid: str) -> Optional[str]:
         entry = self.profiles.get(profile_uuid)
@@ -1408,7 +1432,10 @@ def build_slug_index(profiles: Sequence[ProfileView]) -> SlugIndex:
                 {r.uuid: _topic_rule(r) for r in p.rules if r.publish_to_ha},
             )
             for p in profiles
-        }
+        },
+        snapshot_rule_uuids=frozenset(
+            r.uuid for p in profiles for r in p.rules if r.publish_to_ha and r.publish_snapshot_to_ha
+        ),
     )
 
 
@@ -1813,6 +1840,7 @@ class MqttBridge:
                     name=r.name,
                     enabled=r.enabled,
                     publish_to_ha=bool(getattr(r, "publish_to_ha", True)),
+                    publish_snapshot_to_ha=bool(getattr(r, "publish_snapshot_to_ha", False)),
                     source_uuids=tuple(r.source_uuids_json or []),
                     subject_uuids=self._expand_subjects(r),
                 )
@@ -2206,6 +2234,27 @@ class MqttBridge:
             duration_s=duration_s,
             peak_confidence=peak_confidence,
         )
+
+    def publish_rule_snapshot(self, *, profile_uuid: str, source_uuid: str, rule_uuid: str, jpeg_bytes: bytes) -> None:
+        """A snapshot of the rule's last event, as the `camera` entity
+        `build_source_discovery` declares when `publish_snapshot_to_ha` is on.
+
+        Two independent gates, both checked here rather than trusted to the caller:
+        `rule_base` is None for a rule/source pairing with no entity waiting (the same
+        check `publish_rule_transition` makes), and `wants_snapshot` is the opt-in
+        itself - a rule that never ticked the box must not have JPEG bytes queued for
+        it even transiently, not just published to a topic nothing reads.
+
+        `coalesce=True` like the live camera's own publish
+        (`MqttPublishImageAction`) - a burst of frame-by-frame updates while an event
+        is still open should leave one queued snapshot behind, not a backlog.
+        """
+        if self._publisher is None or not self._slugs.wants_snapshot(rule_uuid):
+            return
+        base = self._slugs.rule_base(profile_uuid, source_uuid, rule_uuid)
+        if base is None:
+            return
+        self._publisher.publish(f"{base}/snapshot", jpeg_bytes, retain=True, coalesce=True)
 
     def _publish_rule_global(
         self,

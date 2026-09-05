@@ -2011,6 +2011,16 @@ class InteractionRule(SQLModel, table=True):
         default=True,
         sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("1")),
     )
+    # Independent of publish_to_ha, and off by default unlike it: a snapshot is a
+    # meaningfully bigger MQTT payload than the sensors/counters publish_to_ha alone
+    # already gates, so this is opt-in per rule rather than inherited "free" the way
+    # the rest of a rule's entities are. Meaningless when publish_to_ha is off — there
+    # is no device for the snapshot entity to hang off then — but stored independently
+    # rather than implied, so re-enabling publish_to_ha doesn't silently resurrect it.
+    publish_snapshot_to_ha: bool = Field(
+        default=False,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("0")),
+    )
     # Which sources this rule is evaluated on. **Empty means every source in the
     # profile**, matching `WatchAction`'s two scope lists, so a rule written before this
     # column existed — or by someone who never opens the picker — still runs everywhere.
@@ -2544,6 +2554,7 @@ class InteractionRuleRead(OrmModel):
     name: str
     enabled: bool = True
     publish_to_ha: bool = True
+    publish_snapshot_to_ha: bool = False
     source_uuids_json: List[Any] = Field(default_factory=list)
     subject_a_kind: str
     subject_a_refs_json: List[Any] = Field(default_factory=list)
@@ -2568,6 +2579,7 @@ class InteractionRuleWrite(ApiModel):
     name: str
     enabled: bool = True
     publish_to_ha: bool = True
+    publish_snapshot_to_ha: bool = False
     # Empty means "every source in this profile" — see `InteractionRule`.
     source_uuids_json: List[Any] = Field(default_factory=list)
     subject_a_kind: RuleSubjectKind = RuleSubjectKind.LABEL

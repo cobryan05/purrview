@@ -700,6 +700,24 @@ class TestHomeAssistantPublishFlags:
         assert saved["sources"][0]["publishToHa"] is False, saved["sources"][0]
         assert saved["rules"][0]["publishToHa"] is True, saved["rules"][0]
 
+    def test_ticking_publish_snapshot_sends_it_true(self, page: Page, base_url: str):
+        """Opt-in, unlike publishToHa - FAKE_PROFILE's rule starts unticked (a bigger
+        MQTT payload than the rest of a rule's entities, so off by default), and
+        ticking it is what turns the snapshot camera entity on."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=lambda body: saved.update(body))
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        expect(page.locator("[data-testid='watch-rule-publish-snapshot']").first).not_to_be_checked()
+        page.locator("[data-testid='watch-rule-publish-snapshot']").first.check()
+        page.locator("#watcher-management-box button:has-text('Save')").first.click()
+
+        wait_until(page, lambda: bool(saved.get("rules")))
+        assert saved["rules"][0]["publishSnapshotToHa"] is True, saved["rules"][0]
+        # Independent of the other flag - ticking the snapshot box must not touch it.
+        assert saved["rules"][0]["publishToHa"] is True, saved["rules"][0]
+
     def test_a_save_that_ignores_the_flags_still_sends_them_as_publishing(self, page: Page, base_url: str):
         """Two regressions in one, both silent.
 
