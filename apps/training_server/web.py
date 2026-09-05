@@ -84,7 +84,7 @@ class ListJobsResponse(BaseModel):
 
 class HyperparamDefaultsResponse(BaseModel):
     trainer_type: str
-    defaults: Dict[str, int]
+    defaults: Dict[str, Any]
 
 
 class CancelJobResponse(BaseModel):

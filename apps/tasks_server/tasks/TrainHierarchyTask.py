@@ -159,6 +159,13 @@ class TrainHierarchyTask(TrainModelTask):
         top_existing = by_node.get(top_node_uuid)
         inherited_datasets = list(getattr(top_existing, "dataset_uuids", None) or [])
 
+        # Names created so far this run join the pre-run set below, so a second
+        # target that would otherwise collide with one just created in this same
+        # loop (e.g. the same label shared under two boundary nodes) still gets
+        # disambiguated instead of colliding with a name that doesn't exist yet
+        # in `existing`.
+        existing_names = {c.name for c in existing}
+
         uuids: list[str] = []
         for target in targets:
             found = by_node.get(target.node_uuid)
@@ -171,8 +178,9 @@ class TrainHierarchyTask(TrainModelTask):
             name = f"{config_name} — {part_name}"
             # Names are unique across training configs, so a collision here is a real
             # one (two configs of the same name) rather than something to overwrite.
-            if any(c.name == name for c in existing):
+            if name in existing_names:
                 name = f"{name} ({target.node_uuid[:8]})"
+            existing_names.add(name)
 
             created = tc_api.create_training_config(
                 TrainingConfigCreate(

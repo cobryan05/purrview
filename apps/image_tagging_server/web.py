@@ -362,6 +362,7 @@ class WebApp:
                 max_age=60 * 60 * 24 * 30,
                 httponly=True,
                 samesite="lax",
+                secure=request.url.scheme == "https",
                 path="/",
             )
             return response

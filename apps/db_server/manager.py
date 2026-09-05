@@ -1516,7 +1516,12 @@ class Manager:
                 # A uuid the DB does not know about is a failure here exactly as
                 # the per-image path's ValueError was.
                 fail_total += len(chunk) - len(records)
-                removed, failed = await self.remove_image_records_bulk(records, delete_files=delete_files)
+                try:
+                    removed, failed = await self.remove_image_records_bulk(records, delete_files=delete_files)
+                except Exception as e:
+                    logger.error("bulk_apply_images_by_uuids: chunk of %d removals failed: %s", len(records), e)
+                    fail_total += len(records)
+                    continue
                 removed_total += removed
                 fail_total += failed
             return removed_total, fail_total, 0
@@ -1595,9 +1600,13 @@ class Manager:
                 # The page query already eager-loaded these records with their
                 # bboxes and tags, so the batch path needs no further reads at
                 # all — the per-image path re-fetched every one of them.
-                removed, failed = await self.remove_image_records_bulk(batch, delete_files=(action == "delete"))
-                modified_count += removed
-                fail_count += failed
+                try:
+                    removed, failed = await self.remove_image_records_bulk(batch, delete_files=(action == "delete"))
+                    modified_count += removed
+                    fail_count += failed
+                except Exception as e:
+                    logger.error("bulk_apply_images: page of %d removals failed: %s", len(batch), e)
+                    fail_count += len(batch)
                 if not has_more:
                     break
                 cursor_uuid = batch[-1].uuid
