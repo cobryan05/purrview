@@ -14,7 +14,7 @@ import pytest
 
 from apps.helpers.cascade import CropSubModel
 from apps.tasks_server.tasks._filter_chain_runner import Detection
-from apps.tasks_server.tasks.PreviewModelRelabelTask import PreviewModelRelabelTask
+from apps.tasks_server.tasks.PreviewModelRelabelTask import NO_PREDICTION_KEY, PreviewModelRelabelTask
 
 _MOCK_MANAGER = MagicMock()
 _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
@@ -159,6 +159,9 @@ class TestMatching:
         candidates = await self._run_process_image(task, detections)
         assert candidates == []
         assert task._no_detection_count == 1
+        # Still recorded against "cat" — a per-label accuracy view must count
+        # this as a miss, not silently drop it from that label's total.
+        assert task._confusion == {"cat": {NO_PREDICTION_KEY: 1}}
 
     async def test_non_overlapping_detection_excluded(self):
         task = _make_task(_base_params())
@@ -166,6 +169,7 @@ class TestMatching:
         candidates = await self._run_process_image(task, detections)
         assert candidates == []
         assert task._no_detection_count == 1
+        assert task._confusion == {"cat": {NO_PREDICTION_KEY: 1}}
 
     async def test_highest_confidence_detection_wins(self):
         task = _make_task(_base_params())
@@ -205,6 +209,7 @@ class TestMatching:
         candidates = await self._run_process_image(task, detections=[])
         assert candidates == []
         assert task._no_detection_count == 1
+        assert task._confusion == {"cat": {NO_PREDICTION_KEY: 1}}
 
     async def test_image_load_failure_counted_and_reported(self):
         task = _make_task(_base_params())
@@ -464,6 +469,7 @@ class TestBboxCropMode:
         task = _make_task(_base_params(crop_mode="bbox"))
         candidates = await self._run_process_image(task, detections=[])
         assert candidates == []
+        assert task._confusion == {"cat": {NO_PREDICTION_KEY: 1}}
 
     async def test_bbox_crop_remaps_geometry_using_clamped_crop_region(self):
         # A candidate bbox extends past the image's right/bottom edge, so the crop
@@ -646,6 +652,7 @@ class TestCropClassifierSecondPass:
         task = _make_task(_base_params(crop_mode="bbox", conf_thresh=0.8))
         backend = self._FakeClassifierBackend([("willow", 0.51), ("cat", 0.49)])
         assert await self._run(task, backend) == []
+        assert task._confusion == {"cat": {NO_PREDICTION_KEY: 1}}
 
     async def test_agreeing_with_the_existing_label_is_a_no_op(self):
         task = _make_task(_base_params(crop_mode="bbox"))

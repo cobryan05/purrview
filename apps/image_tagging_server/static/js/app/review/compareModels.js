@@ -21,10 +21,13 @@
  * Every model is labelled with its place in a hierarchy (top / sub-model /
  * standalone), read from `model_config_uuid`/`role` in its own sidecar
  * (`/api/models/{name}/meta`) — the exact fields every trainer writes when a
- * model is trained as part of a `TrainHierarchyTask` config. Picking a "top"
- * model in image mode pre-selects its paired sub-model(s), so it's obvious
- * whether you're evaluating the full hierarchy or accidentally running the
- * outer detector alone.
+ * model is trained as part of a `TrainHierarchyTask` config. Which sub-model
+ * refines which label is fixed by that sidecar pairing, not something picked
+ * per run — a crop classifier only ever gets detections under its own
+ * `parent_label_uuid`, no matter what else is chained alongside it. So
+ * picking a "top" model in image mode doesn't offer a list of sub-models to
+ * choose from; it offers one on/off switch — "use the full hierarchy" (its
+ * paired sub-model(s), on by default) vs "the top detector by itself."
  *
  * This never proposes new boxes or writes anything back — it only ever reads.
  * Accuracy comes from data `PreviewModelRelabelTask` already computes: a
@@ -49,7 +52,6 @@ import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { resolveCandidateScope, confirmLargeRun, truncateScope, WARN_THRESHOLD } from '/app-static/js/app/review/runModelOnResults.js';
 
 const POLL_INTERVAL_MS = 1000;
-const _CROP_CLASSIFIER_KIND = 'crop_classifier';
 // Only whole-image-scoring kinds are excluded: both modes run a detector or a
 // crop-classifier directly (image mode may additionally chain sub-models
 // onto a detector), so both remain valid primary picks.
@@ -156,7 +158,13 @@ function _hierarchyTag(name, meta, hierarchy) {
   return '';
 }
 
-function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode, labels) {
+function _pairedSubs(modelName, meta, hierarchy) {
+  const m = meta.get(modelName);
+  if (m?.role !== 'top' || !m.modelConfigUuid) return [];
+  return hierarchy.get(m.modelConfigUuid)?.subs ?? [];
+}
+
+function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode) {
   const panel = document.createElement('div');
   panel.className = 'compare-models-config';
   panel.style.cssText = 'flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 0.5rem;';
@@ -179,57 +187,50 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifie
   }
   panel.appendChild(modelSelect);
 
-  const subWrap = document.createElement('div');
-  subWrap.style.display = 'none';
-  const subLabel = document.createElement('small');
-  subLabel.textContent = 'Chain crop-classifier sub-model(s) (image mode only; ctrl/cmd-click for multiple). '
-    + 'Each one only ever refines the label named after it — a "Cat" detection never reaches a "Dog" sub-model, '
-    + 'no matter how many are chained together.';
-  subWrap.appendChild(subLabel);
-  const subModelSelect = document.createElement('select');
-  subModelSelect.multiple = true;
-  subModelSelect.size = Math.min(4, Math.max(2, cropClassifierOptions.length));
-  subModelSelect.dataset.testid = `compare-models-submodels-${label.replace(/\s+/g, '-').toLowerCase()}`;
-  for (const name of cropClassifierOptions) {
-    const o = document.createElement('option');
-    o.value = name;
-    const parentLabelUuid = meta.get(name)?.parentLabelUuid;
-    const parentName = parentLabelUuid ? _labelName(labels, parentLabelUuid) : null;
-    o.textContent = parentName ? `${name} (refines ${parentName})` : `${name} (no parent label — won't match anything)`;
-    subModelSelect.appendChild(o);
-  }
-  subWrap.appendChild(subModelSelect);
-  panel.appendChild(subWrap);
+  // No raw sub-model list: which sub-model refines which label is fixed by
+  // the sidecar (see the module docstring), not something to pick per run —
+  // the only real decision here is on/off, "the whole hierarchy" vs "the
+  // top detector by itself." One checkbox says that; a multi-select of bare
+  // model names, with no way to change what each one is wired to, didn't.
+  const hierarchyToggleWrap = document.createElement('label');
+  hierarchyToggleWrap.style.cssText = 'display: none; align-items: center; gap: 0.4rem;';
+  const hierarchyToggle = document.createElement('input');
+  hierarchyToggle.type = 'checkbox';
+  hierarchyToggle.checked = true;
+  hierarchyToggle.dataset.testid = `compare-models-use-hierarchy-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  const hierarchyToggleText = document.createElement('span');
+  hierarchyToggleWrap.appendChild(hierarchyToggle);
+  hierarchyToggleWrap.appendChild(hierarchyToggleText);
+  panel.appendChild(hierarchyToggleWrap);
 
-  function _refreshSubModelVisibility() {
-    subWrap.style.display = getCropMode() === 'image' && cropClassifierOptions.length > 0 ? 'block' : 'none';
+  function _refresh() {
+    const subs = _pairedSubs(modelSelect.value, meta, hierarchy);
+    const show = getCropMode() === 'image' && subs.length > 0;
+    hierarchyToggleWrap.style.display = show ? 'flex' : 'none';
+    if (show) hierarchyToggleText.textContent = `Use full hierarchy (+ ${subs.join(', ')})`;
   }
-  _refreshSubModelVisibility();
-
-  // Picking a "top" model in image mode pre-selects its paired sub-model(s) —
-  // this is the whole point of surfacing the hierarchy at all: it should be
-  // obvious, not something the user has to remember to wire up by hand.
+  // A newly picked model starts with the hierarchy on — that's the real
+  // deployed behaviour, and the box to uncheck for "detector alone" instead.
   modelSelect.addEventListener('change', () => {
-    const m = meta.get(modelSelect.value);
-    const entry = m?.modelConfigUuid ? hierarchy.get(m.modelConfigUuid) : null;
-    const pairedSubs = new Set(m?.role === 'top' ? entry?.subs ?? [] : []);
-    for (const opt of subModelSelect.options) opt.selected = pairedSubs.has(opt.value);
+    hierarchyToggle.checked = true;
+    _refresh();
   });
+  _refresh();
 
   return {
     panel,
-    refreshSubModelVisibility: _refreshSubModelVisibility,
+    refreshSubModelVisibility: _refresh,
     getConfig() {
       const modelName = modelSelect.value;
-      const subModelNames = getCropMode() === 'image' ? [...subModelSelect.selectedOptions].map(o => o.value) : [];
+      const subModelNames = getCropMode() === 'image' && hierarchyToggle.checked
+        ? _pairedSubs(modelName, meta, hierarchy)
+        : [];
       return { modelName, subModelNames };
     },
   };
 }
 
 function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy }) {
-  const cropClassifierOptions = primaryOptions.filter(n => meta.get(n)?.kind === _CROP_CLASSIFIER_KIND);
-
   const { dialog, open, close } = createModalShell();
   // .app-modal-dialog's own max-width (--modal-w-sm, 560px) clamps any wider
   // inline `width` set at the call site — the size-modifier classes exist
@@ -273,8 +274,8 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
 
   const configRow = document.createElement('div');
   configRow.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap;';
-  const configA = _buildConfigPanel('Configuration A', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode, ctx.labels);
-  const configB = _buildConfigPanel('Configuration B', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode, ctx.labels);
+  const configA = _buildConfigPanel('Configuration A', primaryOptions, meta, hierarchy, getCropMode);
+  const configB = _buildConfigPanel('Configuration B', primaryOptions, meta, hierarchy, getCropMode);
   configRow.appendChild(configA.panel);
   configRow.appendChild(configB.panel);
   dialog.appendChild(configRow);
@@ -444,7 +445,13 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
   };
 }
 
+// Must match PreviewModelRelabelTask.NO_PREDICTION_KEY exactly — the
+// confusion map's sentinel "predicted label" for a box the model produced no
+// attributable detection for at all (below threshold, or no match at all).
+const NO_PREDICTION_KEY = '__no_prediction__';
+
 function _labelName(labels, uuid) {
+  if (uuid === NO_PREDICTION_KEY) return 'No detection';
   return labels?.get(uuid)?.name ?? uuid ?? '(none)';
 }
 
@@ -514,6 +521,102 @@ function _renderConfigResult(label, result, labels) {
   return wrap;
 }
 
+/** true_label_uuid -> {correct, total} — the confusion matrix's own diagonal
+ * vs. row sum, i.e. this model's accuracy on just that one label. */
+function _perLabelStats(confusion) {
+  const stats = new Map();
+  for (const [trueUuid, preds] of Object.entries(confusion)) {
+    let total = 0;
+    let correct = 0;
+    for (const [predUuid, count] of Object.entries(preds)) {
+      total += count;
+      if (predUuid === trueUuid) correct += count;
+    }
+    stats.set(trueUuid, { correct, total });
+  }
+  return stats;
+}
+
+/** The actual model-vs-model comparison: one row per label, both configs'
+ * accuracy on it side by side, sorted so the labels they disagree about most
+ * float to the top — that's the part worth looking at first. */
+function _renderPerLabelComparison(resultA, resultB, labelA, labelB, labels) {
+  const statsA = _perLabelStats(resultA.confusion);
+  const statsB = _perLabelStats(resultB.confusion);
+  const allLabelUuids = new Set([...statsA.keys(), ...statsB.keys()]);
+
+  const rows = [...allLabelUuids].map(uuid => {
+    const a = statsA.get(uuid) ?? { correct: 0, total: 0 };
+    const b = statsB.get(uuid) ?? { correct: 0, total: 0 };
+    const accA = a.total > 0 ? a.correct / a.total : null;
+    const accB = b.total > 0 ? b.correct / b.total : null;
+    const deltaPts = accA != null && accB != null ? (accB - accA) * 100 : null;
+    return { name: _labelName(labels, uuid), a, b, accA, accB, deltaPts };
+  });
+  rows.sort((r1, r2) => {
+    const d1 = r1.deltaPts == null ? -1 : Math.abs(r1.deltaPts);
+    const d2 = r2.deltaPts == null ? -1 : Math.abs(r2.deltaPts);
+    return d2 - d1 || r1.name.localeCompare(r2.name);
+  });
+
+  const cellPad = 'padding: 0.3rem 0.8rem; border: 1px solid var(--pico-muted-border-color, #444); text-align: left;';
+  const fmtCell = (acc, s) => (acc == null ? 'n/a' : `${(acc * 100).toFixed(0)}% (${s.correct}/${s.total})`);
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'overflow-x: auto; margin: 0.75rem 0 1.25rem;';
+  const table = document.createElement('table');
+  table.style.cssText = 'font-size: 0.85rem; border-collapse: collapse; width: 100%;';
+
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const text of ['Label', labelA, labelB, 'Difference']) {
+    const th = document.createElement('th');
+    th.textContent = text;
+    th.style.cssText = cellPad;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+
+    const nameCell = document.createElement('td');
+    nameCell.textContent = row.name;
+    nameCell.style.cssText = cellPad;
+    tr.appendChild(nameCell);
+
+    const cellA = document.createElement('td');
+    cellA.textContent = fmtCell(row.accA, row.a);
+    cellA.style.cssText = cellPad;
+    tr.appendChild(cellA);
+
+    const cellB = document.createElement('td');
+    cellB.textContent = fmtCell(row.accB, row.b);
+    cellB.style.cssText = cellPad;
+    tr.appendChild(cellB);
+
+    const deltaCell = document.createElement('td');
+    if (row.deltaPts == null) {
+      deltaCell.textContent = 'n/a';
+      deltaCell.style.cssText = cellPad;
+    } else {
+      const sign = row.deltaPts > 0 ? '+' : '';
+      deltaCell.textContent = `${sign}${row.deltaPts.toFixed(0)} pts`;
+      const emphasize = Math.abs(row.deltaPts) >= 0.5;
+      deltaCell.style.cssText = cellPad
+        + (emphasize ? ` font-weight: bold; color: ${row.deltaPts > 0 ? 'var(--pico-ins-color, #4caf50)' : 'var(--pico-del-color, #f44336)'};` : '');
+    }
+    tr.appendChild(deltaCell);
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
 function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
   const container = document.createElement('div');
 
@@ -529,11 +632,24 @@ function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
     container.appendChild(verdict);
   }
 
+  // The actual comparison — per-label accuracy, both configs side by side,
+  // biggest disagreements first. This is the part that answers "which one
+  // is better," which two independent confusion matrices didn't.
+  container.appendChild(_renderPerLabelComparison(resultA, resultB, labelA, labelB, labels));
+
+  // Full confusion matrices stay available (what each model actually
+  // predicted, not just whether it was right) but collapsed by default —
+  // detail to check when a label's numbers surprise you, not the headline.
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = 'Full confusion matrices';
+  details.appendChild(summary);
   const row = document.createElement('div');
-  row.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap; overflow-x: auto;';
+  row.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap; overflow-x: auto; margin-top: 0.75rem;';
   row.appendChild(_renderConfigResult(labelA, resultA, labels));
   row.appendChild(_renderConfigResult(labelB, resultB, labels));
-  container.appendChild(row);
+  details.appendChild(row);
+  container.appendChild(details);
 
   return container;
 }

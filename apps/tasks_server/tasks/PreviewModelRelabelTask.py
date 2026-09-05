@@ -88,6 +88,11 @@ logging.basicConfig()
 logger = logging.getLogger(__file__)
 logger.setLevel(LOG_LEVEL)
 
+# Sentinel "predicted label" for a box the model produced no attributable
+# detection for at all, used as a confusion-map key (see _maybe_add_candidate).
+# Never a real label UUID, so it can't collide with one.
+NO_PREDICTION_KEY = "__no_prediction__"
+
 # No UX-facing ceiling on the candidate bbox list: the review-browser UI *warns*
 # the user on large runs (and lets them cap the count), but "process all" is
 # always allowed. This sanity cap is not a UX limit — a legitimate UI-driven
@@ -470,10 +475,20 @@ class PreviewModelRelabelTask(Task):
         best_label_uuid: Optional[str],
         geometry: Optional[Dict[str, float]] = None,
     ) -> None:
+        current_label_uuid = bbox.get("labelUuid")
         if best is None or best_label_uuid is None:
             self._no_detection_count += 1
+            # Still recorded against the box's true label — not just the
+            # aggregate no_detection_count — so a per-label accuracy view
+            # doesn't silently exclude "this model usually can't even find
+            # it" and only ever see "wrong when it did." NO_PREDICTION_KEY is
+            # not a real label UUID, so it can't collide with one.
+            if current_label_uuid is not None:
+                self._confusion.setdefault(current_label_uuid, {})
+                self._confusion[current_label_uuid][NO_PREDICTION_KEY] = (
+                    self._confusion[current_label_uuid].get(NO_PREDICTION_KEY, 0) + 1
+                )
             return
-        current_label_uuid = bbox.get("labelUuid")
         if current_label_uuid is not None:
             self._confusion.setdefault(current_label_uuid, {})
             self._confusion[current_label_uuid][best_label_uuid] = (
@@ -536,6 +551,19 @@ class PreviewModelRelabelTask(Task):
         detections = await backend.detect(self._model_name, image_bytes, self._conf_thresh)
         if not detections:
             self._no_detection_count += len(image_bboxes)
+            # Same accounting _maybe_add_candidate does for a per-box miss —
+            # this is the whole-image fast path for "found nothing at all",
+            # which would otherwise leave these boxes invisible to a
+            # per-label accuracy view (present in no_detection_count, absent
+            # from confusion) precisely when the detector is doing worst.
+            for bbox in image_bboxes:
+                current_label_uuid = bbox.get("labelUuid")
+                if current_label_uuid is None:
+                    continue
+                self._confusion.setdefault(current_label_uuid, {})
+                self._confusion[current_label_uuid][NO_PREDICTION_KEY] = (
+                    self._confusion[current_label_uuid].get(NO_PREDICTION_KEY, 0) + 1
+                )
             return
 
         # Second pass runs here, before anything reads a detection's label: both the
@@ -749,6 +777,15 @@ class PreviewModelRelabelTask(Task):
                 top = next(((lu, c) for lu, c in predictions if c >= self._conf_thresh), None)
                 if top is None:
                     self._no_detection_count += 1
+                    # Same accounting _maybe_add_candidate does for a miss —
+                    # this is the classifier's own "nothing cleared the
+                    # threshold" exit, which bypasses that helper entirely.
+                    current_label_uuid = bbox.get("labelUuid")
+                    if current_label_uuid is not None:
+                        self._confusion.setdefault(current_label_uuid, {})
+                        self._confusion[current_label_uuid][NO_PREDICTION_KEY] = (
+                            self._confusion[current_label_uuid].get(NO_PREDICTION_KEY, 0) + 1
+                        )
                     continue
                 label_uuid, confidence = top
                 self._maybe_add_candidate(
