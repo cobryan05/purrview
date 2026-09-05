@@ -66,6 +66,7 @@ import { reviewStateToDatasetForm, datasetFormToReviewState, reviewStateToFilter
 import { fetchViews, createDataset, updateDataset } from '/app-static/js/shared/api/datasets.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
+import { compareModelsFlow } from '/app-static/js/app/review/compareModels.js';
 import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
 import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, countImagesWithVerifiedWork, HIGH_RISK_REMOVAL_COUNT, removeSingleImage } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
@@ -376,6 +377,38 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
   });
 
+  // Compare Models — evaluate two model configurations (e.g. a flat detector
+  // vs. a detector + crop-classifier hierarchy) against the same
+  // Verified-filtered scope and show which one actually predicts more
+  // correctly (see app/review/compareModels.js). Uses the same candidate-scope
+  // resolution as "Run Model on Results…", but reads only — nothing to apply.
+  const compareModelsBtn = document.createElement('button');
+  compareModelsBtn.className = 'review-toolbar__btn';
+  compareModelsBtn.dataset.testid = 'review-compare-models';
+  compareModelsBtn.textContent = 'Compare Models…';
+  compareModelsBtn.addEventListener('click', async () => {
+    const label = compareModelsBtn.textContent;
+    compareModelsBtn.disabled = true;
+    compareModelsBtn.textContent = 'Compare Models… (loading)';
+    try {
+      await compareModelsFlow({
+        fetchImages,
+        filterPanel,
+        viewFilter: _viewFilter,
+        selectionKind: cardGrid.selectionKind,
+        selected: cardGrid.selected,
+        visibleEntries: _visibleEntries,
+        bboxFilterFn,
+        labels,
+        sortBy: sortBySelect.value,
+        sortOrder: sortOrderSelect.value,
+      });
+    } finally {
+      compareModelsBtn.disabled = false;
+      compareModelsBtn.textContent = label;
+    }
+  });
+
   // Saved Previews — every persisted "Run Model on Results" run, so a large
   // triage can be picked up later instead of having to finish in one sitting.
   //
@@ -607,7 +640,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const filterScopedActionsBar = document.createElement('div');
   filterScopedActionsBar.className = 'review-filter-scoped-actions';
   filterScopedActionsBar.dataset.testid = 'review-filter-scoped-actions';
-  filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, runChainBtn);
+  filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, compareModelsBtn, runChainBtn);
   if (!fetchImages) filterScopedActionsBar.insertBefore(savedPreviewsBtn, runChainBtn);
 
   // ── Contextual action bar (slice 3, PR 3.3) ────────────────────────

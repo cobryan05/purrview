@@ -247,6 +247,14 @@ class PreviewModelRelabelTask(Task):
         self._no_detection_count: int = resume_data.get("no_detection_count", 0) if resume_data else 0
         self._no_op_count: int = resume_data.get("no_op_count", 0) if resume_data else 0
         self._new_boxes_found: int = resume_data.get("new_boxes_found", 0) if resume_data else 0
+        # true_label_uuid -> predicted_label_uuid -> count, for every candidate box
+        # that already had a label (regardless of whether the model agreed).
+        # `_candidates`/`no_op_count` only ever expose the *disagreements* (a
+        # no-op has nothing to preview), which is enough to drive a relabel
+        # dialog but not enough to reconstruct per-class accuracy — the "Compare
+        # Models" review-tab tool needs the on-diagonal (correct) counts too, and
+        # this is the one place both cases are visible at once.
+        self._confusion: Dict[str, Dict[str, int]] = resume_data.get("confusion", {}) if resume_data else {}
 
         self._pin_id: Optional[str] = None
         # Populated in _run() once label names are fetched; defaults to empty so
@@ -466,6 +474,11 @@ class PreviewModelRelabelTask(Task):
             self._no_detection_count += 1
             return
         current_label_uuid = bbox.get("labelUuid")
+        if current_label_uuid is not None:
+            self._confusion.setdefault(current_label_uuid, {})
+            self._confusion[current_label_uuid][best_label_uuid] = (
+                self._confusion[current_label_uuid].get(best_label_uuid, 0) + 1
+            )
         if best_label_uuid == current_label_uuid:
             self._no_op_count += 1
             return  # no-op relabel — model agrees with the existing label
@@ -838,6 +851,7 @@ class PreviewModelRelabelTask(Task):
             "no_detection_count": self._no_detection_count,
             "no_op_count": self._no_op_count,
             "new_boxes_found": self._new_boxes_found,
+            "confusion": self._confusion,
         }
 
     def _build_result(self) -> Dict[str, Any]:
@@ -855,6 +869,10 @@ class PreviewModelRelabelTask(Task):
             # configured is the signal that the cascade ran but never cleared its
             # confidence bar — a different problem from "the detector found nothing".
             "refined_count": self._refined_count,
+            # {true_label_uuid: {predicted_label_uuid: count}} — every labeled
+            # candidate box, correct or not. See the field's own docstring in
+            # __init__ for why this exists alongside candidates/no_op_count.
+            "confusion": self._confusion,
         }
         if self._preview_run_uuid:
             # The candidates live in the DB now; shipping them through the

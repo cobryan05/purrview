@@ -133,6 +133,9 @@ class TestMatching:
         assert c["proposedLabelUuid"] == "dog"
         assert c["proposedLabelName"] == "Dog"
         assert c["confidence"] == 0.9
+        # Confusion tracks the disagreement too — not just the candidate list —
+        # so an evaluator can reconstruct a per-class accuracy breakdown.
+        assert task._confusion == {"cat": {"dog": 1}}
 
     async def test_no_op_relabel_excluded(self):
         task = _make_task(_base_params())
@@ -142,6 +145,11 @@ class TestMatching:
         assert candidates == []
         assert task._no_op_count == 1
         assert task._no_detection_count == 0
+        # A no-op still has ground truth to compare against — it just isn't a
+        # "candidate" (nothing to preview/apply) — so it must still show up on
+        # the confusion matrix's diagonal, or a 100%-correct run would look
+        # exactly like a run that never scored anything.
+        assert task._confusion == {"cat": {"cat": 1}}
 
     async def test_unmapped_detection_excluded(self):
         task = _make_task(_base_params())
@@ -443,6 +451,7 @@ class TestBboxCropMode:
         assert len(candidates) == 1
         assert candidates[0]["proposedLabelUuid"] == "dog"
         assert candidates[0]["confidence"] == 0.86
+        assert task._confusion == {"cat": {"dog": 1}}
 
     async def test_bbox_crop_unmapped_class_resolved_by_name(self):
         task = _make_task(_base_params(crop_mode="bbox"))
@@ -642,6 +651,7 @@ class TestCropClassifierSecondPass:
         task = _make_task(_base_params(crop_mode="bbox"))
         backend = self._FakeClassifierBackend([("cat", 0.99)])
         assert await self._run(task, backend) == []
+        assert task._confusion == {"cat": {"cat": 1}}
 
     async def test_padding_enlarges_the_classified_crop(self):
         """The crop handed to the model must grow with the sidecar's padding —
