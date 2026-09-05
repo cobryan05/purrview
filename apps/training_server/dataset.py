@@ -20,6 +20,11 @@ import shutil
 from pathlib import Path
 
 from apps.helpers.classifier_utils import DEFAULT_CROP_PADDING, crop_region
+from apps.training_server.augmentation import (
+    DEFAULT_AUGMENTATION_PRESET,
+    build_classifier_train_transform,
+    resolve_augmentation_preset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,7 @@ def build_dataset_from_manifest(
     cache_dir: str,
     split: str = "train",
     val_fraction: float = 0.2,
+    augmentation: str = DEFAULT_AUGMENTATION_PRESET,
 ) -> "ImageLabelDataset":
     """Build an ``ImageLabelDataset`` from a pushed manifest + local UUID-keyed cache.
 
@@ -53,6 +59,8 @@ def build_dataset_from_manifest(
         cache_dir:    Path to the UUID-keyed image cache directory.
         split:        ``"train"`` or ``"val"``.
         val_fraction: Fraction of images to hold out for validation.
+        augmentation: Preset name from ``augmentation.AUGMENTATION_PRESETS``,
+                      applied to the train split only (val stays deterministic).
 
     Raises:
         ValueError: When no manifest rows are available or required images are
@@ -80,7 +88,7 @@ def build_dataset_from_manifest(
     else:
         split_rows = rows_sorted[n_train:]
 
-    return ImageLabelDataset(split_rows=split_rows, cache_dir=cache_dir, split=split)
+    return ImageLabelDataset(split_rows=split_rows, cache_dir=cache_dir, split=split, augmentation=augmentation)
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +114,7 @@ class ImageLabelDataset:
         split_rows: list[dict],
         split: str,
         cache_dir: str,
+        augmentation: str = DEFAULT_AUGMENTATION_PRESET,
     ):
         fetcher = _CacheFetcher(cache_dir)
 
@@ -123,15 +132,7 @@ class ImageLabelDataset:
 
         h, w = self.INPUT_SIZE
         if split == "train":
-            self._transform = A.Compose(
-                [
-                    A.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0)),
-                    A.HorizontalFlip(p=0.5),
-                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
-                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                    ToTensorV2(),
-                ]
-            )
+            self._transform = build_classifier_train_transform((h, w), resolve_augmentation_preset(augmentation))
         else:
             self._transform = A.Compose(
                 [
@@ -184,6 +185,7 @@ def build_multilabel_dataset_from_manifest(
     cache_dir: str,
     split: str = "train",
     val_fraction: float = 0.2,
+    augmentation: str = DEFAULT_AUGMENTATION_PRESET,
 ) -> "MultiLabelDataset":
     """Build a MultiLabelDataset from a pushed manifest + per-label status targets.
 
@@ -222,6 +224,7 @@ def build_multilabel_dataset_from_manifest(
         label_targets=label_targets,
         cache_dir=cache_dir,
         split=split,
+        augmentation=augmentation,
     )
 
 
@@ -245,6 +248,7 @@ class MultiLabelDataset:
         label_targets: dict[str, dict[str, int]],
         cache_dir: str,
         split: str,
+        augmentation: str = DEFAULT_AUGMENTATION_PRESET,
     ):
         import albumentations as A
         import numpy as np
@@ -260,15 +264,7 @@ class MultiLabelDataset:
 
         h, w = self.INPUT_SIZE
         if split == "train":
-            self._transform = A.Compose(
-                [
-                    A.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0)),
-                    A.HorizontalFlip(p=0.5),
-                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
-                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                    ToTensorV2(),
-                ]
-            )
+            self._transform = build_classifier_train_transform((h, w), resolve_augmentation_preset(augmentation))
         else:
             self._transform = A.Compose(
                 [
@@ -340,6 +336,7 @@ def build_crop_dataset_from_manifest(
     split: str = "train",
     val_fraction: float = 0.2,
     crop_padding: float = DEFAULT_CROP_PADDING,
+    augmentation: str = DEFAULT_AUGMENTATION_PRESET,
 ) -> "CropDataset":
     """Build a ``CropDataset`` from a pushed manifest + per-image crop boxes.
 
@@ -396,7 +393,14 @@ def build_crop_dataset_from_manifest(
     if not rows:
         raise ValueError(f"No usable crops in the {split!r} split — check that the in-scope bboxes are verified")
 
-    return CropDataset(rows=rows, num_classes=num_classes, cache_dir=cache_dir, split=split, crop_padding=crop_padding)
+    return CropDataset(
+        rows=rows,
+        num_classes=num_classes,
+        cache_dir=cache_dir,
+        split=split,
+        crop_padding=crop_padding,
+        augmentation=augmentation,
+    )
 
 
 class CropDataset:
@@ -421,6 +425,7 @@ class CropDataset:
         cache_dir: str,
         split: str,
         crop_padding: float = DEFAULT_CROP_PADDING,
+        augmentation: str = DEFAULT_AUGMENTATION_PRESET,
     ):
         import albumentations as A
         import numpy as np
@@ -436,15 +441,7 @@ class CropDataset:
 
         h, w = self.INPUT_SIZE
         if split == "train":
-            self._transform = A.Compose(
-                [
-                    A.RandomResizedCrop(size=(h, w), scale=(0.8, 1.0)),
-                    A.HorizontalFlip(p=0.5),
-                    A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05, p=0.5),
-                    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                    ToTensorV2(),
-                ]
-            )
+            self._transform = build_classifier_train_transform((h, w), resolve_augmentation_preset(augmentation))
         else:
             # No 1.14x resize + centre crop here (unlike the whole-image datasets):
             # the region is already the subject, and centre-cropping it would shave

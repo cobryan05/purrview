@@ -641,6 +641,12 @@ class TrainingJobRunnerMixin:
             log_msg = data.get("log", "")
             if log_msg:
                 self.log(log_msg)
+            # Persisted rather than only logged: the log is a 100-line ring
+            # buffer, and "this job is quietly running on CPU" is exactly the
+            # fact someone checking in an hour later needs to still see.
+            device_warning = data.get("device_warning")
+            if device_warning:
+                self._device_warning = device_warning
             await self.heartbeat()
 
         elif event_type == "status":

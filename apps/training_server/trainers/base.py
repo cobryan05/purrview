@@ -105,6 +105,36 @@ class Trainer(ABC):
             progress_cb({"progress": 0.0, "log": msg})
 
     @staticmethod
+    def warn_if_cpu(logger: logging.Logger, progress_cb: Callable[[dict], None] | None = None) -> None:
+        """Loudly flag a CPU-fallback run.
+
+        No GPU visible to this process is usually not a deliberate choice — it
+        is the container having quietly lost GPU access (a host driver update,
+        a passthrough change) — and CPU training is 10-50x slower with
+        otherwise no signal anything is wrong: the job just looks unusually
+        slow rather than broken.
+
+        Call once near the top of ``train()``, before any CUDA-dependent setup.
+        Sets ``device_warning`` (in addition to ``log``) in the progress event
+        so the task can persist it as a standing status message rather than
+        letting it scroll out of the log — see
+        ``_training_job_runner.py``'s ``_handle_event``.
+        """
+        import torch
+
+        if torch.cuda.is_available():
+            return
+        msg = (
+            "WARNING: no GPU detected — training will run on CPU, roughly 10-50x "
+            "slower than GPU. If this is unexpected, check that the container "
+            "still has GPU access (a host driver update or a GPU passthrough "
+            "change can silently drop it)."
+        )
+        logger.warning(msg)
+        if progress_cb is not None:
+            progress_cb({"log": msg, "device_warning": msg})
+
+    @staticmethod
     def release_gpu_memory() -> None:
         """Best-effort release of GPU memory back to the driver after a job ends.
 

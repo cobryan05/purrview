@@ -18,6 +18,7 @@ import logging
 import shutil
 import sys
 import tempfile
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -85,6 +86,7 @@ class ObjectDetectionTrainer(Trainer):
         imgsz: int = int(config.get("imgsz", d["imgsz"]))
         batch_size: int = int(config.get("batch_size", d["batch_size"]))
         patience: int = int(config.get("patience", d["patience"]))
+        self.warn_if_cpu(logger, progress_cb)
 
         if not class_names:
             raise ValueError("object_detection trainer requires at least one class in class_names")
@@ -169,6 +171,28 @@ class ObjectDetectionTrainer(Trainer):
                 if cancel_event.is_set():
                     raise RuntimeError("Training cancelled by user")
 
+            def _on_train_start(event) -> None:
+                # Emitted once, before the first epoch: on slow (e.g. CPU)
+                # hardware an epoch can take minutes, and with no event between
+                # "job started" and "epoch 1 finished" the job looks stuck
+                # rather than merely slow. libreyolo has no per-epoch
+                # "epoch N starting" hook (only on_train_epoch_end), so this
+                # is the earliest signal available.
+                total = event.total_epochs or max_epochs
+                progress_cb(
+                    {
+                        "progress": 0.0,
+                        "epoch": event.start_epoch,
+                        "total_epochs": total,
+                        "log": f"Training started — epoch {event.start_epoch}/{total} running...",
+                    }
+                )
+
+            # Object exposing on_train_start, dispatched alongside the plain
+            # _epoch_cb callable (which libreyolo routes to on_train_epoch_end
+            # only) — see libreyolo.training.callbacks.TrainCallbackList.
+            start_announcer = types.SimpleNamespace(on_train_start=_on_train_start)
+
             # Load model (downloads pretrained weights from HuggingFace on first use).
             # Omit nb_classes so it defaults to the checkpoint's nc (80 for COCO);
             # model.train() adapts the head to the dataset's class count automatically.
@@ -200,7 +224,7 @@ class ObjectDetectionTrainer(Trainer):
                     project=str(artifact_path / "runs"),
                     name=model_name,
                     exist_ok=True,
-                    callbacks=_epoch_cb,
+                    callbacks=[_epoch_cb, start_announcer],
                 )
 
                 best_map50: float = float(results.get("best_mAP50", 0.0))

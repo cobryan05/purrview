@@ -12,6 +12,14 @@
  * same value so it works regardless of which trainer ends up consuming it;
  * each trainer ignores keys it doesn't read.
  *
+ * Augmentation preset (off/light/standard/heavy) is a training-config option
+ * shared across every trainer: the classifier trainers (binary/multi-label/
+ * crop) apply it to their albumentations pipeline (see
+ * apps/training_server/augmentation.py), and the Ultralytics YOLO trainer
+ * maps it onto the real hsv/degrees/mosaic/mixup kwargs `model.train()`
+ * accepts. LibreYOLO9 (`object_detection` trainer_type) does not read this
+ * key — its `train()` has no confirmed augmentation kwargs to map onto.
+ *
  * The "Remember exact image list" tickbox is the one field here that is NOT a
  * hyperparameter — it rides hyperparams_json only because that is the training
  * config's sole free-form blob. TrainModelTask pops it back out and threads it
@@ -86,11 +94,31 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     'Write the exact train/validation image lists into the trained model’s sidecar JSON, '
     + 'so you can see later which images produced it. Untick to keep the list out of the artifact.';
 
+  const augmentationSelect = document.createElement('select');
+  augmentationSelect.style.cssText = 'width: auto; flex-shrink: 0;';
+  augmentationSelect.title =
+    'How aggressively to distort training images (crop/flip/rotate/colour jitter). '
+    + 'Higher settings help when classes look very similar (e.g. two cats) and the model overfits early. '
+    + 'Ignored by the LibreYOLO9 object-detection trainer.';
+  for (const [value, label] of [
+    ['off', 'Off'],
+    ['light', 'Light'],
+    ['standard', 'Standard (default)'],
+    ['heavy', 'Heavy'],
+  ]) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    augmentationSelect.appendChild(o);
+  }
+  augmentationSelect.value = initial.augmentation ?? 'standard';
+
   if (onChange) {
     for (const input of [batchSizeInput, imgszInput, maxEpochsInput, patienceInput]) {
       input.addEventListener('input', onChange);
     }
     recordManifestInput.addEventListener('change', onChange);
+    augmentationSelect.addEventListener('change', onChange);
   }
 
   // ── VRAM tier select (prefill-only; never disables the fields above) ──────
@@ -143,6 +171,7 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     makeFieldRow('Image size', imgszInput),
     makeFieldRow('Max epochs', maxEpochsInput),
     makeFieldRow('Early stopping patience', patienceInput),
+    makeFieldRow('Augmentation', augmentationSelect),
     makeFieldRow('Remember exact image list', recordManifestInput),
   ];
 
@@ -162,6 +191,7 @@ export function createHyperparamsFieldset({ initial = {}, onChange, architecture
     // Only written when opting OUT — an absent key means "record", which is what
     // every already-saved config (and the trainers' own default) means today.
     if (!recordManifestInput.checked) hyperparamsJson.record_image_manifest = false;
+    hyperparamsJson.augmentation = augmentationSelect.value;
     return hyperparamsJson;
   }
 

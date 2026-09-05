@@ -84,6 +84,11 @@ class TrainHierarchyTask(TrainModelTask):
 
         self._epoch_history: list[dict[str, Any]] = list((resume_data or {}).get("epoch_history") or [])
         self._total_epochs: Optional[int] = None
+        # See TrainModelTask._init — set by _handle_event() the first time a
+        # trainer reports a CPU fallback. Duplicated here (not inherited via
+        # super()._init()) because this _init overrides TrainModelTask's
+        # entirely rather than extending it.
+        self._device_warning: str = ""
 
         self._model_config_uuid: str = str(params.get("model_config_uuid") or "")
         if not self._model_config_uuid:
@@ -211,6 +216,10 @@ class TrainHierarchyTask(TrainModelTask):
                     self._resolve_training_config, training_config_uuid
                 )
                 self._epoch_history = []
+                # A CPU-fallback warning belongs to whichever job produced it —
+                # carrying it into the next part would misreport a part that's
+                # actually running fine (e.g. GPU access came back mid-hierarchy).
+                self._device_warning = ""
 
             self.log(f"Training part {self._target_index + 1} of {total}: {self._model_name}")
             result = await self._run_one_job() or {}
@@ -243,6 +252,27 @@ class TrainHierarchyTask(TrainModelTask):
             "parts_total": total,
             "cancelled": self._target_index < total,
         }
+
+    def get_status_message(self) -> str:
+        """Which part the epoch stats / loss curve below currently belong to.
+
+        Those widgets are per-part by design (see ``get_progress``) — reset on
+        every target so each part's curve isn't stitched to the last one's —
+        but nothing on the widgets themselves says *which* part that is. The
+        only other place that showed up was a "Training part 2 of 3: ..." log
+        line, which scrolls out of the 5-line log tail as soon as that part
+        starts logging its own epochs. This is the persistent slot instead.
+        """
+        total = len(getattr(self, "_training_config_uuids", None) or [])
+        # Once every part has run, _target_index == total and there is no
+        # "current part" left to name — fall through to "" (or the device
+        # warning alone) rather than claiming a part total+1 that doesn't exist.
+        part_msg = (
+            f"Part {self._target_index + 1} of {total}: {self._model_name}" if 0 <= self._target_index < total else ""
+        )
+        if self._device_warning:
+            return f"{part_msg} — {self._device_warning}" if part_msg else self._device_warning
+        return part_msg
 
     def get_progress(self) -> Optional[float]:
         """Progress across the whole hierarchy, not within one job.

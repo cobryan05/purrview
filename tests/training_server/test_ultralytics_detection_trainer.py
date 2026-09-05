@@ -126,8 +126,11 @@ class TestModelFamilyForArch:
 
 class TestHyperparamDefaults:
     def test_matches_object_detection_trainer_shape(self):
+        """Same core hyperparam shape as object_detection_trainer, plus
+        "augmentation" — which object_detection (LibreYOLO9) does not read,
+        see augmentation.py's module docstring for why."""
         d = UltralyticsDetectionTrainer.HYPERPARAM_DEFAULTS
-        assert set(d.keys()) == {"max_epochs", "imgsz", "batch_size", "patience"}
+        assert set(d.keys()) == {"max_epochs", "imgsz", "batch_size", "patience", "augmentation"}
 
     def test_reads_patience_not_early_stopping_patience(self):
         """See NOTES.md: hyperparams_json key-name mismatch gotcha — this

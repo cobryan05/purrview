@@ -88,6 +88,11 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         # below: both paths need it.
         self._epoch_history: list[dict[str, Any]] = list((resume_data or {}).get("epoch_history") or [])
         self._total_epochs: Optional[int] = None
+        # Set by _handle_event() the first time a trainer reports it fell back
+        # to CPU (see Trainer.warn_if_cpu). Persists for the whole run rather
+        # than scrolling out of the log — "this job silently lost its GPU" is
+        # worth keeping visible the entire time it's true.
+        self._device_warning: str = ""
 
         # ── Resume from a previous run ───────────────────────────────────────
         self._job_id: Optional[str] = resume_data.get("job_id") if resume_data else None
@@ -525,6 +530,11 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     async def _deinit(self) -> None:
         pass
+
+    def get_status_message(self) -> str:
+        """The persistent "statusMessage" widget — currently only used for the
+        CPU-fallback warning, so it's the empty string the rest of the time."""
+        return self._device_warning
 
     @classmethod
     def status_schema(cls) -> list[dict[str, Any]]:

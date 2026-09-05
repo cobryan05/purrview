@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..augmentation import resolve_yolo_augmentation_kwargs
 from ..dataset import build_yolo_detection_dataset
 from . import register_trainer
 from .base import STOP_CANCELLED, STOP_COMPLETED, STOP_EARLY, Trainer, image_manifest_fields, stop_summary
@@ -110,11 +111,14 @@ class UltralyticsDetectionTrainer(Trainer):
     # NOTE: this trainer reads "patience", matching object_detection_trainer —
     # NOT "early_stopping_patience" (used by the classifier trainers). See
     # NOTES.md's hyperparams_json key-name gotcha.
-    HYPERPARAM_DEFAULTS: dict[str, int] = {
+    HYPERPARAM_DEFAULTS: dict[str, Any] = {
         "max_epochs": 50,
         "imgsz": 640,
         "batch_size": 16,
         "patience": 20,
+        # "off" | "light" | "standard" | "heavy" — see augmentation.py.
+        # "standard" applies no override, leaving ultralytics' own defaults.
+        "augmentation": "standard",
     }
 
     async def train(
@@ -141,6 +145,9 @@ class UltralyticsDetectionTrainer(Trainer):
         imgsz: int = int(config.get("imgsz", d["imgsz"]))
         batch_size: int = int(config.get("batch_size", d["batch_size"]))
         patience: int = int(config.get("patience", d["patience"]))
+        augmentation: str = config.get("augmentation", d["augmentation"])
+        augmentation_kwargs = resolve_yolo_augmentation_kwargs(augmentation)
+        self.warn_if_cpu(logger, progress_cb)
 
         if not class_names:
             raise ValueError("ultralytics_object_detection trainer requires at least one class in class_names")
@@ -198,6 +205,25 @@ class UltralyticsDetectionTrainer(Trainer):
                 "cancelled": False,
             }
 
+            def _on_train_epoch_start(trainer) -> None:
+                # Reported before the epoch runs, not just after: on slow (e.g.
+                # CPU) hardware an epoch can take minutes, and with no event
+                # between "job started" and "epoch 1 finished" the job looks
+                # stuck rather than merely slow. `epoch` on the trainer is
+                # already 0-indexed and already advanced for the epoch about
+                # to run — same `+ 1` as _on_train_epoch_end uses.
+                epoch = int(getattr(trainer, "epoch", 0)) + 1
+                total = int(progress_state["total_epochs"])
+                last_progress = observed["last_epoch"] / max(total, 1)
+                progress_cb(
+                    {
+                        "progress": last_progress,
+                        "epoch": epoch,
+                        "total_epochs": total,
+                        "log": f"Epoch {epoch}/{total} starting...",
+                    }
+                )
+
             def _on_train_epoch_end(trainer) -> None:
                 epoch = int(getattr(trainer, "epoch", 0)) + 1
                 total = int(progress_state["total_epochs"])
@@ -240,6 +266,7 @@ class UltralyticsDetectionTrainer(Trainer):
                 YOLO = _get_yolo_class()
                 model = YOLO(f"{weights_stem}.pt")
                 try:
+                    model.add_callback("on_train_epoch_start", _on_train_epoch_start)
                     model.add_callback("on_train_epoch_end", _on_train_epoch_end)
                     results = model.train(
                         data=data_yaml,
@@ -250,6 +277,7 @@ class UltralyticsDetectionTrainer(Trainer):
                         project=str(artifact_path / "runs"),
                         name=model_name,
                         exist_ok=True,
+                        **augmentation_kwargs,
                     )
                     # results.results_dict has keys like "metrics/mAP50(B)".
                     results_dict = dict(getattr(results, "results_dict", None) or {})
@@ -296,6 +324,7 @@ class UltralyticsDetectionTrainer(Trainer):
                 imgsz=imgsz,
                 batch=batch_size,
                 patience=patience,
+                augmentation=augmentation,
             )
             train_result: dict = await asyncio.to_thread(_run_training)
 
