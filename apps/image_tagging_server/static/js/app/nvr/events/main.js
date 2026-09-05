@@ -215,7 +215,13 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     : 'count';
   // Seconds of quiet that end a session; 0 disables the grouping entirely. Remembered
   // like the view, because how coarsely you want repeats folded is a working preference.
-  let sessionGapS = Number(localStorage.getItem(SESSION_STORAGE_KEY) ?? 0) || 0;
+  // Defaults to 300 (5 min) on a first-ever visit; a bad or missing stored value falls
+  // back to that default rather than silently landing on "every event".
+  let sessionGapS = SESSION_GAP_OPTIONS.some(
+    ([s]) => s === Number(localStorage.getItem(SESSION_STORAGE_KEY))
+  )
+    ? Number(localStorage.getItem(SESSION_STORAGE_KEY))
+    : 300;
   // The groups behind the current render, folded to the grain on screen.
   let pageGroups = [];
   // The last aggregate response, at the server's finest grain — the *input* to the fold
