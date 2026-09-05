@@ -2,23 +2,31 @@
  * "Compare Models" — evaluate two model configurations against the same
  * verified ground truth and show which one actually predicts more correctly.
  *
- * Deliberately narrower than "Run Model on Results": this only makes sense
- * against boxes whose current label is trustworthy (i.e. a Verified-filtered
- * scope), always runs in `crop_mode: "bbox"` (crop the known-correct box and
- * classify just that crop — the true apples-to-apples comparison; "image"
- * mode's IoU-matching conflates localisation with identification), and never
- * proposes new boxes or writes anything back — it only ever reads.
+ * Two evaluation modes, chosen once for the whole comparison (both sides must
+ * use the same one for the numbers to mean anything against each other):
  *
- * A "configuration" is a single model name — a detector or a crop classifier,
- * run directly as `PreviewModelRelabelTask`'s `model_name`. No sub-model
- * chaining: the task itself rejects `sub_model_names` in bbox mode ("the crop
- * classifier IS the model to run"), which is the right rule here too — the
- * box is already known, so comparing "flat model" vs "detector + crop-
- * classifier hierarchy" reduces to comparing the flat model directly against
- * the hierarchy's crop-classifier stage on the same known boxes. The upstream
- * detector's own find-the-box accuracy is a separate question this scope
- * (ground-truth boxes only) isn't set up to answer.
+ *   - "image" (default): run each configuration's detector on the whole
+ *     image and match its detections to the candidate boxes by IoU — the
+ *     real, deployed system's behaviour, including its own localisation. A
+ *     configuration here is a top-level model **plus** any crop-classifier
+ *     sub-models chained onto it (`sub_model_names`), so "all-in-one flat
+ *     model" vs "detector + crop-classifier hierarchy" is a genuine face-off
+ *     of the two actual systems, not an idealised shortcut.
+ *   - "bbox": crop each candidate box directly and classify just that crop —
+ *     no localisation involved, purest read on "given a known box, which
+ *     model names it better." No sub-model chaining here: the task itself
+ *     rejects `sub_model_names` in bbox mode ("the crop classifier IS the
+ *     model to run"), since the box is already known.
  *
+ * Every model is labelled with its place in a hierarchy (top / sub-model /
+ * standalone), read from `model_config_uuid`/`role` in its own sidecar
+ * (`/api/models/{name}/meta`) — the exact fields every trainer writes when a
+ * model is trained as part of a `TrainHierarchyTask` config. Picking a "top"
+ * model in image mode pre-selects its paired sub-model(s), so it's obvious
+ * whether you're evaluating the full hierarchy or accidentally running the
+ * outer detector alone.
+ *
+ * This never proposes new boxes or writes anything back — it only ever reads.
  * Accuracy comes from data `PreviewModelRelabelTask` already computes: a
  * "no-op" candidate (the model agrees with the current/ground-truth label)
  * and the `confusion` map (added alongside `no_op_count` specifically for
@@ -26,7 +34,8 @@
  * correct/incorrect counts with zero new backend inference logic.
  */
 
-import { fetchModelsList, fetchModelsKinds } from '/app-static/js/shared/api/models.js';
+import { fetchModelsList } from '/app-static/js/shared/api/models.js';
+import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import {
   createTaskConfig,
   startTask,
@@ -40,9 +49,10 @@ import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { resolveCandidateScope, confirmLargeRun, truncateScope, WARN_THRESHOLD } from '/app-static/js/app/review/runModelOnResults.js';
 
 const POLL_INTERVAL_MS = 1000;
-// Only whole-image-scoring kinds are excluded: bbox mode runs a detector or a
-// crop-classifier directly on the known box, so both remain valid picks —
-// see the module docstring on why bbox mode never chains a sub-model.
+const _CROP_CLASSIFIER_KIND = 'crop_classifier';
+// Only whole-image-scoring kinds are excluded: both modes run a detector or a
+// crop-classifier directly (image mode may additionally chain sub-models
+// onto a detector), so both remain valid primary picks.
 const _NON_PRIMARY_KINDS = new Set(['image_classifier', 'multi_label_classifier']);
 
 /**
@@ -74,27 +84,79 @@ export async function compareModelsFlow(ctx) {
     ({ bboxUuids, imageUuids } = truncateScope(scope, limit));
   }
 
-  let modelNames, kinds;
+  let modelNames, meta;
   try {
     modelNames = await fetchModelsList();
-    kinds = await fetchModelsKinds(modelNames);
+    meta = await _fetchModelMeta(modelNames);
   } catch (err) {
     Logger.error('Failed to fetch models list for comparison:', err);
     toast(`Could not load models: ${err.message}`, 5000, 'error');
     return;
   }
 
-  const primaryOptions = modelNames.filter(n => !_NON_PRIMARY_KINDS.has(kinds.get(n)));
+  const primaryOptions = modelNames.filter(n => !_NON_PRIMARY_KINDS.has(meta.get(n)?.kind));
 
   if (primaryOptions.length === 0) {
     toast('No detector or crop-classifier models available to compare.', 5000, 'warning');
     return;
   }
 
-  _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions });
+  _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy: _buildHierarchyIndex(meta) });
 }
 
-function _buildConfigPanel(label, primaryOptions) {
+/** Fetches `/api/models/{name}/meta` for every model in parallel. */
+async function _fetchModelMeta(modelNames) {
+  const meta = new Map();
+  await Promise.all(modelNames.map(async name => {
+    try {
+      const res = await apiFetch(`/api/models/${encodeURIComponent(name)}/meta`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.status === 'success') {
+        meta.set(name, {
+          kind: data.modelKind ?? 'detector',
+          labelUuids: data.labelUuids ?? [],
+          parentLabelUuid: data.parentLabelUuid ?? null,
+          modelConfigUuid: data.modelConfigUuid ?? null,
+          role: data.role ?? null,
+        });
+      } else {
+        meta.set(name, { kind: 'detector', labelUuids: [], parentLabelUuid: null, modelConfigUuid: null, role: null });
+      }
+    } catch {
+      meta.set(name, { kind: 'detector', labelUuids: [], parentLabelUuid: null, modelConfigUuid: null, role: null });
+    }
+  }));
+  return meta;
+}
+
+/** modelConfigUuid -> { top: name|null, subs: string[] } — the hierarchy pairing. */
+function _buildHierarchyIndex(meta) {
+  const byConfig = new Map();
+  for (const [name, m] of meta.entries()) {
+    if (!m.modelConfigUuid || !m.role) continue;
+    if (!byConfig.has(m.modelConfigUuid)) byConfig.set(m.modelConfigUuid, { top: null, subs: [] });
+    const entry = byConfig.get(m.modelConfigUuid);
+    if (m.role === 'top') entry.top = name;
+    else if (m.role === 'submodel') entry.subs.push(name);
+  }
+  return byConfig;
+}
+
+/** A short suffix describing where `name` sits in a hierarchy, or '' if standalone. */
+function _hierarchyTag(name, meta, hierarchy) {
+  const m = meta.get(name);
+  if (!m?.modelConfigUuid) return '';
+  const entry = hierarchy.get(m.modelConfigUuid);
+  if (m.role === 'top') {
+    return entry?.subs.length ? ` — hierarchical top (+ ${entry.subs.join(', ')})` : ' — top (no sub-models found)';
+  }
+  if (m.role === 'submodel') {
+    return entry?.top ? ` — sub-model (refines ${entry.top})` : ' — sub-model';
+  }
+  return '';
+}
+
+function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode) {
   const panel = document.createElement('div');
   panel.className = 'compare-models-config';
   panel.style.cssText = 'flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 0.5rem;';
@@ -112,26 +174,58 @@ function _buildConfigPanel(label, primaryOptions) {
   for (const name of primaryOptions) {
     const o = document.createElement('option');
     o.value = name;
-    o.textContent = name;
+    o.textContent = name + _hierarchyTag(name, meta, hierarchy);
     modelSelect.appendChild(o);
   }
   panel.appendChild(modelSelect);
 
-  const hint = document.createElement('small');
-  hint.style.color = 'var(--pico-muted-color, #888)';
-  hint.textContent = 'Pick any detector or crop-classifier model — since the box is already known, '
-    + 'a crop classifier evaluates directly (no detector cascade needed here).';
-  panel.appendChild(hint);
+  const subWrap = document.createElement('div');
+  subWrap.style.display = 'none';
+  const subLabel = document.createElement('small');
+  subLabel.textContent = 'Chain crop-classifier sub-model(s) (image mode only; ctrl/cmd-click for multiple):';
+  subWrap.appendChild(subLabel);
+  const subModelSelect = document.createElement('select');
+  subModelSelect.multiple = true;
+  subModelSelect.size = Math.min(4, Math.max(2, cropClassifierOptions.length));
+  subModelSelect.dataset.testid = `compare-models-submodels-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  for (const name of cropClassifierOptions) {
+    const o = document.createElement('option');
+    o.value = name;
+    o.textContent = name;
+    subModelSelect.appendChild(o);
+  }
+  subWrap.appendChild(subModelSelect);
+  panel.appendChild(subWrap);
+
+  function _refreshSubModelVisibility() {
+    subWrap.style.display = getCropMode() === 'image' && cropClassifierOptions.length > 0 ? 'block' : 'none';
+  }
+  _refreshSubModelVisibility();
+
+  // Picking a "top" model in image mode pre-selects its paired sub-model(s) —
+  // this is the whole point of surfacing the hierarchy at all: it should be
+  // obvious, not something the user has to remember to wire up by hand.
+  modelSelect.addEventListener('change', () => {
+    const m = meta.get(modelSelect.value);
+    const entry = m?.modelConfigUuid ? hierarchy.get(m.modelConfigUuid) : null;
+    const pairedSubs = new Set(m?.role === 'top' ? entry?.subs ?? [] : []);
+    for (const opt of subModelSelect.options) opt.selected = pairedSubs.has(opt.value);
+  });
 
   return {
     panel,
+    refreshSubModelVisibility: _refreshSubModelVisibility,
     getConfig() {
-      return { modelName: modelSelect.value };
+      const modelName = modelSelect.value;
+      const subModelNames = getCropMode() === 'image' ? [...subModelSelect.selectedOptions].map(o => o.value) : [];
+      return { modelName, subModelNames };
     },
   };
 }
 
-function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions }) {
+function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy }) {
+  const cropClassifierOptions = primaryOptions.filter(n => meta.get(n)?.kind === _CROP_CLASSIFIER_KIND);
+
   const { dialog, open, close } = createModalShell();
   dialog.style.cssText = 'width: min(900px, 92vw); max-height: 88vh; overflow-y: auto; padding: 1.25rem;';
 
@@ -144,16 +238,43 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions }) {
     + 'if the current filter is scoped to Verified boxes.';
   dialog.appendChild(hint);
 
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'margin-bottom: 0.75rem;';
+  const modeLabel = document.createElement('label');
+  modeLabel.style.cssText = 'display: flex; align-items: center; gap: 0.5rem;';
+  modeLabel.textContent = 'Evaluation mode:';
+  const modeSelect = document.createElement('select');
+  modeSelect.dataset.testid = 'compare-models-crop-mode';
+  for (const [value, text] of [
+    ['image', 'Full pipeline — detect on the whole image, match to the box by overlap (real deployed behaviour)'],
+    ['bbox', 'Identification only — classify the already-known box directly (no localisation)'],
+  ]) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = text;
+    modeSelect.appendChild(o);
+  }
+  modeLabel.appendChild(modeSelect);
+  modeRow.appendChild(modeLabel);
+  dialog.appendChild(modeRow);
+
+  const getCropMode = () => modeSelect.value;
+
   const configRow = document.createElement('div');
   configRow.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap;';
-  const configA = _buildConfigPanel('Configuration A', primaryOptions);
-  const configB = _buildConfigPanel('Configuration B', primaryOptions);
+  const configA = _buildConfigPanel('Configuration A', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode);
+  const configB = _buildConfigPanel('Configuration B', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode);
   configRow.appendChild(configA.panel);
   configRow.appendChild(configB.panel);
   dialog.appendChild(configRow);
 
+  modeSelect.addEventListener('change', () => {
+    configA.refreshSubModelVisibility();
+    configB.refreshSubModelVisibility();
+  });
+
   const threshRow = document.createElement('div');
-  threshRow.style.cssText = 'margin-top: 1rem; display: flex; align-items: center; gap: 0.5rem;';
+  threshRow.style.cssText = 'margin-top: 1rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;';
   const threshLabel = document.createElement('label');
   threshLabel.textContent = 'Confidence threshold:';
   threshLabel.style.cssText = 'display: flex; align-items: center; gap: 0.5rem;';
@@ -166,6 +287,19 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions }) {
   threshInput.style.width = '6rem';
   threshLabel.appendChild(threshInput);
   threshRow.appendChild(threshLabel);
+
+  const iouLabel = document.createElement('label');
+  iouLabel.textContent = 'IoU threshold (image mode):';
+  iouLabel.style.cssText = 'display: flex; align-items: center; gap: 0.5rem;';
+  const iouInput = document.createElement('input');
+  iouInput.type = 'number';
+  iouInput.min = '0';
+  iouInput.max = '1';
+  iouInput.step = '0.05';
+  iouInput.value = '0.5';
+  iouInput.style.width = '6rem';
+  iouLabel.appendChild(iouInput);
+  threshRow.appendChild(iouLabel);
   dialog.appendChild(threshRow);
 
   const progressArea = document.createElement('div');
@@ -196,6 +330,7 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions }) {
   dialog.appendChild(footer);
 
   runBtn.addEventListener('click', async () => {
+    const cropMode = getCropMode();
     const a = configA.getConfig();
     const b = configB.getConfig();
     if (!a.modelName || !b.modelName) {
@@ -210,16 +345,17 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions }) {
 
     try {
       const confThresh = Math.min(1, Math.max(0, parseFloat(threshInput.value) || 0.25));
-      const labelA = a.modelName;
-      const labelB = b.modelName;
+      const iouThresh = Math.min(1, Math.max(0, parseFloat(iouInput.value) || 0.5));
+      const labelA = a.modelName + (a.subModelNames.length ? ` → ${a.subModelNames.join(', ')}` : '');
+      const labelB = b.modelName + (b.subModelNames.length ? ` → ${b.subModelNames.join(', ')}` : '');
 
       progressLabel.textContent = `Running Configuration A (${labelA})…`;
       progressBar.value = 0;
-      const resultA = await _runOneConfig({ ...a, bboxUuids, imageUuids, confThresh, onProgress: p => { progressBar.value = p; } });
+      const resultA = await _runOneConfig({ ...a, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
 
       progressLabel.textContent = `Running Configuration B (${labelB})…`;
       progressBar.value = 0;
-      const resultB = await _runOneConfig({ ...b, bboxUuids, imageUuids, confThresh, onProgress: p => { progressBar.value = p; } });
+      const resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
 
       progressArea.style.display = 'none';
       resultsArea.appendChild(_renderComparison({ labelA, labelB, resultA, resultB, labels: ctx.labels }));
@@ -237,16 +373,19 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions }) {
 }
 
 /** Launches one PreviewModelRelabelTask run and returns its parsed stats. */
-async function _runOneConfig({ modelName, bboxUuids, imageUuids, confThresh, onProgress }) {
+async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress }) {
   const params = {
     model_name: modelName,
-    crop_mode: 'bbox',
+    crop_mode: cropMode,
     add_new: false,
     relabel_existing: true,
     conf_thresh: confThresh,
-    iou_thresh: 0.5,
+    iou_thresh: iouThresh,
     image_uuids: imageUuids,
     bbox_uuids: bboxUuids,
+    // Only meaningful (and only accepted by the task) in image mode — see
+    // the module docstring on why bbox mode never chains a sub-model.
+    ...(cropMode === 'image' && subModelNames.length ? { sub_model_names: subModelNames } : {}),
   };
 
   const configUuid = await createTaskConfig({

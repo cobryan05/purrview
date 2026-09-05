@@ -205,6 +205,15 @@ class ModelMetaResponse(StatusResponse):
     # is served here rather than requiring filesystem access to the sidecar —
     # inference_server can be a remote host (see the split-container topology).
     parent_label_uuid: Optional[str] = None
+    # The hierarchy this model belongs to, if it was trained as part of one
+    # (TrainHierarchyTask / a model config with sub-models) — every trainer
+    # writes both into its sidecar. `role` is "top" for the root detector,
+    # "submodel" for a crop classifier refining one of its labels; absent
+    # (both None) for a model trained standalone. Lets a caller tell "this
+    # detector has a crop-classifier hierarchy attached" from "this is the
+    # whole system" without walking the label tree itself.
+    model_config_uuid: Optional[str] = None
+    role: Optional[str] = None
     device: str = "auto"
     # (height, width) the model's ONNX graph declares; None if the model isn't
     # found or its graph declares a dynamic shape. Lets a caller compute
@@ -600,6 +609,8 @@ class WebApp:
                     label_uuid=config.get("label_uuid"),
                     label_uuids=config.get("label_uuids"),
                     parent_label_uuid=config.get("parent_label_uuid"),
+                    model_config_uuid=config.get("model_config_uuid"),
+                    role=config.get("role"),
                     device=config.get("device", "auto"),
                     input_shape=input_shape,
                 )
