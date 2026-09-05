@@ -156,7 +156,7 @@ function _hierarchyTag(name, meta, hierarchy) {
   return '';
 }
 
-function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode) {
+function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode, labels) {
   const panel = document.createElement('div');
   panel.className = 'compare-models-config';
   panel.style.cssText = 'flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 0.5rem;';
@@ -182,7 +182,9 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifie
   const subWrap = document.createElement('div');
   subWrap.style.display = 'none';
   const subLabel = document.createElement('small');
-  subLabel.textContent = 'Chain crop-classifier sub-model(s) (image mode only; ctrl/cmd-click for multiple):';
+  subLabel.textContent = 'Chain crop-classifier sub-model(s) (image mode only; ctrl/cmd-click for multiple). '
+    + 'Each one only ever refines the label named after it — a "Cat" detection never reaches a "Dog" sub-model, '
+    + 'no matter how many are chained together.';
   subWrap.appendChild(subLabel);
   const subModelSelect = document.createElement('select');
   subModelSelect.multiple = true;
@@ -191,7 +193,9 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, cropClassifie
   for (const name of cropClassifierOptions) {
     const o = document.createElement('option');
     o.value = name;
-    o.textContent = name;
+    const parentLabelUuid = meta.get(name)?.parentLabelUuid;
+    const parentName = parentLabelUuid ? _labelName(labels, parentLabelUuid) : null;
+    o.textContent = parentName ? `${name} (refines ${parentName})` : `${name} (no parent label — won't match anything)`;
     subModelSelect.appendChild(o);
   }
   subWrap.appendChild(subModelSelect);
@@ -227,7 +231,14 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
   const cropClassifierOptions = primaryOptions.filter(n => meta.get(n)?.kind === _CROP_CLASSIFIER_KIND);
 
   const { dialog, open, close } = createModalShell();
-  dialog.style.cssText = 'width: min(900px, 92vw); max-height: 88vh; overflow-y: auto; padding: 1.25rem;';
+  // .app-modal-dialog's own max-width (--modal-w-sm, 560px) clamps any wider
+  // inline `width` set at the call site — the size-modifier classes exist
+  // for exactly this (see app.css's comment on .app-modal-dialog). --lg
+  // (960px cap) is wide enough to show two confusion matrices side by side;
+  // a matrix wider than that scrolls inside its own wrapper (see
+  // _renderConfigResult) instead of squeezing every column unreadable.
+  dialog.classList.add('app-modal-dialog--lg');
+  dialog.style.cssText = 'overflow-y: auto;';
 
   const title = document.createElement('h3');
   title.textContent = `Compare Models (${bboxUuids.length} verified box${bboxUuids.length === 1 ? '' : 'es'})`;
@@ -262,8 +273,8 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
 
   const configRow = document.createElement('div');
   configRow.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap;';
-  const configA = _buildConfigPanel('Configuration A', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode);
-  const configB = _buildConfigPanel('Configuration B', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode);
+  const configA = _buildConfigPanel('Configuration A', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode, ctx.labels);
+  const configB = _buildConfigPanel('Configuration B', primaryOptions, meta, hierarchy, cropClassifierOptions, getCropMode, ctx.labels);
   configRow.appendChild(configA.panel);
   configRow.appendChild(configB.panel);
   dialog.appendChild(configRow);
@@ -440,7 +451,7 @@ function _labelName(labels, uuid) {
 /** One config's accuracy summary + confusion-matrix table. */
 function _renderConfigResult(label, result, labels) {
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'flex: 1; min-width: 320px;';
+  wrap.style.cssText = 'flex: 1 1 420px; min-width: 320px; max-width: 100%; overflow-x: auto;';
 
   const heading = document.createElement('h4');
   heading.textContent = label;
@@ -461,13 +472,19 @@ function _renderConfigResult(label, result, labels) {
     const predLabels = [...predLabelSet];
 
     const table = document.createElement('table');
-    table.style.cssText = 'width: 100%; font-size: 0.85rem;';
+    // No fixed width: with many labels this table is wider than its column —
+    // the wrapping div's overflow-x lets it scroll instead of squeezing every
+    // cell down to unreadable widths.
+    table.style.cssText = 'font-size: 0.85rem; white-space: nowrap; border-collapse: collapse;';
+    const cellPad = 'padding: 0.2rem 0.6rem; border: 1px solid var(--pico-muted-border-color, #444);';
+
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
     headRow.appendChild(document.createElement('th'));
     for (const p of predLabels) {
       const th = document.createElement('th');
       th.textContent = _labelName(labels, p);
+      th.style.cssText = cellPad;
       headRow.appendChild(th);
     }
     thead.appendChild(headRow);
@@ -479,12 +496,13 @@ function _renderConfigResult(label, result, labels) {
       const rowHead = document.createElement('th');
       rowHead.textContent = _labelName(labels, t);
       rowHead.scope = 'row';
+      rowHead.style.cssText = cellPad;
       row.appendChild(rowHead);
       for (const p of predLabels) {
         const td = document.createElement('td');
         const count = result.confusion[t][p] || 0;
         td.textContent = count || '';
-        if (p === t && count) td.style.fontWeight = 'bold';
+        td.style.cssText = cellPad + (p === t && count ? ' font-weight: bold;' : '');
         row.appendChild(td);
       }
       tbody.appendChild(row);
