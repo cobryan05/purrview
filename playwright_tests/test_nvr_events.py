@@ -522,21 +522,31 @@ def _histogram_rows(rows):
     ]
 
 
-def _open_events_pane(page: Page, base_url: str, view: str = "all", date_range: str = ""):
-    """Open NVR → Events on a named view and a named date range.
+def _open_events_pane(page: Page, base_url: str, view: str = "all", date_range: str = "", session_gap: str = "0"):
+    """Open NVR → Events on a named view, date range, and session-gap grouping.
 
-    Both are chosen explicitly rather than left to the default. The view is remembered in
-    localStorage, so a test inheriting whatever the previous one picked would depend on
-    execution order — and most of these tests are about the flat grid specifically, which
-    is no longer where the page lands.
+    All three are chosen explicitly rather than left to the default. The view and gap are
+    both remembered in localStorage, so a test inheriting whatever the previous one picked
+    would depend on execution order — and most of these tests are about the flat grid of
+    individual events specifically, which is not what "all" renders once the gap default
+    (5 minutes) is in effect. `session_gap` defaults to `"0"` (**Every event**) so these
+    tests keep exercising that flat grid; tests that are about session grouping itself set
+    it to whatever they're testing.
 
     `date_range` defaults to `""` — **All time** — because the fixtures here are dated at
     fixed points in 2026 while the page now opens on the last 7 days. Leaving the default
     would make almost every test depend on how long ago those fixture dates were, i.e. it
     would pass today and start failing on its own next week. Tests that are *about* the
     range set it themselves.
+
+    `session_gap` is seeded into localStorage *before* the page reads it, rather than
+    selected on the control afterwards — selecting it would fire a second, asynchronous
+    search that a test's own `issues_a_request`-style barrier could then mistake for the
+    one its own interaction produced, since that barrier only waits for *a* new request,
+    not a particular one.
     """
     page.goto(base_url)
+    page.evaluate("gap => localStorage.setItem('nvr.events.sessionGapS', gap)", session_gap)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-nvr']").click()
     page.locator(".workspace-tab-button[data-tab='tab-nvr-events']").click()
