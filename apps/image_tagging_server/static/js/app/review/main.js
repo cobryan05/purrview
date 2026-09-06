@@ -66,7 +66,7 @@ import { reviewStateToDatasetForm, datasetFormToReviewState, reviewStateToFilter
 import { fetchViews, createDataset, updateDataset } from '/app-static/js/shared/api/datasets.js';
 import { openDissimilarGlobalModal } from '/app-static/js/ui/dissimilarSearch.js';
 import { runModelOnResultsFlow, makeBboxFilterPredicate } from '/app-static/js/app/review/runModelOnResults.js';
-import { compareModelsFlow } from '/app-static/js/app/review/compareModels.js';
+import { verifyModelFlow } from '/app-static/js/app/review/compareModels.js';
 import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilterChainOnResults.js';
 import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, countImagesWithVerifiedWork, HIGH_RISK_REMOVAL_COUNT, removeSingleImage } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
@@ -377,21 +377,20 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     }
   });
 
-  // Compare Models — evaluate two model configurations (e.g. a flat detector
-  // vs. a detector + crop-classifier hierarchy) against the same
-  // Verified-filtered scope and show which one actually predicts more
-  // correctly (see app/review/compareModels.js). Uses the same candidate-scope
-  // resolution as "Run Model on Results…", but reads only — nothing to apply.
-  const compareModelsBtn = document.createElement('button');
-  compareModelsBtn.className = 'review-toolbar__btn';
-  compareModelsBtn.dataset.testid = 'review-compare-models';
-  compareModelsBtn.textContent = 'Compare Models…';
-  compareModelsBtn.addEventListener('click', async () => {
-    const label = compareModelsBtn.textContent;
-    compareModelsBtn.disabled = true;
-    compareModelsBtn.textContent = 'Compare Models… (loading)';
+  // Verify Model — evaluate one model (or two, side by side) against the same
+  // Verified-filtered scope and show how accurately it predicts (see
+  // app/review/compareModels.js). Uses the same candidate-scope resolution as
+  // "Run Model on Results…", but reads only — nothing to apply.
+  const verifyModelBtn = document.createElement('button');
+  verifyModelBtn.className = 'review-toolbar__btn';
+  verifyModelBtn.dataset.testid = 'review-verify-model';
+  verifyModelBtn.textContent = 'Verify Model…';
+  verifyModelBtn.addEventListener('click', async () => {
+    const label = verifyModelBtn.textContent;
+    verifyModelBtn.disabled = true;
+    verifyModelBtn.textContent = 'Verify Model… (loading)';
     try {
-      await compareModelsFlow({
+      await verifyModelFlow({
         fetchImages,
         filterPanel,
         viewFilter: _viewFilter,
@@ -404,8 +403,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         sortOrder: sortOrderSelect.value,
       });
     } finally {
-      compareModelsBtn.disabled = false;
-      compareModelsBtn.textContent = label;
+      verifyModelBtn.disabled = false;
+      verifyModelBtn.textContent = label;
     }
   });
 
@@ -640,7 +639,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const filterScopedActionsBar = document.createElement('div');
   filterScopedActionsBar.className = 'review-filter-scoped-actions';
   filterScopedActionsBar.dataset.testid = 'review-filter-scoped-actions';
-  filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, compareModelsBtn, runChainBtn);
+  filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, verifyModelBtn, runChainBtn);
   if (!fetchImages) filterScopedActionsBar.insertBefore(savedPreviewsBtn, runChainBtn);
 
   // ── Contextual action bar (slice 3, PR 3.3) ────────────────────────

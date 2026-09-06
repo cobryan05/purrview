@@ -1,6 +1,7 @@
 /**
- * "Compare Models" — evaluate two model configurations against the same
- * verified ground truth and show which one actually predicts more correctly.
+ * "Verify Model" — evaluate one model configuration against the same
+ * verified ground truth (how accurate is it?), or two side by side (which one
+ * predicts more correctly?). The second model is optional.
  *
  * Two evaluation modes, chosen once for the whole comparison (both sides must
  * use the same one for the numbers to mean anything against each other):
@@ -60,11 +61,11 @@ const _NON_PRIMARY_KINDS = new Set(['image_classifier', 'multi_label_classifier'
 /**
  * Entry point wired to a review-browser toolbar button. Resolves the current
  * bbox scope exactly like "Run Model on Results" does, then opens the
- * two-configuration comparison dialog.
+ * verification dialog (one model, or two side by side).
  *
  * @param {Object} ctx - same shape `runModelOnResultsFlow` takes.
  */
-export async function compareModelsFlow(ctx) {
+export async function verifyModelFlow(ctx) {
   let scope;
   try {
     scope = await resolveCandidateScope(ctx);
@@ -103,7 +104,7 @@ export async function compareModelsFlow(ctx) {
     return;
   }
 
-  _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy: _buildHierarchyIndex(meta) });
+  _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy: _buildHierarchyIndex(meta) });
 }
 
 /** Fetches `/api/models/{name}/meta` for every model in parallel. */
@@ -164,7 +165,27 @@ function _pairedSubs(modelName, meta, hierarchy) {
   return hierarchy.get(m.modelConfigUuid)?.subs ?? [];
 }
 
-function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode) {
+/** Every label uuid this configuration can actually predict — the top model's
+ * own label set plus whatever its chained sub-models add. A label absent from
+ * this set can never be a correct prediction no matter how much ground truth
+ * for it is in the verification set — that's a coverage gap, not an accuracy
+ * problem, and the results should say so instead of just scoring it 0%. */
+function _supportedLabelUuids(modelName, subModelNames, meta) {
+  const set = new Set(meta.get(modelName)?.labelUuids ?? []);
+  for (const sub of subModelNames) {
+    for (const uuid of meta.get(sub)?.labelUuids ?? []) set.add(uuid);
+  }
+  return set;
+}
+
+/** Whether `uuid` is known to be outside `supportedLabelUuids` — false (i.e.
+ * "don't flag it") whenever that set is empty, since an empty set means the
+ * model's label list failed to load, not that it truly supports nothing. */
+function _isUnsupportedLabel(uuid, supportedLabelUuids) {
+  return !!supportedLabelUuids && supportedLabelUuids.size > 0 && !supportedLabelUuids.has(uuid);
+}
+
+function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode, { optional = false, testidSuffix = 'a' } = {}) {
   const panel = document.createElement('div');
   panel.className = 'compare-models-config';
   panel.style.cssText = 'flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 0.5rem;';
@@ -174,10 +195,10 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode) 
   panel.appendChild(heading);
 
   const modelSelect = document.createElement('select');
-  modelSelect.dataset.testid = `compare-models-primary-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  modelSelect.dataset.testid = `compare-models-primary-${testidSuffix}`;
   const blankOpt = document.createElement('option');
   blankOpt.value = '';
-  blankOpt.textContent = '— pick a model —';
+  blankOpt.textContent = optional ? '— none (verify one model) —' : '— pick a model —';
   modelSelect.appendChild(blankOpt);
   for (const name of primaryOptions) {
     const o = document.createElement('option');
@@ -197,7 +218,7 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode) 
   const hierarchyToggle = document.createElement('input');
   hierarchyToggle.type = 'checkbox';
   hierarchyToggle.checked = true;
-  hierarchyToggle.dataset.testid = `compare-models-use-hierarchy-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  hierarchyToggle.dataset.testid = `compare-models-use-hierarchy-${testidSuffix}`;
   const hierarchyToggleText = document.createElement('span');
   hierarchyToggleWrap.appendChild(hierarchyToggle);
   hierarchyToggleWrap.appendChild(hierarchyToggleText);
@@ -225,12 +246,12 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode) 
       const subModelNames = getCropMode() === 'image' && hierarchyToggle.checked
         ? _pairedSubs(modelName, meta, hierarchy)
         : [];
-      return { modelName, subModelNames };
+      return { modelName, subModelNames, supportedLabelUuids: _supportedLabelUuids(modelName, subModelNames, meta) };
     },
   };
 }
 
-function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy }) {
+function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy }) {
   const { dialog, open, close } = createModalShell();
   // .app-modal-dialog's own max-width (--modal-w-sm, 560px) clamps any wider
   // inline `width` set at the call site — the size-modifier classes exist
@@ -242,7 +263,7 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
   dialog.style.cssText = 'overflow-y: auto;';
 
   const title = document.createElement('h3');
-  title.textContent = `Compare Models (${bboxUuids.length} verified box${bboxUuids.length === 1 ? '' : 'es'})`;
+  title.textContent = `Verify Model (${bboxUuids.length} verified box${bboxUuids.length === 1 ? '' : 'es'})`;
   dialog.appendChild(title);
 
   const hint = document.createElement('p');
@@ -274,8 +295,10 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
 
   const configRow = document.createElement('div');
   configRow.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap;';
-  const configA = _buildConfigPanel('Configuration A', primaryOptions, meta, hierarchy, getCropMode);
-  const configB = _buildConfigPanel('Configuration B', primaryOptions, meta, hierarchy, getCropMode);
+  const configA = _buildConfigPanel('Model', primaryOptions, meta, hierarchy, getCropMode, { testidSuffix: 'a' });
+  // Second model is entirely optional — leave it unset to just verify Model
+  // A's own accuracy; pick one to compare the two side by side.
+  const configB = _buildConfigPanel('Compare against (optional)', primaryOptions, meta, hierarchy, getCropMode, { optional: true, testidSuffix: 'b' });
   configRow.appendChild(configA.panel);
   configRow.appendChild(configB.panel);
   dialog.appendChild(configRow);
@@ -335,7 +358,7 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
   cancelBtn.className = 'secondary';
   cancelBtn.addEventListener('click', close);
   const runBtn = document.createElement('button');
-  runBtn.textContent = 'Compare';
+  runBtn.textContent = 'Verify';
   runBtn.dataset.testid = 'compare-models-run';
   footer.appendChild(cancelBtn);
   footer.appendChild(runBtn);
@@ -345,8 +368,8 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
     const cropMode = getCropMode();
     const a = configA.getConfig();
     const b = configB.getConfig();
-    if (!a.modelName || !b.modelName) {
-      toast('Pick a model for both configurations.', 4000, 'warning');
+    if (!a.modelName) {
+      toast('Pick a model to verify.', 4000, 'warning');
       return;
     }
 
@@ -359,21 +382,29 @@ function _showCompareDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, 
       const confThresh = Math.min(1, Math.max(0, parseFloat(threshInput.value) || 0.25));
       const iouThresh = Math.min(1, Math.max(0, parseFloat(iouInput.value) || 0.5));
       const labelA = a.modelName + (a.subModelNames.length ? ` → ${a.subModelNames.join(', ')}` : '');
-      const labelB = b.modelName + (b.subModelNames.length ? ` → ${b.subModelNames.join(', ')}` : '');
 
-      progressLabel.textContent = `Running Configuration A (${labelA})…`;
+      progressLabel.textContent = `Running ${labelA}…`;
       progressBar.value = 0;
       const resultA = await _runOneConfig({ ...a, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
+      resultA.supportedLabelUuids = a.supportedLabelUuids;
 
-      progressLabel.textContent = `Running Configuration B (${labelB})…`;
-      progressBar.value = 0;
-      const resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
+      let resultB = null;
+      let labelB = null;
+      if (b.modelName) {
+        labelB = b.modelName + (b.subModelNames.length ? ` → ${b.subModelNames.join(', ')}` : '');
+        progressLabel.textContent = `Running ${labelB}…`;
+        progressBar.value = 0;
+        resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
+        resultB.supportedLabelUuids = b.supportedLabelUuids;
+      }
 
       progressArea.style.display = 'none';
-      resultsArea.appendChild(_renderComparison({ labelA, labelB, resultA, resultB, labels: ctx.labels }));
+      resultsArea.appendChild(resultB
+        ? _renderComparison({ labelA, labelB, resultA, resultB, labels: ctx.labels })
+        : _renderSingleResult({ labelA, resultA, labels: ctx.labels }));
     } catch (err) {
-      Logger.error('Model comparison run failed:', err);
-      toast(`Comparison failed: ${err.message}`, 6000, 'error');
+      Logger.error('Model verification run failed:', err);
+      toast(`Verification failed: ${err.message}`, 6000, 'error');
       progressArea.style.display = 'none';
     } finally {
       runBtn.disabled = false;
@@ -402,7 +433,7 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
 
   const configUuid = await createTaskConfig({
     typename: 'PreviewModelRelabelTask',
-    name: `Compare Models: ${modelName}`,
+    name: `Verify Model: ${modelName}`,
     params,
     persistent: false,
     isTemporary: true,
@@ -501,9 +532,10 @@ function _renderConfigResult(label, result, labels) {
     for (const t of trueLabels) {
       const row = document.createElement('tr');
       const rowHead = document.createElement('th');
-      rowHead.textContent = _labelName(labels, t);
+      const unsupported = _isUnsupportedLabel(t, result.supportedLabelUuids);
+      rowHead.textContent = unsupported ? `${_labelName(labels, t)} (not in model)` : _labelName(labels, t);
       rowHead.scope = 'row';
-      rowHead.style.cssText = cellPad;
+      rowHead.style.cssText = cellPad + (unsupported ? ' color: var(--pico-muted-color, #888); font-style: italic;' : '');
       row.appendChild(rowHead);
       for (const p of predLabels) {
         const td = document.createElement('td');
@@ -551,7 +583,11 @@ function _renderPerLabelComparison(resultA, resultB, labelA, labelB, labels) {
     const accA = a.total > 0 ? a.correct / a.total : null;
     const accB = b.total > 0 ? b.correct / b.total : null;
     const deltaPts = accA != null && accB != null ? (accB - accA) * 100 : null;
-    return { name: _labelName(labels, uuid), a, b, accA, accB, deltaPts };
+    return {
+      name: _labelName(labels, uuid), a, b, accA, accB, deltaPts,
+      unsupportedA: _isUnsupportedLabel(uuid, resultA.supportedLabelUuids),
+      unsupportedB: _isUnsupportedLabel(uuid, resultB.supportedLabelUuids),
+    };
   });
   rows.sort((r1, r2) => {
     const d1 = r1.deltaPts == null ? -1 : Math.abs(r1.deltaPts);
@@ -560,7 +596,15 @@ function _renderPerLabelComparison(resultA, resultB, labelA, labelB, labels) {
   });
 
   const cellPad = 'padding: 0.3rem 0.8rem; border: 1px solid var(--pico-muted-border-color, #444); text-align: left;';
-  const fmtCell = (acc, s) => (acc == null ? 'n/a' : `${(acc * 100).toFixed(0)}% (${s.correct}/${s.total})`);
+  // "Not in model" isn't a wrong prediction — it's a coverage gap: the model
+  // was never trained to say this label at all, so 0% there means "can't",
+  // not "doesn't." Muted styling + an explicit note keeps that legible
+  // instead of reading as ordinary poor accuracy.
+  const fmtCell = (acc, s, unsupported) => {
+    const pct = acc == null ? 'n/a' : `${(acc * 100).toFixed(0)}% (${s.correct}/${s.total})`;
+    return unsupported ? `${pct} — not in model` : pct;
+  };
+  const cellStyle = unsupported => cellPad + (unsupported ? ' color: var(--pico-muted-color, #888); font-style: italic;' : '');
 
   const wrap = document.createElement('div');
   wrap.style.cssText = 'overflow-x: auto; margin: 0.75rem 0 1.25rem;';
@@ -588,13 +632,13 @@ function _renderPerLabelComparison(resultA, resultB, labelA, labelB, labels) {
     tr.appendChild(nameCell);
 
     const cellA = document.createElement('td');
-    cellA.textContent = fmtCell(row.accA, row.a);
-    cellA.style.cssText = cellPad;
+    cellA.textContent = fmtCell(row.accA, row.a, row.unsupportedA);
+    cellA.style.cssText = cellStyle(row.unsupportedA);
     tr.appendChild(cellA);
 
     const cellB = document.createElement('td');
-    cellB.textContent = fmtCell(row.accB, row.b);
-    cellB.style.cssText = cellPad;
+    cellB.textContent = fmtCell(row.accB, row.b, row.unsupportedB);
+    cellB.style.cssText = cellStyle(row.unsupportedB);
     tr.appendChild(cellB);
 
     const deltaCell = document.createElement('td');
@@ -617,6 +661,75 @@ function _renderPerLabelComparison(resultA, resultB, labelA, labelB, labels) {
   return wrap;
 }
 
+/** Single-model verification: overall accuracy, per-label breakdown (no
+ * second column to diff against), and the full confusion matrix. */
+function _renderSingleResult({ labelA, resultA, labels }) {
+  const container = document.createElement('div');
+
+  const pct = resultA.accuracy == null ? 'n/a' : `${(resultA.accuracy * 100).toFixed(1)}%`;
+  const accSummary = document.createElement('p');
+  accSummary.innerHTML = `<strong>${pct}</strong> accurate (${resultA.correct}/${resultA.total}) — `
+    + `${resultA.wrong} wrong, ${resultA.noDetection} no detection`
+    + (resultA.imagesFailed ? `, ${resultA.imagesFailed} image(s) failed to load` : '');
+  container.appendChild(accSummary);
+
+  const statsA = _perLabelStats(resultA.confusion);
+  const rows = [...statsA.entries()]
+    .map(([uuid, s]) => ({
+      name: _labelName(labels, uuid), s, acc: s.total > 0 ? s.correct / s.total : null,
+      unsupported: _isUnsupportedLabel(uuid, resultA.supportedLabelUuids),
+    }))
+    .sort((r1, r2) => r1.name.localeCompare(r2.name));
+
+  if (rows.length > 0) {
+    const cellPad = 'padding: 0.3rem 0.8rem; border: 1px solid var(--pico-muted-border-color, #444); text-align: left;';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'overflow-x: auto; margin: 0.75rem 0 1.25rem;';
+    const table = document.createElement('table');
+    table.style.cssText = 'font-size: 0.85rem; border-collapse: collapse; width: 100%;';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const text of ['Label', 'Accuracy']) {
+      const th = document.createElement('th');
+      th.textContent = text;
+      th.style.cssText = cellPad;
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      const nameCell = document.createElement('td');
+      nameCell.textContent = row.name;
+      nameCell.style.cssText = cellPad;
+      tr.appendChild(nameCell);
+
+      const accCell = document.createElement('td');
+      const pctText = row.acc == null ? 'n/a' : `${(row.acc * 100).toFixed(0)}% (${row.s.correct}/${row.s.total})`;
+      accCell.textContent = row.unsupported ? `${pctText} — not in model` : pctText;
+      accCell.style.cssText = cellPad + (row.unsupported ? ' color: var(--pico-muted-color, #888); font-style: italic;' : '');
+      tr.appendChild(accCell);
+
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+  }
+
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = 'Full confusion matrix';
+  details.appendChild(summary);
+  details.appendChild(_renderConfigResult(labelA, resultA, labels));
+  container.appendChild(details);
+
+  return container;
+}
+
 function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
   const container = document.createElement('div');
 
@@ -624,10 +737,10 @@ function _renderComparison({ labelA, labelB, resultA, resultB, labels }) {
     const deltaPts = (resultB.accuracy - resultA.accuracy) * 100;
     const verdict = document.createElement('p');
     if (Math.abs(deltaPts) < 0.05) {
-      verdict.innerHTML = '<strong>Configurations score about the same.</strong>';
+      verdict.innerHTML = '<strong>Both models score about the same.</strong>';
     } else {
-      const winner = deltaPts > 0 ? 'B' : 'A';
-      verdict.innerHTML = `<strong>Configuration ${winner} is ${Math.abs(deltaPts).toFixed(1)} points more accurate.</strong>`;
+      const winner = deltaPts > 0 ? labelB : labelA;
+      verdict.innerHTML = `<strong>${winner} is ${Math.abs(deltaPts).toFixed(1)} points more accurate.</strong>`;
     }
     container.appendChild(verdict);
   }
