@@ -88,6 +88,12 @@ class Manager:
         self._probe_tasks: Dict[str, asyncio.Task] = {}
         self._probe_started_at: Dict[str, float] = {}
 
+        # Services that are expected to sometimes simply be off (a remote host
+        # that isn't always on) get their "unreachable" notice surfaced once per
+        # outage rather than on every poll — see _unreachable_notice() below.
+        self._QUIET_UNREACHABLE_SERVICES = {"training_server"}
+        self._unreachable_notified: Dict[str, bool] = {}
+
         # Off by default. See Settings → Security / AuthGate in web.py.
         self._require_auth: bool = False
         self._auth_token: str = ""
@@ -368,11 +374,20 @@ class Manager:
             ("stream_server", f"http://{relay_cfg.host}:{relay_cfg.port}"),
         ]
 
-        def _unreachable_notice(name: str, message: str) -> dict:
+        def _unreachable_notice(name: str, message: str) -> Optional[dict]:
             # get_notices()/get_raw_notices() only surface a service's own
             # "notices" key when it *is* reachable, so a down service would
             # otherwise vanish from the notices bar instead of being flagged —
             # synthesize one here so it flows through that same pipeline.
+            if name in self._QUIET_UNREACHABLE_SERVICES:
+                # A remote service like training_server isn't always expected to
+                # be up — flag it once per outage, then go quiet so the bar
+                # doesn't nag while it stays down. Any action that actually needs
+                # the service (e.g. starting a training run) surfaces its own
+                # error independently of this ambient notice.
+                if self._unreachable_notified.get(name):
+                    return None
+                self._unreachable_notified[name] = True
             return {"key": f"{name}_unreachable", "level": "warning", "message": message}
 
         def _waiting_notice(name: str) -> dict:
@@ -391,20 +406,24 @@ class Manager:
                 if resp.status_code == 200:
                     data = resp.json()
                     data.setdefault("service", name)
+                    # Recovered — the next outage should notify again.
+                    self._unreachable_notified.pop(name, None)
                     return data
                 message = f"HTTP {resp.status_code}"
+                notice = _unreachable_notice(name, f"{name} is not responding ({message})")
                 return {
                     "service": name,
                     "status": "error",
                     "message": message,
-                    "notices": [_unreachable_notice(name, f"{name} is not responding ({message})")],
+                    "notices": [notice] if notice else [],
                 }
             except Exception as e:
+                notice = _unreachable_notice(name, f"{name} is not responding")
                 return {
                     "service": name,
                     "status": "unreachable",
                     "message": str(e),
-                    "notices": [_unreachable_notice(name, f"{name} is not responding")],
+                    "notices": [notice] if notice else [],
                 }
 
         async def _probe(name: str, base_url: str) -> dict:
