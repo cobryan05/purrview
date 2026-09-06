@@ -745,6 +745,7 @@ class TestSaveArtifact:
         task._model_name = "m"
         task._training_base_url = "http://training:8005"
         task._job_id = "job-1"
+        task._push_artifact_to_inference_server = AsyncMock()
 
         mock_get_resp = MagicMock()
         mock_get_resp.content = tar_bytes

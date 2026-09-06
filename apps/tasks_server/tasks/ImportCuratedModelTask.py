@@ -52,6 +52,7 @@ from apps.helpers.curatedModels import get_curated_model
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name, write_onnx_with_sidecar
 
+from ._inference_push import build_artifact_tar, push_artifact_tar_to_inference_server
 from ._training_job_runner import TrainingJobRunnerMixin
 from .Registry import register_task
 from .Task import Task
@@ -280,6 +281,25 @@ class ImportCuratedModelTask(Task, TrainingJobRunnerMixin):
             extra_metadata=sidecar_extra,
         )
         self.log(f"Saved converted model artifact: {model_path} ({len(metadata.get('classes', []))} classes)")
+
+        await self._push_to_inference_server(model_path, onnx_bytes)
+
+    async def _push_to_inference_server(self, model_path: Path, onnx_bytes: bytes) -> None:
+        """Push the same .onnx + sidecar to inference_server (see _inference_push).
+
+        Without this, a split-container inference_server would never learn about a
+        curated model imported here.
+        """
+        self.log("Pushing model to inference server...")
+        sidecar_bytes = await asyncio.to_thread(model_path.with_suffix(".json").read_bytes)
+        tar_bytes = build_artifact_tar(
+            {
+                f"{self._model_name}.onnx": onnx_bytes,
+                f"{self._model_name}.json": sidecar_bytes,
+            }
+        )
+        files = await push_artifact_tar_to_inference_server(self._manager.get_inference_api_client(), tar_bytes)
+        self.log(f"Inference server updated: {files}")
 
     async def _deinit(self) -> None:
         # Always clean up the local temp .pt file — whether the run completed,

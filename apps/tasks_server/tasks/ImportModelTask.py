@@ -24,6 +24,7 @@ from apps.helpers.metadataUtils import (
     write_onnx_with_sidecar,
 )
 
+from ._inference_push import build_artifact_tar, push_artifact_tar_to_inference_server
 from .Registry import register_task
 from .Task import Task
 
@@ -98,8 +99,28 @@ class ImportModelTask(Task):
             extra_metadata={"model_family": self._model_family, "class_map": {}},
         )
 
+        await self._push_to_inference_server(onnx_bytes)
+
         self.log("Import complete")
         return {"model_name": self._model_name, "classes": metadata.get("classes", [])}
+
+    async def _push_to_inference_server(self, onnx_bytes: bytes) -> None:
+        """Push the same .onnx + sidecar to inference_server (see _inference_push).
+
+        Not something get_inference_api_client's host has to share a filesystem
+        with this one for: without this, a split-container inference_server would
+        never learn about a curated model imported here.
+        """
+        self.log("Pushing model to inference server...")
+        sidecar_bytes = await asyncio.to_thread(self._model_path.with_suffix(".json").read_bytes)
+        tar_bytes = build_artifact_tar(
+            {
+                f"{self._model_name}.onnx": onnx_bytes,
+                f"{self._model_name}.json": sidecar_bytes,
+            }
+        )
+        files = await push_artifact_tar_to_inference_server(self._manager.get_inference_api_client(), tar_bytes)
+        self.log(f"Inference server updated: {files}")
 
     async def _deinit(self) -> None:
         # Nothing to clean up — no pinned models, no open sessions.

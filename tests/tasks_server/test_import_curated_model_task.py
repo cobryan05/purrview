@@ -35,7 +35,9 @@ _CONVERSION_KEY = next(e["key"] for e in CURATED_BASE_MODELS if e.get("requires_
 
 
 def _make_task(params: dict) -> ImportCuratedModelTask:
-    return ImportCuratedModelTask(task_config_uuid="cfg-uuid", params=params, manager=_MOCK_MANAGER)
+    task = ImportCuratedModelTask(task_config_uuid="cfg-uuid", params=params, manager=_MOCK_MANAGER)
+    task._push_to_inference_server = AsyncMock()
+    return task
 
 
 def _build_onnx_bytes() -> bytes:
@@ -278,6 +280,8 @@ class TestRun:
         assert task._source_path is not None
         await task._deinit()
         assert not task._source_path.exists()
+
+        task._push_to_inference_server.assert_awaited_once_with(onnx_path, _ONNX_BYTES)
 
     async def test_garbage_artifact_onnx_rejected_without_writing_files(self, tmp_path, monkeypatch):
         """The overridden _save_artifact must validate in memory before writing —

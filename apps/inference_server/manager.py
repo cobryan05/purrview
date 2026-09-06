@@ -1,9 +1,11 @@
 """Manager models on Inference Server"""
 
 import asyncio
+import io
 import logging
 import os
 import sys
+import tarfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -28,6 +30,7 @@ from apps.helpers.inferenceProviders.inferenceProvider import (
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import (
     VALID_MODEL_DEVICES,
+    atomic_write_bytes,
     get_model_metadata,
     save_model_json_metadata,
     validate_bare_model_name,
@@ -402,6 +405,43 @@ class Manager:
         await self.list_models()
 
         return {"model_name": model_name, "classes": metadata.get("classes", [])}
+
+    async def import_artifact_tar(self, tar_bytes: bytes) -> Dict[str, Any]:
+        """Extract a training-job artifact tar (.onnx + optional .onnx.data + .json
+        sidecar, produced verbatim by the training server) straight into the models
+        dir, then refresh the available-models list.
+
+        Mirrors tasks_server's `_training_job_runner._save_artifact`, which writes the
+        same tar to $MODELS_ROOT when this server shares a filesystem with tasks_server.
+        This is the HTTP path for when it doesn't: tasks_server pushes the artifact here
+        directly after saving its own copy.
+
+        Args:
+            tar_bytes (bytes): Raw tar archive containing the artifact files.
+
+        Returns:
+            Dict[str, Any]: {"files": [written filenames]}
+        """
+        written: list[str] = []
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:*") as tf:
+            members = [m for m in tf.getmembers() if m.isfile()]
+            # .onnx lands last — see the matching comment in _save_artifact. Any
+            # in-flight (un-)pin here still resolves off the old weights until the
+            # write completes and _reload_if_weights_changed picks up the new mtime.
+            members.sort(key=lambda m: Path(m.name).name.endswith(".onnx"))
+            for member in members:
+                name = Path(member.name).name
+                if not name.endswith((".onnx", ".onnx.data", ".json")):
+                    logger.warning("Unexpected artifact file %s, skipping", name)
+                    continue
+                fobj = tf.extractfile(member)
+                if fobj:
+                    dest = Path(self._models_path) / name
+                    await asyncio.to_thread(atomic_write_bytes, dest, fobj.read())
+                    written.append(name)
+
+        await self.list_models()
+        return {"files": written}
 
     def _get_model_lock(self, model_name: str) -> asyncio.Lock:
         """Lock serializing pin_model/delete_model for a given model_name, so a

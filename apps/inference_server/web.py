@@ -236,6 +236,14 @@ class ImportModelUploadPayload(Payload):
     overwrite: bool = False
 
 
+class ImportModelArtifactPayload(Payload):
+    artifact_tar_base64: str
+
+
+class ImportModelArtifactResponse(StatusResponse):
+    files: Optional[List[str]] = None
+
+
 class ImportModelUploadResponse(StatusResponse):
     model_name: Optional[str] = None
     classes: Optional[List[str]] = None
@@ -678,6 +686,29 @@ class WebApp:
                 )
             except Exception as e:
                 return ImportModelUploadResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/artifact/upload",
+            response_model=ImportModelArtifactResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="import_model_artifact",
+        )
+        async def import_model_artifact_api(payload: ImportModelArtifactPayload) -> ImportModelArtifactResponse:
+            """Extract a training-job artifact tar (.onnx + optional .onnx.data + .json
+            sidecar) straight into the models dir. Lets tasks_server push a freshly
+            trained model here over HTTP instead of requiring a shared models directory."""
+            try:
+                tar_bytes = base64.b64decode(payload.artifact_tar_base64, validate=True)
+            except Exception as e:
+                return ImportModelArtifactResponse(
+                    status=JsonValues.FAILURE, message=f"Invalid artifact_tar_base64: {e}"
+                )
+
+            try:
+                result = await self._manager.import_artifact_tar(tar_bytes)
+                return ImportModelArtifactResponse(status=JsonValues.SUCCESS, files=result["files"])
+            except Exception as e:
+                return ImportModelArtifactResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/detect",

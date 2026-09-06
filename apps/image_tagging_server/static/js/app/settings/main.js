@@ -206,8 +206,8 @@ async function _buildServerSection() {
       settingKey: 'inference_server_url',
       description:
         'Runs ONNX detection and classification. Takes images over HTTP and needs no database, so it can run on ' +
-        'another host — but the models directory must live with it, and trained models are currently written to the ' +
-        'models directory of whichever host runs the tasks server. Point this elsewhere only if both share that directory.',
+        'another host with its own models directory — newly trained models are pushed here over HTTP as soon as ' +
+        'training finishes, so no shared filesystem is required.',
       defaultUrl: serverConfig.inference_server ?? 'http://localhost:8001',
       currentOverride: serverConfig.inference_server_url_override ?? null,
     }),

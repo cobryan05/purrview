@@ -41,6 +41,8 @@ from training_client.models.submit_job_payload import SubmitJobPayload
 from apps import FILES_ROOT
 from apps.helpers.metadataUtils import atomic_write_bytes
 
+from ._inference_push import push_artifact_tar_to_inference_server
+
 logger = logging.getLogger(__file__)
 
 _MODELS_DIR = Path(os.environ.get("MODELS_ROOT", "/models"))
@@ -757,6 +759,20 @@ class TrainingJobRunnerMixin:
                     # truncated ONNX mid-write. See atomic_write_bytes.
                     await asyncio.to_thread(atomic_write_bytes, dest, fobj.read())
                     self.log(f"Saved model artifact: {dest}")
+
+        await self._push_artifact_to_inference_server(tar_bytes)
+
+    async def _push_artifact_to_inference_server(self, tar_bytes: bytes) -> None:
+        """Push the same artifact tar to inference_server over HTTP.
+
+        Keeps inference_server's models dir in sync without depending on it sharing
+        a filesystem with this host — the write to $MODELS_ROOT above is this host's
+        own copy (tasks_server loads models directly for on-the-fly classification,
+        see `_classifier_runtime.py`), not something inference_server can rely on.
+        """
+        self.log("Pushing model artifact to inference server...")
+        files = await push_artifact_tar_to_inference_server(self._manager.get_inference_api_client(), tar_bytes)
+        self.log(f"Inference server updated: {files}")
 
     async def _cancel_remote_job(self, job_id: str) -> None:
         """Best-effort DELETE of the remote training job."""

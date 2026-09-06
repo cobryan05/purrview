@@ -7,7 +7,9 @@ no network access involved.
 """
 
 import base64
+import io
 import json
+import tarfile
 
 import onnx
 import pytest
@@ -157,6 +159,81 @@ class TestImportModelUploadEndpoint:
         resp2 = await http_client.post("/api/models/import/upload", json=payload)
         assert resp2.status_code == 200
         assert resp2.json()["status"] == "failure"
+
+
+def _tar(files: dict) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+class TestImportArtifactTarManager:
+    """Manager.import_artifact_tar — how tasks_server pushes a freshly trained
+    model here over HTTP instead of relying on a shared models directory."""
+
+    async def test_writes_all_artifact_files(self, tmp_path):
+        mgr = Manager(models_path=str(tmp_path))
+        tar_bytes = _tar({"m.onnx": b"weights", "m.onnx.data": b"tensors", "m.json": b"{}"})
+
+        result = await mgr.import_artifact_tar(tar_bytes)
+
+        assert (tmp_path / "m.onnx").read_bytes() == b"weights"
+        assert (tmp_path / "m.onnx.data").read_bytes() == b"tensors"
+        assert (tmp_path / "m.json").read_bytes() == b"{}"
+        assert set(result["files"]) == {"m.onnx", "m.onnx.data", "m.json"}
+
+    async def test_skips_unexpected_files(self, tmp_path):
+        mgr = Manager(models_path=str(tmp_path))
+        tar_bytes = _tar({"m.onnx": b"weights", "notes.txt": b"hi"})
+
+        result = await mgr.import_artifact_tar(tar_bytes)
+
+        assert not (tmp_path / "notes.txt").exists()
+        assert "notes.txt" not in result["files"]
+
+    async def test_appears_in_list_models(self, tmp_path):
+        mgr = Manager(models_path=str(tmp_path))
+        await mgr.import_artifact_tar(_tar({"pushed.onnx": b"weights", "pushed.json": b"{}"}))
+        assert "pushed" in await mgr.list_models()
+
+    async def test_overwrites_existing_weights(self, tmp_path):
+        mgr = Manager(models_path=str(tmp_path))
+        await mgr.import_artifact_tar(_tar({"m.onnx": b"old"}))
+        await mgr.import_artifact_tar(_tar({"m.onnx": b"new"}))
+        assert (tmp_path / "m.onnx").read_bytes() == b"new"
+
+
+class TestImportArtifactEndpoint:
+    async def test_upload_endpoint_success(self, http_client):
+        tar_bytes = _tar({"pushed_http.onnx": b"weights", "pushed_http.json": b"{}"})
+        resp = await http_client.post(
+            "/api/models/artifact/upload",
+            json={"artifactTarBase64": base64.b64encode(tar_bytes).decode()},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert set(data["files"]) == {"pushed_http.onnx", "pushed_http.json"}
+
+    async def test_upload_endpoint_invalid_base64_returns_failure_not_500(self, http_client):
+        resp = await http_client.post(
+            "/api/models/artifact/upload",
+            json={"artifactTarBase64": "not-valid-base64!!"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failure"
+
+    async def test_upload_endpoint_invalid_tar_returns_failure_not_500(self, http_client):
+        resp = await http_client.post(
+            "/api/models/artifact/upload",
+            json={"artifactTarBase64": base64.b64encode(b"not a tar file").decode()},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failure"
 
 
 class TestDetectAndStage:

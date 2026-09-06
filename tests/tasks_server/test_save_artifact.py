@@ -38,6 +38,7 @@ def _make_task() -> TrainModelTask:
     task = TrainModelTask(task_config_uuid="cfg-uuid", params={}, manager=_MOCK_MANAGER)
     task._training_base_url = "http://training:8005"
     task.log = MagicMock()
+    task._push_artifact_to_inference_server = AsyncMock()
     return task
 
 
@@ -127,3 +128,22 @@ class TestSaveArtifact:
             await task._save_artifact("job-1")
 
         assert sorted(p.name for p in models_dir.iterdir()) == ["m.json", "m.onnx"]
+
+
+class TestSaveArtifactPushesToInferenceServer:
+    """_save_artifact's write to $MODELS_DIR is this host's own copy (tasks_server
+    loads models directly for classification); inference_server only ever learns
+    about a retrained model through the push. See test_inference_push.py for the
+    push mechanics themselves (success/failure handling, tar contents)."""
+
+    async def test_pushes_the_same_tar_it_downloaded(self, models_dir):
+        task = TrainModelTask(task_config_uuid="cfg-uuid", params={}, manager=_MOCK_MANAGER)
+        task._training_base_url = "http://training:8005"
+        task.log = MagicMock()
+        task._push_artifact_to_inference_server = AsyncMock()
+        tar_bytes = _tar({"m.onnx": b"weights", "m.json": b"{}"})
+
+        with _patch_download(tar_bytes):
+            await task._save_artifact("job-1")
+
+        task._push_artifact_to_inference_server.assert_awaited_once_with(tar_bytes)

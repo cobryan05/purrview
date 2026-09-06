@@ -21,7 +21,9 @@ _MOCK_MANAGER.update_task_heartbeat = AsyncMock()
 
 
 def _make_task(params: dict) -> ImportModelTask:
-    return ImportModelTask(task_config_uuid="cfg-uuid", params=params, manager=_MOCK_MANAGER)
+    task = ImportModelTask(task_config_uuid="cfg-uuid", params=params, manager=_MOCK_MANAGER)
+    task._push_to_inference_server = AsyncMock()
+    return task
 
 
 def _build_onnx_bytes(class_names: dict) -> bytes:
@@ -197,6 +199,27 @@ class TestRun:
         with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
             await task._init(task._params, None)
         await task._deinit()  # should not raise
+
+    async def test_pushes_to_inference_server_on_success(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_factory(_ONNX_BYTES))
+
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "pushed_model", "overwrite": False})
+        with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
+            await task._init(task._params, None)
+            await task._run()
+
+        task._push_to_inference_server.assert_awaited_once_with(_ONNX_BYTES)
+
+    async def test_download_error_skips_inference_push(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_factory(_ONNX_BYTES, raise_error=True))
+
+        task = _make_task({"curated_key": "yolo9_t-coco", "model_name": "failed_push", "overwrite": False})
+        with patch("apps.tasks_server.tasks.ImportModelTask._MODELS_ROOT", tmp_path):
+            await task._init(task._params, None)
+            with pytest.raises(RuntimeError):
+                await task._run()
+
+        task._push_to_inference_server.assert_not_awaited()
 
 
 class TestParamsSchema:
