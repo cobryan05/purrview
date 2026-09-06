@@ -332,6 +332,19 @@ echo "and the training/mono images build the CUDA/torch wheelhouse. Build on a"
 echo "capable host and pull the images on lean/CPU-only targets if desired."
 echo
 
+# ---- prepare host-side bind-mount directories ------------------------------
+# logs/, data/, models/ and image_datasets/ are all gitignored (runtime data,
+# not source) — a fresh clone has none of them. If `docker compose up` is the
+# first thing to touch one of these bind-mount paths, Docker creates it in the
+# daemon's own context (root, even under WSL2's Docker Desktop backend), and
+# it stays root:root/0755 from then on. The container never runs as root at
+# startup (no entrypoint, straight to `USER appuser`), so anything writing
+# there — e.g. supervisord's own stdout/stderr log files — dies with EACCES
+# on first boot. Creating them here, as whoever is running setup.sh, means
+# they're already owned by APPUSER_UID/APPUSER_GID before Docker gets a
+# chance to create them itself.
+mkdir -p logs data models image_datasets
+
 if ask "Build and start now (docker compose up -d --build)?" n; then
   exec docker compose up -d --build
 else
