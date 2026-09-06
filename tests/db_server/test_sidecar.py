@@ -772,3 +772,64 @@ def test_sidecar_write_failure_preserves_existing_file(tmp_path, monkeypatch):
     assert data["uuid"] == "original-uuid"
     # No leftover temp file next to the sidecar.
     assert not list(tmp_path.glob("*.tmp"))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# sync_image_from_json must recover `sourceUuid` from writer-authored sidecars
+# (e.g. SaveSnapshotAction's watch-triggered captures) that never go through
+# add_image/upload_images. Without this, an image is filed with source_uuid=NULL
+# and silently drops out of every "filter by source" query.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_sync_from_json_picks_up_source_uuid_on_insert(tmp_path):
+    client = DbClient(db_dir=tmp_path, memory=True)
+    await client.init_db()
+    source = await client.add_source("cam1", "rtsp", {})
+
+    image_path = tmp_path / "captured.png"
+    image_path.write_bytes(make_png())
+    image_path.with_suffix(".json").write_text(json.dumps({"sourceUuid": source.uuid}))
+
+    record = await client.sync_image_from_json(image_path)
+
+    assert record.source_uuid == source.uuid
+    await client.close()
+
+
+async def test_sync_from_json_ignores_deleted_source(tmp_path):
+    """A stale sourceUuid (source deleted since the sidecar was written) must not
+    fail the whole sync — the image is filed unattributed instead."""
+    client = DbClient(db_dir=tmp_path, memory=True)
+    await client.init_db()
+
+    image_path = tmp_path / "captured.png"
+    image_path.write_bytes(make_png())
+    image_path.with_suffix(".json").write_text(json.dumps({"sourceUuid": str(uuid_mod.uuid4())}))
+
+    record = await client.sync_image_from_json(image_path)
+
+    assert record.source_uuid is None
+    await client.close()
+
+
+async def test_sync_from_json_backfills_blank_source_but_never_overwrites(tmp_path):
+    client = DbClient(db_dir=tmp_path, memory=True)
+    await client.init_db()
+    source_a = await client.add_source("cam1", "rtsp", {})
+    source_b = await client.add_source("cam2", "rtsp", {})
+
+    image_path = tmp_path / "captured.png"
+    image_path.write_bytes(make_png())
+    await client.add_image(image_path)  # no source yet
+
+    image_path.with_suffix(".json").write_text(json.dumps({"sourceUuid": source_a.uuid}))
+    record = await client.sync_image_from_json(image_path, overwrite=True)
+    assert record.source_uuid == source_a.uuid
+
+    # A later sync with a different source must not clobber an already-attributed image.
+    image_path.with_suffix(".json").write_text(json.dumps({"sourceUuid": source_b.uuid}))
+    record = await client.sync_image_from_json(image_path, overwrite=True)
+    assert record.source_uuid == source_a.uuid
+
+    await client.close()

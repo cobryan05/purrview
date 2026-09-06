@@ -1032,6 +1032,7 @@ class DbClient:
         metadata_dict = {}
         json_uuid = None
         json_phash: Optional[str] = None
+        json_source_uuid: Optional[str] = None
         json_bboxes: List[BBox] = []
         # Per-bbox supplementary data extracted before constructing BBox objects.
         box_tag_uuids: Dict[str, List[str]] = {}  # bbox_uuid → tag UUID list
@@ -1047,6 +1048,7 @@ class DbClient:
                 metadata_dict = jstyleson.loads(json_path.read_text())
                 json_uuid = metadata_dict.get("uuid")
                 json_phash = metadata_dict.get("phash")
+                json_source_uuid = metadata_dict.get("sourceUuid")
                 for box_data in metadata_dict.get("boxes", []):
                     raw = dict(box_data)
                     tag_uuids_list = raw.pop("tag_uuids", [])
@@ -1095,6 +1097,19 @@ class DbClient:
                 sidecar_has_image_labels = False
 
         async with self._async_session_maker() as session:
+            # A source can be deleted between the writer recording its UUID and this
+            # sync running; provenance is not worth failing (or corrupting) an image
+            # sync over, so an unresolvable UUID is treated the same as none at all.
+            if json_source_uuid is not None:
+                src = await session.get(Source, json_source_uuid)
+                if src is None:
+                    logger.warning(
+                        "Sidecar %s references source %s, which no longer exists; leaving unattributed.",
+                        json_path,
+                        json_source_uuid,
+                    )
+                    json_source_uuid = None
+
             # --- Resolve label/tag UUIDs (UUID-first, name-fallback) ---
             all_label_uuids = {b.label_uuid for b in json_bboxes if b.label_uuid}
             all_label_uuids |= {u for u, _n, _s in json_image_labels if u}
@@ -1226,6 +1241,7 @@ class DbClient:
                     bboxes=json_bboxes,
                     metadata_json=metadata_dict,
                     phash=json_phash,
+                    source_uuid=json_source_uuid,
                 )
                 session.add(db_record)
                 bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
@@ -1245,6 +1261,8 @@ class DbClient:
                 db_record.metadata_json = metadata_dict
                 if json_phash:
                     db_record.phash = json_phash
+                if json_source_uuid and db_record.source_uuid is None:
+                    db_record.source_uuid = json_source_uuid
                 session.add(db_record)
                 bboxes_needing_links = [b.uuid for b in json_bboxes if box_tag_uuids.get(b.uuid)]
             else:
@@ -1253,6 +1271,8 @@ class DbClient:
                 db_record.bboxes = db_record.bboxes + new_bboxes
                 if not db_record.metadata_json:
                     db_record.metadata_json = metadata_dict
+                if json_source_uuid and db_record.source_uuid is None:
+                    db_record.source_uuid = json_source_uuid
                 session.add(db_record)
                 bboxes_needing_links = [b.uuid for b in new_bboxes if box_tag_uuids.get(b.uuid)]
 
