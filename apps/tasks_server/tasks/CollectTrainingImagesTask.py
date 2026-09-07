@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import os
 import time
@@ -27,6 +28,7 @@ from apps.helpers.training.collectorSpec import (
     ambiguity_fires,
     ambiguity_value,
     collector_params_schema,
+    collector_status_schema,
     parse_confidence_band,
 )
 
@@ -665,6 +667,24 @@ class CollectTrainingImagesTask(Task):
 
     @classmethod
     def status_schema(cls) -> list[dict[str, Any]]:
+        """`last_capture` and `sources` are this task's own — a watcher has
+        neither a single frame nor a fixed source list of its own to show.
+        Everything about *collection itself* comes from `collector_status_schema()`
+        (collectorSpec.py), shared with the per-collector diagnostics a
+        watcher-attached collector renders — this task only splices its own
+        loop-owned fields (`processed`, `captures_per_min`, `uptime`) into that
+        shared schema's `stats` widget, exactly the way `params_schema()` used
+        to splice loop params around `collector_params_schema()`.
+        """
+        schema = copy.deepcopy(collector_status_schema())
+        stats_widget = next(w for w in schema if w["id"] == "stats")
+        stats_widget["fields"] = {
+            "saved": "Saved",
+            "processed": "Processed",
+            "captures_per_min": "Captures/min",
+            "uptime": "Uptime",
+            **stats_widget["fields"],
+        }
         return [
             {
                 "id": "last_capture",
@@ -673,106 +693,7 @@ class CollectTrainingImagesTask(Task):
                 "label": "Last capture",
                 "height": "16em",
             },
-            {
-                "id": "stats",
-                "type": "stat_grid",
-                "source": "status",
-                "label": "Collection stats",
-                # Superset of every field this task type can ever report. Per-instance,
-                # get_status_data() only *populates* the subset that's actually active
-                # (dedup / filter-chain) — an inactive one's key is simply absent, which
-                # the stat_grid widget renders as "—" rather than a misleading "0".
-                "fields": {
-                    "saved": "Saved",
-                    "processed": "Processed",
-                    "captures_per_min": "Captures/min",
-                    "uptime": "Uptime",
-                    "dedup_checked": "Dedup checked",
-                    "dedup_image_hits": "Dedup image hits",
-                    "dedup_bbox_hits": "Dedup bbox hits",
-                    "dedup_discarded": "Dedup discarded",
-                    "dedup_image_dist_median": "Image dist (median)",
-                    "dedup_image_dist_p10": "Image dist (p10)",
-                    "dedup_bbox_dist_median": "BBox dist (median)",
-                    "dedup_sample_size": "Calibration sample",
-                    "filter_discarded": "Filter discarded",
-                    "filter_relabeled": "Filter relabeled",
-                    "filter_tagged": "Filter tagged",
-                    "filter_stripped": "Filter stripped",
-                },
-            },
-            # ── Dedup threshold calibration ──────────────────────────────────
-            # Only populated when dedup is enabled; get_status_data() omits these
-            # keys otherwise and the widgets render their own empty state.
-            #
-            # Collapsed by default, and nested one level deeper: four charts and
-            # tables is the right amount of detail while you are actually reading
-            # a threshold off them, and far too much to scroll past every other
-            # time. `group` carries no data of its own — the child ids are still
-            # what get_status_data() keys its payload by, unchanged.
-            {
-                "id": "dedup_calibration",
-                "type": "group",
-                "label": "Duplicate threshold calibration",
-                "collapsed": True,
-                "widgets": [
-                    {
-                        "id": "dedup_hint",
-                        "type": "text",
-                        "source": "status",
-                    },
-                    {
-                        "id": "dedup_image_group",
-                        "type": "group",
-                        "label": "Image distance",
-                        "widgets": [
-                            {
-                                "id": "dedup_image_hist",
-                                "type": "histogram",
-                                "source": "status",
-                                "label": "Distance to nearest stored image",
-                            },
-                            {
-                                "id": "dedup_image_sweep",
-                                "type": "table",
-                                "source": "status",
-                                "label": "Image threshold sweep (what each value would have done)",
-                                "columns": [
-                                    {"key": "threshold", "label": "Image threshold"},
-                                    {"key": "matched", "label": "Frames matching"},
-                                    {"key": "discarded", "label": "Would discard"},
-                                    {"key": "kept", "label": "Would keep"},
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "id": "dedup_bbox_group",
-                        "type": "group",
-                        "label": "BBox distance",
-                        "widgets": [
-                            {
-                                "id": "dedup_bbox_hist",
-                                "type": "histogram",
-                                "source": "status",
-                                "label": "Distance to nearest same-label crop",
-                            },
-                            {
-                                "id": "dedup_bbox_sweep",
-                                "type": "table",
-                                "source": "status",
-                                "label": "BBox threshold sweep (what each value would have done)",
-                                "columns": [
-                                    {"key": "threshold", "label": "BBox threshold"},
-                                    {"key": "matched", "label": "BBoxes matching"},
-                                    {"key": "discarded", "label": "Would discard"},
-                                    {"key": "kept", "label": "Would keep"},
-                                ],
-                            },
-                        ],
-                    },
-                ],
-            },
+            *schema,
             {
                 "id": "sources",
                 "type": "table",

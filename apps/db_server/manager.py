@@ -124,6 +124,7 @@ from apps.helpers.recordings.clipDrain import DRAIN_FRACTION, MIN_DRAIN_INTERVAL
 from apps.helpers.serviceStatus import row, section
 from apps.helpers.timeUtils import ensure_utc
 from apps.helpers.tracking.Registry import tracker_registry
+from apps.helpers.training.collectorSpec import CollectorSpec, build_review_actions, task_tag_candidates
 from apps.helpers.types import FileEntryRead
 
 logging.basicConfig(stream=sys.stdout)
@@ -4111,6 +4112,39 @@ class Manager:
 
     async def delete_training_collector(self, uuid: str) -> bool:
         return await self._db_client.delete_training_collector(uuid)
+
+    async def get_training_collector_review_actions(self, uuid: str) -> List[dict]:
+        """The same "browse this collector's output" buttons a running watcher's
+        Jobs card shows — available whether or not anything is currently running.
+
+        `TrainingCollector.review_actions()` needs a live task tag (created, if
+        missing, on `start()`), which a stopped collector has never had a chance
+        to resolve. Reproduce that resolution read-only: compute the two
+        candidate uuids the same way `_resolve_tags` would name them
+        (`task_tag_candidates`), and prefer whichever one the DB says already
+        exists — mirroring the live path's own "reuse the legacy tag if its name
+        still matches" rule — without ever creating a tag from a page that is
+        just trying to answer "what's here to review".
+
+        A tag that doesn't exist yet (collector has never actually run) still
+        gets a uuid handed back: filtering Review on a tag nothing carries yet
+        just returns nothing, which is the correct answer for "not collected
+        anything yet" — better than hiding the button and forcing the run to
+        happen before its own review path can even be discovered.
+        """
+        collector = await self.get_training_collector(uuid)
+        if collector is None:
+            return []
+        spec = CollectorSpec.from_params(collector.params)
+        if not spec.generate_task_tag:
+            # No task tag means nothing on disk is scoped to THIS collector
+            # specifically — there's nothing to filter by that a run wouldn't
+            # also fail to filter by. Matches `review_actions()`'s own guard.
+            return []
+        legacy_tag_uuid, task_tag_uuid, tag_name = task_tag_candidates(uuid, collector.name, spec)
+        legacy_tag = await self.get_tag_by_uuid(legacy_tag_uuid)
+        resolved_tag_uuid = legacy_tag_uuid if (legacy_tag and legacy_tag.name == tag_name) else task_tag_uuid
+        return build_review_actions(resolved_tag_uuid, spec)
 
     # ── Watch profiles (StreamWatcher / NVR) ───────────────────────────────────
 

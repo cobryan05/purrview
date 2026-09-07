@@ -6446,6 +6446,13 @@ button.filter-active {
   box-sizing: border-box;
 }
 
+.collector-review-box__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 0.5rem);
+  margin-bottom: 0.75em;
+}
+
 /* Sub-heading label inside a panel body */
 .panel-section-label {
   margin: 0.6em 0 0.3em;
@@ -6866,6 +6873,52 @@ button.filter-active {
 
 .status-group__body {
   padding: 0.15em 0.5em 0.45em;
+}
+
+/* Collector diagnostics modal (ui/collectorDiagnosticsModal.js) */
+.collector-diag-dialog {
+  max-width: 46em;
+  width: 100%;
+}
+
+.collector-diag-links {
+  margin: 0.3em 0 0.6em;
+}
+
+.collector-diag-status {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  margin-bottom: 0.4em;
+}
+
+.collector-diag-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  margin-bottom: 0.4em;
+}
+
+.collector-diag-notice {
+  padding: 0.35em 0.6em;
+  border-radius: var(--radius-sm);
+  font-size: 0.85em;
+}
+
+.collector-diag-notice--warning {
+  background: var(--surface-warning, rgba(255, 193, 7, 0.12));
+  color: var(--text-warning, #b8860b);
+}
+
+.collector-diag-widgets {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.collector-diag-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  margin-top: 0.5em;
 }
 
 /* Active vs Completed task sections (ui/tasks.js) */

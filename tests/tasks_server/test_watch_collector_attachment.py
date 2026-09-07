@@ -296,6 +296,7 @@ class TestStatusDataCollectorsTable:
         assert data["collectorsTable"] == [
             {
                 "name": "Litter box collector",
+                "uuid": "c1",
                 "offered": 40,
                 "saved": 12,
                 # Blank, not 0: this collector has never saved for a non-band

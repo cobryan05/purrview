@@ -797,6 +797,32 @@ class Manager:
                 logger.exception("Failed to load persisted status data for %s", not_running)
         return status_data
 
+    async def get_task_collector_diagnostics(self, task_uuid: str, collector_uuid: str) -> Optional[dict[str, Any]]:
+        """Live `{stats, calibration, notices}` for one collector attached to a
+        running watcher — the tuning modal's data half.
+
+        Live-only, like `get_task_live_preview`: this is in-memory counter state
+        (dedup samples, ambiguity samples) that is never persisted to
+        `status_data_json`, so a stopped watcher has nothing to fall back to —
+        unlike `get_tasks_status_data`, whose consumer already reads a task's own
+        summary `collectorsTable` row from the persisted snapshot.
+
+        `getattr`, not attribute access: only `StreamWatcherTask` implements this
+        — a task type with a single fixed collector (`CollectTrainingImagesTask`)
+        already serves the same data through `get_status_data()`/status-data, and
+        has no per-collector uuid to key on in the first place.
+
+        Raises ValueError if the task isn't running; returns None if this task
+        type has no such method, or the uuid isn't attached to it.
+        """
+        task_info = self._running_tasks.get(task_uuid)
+        if task_info is None or task_info.task is None:
+            raise ValueError(f"Task {task_uuid} is not currently running")
+        get_diagnostics = getattr(task_info.task, "get_collector_diagnostics", None)
+        if get_diagnostics is None:
+            return None
+        return get_diagnostics(collector_uuid)
+
     async def get_task_live_preview(
         self, task_uuid: str, source_uuid: Optional[str] = None, **options: Any
     ) -> Optional[dict[str, Any]]:

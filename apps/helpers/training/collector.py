@@ -58,22 +58,28 @@ from db_client.api.labels_api import LabelsApi
 from db_client.api.settings_api import SettingsApi
 from db_client.api.tags_api import TagsApi
 from db_client.models.add_tag_payload import AddTagPayload
+from db_client.models.b_box_verification_term import BBoxVerificationTerm
 from db_client.models.bounding_box_metadata_model import BoundingBoxMetadataModel
+from db_client.models.image_label_state import ImageLabelState
+from db_client.models.image_search_params import ImageSearchParams
+from db_client.models.image_tag_term import ImageTagTerm
 from db_client.models.set_image_tag_payload import SetImageTagPayload
 from db_client.models.tag_kind import TagKind as ApiTagKind
+from db_client.models.terms_inner import TermsInner
 from db_client.models.update_metadata_payload import UpdateMetadataPayload
 from inference_client.api.inference_api import InferenceApi
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.bboxUtils import iou_xywh
-from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, DETECTOR_MISS_TAG_UUID, UNVERIFIED_TAG_UUID
+from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, UNVERIFIED_TAG_UUID
 from apps.helpers.detectionMerger import merge_detections_by_iou_and_hierarchy
 from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.hashUtils import (
     DEFAULT_BBOX_HASH_SIZE,
     DEFAULT_IMAGE_HASH_SIZE,
     PHASH_JPEG_QUALITY,
+    compute_image_phash,
     compute_phashes_with_jpeg_roundtrip,
     hamming,
     phash_from_numpy_crop,
@@ -85,12 +91,15 @@ from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.training.collectorSpec import (
     AMBIGUITY_KIND_CROSS_MODEL,
     AMBIGUITY_METRIC_RATIO,
+    EVICTION_LEAST_UNIQUE,
     SAME_BBOX_IOU_THRESHOLD,
     AmbiguityInfo,
     CollectorSpec,
     ambiguity_fires,
     ambiguity_value,
+    build_review_actions,
 )
+from apps.helpers.training.reviewQueueEviction import EvictionCandidate, select_for_eviction
 
 logging.basicConfig()
 logger = logging.getLogger(__file__)
@@ -347,6 +356,16 @@ class TrainingCollector:
         self._combined_pin_ids: dict[str, str] = {}
 
         self._pending_saves: list[tuple[asyncio.Task, Optional[str], str]] = []
+        #: Images deleted by the review-queue cap (plan: keep the review queue
+        #: lean). Surfaced in status_stats so a knob that's silently deleting
+        #: nothing (or everything) is visible, the same reasoning as every
+        #: other "is this feature doing anything" counter here.
+        self._evicted_total: int = 0
+        #: Guards against two eviction passes running at once — `collect_saves()`
+        #: is called from a hot loop and must never block on it, so a pass is
+        #: fired as a background task; this is that task, checked (not awaited)
+        #: before starting another.
+        self._eviction_task: Optional[asyncio.Task] = None
         #: Monotonic per-run save counter, used only to make live-source filenames
         #: unique — see `_save_image`. Not persisted: it exists to separate two
         #: saves within ONE run, and the UTC stamp beside it separates runs.
@@ -909,6 +928,7 @@ class TrainingCollector:
         """
         completed: list[str] = []
         still_pending = []
+        any_saved = False
         for task, uid, reason in self._pending_saves:
             if task.done():
                 try:
@@ -921,13 +941,156 @@ class TrainingCollector:
                 if uid:
                     completed.append(uid)
                 self._images_saved += 1
+                any_saved = True
                 self._saved_by_reason[reason] = self._saved_by_reason.get(reason, 0) + 1
                 self._log(f"Saved {filename} ({self._images_saved} total)")
             else:
                 still_pending.append((task, uid, reason))
         self._pending_saves.clear()
         self._pending_saves.extend(still_pending)
+        # `completed` is empty for every live-source save (FrameOffer.unique_id is
+        # None for those — see its own docstring), so it cannot be the trigger for
+        # "did anything land this round"; `any_saved` is the one signal both FIXED
+        # and live sources actually set.
+        if any_saved:
+            self._maybe_enforce_review_queue_cap()
         return completed
+
+    # ── review-queue eviction ────────────────────────────────────────────────
+
+    #: How many eviction candidates are ever pulled into memory / compared
+    #: pairwise (least_unique is O(n²) over this set). Self-limiting for the
+    #: common case: a count cap keeps the queue at or below this anyway. The
+    #: one case it silently truncates is a byte-only cap with no count cap and
+    #: a backlog past this size — that converges over several save cycles
+    #: instead of one, rather than risking an unbounded query and hash pass.
+    EVICTION_CANDIDATE_CEILING: int = 2000
+
+    def _maybe_enforce_review_queue_cap(self) -> None:
+        """Fire a background eviction pass, unless one is already running.
+
+        Called from `collect_saves()`, itself called from a driver's hot loop —
+        this method must never await anything itself. The task-in-flight check
+        is the throttle: while a pass is running, further saves in the same
+        window don't queue up a pile of overlapping passes; the next save after
+        it finishes re-checks and fires again if the queue is still over.
+        """
+        if self._spec.max_unverified_images is None and self._spec.max_unverified_bytes is None:
+            return
+        if self._task_tag_uuid is None:
+            return
+        if self._eviction_task is not None and not self._eviction_task.done():
+            return
+        self._eviction_task = asyncio.create_task(self._enforce_review_queue_cap())
+
+    async def _enforce_review_queue_cap(self) -> None:
+        """Delete this collector's own oldest/least-useful still-unverified
+        images until both configured caps are satisfied.
+
+        Never raises past this call — a failed eviction pass costs the next
+        save nothing but a fuller queue, which is the state before this
+        feature existed at all.
+        """
+        # Re-checked here, not just in the sync gate that schedules this task:
+        # a collector with no caps configured (the common case) must cost
+        # nothing, including to a caller that reaches this method directly.
+        if self._spec.max_unverified_images is None and self._spec.max_unverified_bytes is None:
+            return
+        if self._task_tag_uuid is None:
+            return
+        try:
+            images_api = ImagesApi(self._host.db_api_client())
+            verification_state = "no_boxes" if self._spec.collect_all else "unverified"
+            # Each term is wrapped in TermsInner (the generated client's oneOf
+            # holder) — ImageSearchParams.terms rejects a bare term instance,
+            # see TermsInner's own generated model.
+            count_params = ImageSearchParams(
+                sort_by="created_at",
+                sort_order="asc",
+                limit=1,
+                terms=[
+                    TermsInner(
+                        actual_instance=ImageTagTerm(tag_uuid=self._task_tag_uuid, state=ImageLabelState.PRESENT)
+                    ),
+                    TermsInner(actual_instance=BBoxVerificationTerm(state=verification_state)),
+                ],
+            )
+            count_resp = await asyncio.to_thread(images_api.get_review_queue, count_params)
+            total = count_resp.total_count
+            over_count = self._spec.max_unverified_images is not None and total > self._spec.max_unverified_images
+            if not over_count and self._spec.max_unverified_bytes is None:
+                return
+
+            page_params = count_params.model_copy(update={"limit": min(total, self.EVICTION_CANDIDATE_CEILING)})
+            page_resp = await asyncio.to_thread(images_api.get_review_queue, page_params)
+            candidates = [
+                EvictionCandidate(
+                    uuid=img.uuid,
+                    filename=img.filename,
+                    created_at=img.created_at,
+                    label_uuids=tuple(sorted({b.label_uuid for b in (img.bboxes or []) if b.label_uuid})),
+                )
+                for img in page_resp.images or []
+            ]
+            if not candidates:
+                return
+
+            if self._spec.eviction_strategy == EVICTION_LEAST_UNIQUE:
+                for candidate in candidates:
+                    candidate.phash = await asyncio.to_thread(self._safe_phash, candidate.filename)
+
+            sizes: dict[str, int] = {}
+            remaining_bytes: Optional[int] = None
+            if self._spec.max_unverified_bytes is not None:
+                for candidate in candidates:
+                    sizes[candidate.uuid] = await asyncio.to_thread(self._safe_file_size, candidate.filename)
+                remaining_bytes = sum(sizes.values())
+
+            # A single full-priority ranking, walked from the worst end, rather
+            # than re-ranking after every delete: both caps are satisfied by
+            # the same evict-the-worst-first order, so one pass answers both.
+            ranked = select_for_eviction(candidates, len(candidates), self._spec.eviction_strategy)
+            remaining_count = total
+            to_delete: list[EvictionCandidate] = []
+            for candidate in ranked:
+                over_count = self._spec.max_unverified_images is not None and (
+                    remaining_count > self._spec.max_unverified_images
+                )
+                over_bytes = (
+                    self._spec.max_unverified_bytes is not None
+                    and remaining_bytes is not None
+                    and remaining_bytes > self._spec.max_unverified_bytes
+                )
+                if not over_count and not over_bytes:
+                    break
+                to_delete.append(candidate)
+                remaining_count -= 1
+                if remaining_bytes is not None:
+                    remaining_bytes -= sizes.get(candidate.uuid, 0)
+
+            for candidate in to_delete:
+                try:
+                    await asyncio.to_thread(images_api.delete_image, candidate.uuid)
+                    self._evicted_total += 1
+                except Exception:
+                    logger.exception("review-queue eviction failed to delete %s", candidate.uuid)
+            if to_delete:
+                self._log(f"Review queue cap: evicted {len(to_delete)} image(s) ({self._evicted_total} total)")
+        except Exception:
+            logger.exception("review-queue cap enforcement failed for %s", self._tag_scope_name)
+
+    def _safe_phash(self, filename: str) -> Optional[str]:
+        try:
+            return compute_image_phash(self._files_root / filename)
+        except Exception:
+            logger.debug("Could not hash %s for eviction ranking", filename, exc_info=True)
+            return None
+
+    def _safe_file_size(self, filename: str) -> int:
+        try:
+            return (self._files_root / filename).stat().st_size
+        except OSError:
+            return 0
 
     async def drain_saves(self) -> list[str]:
         """Wait for every in-flight save, then collect the results."""
@@ -2161,6 +2324,9 @@ class TrainingCollector:
         if self._frames_dropped_behind:
             stats["dropped_behind"] = self._frames_dropped_behind
 
+        if self._spec.max_unverified_images is not None or self._spec.max_unverified_bytes is not None:
+            stats["evicted_total"] = self._evicted_total
+
         return stats, calibration
 
     def notices(self) -> list[dict]:
@@ -2188,69 +2354,11 @@ class TrainingCollector:
         """Ways into Review over this collector's images: everything, the part
         still needing a human, and (when enabled) the confusable subset.
 
-        The collector auto-annotates with its models and tags what it draws
-        UNVERIFIED, so after a long run "what did I collect" and "what do I still
-        have to look at" are different, and usually very different, questions. One
-        button could only answer the first.
+        Delegates to `build_review_actions` (collectorSpec.py) — the same pure
+        function a stopped collector's "browse this collector's output" button
+        uses, so the two surfaces can never drift apart.
         """
-        if not self._task_tag_uuid:
-            return []
-
-        # image_tag_uuids is what actually finds every collected frame: the tag
-        # is written to the image record, so it matches whether or not the frame
-        # ended up with bboxes. tag_uuids (a bbox-tag filter) is kept for
-        # annotated runs, where narrowing to the tagged bboxes is more useful.
-        scope = {
-            "tag_uuids": [] if self._spec.collect_all else [self._task_tag_uuid],
-            "image_tag_uuids": [self._task_tag_uuid],
-        }
-        actions = [
-            {
-                "type": "open_review",
-                "label": "Browse all results",
-                # Sent explicitly rather than omitted so this also *clears* an
-                # 'unverified' filter left over from the button next to it.
-                "payload": {**scope, "bbox_verification": "any"},
-            },
-            {
-                "type": "open_review",
-                "label": "Browse unverified",
-                "payload": {**scope, "bbox_verification": "unverified"},
-            },
-        ]
-        if self._spec.enable_ambiguity:
-            # The confusable set is usually a small fraction of a run and is the
-            # part with the highest review value per box, so it gets its own way
-            # in rather than being something to reconstruct by hand in the filter
-            # bar. Narrowed by bbox tag, which is what the tag is for.
-            actions.append(
-                {
-                    "type": "open_review",
-                    "label": "Browse confusable",
-                    "payload": {
-                        **scope,
-                        "tag_uuids": [*(scope["tag_uuids"] or []), CONFUSABLE_TAG_UUID],
-                        "bbox_verification": "any",
-                    },
-                }
-            )
-        if self._spec.enable_detector_miss:
-            # Always unverified — a detector-miss box is a fresh seed, never a
-            # confirmed one (plan §5: "unverified": narrower than confusable's
-            # "any", since a verified detector-miss box has already had its
-            # one human look).
-            actions.append(
-                {
-                    "type": "open_review",
-                    "label": "Browse detector misses",
-                    "payload": {
-                        **scope,
-                        "tag_uuids": [*(scope["tag_uuids"] or []), DETECTOR_MISS_TAG_UUID],
-                        "bbox_verification": "unverified",
-                    },
-                }
-            )
-        return actions
+        return build_review_actions(self._task_tag_uuid, self._spec)
 
     def resume_fragment(self) -> dict[str, Any]:
         """The collector's half of a checkpoint."""

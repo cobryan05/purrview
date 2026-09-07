@@ -229,6 +229,27 @@ export async function fetchTaskLivePreview(
   return data.status === 'success' ? (data.preview ?? null) : null;
 }
 
+/**
+ * Live `{stats, calibration, notices}` for one collector attached to a running
+ * watcher — the data half of the collector diagnostics modal (the widget
+ * definitions come from `fetchCollectorStatusSchema`, which is static and
+ * fetched separately). Live-only: a stopped watcher has nothing to serve this
+ * from, so `null` covers both "not running" and "not attached".
+ *
+ * @param {string} taskUuid
+ * @param {string} collectorUuid
+ * @returns {Promise<?object>}
+ * @throws {Error} only on a transport failure
+ */
+export async function fetchCollectorDiagnostics(taskUuid, collectorUuid) {
+  const res = await apiFetch(
+    `/api/tasks/instances/${encodeURIComponent(taskUuid)}/collectors/${encodeURIComponent(collectorUuid)}/diagnostics`,
+  );
+  if (!res.ok) throw new Error(`Collector diagnostics request failed (${res.status})`);
+  const data = await res.json();
+  return data.status === 'success' ? (data.diagnostics ?? null) : null;
+}
+
 /** Task typename of the watcher, which is what owns a live event's frame buffers. */
 const WATCHER_TYPENAME = 'StreamWatcherTask';
 

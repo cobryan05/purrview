@@ -24,6 +24,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { NEW_ITEM_SELECTION, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { Logger, showPaneError, toast } from '/app-static/js/ui/utils/index.js';
 import { openWatcherLiveView } from '/app-static/js/app/nvr/liveViewModal.js';
+import { openCollectorDiagnosticsModal, openCollectorPickerModal } from '/app-static/js/ui/collectorDiagnosticsModal.js';
 import {
   DEFAULT_REFRESH_MS,
   REFRESH_RATES,
@@ -637,6 +638,44 @@ function _profileCard(profile, task, sources = [], arming = new Map()) {
     );
     liveBtn.dataset.testid = 'nvr-live-view';
     bar.appendChild(liveBtn);
+
+    // The tuning surface for whatever this watcher is feeding training data
+    // into — live stats/calibration, "Browse unverified" and friends, and a
+    // link to the collector's own config, all in one place (see
+    // collectorDiagnosticsModal.js). The collector list itself is only
+    // resolved on click (`get_status_data()`'s `collectorsTable`, which this
+    // pane doesn't otherwise fetch) rather than on every render of this
+    // card — the Live pane already re-renders on any task-stream event, and
+    // that is too often to be pulling per-collector stats nobody has asked
+    // to see yet.
+    const collectorBtn = _panelButton('Collector…', async () => {
+      collectorBtn.disabled = true;
+      try {
+        const dataMap = await fetchTaskStatusData([task.taskUuid]);
+        const rows = dataMap.get(task.taskUuid)?.collectorsTable ?? [];
+        if (!rows.length) {
+          toast(`${profile.name} has no training collector attached`, 4000, 'warning');
+          return;
+        }
+        const open = (row) => openCollectorDiagnosticsModal({
+          collectorUuid: row.uuid,
+          collectorName: row.name,
+          taskUuid: task.taskUuid,
+        });
+        if (rows.length === 1) {
+          open(rows[0]);
+          return;
+        }
+        openCollectorPickerModal({ rows, onPick: open });
+      } catch (err) {
+        Logger.error(err);
+        toast('Could not load this watcher’s collectors', 5000, 'error');
+      } finally {
+        collectorBtn.disabled = false;
+      }
+    });
+    collectorBtn.dataset.testid = 'nvr-collector-diagnostics';
+    bar.appendChild(collectorBtn);
   }
 
   // Start/stop belongs here as well as in Jobs. This pane is where you *look* to see

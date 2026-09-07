@@ -27,6 +27,18 @@ const schemaFetcher = createCachedFetcher(async (keys) => {
   return ignoreKeyReturn(keys, data.paramsSchema);
 });
 
+/** The status widgets `collector_status_schema()` describes — static for the life
+ *  of the server, same reasoning as `schemaFetcher` above. The diagnostics modal
+ *  fetches this once and polls only the live per-collector data after that. */
+const statusSchemaFetcher = createCachedFetcher(async (keys) => {
+  const res = await apiFetch('/api/training-collectors/status-schema');
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch collector status schema');
+  }
+  return ignoreKeyReturn(keys, data.statusSchema);
+});
+
 export function clearTrainingCollectorsCache() {
   collectorsFetcher.clear();
 }
@@ -41,6 +53,10 @@ export async function fetchTrainingCollectors() {
 
 export async function fetchCollectorParamsSchema() {
   return schemaFetcher.fetch('collectorSchema');
+}
+
+export async function fetchCollectorStatusSchema() {
+  return statusSchemaFetcher.fetch('collectorStatusSchema');
 }
 
 /** -----------------------------
@@ -79,6 +95,20 @@ export async function updateTrainingCollector(uuid, { name, description, enabled
   }
   collectorsFetcher.clear();
   return data.collector;
+}
+
+/** Ways into Review over this collector's own output — "Browse unverified" etc.
+ *  — resolved read-only against whatever tag a run of this collector has
+ *  produced (or would produce), whether or not anything is running right now.
+ *  Not cached: unlike the schema/list above, whether a tag already exists can
+ *  change between one collector's first run and the next visit to this page. */
+export async function fetchTrainingCollectorReviewActions(uuid) {
+  const res = await apiFetch(`/api/training-collectors/${uuid}/review-actions`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch review actions');
+  }
+  return data.actions ?? [];
 }
 
 export async function deleteTrainingCollector(uuid) {

@@ -2513,6 +2513,11 @@ class StreamWatcherTask(Task):
             collectors_table.append(
                 {
                     "name": name,
+                    # Not rendered by the table widget (not one of its configured
+                    # columns) — carried so the Live pane's watcher card can open
+                    # this specific collector's own diagnostics view without
+                    # having to match on name.
+                    "uuid": collector_uuid,
                     "offered": stats.get("offered", 0),
                     # "Collected", not "ready to train": an image becomes trainable
                     # only once every in-scope label has an explicit PRESENT/ABSENT
@@ -2597,6 +2602,23 @@ class StreamWatcherTask(Task):
         if not rule_uuid:
             raise ValueError("set_rule_armed requires a ruleUuid")
         self._manager.get_mqtt_bridge().set_rule_armed(rule_uuid, bool(params.get("armed")))
+
+    def get_collector_diagnostics(self, collector_uuid: str) -> Optional[dict[str, Any]]:
+        """`{stats, calibration, notices}` for ONE attached collector — the data
+        half of the per-collector tuning modal (`collector_status_schema()` is
+        the other half, and is static, so it isn't served from here).
+
+        `None` when the uuid isn't attached to this watcher (including "no
+        collectors at all yet" during the PENDING window) — the caller reads
+        that as "nothing to show", not an error; a collector can be detached by
+        an edit made while its diagnostics view is open.
+        """
+        collectors: dict[str, Any] = getattr(self, "_collectors", None) or {}
+        collector = collectors.get(collector_uuid)
+        if collector is None:
+            return None
+        stats, calibration = collector.status_stats()
+        return {"stats": stats, "calibration": calibration, "notices": collector.notices()}
 
     def get_status_actions(self) -> list[dict]:
         """Ways into Review over what the attached collectors have collected.

@@ -168,6 +168,13 @@ class TaskLivePreviewResponse(StatusResponse):
     preview: Optional[dict] = None
 
 
+class TaskCollectorDiagnosticsResponse(StatusResponse):
+    #: `{stats, calibration, notices}` — same free-form-dict reasoning as
+    #: `preview` above. Absent when the task isn't running, has no such
+    #: collector attached, or is a task type with nothing per-collector to show.
+    diagnostics: Optional[dict] = None
+
+
 class GrabSourceFrameResponse(StatusResponse):
     #: Bare base64 JPEG — the bytes an <img> src wants, not the inference API's envelope.
     frame: Optional[str] = None
@@ -556,6 +563,31 @@ class WebApp:
             if preview is None:
                 return TaskLivePreviewResponse(status=WebApp.FAILURE_KEY, message="This task type has no live view")
             return TaskLivePreviewResponse(status=WebApp.SUCCESS_KEY, preview=preview)
+
+        @self._app.get(
+            "/api/tasks/instances/{task_uuid}/collectors/{collector_uuid}/diagnostics",
+            tags=[WebApp.TASKS_API_TAG_NAME],
+            operation_id="get_task_collector_diagnostics",
+            response_model=TaskCollectorDiagnosticsResponse,
+        )
+        async def get_task_collector_diagnostics_api(
+            task_uuid: str, collector_uuid: str
+        ) -> TaskCollectorDiagnosticsResponse:
+            """Live tuning stats for one collector attached to a running watcher —
+            the data half of the collector diagnostics modal. A GET, polled every
+            few seconds while the modal is open, for the same reason live-preview
+            is: it reads state without touching it.
+            """
+            try:
+                diagnostics = await self._manager.get_task_collector_diagnostics(task_uuid, collector_uuid)
+            except ValueError as e:
+                # Not running is the ordinary case (the watcher was stopped while
+                # the modal was open), not a server fault.
+                return TaskCollectorDiagnosticsResponse(status=WebApp.FAILURE_KEY, message=str(e))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TaskCollectorDiagnosticsResponse(status=WebApp.FAILURE_KEY, message=str(e))
+            return TaskCollectorDiagnosticsResponse(status=WebApp.SUCCESS_KEY, diagnostics=diagnostics)
 
         @self._app.get(
             "/api/tasks/instances/{task_uuid}/timelapse-preview",

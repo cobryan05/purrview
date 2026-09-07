@@ -9,6 +9,8 @@ collector editor, are both silent — nothing raises, the form is just wrong.
 from apps.helpers.training.collectorSpec import (
     AMBIGUITY_METRIC_MARGIN,
     AMBIGUITY_METRIC_RATIO,
+    EVICTION_FIFO,
+    EVICTION_STRATEGIES,
     CollectorSpec,
     collector_params_schema,
     parse_confidence_band,
@@ -134,6 +136,31 @@ class TestCollectorSpecFromParams:
         assert spec.ambiguity_metric == AMBIGUITY_METRIC_RATIO
         spec = CollectorSpec.from_params({"output_dir": "out", "ambiguity_metric": AMBIGUITY_METRIC_MARGIN})
         assert spec.ambiguity_metric == AMBIGUITY_METRIC_MARGIN
+
+    def test_review_queue_limits_default_to_unlimited(self):
+        spec = CollectorSpec.from_params({"output_dir": "out"})
+        assert spec.max_unverified_images is None
+        assert spec.max_unverified_bytes is None
+        assert spec.eviction_strategy == EVICTION_FIFO
+
+    def test_zero_review_queue_limits_mean_unlimited_not_zero(self):
+        """The UI's blank/0 convention for 'no limit' — matches max_images above."""
+        spec = CollectorSpec.from_params({"output_dir": "out", "max_unverified_images": 0, "max_unverified_mb": 0})
+        assert spec.max_unverified_images is None
+        assert spec.max_unverified_bytes is None
+
+    def test_max_unverified_mb_is_converted_to_bytes(self):
+        spec = CollectorSpec.from_params({"output_dir": "out", "max_unverified_mb": 5})
+        assert spec.max_unverified_bytes == 5 * 1024 * 1024
+
+    def test_unknown_eviction_strategy_falls_back_to_fifo(self):
+        spec = CollectorSpec.from_params({"output_dir": "out", "eviction_strategy": "vibes"})
+        assert spec.eviction_strategy == EVICTION_FIFO
+
+    def test_eviction_strategy_round_trips_for_every_known_value(self):
+        for strategy in EVICTION_STRATEGIES:
+            spec = CollectorSpec.from_params({"output_dir": "out", "eviction_strategy": strategy})
+            assert spec.eviction_strategy == strategy
 
 
 class TestSchemaGrouping:

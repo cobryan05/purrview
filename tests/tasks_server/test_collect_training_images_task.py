@@ -2409,7 +2409,7 @@ class TestStatusSchema:
         assert "source" not in group
 
         inner = {w["id"]: w for w in group["widgets"] if w.get("type") == "group"}
-        assert set(inner) == {"dedup_image_group", "dedup_bbox_group"}
+        assert set(inner) == {"dedup_hint_group", "dedup_image_group", "dedup_bbox_group"}
         assert {w["id"] for w in inner["dedup_image_group"]["widgets"]} == {
             "dedup_image_hist",
             "dedup_image_sweep",
@@ -2418,10 +2418,15 @@ class TestStatusSchema:
             "dedup_bbox_hist",
             "dedup_bbox_sweep",
         }
-        # The inner ones open with their parent — a second click to see anything
-        # would defeat the point of opening the outer group.
+        # The inner distance groups open with their parent — a second click to
+        # see anything would defeat the point of opening the outer group. The
+        # explanatory hint is the exception: it's the same paragraph every
+        # time, so it starts collapsed even once the calibration block itself
+        # is open.
         assert inner["dedup_image_group"].get("collapsed", False) is False
         assert inner["dedup_bbox_group"].get("collapsed", False) is False
+        assert inner["dedup_hint_group"]["collapsed"] is True
+        assert {w["id"] for w in inner["dedup_hint_group"]["widgets"]} == {"dedup_hint"}
 
     def test_unconditional_keys_present_before_init(self):
         task = _make_task()
@@ -5500,3 +5505,122 @@ class TestSendWidth:
         """An unreadable ONNX graph must never make a working collector start
         re-encoding frames at a guessed size."""
         assert self._collector(None).send_width(1920) is None
+
+
+class _FakeBBox:
+    def __init__(self, label_uuid):
+        self.label_uuid = label_uuid
+
+
+class _FakeImage:
+    def __init__(self, uuid, created_at, label_uuids=()):
+        self.uuid = uuid
+        self.filename = f"{uuid}.jpg"
+        self.created_at = created_at
+        self.bboxes = [_FakeBBox(label_uuid) for label_uuid in label_uuids]
+
+
+class _FakeReviewQueueResponse:
+    def __init__(self, images, total_count):
+        self.images = images
+        self.total_count = total_count
+
+
+class TestReviewQueueEviction:
+    """`TrainingCollector._enforce_review_queue_cap` — the part of the review-queue
+    cap feature that actually deletes something. `select_for_eviction` itself
+    (which strategy picks which candidate) has its own pure tests; these guard
+    the surrounding wiring: does it skip when nothing is configured, does it ask
+    for the right verification state, does it delete the right count and no more.
+    """
+
+    @staticmethod
+    def _collector(params):
+        collector = _detached_collector({"output_dir": "out", **params})
+        # Normally set by _resolve_tags() during start(), which needs a real DB
+        # round-trip this test doesn't want. Eviction only needs the identity,
+        # not how it was resolved.
+        collector._task_tag_uuid = "collector-tag-uuid"
+        return collector
+
+    async def test_no_op_when_no_caps_configured(self):
+        collector = self._collector({})
+        with patch("apps.helpers.training.collector.ImagesApi") as fake_api_cls:
+            await collector._enforce_review_queue_cap()
+        fake_api_cls.assert_not_called()
+
+    async def test_no_op_before_the_task_tag_is_resolved(self):
+        """The PENDING-window state `start()` hasn't reached yet — nothing to
+        scope eviction to, so it must not guess and delete something else's images."""
+        collector = self._collector({"max_unverified_images": 1})
+        collector._task_tag_uuid = None
+        with patch("apps.helpers.training.collector.ImagesApi") as fake_api_cls:
+            collector._maybe_enforce_review_queue_cap()
+            await asyncio.sleep(0)  # let any (wrongly) scheduled task start
+        fake_api_cls.assert_not_called()
+
+    async def test_evicts_the_oldest_excess_under_fifo(self):
+        collector = self._collector({"max_unverified_images": 2, "eviction_strategy": "fifo"})
+        images = [
+            _FakeImage("oldest", datetime(2026, 1, 1)),
+            _FakeImage("middle", datetime(2026, 1, 2)),
+            _FakeImage("newest", datetime(2026, 1, 3)),
+        ]
+        fake_api = MagicMock()
+        fake_api.get_review_queue.side_effect = [
+            _FakeReviewQueueResponse([], total_count=3),  # the cheap count-only check
+            _FakeReviewQueueResponse(images, total_count=3),  # the full candidate page
+        ]
+        with patch("apps.helpers.training.collector.ImagesApi", return_value=fake_api):
+            await collector._enforce_review_queue_cap()
+        fake_api.delete_image.assert_called_once_with("oldest")
+        assert collector._evicted_total == 1
+
+    async def test_stays_under_the_ceiling_never_deletes_when_not_over(self):
+        collector = self._collector({"max_unverified_images": 5})
+        fake_api = MagicMock()
+        fake_api.get_review_queue.return_value = _FakeReviewQueueResponse([], total_count=3)
+        with patch("apps.helpers.training.collector.ImagesApi", return_value=fake_api):
+            await collector._enforce_review_queue_cap()
+        fake_api.delete_image.assert_not_called()
+        # Only the cheap count check ran — no reason to fetch a candidate page
+        # for a queue that isn't over the cap.
+        assert fake_api.get_review_queue.call_count == 1
+
+    async def test_label_balance_targets_the_over_represented_label(self):
+        collector = self._collector({"max_unverified_images": 3, "eviction_strategy": "label_balance"})
+        images = [
+            _FakeImage("cat1", datetime(2026, 1, 1), ["cat"]),
+            _FakeImage("cat2", datetime(2026, 1, 2), ["cat"]),
+            _FakeImage("raccoon1", datetime(2026, 1, 3), ["raccoon"]),
+            _FakeImage("cat3", datetime(2026, 1, 4), ["cat"]),
+        ]
+        fake_api = MagicMock()
+        fake_api.get_review_queue.side_effect = [
+            _FakeReviewQueueResponse([], total_count=4),
+            _FakeReviewQueueResponse(images, total_count=4),
+        ]
+        with patch("apps.helpers.training.collector.ImagesApi", return_value=fake_api):
+            await collector._enforce_review_queue_cap()
+        fake_api.delete_image.assert_called_once()
+        assert fake_api.delete_image.call_args[0][0] in ("cat1", "cat2", "cat3")
+
+    async def test_collect_saves_fires_an_eviction_pass_in_the_background(self):
+        """The actual wiring a driver relies on: harvesting a completed save
+        triggers a cap check without collect_saves() itself ever awaiting it."""
+        collector = self._collector({"max_unverified_images": 1})
+        images = [_FakeImage("old", datetime(2026, 1, 1)), _FakeImage("new", datetime(2026, 1, 2))]
+        fake_api = MagicMock()
+        fake_api.get_review_queue.side_effect = [
+            _FakeReviewQueueResponse([], total_count=2),
+            _FakeReviewQueueResponse(images, total_count=2),
+        ]
+        with patch("apps.helpers.training.collector.ImagesApi", return_value=fake_api):
+            done = asyncio.get_event_loop().create_future()
+            done.set_result("saved.jpg")
+            collector._pending_saves.append((done, None, SAVE_REASON_BAND))
+            collector.collect_saves()
+            assert collector._eviction_task is not None
+            await await_condition(lambda: fake_api.delete_image.called, "eviction pass never ran")
+            await collector._eviction_task
+        fake_api.delete_image.assert_called_once_with("old")

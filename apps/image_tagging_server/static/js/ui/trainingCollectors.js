@@ -15,6 +15,7 @@ import {
   createTrainingCollector,
   deleteTrainingCollector,
   fetchCollectorParamsSchema,
+  fetchTrainingCollectorReviewActions,
   fetchTrainingCollectors,
   updateTrainingCollector,
 } from '/app-static/js/shared/api/trainingCollectors.js';
@@ -22,11 +23,62 @@ import { buildPanelEditorBar, makeFieldRow, toast } from '/app-static/js/ui/util
 import { FIELD_EDIT_EVENT } from '/app-static/js/ui/utils/fields/Field.js';
 import { SchemaField } from '/app-static/js/ui/utils/fields/SchemaField.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 const TAB_ID = 'tab-collector-management';
 
 let _rendering = false;
 let _navGuardController = null;
+
+/**
+ * "Browse unverified" and friends for one collector — works whether or not
+ * anything is currently running (see `fetchTrainingCollectorReviewActions`),
+ * which is the reason this lives on the collector's own config page rather than
+ * only on a running task's status card: a stopped watcher's already-collected
+ * frames are exactly as reviewable as a running one's.
+ *
+ * "Browse unverified" alone is a superset of the narrower buttons beside it —
+ * a band match, a confusable flag, and a detector-miss seed all start life
+ * unverified — but all of them are still offered here rather than just the one:
+ * they're the same buttons a running watcher's Jobs card shows, and hiding some
+ * of them here would mean the two surfaces disagree about what this collector
+ * produced.
+ */
+async function _loadReviewActions(box, collectorUuid) {
+  let actions;
+  try {
+    actions = await fetchTrainingCollectorReviewActions(collectorUuid);
+  } catch (err) {
+    console.error('Could not load review actions for collector', collectorUuid, err);
+    return;
+  }
+  if (!actions.length) return;
+  const label = document.createElement('div');
+  label.className = 'panel-section-label';
+  label.textContent = 'Review this collector’s output';
+  box.appendChild(label);
+  const row = document.createElement('div');
+  row.className = 'collector-review-box__row';
+  for (const action of actions) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'panel-btn';
+    btn.textContent = action.label;
+    btn.dataset.testid = 'collector-review-action';
+    btn.addEventListener('click', () => {
+      const payload = {
+        tagUuids: action.payload?.tag_uuids ?? [],
+        imageTagUuids: action.payload?.image_tag_uuids ?? [],
+      };
+      if (action.payload?.bbox_verification !== undefined) {
+        payload.bboxVerification = action.payload.bbox_verification;
+      }
+      events.publish(EventTypes.OPEN_REVIEW_WITH_FILTERS, payload);
+    });
+    row.appendChild(btn);
+  }
+  box.appendChild(row);
+}
 
 /**
  * Name/description/enabled, then the schema-rendered params.
@@ -53,6 +105,18 @@ async function buildCollectorForm(container, collector, schema, { onAnyChange })
   enabledCheckbox.type = 'checkbox';
   enabledCheckbox.checked = collector?.enabled !== false;
   container.appendChild(makeFieldRow('Enabled', enabledCheckbox));
+
+  // Only for a collector that's already been saved — a not-yet-created one has no
+  // uuid to have collected anything under. Independent of whether anything using
+  // it is currently running: the tag a run produces (or would produce) outlives
+  // the run, which is the whole point of asking here rather than on a job card.
+  if (collector?.uuid) {
+    const reviewBox = document.createElement('div');
+    reviewBox.className = 'collector-review-box';
+    reviewBox.dataset.testid = 'collector-review-actions';
+    container.appendChild(reviewBox);
+    void _loadReviewActions(reviewBox, collector.uuid);
+  }
 
   const schemaField = await SchemaField.create({
     schema,

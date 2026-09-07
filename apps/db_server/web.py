@@ -91,7 +91,7 @@ from apps.helpers.db.types import (
     WatchProfileUpdate,
 )
 from apps.helpers.logUtils import LOG_LEVEL
-from apps.helpers.training.collectorSpec import collector_params_schema
+from apps.helpers.training.collectorSpec import collector_params_schema, collector_status_schema
 from apps.helpers.types import (
     Base64Image,
     BoundingBoxMetadataModel,
@@ -927,6 +927,20 @@ class TrainingCollectorSchemaResponse(StatusResponse):
     #: `collector_params_schema()` verbatim — field shapes vary per knob, so this
     #: stays an untyped dict rather than a model that would have to restate them.
     params_schema: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingCollectorStatusSchemaResponse(StatusResponse):
+    #: `collector_status_schema()` verbatim — same untyped-list reasoning as
+    #: `params_schema` above (widget shapes vary per type).
+    status_schema: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class TrainingCollectorReviewActionsResponse(StatusResponse):
+    #: `build_review_actions()` verbatim (collectorSpec.py) — an untyped list of
+    #: `{type, label, payload}` dicts, same shape a running watcher's status card
+    #: already sends for `open_review` actions, so the frontend button handler
+    #: is shared rather than restated for this cold (no-task) path.
+    actions: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class AddPreviewCandidatesPayload(ApiPayload):
@@ -4485,6 +4499,22 @@ class WebApp:
             # the editor renders it rather than restating it in JS.
             return TrainingCollectorSchemaResponse(status=JsonValues.SUCCESS, params_schema=collector_params_schema())
 
+        # Before /{uuid}, for the same reason "schema" above is.
+        @self._app.get(
+            "/api/training-collectors/status-schema",
+            response_model=TrainingCollectorStatusSchemaResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="get_training_collector_status_schema",
+        )
+        async def get_training_collector_status_schema() -> TrainingCollectorStatusSchemaResponse:
+            # Static — describes every widget `status_stats()`/`notices()` can ever
+            # populate, not any one collector's current values. The diagnostics
+            # modal fetches this once and polls only the per-collector data
+            # endpoint (`get_task_collector_diagnostics`) after that.
+            return TrainingCollectorStatusSchemaResponse(
+                status=JsonValues.SUCCESS, status_schema=collector_status_schema()
+            )
+
         @self._app.get(
             "/api/training-collectors/{uuid}",
             response_model=TrainingCollectorResponse,
@@ -4500,6 +4530,20 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return TrainingCollectorResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/training-collectors/{uuid}/review-actions",
+            response_model=TrainingCollectorReviewActionsResponse,
+            tags=[ApiTags.TRAINING_COLLECTORS],
+            operation_id="get_training_collector_review_actions",
+        )
+        async def get_training_collector_review_actions(uuid: str) -> TrainingCollectorReviewActionsResponse:
+            try:
+                actions = await self._manager.get_training_collector_review_actions(uuid)
+                return TrainingCollectorReviewActionsResponse(status=JsonValues.SUCCESS, actions=actions)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return TrainingCollectorReviewActionsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.patch(
             "/api/training-collectors/{uuid}",

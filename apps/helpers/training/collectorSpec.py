@@ -22,10 +22,12 @@ is the whole point — the alternative is two copies that drift.
 """
 
 import logging
+import uuid as uuid_module
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from apps.helpers.db.db_client import CONFUSABLE_TAG_UUID, DETECTOR_MISS_TAG_UUID
 from apps.helpers.detectionMerger import MergePolicy
 from apps.helpers.logUtils import LOG_LEVEL
 
@@ -52,6 +54,16 @@ AMBIGUITY_METRIC_MARGIN = "margin"
 
 AMBIGUITY_KIND_SAME_MODEL = "same_model"
 AMBIGUITY_KIND_CROSS_MODEL = "cross_model"
+
+
+# Review-queue eviction strategies — which already-saved, still-unverified image
+# a cap-exceeding collector deletes first. See `reviewQueueEviction.py` for the
+# selection logic itself; this module only owns the identifiers and the schema
+# that lets a config name one.
+EVICTION_FIFO = "fifo"
+EVICTION_LEAST_UNIQUE = "least_unique"
+EVICTION_LABEL_BALANCE = "label_balance"
+EVICTION_STRATEGIES: tuple[str, ...] = (EVICTION_FIFO, EVICTION_LEAST_UNIQUE, EVICTION_LABEL_BALANCE)
 
 
 @dataclass
@@ -299,6 +311,18 @@ class CollectorSpec:
     #: cap throws away the pose variation that is the whole point of the feature.
     max_frames_per_track: int = 25
 
+    # ── review queue limits ────────────────────────────────────────────────────
+    #: Distinct from `max_images`/`max_duration_s` above: those stop the
+    #: collector; these prune what it has already saved. A collector left
+    #: running unattended has no other way to stay bounded, and an unbounded
+    #: unverified pile is the thing that actually breaks review — not disk
+    #: usage, but a human giving up on a queue too long to face.
+    max_unverified_images: Optional[int] = None
+    #: Bytes, not MB — see `parse_size_mb` for the params-JSON side of that unit
+    #: choice. Independent of `max_unverified_images`: either can be set alone.
+    max_unverified_bytes: Optional[int] = None
+    eviction_strategy: str = EVICTION_FIFO
+
     @property
     def target_label_bands(self) -> Dict[str, ConfidenceBand]:
         return {t.label_uuid: t.band for t in self.target_labels}
@@ -407,7 +431,272 @@ class CollectorSpec:
             # zero-length, so nothing would ever compare as non-novel and the
             # prefilter would silently become a no-op.
             max_frames_per_track=max(1, _as_int(params.get("max_frames_per_track"), 25)),
+            max_unverified_images=(
+                int(_max_unverified_images_raw)
+                if (_max_unverified_images_raw := params.get("max_unverified_images"))
+                else None
+            ),
+            # Stored as MB in params JSON (a human picks a number of megabytes,
+            # not bytes) and converted once here, so every reader downstream
+            # compares against a plain byte count without redoing the unit math.
+            max_unverified_bytes=(
+                int(_max_unverified_mb_raw * 1024 * 1024)
+                if (_max_unverified_mb_raw := _as_float(params.get("max_unverified_mb"), 0.0))
+                else None
+            ),
+            eviction_strategy=(
+                params.get("eviction_strategy")
+                if params.get("eviction_strategy") in EVICTION_STRATEGIES
+                else EVICTION_FIFO
+            ),
         )
+
+
+def task_tag_candidates(collector_uuid: str, collector_name: str, spec: "CollectorSpec") -> tuple[str, str, str]:
+    """The tag identity a run of this collector would resolve to, computed with
+    no I/O — mirrors `TrainingCollector._resolve_tags`'s naming/hashing exactly
+    (see there for why it's name-keyed, not scope-alone) but stops short of
+    reading or creating anything, so a **stopped** collector's tag can still be
+    named for a "browse what this collector has produced" button (plan: review
+    integration without a running task).
+
+    Returns `(legacy_tag_uuid, task_tag_uuid, tag_name)`. The caller decides
+    which of the two uuids is the one actually in use — that requires a DB
+    lookup this function deliberately doesn't do.
+    """
+    tag_name = spec.task_tag_name_override or f"[Task] {collector_name}"
+    legacy_tag_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_OID, collector_uuid))
+    task_tag_uuid = str(uuid_module.uuid5(uuid_module.NAMESPACE_OID, f"{collector_uuid}:{tag_name}"))
+    return legacy_tag_uuid, task_tag_uuid, tag_name
+
+
+def build_review_actions(task_tag_uuid: Optional[str], spec: "CollectorSpec") -> list[dict]:
+    """Ways into Review over one collector's images: everything, the part still
+    needing a human, and (when enabled) the confusable / detector-miss subsets.
+
+    Pure function of the resolved tag and the spec — no host, no live collector
+    instance — so it can build the exact same button set whether the collector
+    is currently running (`TrainingCollector.review_actions()`) or has never run
+    at all (a "browse this collector's output" button on its config page).
+
+    The collector auto-annotates with its models and tags what it draws
+    UNVERIFIED, so after a long run "what did I collect" and "what do I still
+    have to look at" are different, and usually very different, questions. One
+    button could only answer the first — and "Browse unverified" alone already
+    answers "what might be worth training on": every category this collector can
+    produce (a band match, a confusable flag, a detector-miss seed, or a bare
+    collect-all frame) starts life unverified, so it's a strict superset of the
+    narrower buttons below, not an alternative reading of the same data.
+    """
+    if not task_tag_uuid:
+        return []
+
+    # image_tag_uuids is what actually finds every collected frame: the tag is
+    # written to the image record, so it matches whether or not the frame ended
+    # up with bboxes. tag_uuids (a bbox-tag filter) is kept for annotated runs,
+    # where narrowing to the tagged bboxes is more useful.
+    scope = {
+        "tag_uuids": [] if spec.collect_all else [task_tag_uuid],
+        "image_tag_uuids": [task_tag_uuid],
+    }
+    actions = [
+        {
+            "type": "open_review",
+            "label": "Browse all results",
+            # Sent explicitly rather than omitted so this also *clears* an
+            # 'unverified' filter left over from the button next to it.
+            "payload": {**scope, "bbox_verification": "any"},
+        },
+        {
+            "type": "open_review",
+            "label": "Browse unverified",
+            "payload": {**scope, "bbox_verification": "unverified"},
+        },
+    ]
+    if spec.enable_ambiguity:
+        # The confusable set is usually a small fraction of a run and is the
+        # part with the highest review value per box, so it gets its own way in
+        # rather than being something to reconstruct by hand in the filter bar.
+        # Narrowed by bbox tag, which is what the tag is for.
+        actions.append(
+            {
+                "type": "open_review",
+                "label": "Browse confusable",
+                "payload": {
+                    **scope,
+                    "tag_uuids": [*(scope["tag_uuids"] or []), CONFUSABLE_TAG_UUID],
+                    "bbox_verification": "any",
+                },
+            }
+        )
+    if spec.enable_detector_miss:
+        # Always unverified — a detector-miss box is a fresh seed, never a
+        # confirmed one (plan §5: "unverified": narrower than confusable's
+        # "any", since a verified detector-miss box has already had its one
+        # human look).
+        actions.append(
+            {
+                "type": "open_review",
+                "label": "Browse detector misses",
+                "payload": {
+                    **scope,
+                    "tag_uuids": [*(scope["tag_uuids"] or []), DETECTOR_MISS_TAG_UUID],
+                    "bbox_verification": "unverified",
+                },
+            }
+        )
+    return actions
+
+
+def collector_status_schema() -> list[dict[str, Any]]:
+    """The status widgets covering everything `TrainingCollector.status_stats()`
+    and `notices()` can report — one definition, mirroring
+    `collector_params_schema()`'s own reasoning, shared by:
+
+    * `CollectTrainingImagesTask.status_schema()`, which splices its own
+      task-owned fields (`processed`, `captures_per_min`, `uptime` — properties
+      of the driver loop, not of collection) into this schema's `stats` widget,
+      alongside its own `last_capture` and `sources` widgets this function
+      knows nothing about;
+    * the per-collector diagnostics view a watcher-attached collector renders
+      on its own, unmodified — a watcher has no "processed" or single
+      "uptime" of its own to add (it drives many collectors and sources at
+      once), so there is nothing for it to splice in.
+
+    Confusable-detection fields are listed here even though the standalone
+    task's card never showed them before this was written — `status_stats()`
+    always computed them, they were simply missing from the schema that
+    decides what a `stat_grid` renders. Both surfaces get them by fixing it
+    once, here.
+    """
+    return [
+        {
+            "id": "stats",
+            "type": "stat_grid",
+            "source": "status",
+            "label": "Collection stats",
+            # Superset of every field `status_stats()` can ever populate — a
+            # feature that isn't enabled for this collector simply never sends
+            # its key, which the stat_grid widget renders as "—" rather than a
+            # misleading 0.
+            "fields": {
+                "offered": "Offered",
+                "saved": "Saved",
+                "saved_band": "Saved (band match)",
+                "saved_detector_miss": "Saved (detector miss)",
+                "saved_track_worst": "Saved (track worst)",
+                "track_novelty_kept": "Novel poses kept",
+                "track_novelty_dropped": "Redundant poses dropped",
+                "track_worst_committed": "Hardest-pose commits",
+                "detector_miss_offered": "Detector-miss candidates",
+                "dropped_behind": "Dropped (collector behind)",
+                "evicted_total": "Evicted (review queue cap)",
+                "dedup_checked": "Dedup checked",
+                "dedup_image_hits": "Dedup image hits",
+                "dedup_bbox_hits": "Dedup bbox hits",
+                "dedup_discarded": "Dedup discarded",
+                "dedup_image_dist_median": "Image dist (median)",
+                "dedup_image_dist_p10": "Image dist (p10)",
+                "dedup_bbox_dist_median": "BBox dist (median)",
+                "dedup_sample_size": "Calibration sample",
+                "confusable_flagged": "Confusable flagged",
+                "confusable_measured": "Confusable measured",
+                "confusable_median_closeness": "Confusable median closeness",
+                "confusable_most_extreme": "Confusable most extreme seen",
+                "confusable_top_pairs": "Confusable top pairs",
+                "confusable_unsupported_models": "Confusable-unsupported models",
+                "filter_discarded": "Filter discarded",
+                "filter_relabeled": "Filter relabeled",
+                "filter_tagged": "Filter tagged",
+                "filter_stripped": "Filter stripped",
+            },
+        },
+        # ── Dedup threshold calibration ──────────────────────────────────
+        # Only populated when dedup is enabled; the data source omits these
+        # keys otherwise and the widgets render their own empty state.
+        #
+        # Collapsed by default, and nested one level deeper: four charts and
+        # tables is the right amount of detail while you are actually reading
+        # a threshold off them, and far too much to scroll past every other
+        # time.
+        {
+            "id": "dedup_calibration",
+            "type": "group",
+            "label": "Duplicate threshold calibration",
+            "collapsed": True,
+            "widgets": [
+                # Nested one level deeper than the two distance groups below,
+                # collapsed by default: `_dedup_hint_text()` is a genuinely
+                # useful multi-sentence explanation of how to read the
+                # histograms and sweep tables, but it is the same paragraph
+                # every time, and reading it once is not a reason to scroll
+                # past it on every later visit.
+                {
+                    "id": "dedup_hint_group",
+                    "type": "group",
+                    "label": "How to read this",
+                    "collapsed": True,
+                    "widgets": [
+                        {
+                            "id": "dedup_hint",
+                            "type": "text",
+                            "source": "status",
+                        },
+                    ],
+                },
+                {
+                    "id": "dedup_image_group",
+                    "type": "group",
+                    "label": "Image distance",
+                    "widgets": [
+                        {
+                            "id": "dedup_image_hist",
+                            "type": "histogram",
+                            "source": "status",
+                            "label": "Distance to nearest stored image",
+                        },
+                        {
+                            "id": "dedup_image_sweep",
+                            "type": "table",
+                            "source": "status",
+                            "label": "Image threshold sweep (what each value would have done)",
+                            "columns": [
+                                {"key": "threshold", "label": "Image threshold"},
+                                {"key": "matched", "label": "Frames matching"},
+                                {"key": "discarded", "label": "Would discard"},
+                                {"key": "kept", "label": "Would keep"},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "id": "dedup_bbox_group",
+                    "type": "group",
+                    "label": "BBox distance",
+                    "widgets": [
+                        {
+                            "id": "dedup_bbox_hist",
+                            "type": "histogram",
+                            "source": "status",
+                            "label": "Distance to nearest same-label crop",
+                        },
+                        {
+                            "id": "dedup_bbox_sweep",
+                            "type": "table",
+                            "source": "status",
+                            "label": "BBox threshold sweep (what each value would have done)",
+                            "columns": [
+                                {"key": "threshold", "label": "BBox threshold"},
+                                {"key": "matched", "label": "BBoxes matching"},
+                                {"key": "discarded", "label": "Would discard"},
+                                {"key": "kept", "label": "Would keep"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        },
+    ]
 
 
 def collector_params_schema() -> dict[str, dict[str, Any]]:
@@ -443,6 +732,7 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                 "ambiguity_group",
                 "dedup_group",
                 "detector_miss_group",
+                "review_queue_group",
             ]
         },
         "output_dir": {
@@ -801,6 +1091,57 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                         "discards the pose variation the detector needs."
                     ),
                     "default": 25,
+                },
+            },
+        },
+        "review_queue_group": {
+            "type": "group",
+            "label": "Review queue limits",
+            "collapsed": True,
+            "fields": {
+                "max_unverified_images": {
+                    "type": "int",
+                    "label": "Max Unverified Images",
+                    "description": (
+                        "Once this many of this collector's images are still unverified, the oldest "
+                        "excess (or the one the eviction strategy below picks) is deleted to make room "
+                        "for new ones. This bounds your review queue, not the collector's lifetime "
+                        "output — a verified image no longer counts against it. Leave blank / 0 for "
+                        "unlimited."
+                    ),
+                    "default": 0,
+                },
+                "max_unverified_mb": {
+                    "type": "float",
+                    "label": "Max Unverified Size (MB)",
+                    "description": (
+                        "Same idea as the image count above, but by disk space instead — evicts the "
+                        "oldest/least-useful unverified images once their total size passes this many "
+                        "megabytes. Independent of the count limit; set either, both, or neither. Leave "
+                        "blank / 0 for unlimited."
+                    ),
+                    "default": 0,
+                },
+                "eviction_strategy": {
+                    "type": "select",
+                    "label": "Eviction Strategy",
+                    "description": (
+                        "Which still-unverified image to delete first when a limit above is exceeded.\n\n"
+                        "• Oldest first (FIFO) — simplest and most predictable.\n"
+                        "• Least unique — deletes whichever image is closest (by perceptual hash) to "
+                        "another one already in the queue, so near-duplicates go before genuinely "
+                        "distinct frames. Costs a re-hash of each candidate image, done only when a "
+                        "limit is actually exceeded.\n"
+                        "• Balance labels — deletes from whichever label currently has the most "
+                        "unverified images, so one common subject can't crowd out the rarer ones you "
+                        "actually need to see."
+                    ),
+                    "options": [
+                        {"value": EVICTION_FIFO, "label": "Oldest first (FIFO)"},
+                        {"value": EVICTION_LEAST_UNIQUE, "label": "Least unique first"},
+                        {"value": EVICTION_LABEL_BALANCE, "label": "Balance labels"},
+                    ],
+                    "default": EVICTION_FIFO,
                 },
             },
         },
