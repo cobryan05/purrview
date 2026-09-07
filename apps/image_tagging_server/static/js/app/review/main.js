@@ -72,7 +72,7 @@ import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, conf
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
-import { createMultiSelectDropdown } from '/app-static/js/ui/utils/index.js';
+import { createMultiSelectDropdown, flashHighlight } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 
 const DEFAULT_PAGE_SIZE = 250;
@@ -2084,13 +2084,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       },
       onClose(closedImg) {
         if (!closedImg) return;
-        const card = grid.querySelector(`[data-image-uuid="${closedImg.uuid}"]`);
-        if (!card) return;
-        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        card.classList.remove('recently-viewed');
-        void card.offsetWidth; // force reflow to restart the animation
-        card.classList.add('recently-viewed');
-        card.addEventListener('animationend', () => card.classList.remove('recently-viewed'), { once: true });
+        flashHighlight(grid.querySelector(`[data-image-uuid="${closedImg.uuid}"]`));
       },
     };
   }
@@ -3523,6 +3517,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   let unsubNavLoad = null;
   let _updateNavButtons = () => {};
   let _prefetchNavNeighbours = () => {};
+  // Replaced below when this modal has a nav list. Deleting the only image a
+  // modal was opened on has nowhere to go, so the default is "I could not
+  // advance" and the caller falls back to closing.
+  let _advancePastDeleted = () => false;
   if (_allowNavigation && navContext?.items?.length) {
     // Duck-typed FileNavigation used by files.js's next_image / prev_image.
     // Those functions also call guardUnsavedChanges before advancing, so the
@@ -3582,6 +3580,50 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
       }
     };
     _prefetchNavNeighbours();
+
+    /**
+     * Drop a just-deleted image from the nav list and land on the next one.
+     *
+     * Deleting is rarely a single action — it comes in runs, while you page
+     * through results — and closing the modal each time costs a re-open and a
+     * scroll back to where you were. Stepping on instead keeps the run going.
+     *
+     * Publishes the same LOAD_IMAGE_ONTO_CANVAS the `[`/`]` keys and the
+     * prev/next buttons do, rather than calling `next_image`: removing the
+     * item `_navIndex` pointed at already leaves the index on what followed it,
+     * so advancing again would skip an image. It also correctly skips
+     * `guardUnsavedChanges` — there is nothing left to save on an image that no
+     * longer exists.
+     *
+     * @param {{uuid: string}} deletedImg
+     * @returns {boolean} false when nothing is left to show, so the caller closes.
+     */
+    _advancePastDeleted = (deletedImg) => {
+      // Every item for that image, not just the current one: `_buildNavContext`
+      // dedupes by image uuid but the shape doesn't promise it, and a second
+      // item pointing at a deleted file would be a guaranteed load failure.
+      let removedBefore = 0;
+      for (let i = navContext.items.length - 1; i >= 0; i--) {
+        if (navContext.items[i]?.img?.uuid !== deletedImg.uuid) continue;
+        navContext.items.splice(i, 1);
+        if (i < _navIndex) removedBefore += 1;
+      }
+      if (!navContext.items.length) return false;
+      // Removing the item at _navIndex leaves the index on what followed it —
+      // the "next" image. The clamp is the end-of-list case, where stepping
+      // back to the previous image is the only thing left to show.
+      _navIndex = Math.min(Math.max(_navIndex - removedBefore, 0), navContext.items.length - 1);
+      // The start-bbox preference below keys off startIndex, and the splice has
+      // shifted every index past it — so it can now only match the wrong item.
+      navContext.startIndex = -1;
+      _updateNavButtons();
+      events.publish(EventTypes.LOAD_IMAGE_ONTO_CANVAS, {
+        path: navContext.items[_navIndex].img.filename,
+        showCanvas: true,
+        runtimeId: instance.runtime.id,
+      });
+      return true;
+    };
 
     // When files.js publishes LOAD_IMAGE_ONTO_CANVAS for our runtime, load the
     // new image into this same modal canvas.
@@ -3805,6 +3847,13 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     }
 
     events.publish(EventTypes.IMAGE_DELETED, { imageUuid: targetImg.uuid, imagePath: targetImg.filename });
+
+    // Buttons come back before the advance publishes: the load handler disables
+    // prev/next for the duration of its own fetch and restores them in its
+    // `finally`, so re-enabling afterwards would fight it mid-load.
+    _setAllButtonsDisabled(false);
+    if (_advancePastDeleted(targetImg)) return;
+
     closeModal();
     navContext?.onClose?.(targetImg);
   });

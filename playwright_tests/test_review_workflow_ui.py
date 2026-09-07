@@ -1736,28 +1736,36 @@ class TestCanvasModalRoundTrip:
         expect(modal).to_have_count(0, timeout=8000)
         expect(card).to_have_class("review-card stale-deleted")
 
-    def test_delete_image_button_removes_the_whole_image_and_closes(self, page: Page, base_url: str):
-        """The header's 🗑 button deletes the whole image (not just the
-        highlighted bbox), skips the unsaved-changes prompt, and marks the
-        originating card as deleted via the same IMAGE_DELETED broadcast the
-        grid's own bulk-delete path uses."""
-        _mock_review_queue(page, PAGE_1_IMAGES)
-        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
-        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
-        _mock_misc_review_endpoints(page)
-        _mock_canvas_modal_image(page)
+    @staticmethod
+    def _mock_delete(page: Page, image_uuid: str, filename: str):
         page.route(
-            "**/api/images/img-1",
+            f"**/api/images/{image_uuid}",
             lambda route: (
                 route.fulfill(
                     status=200,
                     content_type="application/json",
-                    body=json.dumps({"status": "success", "imageUuid": "img-1", "filename": "folder/image1.jpg"}),
+                    body=json.dumps({"status": "success", "imageUuid": image_uuid, "filename": filename}),
                 )
                 if route.request.method == "DELETE"
                 else route.fallback()
             ),
         )
+
+    def test_delete_image_button_advances_to_the_next_image(self, page: Page, base_url: str):
+        """The header's 🗑 button deletes the whole image (not just the
+        highlighted bbox), skips the unsaved-changes prompt, and marks the
+        originating card as deleted via the same IMAGE_DELETED broadcast the
+        grid's own bulk-delete path uses.
+
+        It then steps to the next image rather than closing: deleting comes in
+        runs, and dropping back to the grid each time costs a re-open and a
+        scroll back to where you were."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+        self._mock_delete(page, "img-1", "folder/image1.jpg")
 
         _navigate_to_review(page, base_url)
         _switch_view(page, "bboxes")
@@ -1767,13 +1775,66 @@ class TestCanvasModalRoundTrip:
 
         modal = page.get_by_test_id("canvas-edit-modal")
         expect(modal).to_be_visible(timeout=8000)
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_contain_text("image1.jpg")
+
+        modal.get_by_test_id("canvas-edit-modal-delete-image").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
+
+        # Still open, now showing the image that followed the deleted one.
+        expect(modal).to_be_visible()
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_contain_text("image2.jpg", timeout=8000)
+        # The grid still learns about the delete, exactly as it did when the
+        # modal closed instead.
+        expect(card).to_have_class("review-card stale-deleted")
+        expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
+
+    def test_deleting_the_last_image_in_the_list_closes_the_modal(self, page: Page, base_url: str):
+        """Advancing needs somewhere to advance to. With nothing left the modal
+        has to close, or it sits open on an image that no longer exists."""
+        _mock_review_queue(page, [IMAGE_2])
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+        self._mock_delete(page, "img-2", "folder/image2.jpg")
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        page.locator("#review-root [data-bbox-uuid='bbox-3'] img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
 
         modal.get_by_test_id("canvas-edit-modal-delete-image").click()
         page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
 
         expect(modal).to_have_count(0, timeout=8000)
-        expect(card).to_have_class("review-card stale-deleted")
-        expect(card.locator(".card-state-badge")).to_have_text("🗑 Deleted")
+
+    def test_deleting_the_final_image_steps_back_rather_than_closing(self, page: Page, base_url: str):
+        """At the end of the list there is no "next", but there is still
+        something to show — stepping back beats closing on the user."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+        _mock_misc_review_endpoints(page)
+        _mock_canvas_modal_image(page)
+        self._mock_delete(page, "img-2", "folder/image2.jpg")
+
+        _navigate_to_review(page, base_url)
+        _switch_view(page, "bboxes")
+
+        page.locator("#review-root [data-bbox-uuid='bbox-3'] img.thumb").dblclick()
+
+        modal = page.get_by_test_id("canvas-edit-modal")
+        expect(modal).to_be_visible(timeout=8000)
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_contain_text("image2.jpg")
+
+        modal.get_by_test_id("canvas-edit-modal-delete-image").click()
+        page.get_by_test_id("modal-shell-dialog").locator("button", has_text="Delete").click()
+
+        expect(modal).to_be_visible()
+        expect(modal.get_by_test_id("canvas-edit-modal-title")).to_contain_text("image1.jpg", timeout=8000)
 
     def test_delete_image_button_cancel_leaves_modal_open(self, page: Page, base_url: str):
         _mock_review_queue(page, PAGE_1_IMAGES)
