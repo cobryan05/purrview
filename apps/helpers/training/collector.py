@@ -1049,7 +1049,16 @@ class TrainingCollector:
             # A single full-priority ranking, walked from the worst end, rather
             # than re-ranking after every delete: both caps are satisfied by
             # the same evict-the-worst-first order, so one pass answers both.
-            ranked = select_for_eviction(candidates, len(candidates), self._spec.eviction_strategy)
+            #
+            # Off-loop: `least_unique` and `label_balance` are both O(n²) over
+            # up to EVICTION_CANDIDATE_CEILING candidates (a pairwise Hamming
+            # scan / a re-tallying greedy pass), which is seconds of pure CPU
+            # on a full queue. This coroutine shares its loop with the frame
+            # pipeline that called it, so ranking runs in a thread for the same
+            # reason the hashing and the stat() calls above do.
+            ranked = await asyncio.to_thread(
+                select_for_eviction, candidates, len(candidates), self._spec.eviction_strategy
+            )
             remaining_count = total
             to_delete: list[EvictionCandidate] = []
             for candidate in ranked:

@@ -195,7 +195,23 @@ export function openCollectorDiagnosticsModal({ collectorUuid, collectorName, ta
     }
   }
 
+  // Every tick rebuilds the whole widget tree, with awaits between clearing the
+  // host and refilling it. Two ticks overlapping (a slow watcher, a slow
+  // network) would interleave those rebuilds and leave a half-rendered or
+  // duplicated tree, so a tick that arrives while one is still running is
+  // simply skipped — the next one is only POLL_MS away.
+  let polling = false;
   async function pollDiagnostics() {
+    if (stopped || polling) return;
+    polling = true;
+    try {
+      await _pollDiagnosticsOnce();
+    } finally {
+      polling = false;
+    }
+  }
+
+  async function _pollDiagnosticsOnce() {
     if (stopped) return;
     if (!taskUuid) {
       statusLine.textContent = 'Not currently running — start the watcher to see live tuning stats.';

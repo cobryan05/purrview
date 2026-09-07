@@ -53,6 +53,9 @@ import { toast, Logger } from '/app-static/js/ui/utils/logging.js';
 import { resolveCandidateScope, confirmLargeRun, truncateScope, WARN_THRESHOLD } from '/app-static/js/app/review/runModelOnResults.js';
 
 const POLL_INTERVAL_MS = 1000;
+// Consecutive polls in which a started task is absent from the status map before
+// the run is declared lost — see the wait loop in `_runOneConfig`.
+const MAX_MISSING_POLLS = 5;
 // Only whole-image-scoring kinds are excluded: both modes run a detector or a
 // crop-classifier directly (image mode may additionally chain sub-models
 // onto a detector), so both remain valid primary picks.
@@ -441,6 +444,13 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
   const taskUuid = await startTask({ configUuid });
 
   let info;
+  // A task that stops appearing in the status map has no terminal status to
+  // report, so "keep polling until it's terminal" would spin here forever with
+  // the dialog stuck on its progress bar — reachable whenever the instance goes
+  // away underneath us (another surface cleared it, tasks_server restarted).
+  // Tolerate a few missing polls (the instance can lag a beat behind startTask)
+  // and then give up with a real error instead.
+  let missingPolls = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const { tasks } = await fetchTasksStatus({ taskUuids: [taskUuid] });
@@ -448,6 +458,14 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
     onProgress?.(info?.progress ?? 0);
     const status = info?.instance?.status;
     if (status === TaskStatus.COMPLETED || status === TaskStatus.ERROR || status === TaskStatus.CANCELLED) break;
+    if (status === undefined) {
+      missingPolls += 1;
+      if (missingPolls > MAX_MISSING_POLLS) {
+        throw new Error(`Task for ${modelName} disappeared before it finished`);
+      }
+    } else {
+      missingPolls = 0;
+    }
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
 
@@ -462,7 +480,10 @@ async function _runOneConfig({ modelName, subModelNames, cropMode, bboxUuids, im
   await deleteTasks({ taskUuids: [taskUuid] }).catch(e => Logger.error('Cleanup failed', e));
 
   const noOp = data.no_op_count ?? 0;
-  const wrong = (data.candidates ?? []).length;
+  // `candidate_count`, not `candidates.length`: the task empties `candidates`
+  // out of its result whenever the run is persisted to a preview run, and a
+  // zero-length list there would read as "nothing wrong" — i.e. 100% accurate.
+  const wrong = data.candidate_count ?? (data.candidates ?? []).length;
   const noDetection = data.no_detection_count ?? 0;
   const total = noOp + wrong + noDetection;
   return {
