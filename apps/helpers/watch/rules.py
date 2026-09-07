@@ -59,7 +59,17 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..tracking.tracker import Track
 from .events import EventCloseReason, EventPhase, WatchEventSignal
-from .geometry import Zone, centroid, containment, inflate, iou, margin_pad, normalised_distance, overlap_ratio
+from .geometry import (
+    Zone,
+    centroid,
+    containment,
+    inflate,
+    iou,
+    margin_pad,
+    normalised_distance,
+    overlap_ratio,
+    zone_area_terms,
+)
 from .motion import DEFAULT_SENSITIVITY as MOTION_DEFAULT_SENSITIVITY
 from .motion import MotionField
 
@@ -386,15 +396,23 @@ def evaluate_predicate(
                     # "higher score = closer to firing" true everywhere.
                     dist = normalised_distance(track_a.bbox, target_box, frame_width, frame_height)
                     score = 1.0 - dist if dist <= spec.threshold else 0.0
-                elif spec.relation == "iou":
-                    # Bounding-box approximate for polygon zones, exactly as
-                    # `Zone.bounds` documents — the margin does not change
-                    # that, it only moves the bounds.
-                    score = iou(box_a, box_b)
-                elif spec.relation == "overlaps":
-                    score = overlap_ratio(box_a, box_b)
-                else:  # contains
-                    score = containment(box_a, box_b)
+                else:
+                    # Measured against the polygon itself, not its bounding box. These
+                    # three used to share the box relations above via `Zone.bounds`,
+                    # which for a traced yard is most of the frame — a person on the
+                    # pavement scored a full 1.0 `overlaps` and fired the rule. See
+                    # `zone_area_terms` for where the margin lands, which differs by kind.
+                    inter, subject_area, zone_area = zone_area_terms(
+                        target, track_a.bbox, margin, frame_width, frame_height
+                    )
+                    if spec.relation == "iou":
+                        union = subject_area + zone_area - inter
+                        score = inter / union if union > 0 else 0.0
+                    elif spec.relation == "overlaps":
+                        smaller = min(subject_area, zone_area)
+                        score = inter / smaller if smaller > 0 else 0.0
+                    else:  # contains
+                        score = inter / subject_area if subject_area > 0 else 0.0
             else:
                 if track_a.track_id == target.track_id:
                     continue  # an object never interacts with itself

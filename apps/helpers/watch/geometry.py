@@ -161,6 +161,73 @@ def point_in_polygon(point: Point, polygon: Sequence[Point]) -> bool:
     return inside
 
 
+def polygon_area(polygon: Sequence[Point]) -> float:
+    """Absolute area of a simple polygon, by the shoelace formula.
+
+    Sign-free on purpose: zones are drawn by hand and arrive in whichever winding the
+    user happened to draw, and nothing here cares which way round they go.
+    """
+    n = len(polygon)
+    if n < 3:
+        return 0.0
+    total = 0.0
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        total += (xj + xi) * (yj - yi)
+        j = i
+    return abs(total) / 2.0
+
+
+def _axis_crossing(a: Point, b: Point, axis: int, limit: float) -> Point:
+    """Where segment a→b crosses the line `axis == limit`."""
+    if axis == 0:
+        denom = b[0] - a[0]
+        t = 0.0 if denom == 0 else (limit - a[0]) / denom
+        return (limit, a[1] + t * (b[1] - a[1]))
+    denom = b[1] - a[1]
+    t = 0.0 if denom == 0 else (limit - a[1]) / denom
+    return (a[0] + t * (b[0] - a[0]), limit)
+
+
+def clip_polygon_to_box(polygon: Sequence[Point], box: BBox) -> List[Point]:
+    """The part of `polygon` lying inside the axis-aligned `box`, by Sutherland–Hodgman.
+
+    This is what makes the area relations exact for a polygon zone. They used to measure
+    a polygon by `Zone.bounds`, and for the shapes people actually draw — a yard traced
+    under a roofline, an L-shaped run of floor — the bounding box is most of the frame.
+    A person on the pavement well outside the traced yard scored a full 1.0 `overlaps`
+    against it and fired the rule, which is the bug this replaces.
+
+    Clipping a *concave* subject against a convex window can emit degenerate edges that
+    run back along the window's boundary, joining what are really separate pieces. That
+    is harmless here: those edges enclose no area, so `polygon_area` of the result is
+    still the sum of the pieces. Only the area is claimed to be meaningful — the returned
+    ring is not guaranteed to be a simple polygon.
+    """
+    x1, y1, x2, y2 = box
+    if x2 <= x1 or y2 <= y1 or len(polygon) < 3:
+        return []
+    points = list(polygon)
+    # (axis, limit, keep points on the >= side)
+    for axis, limit, keep_greater in ((0, x1, True), (0, x2, False), (1, y1, True), (1, y2, False)):
+        if not points:
+            return []
+        clipped: List[Point] = []
+        previous = points[-1]
+        previous_in = previous[axis] >= limit if keep_greater else previous[axis] <= limit
+        for current in points:
+            current_in = current[axis] >= limit if keep_greater else current[axis] <= limit
+            if current_in != previous_in:
+                clipped.append(_axis_crossing(previous, current, axis, limit))
+            if current_in:
+                clipped.append(current)
+            previous, previous_in = current, current_in
+        points = clipped
+    return points
+
+
 def point_to_segment_distance(point: Point, a: Point, b: Point) -> float:
     """Shortest distance from `point` to the segment a→b."""
     px, py = point
@@ -219,16 +286,29 @@ class Zone:
     def bounds(self, frame_width: float, frame_height: float) -> BBox:
         """Axis-aligned bounding box of the zone in pixels.
 
-        This is what the area relations measure a zone by, which is exact for box zones
-        and over-estimates a concave polygon — deliberately, because the alternative is
-        a polygon-clipping dependency for a gain that a `centroid_in` rule already
-        provides more cheaply and more predictably. `contains_point` and
-        `contains_point_within` are exact for both kinds.
+        A *ruler*, not a stand-in for the zone. The area relations no longer measure a
+        polygon by this — they used to, and a traced yard whose bounding box is most of
+        the frame fired on anything anywhere below the roofline (see
+        `clip_polygon_to_box`). What still legitimately uses it is `margin_pad`, which
+        only needs the zone's rough scale, and the `distance` relation, which compares
+        centre points.
         """
         pts = self.to_pixels(frame_width, frame_height)
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         return (min(xs), min(ys), max(xs), max(ys))
+
+    def pixel_area(self, frame_width: float, frame_height: float) -> float:
+        """The zone's own area in pixels — the polygon's, not its bounding box's."""
+        if self.kind == "box":
+            return area(self.bounds(frame_width, frame_height))
+        return polygon_area(self.to_pixels(frame_width, frame_height))
+
+    def intersection_area_with_box(self, box: BBox, frame_width: float, frame_height: float) -> float:
+        """Exact area of `box` ∩ this zone, in pixels, for both kinds."""
+        if self.kind == "box":
+            return intersection_area(box, self.bounds(frame_width, frame_height))
+        return polygon_area(clip_polygon_to_box(self.to_pixels(frame_width, frame_height), box))
 
     def contains_point(self, point: Point, frame_width: float, frame_height: float) -> bool:
         pts = self.to_pixels(frame_width, frame_height)
@@ -265,6 +345,43 @@ class Zone:
             return False
         edge_distance = min(point_to_segment_distance(point, pts[i], pts[(i + 1) % n]) for i in range(n))
         return edge_distance >= -pad
+
+
+def zone_area_terms(
+    zone: Zone,
+    box: BBox,
+    margin: float,
+    frame_width: float,
+    frame_height: float,
+) -> Tuple[float, float, float]:
+    """`(intersection, subject area, zone area)` in pixels, with `margin` applied.
+
+    The three area relations — `contains`, `overlaps`, `iou` — are all ratios of these
+    same three numbers against a zone, so they are computed once here rather than three
+    times at the call site with three chances to disagree about the margin.
+
+    The margin lands asymmetrically, by kind, and that is deliberate:
+
+    * A **box** zone can be grown exactly, so subject and zone each take half, exactly as
+      a pair of detection boxes do. Nothing about box zones changes.
+    * A **polygon** cannot be offset without distorting exactly the concave shapes these
+      zones tend to be — the same reason `contains_point_within` measures a distance
+      rather than moving the vertices — so the whole margin goes on the subject box
+      instead. It closes the same total gap, and it is the choice `centroid_in` already
+      makes for a polygon zone.
+
+    With `margin == 0`, which is the default and what nearly every rule uses, the two
+    paths are identical anyway.
+    """
+    bounds = zone.bounds(frame_width, frame_height)
+    pad = margin_pad(margin, box, bounds) if margin else 0.0
+    if zone.kind == "box":
+        subject = inflate(box, pad) if pad else box
+        target = inflate(bounds, pad) if pad else bounds
+        return intersection_area(subject, target), area(subject), area(target)
+    subject = inflate(box, 2 * pad) if pad else box
+    points = zone.to_pixels(frame_width, frame_height)
+    return polygon_area(clip_polygon_to_box(points, subject)), area(subject), polygon_area(points)
 
 
 def zone_from_row(row) -> Zone:

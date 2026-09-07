@@ -30,6 +30,8 @@ from apps.helpers.watch.geometry import (
     overlap_ratio,
     point_in_polygon,
     point_to_polygon_distance,
+    polygon_area,
+    zone_area_terms,
 )
 from apps.helpers.watch.rules import RuleMachine, RuleSpec, RuleState, evaluate_predicate
 
@@ -194,6 +196,119 @@ class TestZone:
         poly = Zone("z", "z", "polygon", [(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)])
         assert poly.contains_point((500, 200), FRAME_W, FRAME_H) is True
         assert poly.contains_point((50, 900), FRAME_W, FRAME_H) is False
+
+
+# A yard traced under a roofline: its bounding box is the WHOLE frame, but the top-left
+# corner — the pavement beyond the yard — is outside it. This is the shape that made the
+# area relations fire on anything anywhere in the picture.
+YARD_ZONE = Zone(
+    uuid=ZONE_UUID,
+    name="yard",
+    kind="polygon",
+    points=[(0.0, 0.5), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+)
+
+# A 'C' opening to the right: the notch is inside the bounding box and outside the zone.
+C_ZONE = Zone(
+    uuid=ZONE_UUID,
+    name="hallway",
+    kind="polygon",
+    points=[(0, 0), (1, 0), (1, 0.3), (0.3, 0.3), (0.3, 0.7), (1, 0.7), (1, 1), (0, 1)],
+)
+
+
+def _zone_score(zone, box, relation, margin=0.0):
+    """The area relations' score for one box against one zone, as the engine computes it."""
+    inter, subject_area, zone_area = zone_area_terms(zone, box, margin, FRAME_W, FRAME_H)
+    if relation == "iou":
+        union = subject_area + zone_area - inter
+        return inter / union if union > 0 else 0.0
+    if relation == "overlaps":
+        smaller = min(subject_area, zone_area)
+        return inter / smaller if smaller > 0 else 0.0
+    return inter / subject_area if subject_area > 0 else 0.0
+
+
+class TestPolygonZoneAreas:
+    """The area relations must measure the polygon, not its bounding box.
+
+    They used to measure `Zone.bounds`, and every test here fails against that: a yard
+    zone's bounding box is the whole frame, so a person on the pavement scored a perfect
+    1.0 and fired the rule.
+    """
+
+    PAVEMENT = (50.0, 50.0, 150.0, 150.0)  # inside the zone's bounds, outside the zone
+    IN_YARD = (400.0, 700.0, 600.0, 900.0)
+
+    def test_bounding_box_would_have_swallowed_the_pavement(self):
+        """The premise: the bounds *do* contain the box that must not fire."""
+        assert overlap_ratio(self.PAVEMENT, YARD_ZONE.bounds(FRAME_W, FRAME_H)) == 1.0
+
+    @pytest.mark.parametrize("relation", ["contains", "overlaps", "iou"])
+    def test_outside_the_polygon_scores_zero(self, relation):
+        assert _zone_score(YARD_ZONE, self.PAVEMENT, relation) == 0.0
+
+    @pytest.mark.parametrize("relation", ["contains", "overlaps"])
+    def test_inside_the_polygon_still_scores_one(self, relation):
+        assert _zone_score(YARD_ZONE, self.IN_YARD, relation) == pytest.approx(1.0)
+
+    def test_partial_overlap_is_the_exact_clipped_area(self):
+        # The zone's edge runs (0, 500) → (200, 400) across this box, cutting off a
+        # 10 000 px triangle of its 40 000 px area.
+        straddling = (0.0, 400.0, 200.0, 600.0)
+        assert _zone_score(YARD_ZONE, straddling, "contains") == pytest.approx(0.75)
+
+    def test_a_box_in_a_concave_notch_scores_zero(self):
+        assert _zone_score(C_ZONE, (500.0, 400.0, 700.0, 600.0), "contains") == 0.0
+
+    def test_two_disjoint_pieces_sum_rather_than_cancel(self):
+        """Clipping a concave zone can emit degenerate joining edges; they enclose no area."""
+        # Spans both arms of the C and the notch between them: 2 × (500 × 100) of
+        # 500 × 600.
+        across_both_arms = (500.0, 200.0, 1000.0, 800.0)
+        assert _zone_score(C_ZONE, across_both_arms, "contains") == pytest.approx(1 / 3)
+
+    def test_zone_area_is_the_polygon_not_the_bounds(self):
+        assert YARD_ZONE.pixel_area(FRAME_W, FRAME_H) == pytest.approx(750_000.0)
+        assert area(YARD_ZONE.bounds(FRAME_W, FRAME_H)) == pytest.approx(1_000_000.0)
+
+    def test_margin_reaches_across_the_polygon_edge(self):
+        """A subject just short of the zone fires only once the margin closes the gap."""
+        # The zone's edge runs y = 500 - x/2, so it sits at y = 200 by the time this box's
+        # right side is reached — 20 px below the box's bottom.
+        just_short = (400.0, 60.0, 600.0, 180.0)
+        assert _zone_score(YARD_ZONE, just_short, "contains", margin=0.0) == 0.0
+        assert _zone_score(YARD_ZONE, just_short, "contains", margin=1.0) > 0.0
+
+    def test_box_zones_are_unaffected(self):
+        """A box zone is its own bounds, so nothing about it changes."""
+        box = (450.0, 450.0, 550.0, 550.0)
+        assert _zone_score(LITTER_ZONE, box, "contains") == pytest.approx(
+            containment(box, LITTER_ZONE.bounds(FRAME_W, FRAME_H))
+        )
+        pad = margin_pad(0.5, box, LITTER_ZONE.bounds(FRAME_W, FRAME_H))
+        assert _zone_score(LITTER_ZONE, box, "iou", margin=0.5) == pytest.approx(
+            iou(inflate(box, pad), inflate(LITTER_ZONE.bounds(FRAME_W, FRAME_H), pad))
+        )
+
+    def test_the_rule_that_shipped_this_bug(self):
+        """End to end: "person overlaps the yard" must not fire on the pavement."""
+        spec = _rule(relation="overlaps", threshold=0.6)
+        zones = {ZONE_UUID: YARD_ZONE}
+        assert not evaluate_predicate(spec, [_track(bbox=self.PAVEMENT)], zones, FRAME_W, FRAME_H).holds
+        assert evaluate_predicate(spec, [_track(bbox=self.IN_YARD)], zones, FRAME_W, FRAME_H).holds
+
+
+class TestPolygonArea:
+    def test_shoelace_matches_a_known_rectangle(self):
+        assert polygon_area([(0, 0), (10, 0), (10, 4), (0, 4)]) == pytest.approx(40.0)
+
+    def test_winding_direction_does_not_matter(self):
+        clockwise = [(0, 0), (0, 4), (10, 4), (10, 0)]
+        assert polygon_area(clockwise) == pytest.approx(40.0)
+
+    def test_degenerate_polygon_has_no_area(self):
+        assert polygon_area([(0, 0), (1, 1)]) == 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
