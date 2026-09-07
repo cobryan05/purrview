@@ -147,3 +147,35 @@ class TestSaveArtifactPushesToInferenceServer:
             await task._save_artifact("job-1")
 
         task._push_artifact_to_inference_server.assert_awaited_once_with(tar_bytes)
+
+    async def test_colocated_inference_server_is_not_pushed_to(self):
+        """In the single-container deployment the write to $MODELS_DIR already *is*
+        inference_server's copy, so posting the same tar back re-writes files it has
+        — and a transient HTTP failure would error a finished training run."""
+        task = TrainModelTask(task_config_uuid="cfg-uuid", params={}, manager=_MOCK_MANAGER)
+        task.log = MagicMock()
+        manager = MagicMock()
+        manager.get_inference_api_client.return_value = MagicMock(configuration=MagicMock(host="http://localhost:8001"))
+        task._manager = manager
+
+        with patch("apps.tasks_server.tasks._training_job_runner.push_artifact_tar_to_inference_server") as push:
+            await task._push_artifact_to_inference_server(b"tar")
+
+        push.assert_not_called()
+
+    async def test_remote_inference_server_is_pushed_to(self):
+        task = TrainModelTask(task_config_uuid="cfg-uuid", params={}, manager=_MOCK_MANAGER)
+        task.log = MagicMock()
+        manager = MagicMock()
+        manager.get_inference_api_client.return_value = MagicMock(
+            configuration=MagicMock(host="http://gpu-box.lan:8001")
+        )
+        task._manager = manager
+
+        with patch(
+            "apps.tasks_server.tasks._training_job_runner.push_artifact_tar_to_inference_server",
+            new=AsyncMock(return_value=["m.onnx"]),
+        ) as push:
+            await task._push_artifact_to_inference_server(b"tar")
+
+        push.assert_awaited_once()

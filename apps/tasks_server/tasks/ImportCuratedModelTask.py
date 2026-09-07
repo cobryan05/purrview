@@ -52,7 +52,7 @@ from apps.helpers.curatedModels import get_curated_model
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name, write_onnx_with_sidecar
 
-from ._inference_push import build_artifact_tar, push_artifact_tar_to_inference_server
+from ._inference_push import build_artifact_tar, inference_server_is_colocated, push_artifact_tar_to_inference_server
 from ._training_job_runner import TrainingJobRunnerMixin
 from .Registry import register_task
 from .Task import Task
@@ -288,8 +288,13 @@ class ImportCuratedModelTask(Task, TrainingJobRunnerMixin):
         """Push the same .onnx + sidecar to inference_server (see _inference_push).
 
         Without this, a split-container inference_server would never learn about a
-        curated model imported here.
+        curated model imported here. Skipped when it is co-located — see
+        `inference_server_is_colocated`.
         """
+        client = self._manager.get_inference_api_client()
+        if inference_server_is_colocated(client):
+            self.log("Inference server is co-located; it already has the model.")
+            return
         self.log("Pushing model to inference server...")
         sidecar_bytes = await asyncio.to_thread(model_path.with_suffix(".json").read_bytes)
         tar_bytes = build_artifact_tar(
@@ -298,7 +303,7 @@ class ImportCuratedModelTask(Task, TrainingJobRunnerMixin):
                 f"{self._model_name}.json": sidecar_bytes,
             }
         )
-        files = await push_artifact_tar_to_inference_server(self._manager.get_inference_api_client(), tar_bytes)
+        files = await push_artifact_tar_to_inference_server(client, tar_bytes)
         self.log(f"Inference server updated: {files}")
 
     async def _deinit(self) -> None:

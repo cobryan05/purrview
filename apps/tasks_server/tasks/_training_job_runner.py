@@ -41,7 +41,7 @@ from training_client.models.submit_job_payload import SubmitJobPayload
 from apps import FILES_ROOT
 from apps.helpers.metadataUtils import atomic_write_bytes
 
-from ._inference_push import push_artifact_tar_to_inference_server
+from ._inference_push import inference_server_is_colocated, push_artifact_tar_to_inference_server
 
 logger = logging.getLogger(__file__)
 
@@ -769,9 +769,16 @@ class TrainingJobRunnerMixin:
         a filesystem with this host — the write to $MODELS_ROOT above is this host's
         own copy (tasks_server loads models directly for on-the-fly classification,
         see `_classifier_runtime.py`), not something inference_server can rely on.
+
+        Skipped when inference_server is co-located, where the write above already is
+        its copy — see `inference_server_is_colocated`.
         """
+        client = self._manager.get_inference_api_client()
+        if inference_server_is_colocated(client):
+            self.log("Inference server is co-located; it already has the artifact.")
+            return
         self.log("Pushing model artifact to inference server...")
-        files = await push_artifact_tar_to_inference_server(self._manager.get_inference_api_client(), tar_bytes)
+        files = await push_artifact_tar_to_inference_server(client, tar_bytes)
         self.log(f"Inference server updated: {files}")
 
     async def _cancel_remote_job(self, job_id: str) -> None:

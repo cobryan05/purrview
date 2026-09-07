@@ -6,6 +6,7 @@ ImportCuratedModelTask each only need to prove they call it with the right bytes
 
 import base64
 import io
+import socket
 import tarfile
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ import pytest
 
 from apps.tasks_server.tasks._inference_push import (
     build_artifact_tar,
+    inference_server_is_colocated,
     push_artifact_tar_to_inference_server,
 )
 
@@ -50,3 +52,40 @@ class TestPushArtifactTarToInferenceServer:
 
         with patcher, pytest.raises(RuntimeError, match="disk full"):
             await push_artifact_tar_to_inference_server(MagicMock(), build_artifact_tar({"m.onnx": b"weights"}))
+
+
+def _client_for(host):
+    return MagicMock(configuration=MagicMock(host=host))
+
+
+class TestInferenceServerIsColocated:
+    """The gate that decides whether the push happens at all. Getting it wrong in
+    either direction is expensive: a false positive leaves a remote inference_server
+    on stale weights, a false negative round-trips a multi-hundred-MB model through
+    base64 back into the directory it was just written to.
+    """
+
+    @pytest.mark.parametrize("host", ["http://localhost:8001", "http://127.0.0.1:8001", "http://[::1]:8001"])
+    def test_loopback_is_colocated(self, host):
+        assert inference_server_is_colocated(_client_for(host)) is True
+
+    def test_this_hosts_own_name_is_colocated(self):
+        assert inference_server_is_colocated(_client_for(f"http://{socket.gethostname()}:8001")) is True
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "http://inference:8001",  # sibling container on the compose network
+            "http://gpu-box.lan:8001",  # Settings -> Servers override
+            "http://192.0.2.10:8001",
+        ],
+    )
+    def test_another_host_is_not_colocated(self, host):
+        assert inference_server_is_colocated(_client_for(host)) is False
+
+    def test_unusable_configuration_pushes_rather_than_skipping(self):
+        """An unparseable host must not be read as "co-located" — skipping the push
+        is the one outcome that fails silently."""
+        assert inference_server_is_colocated(MagicMock(configuration=None)) is False
+        assert inference_server_is_colocated(_client_for(MagicMock())) is False
+        assert inference_server_is_colocated(_client_for("")) is False

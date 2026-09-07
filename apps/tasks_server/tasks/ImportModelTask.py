@@ -24,7 +24,7 @@ from apps.helpers.metadataUtils import (
     write_onnx_with_sidecar,
 )
 
-from ._inference_push import build_artifact_tar, push_artifact_tar_to_inference_server
+from ._inference_push import build_artifact_tar, inference_server_is_colocated, push_artifact_tar_to_inference_server
 from .Registry import register_task
 from .Task import Task
 
@@ -109,8 +109,13 @@ class ImportModelTask(Task):
 
         Not something get_inference_api_client's host has to share a filesystem
         with this one for: without this, a split-container inference_server would
-        never learn about a curated model imported here.
+        never learn about a curated model imported here. Skipped when it is
+        co-located — see `inference_server_is_colocated`.
         """
+        client = self._manager.get_inference_api_client()
+        if inference_server_is_colocated(client):
+            self.log("Inference server is co-located; it already has the model.")
+            return
         self.log("Pushing model to inference server...")
         sidecar_bytes = await asyncio.to_thread(self._model_path.with_suffix(".json").read_bytes)
         tar_bytes = build_artifact_tar(
@@ -119,7 +124,7 @@ class ImportModelTask(Task):
                 f"{self._model_name}.json": sidecar_bytes,
             }
         )
-        files = await push_artifact_tar_to_inference_server(self._manager.get_inference_api_client(), tar_bytes)
+        files = await push_artifact_tar_to_inference_server(client, tar_bytes)
         self.log(f"Inference server updated: {files}")
 
     async def _deinit(self) -> None:
