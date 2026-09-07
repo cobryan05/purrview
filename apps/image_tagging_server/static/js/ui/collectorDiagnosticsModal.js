@@ -240,7 +240,15 @@ export function openCollectorDiagnosticsModal({ collectorUuid, collectorName, ta
     }
     const schema = await fetchCollectorStatusSchema();
     if (stopped) return;
-    const dataSource = { ...diagnostics.stats, ...diagnostics.calibration };
+    // Keyed by widget id, because renderWidgets looks each widget's data up as
+    // `dataSource[widget.id]`. The two halves are shaped differently and only one
+    // of them can be spread flat: `calibration`'s own keys ARE widget ids
+    // (dedup_hint, dedup_image_hist, …), while `stats` is the flat scalar dict
+    // that belongs to the single `stats` stat_grid. Spreading stats flat too left
+    // `dataSource.stats` undefined and rendered all 29 fields as "—" on a
+    // collector that was actively collecting. Matches what
+    // CollectTrainingImagesTask.get_status_data() sends for the same schema.
+    const dataSource = { stats: diagnostics.stats, ...diagnostics.calibration };
     widgetsHost.innerHTML = '';
     await renderWidgets(schema, widgetsHost, dataSource, groupOverrides);
   }
