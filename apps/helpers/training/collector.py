@@ -1059,7 +1059,19 @@ class TrainingCollector:
             ranked = await asyncio.to_thread(
                 select_for_eviction, candidates, len(candidates), self._spec.eviction_strategy
             )
-            remaining_count = total
+            # The page, not `total`. `total` comes from the review-queue count,
+            # which db_server caches for 60s and does not invalidate on delete —
+            # so a pass that runs inside that window reads the count from *before
+            # the previous pass's deletions* while paging the already-trimmed
+            # queue, and deletes the difference a second time. Every pass made
+            # the count staler, so the queue was emptied rather than trimmed.
+            # `candidates` is the freshly-listed page and is ground truth for
+            # what exists right now; it is also what bounds a page truncated by
+            # EVICTION_CANDIDATE_CEILING, where `total` is legitimately larger
+            # than anything this pass can see. A stale-LOW count is safe in the
+            # other direction: the page comes back short, this pass under-deletes
+            # and the next one finishes the job.
+            remaining_count = len(candidates)
             to_delete: list[EvictionCandidate] = []
             for candidate in ranked:
                 over_count = self._spec.max_unverified_images is not None and (
