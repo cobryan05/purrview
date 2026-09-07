@@ -6,7 +6,7 @@ import {
   fetchWatchProfiles, createWatchProfile, updateWatchProfile, deleteWatchProfile,
   validateWatchProfile, fetchTrackers, fetchWatchActionSchemas,
 } from '/app-static/js/shared/api/watchProfiles.js';
-import { toast, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
+import { toast, buildPanelEditorBar, flashHighlight } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { openSourceRegionsModal } from '/app-static/js/ui/sourceRegionsModal.js';
@@ -2968,7 +2968,16 @@ export async function renderWatchProfileManager({ target }) {
         refreshScopes();
       }
 
-      addRuleBtn.addEventListener('click', () => { addRule({}); onAnyChange(); });
+      // The flash is on the click path only, not inside addRule: the same
+      // function populates the editor on open, and flashing every existing rule
+      // on load would be a lightshow that means nothing.
+      addRuleBtn.addEventListener('click', () => {
+        addRule({});
+        onAnyChange();
+        // A profile with a few rules already appends below the fold, where "+ Add
+        // rule" looks like it did nothing at all.
+        flashHighlight(ruleRows[ruleRows.length - 1]?.element);
+      });
 
       // ── Actions ──
       const addActionBtn = el('button', 'panel-btn', '+ Add action');
@@ -3022,7 +3031,11 @@ export async function renderWatchProfileManager({ target }) {
         actionsBox.appendChild(entry.element);
       }
 
-      addActionBtn.addEventListener('click', () => { addAction({}); onAnyChange(); });
+      addActionBtn.addEventListener('click', () => {
+        addAction({});
+        onAnyChange();
+        flashHighlight(actionRows[actionRows.length - 1]?.element);
+      });
 
       // ── Validation report ──
       const report = el('div', 'watch-validation');

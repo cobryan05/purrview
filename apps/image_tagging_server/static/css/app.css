@@ -4694,14 +4694,19 @@ button.filter-active {
   background: #c9a22718; border: 1px solid var(--color-warning); color: var(--color-warning);
 }
 
-/* ===== Review: Recently-viewed flash (after closing canvas modal) ===== */
+/* ===== Flash highlight (ui/utils/flashHighlight.js) =====
+   Not review-only: the watcher editor flashes a newly added rule/action row
+   with the same treatment. Deliberately unqualified by an element class so any
+   caller can use it — the animation origin outranks the plain `outline`
+   declarations on e.g. `.review-card.group-highlight-*`, so a flashing card
+   still flashes while it is also group-highlighted. */
 @keyframes recently-viewed-flash {
   0%   { outline: 4px solid #ffcc0000; outline-offset: -2px; box-shadow: 0 0 0px #ffcc0000; }
   8%   { outline: 4px solid #ffcc00ff; outline-offset: -2px; box-shadow: 0 0 20px 4px #ffcc0099; }
   35%  { outline: 4px solid #ffcc00ee; outline-offset: -2px; box-shadow: 0 0 14px 2px #ffcc0066; }
   100% { outline: 4px solid #ffcc0000; outline-offset: -2px; box-shadow: 0 0 0px  0px #ffcc0000; }
 }
-.review-card.recently-viewed {
+.recently-viewed {
   animation: recently-viewed-flash 3s ease-out forwards;
   position: relative;
   z-index: 2; /* float above neighbours so the glow isn't clipped */

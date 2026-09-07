@@ -629,6 +629,80 @@ class TestWatcherEditor:
         page.locator("[data-testid='watch-add-rule']").click()
         expect(page.locator("[data-testid='watch-rule-row']")).to_have_count(2)
 
+    @staticmethod
+    def _record_flashes(page: Page, row_testid: str):
+        """Record which row indices EVER carry the flash class, from now on.
+
+        Not a `to_have_class` check on the live DOM: `flashHighlight` removes the
+        class on `animationend` (3s), so a poll that lands after the animation
+        sees nothing and the test fails for a reason that has nothing to do with
+        the behaviour. A MutationObserver installed before the click answers
+        "was it flashed" independently of when the assertion runs.
+        """
+        page.evaluate(
+            """(testid) => {
+                window.__flashed = new Set();
+                const rows = () => [...document.querySelectorAll(`[data-testid="${testid}"]`)];
+                const observer = new MutationObserver((records) => {
+                    for (const rec of records) {
+                        const el = rec.target;
+                        if (el.classList?.contains('recently-viewed')) {
+                            window.__flashed.add(rows().indexOf(el));
+                        }
+                    }
+                });
+                observer.observe(document.body, {
+                    subtree: true, attributes: true, attributeFilter: ['class'],
+                });
+            }""",
+            row_testid,
+        )
+
+    @staticmethod
+    def _flashed(page: Page) -> set:
+        return set(page.evaluate("() => [...(window.__flashed ?? [])]"))
+
+    def test_a_newly_added_rule_is_flashed_and_the_existing_ones_are_not(self, page: Page, base_url: str):
+        """ "+ Add rule" appends below the fold on a profile that already has
+        rules, so without the flash the button reads as doing nothing. The
+        negative half matters as much: `addRule` also populates the editor on
+        open, and flashing every existing row on load would be noise."""
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        rows = page.locator("[data-testid='watch-rule-row']")
+        expect(rows).to_have_count(1)
+        self._record_flashes(page, "watch-rule-row")
+
+        page.locator("[data-testid='watch-add-rule']").click()
+        expect(rows).to_have_count(2)
+
+        wait_until(
+            page,
+            lambda: 1 in self._flashed(page),
+            lambda: f"Expected the new rule row (index 1) to flash, flashed={self._flashed(page)}",
+        )
+        assert 0 not in self._flashed(page), "the pre-existing rule row must not flash"
+
+    def test_a_newly_added_action_is_flashed(self, page: Page, base_url: str):
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE])
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+
+        rows = page.locator("[data-testid='watch-action-row']")
+        before = rows.count()
+        self._record_flashes(page, "watch-action-row")
+
+        page.locator("[data-testid='watch-add-action']").click()
+        expect(rows).to_have_count(before + 1)
+
+        wait_until(
+            page,
+            lambda: before in self._flashed(page),
+            lambda: f"Expected the new action row (index {before}) to flash, flashed={self._flashed(page)}",
+        )
+
     def test_new_rules_default_to_hysteresis_values(self, page: Page, base_url: str):
         """A bare threshold flaps into an MQTT storm; the defaults must guard it."""
         _mock_watch_apis(page, profiles=[FAKE_PROFILE])
