@@ -9,6 +9,7 @@ import {
 } from '/app-static/js/shared/api/storage.js';
 import { createServiceStatusPanel } from '/app-static/js/ui/serviceStatus.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
+import { promptRestartWatchersUsingMqtt } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import {
   DEFAULT_BBOX_HASH_SIZE,
@@ -929,6 +930,10 @@ async function _buildMqttSection() {
             : 'Saved: MQTT publishing disabled.',
           values.host ? 'info' : 'muted'
         );
+        // A watcher opens its broker connection once, in _build_actions, so both
+        // directions need the restart: a new host, and a cleared one that should
+        // stop publishing. No-op when no live watcher publishes over MQTT.
+        await promptRestartWatchersUsingMqtt();
       },
       (msg) => setStatus(`✗ ${msg}`, 'error')
     );

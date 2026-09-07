@@ -378,3 +378,120 @@ class TestIndirectReferences:
     def test_the_profile_itself_still_matches_directly(self, shared_page: Page):
         profiles = "[{ uuid: 'prof-1', name: 'P', sources: [{ sourceUuid: 'src-9' }] }]"
         assert self._run(shared_page, profiles, "prof-1") == ["task-1"]
+
+    def test_a_collector_attached_to_an_action_is_found(self, shared_page: Page):
+        """The case that started this: a collector is named by a watcher's action
+        row, so a running watcher holds the CollectorSpec it read at start and
+        every later edit to the caps/thresholds is invisible to it."""
+        profiles = (
+            "[{ uuid: 'prof-1', name: 'P', sources: [], "
+            "actions: [{ kind: 'collect_training_images', enabled: true, "
+            "paramsJson: { collectorUuid: 'coll-3' } }] }]"
+        )
+        assert self._run(shared_page, profiles, "coll-3") == ["task-1"]
+
+
+class TestPromptRestartWatchersUsingMqtt:
+    """The broker is a global Settings row with no uuid, so the deep scan cannot
+    reach it — but `_build_actions` reads it exactly once and hands the resulting
+    connection to every MQTT action. This is the one config where the prompt has
+    to be found by task type instead."""
+
+    _SETUP = """
+        const { promptRestartWatchersUsingMqtt } =
+            await import('/app-static/js/ui/utils/restartAffectedTasks.js');
+        const { clearWatchProfilesCache } =
+            await import('/app-static/js/shared/api/watchProfiles.js');
+        clearWatchProfilesCache();
+
+        window.__calls = [];
+        const _realFetch = window.fetch;
+        window.fetch = async (url, opts) => {
+            window.__calls.push(String(url));
+            let payload = { status: 'success' };
+            if (String(url).includes('/api/watch-profiles')) {
+                if (window.__profilesFail) {
+                    return new Response('nope', { status: 500 });
+                }
+                payload = { status: 'success', profiles: window.__profiles || [] };
+            } else if (String(url).includes('/api/tasks/instances/get')) {
+                payload = { status: 'success', tasks: window.__cancelled ? {} : window.__tasks };
+            } else if (String(url).includes('/api/tasks/instances/cancel')) {
+                window.__cancelled = true;
+            }
+            return new Response(JSON.stringify(payload), {
+                status: 200, headers: { 'Content-Type': 'application/json' },
+            });
+        };
+        window.__restoreFetch = () => { window.fetch = _realFetch; clearWatchProfilesCache(); };
+    """
+
+    _TEARDOWN = """
+        window.__restoreFetch();
+        delete window.__tasks; delete window.__profiles;
+        delete window.__cancelled; delete window.__profilesFail;
+        document.querySelectorAll('[data-testid="modal-shell-overlay"]').forEach(d => d.remove());
+    """
+
+    def _prompted(self, page: Page, profiles: str, tasks: str = None, fail_profiles: bool = False) -> bool:
+        """Does the confirm modal appear? Declines it either way, so nothing restarts."""
+        tasks = tasks or _running_task("{ watch_profile_uuid: 'prof-1' }")
+        return page.evaluate(f"""async () => {{
+            {self._SETUP}
+            window.__profiles = {profiles};
+            window.__tasks = {tasks};
+            window.__profilesFail = {str(fail_profiles).lower()};
+            const pending = promptRestartWatchersUsingMqtt();
+            // Give the modal a chance to mount before looking for it.
+            await new Promise(r => setTimeout(r, 50));
+            const overlay = document.querySelector('[data-testid="modal-shell-overlay"]');
+            const shown = !!overlay;
+            if (overlay) {{
+                const cancel = [...overlay.querySelectorAll('button')]
+                    .find(b => /keep running/i.test(b.textContent));
+                cancel?.click();
+            }}
+            await pending;
+            {self._TEARDOWN}
+            return shown;
+        }}""")
+
+    def test_prompts_for_a_watcher_with_an_enabled_mqtt_action(self, shared_page: Page):
+        profiles = (
+            "[{ uuid: 'prof-1', name: 'P', " "actions: [{ kind: 'publish_mqtt', enabled: true, paramsJson: {} }] }]"
+        )
+        assert self._prompted(shared_page, profiles) is True
+
+    def test_silent_for_a_watcher_with_no_mqtt_action(self, shared_page: Page):
+        """Changing the broker must not nag about a motion-only camera."""
+        profiles = (
+            "[{ uuid: 'prof-1', name: 'P', " "actions: [{ kind: 'record_clip', enabled: true, paramsJson: {} }] }]"
+        )
+        assert self._prompted(shared_page, profiles) is False
+
+    def test_silent_for_a_disabled_mqtt_action(self, shared_page: Page):
+        profiles = (
+            "[{ uuid: 'prof-1', name: 'P', " "actions: [{ kind: 'publish_mqtt', enabled: false, paramsJson: {} }] }]"
+        )
+        assert self._prompted(shared_page, profiles) is False
+
+    def test_prompts_when_the_profiles_cannot_be_read(self, shared_page: Page):
+        """Over-prompting is recoverable; a missed prompt is the silent failure."""
+        assert self._prompted(shared_page, "[]", fail_profiles=True) is True
+
+    def test_ignores_a_non_watcher_task(self, shared_page: Page):
+        tasks = """{
+            'task-1': {
+                config: { uuid: 'cfg-1', name: 'A Filter Run',
+                          typename: 'ApplyFilterChainTask', params: {} },
+                instance: { uuid: 'task-1', configUuid: 'cfg-1', status: 'running' },
+            }
+        }"""
+        assert self._prompted(shared_page, "[]", tasks=tasks) is False
+
+    def test_ignores_a_watcher_that_is_not_live(self, shared_page: Page):
+        profiles = (
+            "[{ uuid: 'prof-1', name: 'P', " "actions: [{ kind: 'publish_mqtt', enabled: true, paramsJson: {} }] }]"
+        )
+        tasks = _running_task("{ watch_profile_uuid: 'prof-1' }", status="completed")
+        assert self._prompted(shared_page, profiles, tasks=tasks) is False

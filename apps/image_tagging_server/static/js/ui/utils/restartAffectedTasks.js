@@ -240,6 +240,70 @@ export async function promptRestartOwnTask(configUuid) {
     `until ${one ? 'it is' : 'they are'} restarted.`);
 }
 
+/** Task typename of a watcher run, and the action kinds that publish over MQTT. */
+const WATCHER_TYPENAME = 'StreamWatcherTask';
+const MQTT_ACTION_KINDS = new Set(['publish_mqtt', 'publish_mqtt_image']);
+
+/**
+ * Offers to restart running watchers after the global MQTT broker settings change.
+ *
+ * The uuid scan above cannot see this one: broker settings are a global Settings
+ * row with no uuid to match, but `StreamWatcherTask._build_actions` reads them
+ * exactly once and hands the resulting connection to every MQTT action it builds.
+ * A watcher started before the change keeps publishing to the old broker (or, if
+ * there was none, keeps skipping publishes entirely) with nothing on screen
+ * saying so.
+ *
+ * Narrowed to watchers whose profile actually has an enabled MQTT action, so
+ * changing the broker does not nag about a motion-only camera. If the profiles
+ * cannot be read, every live watcher is offered instead — over-prompting is
+ * recoverable, and a missed prompt is the silent failure this module exists for.
+ *
+ * @returns {Promise<number>} how many watchers were restarted (0 if declined/none).
+ */
+export async function promptRestartWatchersUsingMqtt() {
+  let tasks;
+  let profiles = null;
+  try {
+    ({ tasks } = await fetchTasksStatus());
+  } catch {
+    return 0;  // Same reasoning as findTasksUsing: the save itself succeeded.
+  }
+  try {
+    profiles = await fetchWatchProfiles();
+  } catch {
+    profiles = null;  // Fall through to "prompt for every live watcher".
+  }
+
+  const publishesMqtt = (profileUuid) => {
+    if (!profiles) return true;
+    // ⚠️ A Map keyed by uuid, not an array (see fetchWatchProfiles).
+    const profile = profiles.get(profileUuid);
+    if (!profile) return true;
+    return (profile.actions || []).some(a => a?.enabled && MQTT_ACTION_KINDS.has(a?.kind));
+  };
+
+  const affected = [];
+  for (const [taskUuid, info] of Object.entries(tasks || {})) {
+    if (!LIVE_STATUSES.has(info?.instance?.status)) continue;
+    if (info?.config?.typename !== WATCHER_TYPENAME) continue;
+    if (!publishesMqtt(info?.config?.params?.watch_profile_uuid)) continue;
+    affected.push({
+      taskUuid,
+      configUuid: info?.config?.uuid,
+      name: info?.config?.name || info?.config?.typename || 'watcher',
+    });
+  }
+  if (!affected.length) return 0;
+
+  const names = affected.map(a => `"${a.name}"`).join(', ');
+  const one = affected.length === 1;
+  return _confirmAndRestart(affected,
+    `${affected.length} running ${one ? 'watcher is' : 'watchers are'} publishing over MQTT: ${names}. ` +
+    `${one ? 'It' : 'They'} connected to the broker at start and will keep using the previous settings ` +
+    `until restarted.`);
+}
+
 /**
  * Shared tail of both prompts: confirm, then cancel-and-restart each instance.
  *

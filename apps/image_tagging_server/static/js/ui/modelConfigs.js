@@ -12,6 +12,7 @@ import { MODEL_SPEC, scopeForModelType, parseNodes, computeNodes } from '/app-st
 import { renderModelTreePanel } from '/app-static/js/ui/modelTreePanel.js';
 import { NEW_ITEM_SELECTION, takePendingSelection, navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { fetchModelUnits } from '/app-static/js/shared/api/inference.js';
 
 let _rendering = false;
@@ -370,6 +371,9 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
                 const nameEl = listBody.querySelector(`[data-config-uuid="${config.uuid}"] .mc-list-item__name`);
                 if (nameEl) nameEl.textContent = updated.name;
                 await _showForm(updated, { force: true });
+                // A training run reads its shape once, at _init. No-op when nothing
+                // is running on this one.
+                await promptRestartAffectedTasks(config.uuid, { label: 'model shape' });
               } else {
                 const created = await createModelConfig({ name, description, nodes });
                 setDirty(false);
@@ -437,6 +441,7 @@ export async function renderModelConfigManager({ target = 'model-config-box' } =
               toast('Saved', 3000);
               const nameEl = listBody.querySelector(`[data-config-uuid="${config.uuid}"] .mc-list-item__name`);
               if (nameEl) nameEl.textContent = updated.name;
+              await promptRestartAffectedTasks(config.uuid, { label: 'model shape' });
             } else {
               const created = await createModelConfig({ name, description, nodes });
               setDirty(false);

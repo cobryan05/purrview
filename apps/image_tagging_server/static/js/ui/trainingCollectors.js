@@ -23,6 +23,7 @@ import { buildPanelEditorBar, makeFieldRow, toast } from '/app-static/js/ui/util
 import { FIELD_EDIT_EVENT } from '/app-static/js/ui/utils/fields/Field.js';
 import { SchemaField } from '/app-static/js/ui/utils/fields/SchemaField.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 
 const TAB_ID = 'tab-collector-management';
@@ -223,6 +224,12 @@ export async function renderTrainingCollectorManager({ target = 'collector-manag
               updateTitle(updated.name);
               toast('Collector saved', 3000);
               await refreshList();
+              // A watcher builds its collectors once, in _build_collectors, and holds
+              // the CollectorSpec it read then for the life of the run — so every
+              // field on this form (dedup thresholds, models, queue caps, eviction
+              // strategy) is invisible to anything already running. No-op when
+              // nothing is.
+              await promptRestartAffectedTasks(collector.uuid, { label: 'collector' });
             } else {
               const created = await createTrainingCollector(payload);
               setDirty(false);

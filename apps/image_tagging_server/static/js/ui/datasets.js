@@ -9,6 +9,7 @@ import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
 import { createFilterPanel } from '/app-static/js/app/review/filters.js';
 import { reviewStateToDatasetForm, datasetFormToReviewState } from '/app-static/js/shared/filterUtils.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 
 let _rendering = false;
 let _unsubDatasets = null;
@@ -306,6 +307,10 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
               toast(`${kindNoun} saved`, 3000);
               const nameEl = listBody.querySelector(`[data-dataset-uuid="${dataset.uuid}"] .ds-list-item__name`);
               if (nameEl) nameEl.textContent = updated.name;
+              // A task resolves its dataset to a concrete image set at _init, so a
+              // run already in flight keeps the old membership. No-op when nothing
+              // is running on it.
+              await promptRestartAffectedTasks(dataset.uuid, { label: kindNoun.toLowerCase() });
             } else {
               const created = await createDataset({
                 name,

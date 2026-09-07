@@ -23,6 +23,7 @@ import {
 } from '/app-static/js/shared/api/modelGroups.js';
 import { toast, makeFieldRow, buildPanelEditorBar } from '/app-static/js/ui/utils/index.js';
 import { createListEditorScreen } from '/app-static/js/ui/utils/listEditorScreen.js';
+import { promptRestartAffectedTasks } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 
 let _rendering = false;
 let _navGuardController = null;
@@ -308,6 +309,10 @@ export async function renderModelStackManager({ target = 'model-stack-management
               updateTitle(updated.name);
               toast('Model stack saved', 3000);
               await refreshList();
+              // A watcher resolves its stack to concrete model names once, in
+              // _build_pipelines, and pins those. Adding or removing a member here
+              // does not reach a run already in flight. No-op when nothing is.
+              await promptRestartAffectedTasks(stack.uuid, { label: 'model stack' });
             } else {
               const created = await createModelGroup({ name, description, members });
               setDirty(false);
