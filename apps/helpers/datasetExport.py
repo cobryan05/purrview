@@ -202,19 +202,21 @@ class CocoWriter(_Writer):
             {"id": image_id, "file_name": f"{base}{ext}", "width": width, "height": height}
         )
         for cls_idx, cx, cy, w, h in annotations:
-            px_w = _clamp01(w) * width
-            px_h = _clamp01(h) * height
+            # Clamp the *corners* and derive the extent from them. Clamping the
+            # origin while keeping the stored width would push `x + w` past the
+            # right edge for any box that overhangs the frame — which detector
+            # output routinely does — and COCO validators reject an out-of-image
+            # box outright.
+            x0 = _clamp01(cx - w / 2) * width
+            y0 = _clamp01(cy - h / 2) * height
+            px_w = max(0.0, _clamp01(cx + w / 2) * width - x0)
+            px_h = max(0.0, _clamp01(cy + h / 2) * height - y0)
             self._annotations.setdefault(split, []).append(
                 {
                     "id": self._next_ann_id,
                     "image_id": image_id,
                     "category_id": int(cls_idx) + 1,  # COCO category ids are 1-based
-                    "bbox": [
-                        round(_clamp01(cx - w / 2) * width, 2),
-                        round(_clamp01(cy - h / 2) * height, 2),
-                        round(px_w, 2),
-                        round(px_h, 2),
-                    ],
+                    "bbox": [round(x0, 2), round(y0, 2), round(px_w, 2), round(px_h, 2)],
                     "area": round(px_w * px_h, 2),
                     "iscrowd": 0,
                 }
