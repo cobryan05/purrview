@@ -877,6 +877,19 @@ class DbClient:
         """
         return self._write_epoch[0]
 
+    def _bump_write_epoch(self) -> None:
+        """Retire the cached review counts explicitly.
+
+        The `after_flush` listener above only sees ORM unit-of-work changes.
+        A Core statement handed to `session.exec()` — `delete(ImageRecord)`,
+        `sqlite_insert(ImageLabel)` and friends — never populates
+        `session.new/deleted/dirty`, so `flush()` short-circuits and the event
+        never fires. `delete_images_bulk` is exactly that shape, and it is the
+        "Apply to filtered images" path the epoch exists for, so every Core
+        write to a count-relevant table calls this by hand.
+        """
+        self._write_epoch[0] += 1
+
     async def init_db(self) -> None:
         """Initialize database and run any pending Alembic migrations.
 
@@ -2316,6 +2329,7 @@ class DbClient:
             result = await session.exec(delete(ImageRecord).where(ImageRecord.uuid.in_(uuids)))
             await session.commit()
             deleted_count = result.rowcount or 0
+        self._bump_write_epoch()
 
         # A large delete leaves that many pages on the freelist; auto_vacuum=INCREMENTAL
         # (set in _set_sqlite_pragma) doesn't reclaim them on its own, only on request.
@@ -3335,6 +3349,7 @@ class DbClient:
             )
             await session.exec(stmt)
             await session.commit()
+        self._bump_write_epoch()
 
     async def set_image_labels_status(self, image_uuid: str, label_uuids: List[str], status: ImageItemStatus) -> None:
         """Batch upsert image_label rows for several labels on one image in a single
@@ -3356,6 +3371,7 @@ class DbClient:
             )
             await session.exec(stmt)
             await session.commit()
+        self._bump_write_epoch()
 
     async def sync_image_present_labels(
         self,
@@ -3402,6 +3418,7 @@ class DbClient:
                     )
                 )
             await session.commit()
+        self._bump_write_epoch()
 
     async def get_image_labels(self, image_uuid: str) -> List[ImageLabel]:
         """Return all image_label rows for a given image."""
