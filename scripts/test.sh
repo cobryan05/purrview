@@ -56,9 +56,19 @@ run() {
 # `playwright` that also hands it `-p no:asyncio`, which turns off
 # `asyncio_mode = auto` and errors out every async test in the repo. `test.sh
 # playwright -q` did exactly that before this check existed.
+# A bare word is only a path if it looks like one. The first version of this
+# asked "does it start with a dash", which reads the *value* of a separated
+# option as a test path: `test.sh playwright -n 4` saw `4`, decided a path was
+# present, and ran `pytest -n 4 -p no:asyncio` — the unit suite, every async
+# test erroring, nine minutes to say so. Matching on a slash, a .py, or a name
+# that exists on disk costs nothing and cannot be fooled by an option value.
 has_path() {
   for a in "$@"; do
-    case "$a" in -*) ;; *) return 0 ;; esac
+    case "$a" in
+      -*) ;;
+      */*|*.py|*::*) return 0 ;;
+      *) [ -e "$a" ] && return 0 ;;
+    esac
   done
   return 1
 }
