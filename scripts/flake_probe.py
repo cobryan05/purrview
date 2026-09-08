@@ -8,15 +8,17 @@ process is dying can be captured and discarded.
 
   faulthandler -> /tmp/flake_probe/fh-<pid>.log
       A native crash (SIGSEGV/SIGABRT/SIGBUS/SIGFPE) dumps a C-level traceback
-      here. A file that exists means the worker crashed in native code.
+      here. The file is created when the probe starts, so its mere existence
+      proves nothing — a NON-EMPTY one means the worker crashed in native code.
 
   signal log   -> /tmp/flake_probe/sig-<pid>.log
       SIGTERM/SIGINT/SIGHUP are catchable, so a line here means something asked
       the worker to stop. SIGKILL cannot be caught, so its signature is the
       absence of BOTH files next to a vanished pid.
 
-So: fh file => native crash. sig file => something signalled it. Neither, and
-the process gone => SIGKILL from outside the process.
+So: non-empty fh file => native crash. sig file => something signalled it.
+Neither (fh file empty, no sig file), and the process gone => SIGKILL from
+outside the process.
 """
 
 import atexit
