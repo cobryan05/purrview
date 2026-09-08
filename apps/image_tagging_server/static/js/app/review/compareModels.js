@@ -30,6 +30,16 @@
  * choose from; it offers one on/off switch — "use the full hierarchy" (its
  * paired sub-model(s), on by default) vs "the top detector by itself."
  *
+ * Either side can be an **archived version** of its model instead of the live
+ * one, which is what makes the version history worth keeping: "did the retrain
+ * actually help?" is this dialog's question asked across time rather than across
+ * models. A version is not a model — it lives outside the models directory and
+ * nothing can load it by name — so picking one materialises a temporary copy
+ * (`<model>@<versionId>`, see `apps/helpers/modelVersions.py`) that runs like any
+ * other model and is deleted when the dialog closes. Sub-model chaining is off for
+ * a version: the sub-models on disk are the current ones, and pairing an archived
+ * detector with them would compare a hierarchy that never existed.
+ *
  * This never proposes new boxes or writes anything back — it only ever reads.
  * Accuracy comes from data `PreviewModelRelabelTask` already computes: a
  * "no-op" candidate (the model agrees with the current/ground-truth label)
@@ -38,7 +48,13 @@
  * correct/incorrect counts with zero new backend inference logic.
  */
 
-import { fetchModelsList } from '/app-static/js/shared/api/models.js';
+import {
+  fetchModelsList,
+  fetchModelVersions,
+  materializeModelVersion,
+  deleteModelPreview,
+} from '/app-static/js/shared/api/models.js';
+import { parseApiDate } from '/app-static/js/shared/time.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import {
   createTaskConfig,
@@ -188,7 +204,13 @@ function _isUnsupportedLabel(uuid, supportedLabelUuids) {
   return !!supportedLabelUuids && supportedLabelUuids.size > 0 && !supportedLabelUuids.has(uuid);
 }
 
-function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode, { optional = false, testidSuffix = 'a' } = {}) {
+/** "Trained 3 Sep 2026, 10:15" for a version option, so the list reads as dates. */
+function _versionOptionText(version) {
+  const d = parseApiDate(version.createdAt);
+  return d ? `Trained ${d.toLocaleString()}` : `Version ${version.versionId}`;
+}
+
+function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode, { optional = false, testidSuffix = 'a', onPreviewCreated = () => {} } = {}) {
   const panel = document.createElement('div');
   panel.className = 'compare-models-config';
   panel.style.cssText = 'flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 0.5rem;';
@@ -211,6 +233,111 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode, 
   }
   panel.appendChild(modelSelect);
 
+  // Which generation of that model. Hidden until the chosen model actually has
+  // history — most won't, and an empty "Current" dropdown is just noise.
+  const versionSelect = document.createElement('select');
+  versionSelect.dataset.testid = `compare-models-version-${testidSuffix}`;
+  versionSelect.style.display = 'none';
+
+  const versionNote = document.createElement('small');
+  versionNote.dataset.testid = `compare-models-version-note-${testidSuffix}`;
+  versionNote.style.cssText = 'display: none; opacity: 0.75;';
+  versionNote.textContent = 'Archived versions run on their own — the sub-models on disk belong to the '
+    + 'current model, not to this generation.';
+
+  panel.appendChild(versionSelect);
+  panel.appendChild(versionNote);
+
+  // The name the run actually uses: the model itself, or the temporary copy of an
+  // archived generation. Everything downstream (meta, sub-model pairing, the task)
+  // takes a model name, so resolving the choice to one name here keeps the version
+  // case from leaking into any of it.
+  let effectiveName = '';
+  let previewName = null;
+
+  /** Materialise the picked version (or drop back to the live model). */
+  async function _applyVersionChoice() {
+    const modelName = modelSelect.value;
+    const versionId = versionSelect.value;
+
+    if (previewName) {
+      // The panel never deletes: both panels can be showing the same version of
+      // the same model, and the server hands them one shared copy. Deleting on
+      // release would pull it out from under the other side mid-run, so the
+      // dialog refcounts and deletes when the last holder lets go.
+      onPreviewCreated(previewName, 'released');
+      previewName = null;
+    }
+
+    if (!modelName || !versionId) {
+      effectiveName = modelName;
+      versionNote.style.display = 'none';
+      return;
+    }
+
+    versionSelect.disabled = true;
+    try {
+      previewName = await materializeModelVersion(modelName, versionId);
+      onPreviewCreated(previewName, 'created');
+      // The preview carries the sidecar it was trained with, so its label set and
+      // kind are read from it rather than assumed to match the live model's —
+      // a class list that changed between generations is exactly what a
+      // comparison is looking for.
+      const previewMeta = await _fetchModelMeta([previewName]);
+      meta.set(previewName, previewMeta.get(previewName));
+      effectiveName = previewName;
+      versionNote.style.display = 'block';
+    } catch (err) {
+      toast(err.message || 'Could not load that version', 5000, 'error');
+      versionSelect.value = '';
+      effectiveName = modelName;
+      versionNote.style.display = 'none';
+    } finally {
+      versionSelect.disabled = false;
+    }
+  }
+
+  /** Refill the version list for the currently selected model. */
+  async function _loadVersions() {
+    versionSelect.innerHTML = '';
+    const modelName = modelSelect.value;
+    if (!modelName) {
+      versionSelect.style.display = 'none';
+      return;
+    }
+
+    let versions = [];
+    try {
+      versions = await fetchModelVersions(modelName);
+    } catch (err) {
+      // A model whose history can't be read is still comparable as it is now.
+      Logger.warn('Could not load versions for', modelName, err);
+    }
+    if (modelSelect.value !== modelName) return; // selection moved on while fetching
+
+    if (versions.length === 0) {
+      versionSelect.style.display = 'none';
+      return;
+    }
+
+    const live = document.createElement('option');
+    live.value = '';
+    live.textContent = 'Current version (live)';
+    versionSelect.appendChild(live);
+    for (const version of versions) {
+      const o = document.createElement('option');
+      o.value = version.versionId;
+      o.textContent = _versionOptionText(version);
+      versionSelect.appendChild(o);
+    }
+    versionSelect.style.display = '';
+  }
+
+  versionSelect.addEventListener('change', async () => {
+    await _applyVersionChoice();
+    _refresh();
+  });
+
   // No raw sub-model list: which sub-model refines which label is fixed by
   // the sidecar (see the module docstring), not something to pick per run —
   // the only real decision here is on/off, "the whole hierarchy" vs "the
@@ -228,15 +355,21 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode, 
   panel.appendChild(hierarchyToggleWrap);
 
   function _refresh() {
-    const subs = _pairedSubs(modelSelect.value, meta, hierarchy);
+    // An archived generation never chains: `_pairedSubs` would pair it with the
+    // *current* sub-models via its sidecar's config uuid, which is a hierarchy
+    // that never ran. The note beside the picker says so.
+    const subs = versionSelect.value ? [] : _pairedSubs(modelSelect.value, meta, hierarchy);
     const show = getCropMode() === 'image' && subs.length > 0;
     hierarchyToggleWrap.style.display = show ? 'flex' : 'none';
     if (show) hierarchyToggleText.textContent = `Use full hierarchy (+ ${subs.join(', ')})`;
   }
   // A newly picked model starts with the hierarchy on — that's the real
   // deployed behaviour, and the box to uncheck for "detector alone" instead.
-  modelSelect.addEventListener('change', () => {
+  modelSelect.addEventListener('change', async () => {
     hierarchyToggle.checked = true;
+    effectiveName = modelSelect.value;
+    await _loadVersions();
+    await _applyVersionChoice();
     _refresh();
   });
   _refresh();
@@ -245,17 +378,57 @@ function _buildConfigPanel(label, primaryOptions, meta, hierarchy, getCropMode, 
     panel,
     refreshSubModelVisibility: _refresh,
     getConfig() {
-      const modelName = modelSelect.value;
-      const subModelNames = getCropMode() === 'image' && hierarchyToggle.checked
+      const modelName = effectiveName || modelSelect.value;
+      const isVersion = Boolean(versionSelect.value);
+      const subModelNames = !isVersion && getCropMode() === 'image' && hierarchyToggle.checked
         ? _pairedSubs(modelName, meta, hierarchy)
         : [];
-      return { modelName, subModelNames, supportedLabelUuids: _supportedLabelUuids(modelName, subModelNames, meta) };
+      return {
+        modelName,
+        subModelNames,
+        supportedLabelUuids: _supportedLabelUuids(modelName, subModelNames, meta),
+        // What to call it in the results: `<model>@<timestamp>` is a filename, not
+        // something anyone picked, and the two sides of a same-model comparison are
+        // otherwise indistinguishable in the output.
+        displayName: isVersion
+          ? `${modelSelect.value} — ${versionSelect.selectedOptions[0]?.textContent ?? versionSelect.value}`
+          : modelName,
+      };
     },
   };
 }
 
 function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, hierarchy }) {
-  const { dialog, open, close } = createModalShell();
+  // Version previews are full copies of a model's weights. They are deleted as
+  // soon as a panel stops using one, and this set is the backstop for the rest:
+  // closing the dialog mid-comparison, or with a version still selected.
+  // name -> how many panels are holding it. Two panels comparing the same version
+  // of the same model share one materialised copy (the server is idempotent), so
+  // this is a refcount, not a set: whoever lets go last does the deleting.
+  const livePreviews = new Map();
+  const _releasePreview = (name) => {
+    deleteModelPreview(name).catch(err => Logger.warn('Preview cleanup failed:', err));
+  };
+  const _trackPreview = (name, action) => {
+    const held = livePreviews.get(name) ?? 0;
+    if (action === 'created') {
+      livePreviews.set(name, held + 1);
+      return;
+    }
+    if (held <= 1) {
+      livePreviews.delete(name);
+      _releasePreview(name);
+    } else {
+      livePreviews.set(name, held - 1);
+    }
+  };
+
+  const { dialog, open, close } = createModalShell({
+    onClose: () => {
+      for (const name of livePreviews.keys()) _releasePreview(name);
+      livePreviews.clear();
+    },
+  });
   // .app-modal-dialog's own max-width (--modal-w-sm, 560px) clamps any wider
   // inline `width` set at the call site — the size-modifier classes exist
   // for exactly this (see app.css's comment on .app-modal-dialog). --lg
@@ -298,10 +471,14 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
 
   const configRow = document.createElement('div');
   configRow.style.cssText = 'display: flex; gap: 1.5rem; flex-wrap: wrap;';
-  const configA = _buildConfigPanel('Model', primaryOptions, meta, hierarchy, getCropMode, { testidSuffix: 'a' });
+  const configA = _buildConfigPanel('Model', primaryOptions, meta, hierarchy, getCropMode, {
+    testidSuffix: 'a', onPreviewCreated: _trackPreview,
+  });
   // Second model is entirely optional — leave it unset to just verify Model
   // A's own accuracy; pick one to compare the two side by side.
-  const configB = _buildConfigPanel('Compare against (optional)', primaryOptions, meta, hierarchy, getCropMode, { optional: true, testidSuffix: 'b' });
+  const configB = _buildConfigPanel('Compare against (optional)', primaryOptions, meta, hierarchy, getCropMode, {
+    optional: true, testidSuffix: 'b', onPreviewCreated: _trackPreview,
+  });
   configRow.appendChild(configA.panel);
   configRow.appendChild(configB.panel);
   dialog.appendChild(configRow);
@@ -384,7 +561,7 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
     try {
       const confThresh = Math.min(1, Math.max(0, parseFloat(threshInput.value) || 0.25));
       const iouThresh = Math.min(1, Math.max(0, parseFloat(iouInput.value) || 0.5));
-      const labelA = a.modelName + (a.subModelNames.length ? ` → ${a.subModelNames.join(', ')}` : '');
+      const labelA = (a.displayName ?? a.modelName) + (a.subModelNames.length ? ` → ${a.subModelNames.join(', ')}` : '');
 
       progressLabel.textContent = `Running ${labelA}…`;
       progressBar.value = 0;
@@ -394,7 +571,7 @@ function _showVerifyDialog({ ctx, bboxUuids, imageUuids, primaryOptions, meta, h
       let resultB = null;
       let labelB = null;
       if (b.modelName) {
-        labelB = b.modelName + (b.subModelNames.length ? ` → ${b.subModelNames.join(', ')}` : '');
+        labelB = (b.displayName ?? b.modelName) + (b.subModelNames.length ? ` → ${b.subModelNames.join(', ')}` : '');
         progressLabel.textContent = `Running ${labelB}…`;
         progressBar.value = 0;
         resultB = await _runOneConfig({ ...b, cropMode, bboxUuids, imageUuids, confThresh, iouThresh, onProgress: p => { progressBar.value = p; } });
