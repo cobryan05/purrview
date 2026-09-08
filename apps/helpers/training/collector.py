@@ -366,6 +366,11 @@ class TrainingCollector:
         #: fired as a background task; this is that task, checked (not awaited)
         #: before starting another.
         self._eviction_task: Optional[asyncio.Task] = None
+        #: Set by `shutdown()` before it drains. `drain_saves()` goes through
+        #: `collect_saves()`, which schedules an eviction pass — so without this
+        #: the teardown itself starts a detached task that outlives the collector
+        #: and goes on deleting images after the run was told to stop.
+        self._shutting_down: bool = False
         #: Monotonic per-run save counter, used only to make live-source filenames
         #: unique — see `_save_image`. Not persisted: it exists to separate two
         #: saves within ONE run, and the UTC stamp beside it separates runs.
@@ -494,6 +499,22 @@ class TrainingCollector:
         then dedup drains so every queued frame has its save task registered
         before we wait on them.
         """
+        self._shutting_down = True
+
+        # Before anything else: it is a detached background task that deletes
+        # images, and nothing downstream waits on it. Cancelling and awaiting
+        # here is what keeps it from outliving the collector (and from being
+        # garbage-collected mid-delete when the loop goes away).
+        if self._eviction_task is not None:
+            self._eviction_task.cancel()
+            try:
+                await self._eviction_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Review-queue eviction pass failed during shutdown")
+            self._eviction_task = None
+
         if self._renew_pins_task is not None:
             self._renew_pins_task.cancel()
             try:
@@ -982,6 +1003,8 @@ class TrainingCollector:
         window don't queue up a pile of overlapping passes; the next save after
         it finishes re-checks and fires again if the queue is still over.
         """
+        if self._shutting_down:
+            return
         if self._spec.max_unverified_images is None and self._spec.max_unverified_bytes is None:
             return
         if self._task_tag_uuid is None:
@@ -1024,6 +1047,13 @@ class TrainingCollector:
             )
             count_resp = await asyncio.to_thread(images_api.get_review_queue, count_params)
             total = count_resp.total_count
+            if total is None or total < 0:
+                # `Manager._count_images_bounded` answers -1 when the count query
+                # times out, which is likeliest on exactly the oversized queue this
+                # pass exists to trim. Neither cap can be judged against an unknown
+                # total, and a negative one would ask for a negative page size, so
+                # skip this pass — the next save fires another.
+                return
             over_count = self._spec.max_unverified_images is not None and total > self._spec.max_unverified_images
             if not over_count and self._spec.max_unverified_bytes is None:
                 return
