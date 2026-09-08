@@ -319,8 +319,9 @@ def install_with_history(models_dir: Path, model_names, keep: int = DEFAULT_VERS
     for name in sorted(set(model_names)):
         try:
             archived[name] = snapshot_current(models_dir, name)
-            # keep + 1: the generation just archived is the newest of the previous
-            # ones, and `keep` counts previous generations, not files on disk.
+            # `keep` and not `keep + 1`: the generation just archived is already one
+            # of the *previous* ones (the new weights have not landed yet), and
+            # `keep` counts previous generations.
             prune_versions(models_dir, name, keep)
         except OSError:
             logger.exception("Could not archive current version of model %s", name)
@@ -384,11 +385,17 @@ def materialize_version(models_dir: Path, model_name: str, version_id: str) -> s
 
     # Weights last, same rule as everywhere else: a reader that spots the .onnx
     # must find its sidecar and external tensors already there.
+    #
+    # `copyfile`, not `copy2`: an archived generation carries the mtime it was
+    # *trained* at, which is days or weeks old, and `sweep_stale_previews` dates a
+    # preview by that mtime. Preserving it would make every preview born already
+    # older than PREVIEW_MAX_AGE_S, so the next comparison's sweep would delete a
+    # preview another comparison is still running against.
     for suffix in MODEL_SUFFIXES:
         src = sources.get(f"{model_name}{suffix}")
         if src is None:
             continue
-        shutil.copy2(src, Path(models_dir) / f"{name}{suffix}")
+        shutil.copyfile(src, Path(models_dir) / f"{name}{suffix}")
 
     logger.info("Materialised %s version %s as %s", model_name, version_id, name)
     return name
