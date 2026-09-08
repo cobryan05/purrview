@@ -321,3 +321,73 @@ export async function associateLabel(modelName, modelClass, labelUuid) {
   const modelsMap = await modelsFetcher.fetch('modelsMap');
   modelsMap.set(modelName, null);
 }
+/**
+ * Previous generations of a model, newest first.
+ *
+ * Every training run archives the weights it replaces, so this is the model's
+ * history and the list you roll back from. Deliberately uncached: it changes
+ * whenever a run finishes or a restore happens, and a stale list here offers a
+ * version that is no longer on disk.
+ *
+ * @returns {Promise<Array<{versionId: string, archivedAt: ?string, createdAt: ?string,
+ *   bytes: number, files: string[]}>>}
+ */
+export async function fetchModelVersions(modelName) {
+  const res = await apiFetch(`/api/models/${encodeURIComponent(modelName)}/versions`);
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to fetch model versions');
+  }
+  return data.versions ?? [];
+}
+
+/**
+ * Roll a model back to one of its archived generations.
+ *
+ * The generation being replaced is archived on the way out, so the restore is
+ * itself undoable — the response's `archived` id is the entry that now holds it.
+ *
+ * @returns {Promise<{restored: string, archived: ?string, files: string[]}>}
+ */
+export async function restoreModelVersion(modelName, versionId) {
+  const res = await apiFetch(
+    `/api/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(versionId)}/restore`,
+    { method: 'POST' },
+  );
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to restore model version');
+  }
+  return { restored: data.restored, archived: data.archived, files: data.files ?? [] };
+}
+
+/**
+ * Materialise an archived version as a temporary, runnable model.
+ *
+ * Returns the name it is runnable under (`<model>@<versionId>`). It is a full
+ * copy of the weights, so whoever creates one is responsible for calling
+ * `deleteModelPreview` when the run that needed it is finished; the server sweeps
+ * ones left behind by a browser that went away, but only after hours.
+ *
+ * @returns {Promise<string>} the preview model name
+ */
+export async function materializeModelVersion(modelName, versionId) {
+  const res = await apiFetch(
+    `/api/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(versionId)}/preview`,
+    { method: 'POST' },
+  );
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to prepare that version for comparison');
+  }
+  return data.previewName;
+}
+
+/** Delete a materialised version. Refused server-side for anything that isn't one. */
+export async function deleteModelPreview(previewName) {
+  const res = await apiFetch(`/api/models/${encodeURIComponent(previewName)}/preview`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to clean up the version preview');
+  }
+}

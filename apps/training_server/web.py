@@ -145,6 +145,14 @@ class CacheEvictResponse(BaseModel):
     bytes: int
 
 
+class ArtifactsEvictResponse(BaseModel):
+    removed: List[str] = Field(default_factory=list)
+    freed_bytes: int = 0
+    kept: int = 0
+    jobs: int = 0
+    bytes: int = 0
+
+
 def _job_to_info(job) -> JobInfo:
     d = job.to_dict()
     return JobInfo(**d)
@@ -471,6 +479,22 @@ class WebApp:
             directories — off the event loop, and never on the status poll path.
             """
             return JSONResponse(await asyncio.to_thread(self._manager.get_info))
+
+        @self._app.post(
+            "/api/training/artifacts/evict",
+            operation_id="evict_training_artifacts",
+            response_model=ArtifactsEvictResponse,
+            tags=["training"],
+        )
+        async def evict_artifacts(keep: Optional[int] = None) -> ArtifactsEvictResponse:
+            """Keep only the newest ``keep`` finished jobs' artifact directories.
+
+            Called by tasks_server once it has safely downloaded a run's weights,
+            which is the only moment the older directories are certainly no longer
+            needed. Safe to call at any time: a queued, running or interrupted job's
+            directory is never a candidate.
+            """
+            return ArtifactsEvictResponse(**await asyncio.to_thread(self._manager.evict_artifacts, keep))
 
         @self._app.post(
             "/api/training/cache/evict",

@@ -2,6 +2,7 @@ import { createModalShell } from './utils/modalShell.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import { showPaneError } from '/app-static/js/ui/utils/index.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
+import { getSetting, TRAINING_ARTIFACTS_KEEP_SETTING_KEY } from '/app-static/js/shared/api/settings.js';
 
 const STATUS_COLOR = {
   running:       'var(--pico-ins-color,#4b8)',
@@ -125,10 +126,15 @@ function _fmtBytes(n) {
  *    kept, because dropping those leaves a queued job unable to run without a
  *    fresh upload of every image it needs; the response says how many it spared.
  *
- * Artifacts are reported but not clearable here. A job's artifact directory holds
- * the weights it produced and is what a restart or a download reads from — that is
- * output, not cache, and deleting it is a different decision from reclaiming
- * scratch space.
+ *  - **Evict artifacts** applies the "Keep training job folders" bound from
+ *    Settings → Model History. A job folder holds one finished run's weights and
+ *    checkpoints and is what a restart or a re-download reads, so it is output
+ *    rather than scratch — which is why it is bounded by its own number and not
+ *    swept with the cache. Only finished runs are candidates: queued, running and
+ *    interrupted jobs keep their folders, an interrupted one because it can still
+ *    be restarted from the checkpoint inside it. The same sweep runs on its own
+ *    after every completed training run; this button is for reclaiming the space
+ *    without waiting for one.
  *
  * @param {() => Promise<void>} onChanged - re-read the panel after an action.
  * @returns {HTMLElement}
@@ -172,8 +178,8 @@ function _renderStorage(info, onChanged) {
   status.style.cssText = 'font-size: 0.75em; color: var(--pico-muted-color,#888); margin-top: 6px; min-height: 1.1em;';
   status.dataset.testid = 'training-cache-status';
 
-  /** Run one cache action, reporting what it freed and re-reading the figures. */
-  const action = (label, title, run) => {
+  /** Run one storage action, reporting what it freed and re-reading the figures. */
+  const action = (label, title, run, unit = 'file') => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'secondary';
@@ -187,9 +193,12 @@ function _renderStorage(info, onChanged) {
       try {
         const result = await run();
         if (result === null) return; // declined at the confirm
-        const removed = result?.removed ?? 0;
+        // Cache eviction counts files; artifact eviction names the job folders it
+        // removed. Both arrive as `removed`.
+        const rawRemoved = result?.removed ?? 0;
+        const removed = Array.isArray(rawRemoved) ? rawRemoved.length : rawRemoved;
         status.textContent = removed
-          ? `Removed ${removed} file(s), freeing ${_fmtBytes(result?.freedBytes ?? result?.freed_bytes ?? 0)}`
+          ? `Removed ${removed} ${unit}(s), freeing ${_fmtBytes(result?.freedBytes ?? result?.freed_bytes ?? 0)}`
             + (result?.keptPinned ?? result?.kept_pinned ? ` · kept ${result.keptPinned ?? result.kept_pinned} pinned` : '')
           : 'Nothing to remove.';
         await onChanged();
@@ -209,6 +218,25 @@ function _renderStorage(info, onChanged) {
       if (!res.ok) throw new Error(`Eviction failed (${res.status})`);
       return await res.json();
     }),
+    action(
+      'Evict artifacts',
+      'Keep only the most recent finished runs, per Settings → Model History',
+      async () => {
+        // The limit lives in db_server settings; the training server may be on
+        // another host and cannot read it, so it is sent with the request.
+        let keep = null;
+        try {
+          const stored = await getSetting(TRAINING_ARTIFACTS_KEEP_SETTING_KEY);
+          const parsed = stored != null && String(stored).trim() !== '' ? Number(stored) : NaN;
+          if (Number.isFinite(parsed)) keep = Math.max(0, Math.trunc(parsed));
+        } catch (_) {}
+        const query = keep === null ? '' : `?keep=${keep}`;
+        const res = await apiFetch(`/api/training/artifacts/evict${query}`, { method: 'POST' });
+        if (!res.ok) throw new Error(`Artifact eviction failed (${res.status})`);
+        return await res.json();
+      },
+      'folder',
+    ),
     action('Clear cache', 'Delete every cached image except those a live job is using', async () => {
       if (!window.confirm(
         'Delete the training server\'s cached images?\n\n'

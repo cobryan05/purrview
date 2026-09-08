@@ -278,8 +278,8 @@ class TestSettingsLayout:
         wrap = page.locator("#tab-settings .settings-wrap")
         expect(wrap).to_have_css("display", "grid")
         # Servers, Security, MQTT Broker, Recording Retention, Timelapse Retention,
-        # Storage, Deduplication, Interface, Keyboard Shortcuts
-        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(9)
+        # Model History, Storage, Deduplication, Interface, Keyboard Shortcuts
+        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(10)
 
         # At a desktop width the grid resolves to more than one column.
         columns = page.evaluate(
@@ -393,7 +393,7 @@ class TestMqttSettings:
         _navigate_to_settings(page, base_url)
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
-        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(9)
+        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(10)
 
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
         _mock_server_config(page)
@@ -1109,3 +1109,47 @@ class TestTimelapseRetention:
         caveat = page.locator("[data-testid='settings-timelapse-caveat']")
         expect(caveat).to_contain_text("JSON sidecar")
         expect(caveat).to_contain_text("YYYY-MM-DD")
+
+
+class TestModelHistorySettings:
+    """The two bounds on what training leaves behind.
+
+    Both rows are built from the same helper, so the risk they carry is that one
+    saves under the other's key — which would look like a working input that
+    silently changes nothing.
+    """
+
+    def test_each_row_saves_under_its_own_key(self, page: Page, base_url: str):
+        _mock_server_config(page)
+        _mock_settings_get(page, {"model_versions_keep": "3", "training_artifacts_keep": "3"})
+        _navigate_to_settings(page, base_url)
+
+        put_calls = []
+
+        def handle_put(route: Route):
+            if route.request.method == "PUT":
+                put_calls.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
+
+        page.route(lambda url: "/api/settings/" in url, handle_put)
+
+        page.get_by_test_id("settings-model-versions-keep").fill("5")
+        page.get_by_test_id("settings-model-versions-keep-save").click()
+        wait_until(page, lambda: put_calls, "Expected PUT for the model-versions bound")
+
+        page.get_by_test_id("settings-training-artifacts-keep").fill("1")
+        page.get_by_test_id("settings-training-artifacts-keep-save").click()
+        wait_until(page, lambda: len(put_calls) == 2, "Expected PUT for the artifacts bound")
+
+        by_key = {url.rstrip("/").rsplit("/", 1)[-1]: body for url, body in put_calls}
+        assert by_key["model_versions_keep"] == {"value": "5"}
+        assert by_key["training_artifacts_keep"] == {"value": "1"}
+
+    def test_zero_versions_is_described_as_no_rollback(self, page: Page, base_url: str):
+        """0 is a legal value with real consequences, so the row has to say what it means."""
+        _mock_server_config(page)
+        _mock_settings_get(page, {"model_versions_keep": "0"})
+        _navigate_to_settings(page, base_url)
+
+        row = page.locator(".settings-server-row").filter(has=page.get_by_test_id("settings-model-versions-keep"))
+        expect(row.locator(".settings-server-status")).to_contain_text("No history")

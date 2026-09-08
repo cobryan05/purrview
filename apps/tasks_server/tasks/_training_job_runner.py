@@ -40,12 +40,24 @@ from training_client.models.submit_job_payload import SubmitJobPayload
 
 from apps import FILES_ROOT
 from apps.helpers.metadataUtils import atomic_write_bytes
+from apps.helpers.modelVersions import (
+    DEFAULT_VERSIONS_KEEP,
+    MODEL_VERSIONS_KEEP_SETTING_KEY,
+    install_with_history,
+)
 
 from ._inference_push import inference_server_is_colocated, push_artifact_tar_to_inference_server
 
 logger = logging.getLogger(__file__)
 
 _MODELS_DIR = Path(os.environ.get("MODELS_ROOT", "/models"))
+
+#: Settings key (db_server ``user_settings``) for how many finished jobs' artifact
+#: directories the training server keeps. Read here rather than there because the
+#: training server may be a different container on a different host with no route
+#: to db_server — it is told the number, it does not look it up.
+TRAINING_ARTIFACTS_KEEP_SETTING_KEY = "training_artifacts_keep"
+DEFAULT_TRAINING_ARTIFACTS_KEEP = 3
 _TAR_BATCH_SIZE = 500  # max images per tar POST
 
 # Hard cap on retained per-epoch metric samples. Real runs are tens-to-hundreds of
@@ -722,6 +734,13 @@ class TrainingJobRunnerMixin:
 
         return ", ".join(parts)
 
+    async def _models_versions_keep(self) -> int:
+        """How many previous generations of each model to keep on install."""
+        from db_client.api.settings_api import SettingsApi
+
+        settings_api = SettingsApi(self._manager.get_db_api_client())
+        return await self._read_int_setting(settings_api, MODEL_VERSIONS_KEEP_SETTING_KEY, DEFAULT_VERSIONS_KEEP)
+
     async def _save_artifact(self, job_id: str) -> None:
         """Download the artifact tar from the training server and write to /models."""
         artifact_url = f"{self._training_base_url}/api/training/jobs/{job_id}/artifact"
@@ -732,6 +751,8 @@ class TrainingJobRunnerMixin:
             r.raise_for_status()
             tar_bytes = r.content
 
+        versions_keep = await self._models_versions_keep()
+
         _MODELS_DIR.mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:*") as tf:
             members = [m for m in tf.getmembers() if m.isfile()]
@@ -741,6 +762,18 @@ class TrainingJobRunnerMixin:
             # disk when it moves. Keyed on the boolean rather than the name, because
             # lexicographically ".onnx" sorts *before* ".onnx.data".
             members.sort(key=lambda m: Path(m.name).name.endswith(".onnx"))
+
+            # Archive whatever is on disk now, before a byte of it is overwritten.
+            # This is the whole rollback story: without it the previous generation
+            # is gone the moment the first member lands.
+            model_names = {
+                Path(m.name).name.split(".")[0] for m in members if Path(m.name).name.endswith((".onnx", ".json"))
+            }
+            archived = await asyncio.to_thread(install_with_history, _MODELS_DIR, model_names, versions_keep)
+            for model_name, version_id in sorted(archived.items()):
+                if version_id:
+                    self.log(f"Archived previous {model_name} as version {version_id}")
+
             for member in members:
                 name = Path(member.name).name
                 if not name.endswith((".onnx", ".onnx.data", ".json")):
@@ -750,9 +783,10 @@ class TrainingJobRunnerMixin:
                 fobj = tf.extractfile(member)
                 if fobj:
                     if dest.exists():
-                        # Expected on retrain of the same model name; anything
-                        # else (e.g. two configs sharing a model name) is a silent
-                        # clobber — leave a trace either way.
+                        # Expected on retrain of the same model name, and no longer
+                        # destructive — the previous generation was archived above.
+                        # Still logged, because two configs sharing a model name
+                        # overwrite each other and only the log shows it.
                         logger.warning("Overwriting existing model artifact %s", dest)
                     # Atomic: a live detection task stats and reloads this file on
                     # every inference, so a plain write_bytes() is readable as a
@@ -761,6 +795,33 @@ class TrainingJobRunnerMixin:
                     self.log(f"Saved model artifact: {dest}")
 
         await self._push_artifact_to_inference_server(tar_bytes)
+        await self._evict_remote_artifacts()
+
+    async def _evict_remote_artifacts(self) -> None:
+        """Bound the training server's artifact directories, now that the weights are here.
+
+        Deliberately after the artifact is saved and pushed: that is the moment the
+        older runs' directories are certainly no longer needed, and this call is the
+        only thing that ever bounded them — every finished job used to keep its full
+        directory (weights plus checkpoints, ~1 GB for a detector) forever.
+
+        Best-effort by construction. A completed multi-hour training run must not be
+        reported as failed because a cleanup call did not land.
+        """
+        from db_client.api.settings_api import SettingsApi
+
+        try:
+            settings_api = SettingsApi(self._manager.get_db_api_client())
+            keep = await self._read_int_setting(
+                settings_api, TRAINING_ARTIFACTS_KEEP_SETTING_KEY, DEFAULT_TRAINING_ARTIFACTS_KEEP
+            )
+            result = await asyncio.to_thread(TrainingApi(self._api_client).evict_training_artifacts, keep)
+            removed = list(result.removed or [])
+            if removed:
+                freed_mb = (result.freed_bytes or 0) / (1024 * 1024)
+                self.log(f"Training server: removed {len(removed)} old artifact folder(s), freed {freed_mb:.0f} MB")
+        except Exception as exc:
+            logger.warning("Could not evict training-server artifacts: %s", exc)
 
     async def _push_artifact_to_inference_server(self, tar_bytes: bytes) -> None:
         """Push the same artifact tar to inference_server over HTTP.
@@ -778,7 +839,9 @@ class TrainingJobRunnerMixin:
             self.log("Inference server is co-located; it already has the artifact.")
             return
         self.log("Pushing model artifact to inference server...")
-        files = await push_artifact_tar_to_inference_server(client, tar_bytes)
+        files = await push_artifact_tar_to_inference_server(
+            client, tar_bytes, versions_keep=await self._models_versions_keep()
+        )
         self.log(f"Inference server updated: {files}")
 
     async def _cancel_remote_job(self, job_id: str) -> None:

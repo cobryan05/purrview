@@ -65,10 +65,22 @@ export function renderModelLabelAssignments({
           onClick: () => openTrainingDataModal(preselectedModel),
         }] : []),
         ...(preselectedModel ? [{
+          text: 'History',
+          emoji: '\u{1F553}',
+          // Emoji buttons carry no text for a selector to match — see createGenericRow.
+          testid: 'model-history-open',
+          onClick: async () => {
+            const { showModelVersionsModal } = await import('/app-static/js/ui/modelVersionsModal.js');
+            await showModelVersionsModal(preselectedModel);
+          },
+        }] : []),
+        ...(preselectedModel ? [{
           text: 'Delete model',
           emoji: '🗑️',
           onClick: async () => {
-            if (!window.confirm(`Delete model "${preselectedModel}"? This cannot be undone.`)) return;
+            if (!window.confirm(
+              `Delete model "${preselectedModel}"? Its previous versions are deleted too. `
+              + 'This cannot be undone.')) return;
             try {
               await deleteModel(preselectedModel);
               notifyModelsChanged();

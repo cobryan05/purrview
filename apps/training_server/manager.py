@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -289,6 +290,61 @@ class Manager:
             "removed": before["files"] - after["files"],
             "freed_bytes": before["bytes"] - after["bytes"],
             "files": after["files"],
+            "bytes": after["bytes"],
+        }
+
+    #: Finished jobs whose artifact directories are kept when the caller names no
+    #: number. Every completed run used to be kept forever — a single object-detection
+    #: job's directory here measured 1.1 GB — so this is a bound where there was none,
+    #: not a tightening of an existing one.
+    DEFAULT_ARTIFACTS_KEEP = 3
+
+    def evict_artifacts(self, keep: Optional[int] = None) -> Dict[str, Any]:
+        """Delete the artifact directories of all but the ``keep`` newest finished jobs.
+
+        Only ``done``/``error``/``cancelled`` jobs are candidates. A queued, running
+        or awaiting job is still going to write there; an ``interrupted`` one can be
+        restarted from the checkpoint in that directory, and deleting it would throw
+        away recoverable work. Newest-first by creation time, so the run whose weights
+        were just fetched is never the one removed.
+
+        The job record is dropped along with its directory — a job whose artifacts are
+        gone can neither be restarted nor downloaded, and leaving it listed offers both.
+        """
+        keep = self.DEFAULT_ARTIFACTS_KEEP if keep is None else max(0, int(keep))
+
+        evictable = [j for j in self._queue.list_jobs() if j.status in ("done", "error", "cancelled")]
+        # list_jobs() is already newest-first.
+        doomed = evictable[keep:]
+
+        removed: List[str] = []
+        freed = 0
+        for job in doomed:
+            job_dir = job.artifact_dir
+            if job_dir is None or not Path(job_dir).is_dir():
+                self._queue.forget(job.job_id)
+                continue
+            try:
+                for path in Path(job_dir).rglob("*"):
+                    if path.is_file():
+                        try:
+                            freed += path.stat().st_size
+                        except OSError:
+                            pass
+                shutil.rmtree(job_dir)
+                self._queue.forget(job.job_id)
+                removed.append(job.job_id)
+            except OSError:
+                logger.exception("Could not remove artifact directory %s", job_dir)
+
+        if removed:
+            logger.info("Evicted %d artifact director(ies), freeing %d bytes", len(removed), freed)
+        after = self._artifacts_stats()
+        return {
+            "removed": removed,
+            "freed_bytes": freed,
+            "kept": min(len(evictable), keep),
+            "jobs": after["jobs"],
             "bytes": after["bytes"],
         }
 

@@ -230,6 +230,22 @@ class JobQueue:
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
 
+    def forget(self, job_id: str) -> bool:
+        """Drop a finished job from the queue's memory.
+
+        Only terminal jobs, and never an ``interrupted`` one: that status means
+        the server restarted mid-run and the job can still be restarted from its
+        checkpoint, so forgetting it would strand work that is still recoverable.
+        Used by artifact eviction, which has just deleted the directory this job's
+        record points at — leaving the record would offer a restart that cannot
+        read its own inputs.
+        """
+        job = self._jobs.get(job_id)
+        if job is None or job.status not in TERMINAL_STATUSES or job.status == "interrupted":
+            return False
+        del self._jobs[job_id]
+        return True
+
     async def shutdown(self) -> None:
         """Cancel all worker tasks and wait for them to persist their state."""
         for worker in self._workers:

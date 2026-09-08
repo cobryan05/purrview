@@ -18,7 +18,7 @@ import base64
 import io
 import socket
 import tarfile
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from inference_client import ApiClient
@@ -77,15 +77,24 @@ def build_artifact_tar(files: Dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
-async def push_artifact_tar_to_inference_server(inference_api_client: ApiClient, tar_bytes: bytes) -> List[str]:
+async def push_artifact_tar_to_inference_server(
+    inference_api_client: ApiClient, tar_bytes: bytes, *, versions_keep: Optional[int] = None
+) -> List[str]:
     """POST an artifact tar to inference_server; raises if it's rejected.
 
     A silently-swallowed failure here would leave inference_server serving stale (or
     no) weights indefinitely with no other signal that anything is wrong, so a
     rejection propagates as a task failure rather than a logged warning.
+
+    ``versions_keep`` travels with the artifact because a remote inference server
+    cannot read db_server's settings for itself; sending it is what keeps the two
+    copies of a model on the same retention policy.
     """
     models_api = ModelsApi(inference_api_client)
-    payload = ImportModelArtifactPayload(artifact_tar_base64=base64.b64encode(tar_bytes).decode("ascii"))
+    payload = ImportModelArtifactPayload(
+        artifact_tar_base64=base64.b64encode(tar_bytes).decode("ascii"),
+        versions_keep=versions_keep,
+    )
     response = await asyncio.to_thread(models_api.import_model_artifact, payload)
     if response.status != "success":
         raise RuntimeError(f"inference server rejected model artifact: {response.message}")

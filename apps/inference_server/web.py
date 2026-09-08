@@ -14,13 +14,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
 
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues
 from apps.helpers.curatedModels import CURATED_BASE_MODELS
 from apps.helpers.imageUtils import base64_decode_image
 from apps.helpers.landingPage import action, render_landing_page
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.modelVersions import is_version_preview
 from apps.helpers.types import (
     InferenceResult,
     InferenceResultModel,
@@ -238,6 +240,39 @@ class ImportModelUploadPayload(Payload):
 
 class ImportModelArtifactPayload(Payload):
     artifact_tar_base64: str
+    #: How many previous generations of each model in the tar to keep. Sent by the
+    #: pusher because this server may be remote and cannot read db_server's
+    #: settings; None falls back to DEFAULT_VERSIONS_KEEP.
+    versions_keep: Optional[int] = None
+
+
+class ModelVersionRead(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    version_id: str
+    archived_at: Optional[str] = None
+    created_at: Optional[str] = None
+    bytes: int = 0
+    files: List[str] = Field(default_factory=list)
+
+
+class ListModelVersionsResponse(StatusResponse):
+    model_name: Optional[str] = None
+    versions: List[ModelVersionRead] = Field(default_factory=list)
+
+
+class MaterializeModelVersionResponse(StatusResponse):
+    #: The temporary model name the archived generation is runnable under.
+    preview_name: Optional[str] = None
+
+
+class RestoreModelVersionResponse(StatusResponse):
+    #: The version now live.
+    restored: Optional[str] = None
+    #: The generation this replaced, archived on the way out so the restore is
+    #: itself undoable. None when there was nothing live to archive.
+    archived: Optional[str] = None
+    files: List[str] = Field(default_factory=list)
 
 
 class ImportModelArtifactResponse(StatusResponse):
@@ -541,8 +576,15 @@ class WebApp:
             tags=[ApiTags.MODELS],
         )
         async def list_models_api():
+            """Models available to pick.
+
+            Materialised version previews are filtered out rather than excluded from
+            the manager's cache: they have to stay resolvable by name so a comparison
+            can actually run one, but they must never be offerable as a watcher's
+            model or a training target — they are deleted when the comparison ends.
+            """
             try:
-                model_list = await self._manager.list_models()
+                model_list = [m for m in await self._manager.list_models() if not is_version_preview(m)]
                 return ModelListResponse(status=JsonValues.SUCCESS, models=model_list)
             except Exception as e:
                 return ModelListResponse(status=JsonValues.FAILURE, message=str(e))
@@ -705,10 +747,105 @@ class WebApp:
                 )
 
             try:
-                result = await self._manager.import_artifact_tar(tar_bytes)
+                result = await self._manager.import_artifact_tar(tar_bytes, versions_keep=payload.versions_keep)
                 return ImportModelArtifactResponse(status=JsonValues.SUCCESS, files=result["files"])
             except Exception as e:
                 return ImportModelArtifactResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.get(
+            "/api/models/{model_name}/versions",
+            response_model=ListModelVersionsResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="list_model_versions",
+        )
+        async def list_model_versions_api(model_name: str) -> ListModelVersionsResponse:
+            """Previous generations of a model, newest first.
+
+            An empty list is the normal answer for a model that has only ever been
+            trained once, or was imported rather than trained — not an error.
+            """
+            try:
+                versions = await self._manager.list_model_versions(model_name)
+                return ListModelVersionsResponse(
+                    status=JsonValues.SUCCESS,
+                    model_name=model_name,
+                    versions=[ModelVersionRead(**v) for v in versions],
+                )
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return ListModelVersionsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/{model_name}/versions/{version_id}/restore",
+            response_model=RestoreModelVersionResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="restore_model_version",
+        )
+        async def restore_model_version_api(model_name: str, version_id: str) -> RestoreModelVersionResponse:
+            """Roll a model back to one of its archived generations.
+
+            The generation being replaced is archived on the way out, so this is
+            reversible: restoring the wrong one is undone by restoring the entry
+            this call creates.
+            """
+            try:
+                result = await self._manager.restore_model_version(model_name, version_id)
+                return RestoreModelVersionResponse(
+                    status=JsonValues.SUCCESS,
+                    restored=result["restored"],
+                    archived=result["archived"],
+                    files=result["files"],
+                )
+            except FileNotFoundError as e:
+                return RestoreModelVersionResponse(status=JsonValues.FAILURE, message=str(e))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return RestoreModelVersionResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/{model_name}/versions/{version_id}/preview",
+            response_model=MaterializeModelVersionResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="materialize_model_version",
+        )
+        async def materialize_model_version_api(model_name: str, version_id: str) -> MaterializeModelVersionResponse:
+            """Materialise an archived generation as a temporary, runnable model.
+
+            For comparing a version against the live model: the returned name can be
+            run by anything that takes a model name. Delete it with
+            ``DELETE /api/models/{name}/preview`` when the comparison is done — it is
+            a full copy of the weights.
+            """
+            try:
+                name = await self._manager.materialize_model_version(model_name, version_id)
+                return MaterializeModelVersionResponse(status=JsonValues.SUCCESS, preview_name=name)
+            except FileNotFoundError as e:
+                return MaterializeModelVersionResponse(status=JsonValues.FAILURE, message=str(e))
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return MaterializeModelVersionResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.delete(
+            "/api/models/{name}/preview",
+            response_model=StatusResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="delete_model_preview",
+        )
+        async def delete_model_preview_api(name: str) -> StatusResponse:
+            """Delete a materialised version.
+
+            A separate route from ``DELETE /api/models/{name}`` on purpose: this one
+            refuses anything that is not a preview, so a cleanup path that loses track
+            of which name it made cannot delete a real model.
+            """
+            try:
+                removed = await self._manager.delete_model_preview(name)
+                if not removed:
+                    return StatusResponse(status=JsonValues.FAILURE, message=f"{name!r} is not a version preview")
+                return StatusResponse(status=JsonValues.SUCCESS)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return StatusResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.post(
             "/api/models/detect",

@@ -1,6 +1,11 @@
 import { renderHotkeyPanel } from '/app-static/js/app/image-tagging/hotkeyModal.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
-import { getSetting, setSetting } from '/app-static/js/shared/api/settings.js';
+import {
+  getSetting,
+  setSetting,
+  MODEL_VERSIONS_KEEP_SETTING_KEY,
+  TRAINING_ARTIFACTS_KEEP_SETTING_KEY,
+} from '/app-static/js/shared/api/settings.js';
 import {
   clearThumbnailCache,
   fetchStorageUsage,
@@ -41,16 +46,18 @@ export async function init() {
   // The settings panels load their values concurrently — each awaits its
   // own settings reads, so building them in sequence would serialise round-trips
   // that have nothing to do with each other.
-  const [serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, dedupPanel, uiPanel] =
-    await Promise.all([
-      _buildServerSection(),
-      _buildSecuritySection(),
-      _buildMqttSection(),
-      _buildRetentionSection(),
-      _buildTimelapseRetentionSection(),
-      _buildDedupSection(),
-      _buildUiSettingsSection(),
-    ]);
+  const [
+    serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, modelHistoryPanel, dedupPanel, uiPanel,
+  ] = await Promise.all([
+    _buildServerSection(),
+    _buildSecuritySection(),
+    _buildMqttSection(),
+    _buildRetentionSection(),
+    _buildTimelapseRetentionSection(),
+    _buildModelHistorySection(),
+    _buildDedupSection(),
+    _buildUiSettingsSection(),
+  ]);
 
   // Not in that Promise.all: the usage figures come from a directory walk, and
   // making the whole Settings tab wait on it would put a visible delay in front of
@@ -68,7 +75,8 @@ export async function init() {
   wrap.append(
     _buildServiceStatusSection(),
     _buildHotkeySection(),
-    serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, storagePanel, dedupPanel, uiPanel,
+    serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, modelHistoryPanel,
+    storagePanel, dedupPanel, uiPanel,
   );
   container.appendChild(wrap);
 }
@@ -430,6 +438,74 @@ async function _buildRetentionSection() {
     'Only the default clip and snapshot folders are managed. A "Record clip" action pointed at a '
     + 'custom output folder writes outside them, so those files are neither counted toward the size '
     + 'limit nor deleted.';
+  body.appendChild(caveat);
+
+  return section;
+}
+
+/** Mirror `DEFAULT_VERSIONS_KEEP` / `DEFAULT_TRAINING_ARTIFACTS_KEEP` in Python. */
+const MODEL_VERSIONS_KEEP_DEFAULT = 3;
+const TRAINING_ARTIFACTS_KEEP_DEFAULT = 3;
+
+/**
+ * The two bounds on what training leaves behind.
+ *
+ * They are separate numbers because they buy different things. Model versions are
+ * the rollback path — a retrain that made the model worse is undone by restoring
+ * one, from a model's History button. Artifact folders are the training server's
+ * own working output (weights plus every checkpoint of the run, around a gigabyte
+ * for a detector); they are what a restart or a re-download reads, and they used
+ * to accumulate with no bound at all.
+ */
+async function _buildModelHistorySection() {
+  const { section, body } = _panel('Model History', { id: 'settings-section-model-history' });
+
+  const [versionsKeep, artifactsKeep] = await Promise.all([
+    _numericSetting(MODEL_VERSIONS_KEEP_SETTING_KEY, MODEL_VERSIONS_KEEP_DEFAULT),
+    _numericSetting(TRAINING_ARTIFACTS_KEEP_SETTING_KEY, TRAINING_ARTIFACTS_KEEP_DEFAULT),
+  ]);
+
+  const note = document.createElement('p');
+  note.className = 'settings-dedup-warning';
+  note.textContent =
+    'Every training run archives the weights it replaces, so a retrain that made a model worse can be '
+    + 'rolled back from that model\'s History button in Configuration → Models. Versions are full copies: '
+    + 'each one costs about what the model itself costs, and the oldest is deleted once the limit is passed. '
+    + 'Deleting a model deletes its history too.';
+  body.appendChild(note);
+
+  body.appendChild(_boundRow({
+    label: 'Keep previous model versions',
+    description: 'Per model. Set to 0 to keep no history — a retrain then overwrites with no way back.',
+    testid: 'settings-model-versions-keep',
+    settingKey: MODEL_VERSIONS_KEEP_SETTING_KEY,
+    value: versionsKeep,
+    unit: 'versions',
+    describe: (n) => (n > 0
+      ? [`Keeping the ${n} generation${n === 1 ? '' : 's'} before the current one, per model.`, 'info']
+      : ['No history — each retrain replaces the model with no rollback.', 'muted']),
+  }));
+
+  body.appendChild(_boundRow({
+    label: 'Keep training job folders',
+    description: 'On the training server. Each holds one finished run\'s weights and checkpoints.',
+    testid: 'settings-training-artifacts-keep',
+    settingKey: TRAINING_ARTIFACTS_KEEP_SETTING_KEY,
+    value: artifactsKeep,
+    unit: 'folders',
+    describe: (n) => (n > 0
+      ? [`Keeping the ${n} most recent finished run${n === 1 ? '' : 's'}; older folders are removed `
+        + 'after the next run completes.', 'info']
+      : ['Removing every finished run\'s folder after the next run completes.', 'muted']),
+  }));
+
+  const caveat = document.createElement('p');
+  caveat.className = 'settings-dedup-warning';
+  caveat.dataset.testid = 'settings-model-history-caveat';
+  caveat.textContent =
+    'A job folder is only removed once a later run has finished and its weights are safely saved. '
+    + 'Queued, running and interrupted jobs are never touched — an interrupted run can still be '
+    + 'restarted from the checkpoint in its folder.';
   body.appendChild(caveat);
 
   return section;

@@ -48,6 +48,18 @@ from apps.helpers.modelUnit import (
     resolve_stack,
     resolve_unit,
 )
+from apps.helpers.modelVersions import (
+    DEFAULT_VERSIONS_KEEP,
+    delete_preview,
+    delete_versions,
+    install_with_history,
+    is_version_preview,
+    list_versions,
+    materialize_version,
+    restore_version,
+    sweep_stale_previews,
+    versions_usage,
+)
 from apps.helpers.serviceStatus import fmt_bytes, fmt_duration, row, section
 from apps.helpers.yoloUtils import get_input_shape_from_file, load_yolo_onnx
 
@@ -406,7 +418,7 @@ class Manager:
 
         return {"model_name": model_name, "classes": metadata.get("classes", [])}
 
-    async def import_artifact_tar(self, tar_bytes: bytes) -> Dict[str, Any]:
+    async def import_artifact_tar(self, tar_bytes: bytes, *, versions_keep: Optional[int] = None) -> Dict[str, Any]:
         """Extract a training-job artifact tar (.onnx + optional .onnx.data + .json
         sidecar, produced verbatim by the training server) straight into the models
         dir, then refresh the available-models list.
@@ -429,6 +441,17 @@ class Manager:
             # in-flight (un-)pin here still resolves off the old weights until the
             # write completes and _reload_if_weights_changed picks up the new mtime.
             members.sort(key=lambda m: Path(m.name).name.endswith(".onnx"))
+
+            # Archive the generation about to be replaced, before any of it is
+            # overwritten — this server's copy gets the same rollback history as
+            # the one tasks_server keeps, using the keep value sent with the push
+            # (it may be on another host and cannot read the setting itself).
+            keep = DEFAULT_VERSIONS_KEEP if versions_keep is None else versions_keep
+            model_names = {
+                Path(m.name).name.split(".")[0] for m in members if Path(m.name).name.endswith((".onnx", ".json"))
+            }
+            await asyncio.to_thread(install_with_history, Path(self._models_path), model_names, keep)
+
             for member in members:
                 name = Path(member.name).name
                 if not name.endswith((".onnx", ".onnx.data", ".json")):
@@ -442,6 +465,65 @@ class Manager:
 
         await self.list_models()
         return {"files": written}
+
+    # ── Model version history ────────────────────────────────────────────────
+    #
+    # The models dir this server serves from is the one the UI lists, so it is
+    # also where rollback happens. In a split deployment tasks_server keeps its
+    # own copy (and its own archive) for on-the-fly classification; that copy is
+    # refreshed by the next training run, not by a restore here.
+
+    async def list_model_versions(self, model_name: str) -> List[Dict[str, Any]]:
+        """Archived generations of a model, newest first."""
+        return await asyncio.to_thread(list_versions, Path(self._models_path), model_name)
+
+    async def restore_model_version(self, model_name: str, version_id: str) -> Dict[str, Any]:
+        """Make an archived generation live again.
+
+        Held under the same per-model lock as pin/delete: a restore rewrites the
+        very files a load reads, and the two interleaving would give a caller a
+        model whose weights and sidecar came from different generations.
+        """
+        async with self._get_model_lock(model_name):
+            result = await asyncio.to_thread(restore_version, Path(self._models_path), model_name, version_id)
+            # Drop any loaded copy: a pinned session holds the *old* weights in
+            # memory, and the reload check keys on mtime, which a restore moves
+            # backwards as often as forwards.
+            self._pinned_models.pop(model_name, None)
+        await self.list_models()
+        return result
+
+    async def materialize_model_version(self, model_name: str, version_id: str) -> str:
+        """Make an archived generation runnable under its own name, for comparison.
+
+        The comparison tools score a model by *running* it, and everything that runs
+        one is keyed by model name, so the archived files are copied out as
+        ``<name>@<version_id>``. It is a real model for as long as it exists — it
+        loads, pins and scores like any other — and the caller is expected to delete
+        it when the run is done.
+
+        Stale previews are swept first: the only way one outlives its run is a browser
+        that went away, and nothing else will ever come looking for it.
+        """
+        await asyncio.to_thread(sweep_stale_previews, Path(self._models_path))
+        name = await asyncio.to_thread(materialize_version, Path(self._models_path), model_name, version_id)
+        await self.list_models()
+        return name
+
+    async def delete_model_preview(self, name: str) -> bool:
+        """Delete a materialised version. A name that isn't one is refused, not obeyed."""
+        if not is_version_preview(name):
+            return False
+        async with self._get_model_lock(name):
+            self._pinned_models.pop(name, None)
+            removed = await asyncio.to_thread(delete_preview, Path(self._models_path), name)
+        self._model_locks.pop(name, None)
+        await self.list_models()
+        return removed
+
+    def models_versions_usage(self) -> Dict[str, Any]:
+        """Disk held by archived model generations, for the status page."""
+        return versions_usage(Path(self._models_path))
 
     def _get_model_lock(self, model_name: str) -> asyncio.Lock:
         """Lock serializing pin_model/delete_model for a given model_name, so a
@@ -487,9 +569,19 @@ class Manager:
 
             model_path = Path(self._avail_models[model_name])
             sidecar_path = model_path.with_suffix(".json")
+            # External-tensor file for models too large for a single .onnx. It was
+            # never deleted here, which left orphaned multi-hundred-MB blobs behind
+            # every deletion of a large model.
+            external_data_path = model_path.with_suffix(".onnx.data")
 
             await asyncio.to_thread(model_path.unlink, True)
             await asyncio.to_thread(sidecar_path.unlink, True)
+            await asyncio.to_thread(external_data_path.unlink, True)
+            # History that outlives its model is unreachable disk, and a later
+            # model reusing the name would inherit a stranger's rollback targets.
+            removed = await asyncio.to_thread(delete_versions, Path(self._models_path), model_name)
+            if removed:
+                logger.info("Deleted %d archived version(s) of %s", removed, model_name)
 
             del self._avail_models[model_name]
 
@@ -1145,6 +1237,10 @@ class Manager:
                     parts.append("loaded")
                 model_rows.append(row(name, "  ·  ".join(parts)))
 
+        # Archived generations live under _versions/ and are invisible to the
+        # glob above, so without this they are disk nothing accounts for.
+        versions = self.models_versions_usage()
+
         gpu = "CUDAExecutionProvider" in available_providers
         return {
             "service": "inference_server",
@@ -1156,6 +1252,7 @@ class Manager:
             },
             "models_path": self._models_path,
             "models_bytes": total_bytes,
+            "versions": versions,
             "summary": ("GPU (CUDA) available" if gpu else "CPU only"),
             "details": [
                 section(
@@ -1177,6 +1274,11 @@ class Manager:
                     [
                         row("Models directory", self._models_path or "unset"),
                         row("Models size", fmt_bytes(total_bytes)),
+                        row(
+                            "Version history",
+                            f"{fmt_bytes(versions['bytes'])}  ·  {versions['versions']} version(s) "
+                            f"across {versions['models']} model(s)",
+                        ),
                     ],
                 ),
             ],
