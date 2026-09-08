@@ -46,7 +46,11 @@ from apps.helpers.modelVersions import (
     install_with_history,
 )
 
-from ._inference_push import inference_server_is_colocated, push_artifact_tar_to_inference_server
+from ._inference_push import (
+    inference_server_is_colocated,
+    push_artifact_tar_to_inference_server,
+    refresh_inference_server_models,
+)
 
 logger = logging.getLogger(__file__)
 
@@ -794,7 +798,7 @@ class TrainingJobRunnerMixin:
                     await asyncio.to_thread(atomic_write_bytes, dest, fobj.read())
                     self.log(f"Saved model artifact: {dest}")
 
-        await self._push_artifact_to_inference_server(tar_bytes)
+        await self._push_artifact_to_inference_server(tar_bytes, versions_keep)
         await self._evict_remote_artifacts()
 
     async def _evict_remote_artifacts(self) -> None:
@@ -823,7 +827,7 @@ class TrainingJobRunnerMixin:
         except Exception as exc:
             logger.warning("Could not evict training-server artifacts: %s", exc)
 
-    async def _push_artifact_to_inference_server(self, tar_bytes: bytes) -> None:
+    async def _push_artifact_to_inference_server(self, tar_bytes: bytes, versions_keep: Optional[int] = None) -> None:
         """Push the same artifact tar to inference_server over HTTP.
 
         Keeps inference_server's models dir in sync without depending on it sharing
@@ -836,12 +840,15 @@ class TrainingJobRunnerMixin:
         """
         client = self._manager.get_inference_api_client()
         if inference_server_is_colocated(client):
+            # It reads the same $MODELS_ROOT, but its available-models map is only
+            # rebuilt by a listing — a config's first training run produces a model
+            # name it has never seen, which stays unresolvable until something
+            # rescans, so ask it to.
+            await refresh_inference_server_models(client)
             self.log("Inference server is co-located; it already has the artifact.")
             return
         self.log("Pushing model artifact to inference server...")
-        files = await push_artifact_tar_to_inference_server(
-            client, tar_bytes, versions_keep=await self._models_versions_keep()
-        )
+        files = await push_artifact_tar_to_inference_server(client, tar_bytes, versions_keep=versions_keep)
         self.log(f"Inference server updated: {files}")
 
     async def _cancel_remote_job(self, job_id: str) -> None:

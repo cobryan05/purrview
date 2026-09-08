@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
 import socket
 import tarfile
 from typing import Dict, List, Optional
@@ -24,6 +25,8 @@ from urllib.parse import urlparse
 from inference_client import ApiClient
 from inference_client.api.models_api import ModelsApi
 from inference_client.models.import_model_artifact_payload import ImportModelArtifactPayload
+
+logger = logging.getLogger(__name__)
 
 # Hostnames that can only mean "this process's own host".
 _LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
@@ -64,6 +67,26 @@ def inference_server_is_colocated(inference_api_client: ApiClient) -> bool:
         return host == socket.gethostname().lower()
     except OSError:
         return False
+
+
+async def refresh_inference_server_models(inference_api_client: ApiClient) -> None:
+    """Make a co-located inference_server notice files written under its own models dir.
+
+    Its available-models map is only rebuilt by `list_models()`, which the artifact
+    upload used to call as its last step. When the push is skipped because the two
+    services share a filesystem, nothing rescans — and a model whose *name* is new
+    (a config's first training run) stays unresolvable, so the first inference on it
+    fails with "Model 'X' is not available" until some unrelated caller happens to
+    list. One cheap GET closes that gap.
+
+    Best-effort: a failure here costs a rescan that the next models listing will do
+    anyway, and must not fail a completed training run.
+    """
+    try:
+        models_api = ModelsApi(inference_api_client)
+        await asyncio.to_thread(models_api.list_models_api_api_models_get)
+    except Exception:
+        logger.warning("Could not refresh the co-located inference server's model list", exc_info=True)
 
 
 def build_artifact_tar(files: Dict[str, bytes]) -> bytes:

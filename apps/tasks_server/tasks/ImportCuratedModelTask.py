@@ -52,7 +52,12 @@ from apps.helpers.curatedModels import get_curated_model
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.metadataUtils import validate_bare_model_name, write_onnx_with_sidecar
 
-from ._inference_push import build_artifact_tar, inference_server_is_colocated, push_artifact_tar_to_inference_server
+from ._inference_push import (
+    build_artifact_tar,
+    inference_server_is_colocated,
+    push_artifact_tar_to_inference_server,
+    refresh_inference_server_models,
+)
 from ._training_job_runner import TrainingJobRunnerMixin
 from .Registry import register_task
 from .Task import Task
@@ -293,6 +298,10 @@ class ImportCuratedModelTask(Task, TrainingJobRunnerMixin):
         """
         client = self._manager.get_inference_api_client()
         if inference_server_is_colocated(client):
+            # It reads the same directory, but its available-models map is only
+            # rebuilt by a listing — a newly *named* model stays unresolvable
+            # until something rescans, so ask it to.
+            await refresh_inference_server_models(client)
             self.log("Inference server is co-located; it already has the model.")
             return
         self.log("Pushing model to inference server...")

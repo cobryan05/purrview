@@ -146,7 +146,10 @@ class TestSaveArtifactPushesToInferenceServer:
         with _patch_download(tar_bytes):
             await task._save_artifact("job-1")
 
-        task._push_artifact_to_inference_server.assert_awaited_once_with(tar_bytes)
+        # The keep value is read once in _save_artifact and threaded through, rather
+        # than re-read here; the tar is what this test is about.
+        task._push_artifact_to_inference_server.assert_awaited_once()
+        assert task._push_artifact_to_inference_server.await_args.args[0] == tar_bytes
 
     async def test_colocated_inference_server_is_not_pushed_to(self):
         """In the single-container deployment the write to $MODELS_DIR already *is*
