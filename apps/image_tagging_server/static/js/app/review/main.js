@@ -1776,7 +1776,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // page may already have moved further. `_loadMorePending` records "someone
   // asked again while I was busy" so the running call loops once more before
   // it actually exits, instead of assuming a later scroll event will retry it.
-  async function _loadMoreCurated() {
+  async function _loadMoreCurated({ force = false } = {}) {
     if (!fetchImages || _rendering) return;
     if (_loadingMore) { _loadMorePending = true; return; }
     _loadingMore = true;
@@ -1784,7 +1784,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     try {
       do {
         _loadMorePending = false;
-        while (!_curatedExhausted && _allEntries.length < MAX_ENTRIES && _nearBottom()) {
+        // `force` is spent on the first chunk: the modal asks for one more, not
+        // for the rest of the result set.
+        while (!_curatedExhausted && _allEntries.length < MAX_ENTRIES && (force || _nearBottom())) {
+          force = false;
           const raw = await fetchImages({
             afterUuid: _curatedCursor,
             afterSortValue: _curatedCursorSortValue,
@@ -2058,9 +2061,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // Builds a deduplicated list of images from the current visible entries,
   // finds the start index for the given image UUID, and attaches an onClose
   // callback that scrolls to + briefly highlights the last-viewed card.
-  function _buildNavContext(targetImgUuid) {
+  /** One nav entry per visible image, in render order. */
+  function _navItemsFromVisible() {
     const seen = new Set();
-    const navItems = [];
+    const items = [];
     for (const entry of _visibleEntries) {
       const uuid = entry.img.uuid;
       if (seen.has(uuid)) continue;
@@ -2068,13 +2072,75 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       // Same rule as the image-card double-click handler in cardGrid.js: an
       // image-kind entry (no specific bbox of its own) must navigate to
       // nothing pre-selected, not silently to its first bbox.
-      navItems.push({ img: entry.img, bbox: entry.bbox ?? null });
+      items.push({ img: entry.img, bbox: entry.bbox ?? null });
     }
+    return items;
+  }
+
+  function _buildNavContext(targetImgUuid) {
+    const navItems = _navItemsFromVisible();
     const foundIndex = navItems.findIndex(item => item.img.uuid === targetImgUuid);
     const startIndex = foundIndex >= 0 ? foundIndex : 0;
     return {
       items: navItems,
       startIndex,
+
+      /** Is there a page that way at all? Drives the modal's arrow buttons. */
+      canLoadPage(direction) {
+        if (direction > 0) return _hasMore;
+        return fetchImages ? false : _pageCursors.length > 1;
+      },
+
+      /**
+       * Carry the modal's nav list across a results-page boundary.
+       *
+       * The page a card came from is an artefact of how the results were
+       * fetched, not a boundary the person browsing them cares about: stepping
+       * off the end of page 1 should land on the first result of page 2, not
+       * stop. So the boundary moves the grid behind the modal too, which is
+       * also what the user wants on close — they end up where they navigated
+       * to, not back where they started.
+       *
+       * Returns false when there is genuinely nothing more that way, otherwise
+       * how the list changed, because that decides where the modal's cursor
+       * has to land:
+       *   'replace' — a new page took the list's place; the caller steps to its
+       *               first (forward) or last (backward) item.
+       *   'append'  — curated mode grew the one list it has; the caller's index
+       *               still points at the same image and must not move.
+       *
+       * @param {1|-1} direction
+       * @returns {Promise<{mode: 'replace'|'append'}|false>}
+       */
+      async loadPage(direction) {
+        if (fetchImages) {
+          // Curated mode has no pages — one growing list, normally fed by
+          // scrolling, which a modal covering the grid cannot do.
+          if (direction < 0 || !_hasMore) return false;
+          const before = navItems.length;
+          await _loadMoreCurated({ force: true });
+          navItems.splice(0, navItems.length, ..._navItemsFromVisible());
+          return navItems.length > before ? { mode: 'append' } : false;
+        }
+        if (direction > 0 ? !_hasMore : _pageCursors.length <= 1) return false;
+        // Restored if the page we land on turns out to hold nothing this modal
+        // can show (every entry filtered out by the view toggle). Moving the
+        // grid to a dead end and reporting failure would leave the modal
+        // showing an image the list behind it no longer contains.
+        const cursorsBefore = _pageCursors.slice();
+        if (direction > 0) _pageCursors.push(_lastCursor);
+        else _pageCursors.pop();
+        await render();
+        const rebuilt = _navItemsFromVisible();
+        if (!rebuilt.length) {
+          _pageCursors = cursorsBefore;
+          await render();
+          return false;
+        }
+        navItems.splice(0, navItems.length, ...rebuilt);
+        return { mode: 'replace' };
+      },
+
       onSaved(savedImg, savedBboxesMap) {
         if (!savedImg || !savedBboxesMap) return;
         for (const [bboxUuid, uiBbox] of savedBboxesMap) {
@@ -3525,33 +3591,46 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     // Duck-typed FileNavigation used by files.js's next_image / prev_image.
     // Those functions also call guardUnsavedChanges before advancing, so the
     // "are you sure?" dialog is handled for free on nav-hotkey presses.
-    let _lastBoundaryToast = 0;
     const navObj = {
-      hasNext() {
-        const ok = _navIndex < navContext.items.length - 1;
-        if (!ok) {
-          const now = Date.now();
-          if (now - _lastBoundaryToast > 1200) {
-            _lastBoundaryToast = now;
-            toast('End of results page — go to the next page for more', 3000, 'warning');
-          }
-        }
-        return ok;
-      },
-      hasPrev() {
-        const ok = _navIndex > 0;
-        if (!ok) {
-          const now = Date.now();
-          if (now - _lastBoundaryToast > 1200) {
-            _lastBoundaryToast = now;
-            toast('Beginning of results page — go to the previous page for more', 3000, 'warning');
-          }
-        }
-        return ok;
-      },
+      // Pure predicates. They used to toast "end of results page" from inside
+      // the check, which is now wrong twice over: it is a side effect in a
+      // question, and the end of a page is no longer the end of anything —
+      // files.js asks loadMoreNext/loadMorePrev to cross the boundary first and
+      // only announces an end if that comes back empty-handed.
+      hasNext() { return _navIndex < navContext.items.length - 1; },
+      hasPrev() { return _navIndex > 0; },
       next() { _navIndex = Math.min(_navIndex + 1, navContext.items.length - 1); },
       prev() { _navIndex = Math.max(_navIndex - 1, 0); },
       currentPath() { return navContext.items[_navIndex]?.img.filename ?? null; },
+      endMessage(direction) {
+        return direction === 'next' ? 'End of results' : 'Beginning of results';
+      },
+
+      /**
+       * Step onto the next/previous results page and park the cursor just
+       * outside the item to land on, so the caller's own `next()`/`prev()` —
+       * which runs immediately after — moves onto it. Parking outside rather
+       * than moving directly keeps one rule about where the cursor goes.
+       */
+      async loadMoreNext() {
+        const res = await navContext.loadPage?.(1);
+        if (!res) return false;
+        if (res.mode === 'replace') {
+          _navIndex = -1;
+          // The bbox this modal was opened on is not on this page any more.
+          navContext.startIndex = -1;
+        }
+        _updateNavButtons();
+        return true;
+      },
+      async loadMorePrev() {
+        const res = await navContext.loadPage?.(-1);
+        if (!res) return false;
+        _navIndex = navContext.items.length;
+        navContext.startIndex = -1;
+        _updateNavButtons();
+        return true;
+      },
     };
     instance.runtime.setFileNavigation(navObj);
 
@@ -3559,9 +3638,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
     // stay in lockstep. Only shown when there's actually something to navigate.
     prevBtn.style.display = '';
     nextBtn.style.display = '';
+    // Disabled means "nothing further exists", not "nothing further on this
+    // page" — otherwise the buttons contradict the arrow keys, which now page.
     _updateNavButtons = () => {
-      prevBtn.disabled = _navIndex <= 0;
-      nextBtn.disabled = _navIndex >= navContext.items.length - 1;
+      prevBtn.disabled = _navIndex <= 0 && !navContext.canLoadPage?.(-1);
+      nextBtn.disabled = _navIndex >= navContext.items.length - 1 && !navContext.canLoadPage?.(1);
     };
     _updateNavButtons();
     prevBtn.addEventListener('click', () => prev_image(instance.runtime));

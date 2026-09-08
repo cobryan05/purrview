@@ -105,19 +105,38 @@ export async function init(runtime) {
 
 
 /**
+ * Say "there is genuinely nothing further this way", once per 1.2s.
+ *
+ * The wording is the nav list's to choose: a directory ends, a result set ends,
+ * and telling someone paging through search results that they reached the end
+ * of a *directory* describes a structure they never asked about.
+ *
+ * @param {{endMessage?: (dir: 'next'|'prev') => string}} nav
+ * @param {'next'|'prev'} direction
+ * @param {string} fallback
+ */
+function _boundaryToast(nav, direction, fallback) {
+  const now = Date.now();
+  if (now - _lastBoundaryToast <= 1200) return;
+  _lastBoundaryToast = now;
+  toast(nav.endMessage?.(direction) ?? fallback, 3000, 'warning');
+}
+
+/**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export async function next_image(runtime) {
   const nav = runtime.fileNavigation;
   if (!nav) return; // canvas has no navigation context (e.g. a single-candidate editor modal)
   if (!nav.hasNext()) {
-    await browser?.loadNextPage();
+    // Running off the end of the list is not the same as running out of images.
+    // Two kinds of list say so differently — the directory browser has another
+    // page of files, a search-results modal has another page of results — so
+    // whoever owns the list is asked to extend it before we call it an end.
+    if (nav.loadMoreNext) await nav.loadMoreNext();
+    else await browser?.loadNextPage();
     if (!nav.hasNext()) {
-      const now = Date.now();
-      if (now - _lastBoundaryToast > 1200) {
-        _lastBoundaryToast = now;
-        toast('End of directory', 3000, 'warning');
-      }
+      _boundaryToast(nav, 'next', 'End of directory');
       return;
     }
   }
@@ -134,12 +153,11 @@ export async function prev_image(runtime) {
   const nav = runtime.fileNavigation;
   if (!nav) return; // canvas has no navigation context (e.g. a single-candidate editor modal)
   if (!nav.hasPrev()) {
-    const now = Date.now();
-    if (now - _lastBoundaryToast > 1200) {
-      _lastBoundaryToast = now;
-      toast('Beginning of directory', 3000, 'warning');
+    if (nav.loadMorePrev) await nav.loadMorePrev();
+    if (!nav.hasPrev()) {
+      _boundaryToast(nav, 'prev', 'Beginning of directory');
+      return;
     }
-    return;
   }
   if (!await guardUnsavedChanges(runtime)) return;
   nav.prev();
