@@ -237,6 +237,34 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
         });
         editorFooter.appendChild(previewBtn);
 
+        // Export — only on a saved row: the download is served from the stored
+        // filter, so an unsaved edit would silently export the old definition.
+        if (dataset) {
+          const exportBtn = document.createElement('button');
+          exportBtn.type = 'button';
+          exportBtn.className = 'panel-btn secondary';
+          exportBtn.style.marginBottom = '0';
+          exportBtn.dataset.testid = 'dataset-export-open';
+          exportBtn.textContent = '⬇ Export';
+          exportBtn.title = 'Download this dataset as YOLO, COCO or Pascal VOC';
+          exportBtn.addEventListener('click', async () => {
+            if (getDirty()) {
+              toast('Save your changes first — the export uses the saved filter', 5000, 'error');
+              return;
+            }
+            exportBtn.disabled = true;
+            try {
+              const { showDatasetExportModal } = await import('/app-static/js/ui/datasetExportModal.js');
+              await showDatasetExportModal(dataset);
+            } catch (err) {
+              toast(err.message || 'Failed to open export', 5000, 'error');
+            } finally {
+              exportBtn.disabled = false;
+            }
+          });
+          editorFooter.appendChild(exportBtn);
+        }
+
         // Promote / demote — the flag flip that turns a saved search into
         // something training can consume, and back. Only meaningful on a saved
         // row, so it is absent on the new-item form.

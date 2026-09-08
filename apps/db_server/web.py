@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from apps.db_server.manager import _THUMB_MEDIA_TYPE, Manager
 from apps.helpers.consts import ApiTags, JsonKeys, JsonValues, TaskStatus
+from apps.helpers.datasetExport import EXPORT_FORMATS
 from apps.helpers.db.types import (
     DEFAULT_SESSION_GAP_S,
     ApiModel,
@@ -716,6 +717,16 @@ class DatasetImageUuidsResponse(StatusResponse):
 
 class DatasetLabelsResponse(StatusResponse):
     labels: List[LabelRead] = Field(default_factory=list)
+
+
+class DatasetExportFormat(ApiModel):
+    id: str
+    name: str
+    description: str
+
+
+class DatasetExportFormatsResponse(StatusResponse):
+    formats: List[DatasetExportFormat] = Field(default_factory=list)
 
 
 class DatasetPreviewPayload(ApiModel):
@@ -3674,6 +3685,56 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return StatusResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # Registered before "/{uuid}/..." routes so the literal path segments below
+        # are never captured as a dataset UUID.
+        @self._app.get(
+            "/api/datasets/export-formats",
+            response_model=DatasetExportFormatsResponse,
+            tags=[ApiTags.DATASETS],
+            operation_id="list_dataset_export_formats",
+        )
+        async def list_dataset_export_formats() -> DatasetExportFormatsResponse:
+            return DatasetExportFormatsResponse(
+                status=JsonValues.SUCCESS,
+                formats=[DatasetExportFormat(**f) for f in EXPORT_FORMATS],
+            )
+
+        @self._app.get(
+            "/api/datasets/{uuid}/export",
+            tags=[ApiTags.DATASETS],
+            operation_id="export_dataset",
+            response_class=StreamingResponse,
+        )
+        async def export_dataset(
+            uuid: str,
+            format: str = Query(default="yolo"),
+            val_fraction: float = Query(default=0.2, ge=0.0, le=0.9),
+            require_verification: bool = Query(default=True),
+        ):
+            """Stream the dataset as a tar in one of the standard training layouts.
+
+            A download, not an API call the SPA reads: the browser is pointed
+            straight at this URL and the archive streams through the proxy.
+            """
+            try:
+                result = await self._manager.stream_dataset_export(
+                    uuid,
+                    format,
+                    val_fraction=val_fraction,
+                    require_verification=require_verification,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if result is None:
+                raise HTTPException(status_code=404, detail="Dataset not found")
+
+            download_name, chunks = result
+            return StreamingResponse(
+                chunks,
+                media_type="application/x-tar",
+                headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+            )
 
         @self._app.get(
             "/api/datasets/image-uuids",

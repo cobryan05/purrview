@@ -599,3 +599,84 @@ class TestUnsavedNavGuard:
         page.locator("#tab-configuration .workspace-tab-button[data-tab='tab-dataset-management']").click()
 
         expect(page.get_by_test_id("modal-shell-dialog")).to_have_count(0)
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+
+FAKE_EXPORT_FORMATS = [
+    {"id": "yolo", "name": "YOLO (Ultralytics / darknet)", "description": "images/ + labels/ + data.yaml"},
+    {"id": "coco", "name": "COCO", "description": "images/ + annotations/instances_<split>.json"},
+]
+
+
+def _mock_export_formats(page: Page):
+    page.route(
+        "**/api/datasets/export-formats",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"status": "success", "formats": FAKE_EXPORT_FORMATS}),
+        ),
+    )
+
+
+class TestDatasetExport:
+    """The export button hands the browser a URL built from the picker; the wiring
+    between the two is the part only a browser can check."""
+
+    def _setup(self, page: Page, base_url: str):
+        _mock_datasets(page, [FAKE_DATASET])
+        _mock_labels(page, [])
+        _mock_tags_empty(page)
+        _mock_export_formats(page)
+        _navigate_to_datasets(page, base_url)
+        page.wait_for_timeout(900)
+
+    def test_export_button_appears_only_for_a_saved_row(self, page: Page, base_url: str):
+        """There is nothing to export before the row exists — and the new-dataset
+        form is what the pane opens on, so the button must not be there yet."""
+        self._setup(page, base_url)
+        expect(page.get_by_test_id("dataset-export-open")).to_have_count(0)
+
+        _open_detail_panel(page)
+        expect(page.get_by_test_id("dataset-export-open")).to_be_visible()
+
+    def test_format_picker_is_populated_from_the_server(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+        _open_detail_panel(page)
+        page.get_by_test_id("dataset-export-open").click()
+
+        select = page.get_by_test_id("dataset-export-format")
+        expect(select).to_be_visible()
+        expect(select.locator("option")).to_have_count(len(FAKE_EXPORT_FORMATS))
+        # The layout blurb tracks the selection rather than being static text.
+        expect(page.get_by_test_id("dataset-export-layout")).to_contain_text("data.yaml")
+        select.select_option("coco")
+        expect(page.get_by_test_id("dataset-export-layout")).to_contain_text("instances")
+
+    def test_download_requests_the_chosen_options(self, page: Page, base_url: str):
+        self._setup(page, base_url)
+
+        requested: list = []
+
+        def handle_export(route: Route):
+            requested.append(route.request.url)
+            route.fulfill(status=200, content_type="application/x-tar", body="")
+
+        page.route("**/api/datasets/*/export?**", handle_export)
+
+        _open_detail_panel(page)
+        page.get_by_test_id("dataset-export-open").click()
+        page.get_by_test_id("dataset-export-format").select_option("coco")
+        page.get_by_test_id("dataset-export-val-fraction").fill("0")
+        page.get_by_test_id("dataset-export-verified-only").uncheck()
+        page.get_by_test_id("dataset-export-download").click()
+
+        wait_until(page, lambda: len(requested) == 1, message="export download was never requested")
+        url = requested[0]
+        assert FAKE_DATASET["uuid"] in url
+        assert "format=coco" in url
+        assert "val_fraction=0" in url
+        assert "require_verification=false" in url

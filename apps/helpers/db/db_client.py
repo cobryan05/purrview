@@ -5211,12 +5211,78 @@ class DbClient:
 
         return await self._assemble_detection_dataset(target["label_uuids"], target["class_remap"], dataset_uuids)
 
+    async def get_dataset_detection_dataset(
+        self,
+        dataset_uuid: str,
+        *,
+        require_verification: bool = True,
+    ) -> Optional[dict]:
+        """Assemble a detection dataset for one Dataset row, for export.
+
+        Classes are the Dataset's own labels, in hierarchical order. A box carrying
+        a label that is a *descendant* of a selected label but is not itself selected
+        rolls up into its nearest selected ancestor's class — the same collapsing the
+        model tree does, and the only reading that doesn't silently drop boxes when a
+        Dataset selects "Cat" and the annotations say "Cat > Tabby".
+
+        Deliberately independent of the Dataset filter's ``labelIncludeChildren``:
+        that flag decides which *images* the Dataset contains, while this decides
+        what the boxes on an included image are called. A descendant box left
+        unannotated on an image that ships anyway is a false negative — the one
+        outcome worth ruling out.
+
+        Same output shape as ``get_training_config_detection_dataset``. Returns None
+        if the dataset doesn't exist.
+        """
+        dataset = await self.get_dataset(dataset_uuid)
+        if dataset is None:
+            return None
+
+        selected = list(dataset.label_uuids or [])
+        if not selected:
+            return {"class_names": [], "images": []}
+
+        async with self._async_session_maker() as session:
+            result = await session.exec(select(Label))
+            all_labels = {lbl.uuid: lbl for lbl in result.all()}
+
+        class_label_uuids = DbClient._sort_labels_hierarchically(selected, all_labels)
+        selected_set = set(class_label_uuids)
+
+        # Walk each unselected label up to its nearest selected ancestor.
+        remap: dict[str, str] = {}
+        for uuid, lbl in all_labels.items():
+            if uuid in selected_set:
+                continue
+            parent = lbl.parent_uuid
+            while parent is not None:
+                if parent in selected_set:
+                    remap[uuid] = parent
+                    break
+                parent_label = all_labels.get(parent)
+                parent = parent_label.parent_uuid if parent_label is not None else None
+
+        return await self._assemble_detection_dataset(
+            class_label_uuids, remap, [dataset_uuid], require_verification=require_verification
+        )
+
     async def _assemble_detection_dataset(
-        self, class_label_uuids: list[str], remap: dict[str, str], dataset_uuids: list[str]
+        self,
+        class_label_uuids: list[str],
+        remap: dict[str, str],
+        dataset_uuids: list[str],
+        *,
+        require_verification: bool = True,
     ) -> dict:
         """Shared core: given an ordered class list + {in-scope label -> class label}
         remap, assemble YOLO-format annotations from verified bboxes across a dataset
         union. See ``get_training_config_detection_dataset`` for the output shape.
+
+        ``require_verification=False`` drops the "every in-scope class must carry a
+        PRESENT/ABSENT decision on this image" gate and emits every image in the
+        union instead. Training must never do that — an unreviewed image with no
+        boxes is indistinguishable from a true negative and teaches the model to
+        miss — but an *export* is allowed to hand over the raw contents on request.
         """
         # class_names are fetched from the DB; we need the label names in order.
         async with self._async_session_maker() as session:
@@ -5247,21 +5313,24 @@ class DbClient:
         # reflects the number of independent annotation decisions needed.
         readiness_threshold = n_labels
 
-        verified_by_image: Dict[str, int] = {}
-        async with self._async_session_maker() as session:
-            for chunk in _chunked(image_uuids):
-                result = await session.exec(
-                    select(ImageLabel.image_uuid, func.count(ImageLabel.label_uuid))
-                    .where(
-                        ImageLabel.image_uuid.in_(chunk),
-                        ImageLabel.label_uuid.in_(list(in_scope_label_uuids)),
-                        ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+        if require_verification:
+            verified_by_image: Dict[str, int] = {}
+            async with self._async_session_maker() as session:
+                for chunk in _chunked(image_uuids):
+                    result = await session.exec(
+                        select(ImageLabel.image_uuid, func.count(ImageLabel.label_uuid))
+                        .where(
+                            ImageLabel.image_uuid.in_(chunk),
+                            ImageLabel.label_uuid.in_(list(in_scope_label_uuids)),
+                            ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+                        )
+                        .group_by(ImageLabel.image_uuid)
                     )
-                    .group_by(ImageLabel.image_uuid)
-                )
-                verified_by_image.update(dict(result.all()))
+                    verified_by_image.update(dict(result.all()))
 
-        eligible_images = [img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold]
+            eligible_images = [img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold]
+        else:
+            eligible_images = list(all_images)
 
         # Batch-fetch all verified in-scope bboxes for eligible images (chunked
         # to stay under the SQLite bind-variable cap).

@@ -197,3 +197,39 @@ export async function deleteDataset(uuid) {
   clearDatasetsCache();
   events.publish(EventTypes.DATASETS_UPDATED, {});
 }
+
+/**
+ * GET /api/datasets/export-formats — the export layouts the server can write.
+ *
+ * Fetched rather than hardcoded: a copy of this list in JS would go stale the
+ * first time a format is added on the Python side, and the failure (a picker
+ * offering a format the server rejects) would only show up on click.
+ */
+const exportFormatsFetcher = createCachedFetcher(async (keys) => {
+  const res = await apiFetch('/api/datasets/export-formats');
+  if (!res.ok) throw new Error('Failed to fetch export formats');
+  const data = await res.json();
+  if (data.status !== 'success') {
+    throw new Error(data.message || 'Failed to fetch export formats');
+  }
+  return ignoreKeyReturn(keys, data.formats);
+});
+
+export async function fetchDatasetExportFormats() {
+  return exportFormatsFetcher.fetch('exportFormats');
+}
+
+/**
+ * URL for the export download. Not fetched through `apiFetch`: the archive is
+ * streamed straight to disk by the browser, so the page navigates to this URL
+ * (the `Content-Disposition: attachment` response downloads without unloading
+ * the SPA) instead of buffering an entire dataset into a Blob in memory.
+ */
+export function datasetExportUrl(uuid, { format = 'yolo', valFraction = 0.2, requireVerification = true } = {}) {
+  const query = new URLSearchParams({
+    format,
+    val_fraction: String(valFraction),
+    require_verification: String(requireVerification),
+  });
+  return `/api/datasets/${uuid}/export?${query.toString()}`;
+}

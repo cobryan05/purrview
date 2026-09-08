@@ -34,6 +34,14 @@ from apps.helpers.actions.outputDir import has_placeholder, resolve_output_dir, 
 from apps.helpers.actions.Registry import action_registry
 from apps.helpers.actions.saveTimelapseAction import DEFAULT_TIMELAPSE_DIR
 from apps.helpers.consts import TaskStatus
+from apps.helpers.datasetExport import (
+    EXPORT_FORMAT_IDS,
+    TarStream,
+    image_extension,
+    make_writer,
+    sanitize_stem,
+    split_images,
+)
 from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
 from apps.helpers.db.types import (
     MODEL_TYPE_ARCHITECTURES,
@@ -3937,6 +3945,98 @@ class Manager:
             return []
         labels_map = await self._db_client.get_labels_by_uuids(dataset.label_uuids)
         return list(labels_map.values())
+
+    async def stream_dataset_export(
+        self,
+        uuid: str,
+        fmt: str,
+        *,
+        val_fraction: float = 0.2,
+        require_verification: bool = True,
+    ) -> Optional[Tuple[str, Any]]:
+        """Build a standard-format export of one Dataset, streamed as a tar.
+
+        Returns ``(download_filename, async_iterator_of_chunks)``, or None if the
+        dataset doesn't exist. Returns a 0-image tar rather than an error when the
+        dataset resolves to nothing — "this dataset is empty" is a legitimate answer
+        and the caller can see it in the archive.
+
+        The tar is assembled and emitted incrementally: one member at a time, each
+        image read in a worker thread. Nothing larger than a single image is ever
+        resident, so exporting a 100k-image dataset costs the same memory as
+        exporting one, and the client starts receiving bytes immediately.
+        """
+        if fmt not in EXPORT_FORMAT_IDS:
+            raise ValueError(f"Unknown export format: {fmt!r}")
+
+        dataset = await self._db_client.get_dataset(uuid)
+        if dataset is None:
+            return None
+
+        spec = await self._db_client.get_dataset_detection_dataset(uuid, require_verification=require_verification)
+        if spec is None:
+            return None
+
+        writer = make_writer(fmt, spec["class_names"], dataset.name)
+        assignments = split_images(spec["images"], val_fraction)
+        splits = ["train"] + (["val"] if any(sp == "val" for sp, _ in assignments) else [])
+
+        safe_name = sanitize_stem(dataset.name, uuid)
+        download_name = f"{safe_name}_{fmt}.tar"
+
+        def _read(path: Path, want_size: bool):
+            data = path.read_bytes()
+            if not want_size:
+                return data, (0, 0)
+            from PIL import Image as PILImage
+
+            with PILImage.open(io.BytesIO(data)) as img:
+                return data, img.size
+
+        async def _iter():
+            tar = TarStream()
+            skipped: List[str] = []
+            try:
+                for split, entry in assignments:
+                    path = self._resolve_image_path(entry["filename"])
+                    if path is None or not path.exists():
+                        skipped.append(entry["filename"])
+                        continue
+                    try:
+                        data, size = await asyncio.to_thread(_read, path, writer.needs_dimensions)
+                    except Exception:
+                        logger.exception("Dataset export: failed to read %s", path)
+                        skipped.append(entry["filename"])
+                        continue
+
+                    base = sanitize_stem(entry["filename"], entry["image_uuid"])
+                    writer.add_image(
+                        tar, split, base, image_extension(entry["filename"]), data, size, entry["annotations"]
+                    )
+                    chunk = tar.drain()
+                    if chunk:
+                        yield chunk
+
+                writer.finalize(tar, splits)
+                if skipped:
+                    # Surfaced in the archive rather than only in the log: a
+                    # streamed download has no way to report a partial failure once
+                    # the first byte is out.
+                    tar.add_text(
+                        "SKIPPED.txt",
+                        "These images are in the dataset but could not be read from disk:\n\n"
+                        + "\n".join(skipped)
+                        + "\n",
+                    )
+                tar.close()
+                final = tar.drain()
+                if final:
+                    yield final
+            except Exception:
+                logger.exception("Dataset export failed for %s (%s)", uuid, fmt)
+                raise
+
+        return download_name, _iter()
 
     async def preview_dataset_images(
         self,
