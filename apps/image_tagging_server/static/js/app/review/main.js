@@ -2587,7 +2587,12 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} images` +
           (skippedCount > 0 ? ` (${skippedCount} skipped — verified bbox present)` : '') +
           (failCount > 0 ? ` (${failCount} failed — check console)` : '');
-        render();
+        // Back to page 1, not a re-render in place. A bulk action rewrites the
+        // result set, which makes every page cursor a pointer into a set that no
+        // longer exists — and the server only returns a total on the first page,
+        // so re-rendering page 3 of a set that just became empty leaves every
+        // counter in the toolbar quoting the old number.
+        resetAndRender();
       } catch (err) {
         statusMsg.classList.remove('review-toolbar__status--loading');
         statusMsg.textContent = `Bulk apply failed: ${err.message}`;
@@ -2916,8 +2921,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         statusMsg.classList.remove('review-toolbar__status--loading');
         statusMsg.textContent = `Applied to ${modifiedCount.toLocaleString()} bboxes` +
           (failCount > 0 ? ` (${failCount} failed — check console)` : '');
-        // Reload current page so stale cards are cleared.
-        render();
+        // Page 1, not the current page — see the note in the image-scope
+        // handler above: the cursors and the cached total both belong to the
+        // result set this action just replaced.
+        resetAndRender();
       } catch (err) {
         statusMsg.classList.remove('review-toolbar__status--loading');
         statusMsg.textContent = `Bulk apply failed: ${err.message}`;

@@ -351,7 +351,8 @@ class Manager:
         # filter predicates (sort/page fields excluded); value is (count, ts).
         # TTL is intentionally short so writes that happen while browsing are
         # reflected within a few seconds when the user hits Refresh.
-        self._count_cache: dict[str, tuple[int, float]] = {}
+        # key → (count, monotonic timestamp, db write epoch when it was taken)
+        self._count_cache: dict[str, tuple[int, float, int]] = {}
         self._COUNT_CACHE_TTL = 60.0
         # Expired entries are only ever overwritten on an identical key, so a browsing
         # session that keeps trying new filter combinations would grow this dict
@@ -2043,8 +2044,13 @@ class Manager:
             ).hexdigest()
             now = time.monotonic()
             cached = self._count_cache.get(cache_key)
-
-            if cached is not None and (now - cached[1]) < self._COUNT_CACHE_TTL:
+            # The TTL alone let a cached count outlive the rows it counted: a
+            # bulk delete emptied the grid while the toolbar kept saying
+            # "Page 1 of 2" and "Apply to Filtered Images (500)" for up to a
+            # minute. The write epoch makes that exact rather than eventual —
+            # any write to a table the count is derived from retires it now.
+            epoch = self._db_client.write_epoch
+            if cached is not None and cached[2] == epoch and (now - cached[1]) < self._COUNT_CACHE_TTL:
                 logger.info(
                     "[review] count cache hit (key=%s, age=%.1fs)",
                     cache_key[:8],
@@ -2075,7 +2081,9 @@ class Manager:
                     total_count,
                 )
                 if total_count >= 0:
-                    self._count_cache[cache_key] = (total_count, now)
+                    # Re-read the epoch: a write that landed while the count was
+                    # in flight must not be cached as though it were included.
+                    self._count_cache[cache_key] = (total_count, now, self._db_client.write_epoch)
                     self._evict_expired_counts(now)
         else:
             t1 = time.monotonic()
@@ -3407,7 +3415,7 @@ class Manager:
         """
         if len(self._count_cache) <= self._COUNT_CACHE_MAX_ENTRIES:
             return
-        stale = [key for key, (_, ts) in self._count_cache.items() if now - ts >= self._COUNT_CACHE_TTL]
+        stale = [key for key, (_, ts, _epoch) in self._count_cache.items() if now - ts >= self._COUNT_CACHE_TTL]
         for key in stale:
             del self._count_cache[key]
         if len(self._count_cache) > self._COUNT_CACHE_MAX_ENTRIES:

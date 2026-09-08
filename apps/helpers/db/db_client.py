@@ -227,6 +227,54 @@ _SIDECAR_LOCKS = tuple(threading.Lock() for _ in range(64))
 logger.setLevel(LOG_LEVEL)
 
 
+# ── Write epoch ───────────────────────────────────────────────────────────────
+#
+# The review queue's `total_count` is expensive, so `Manager` caches it. That
+# cache had a TTL and nothing else: delete every image matching a filter and the
+# grid emptied while the toolbar went on saying "Page 1 of 2" and "Apply to
+# Filtered Images (500)" for up to a minute, because the cached count knew
+# nothing about the delete.
+#
+# Rather than ask a dozen mutating methods to remember to invalidate it — a list
+# that is wrong the moment someone adds the thirteenth — the epoch is bumped
+# from the one place every write already passes through, the session flush.
+_WRITE_EPOCH_INFO_KEY = "purrview_write_epoch"
+
+# Only writes to tables a review count is derived from count. Task heartbeats
+# and recording rows churn constantly and would otherwise keep the cache
+# permanently cold, which is the same as not having one.
+# Derived from the models rather than written out: the table names are not the
+# class names ("images", not "imagerecord"), and a hand-written list that is
+# quietly wrong disables the invalidation without failing anything.
+_COUNT_RELEVANT_TABLES = frozenset(
+    model.__table__.name for model in (ImageRecord, BBox, BBoxTagLink, ImageTagLink, ImageLabel, Label, Tag)
+)
+
+# The listener goes on the sync Session class, which is shared by every client
+# in the process, so it is registered once and scoped per client by `info`.
+_write_epoch_listener_registered = False
+
+
+def _register_write_epoch_listener(sync_session_class: type) -> None:
+    global _write_epoch_listener_registered
+    if _write_epoch_listener_registered:
+        return
+    _write_epoch_listener_registered = True
+
+    @event.listens_for(sync_session_class, "after_flush")
+    def _bump_write_epoch(session, flush_context):  # noqa: ANN001 - SQLAlchemy signature
+        epoch = session.info.get(_WRITE_EPOCH_INFO_KEY)
+        if epoch is None:
+            return  # a session from somewhere else in the process
+        for obj in (*session.new, *session.deleted, *session.dirty):
+            table = getattr(getattr(obj, "__table__", None), "name", None)
+            if table in _COUNT_RELEVANT_TABLES:
+                # Fires before commit, so a rolled-back flush over-invalidates.
+                # That costs one recount and never serves a wrong number.
+                epoch[0] += 1
+                return
+
+
 class SidecarParseError(Exception):
     """Raised when a present JSON sidecar cannot be parsed and proceeding would
     destroy DB state (e.g. an overwrite sync from a torn/corrupt sidecar)."""
@@ -805,10 +853,29 @@ class DbClient:
             cursor.execute("PRAGMA auto_vacuum=INCREMENTAL")
             cursor.close()
 
-        self._async_session_maker = sessionmaker(self._engine, class_=AsyncSession, expire_on_commit=False)
+        # Every session this client makes carries the epoch box, which is how a
+        # listener on the (shared, process-wide) sync Session class tells one
+        # DbClient's writes from another's — tests build many clients at once.
+        self._write_epoch = [0]
+        self._async_session_maker = sessionmaker(
+            self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            info={_WRITE_EPOCH_INFO_KEY: self._write_epoch},
+        )
+        _register_write_epoch_listener(self._async_session_maker.class_.sync_session_class)
         # Cached selectivity probe counts for the IN-vs-EXISTS search dispatch.
         # Key → (count, monotonic timestamp); see _selectivity_count().
         self._selectivity_cache: Dict[str, tuple] = {}
+
+    @property
+    def write_epoch(self) -> int:
+        """Bumped whenever this client flushes a change to a table the review
+        counts are derived from. A cached count taken at one epoch is stale at
+        the next — see `Manager.get_review_queue`, which caches counts and had
+        no way to know a bulk delete had happened underneath it.
+        """
+        return self._write_epoch[0]
 
     async def init_db(self) -> None:
         """Initialize database and run any pending Alembic migrations.

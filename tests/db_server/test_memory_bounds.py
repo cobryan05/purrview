@@ -27,7 +27,7 @@ class TestCountCacheEviction:
 
         # Fill past the ceiling with entries that have already timed out.
         for i in range(ceiling + 50):
-            manager._count_cache[f"stale-{i}"] = (i, now - ttl - 1)
+            manager._count_cache[f"stale-{i}"] = (i, now - ttl - 1, 0)
 
         manager._evict_expired_counts(now)
 
@@ -36,7 +36,7 @@ class TestCountCacheEviction:
     def test_under_the_ceiling_nothing_is_touched(self, manager):
         """The sweep is a safety valve, not a TTL enforcer — reads still check the ts."""
         now = 10_000.0
-        manager._count_cache["a"] = (1, now - manager._COUNT_CACHE_TTL - 1)
+        manager._count_cache["a"] = (1, now - manager._COUNT_CACHE_TTL - 1, 0)
 
         manager._evict_expired_counts(now)
 
@@ -48,7 +48,7 @@ class TestCountCacheEviction:
 
         # All still within TTL, so the expiry sweep can't free anything.
         for i in range(ceiling + 10):
-            manager._count_cache[f"fresh-{i}"] = (i, now - (ceiling + 10 - i) * 0.001)
+            manager._count_cache[f"fresh-{i}"] = (i, now - (ceiling + 10 - i) * 0.001, 0)
 
         manager._evict_expired_counts(now)
 
@@ -60,7 +60,7 @@ class TestCountCacheEviction:
     def test_cache_does_not_grow_without_bound_over_many_distinct_filters(self, manager):
         now = 10_000.0
         for i in range(5_000):
-            manager._count_cache[f"filter-{i}"] = (i, now - manager._COUNT_CACHE_TTL - 1)
+            manager._count_cache[f"filter-{i}"] = (i, now - manager._COUNT_CACHE_TTL - 1, 0)
             manager._evict_expired_counts(now)
 
         assert len(manager._count_cache) <= manager._COUNT_CACHE_MAX_ENTRIES
