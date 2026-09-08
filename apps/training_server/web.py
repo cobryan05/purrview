@@ -494,7 +494,7 @@ class WebApp:
             needed. Safe to call at any time: a queued, running or interrupted job's
             directory is never a candidate.
             """
-            return ArtifactsEvictResponse(**await asyncio.to_thread(self._manager.evict_artifacts, keep))
+            return ArtifactsEvictResponse(**await self._manager.evict_artifacts(keep))
 
         @self._app.post(
             "/api/training/cache/evict",

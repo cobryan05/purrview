@@ -7,6 +7,8 @@ job still needs, and never the newest ones.
 """
 
 import asyncio
+import shutil
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -28,7 +30,7 @@ class TestEvictArtifacts:
     async def test_keeps_the_newest_finished_runs_and_removes_the_rest(self, manager):
         jobs = [await _make_job(manager, status="done", age_minutes=m) for m in (50, 40, 30, 20, 10)]
 
-        result = manager.evict_artifacts(keep=2)
+        result = await manager.evict_artifacts(keep=2)
 
         surviving = [j for j in jobs if j.artifact_dir.exists()]
         assert [j.job_id for j in surviving] == [jobs[3].job_id, jobs[4].job_id]
@@ -43,7 +45,7 @@ class TestEvictArtifacts:
         ]
         await _make_job(manager, status="done", age_minutes=1)
 
-        manager.evict_artifacts(keep=0)
+        await manager.evict_artifacts(keep=0)
 
         assert all(job.artifact_dir.exists() for job in live)
 
@@ -52,18 +54,18 @@ class TestEvictArtifacts:
         old = await _make_job(manager, status="done", age_minutes=60)
         await _make_job(manager, status="done", age_minutes=1)
 
-        manager.evict_artifacts(keep=1)
+        await manager.evict_artifacts(keep=1)
 
         assert manager.get_job(old.job_id) is None
 
     async def test_interrupted_jobs_are_still_listed_after_a_sweep(self, manager):
         interrupted = await _make_job(manager, status="interrupted", age_minutes=99)
-        manager.evict_artifacts(keep=0)
+        await manager.evict_artifacts(keep=0)
         assert manager.get_job(interrupted.job_id) is not None
 
     async def test_keeping_more_than_exist_removes_nothing(self, manager):
         job = await _make_job(manager, status="done", age_minutes=5)
-        result = manager.evict_artifacts(keep=10)
+        result = await manager.evict_artifacts(keep=10)
         assert result["removed"] == []
         assert job.artifact_dir.exists()
 
@@ -72,7 +74,7 @@ class TestEvictArtifacts:
         cancelled = await _make_job(manager, status="cancelled", age_minutes=50)
         await _make_job(manager, status="done", age_minutes=1)
 
-        manager.evict_artifacts(keep=1)
+        await manager.evict_artifacts(keep=1)
 
         assert not failed.artifact_dir.exists()
         assert not cancelled.artifact_dir.exists()
@@ -99,3 +101,63 @@ class TestEvictArtifactsEndpoint:
 
         assert r.status_code == 200, r.text
         assert r.json()["jobs"] == manager.DEFAULT_ARTIFACTS_KEEP
+
+
+class TestConcurrentSweeps:
+    """tasks_server evicts after every training run, so two runs finishing close
+    together produce two overlapping sweeps against the same job list."""
+
+    async def test_two_sweeps_at_once_do_not_both_delete_the_same_directories(self, manager, monkeypatch):
+        doomed = [await _make_job(manager, status="done", age_minutes=m) for m in (60, 50, 40)]
+        await _make_job(manager, status="done", age_minutes=1)
+
+        # Hold each rmtree open long enough that an unserialised second sweep
+        # would have selected its victims before the first one deleted them.
+        real_rmtree = shutil.rmtree
+        rmtree_calls: list[str] = []
+
+        def slow_rmtree(path, *a, **kw):
+            rmtree_calls.append(str(path))
+            time.sleep(0.05)
+            return real_rmtree(path, *a, **kw)
+
+        monkeypatch.setattr(shutil, "rmtree", slow_rmtree)
+
+        first, second = await asyncio.gather(
+            manager.evict_artifacts(keep=1),
+            manager.evict_artifacts(keep=1),
+        )
+
+        # Each directory is walked and deleted exactly once, by exactly one sweep.
+        assert sorted(rmtree_calls) == sorted(str(j.artifact_dir) for j in doomed)
+        assert len(first["removed"]) + len(second["removed"]) == 3
+        # ...and the bytes are reported once, not once per sweep. Without the lock
+        # both sweeps size the same files and each claims all 3000.
+        assert first["freed_bytes"] + second["freed_bytes"] == 3000
+
+    async def test_a_job_submitted_during_a_sweep_is_not_swept(self, manager, monkeypatch):
+        """The sweep acts on the victims it chose, not on whatever exists when it
+        finishes — a run submitted while a gigabyte is being deleted is newer than
+        everything it selected."""
+        await _make_job(manager, status="done", age_minutes=60)
+        keeper = await _make_job(manager, status="done", age_minutes=1)
+
+        real_rmtree = shutil.rmtree
+        started = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def slow_rmtree(path, *a, **kw):
+            loop.call_soon_threadsafe(started.set)
+            time.sleep(0.05)
+            return real_rmtree(path, *a, **kw)
+
+        monkeypatch.setattr(shutil, "rmtree", slow_rmtree)
+
+        sweep = asyncio.create_task(manager.evict_artifacts(keep=1))
+        await started.wait()
+        latecomer = await _make_job(manager, status="done", age_minutes=0)
+        await sweep
+
+        assert latecomer.artifact_dir.exists()
+        assert keeper.artifact_dir.exists()
+        assert manager.get_job(latecomer.job_id) is not None

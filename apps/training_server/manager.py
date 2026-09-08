@@ -47,6 +47,10 @@ class Manager:
         self._config: Dict[str, Any] = {"service": APPS.TRAINING_SERVER}
         self._eviction_sweep_sec = int(os.environ.get("TRAINING_CACHE_SWEEP_INTERVAL_SEC", _DEFAULT_EVICTION_SWEEP_SEC))
         self._eviction_task: Optional[asyncio.Task] = None
+        # Serialises artifact sweeps: tasks_server evicts after every training
+        # run, and two runs finishing together would otherwise both select and
+        # both try to delete the same directories.
+        self._artifact_eviction_lock = asyncio.Lock()
         self._started_at = time.time()
 
     def start(self) -> None:
@@ -299,7 +303,7 @@ class Manager:
     #: not a tightening of an existing one.
     DEFAULT_ARTIFACTS_KEEP = 3
 
-    def evict_artifacts(self, keep: Optional[int] = None) -> Dict[str, Any]:
+    async def evict_artifacts(self, keep: Optional[int] = None) -> Dict[str, Any]:
         """Delete the artifact directories of all but the ``keep`` newest finished jobs.
 
         Only ``done``/``error``/``cancelled`` jobs are candidates. A queued, running
@@ -310,19 +314,62 @@ class Manager:
 
         The job record is dropped along with its directory — a job whose artifacts are
         gone can neither be restarted nor downloaded, and leaving it listed offers both.
+
+        Deleting a gigabyte of checkpoints is slow enough that it must not block the
+        event loop, so the filesystem work — and only that — runs in a worker thread.
+        Selecting the victims and forgetting them stay on the loop, because
+        :class:`JobQueue` carries no lock: it is an event-loop structure whose
+        callers are expected to be the loop, and this sweep was the only one that
+        was not. (Under CPython that was survivable rather than broken: ``sorted``
+        materialises the dict view in a C loop that never drops the GIL. It is not a
+        property worth depending on.)
+
+        The lock is the part that fixes real behaviour. tasks_server evicts after
+        every training run, so two runs finishing together produce two sweeps that
+        select the same victims; both then walk and delete the same directories, and
+        each reports the bytes the other freed as its own.
         """
         keep = self.DEFAULT_ARTIFACTS_KEEP if keep is None else max(0, int(keep))
 
-        evictable = [j for j in self._queue.list_jobs() if j.status in ("done", "error", "cancelled")]
-        # list_jobs() is already newest-first.
-        doomed = evictable[keep:]
+        async with self._artifact_eviction_lock:
+            # On the loop: snapshot the victims. Nothing can be added to or removed
+            # from the queue between these two lines.
+            evictable = [j for j in self._queue.list_jobs() if j.status in ("done", "error", "cancelled")]
+            # list_jobs() is already newest-first.
+            doomed = [(job.job_id, job.artifact_dir) for job in evictable[keep:]]
 
+            forgettable, removed, freed = await asyncio.to_thread(self._delete_artifact_dirs, doomed)
+
+            # Back on the loop: drop the records whose directories are now gone.
+            for job_id in forgettable:
+                self._queue.forget(job_id)
+
+            if removed:
+                logger.info("Evicted %d artifact director(ies), freeing %d bytes", len(removed), freed)
+            after = await asyncio.to_thread(self._artifacts_stats)
+
+        return {
+            "removed": removed,
+            "freed_bytes": freed,
+            "kept": min(len(evictable), keep),
+            "jobs": after["jobs"],
+            "bytes": after["bytes"],
+        }
+
+    def _delete_artifact_dirs(self, doomed: List[tuple]) -> tuple[List[str], List[str], int]:
+        """Filesystem half of :meth:`evict_artifacts`; runs in a worker thread.
+
+        Touches no queue state — it is handed plain ``(job_id, dir)`` pairs and
+        reports back which ids the caller should forget, which it actually deleted
+        (a job whose directory was already gone is forgotten but not "removed"),
+        and how many bytes that freed.
+        """
+        forgettable: List[str] = []
         removed: List[str] = []
         freed = 0
-        for job in doomed:
-            job_dir = job.artifact_dir
+        for job_id, job_dir in doomed:
             if job_dir is None or not Path(job_dir).is_dir():
-                self._queue.forget(job.job_id)
+                forgettable.append(job_id)
                 continue
             try:
                 for path in Path(job_dir).rglob("*"):
@@ -332,21 +379,11 @@ class Manager:
                         except OSError:
                             pass
                 shutil.rmtree(job_dir)
-                self._queue.forget(job.job_id)
-                removed.append(job.job_id)
+                forgettable.append(job_id)
+                removed.append(job_id)
             except OSError:
                 logger.exception("Could not remove artifact directory %s", job_dir)
-
-        if removed:
-            logger.info("Evicted %d artifact director(ies), freeing %d bytes", len(removed), freed)
-        after = self._artifacts_stats()
-        return {
-            "removed": removed,
-            "freed_bytes": freed,
-            "kept": min(len(evictable), keep),
-            "jobs": after["jobs"],
-            "bytes": after["bytes"],
-        }
+        return forgettable, removed, freed
 
     def _artifacts_stats(self) -> Dict[str, Any]:
         """Disk used by job artifact directories (trained weights, logs)."""
