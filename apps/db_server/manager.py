@@ -3987,7 +3987,6 @@ class Manager:
 
         writer = make_writer(fmt, spec["class_names"], dataset.name)
         assignments = split_images(spec["images"], val_fraction)
-        splits = ["train"] + (["val"] if any(sp == "val" for sp, _ in assignments) else [])
 
         safe_name = sanitize_stem(dataset.name, uuid)
         download_name = f"{safe_name}_{fmt}.tar"
@@ -4004,6 +4003,12 @@ class Manager:
         async def _iter():
             tar = TarStream()
             skipped: List[str] = []
+            # The splits that actually received an image, not the ones the
+            # assignment *planned*: if every val image turns out to be missing
+            # from disk, declaring `val: images/val` in data.yaml (or emitting an
+            # empty instances_val.json / val.txt) points the trainer at a
+            # directory the archive does not contain, and Ultralytics errors out.
+            written_splits: set = set()
             try:
                 for split, entry in assignments:
                     path = self._resolve_image_path(entry["filename"])
@@ -4021,10 +4026,15 @@ class Manager:
                     writer.add_image(
                         tar, split, base, image_extension(entry["filename"]), data, size, entry["annotations"]
                     )
+                    written_splits.add(split)
                     chunk = tar.drain()
                     if chunk:
                         yield chunk
 
+                # "train" is always declared — a format's index files need the key
+                # even when the archive turned out empty — while "val" is only
+                # declared if something landed in it.
+                splits = ["train"] + (["val"] if "val" in written_splits else [])
                 writer.finalize(tar, splits)
                 if skipped:
                     # Surfaced in the archive rather than only in the log: a

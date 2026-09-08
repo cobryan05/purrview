@@ -162,14 +162,29 @@ class _Writer:
         raise NotImplementedError
 
 
+def _clamped_box(cx: float, cy: float, w: float, h: float):
+    """`(cx, cy, w, h)` for the part of a normalised box inside the frame.
+
+    Clamping the centre and the extent *independently* leaves an overhanging box
+    overhanging — `cx=0.95, w=0.2` survives untouched and still reaches 1.05 —
+    which is the bug the COCO writer already fixes by clamping corners instead.
+    Detector output overhangs routinely, so both corners are clamped here and the
+    centre/extent are re-derived from them.
+    """
+    x0 = _clamp01(cx - w / 2)
+    y0 = _clamp01(cy - h / 2)
+    x1 = _clamp01(cx + w / 2)
+    y1 = _clamp01(cy + h / 2)
+    return (x0 + x1) / 2, (y0 + y1) / 2, max(0.0, x1 - x0), max(0.0, y1 - y0)
+
+
 class YoloWriter(_Writer):
     def add_image(self, tar, split, base, ext, data, size, annotations):
         tar.add(f"images/{split}/{base}{ext}", data)
         lines = []
         for cls_idx, cx, cy, w, h in annotations:
-            lines.append(
-                f"{int(cls_idx)} {_clamp01(cx):.6f} {_clamp01(cy):.6f} " f"{_clamp01(w):.6f} {_clamp01(h):.6f}"
-            )
+            ccx, ccy, cw, ch = _clamped_box(cx, cy, w, h)
+            lines.append(f"{int(cls_idx)} {ccx:.6f} {ccy:.6f} {cw:.6f} {ch:.6f}")
         # A negative image still gets its (empty) label file: YOLO treats a
         # missing .txt as "unlabelled", an empty one as "nothing here".
         tar.add_text(f"labels/{split}/{base}.txt", "\n".join(lines) + ("\n" if lines else ""))
