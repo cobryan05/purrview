@@ -3743,6 +3743,29 @@ class TestOfferDetectorMiss:
 
         enqueue.assert_awaited_once_with(frame, [det], SAVE_REASON_DETECTOR_MISS)
 
+    async def test_review_disabled_label_is_never_seeded(self):
+        """'Review up to = 0' is a statement about the review queue, not about one
+        trigger. A tracker gap on such a label must not save a frame either."""
+        collector = _detached_collector(
+            {
+                "output_dir": "out",
+                "enable_dedup": False,
+                "model_label_config": [
+                    {"modelName": _MODEL_NAME, "labelValues": {_LABEL_UUID: {"min": 0.2, "max": 0}}}
+                ],
+            }
+        )
+        frame = _frame_offer_with(np.zeros((32, 32, 3), dtype=np.uint8))
+        det = _detector_miss_det()
+
+        with patch.object(collector, "_dispatch_save") as dispatch:
+            await collector.offer_detector_miss(frame, det)
+
+        dispatch.assert_not_called()
+        # Still counted as offered: the driver did observe the gap, and the
+        # offered-vs-saved gap is what makes the refusal visible in the status.
+        assert collector._detector_miss_offered == 1
+
     async def test_bypasses_per_track_novelty_and_the_filter_chain(self):
         """Neither reasons about model-derived detections; this box is neither."""
         collector = _detached_collector({"output_dir": "out", "enable_dedup": False})

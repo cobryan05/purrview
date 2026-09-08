@@ -890,6 +890,13 @@ class TrainingCollector:
         without temporal context").
         """
         self._detector_miss_offered += 1
+        # Third door onto the same rule (see _detect_ambiguity and
+        # _detect_cross_model_ambiguity): a label at 'Review up to = 0' never
+        # pulls a frame into review, whatever noticed it. Counted as offered
+        # because the driver did offer it — the refusal is this collector's
+        # config, not a failure to observe the gap.
+        if self._rival_review_disabled(getattr(det.bbox, "label_uuid", None)):
+            return
         if self._spec.enable_dedup:
             await self._enqueue_for_dedup(frame, [det], SAVE_REASON_DETECTOR_MISS)
         else:
