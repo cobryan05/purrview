@@ -380,8 +380,11 @@ def zone_area_terms(
         target = inflate(bounds, pad) if pad else bounds
         return intersection_area(subject, target), area(subject), area(target)
     subject = inflate(box, 2 * pad) if pad else box
-    points = zone.to_pixels(frame_width, frame_height)
-    return polygon_area(clip_polygon_to_box(points, subject)), area(subject), polygon_area(points)
+    return (
+        zone.intersection_area_with_box(subject, frame_width, frame_height),
+        area(subject),
+        zone.pixel_area(frame_width, frame_height),
+    )
 
 
 def zone_from_row(row) -> Zone:

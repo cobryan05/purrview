@@ -545,6 +545,7 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
     saveBtn.dataset.testid = 'watch-zones-save';
     saveBtn.addEventListener('click', async () => {
       saveBtn.disabled = true;
+      let saved = false;
       try {
         const payload = working.map((r, index) => ({
           uuid: r.uuid,
@@ -571,16 +572,21 @@ export async function openSourceRegionsModal({ sourceUuid, sourceName, maskOptOu
         document.removeEventListener('keydown', onKeyDown, true);
         resolve(regions);
         shell.close();
-        // Zones and masks are read once per source in _build_pipelines and baked
-        // into that source's WatchEngine and MotionDetector, so a running watcher
-        // keeps evaluating the old shapes. Prompted after the close so the confirm
-        // does not stack on top of this modal. No-op when nothing is running.
-        await promptRestartAffectedTasks(sourceUuid, { label: "source's regions" });
+        saved = true;
       } catch (e) {
         toast(`Could not save regions: ${e.message}`, 'error');
       } finally {
         saveBtn.disabled = false;
       }
+      // Outside the try: the save has already succeeded and been reported, so a
+      // failure in the restart prompt must not come back as "Could not save
+      // regions" and send the user round again.
+      //
+      // Zones and masks are read once per source in _build_pipelines and baked
+      // into that source's WatchEngine and MotionDetector, so a running watcher
+      // keeps evaluating the old shapes. Prompted after the close so the confirm
+      // does not stack on top of this modal. No-op when nothing is running.
+      if (saved) await promptRestartAffectedTasks(sourceUuid, { label: "source's regions" });
     });
     footer.appendChild(saveBtn);
     shell.dialog.appendChild(footer);
