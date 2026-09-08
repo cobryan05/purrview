@@ -12,6 +12,7 @@ the actual deleting.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -80,11 +81,19 @@ def _select_least_unique(candidates: Sequence[EvictionCandidate], count: int) ->
     hashed = [c for c in candidates if c.phash]
     unhashed = [c for c in candidates if not c.phash]
 
-    def nearest_distance(target: EvictionCandidate) -> int:
+    def nearest_distance(target: EvictionCandidate) -> float:
         # Hamming distance to whichever OTHER hashed candidate is closest —
         # "closest" is what "least unique" means: this frame looks like
         # something else already in the queue.
-        return min((hamming(target.phash, other.phash) for other in hashed if other is not target), default=0)
+        #
+        # `inf` and not 0 when there is nobody to compare against (a page with a
+        # single hashable candidate): "no near-duplicate found" is maximally
+        # unique, and defaulting to 0 ranked the one distinct frame FIRST for
+        # deletion — the exact inverse of what the strategy promises.
+        return min(
+            (hamming(target.phash, other.phash) for other in hashed if other is not target),
+            default=math.inf,
+        )
 
     ranked = sorted(hashed, key=nearest_distance)
     ordered = ranked + _select_fifo(unhashed, len(unhashed))

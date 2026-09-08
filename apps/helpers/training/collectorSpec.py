@@ -431,9 +431,13 @@ class CollectorSpec:
             # zero-length, so nothing would ever compare as non-novel and the
             # prefilter would silently become a no-op.
             max_frames_per_track=max(1, _as_int(params.get("max_frames_per_track"), 25)),
+            # `> 0` and not truthiness: the caps drive a *permanent delete*, and a
+            # negative number (someone reaching for the usual "-1 means unlimited")
+            # would make `total > cap` true forever and evict the whole queue.
+            # 0 and anything below it mean "no cap", exactly as the field help says.
             max_unverified_images=(
-                int(_max_unverified_images_raw)
-                if (_max_unverified_images_raw := params.get("max_unverified_images"))
+                _max_unverified_images_raw
+                if (_max_unverified_images_raw := _as_int(params.get("max_unverified_images"), 0)) > 0
                 else None
             ),
             # Stored as MB in params JSON (a human picks a number of megabytes,
@@ -441,7 +445,7 @@ class CollectorSpec:
             # compares against a plain byte count without redoing the unit math.
             max_unverified_bytes=(
                 int(_max_unverified_mb_raw * 1024 * 1024)
-                if (_max_unverified_mb_raw := _as_float(params.get("max_unverified_mb"), 0.0))
+                if (_max_unverified_mb_raw := _as_float(params.get("max_unverified_mb"), 0.0)) > 0
                 else None
             ),
             eviction_strategy=(
