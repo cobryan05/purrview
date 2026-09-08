@@ -4767,6 +4767,55 @@ class TestAmbiguityDetection:
         det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
         assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
 
+    async def test_review_disabled_rival_is_not_a_reason_to_review(self):
+        """The mirror of the test above. 'Review up to = 0' on a label means it
+        never pulls a frame into review — as the winner OR as the runner-up.
+
+        The reported bug: a label set to 0 kept filling the review queue because
+        another label's box was flagged confusable *with it*, so the frame was
+        saved anyway and arrived carrying the disabled label's box.
+        """
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "ambiguity_scope": "any",
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {_LABEL_UUID: 0.2, _RIVAL_UUID: {"min": 0.2, "max": 0}},
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90)])
+        assert task._collector._detect_ambiguity(det, _MODEL_NAME) is None
+        # Not merely unflagged — never measured, so it can't skew the calibration
+        # stats the status panel shows.
+        assert task._collector._ambiguity_evaluated == 0
+
+    async def test_next_alternate_is_still_considered_after_a_disabled_rival(self):
+        """Skipping a review-disabled rival must not skip the whole detection:
+        the next runner-up is then the strongest eligible one."""
+        other = "label-other-uuid"
+        params = {
+            **_AMBIGUITY_PARAMS,
+            "ambiguity_scope": "any",
+            "model_label_config": [
+                {
+                    "modelName": _MODEL_NAME,
+                    "labelValues": {_LABEL_UUID: 0.2, _RIVAL_UUID: {"min": 0.2, "max": 0}},
+                }
+            ],
+        }
+        task = _make_task(params=params)
+        await task._init(params, resume_data=None)
+
+        det = _detection_with_alts(0.91, [_alt(_RIVAL_UUID, 0.90), _alt(other, 0.89, class_str="other")])
+        info = task._collector._detect_ambiguity(det, _MODEL_NAME)
+        assert info is not None
+        assert info.rival_label_uuid == other
+
     async def test_min_confidence_floor_skips_weak_detections(self):
         """Weak detections are already collected by the confidence band; the floor
         stops the same frame being flagged twice for two different reasons."""
@@ -5211,6 +5260,25 @@ class TestCrossModelAmbiguity:
         assert task._collector._ambiguity_evaluated == 1
         assert task._collector._ambiguity_flagged == 0
         assert task._collector._ambiguity_pairs == {}
+
+    async def test_review_disabled_label_is_flagged_on_neither_side(self):
+        """A cross-model pair where one side's label is set to 'Review up to = 0'
+        is not a reason to review the frame — not for the disabled label, and not
+        for the model that disagreed with it."""
+        task = await self._task(
+            model_label_config=[
+                {"modelName": "model-a", "labelValues": {_LABEL_UUID: 0.5}},
+                {"modelName": "model-b", "labelValues": {self._DOG_UUID: {"min": 0.5, "max": 0}}},
+            ]
+        )
+        cat = _detection_with_alts(0.9, [], label_uuid=_LABEL_UUID)
+        dog = _detection_with_alts(0.85, [], label_uuid=self._DOG_UUID)
+
+        frame = await self._run(task, [cat], [dog])
+
+        assert all(m["ambiguity"] is None for m in frame._det_meta.values())
+        assert task._collector._ambiguity_flagged == 0
+        assert task._collector._ambiguity_evaluated == 0
 
     async def test_agreeing_models_are_not_flagged(self):
         """Same label on the same object is agreement, not confusion."""

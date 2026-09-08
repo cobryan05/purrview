@@ -1407,12 +1407,19 @@ class TrainingCollector:
         #      not worth collecting as evidence of disagreement.
         # The MERGE still receives the unfiltered lists: there a below-floor
         # detection must remain able to suppress an overlapping duplicate.
+        #   3. A label whose 'Review up to' is 0 is excluded outright — on BOTH
+        #      sides. It may not be the winner (that would be the back door the
+        #      same-model path already closes), and it may not be the rival
+        #      either: naming it as the reason another box is confusable still
+        #      ends with the user reviewing frames they asked never to see.
         candidates: list[list] = []
         for dets in results_per_model:
             kept = []
             for det in dets:
                 band = spec.target_label_bands.get(det.bbox.label_uuid)
-                if band is not None and det.confidence >= band.min_confidence:
+                if band is None or band.review_disabled:
+                    continue
+                if det.confidence >= band.min_confidence:
                     kept.append(det)
             candidates.append(kept)
 
@@ -1527,6 +1534,13 @@ class TrainingCollector:
             )
             if not in_scope:
                 continue
+            # A rival the user set to 'Review up to = 0' is not a reason to
+            # review anything. The winner's band already gates its own side
+            # above; without this, a disabled label still pulls frames in from
+            # the runner-up seat. Keep scanning rather than breaking: the next
+            # alternate is then the strongest ELIGIBLE rival.
+            if self._rival_review_disabled(alt.label_uuid):
+                continue
             value = ambiguity_value(spec.ambiguity_metric, det.confidence, alt.confidence)
             # Alternates arrive best-first, so the first in-scope one is the
             # strongest rival — sample it (threshold-independently, for the
@@ -1549,6 +1563,18 @@ class TrainingCollector:
             key = (model_name, det.bbox.label_uuid or "?", best.rival_label_uuid or best.rival_class_str or "?")
             self._ambiguity_pairs[key] = self._ambiguity_pairs.get(key, 0) + 1
         return best
+
+    def _rival_review_disabled(self, label_uuid: Optional[str]) -> bool:
+        """True when *label_uuid* is a configured label whose 'Review up to' is 0.
+
+        Such a label may still be tagged on a frame saved for other reasons, but
+        it may never be part of why a frame is pulled into review — as winner or
+        as rival.
+        """
+        if not label_uuid:
+            return False
+        band = self._spec.target_label_bands.get(label_uuid)
+        return band is not None and band.review_disabled
 
     def _annotatable(self, detections: list) -> list:
         """The (post-merge) detections that get written as unverified bboxes:
