@@ -50,6 +50,7 @@ from apps.helpers.modelUnit import (
 )
 from apps.helpers.modelVersions import (
     DEFAULT_VERSIONS_KEEP,
+    artifact_model_names,
     delete_preview,
     delete_versions,
     install_with_history,
@@ -447,9 +448,7 @@ class Manager:
             # the one tasks_server keeps, using the keep value sent with the push
             # (it may be on another host and cannot read the setting itself).
             keep = DEFAULT_VERSIONS_KEEP if versions_keep is None else versions_keep
-            model_names = {
-                Path(m.name).name.split(".")[0] for m in members if Path(m.name).name.endswith((".onnx", ".json"))
-            }
+            model_names = artifact_model_names(members)
             await asyncio.to_thread(install_with_history, Path(self._models_path), model_names, keep)
 
             for member in members:

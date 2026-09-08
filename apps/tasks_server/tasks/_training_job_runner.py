@@ -43,6 +43,7 @@ from apps.helpers.metadataUtils import atomic_write_bytes
 from apps.helpers.modelVersions import (
     DEFAULT_VERSIONS_KEEP,
     MODEL_VERSIONS_KEEP_SETTING_KEY,
+    artifact_model_names,
     install_with_history,
 )
 
@@ -770,9 +771,7 @@ class TrainingJobRunnerMixin:
             # Archive whatever is on disk now, before a byte of it is overwritten.
             # This is the whole rollback story: without it the previous generation
             # is gone the moment the first member lands.
-            model_names = {
-                Path(m.name).name.split(".")[0] for m in members if Path(m.name).name.endswith((".onnx", ".json"))
-            }
+            model_names = artifact_model_names(members)
             archived = await asyncio.to_thread(install_with_history, _MODELS_DIR, model_names, versions_keep)
             for model_name, version_id in sorted(archived.items()):
                 if version_id:

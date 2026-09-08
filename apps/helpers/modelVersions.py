@@ -81,6 +81,31 @@ PREVIEW_SEPARATOR = "@"
 PREVIEW_MAX_AGE_S = 6 * 3600
 
 
+#: Suffixes an artifact tar member can carry for one model. Order matters: the
+#: longest must be tried first, or ``x.onnx.data`` would match ``.data``.
+_ARTIFACT_MODEL_SUFFIXES = (".onnx.data", ".onnx", ".json")
+
+
+def artifact_model_names(members) -> set:
+    """Model names in an artifact tar, derived by stripping the known suffix.
+
+    Not ``name.split(".")[0]``: a training config called "Cats v1.2" produces the
+    model name ``cats_v1.2`` (`TrainModelTask._resolve_training_config`), and
+    splitting on the first dot would archive and prune a model named ``cats_v1``
+    that does not exist — the real weights would then be overwritten with no
+    version snapshot at all, which is exactly the loss the history exists to
+    prevent.
+    """
+    names = set()
+    for member in members:
+        base = Path(member.name).name
+        for suffix in _ARTIFACT_MODEL_SUFFIXES:
+            if base.endswith(suffix):
+                names.add(base[: -len(suffix)])
+                break
+    return names
+
+
 def versions_root(models_dir: Path) -> Path:
     return Path(models_dir) / VERSIONS_DIRNAME
 
@@ -226,6 +251,19 @@ def restore_version(models_dir: Path, model_name: str, version_id: str) -> Dict:
 
     archived = snapshot_current(models_dir, model_name)
 
+    # A generation that had no external-tensor file must not inherit the current
+    # one's: onnxruntime would load the restored graph against tensors from a
+    # different model and fail somewhere far away from here.
+    #
+    # Removed BEFORE the writes below, not after. The reload the inference server
+    # does is keyed on the .onnx's mtime alone, so a stale .onnx.data still on
+    # disk when the new .onnx lands is a window in which the restored graph is
+    # read against the previous generation's tensors.
+    for stale in live_model_files(models_dir, model_name):
+        if stale.name not in sources:
+            stale.unlink(missing_ok=True)
+            logger.info("Removed %s, which the restored version does not have", stale.name)
+
     written = []
     # Same ordering rule as the install path: weights last, so the reload the
     # mtime triggers never sees a new .onnx beside an old sidecar.
@@ -236,14 +274,6 @@ def restore_version(models_dir: Path, model_name: str, version_id: str) -> Dict:
             continue
         atomic_write_bytes(Path(models_dir) / name, src.read_bytes())
         written.append(name)
-
-    # A generation that had no external-tensor file must not inherit the current
-    # one's: onnxruntime would load the restored graph against tensors from a
-    # different model and fail somewhere far away from here.
-    for stale in live_model_files(models_dir, model_name):
-        if stale.name not in sources:
-            stale.unlink(missing_ok=True)
-            logger.info("Removed %s, which the restored version does not have", stale.name)
 
     logger.info("Restored model %s to version %s", model_name, version_id)
     return {"restored": version_id, "archived": archived, "files": written}
