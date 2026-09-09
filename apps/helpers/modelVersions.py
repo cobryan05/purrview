@@ -261,8 +261,21 @@ def restore_version(models_dir: Path, model_name: str, version_id: str) -> Dict:
     # read against the previous generation's tensors.
     for stale in live_model_files(models_dir, model_name):
         if stale.name not in sources:
-            stale.unlink(missing_ok=True)
-            logger.info("Removed %s, which the restored version does not have", stale.name)
+            try:
+                stale.unlink(missing_ok=True)
+                logger.info("Removed %s, which the restored version does not have", stale.name)
+            except OSError:
+                # Best-effort: this now runs before the writes below, so raising here
+                # would abort the restore with the live model already missing a
+                # companion file and the new one never written — strictly worse than
+                # the leftover stale file this loop exists to avoid. Log and let the
+                # restore proceed; a permission error doesn't get better by retrying
+                # inside this loop.
+                logger.exception(
+                    "Could not remove stale %s before restoring %s — it may not match the restored version",
+                    stale.name,
+                    model_name,
+                )
 
     written = []
     # Same ordering rule as the install path: weights last, so the reload the
