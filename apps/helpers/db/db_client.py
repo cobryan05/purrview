@@ -3564,6 +3564,9 @@ class DbClient:
                 )
             )
             await session.commit()
+        # Core statement, not ORM — the after_flush listener never sees it. Same
+        # reason `delete_images_bulk` bumps by hand; see the write-epoch comment above.
+        self._bump_write_epoch()
 
     async def image_has_verified_bbox_for_label(self, image_uuid: str, label_uuid: str) -> bool:
         """Return True if the image has at least one bbox with the given label that carries the VERIFIED tag."""
@@ -3724,6 +3727,9 @@ class DbClient:
                 )
             )
             await session.commit()
+        # Core statement, not ORM — the after_flush listener never sees it. Same
+        # reason `delete_images_bulk` bumps by hand; see the write-epoch comment above.
+        self._bump_write_epoch()
 
     async def get_image_tag_uuids(self, image_uuid: str) -> List[str]:
         """Return all PRESENT tag UUIDs linked to a whole image."""
@@ -4464,13 +4470,7 @@ class DbClient:
                 )
             )
         for excluded_uuid in f.label_exclude_uuids:
-            # roll_up=False: the pre-1.4b flat label_exclusions field was a
-            # plain equality check, never child-expanded, regardless of
-            # label_include_children (that flag only ever applied to the
-            # include-side label_uuids/label_match_mode predicate). Preserve
-            # that — ObjectLabelTerm.roll_up defaults to True, which would
-            # silently change exclusion behaviour here if left unset.
-            terms.append(ObjectLabelTerm(label_uuids=[excluded_uuid], negate=True, roll_up=False))
+            terms.append(ObjectLabelTerm(label_uuids=[excluded_uuid], negate=True, roll_up=f.label_include_children))
         if f.verification_check:
             terms.append(LabelVerificationTerm(check=f.verification_check, label_uuids=dataset.label_uuids))
 

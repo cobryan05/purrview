@@ -225,14 +225,24 @@ class TestLabelExclude:
         assert _eval(shared_page, "bboxMatchesFilter(bbox('cat'), st({labelExcludeUuids:['cat']}), labels)") is False
         assert _eval(shared_page, "bboxMatchesFilter(bbox('dog'), st({labelExcludeUuids:['cat']}), labels)") is True
 
-    def test_exclude_is_not_child_expanded(self, shared_page: Page):
-        # SERVER SEMANTICS: label exclusions are exact-uuid, never child-expanded,
-        # even when labelIncludeChildren is True. kitten (child of cat) is NOT
-        # excluded by excluding 'cat'.
+    def test_exclude_is_child_expanded_when_flag_set(self, shared_page: Page):
+        # labelIncludeChildren applies symmetrically to include and exclude:
+        # excluding 'cat' with the flag set also excludes 'kitten' (a child of cat).
         assert (
             _eval(
                 shared_page,
                 "bboxMatchesFilter(bbox('kitten'), st({labelExcludeUuids:['cat'], labelIncludeChildren:true}), labels)",
+            )
+            is False
+        )
+
+    def test_exclude_is_not_child_expanded_when_flag_unset(self, shared_page: Page):
+        # Without labelIncludeChildren, exclusion stays an exact-uuid match:
+        # excluding 'cat' does NOT exclude 'kitten'.
+        assert (
+            _eval(
+                shared_page,
+                "bboxMatchesFilter(bbox('kitten'), st({labelExcludeUuids:['cat']}), labels)",
             )
             is True
         )

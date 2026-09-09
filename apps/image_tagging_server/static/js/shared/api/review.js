@@ -224,11 +224,7 @@ function buildReviewFilterBody({
     terms.push({ kind: 'objectLabel', labelUuids: [labelUuid] });
   }
   for (const uuid of labelExcludeUuids) {
-    // rollUp: false — the pre-1.4b flat labelExclusions field was a plain
-    // equality check, never child-expanded (see filterPredicate.js's
-    // matching client-side divergence comment). ObjectLabelTerm.rollUp
-    // defaults true server-side, so this must be explicit.
-    terms.push({ kind: 'objectLabel', labelUuids: [uuid], negate: true, rollUp: false });
+    terms.push({ kind: 'objectLabel', labelUuids: [uuid], negate: true, rollUp: labelIncludeChildren });
   }
 
   terms.push(...buildFilenameTerms(

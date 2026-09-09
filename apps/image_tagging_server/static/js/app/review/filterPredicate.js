@@ -248,20 +248,12 @@ export function bboxMatchesFilter(bbox, state, labels) {
   }
 
   // ── Label exclude ────────────────────────────────────────────────────────
-  // Deviation from the plan doc's proposed spec: the plan suggested expanding
-  // exclusions with descendants under the same `labelIncludeChildren` flag.
-  // The server does NOT do this. Pre-1.4b, `_apply_image_search_filters`'s
-  // "Label exclusions" block was a plain `BBox.label_uuid == label_uuid`
-  // check with no descendant expansion. As of 1.4b it's an ObjectLabelTerm
-  // with `negate: true` — and callers (db_client.build_dataset_search_params,
-  // shared/api/review.js's buildReviewFilterBody) explicitly pass
-  // `rollUp: false` for it, since ObjectLabelTerm.rollUp defaults true and
-  // would otherwise silently change this behaviour. Either way,
-  // `label_include_children`/`labelIncludeChildren` only ever affects the
-  // include-side label_uuids/label_match_mode predicate. We mirror the
-  // server here: exclusion is an exact-UUID match, never child-expanded.
+  // Mirrors the include-side behaviour: `labelIncludeChildren` expands the
+  // exclusion set to descendants too, so excluding a parent label excludes
+  // its children as well.
   if (state.labelExcludeUuids?.length > 0) {
-    if (state.labelExcludeUuids.includes(bbox.labelUuid)) return false;
+    const excludeSet = expandLabelFilterSet(state.labelExcludeUuids, labels, state.labelIncludeChildren);
+    if (excludeSet.has(bbox.labelUuid)) return false;
   }
 
   // ── Tag include ──────────────────────────────────────────────────────────
