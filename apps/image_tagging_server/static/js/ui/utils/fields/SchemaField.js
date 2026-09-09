@@ -192,6 +192,13 @@ export class SchemaField extends Field {
 
         if (descBody) labelRow.appendChild(SchemaField._buildInfoToggle(descBody, meta.label || fieldName));
         fieldContainer.appendChild(labelRow);
+
+        // The desc block must sit right under the toggle that opens it, not
+        // after the field's own content — a full-width field like model_label
+        // can render a whole screen (or several) of configured rows, and a
+        // description appended after that content would open far below the
+        // button that revealed it.
+        if (descBody) fieldContainer.appendChild(descBody);
       }
 
       const node = await fieldRenderCallback(fieldInstance);
@@ -205,11 +212,10 @@ export class SchemaField extends Field {
         selfRow.appendChild(node);
         selfRow.appendChild(SchemaField._buildInfoToggle(descBody, meta.label || fieldName));
         fieldContainer.appendChild(selfRow);
+        fieldContainer.appendChild(descBody);
       } else {
         fieldContainer.appendChild(node);
       }
-
-      if (descBody) fieldContainer.appendChild(descBody);
 
       // `help` is the discoverable counterpart to `description`'s tooltip: prose
       // that has to be readable without hovering (e.g. "how do I choose this
