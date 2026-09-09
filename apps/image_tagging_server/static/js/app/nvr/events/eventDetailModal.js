@@ -1182,11 +1182,42 @@ export function openEventDetailModal(
         testid: 'event-detail-relabel-event',
       }));
     }
-    actions.appendChild(button('Delete event', () => void removeEvent(), {
+    actions.appendChild(pinToggleButton());
+    const deleteBtn = button('Delete event', () => void removeEvent(), {
       testid: 'event-detail-delete',
       className: 'panel-btn panel-btn--danger',
-    }));
+    });
+    // A pin is a promise the event will not be deleted, automatically or by hand —
+    // see `WatchEvent.pinned`. Disabling here rather than confirming-then-refusing
+    // makes that promise visible before the click, not after.
+    if (event.pinned) {
+      deleteBtn.disabled = true;
+      deleteBtn.title = 'Unpin this event before deleting it.';
+    }
+    actions.appendChild(deleteBtn);
     sidebar.appendChild(actions);
+  }
+
+  function pinToggleButton() {
+    const btn = button(event.pinned ? '📌 Unpin' : 'Pin', () => void togglePinned(), {
+      testid: 'event-detail-pin-toggle',
+    });
+    btn.title = event.pinned
+      ? "Stop protecting this event from PurrView's storage-quota and retention cleanup."
+      : "Protect this event's video from PurrView's storage-quota and retention cleanup, and from delete.";
+    return btn;
+  }
+
+  async function togglePinned() {
+    const next = !event.pinned;
+    try {
+      const updated = await updateWatchEvent(event.uuid, { pinned: next });
+      event.pinned = updated.pinned;
+      renderSidebar();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not update that event', 5000, 'error');
+    }
   }
 
   async function removeEvent() {

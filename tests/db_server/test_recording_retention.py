@@ -24,6 +24,7 @@ from apps.db_server.manager import (
     RECORDING_RETENTION_SETTING_KEY,
     Manager,
 )
+from apps.helpers.db.db_client import WatchEventPinnedError
 from apps.helpers.db.types import Recording, WatchEvent, WatchProfile
 
 
@@ -628,3 +629,131 @@ class TestBlipsOutliveTheirClip:
 
         blips, _total = await db_client.list_event_blips(uuids=[kept_blip])
         assert blips[0].state == "new"
+
+
+class TestPinnedEvents:
+    """A pinned event is a promise against deletion — automatic or by hand.
+
+    The size cap and the age sweep both page through `watch_event_uuids_before`,
+    which excludes pinned events, so protecting against those two costs nothing extra
+    beyond confirming the filter actually holds. `delete_watch_event` itself also
+    refuses a pinned row, which is the part worth its own test — that guarantee has to
+    hold for a direct manager call too, not just for the sweeps that happen to share
+    one query.
+    """
+
+    async def test_a_pinned_event_survives_the_age_sweep(self, manager, db_client, tmp_path, profile_uuid):
+        uuid, snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=40, name="old")
+        await db_client.update_watch_event(uuid, pinned=True)
+
+        result = await manager.prune_recordings_by_age()
+
+        assert result == {"events": 0, "recordings": 0}
+        assert await db_client.get_watch_event(uuid) is not None
+        assert snapshot.exists()
+
+    async def test_a_pinned_event_survives_the_size_cap(self, manager, db_client, recording_roots, profile_uuid):
+        clips, _snapshots = recording_roots
+        await db_client.set_setting(RECORDING_MAX_TOTAL_MB_SETTING_KEY, "1")
+        clip = clips / "pinned.mp4"
+        clip.write_bytes(b"x" * (2 * 1024 * 1024))
+        event = await db_client.create_watch_event(WatchEvent(profile_uuid=profile_uuid, started_at=_ago(30)))
+        await db_client.update_watch_event(event.uuid, pinned=True)
+        await db_client.create_recording(
+            Recording(file_path=str(clip), started_at=_ago(30), event_uuid=event.uuid, status="complete")
+        )
+
+        result = await manager.enforce_recording_size_cap()
+
+        assert result["events"] == 0
+        assert await db_client.get_watch_event(event.uuid) is not None
+        assert clip.exists()
+
+    async def test_delete_watch_event_refuses_a_pinned_event(self, manager, db_client, tmp_path, profile_uuid):
+        uuid, snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="kept")
+        await db_client.update_watch_event(uuid, pinned=True)
+
+        with pytest.raises(WatchEventPinnedError):
+            await manager.delete_watch_event(uuid)
+        assert await db_client.get_watch_event(uuid) is not None
+        assert snapshot.exists()
+
+    async def test_delete_watch_event_checks_pinned_before_touching_its_clip(
+        self, manager, db_client, tmp_path, profile_uuid
+    ):
+        """The check has to run before anything is deleted, not just before the event's
+        own row goes. Checking only at the very end (after the recordings loop) would
+        delete the clip, then raise refusing to delete the row that named it - leaving
+        a "pinned" event with no video, which is worse than not pinning it at all.
+        """
+        event_uuid, snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="owner")
+        _rec_uuid, clip = await _recording(db_client, tmp_path, age_days=1, name="owner", event_uuid=event_uuid)
+        await db_client.update_watch_event(event_uuid, pinned=True)
+
+        with pytest.raises(WatchEventPinnedError):
+            await manager.delete_watch_event(event_uuid)
+
+        assert clip.exists()
+        assert snapshot.exists()
+        assert await db_client.get_watch_event(event_uuid) is not None
+
+    async def test_unpinning_allows_delete_again(self, manager, db_client, tmp_path, profile_uuid):
+        uuid, _snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="unpinned")
+        await db_client.update_watch_event(uuid, pinned=True)
+        await db_client.update_watch_event(uuid, pinned=False)
+
+        assert await manager.delete_watch_event(uuid)
+        assert await db_client.get_watch_event(uuid) is None
+
+    async def test_bulk_delete_skips_pinned_events_but_deletes_the_rest(
+        self, manager, db_client, tmp_path, profile_uuid
+    ):
+        kept_uuid, kept_snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="kept")
+        gone_uuid, gone_snapshot = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="gone")
+        await db_client.update_watch_event(kept_uuid, pinned=True)
+
+        deleted = await manager.delete_watch_events([kept_uuid, gone_uuid])
+
+        assert deleted == 1
+        assert await db_client.get_watch_event(kept_uuid) is not None
+        assert kept_snapshot.exists()
+        assert await db_client.get_watch_event(gone_uuid) is None
+        assert not gone_snapshot.exists()
+
+    async def test_bulk_pin_sets_the_flag_and_reports_how_many_moved(self, manager, db_client, tmp_path, profile_uuid):
+        first, _ = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="a")
+        second, _ = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="b")
+
+        updated = await manager.set_watch_event_pinned([first, second, "not-a-real-uuid"], True)
+
+        assert updated == 2
+        assert (await db_client.get_watch_event(first)).pinned is True
+        assert (await db_client.get_watch_event(second)).pinned is True
+
+    async def test_delete_recording_refuses_a_pinned_events_clip(self, manager, db_client, tmp_path, profile_uuid):
+        """The same guarantee, reached through the recording, not the event — the
+        direct `/api/recordings/{uuid}` DELETE path goes through `delete_recording`
+        without ever touching `delete_watch_event`, so it needs its own check.
+        """
+        event_uuid, _ = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="owner")
+        rec_uuid, clip = await _recording(db_client, tmp_path, age_days=1, name="owner", event_uuid=event_uuid)
+        await db_client.update_watch_event(event_uuid, pinned=True)
+
+        with pytest.raises(WatchEventPinnedError):
+            await manager.delete_recording(rec_uuid)
+        # Not just that the row survives - the file must not have been unlinked before
+        # the check ran. Checking only at the db layer (after the file is already gone)
+        # would pass the exception test while still destroying the video.
+        assert clip.exists()
+        assert await db_client.get_recording(rec_uuid) is not None
+
+    async def test_the_pinned_filter_narrows_the_list(self, manager, db_client, tmp_path, profile_uuid):
+        pinned_uuid, _ = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="pinned")
+        unpinned_uuid, _ = await _event(db_client, tmp_path, profile_uuid, age_days=1, name="unpinned")
+        await db_client.update_watch_event(pinned_uuid, pinned=True)
+
+        pinned_only, _total = await db_client.list_watch_events(pinned=True)
+        assert [e.uuid for e in pinned_only] == [pinned_uuid]
+
+        unpinned_only, _total = await db_client.list_watch_events(pinned=False)
+        assert [e.uuid for e in unpinned_only] == [unpinned_uuid]

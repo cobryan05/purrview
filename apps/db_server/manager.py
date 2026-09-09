@@ -42,7 +42,12 @@ from apps.helpers.datasetExport import (
     sanitize_stem,
     split_images,
 )
-from apps.helpers.db.db_client import BBOX_VERIFICATION_STATE_TO_TAG_UUID, DbClient, TagKind
+from apps.helpers.db.db_client import (
+    BBOX_VERIFICATION_STATE_TO_TAG_UUID,
+    DbClient,
+    TagKind,
+    WatchEventPinnedError,
+)
 from apps.helpers.db.types import (
     MODEL_TYPE_ARCHITECTURES,
     UNVERIFIED_TAG_UUID,
@@ -4636,6 +4641,9 @@ class Manager:
     async def set_watch_event_review_states(self, uuids: Sequence[str], state: str) -> int:
         return await self._db_client.set_watch_event_review_states(uuids, state)
 
+    async def set_watch_event_pinned(self, uuids: Sequence[str], pinned: bool) -> int:
+        return await self._db_client.set_watch_event_pinned(uuids, pinned)
+
     async def expire_blips_for_recording(self, recording_uuid: str) -> int:
         return await self._db_client.expire_blips_for_recording(recording_uuid)
 
@@ -4676,10 +4684,19 @@ class Manager:
         images), so they go with the row. A `save_snapshot` action's output lives under
         `image_datasets` and is deliberately left alone — the user curates that. So does
         a `save_timelapse` action's, which is not an event's property at all.
+
+        Checks `pinned` before touching anything, not just before deleting the row.
+        `db_client.delete_watch_event` carries the same check, but it runs *after* the
+        event's recordings are already gone — checking only there would delete every
+        clip and then refuse to delete the row that named them, leaving a "pinned"
+        event with no video at all. Checking here first is what keeps the promise a pin
+        makes atomic.
         """
         event = await self._db_client.get_watch_event(uuid)
         if event is None:
             return False
+        if event.pinned:
+            raise WatchEventPinnedError(f"Event {uuid} is pinned — unpin it before deleting")
         # Both paths are read before the row goes: afterwards there is nothing left to
         # ask, and a crop whose row was deleted first is an orphan the sweep has to find
         # an hour later.
@@ -4708,12 +4725,19 @@ class Manager:
         third event's clip file was locked is worse than deleting what can be deleted
         and saying so. A uuid that no longer exists is not a failure — it is the normal
         result of deleting the same selection twice.
+
+        A pinned event is the same story, not an error: the UI is expected to keep
+        pinned events out of a bulk selection in the first place (see the events page),
+        so hitting one here is normally a race — pinned from another tab after the
+        selection was made — rather than something worth an exception-level log line.
         """
         deleted = 0
         for uuid in uuids:
             try:
                 if await self.delete_watch_event(uuid):
                     deleted += 1
+            except WatchEventPinnedError:
+                logger.info("Skipping delete of pinned watch event %s", uuid)
             except Exception:
                 logger.exception("Could not delete watch event %s", uuid)
         return deleted
@@ -4743,10 +4767,23 @@ class Manager:
         path funnels through (the age sweep, the size cap, the reconcile of hand-deleted
         files, and the DELETE endpoint), which is why the expiry belongs here rather
         than in each of them.
+
+        Checks the owning event's `pinned` flag before touching the file, not just
+        before deleting the row. `db_client.delete_recording` carries the same check,
+        but it runs last — checking only there would unlink the clip and then refuse
+        to delete the now-pointless row, which is a worse outcome than doing nothing.
+        A recording with no event, or whose event has already been deleted, has
+        nothing to check and is unaffected.
         """
         recording = await self._db_client.get_recording(uuid)
         if recording is None:
             return False
+        if recording.event_uuid:
+            owner = await self._db_client.get_watch_event(recording.event_uuid)
+            if owner is not None and owner.pinned:
+                raise WatchEventPinnedError(
+                    f"Recording {uuid} belongs to pinned event {recording.event_uuid} — unpin it before deleting"
+                )
         for path_str in (recording.file_path, recording.thumbnail_path, recording.overlay_path):
             if not path_str:
                 continue

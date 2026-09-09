@@ -280,6 +280,16 @@ class SidecarParseError(Exception):
     destroy DB state (e.g. an overwrite sync from a torn/corrupt sidecar)."""
 
 
+class WatchEventPinnedError(Exception):
+    """Raised by `delete_watch_event` when the target event is pinned.
+
+    A pin is meant to protect against every delete path, not just the automatic
+    sweeps — see `WatchEvent.pinned`. The caller must unpin before deleting; there is
+    deliberately no force-delete parameter here, so that guarantee cannot be bypassed
+    by one careless call site.
+    """
+
+
 T = TypeVar("T", bound=SQLModel)
 
 
@@ -7689,6 +7699,7 @@ class DbClient:
         recording_kind: Optional[str] = None,
         has_blips: Optional[bool] = None,
         review_state: Optional[str] = None,
+        pinned: Optional[bool] = None,
     ):
         """Every `watch_events` search predicate, in one place, for every reader.
 
@@ -7768,6 +7779,8 @@ class DbClient:
             stmt = stmt.where(flagged if has_blips else ~flagged)
         if review_state:
             stmt = stmt.where(WatchEvent.review_state == review_state)
+        if pinned is not None:
+            stmt = stmt.where(WatchEvent.pinned == pinned)
         return stmt
 
     async def list_watch_events(
@@ -8429,6 +8442,21 @@ class DbClient:
             await session.commit()
             return int(result.rowcount or 0)
 
+    async def set_watch_event_pinned(self, uuids: Sequence[str], pinned: bool) -> int:
+        """Bulk pin/unpin, mirroring `set_watch_event_review_states`.
+
+        Returns how many rows actually moved; lower than requested is normal (a uuid
+        already in the target state, or deleted from another tab), not an error.
+        """
+        if not uuids:
+            return 0
+        async with self._async_session_maker() as session:
+            result = await session.exec(
+                sa_update(WatchEvent).where(WatchEvent.uuid.in_(list(uuids))).values(pinned=pinned)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
+
     async def expire_blips_for_recording(self, recording_uuid: str) -> int:
         """Mark a swept clip's blips unreviewable, without deleting them.
 
@@ -8489,6 +8517,8 @@ class DbClient:
             event = await session.get(WatchEvent, uuid)
             if event is None:
                 return False
+            if event.pinned:
+                raise WatchEventPinnedError(f"Event {uuid} is pinned — unpin it before deleting")
             await session.delete(event)
             await session.commit()
         return True
@@ -8500,11 +8530,16 @@ class DbClient:
         each event's files, and hydrating full read models to throw them away is waste.
         Batched because a watcher left running over a long holiday can accumulate more
         expired events than anyone wants to delete inside one worker tick.
+
+        Excludes pinned events. Both the age-based retention sweep and the size-cap
+        eviction page through this one query, so filtering here is the single choke
+        point that keeps a pin out of every automatic deletion path at once — see
+        `WatchEvent.pinned`.
         """
         async with self._async_session_maker() as session:
             result = await session.exec(
                 select(WatchEvent.uuid)
-                .where(WatchEvent.started_at < cutoff)
+                .where(WatchEvent.started_at < cutoff, WatchEvent.pinned == False)  # noqa: E712
                 .order_by(WatchEvent.started_at)
                 .limit(limit)
             )
@@ -8516,10 +8551,23 @@ class DbClient:
         Falls back to `created_at` when `started_at` is NULL: a clip whose extraction
         failed before the relay reported a start time still occupies disk, and a NULL
         compares false against any cutoff, so it would otherwise never expire.
+
+        Excludes recordings that belong to a pinned event — a clip is that event's
+        video, so the size cap's "no events left to shed, evict orphan recordings
+        instead" fallback must not reach a clip the event phase was made to skip.
+        Recordings with no event (`event_uuid` NULL) or an already-deleted one are
+        unaffected: the NOT EXISTS is true for both.
         """
         started = func.coalesce(Recording.started_at, Recording.created_at)
+        not_pinned = ~(
+            select(WatchEvent.uuid)
+            .where(WatchEvent.uuid == Recording.event_uuid, WatchEvent.pinned == True)  # noqa: E712
+            .exists()
+        )
         async with self._async_session_maker() as session:
-            result = await session.exec(select(Recording.uuid).where(started < cutoff).order_by(started).limit(limit))
+            result = await session.exec(
+                select(Recording.uuid).where(started < cutoff, not_pinned).order_by(started).limit(limit)
+            )
             return list(result.all())
 
     async def referenced_recording_paths(self) -> Set[str]:
@@ -8748,10 +8796,23 @@ class DbClient:
             return RecordingRead.model_validate(rec)
 
     async def delete_recording(self, uuid: str) -> bool:
+        """Delete one recording row.
+
+        Refuses a recording that belongs to a pinned event — a clip *is* that event's
+        video, so exempting the event's own row while leaving its clip reachable
+        through this path would make the pin meaningless. Recordings with no event, or
+        whose event has since been deleted, have nothing to check and are unaffected.
+        """
         async with self._async_session_maker() as session:
             rec = await session.get(Recording, uuid)
             if rec is None:
                 return False
+            if rec.event_uuid:
+                event = await session.get(WatchEvent, rec.event_uuid)
+                if event is not None and event.pinned:
+                    raise WatchEventPinnedError(
+                        f"Recording {uuid} belongs to pinned event {rec.event_uuid} — unpin it before deleting"
+                    )
             await session.delete(rec)
             await session.commit()
         return True

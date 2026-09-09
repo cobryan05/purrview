@@ -158,6 +158,7 @@ export async function deleteWatchProfile(uuid) {
  * @param {?string} [opts.startTo] - ISO, inclusive
  * @param {?boolean} [opts.hasRecording] - owns any media, or none
  * @param {?string} [opts.recordingKind] - owns one of a specific kind: 'clip' | 'timelapse'
+ * @param {?boolean} [opts.pinned] - protected from quota/retention cleanup and delete, or not
  * @param {number} [opts.limit]
  * @param {number} [opts.offset]
  * @returns {Promise<{events: Array<Object>, total: number}>}
@@ -194,6 +195,7 @@ export function watchEventFilterParams({
   recordingKind,
   hasBlips,
   reviewState,
+  pinned,
 } = {}) {
   const params = new URLSearchParams();
   if (profileUuid) params.set('profile_uuid', profileUuid);
@@ -223,6 +225,7 @@ export function watchEventFilterParams({
   if (recordingKind) params.set('recording_kind', recordingKind);
   if (hasBlips != null) params.set('has_blips', String(hasBlips));
   if (reviewState) params.set('review_state', reviewState);
+  if (pinned != null) params.set('pinned', String(pinned));
   return params;
 }
 
@@ -299,6 +302,30 @@ export async function setWatchEventReviewStates(uuids, state) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ uuids, state }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Failed to update those events');
+  }
+  return data.updated ?? 0;
+}
+
+/**
+ * Pin or unpin a selection of events in one request.
+ *
+ * A pinned event (and every recording it owns) is skipped by both the size-cap
+ * eviction and the age-based retention sweep, and by delete — single or bulk — until
+ * it is unpinned again.
+ *
+ * @param {string[]} uuids
+ * @param {boolean} pinned
+ * @returns {Promise<number>} how many rows actually moved
+ */
+export async function setWatchEventPinned(uuids, pinned) {
+  const res = await apiFetch('/api/watch-events/pinned', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uuids, pinned }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {

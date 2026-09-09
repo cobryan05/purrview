@@ -21,7 +21,7 @@ import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index
  *             subjectExcludeRefs: string[], targetExcludeRefs: string[],
  *             startFrom: ?string, startTo: ?string,
  *             hasRecording: ?boolean, recordingKind: ?string,
- *             reviewState: ?string}} EventFilterState */
+ *             reviewState: ?string, pinned: ?boolean}} EventFilterState */
 
 /**
  * The four facet filters, as `[state key for includes, state key for excludes, facet key,
@@ -72,6 +72,13 @@ const REVIEW_FILTER_OPTIONS = [
   ['flagged', 'Labels were wrong'],
   ['confirmed', 'Reviewed'],
   ['dismissed', 'Dismissed'],
+];
+
+/** The Pinned select's options, as `[value, label]`. */
+const PINNED_FILTER_OPTIONS = [
+  ['', 'Pinned or not'],
+  ['true', '📌 Pinned only'],
+  ['false', 'Not pinned'],
 ];
 
 /** @param {EventFilterState} state @returns {string} the select value for a state */
@@ -194,6 +201,7 @@ export function defaultFilterState() {
     hasRecording: null,
     recordingKind: null,
     reviewState: null,
+    pinned: null,
   };
   for (const [includeKey, excludeKey] of FACET_FILTERS) {
     state[includeKey] = [];
@@ -299,6 +307,7 @@ export async function createEventFilters(onChange) {
   let facetDropdowns = [];
   let clipSelect;
   let reviewSelect;
+  let pinnedSelect;
   let rangeSelect;
   let prevBtn;
   let nextBtn;
@@ -393,6 +402,21 @@ export async function createEventFilters(onChange) {
       commit();
     });
     controls.appendChild(field('Review', reviewSelect, 'event-filter-review'));
+
+    pinnedSelect = document.createElement('select');
+    pinnedSelect.className = 'event-filters__select';
+    for (const [value, label] of PINNED_FILTER_OPTIONS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      pinnedSelect.appendChild(option);
+    }
+    pinnedSelect.value = state.pinned == null ? '' : String(state.pinned);
+    pinnedSelect.addEventListener('change', () => {
+      state.pinned = pinnedSelect.value === '' ? null : pinnedSelect.value === 'true';
+      commit();
+    });
+    controls.appendChild(field('Pinned', pinnedSelect, 'event-filter-pinned'));
 
     const clear = document.createElement('button');
     clear.type = 'button';

@@ -17,6 +17,7 @@ import {
   fetchWatchEventHistogram,
   fetchWatchEventSessions,
   fetchWatchEvents,
+  setWatchEventPinned,
   setWatchEventReviewStates,
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
@@ -603,6 +604,12 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
       testid: `event-search-review-${state}`,
     }));
   }
+  selectionActions.appendChild(button('📌 Pin', () => void applyPinned(true), {
+    testid: 'event-search-pin',
+  }));
+  selectionActions.appendChild(button('Unpin', () => void applyPinned(false), {
+    testid: 'event-search-unpin',
+  }));
   selectionActions.appendChild(deleteBtn);
   selectionActions.appendChild(button('Clear selection', () => {
     selected.clear();
@@ -691,19 +698,23 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
    * them anyway just in case you tick the box. The exact count is therefore known at
    * confirm time, which is the only moment it has to be right.
    */
-  async function uuidsForSelectedGroups() {
+  async function eventsForSelectedGroups() {
     const groups = pageGroups.filter(g => selectedGroups.has(g.key));
-    const uuids = [];
+    const events = [];
     for (const group of groups) {
-      const { events } = await fetchWatchEvents({
+      const { events: page } = await fetchWatchEvents({
         ...queryState(),
         ...groupDrilldownFilters(group, { splitByCamera }),
         limit: Math.max(1, group.count),
         offset: 0,
       });
-      for (const event of events) uuids.push(event.uuid);
+      events.push(...page);
     }
-    return uuids;
+    return events;
+  }
+
+  async function uuidsForSelectedGroups() {
+    return (await eventsForSelectedGroups()).map(e => e.uuid);
   }
 
   /**
@@ -728,15 +739,38 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     }
   }
 
+  /**
+   * Move the selection to pinned or unpinned.
+   *
+   * Unlike delete, pinning itself is never refused — a pin is a promise about
+   * *deletion*, not about who may set it, so both directions apply to the whole
+   * selection regardless of an event's current state.
+   */
+  async function applyPinned(pinned) {
+    try {
+      const uuids = view === 'all' ? [...selected] : await uuidsForSelectedGroups();
+      if (!uuids.length) return;
+      const updated = await setWatchEventPinned(uuids, pinned);
+      toast(`${pinned ? 'Pinned' : 'Unpinned'} ${updated} event${updated === 1 ? '' : 's'}`, 3000);
+      selected.clear();
+      selectedGroups.clear();
+      anchorIndex = -1;
+      await search();
+    } catch (err) {
+      Logger.error(err);
+      toast(err.message || 'Could not update those events', 5000, 'error');
+    }
+  }
+
   async function deleteSelected() {
-    let uuids;
+    let candidates;
     if (view === 'all') {
-      uuids = [...selected];
+      candidates = pageEvents.filter(e => selected.has(e.uuid));
     } else {
       deleteBtn.disabled = true;
       deleteBtn.textContent = 'Loading events…';
       try {
-        uuids = await uuidsForSelectedGroups();
+        candidates = await eventsForSelectedGroups();
       } catch (err) {
         Logger.error(err);
         toast(err.message || 'Could not load the events in that group', 5000, 'error');
@@ -746,13 +780,24 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
         syncSelectionUi();
       }
     }
-    if (!uuids.length) return;
+    // Pinned events are a promise against delete, not just against the automatic
+    // sweeps — see `WatchEvent.pinned`. Kept out of the request entirely rather than
+    // sent and silently skipped server-side, so the confirm dialog can say up front
+    // what will and will not happen instead of the toast being the first anyone hears
+    // of it.
+    const pinnedCount = candidates.filter(e => e.pinned).length;
+    const uuids = candidates.filter(e => !e.pinned).map(e => e.uuid);
+    if (!uuids.length) {
+      if (pinnedCount) toast(`${pinnedCount} pinned event${pinnedCount === 1 ? ' is' : 's are'} not deletable — unpin first`, 4000);
+      return;
+    }
     const confirmed = await showConfirmModal({
       title: `Delete ${uuids.length} event${uuids.length === 1 ? '' : 's'}?`,
       // Same promise the single-event delete makes, and for the same reason: the one
       // thing a user needs to know is that curated training frames are not in scope.
       message: `The events, their snapshots and any clips or timelapses of them will be removed. `
-        + 'Frames you saved for annotation are not affected.',
+        + 'Frames you saved for annotation are not affected.'
+        + (pinnedCount ? ` ${pinnedCount} pinned event${pinnedCount === 1 ? '' : 's'} in your selection will be kept.` : ''),
       confirmText: 'Delete',
       cancelText: 'Keep',
     });

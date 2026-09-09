@@ -2346,6 +2346,13 @@ class WatchEvent(SQLModel, table=True):
     # key for the same reason `subject_ref` is one: the events grid filters on it, and
     # a JSON extract cannot use an index.
     review_state: str = Field(default=WatchEventReviewState.UNREVIEWED.value, index=True)
+    # A pinned event (and every recording it owns) is excluded from both the age-based
+    # retention sweep and the size-cap eviction — see `DbClient.watch_event_uuids_before`,
+    # the single query both sweeps page through. Also refused by `delete_watch_event`
+    # itself, so a pin protects against an accidental manual delete as well as the
+    # automatic ones; unpin first. Indexed because the eviction sweep filters on it every
+    # pass, not just because it happens to be a column someone might search.
+    pinned: bool = Field(default=False, index=True)
     # Absolute path to the event's own thumbnail, written by the task at START. Distinct
     # from whatever a `save_snapshot` action wrote: that one is a training image the user
     # curates, this one is the review page's card art and is deleted with the event.
@@ -2860,6 +2867,9 @@ class WatchEventRead(OrmModel):
     #: field exists to end.
     close_reason: Optional[str] = None
     review_state: str = WatchEventReviewState.UNREVIEWED.value
+    #: Protected from the retention sweep, the size-cap eviction, and manual delete.
+    #: See `WatchEvent.pinned`.
+    pinned: bool = False
     # Whether the event has card art on disk. The path itself is deliberately not
     # exposed: it is a server filesystem path, and the browser fetches the image from
     # `/api/watch-events/{uuid}/snapshot` instead.

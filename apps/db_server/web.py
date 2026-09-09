@@ -1179,6 +1179,7 @@ class WatchEventQuery:
         recording_kind: Optional[str] = None,
         has_blips: Optional[bool] = None,
         review_state: Optional[str] = None,
+        pinned: Optional[bool] = None,
     ):
         self.profile_uuid = profile_uuid
         self.source_uuid = source_uuid
@@ -1199,6 +1200,7 @@ class WatchEventQuery:
         self.recording_kind = recording_kind
         self.has_blips = has_blips
         self.review_state = review_state
+        self.pinned = pinned
 
     def as_kwargs(self) -> Dict[str, Any]:
         return dict(self.__dict__)
@@ -1249,6 +1251,11 @@ class WatchEventHistogramBucket(ApiModel):
 class SetWatchEventReviewStatesRequest(Payload):
     uuids: List[str] = Field(default_factory=list)
     state: str = ""
+
+
+class SetWatchEventPinnedRequest(Payload):
+    uuids: List[str] = Field(default_factory=list)
+    pinned: bool = True
 
 
 class WatchEventSession(ApiModel):
@@ -1344,6 +1351,7 @@ class WatchEventUpdate(Payload):
     truncated: Optional[bool] = None
     close_reason: Optional[str] = None
     review_state: Optional[str] = None
+    pinned: Optional[bool] = None
     snapshot_path: Optional[str] = None
     # Present so the reconcile pass can clear a crop whose file a user deleted by hand.
     # It cannot be *set* to null through the generic update — see the manager's
@@ -5261,6 +5269,22 @@ class WebApp:
                 if payload.state not in {s.value for s in WatchEventReviewState}:
                     raise ValueError(f"unknown review state {payload.state!r}")
                 updated = await self._manager.set_watch_event_review_states(payload.uuids, payload.state)
+                return UpdatedCountResponse(status=JsonValues.SUCCESS, updated=updated)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return UpdatedCountResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # ⚠️ Before `/{uuid}`, same ordering reason as `review-states` above.
+        @self._app.post(
+            "/api/watch-events/pinned",
+            response_model=UpdatedCountResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="set_watch_event_pinned",
+        )
+        async def set_watch_event_pinned(payload: SetWatchEventPinnedRequest) -> UpdatedCountResponse:
+            """Pin or unpin a selection of events in one request — see `WatchEvent.pinned`."""
+            try:
+                updated = await self._manager.set_watch_event_pinned(payload.uuids, payload.pinned)
                 return UpdatedCountResponse(status=JsonValues.SUCCESS, updated=updated)
             except Exception as e:
                 logger.error(e, exc_info=True)
