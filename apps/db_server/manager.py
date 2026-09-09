@@ -5238,6 +5238,18 @@ class Manager:
                 else:
                     await self._db_client.update_watch_event(row["uuid"], snapshot_path=None)
                     snapshots += 1
+            except WatchEventPinnedError:
+                # The pin promises to protect a clip from deletion; it says nothing
+                # about a row whose file is already gone. Reconciling that row would
+                # not delete any video, but `delete_recording` cannot tell the two
+                # apart, so it refuses. Leaving the stale row is the safe outcome —
+                # info-level and not repeated as an error every sweep, since this is
+                # expected to recur for as long as the event stays pinned.
+                logger.info(
+                    "Reconcile left a missing-file row alone: %s %s belongs to a pinned event",
+                    row["kind"],
+                    row["uuid"],
+                )
             except Exception:
                 # One unreadable row must not stop the pass; the stale index is the point.
                 logger.exception("Reconcile could not clear %s %s", row["kind"], row["uuid"])

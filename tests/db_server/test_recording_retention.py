@@ -757,3 +757,32 @@ class TestPinnedEvents:
 
         unpinned_only, _total = await db_client.list_watch_events(pinned=False)
         assert [e.uuid for e in unpinned_only] == [unpinned_uuid]
+
+    async def test_reconcile_leaves_a_pinned_events_missing_clip_row_alone(
+        self, manager, db_client, recording_roots, profile_uuid
+    ):
+        """`reconcile_missing_recording_files` clears rows for files a user deleted by
+        hand outside the app — it isn't one of the deletion paths a pin is meant to
+        block, since there is no video left to protect. But it reaches a missing file's
+        row through `delete_recording`, which now refuses anything owned by a pinned
+        event. That refusal must not surface as a pass-stopping error on every sweep:
+        the row is left as-is (still pointing at a file that will never come back)
+        rather than the reconcile pass logging an exception forever.
+        """
+        clips, _snapshots = recording_roots
+        event = await db_client.create_watch_event(WatchEvent(profile_uuid=profile_uuid, started_at=_ago(1)))
+        await db_client.update_watch_event(event.uuid, pinned=True)
+        recording = await db_client.create_recording(
+            Recording(
+                file_path=str(clips / "gone.mp4"),  # never written: the file is "missing"
+                started_at=_ago(0.5),
+                created_at=_ago(0.5),
+                event_uuid=event.uuid,
+                status="complete",
+            )
+        )
+
+        result = await manager.reconcile_missing_recording_files()
+
+        assert result == {"recordings": 0, "snapshots": 0}
+        assert await db_client.get_recording(recording.uuid) is not None
