@@ -237,6 +237,11 @@ export function openEventDetailModal(
   nav.appendChild(nextBtn);
   header.appendChild(nav);
 
+  // Next to the title/nav rather than buried in the sidebar below the video — pinning
+  // is a decision reviewers reach for immediately, and scrolling to find it next to
+  // "Wrong label…"/"Delete event" was the actual complaint that moved it here.
+  const pinBtn = button('Pin', () => void togglePinned(), { testid: 'event-detail-pin-toggle' });
+  header.appendChild(pinBtn);
   header.appendChild(button('Close', () => shell.close(), { testid: 'event-detail-close' }));
   shell.dialog.appendChild(header);
 
@@ -249,6 +254,10 @@ export function openEventDetailModal(
     position.textContent = `${index + 1} / ${walk.length}`;
     prevBtn.disabled = index <= 0;
     nextBtn.disabled = index >= walk.length - 1;
+    pinBtn.textContent = event.pinned ? '📌 Unpin' : 'Pin';
+    pinBtn.title = event.pinned
+      ? "Stop protecting this event from PurrView's storage-quota and retention cleanup."
+      : "Protect this event's video from PurrView's storage-quota and retention cleanup, and from delete.";
   }
 
   /**
@@ -1182,7 +1191,6 @@ export function openEventDetailModal(
         testid: 'event-detail-relabel-event',
       }));
     }
-    actions.appendChild(pinToggleButton());
     const deleteBtn = button('Delete event', () => void removeEvent(), {
       testid: 'event-detail-delete',
       className: 'panel-btn panel-btn--danger',
@@ -1198,22 +1206,17 @@ export function openEventDetailModal(
     sidebar.appendChild(actions);
   }
 
-  function pinToggleButton() {
-    const btn = button(event.pinned ? '📌 Unpin' : 'Pin', () => void togglePinned(), {
-      testid: 'event-detail-pin-toggle',
-    });
-    btn.title = event.pinned
-      ? "Stop protecting this event from PurrView's storage-quota and retention cleanup."
-      : "Protect this event's video from PurrView's storage-quota and retention cleanup, and from delete.";
-    return btn;
-  }
-
   async function togglePinned() {
     const next = !event.pinned;
     try {
       const updated = await updateWatchEvent(event.uuid, { pinned: next });
       event.pinned = updated.pinned;
+      renderHeader();
       renderSidebar();
+      // The grid's only "your data changed" hook — see `correctEventRow` above.
+      // Without it the card behind this modal keeps its stale badge and the
+      // Pinned filter until the next manual search.
+      onDeleted?.();
     } catch (err) {
       Logger.error(err);
       toast(err.message || 'Could not update that event', 5000, 'error');
