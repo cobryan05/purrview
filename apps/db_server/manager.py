@@ -2068,7 +2068,15 @@ class Manager:
                     time.monotonic() - t1,
                     len(batch),
                 )
-                total_count = cached[0]
+                if self._db_client.write_epoch == epoch:
+                    total_count = cached[0]
+                else:
+                    # A write landed while the list query above was in flight — the
+                    # cached count is now describing rows the list no longer agrees
+                    # with. Recount rather than serve a total that raced the write.
+                    total_count = await self._count_images_bounded(params)
+                    if total_count >= 0:
+                        self._count_cache[cache_key] = (total_count, time.monotonic(), self._db_client.write_epoch)
             else:
                 logger.info(
                     "[review] count cache miss (key=%s) — running list+count in parallel",
