@@ -6181,6 +6181,95 @@ button.filter-active {
   text-overflow: ellipsis;
 }
 
+/* The label and its `ⓘ` share one line; the label keeps its ellipsis, so the
+   button must not be allowed to shrink away with it. */
+.schema-field__label-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1, 4px);
+  min-width: 0;
+}
+
+.schema-field__label-row > .schema-field__label {
+  min-width: 0;
+}
+
+/* A self-labelling control (a checkbox) plus its `ⓘ`, on the control's own line. */
+.schema-field__self-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.schema-field__self-row > *:first-child {
+  min-width: 0;
+}
+
+/* The `ⓘ` affordance. A click target, not a hover tooltip — the descriptions it
+   opens have to be reachable on a touch screen. */
+.schema-field__info {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-family: var(--pico-font-family, inherit);
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  --pico-form-element-spacing-vertical: 0;
+  --pico-form-element-spacing-horizontal: 0;
+}
+
+.schema-field__info:hover,
+.schema-field__info:focus-visible {
+  color: var(--text-muted);
+  border-color: var(--text-muted);
+  background: transparent;
+}
+
+.schema-field__info.is-open {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+/* The prose the `ⓘ` reveals. `pre-line` because the longer schema descriptions
+   are written as bullet runs separated by single newlines. */
+.schema-field__desc {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  max-width: 46rem;
+  margin-top: 4px;
+  padding-left: 0.6em;
+  border-left: 2px solid var(--border);
+  white-space: pre-line;
+}
+
+.schema-field__desc p {
+  margin: 0 0 0.35em;
+  line-height: 1.45;
+}
+
+.schema-field__desc p:last-child {
+  margin-bottom: 0;
+}
+
+/* One muted line under a group's summary saying what the group is for. */
+.group-field__desc {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  margin: 0 0 0.5em;
+  line-height: 1.45;
+  max-width: 46rem;
+}
+
 /* Visible explanatory prose under a field (schema `help`), as opposed to
    `description`, which is only a tooltip on the label. Sized well below the
    control so it reads as guidance rather than as another field. */

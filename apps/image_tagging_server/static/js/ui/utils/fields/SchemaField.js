@@ -76,6 +76,45 @@ export class SchemaField extends Field {
   static SELF_LABELLING_TYPES = new Set(['boolean', 'bool', 'bbox_info']);
 
   /**
+   * The hidden prose block for a field's `description`. Blank lines become
+   * paragraphs; single newlines are kept (the longer descriptions are written as
+   * bullet runs), which is what `white-space: pre-line` on the block is for.
+   */
+  static _buildDescBody(text) {
+    const body = document.createElement('div');
+    body.className = 'schema-field__desc';
+    body.dataset.testid = 'schema-field-desc';
+    body.hidden = true;
+    for (const para of String(text).split(/\n\s*\n/)) {
+      const p = document.createElement('p');
+      p.textContent = para.trim();
+      body.appendChild(p);
+    }
+    return body;
+  }
+
+  /** The `ⓘ` button that shows/hides one description block. */
+  static _buildInfoToggle(descBody, fieldLabel) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'schema-field__info';
+    btn.dataset.testid = 'schema-field-info';
+    btn.textContent = 'i';
+    btn.title = 'What does this do?';
+    btn.setAttribute('aria-label', `What does “${fieldLabel}” do?`);
+    btn.setAttribute('aria-expanded', 'false');
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const open = descBody.hidden;
+      descBody.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+      btn.classList.toggle('is-open', open);
+    });
+    return btn;
+  }
+
+  /**
    * Renders the form children using the callback for each item.
    *
    * Emits semantic classes and lets `.schema-form` in app.css own the layout,
@@ -125,18 +164,52 @@ export class SchemaField extends Field {
       if (isFullWidth || selfLabels) fieldContainer.classList.add('schema-field--full');
       if (selfLabels) fieldContainer.classList.add('schema-field--self-labelled');
 
+      // `description` is the schema's own explanation of the field. It used to be
+      // *only* a `title` on the label: invisible until hovered, unreachable on a
+      // touch screen, truncated with the label's ellipsis, and — for a boolean,
+      // which draws its own label and so gets no label element here — dropped on
+      // the floor entirely. The collector form is a dozen such fields, every one
+      // of them documented in the schema and none of that visible on screen.
+      // So it becomes a toggle: an `ⓘ` beside the label that opens the prose
+      // under the control. Closed by default, so no form gets taller until the
+      // reader asks a question; a click, not a hover, so it works on a phone.
+      // A boolean with no `label` of its own draws its *description* beside the
+      // checkbox (see the boolean factory), so offering the same text again under
+      // an `ⓘ` would just repeat the line the reader is already looking at.
+      const descIsTheControlLabel = selfLabels && !meta.label;
+      const descText = meta.description && !descIsTheControlLabel ? String(meta.description).trim() : '';
+      const descBody = descText ? SchemaField._buildDescBody(descText) : null;
+
       if (!selfLabels) {
+        const labelRow = document.createElement('div');
+        labelRow.className = 'schema-field__label-row';
+
         const label = document.createElement('label');
         label.className = 'schema-field__label';
         label.textContent = meta.label || fieldName;
-        // `description` is already consumed as the placeholder for text/number
-        // fields, so surface it here as a tooltip rather than another line.
-        if (meta.description) label.title = meta.description;
-        fieldContainer.appendChild(label);
+        if (descText) label.title = descText;
+        labelRow.appendChild(label);
+
+        if (descBody) labelRow.appendChild(SchemaField._buildInfoToggle(descBody, meta.label || fieldName));
+        fieldContainer.appendChild(labelRow);
       }
 
       const node = await fieldRenderCallback(fieldInstance);
-      fieldContainer.appendChild(node);
+
+      if (selfLabels && descBody) {
+        // A self-labelling control owns the line it is on, so the toggle sits
+        // beside the control itself rather than above it. Wrapping keeps the
+        // checkbox and its `ⓘ` on one row without the control knowing.
+        const selfRow = document.createElement('div');
+        selfRow.className = 'schema-field__self-row';
+        selfRow.appendChild(node);
+        selfRow.appendChild(SchemaField._buildInfoToggle(descBody, meta.label || fieldName));
+        fieldContainer.appendChild(selfRow);
+      } else {
+        fieldContainer.appendChild(node);
+      }
+
+      if (descBody) fieldContainer.appendChild(descBody);
 
       // `help` is the discoverable counterpart to `description`'s tooltip: prose
       // that has to be readable without hovering (e.g. "how do I choose this

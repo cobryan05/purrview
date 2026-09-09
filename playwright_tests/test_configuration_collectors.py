@@ -118,3 +118,31 @@ class TestCollectorPane:
         assert params["output_dir"] == "collected/ring"
         assert params["max_images"] == 250
         assert params["enable_dedup"] is True
+
+    def test_field_help_is_hidden_until_its_info_toggle_is_clicked(self, page: Page, base_url: str):
+        """Every collector param carries prose in the schema; the form is only useful
+        if that prose is reachable *and* stays out of the way. Both halves matter:
+        rendering it inline would bury the controls, and leaving it in a `title`
+        (where it lived) made it unreachable on a touch screen. So assert the
+        transition, not the presence — closed first, open after one click."""
+        _mock_collectors(page, [FAKE_COLLECTOR])
+        _navigate_to_collectors(page, base_url)
+        page.wait_for_timeout(800)
+        _open_collector(page)
+
+        editor = page.locator("#collector-management-box .col-editor")
+        toggles = editor.locator("[data-testid='schema-field-info']")
+        expect(toggles.first).to_be_visible()
+
+        # Nothing is expanded on arrival.
+        assert editor.locator("[data-testid='schema-field-desc']:visible").count() == 0
+
+        toggles.first.click()
+        page.wait_for_timeout(200)
+        opened = editor.locator("[data-testid='schema-field-desc']:visible")
+        assert opened.count() == 1, "Clicking the info toggle revealed no description"
+        assert opened.first.inner_text().strip(), "Revealed description was empty"
+
+        toggles.first.click()
+        page.wait_for_timeout(200)
+        assert editor.locator("[data-testid='schema-field-desc']:visible").count() == 0

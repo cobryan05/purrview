@@ -38,9 +38,12 @@ export class GroupField extends Field {
    * @param {object}   values    - Full parent values dict; sub-fields pull their own keys.
    * @param {Function} onChange  - Called with the group's flat value dict on any change.
    */
-  static async create({ label = '', collapsed = false, fields = {}, values = {}, onChange = null, ...rest } = {}) {
+  static async create({
+    label = '', description = '', collapsed = false, fields = {}, values = {}, onChange = null, ...rest
+  } = {}) {
     const instance = new GroupField({ collapsed, ...rest });
     instance._label = label;
+    instance._description = description;
     instance._schemaField = await SchemaField.create({
       schema: fields,
       values,
@@ -73,6 +76,17 @@ export class GroupField extends Field {
     summary.textContent = this._label;
     summary.style.cssText = 'cursor:pointer;font-weight:bold;padding:0.3em 0;user-select:none;';
     details.appendChild(summary);
+
+    // Shown unconditionally rather than behind the per-field `ⓘ`: a group's
+    // description answers "should I even open this?", which is useless if you
+    // have to open it first. It costs one muted line, and only while the group
+    // is expanded.
+    if (this._description) {
+      const desc = document.createElement('p');
+      desc.className = 'group-field__desc';
+      desc.textContent = this._description;
+      details.appendChild(desc);
+    }
 
     const content = await callback(this._schemaField);
     content.style.marginTop = '0.5em';

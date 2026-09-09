@@ -785,6 +785,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
         "merge_group": {
             "type": "group",
             "label": "Multi-model merge",
+            "description": (
+                "Only does anything when more than one model is configured above: how to resolve two "
+                "models boxing the same thing. Safe to ignore with a single model."
+            ),
             # Inert with one model configured, which is the common case — so it starts
             # closed rather than showing two controls that cannot do anything yet.
             "collapsed": True,
@@ -823,6 +827,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
         "tagging_group": {
             "type": "group",
             "label": "Tagging & filtering",
+            "description": (
+                "What gets stamped onto every saved frame, and an optional filter chain that can drop, "
+                "relabel or tag detections before they reach the dataset."
+            ),
             "collapsed": True,
             "fields": {
                 "apply_tags": {
@@ -865,6 +873,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
         "limits_group": {
             "type": "group",
             "label": "Run limits",
+            "description": (
+                "Optional stop conditions for a job running this collector. Both blank/0 (the default) "
+                "means it runs until you stop it."
+            ),
             "collapsed": True,
             "fields": {
                 "max_images": {
@@ -890,6 +902,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
         "ambiguity_group": {
             "type": "group",
             "label": "Confusable Detections",
+            "description": (
+                "Collect the frames where the model was sure something was there but unsure what — the "
+                "cases where your labelling adds the most signal. Off by default."
+            ),
             "collapsed": True,
             "fields": {
                 "enable_ambiguity": {
@@ -1000,6 +1016,11 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
         "dedup_group": {
             "type": "group",
             "label": "Deduplication",
+            "description": (
+                "Skip frames that look like ones already collected, so the dataset does not fill with "
+                "near-identical images. The thresholds want calibrating per camera — see the help "
+                "under 'Action on Duplicate'."
+            ),
             "collapsed": True,
             "fields": {
                 "enable_dedup": {
@@ -1072,6 +1093,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
             # was invisible while they sat loose at the bottom of a flat form: neither
             # does anything at all for a standalone job, because both need a tracker.
             "label": "Watcher-only collection (needs a tracker)",
+            "description": (
+                "Ignored entirely by a standalone collect job: both settings need a tracker, which only "
+                "a watcher has."
+            ),
             "collapsed": True,
             "fields": {
                 "enable_detector_miss": {
@@ -1101,6 +1126,10 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
         "review_queue_group": {
             "type": "group",
             "label": "Review queue limits",
+            "description": (
+                "Caps on how much still-unverified data this collector may pile up. Over a cap, images "
+                "are permanently deleted to make room — verified images never count against it."
+            ),
             "collapsed": True,
             "fields": {
                 "max_unverified_images": {
