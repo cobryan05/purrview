@@ -1110,10 +1110,19 @@ class TestSchemaFieldHelpText:
         expect(help_el.locator("p")).to_have_count(2)
 
     def test_fields_without_help_render_none(self, page: Page, base_url: str):
-        """A `description` must not start rendering as a visible block."""
+        """A `description` must not start rendering as a visible block.
+
+        `not_to_contain_text` on the whole editor is the wrong tool here: it
+        reads raw `textContent`, which includes a `hidden` element's text
+        regardless of whether anything renders it — so it would fail the moment
+        `description` became a real (collapsed) DOM node rather than only a
+        `title` tooltip, even though the text is correctly hidden from both the
+        page and the accessibility tree. Assert visibility instead, the same way
+        `test_help_starts_collapsed_but_is_advertised` already does for `help`.
+        """
         editor = self._open_editor(page, base_url)
         expect(editor.locator(".schema-field__help")).to_have_count(2)
-        expect(editor).not_to_contain_text("Tooltip only.")
+        expect(editor.locator('[data-testid="schema-field-desc"]', has_text="Tooltip only.")).to_be_hidden()
 
 
 # ---------------------------------------------------------------------------
