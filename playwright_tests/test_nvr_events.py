@@ -1950,6 +1950,24 @@ class TestTheTimelineShowsWhenThingsHappened:
         expect(preview).to_contain_text("4 events")
         expect(preview.locator("img")).to_be_visible()
 
+    def test_a_bin_of_one_shows_the_events_own_time_not_the_bucket_hour(self, page: Page, base_url: str):
+        """A bin holding exactly one event fetches that event for the preview image
+        anyway, so the timestamp text has no excuse to show the hour it was binned
+        into (09:00) instead of when it actually happened (09:15) — the whole point
+        of a single-event bin is that the precise answer is already on hand."""
+        _mock(page, events=[_event(uuid="lone-0000", startedAt="2026-08-18T09:15:00")])
+        _open_events_pane(page, base_url, view="timeline")
+        mark = page.locator("[data-testid='event-timeline-mark']").first
+        expect(mark).to_be_attached()
+
+        mark.hover()
+
+        preview = page.locator("[data-testid='event-timeline-preview']")
+        expect(preview).to_be_visible()
+        expect(preview).to_contain_text("1 event")
+        expect(preview).to_contain_text("09:15")
+        expect(preview).not_to_contain_text("09:00")
+
     def test_shift_clicking_a_mark_still_narrows_to_that_identity_and_that_hour(self, page: Page, base_url: str):
         """Narrowing the page to one identity and one hour did not stop being useful —
         it stopped being what an unmodified click does, because it is a one-way door and

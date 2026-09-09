@@ -210,11 +210,16 @@ function createMarkPreview({ onPreviewBucket }) {
       node.appendChild(el('p', 'event-timeline__preview-empty', 'No snapshot for this event.'));
     }
 
+    // A bin with exactly one event has a real timestamp on hand — `data.event.startedAt`
+    // — and showing the bucket's hour instead would be strictly less precise than what
+    // was just fetched. Only trustworthy when `data.total` itself says one: `data.event`
+    // is merely the first event returned, which for a busier bin is not "the" event.
+    const single = data.total === 1 ? parseApiDate(data.event?.startedAt) : null;
     const meta = el('div', 'event-timeline__preview-meta');
     meta.appendChild(el('strong', null, primary));
     meta.appendChild(el('span', null, `${count} event${count === 1 ? '' : 's'}`));
-    meta.appendChild(el('span', null, when.toLocaleString([], {
-      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    meta.appendChild(el('span', null, (single ?? when).toLocaleString([], {
+      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: single ? '2-digit' : undefined,
     })));
     node.appendChild(meta);
 
