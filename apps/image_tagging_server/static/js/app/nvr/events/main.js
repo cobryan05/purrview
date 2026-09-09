@@ -83,14 +83,13 @@ const SORT_STORAGE_KEY = 'nvr.events.sortBy';
  *
  * `0` is "off" rather than a zero-second gap — with grouping disabled the grid pages
  * over events, which is a different endpoint, not a degenerate case of this one.
- * The default matches the backend's, which is the measured median gap between
- * consecutive events of one identity.
  */
 const SESSION_GAP_OPTIONS = [
   [0, 'Every event'],
   [60, 'Group repeats within 1 min'],
   [120, 'Group repeats within 2 min'],
   [300, 'Group repeats within 5 min'],
+  [600, 'Group repeats within 10 min'],
   [900, 'Group repeats within 15 min'],
 ];
 
@@ -216,7 +215,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     : 'count';
   // Seconds of quiet that end a session; 0 disables the grouping entirely. Remembered
   // like the view, because how coarsely you want repeats folded is a working preference.
-  // Defaults to 300 (5 min) on a first-ever visit; a bad or missing stored value falls
+  // Defaults to 600 (10 min) on a first-ever visit; a bad or missing stored value falls
   // back to that default rather than silently landing on "every event". `getItem` returns
   // null when nothing was ever stored, and 0 is itself a valid gap ("every event") — so a
   // missing value must be checked for before parsing, or Number(null) === 0 makes an
@@ -224,7 +223,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   const storedGap = localStorage.getItem(SESSION_STORAGE_KEY);
   let sessionGapS = storedGap !== null && SESSION_GAP_OPTIONS.some(([s]) => s === Number(storedGap))
     ? Number(storedGap)
-    : 300;
+    : 600;
   // The groups behind the current render, folded to the grain on screen.
   let pageGroups = [];
   // The last aggregate response, at the server's finest grain — the *input* to the fold
@@ -400,7 +399,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   gapSelect.className = 'event-filters__select';
   gapSelect.dataset.testid = 'event-session-gap';
   gapSelect.title = 'One visit to the water bowl re-fires its rule several times. '
-    + 'Grouping repeats folds them into the visit they describe.';
+    + 'Grouping repeats folds them into the grouping they describe.';
   for (const [value, label] of SESSION_GAP_OPTIONS) {
     const option = document.createElement('option');
     option.value = String(value);
@@ -700,16 +699,16 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
    */
   async function eventsForSelectedGroups() {
     const groups = pageGroups.filter(g => selectedGroups.has(g.key));
+    // Each group's page is an independent request — fire them together rather
+    // than one at a time, which just adds up their latencies for no reason.
+    const pages = await Promise.all(groups.map(group => fetchWatchEvents({
+      ...queryState(),
+      ...groupDrilldownFilters(group, { splitByCamera }),
+      limit: Math.max(1, group.count),
+      offset: 0,
+    })));
     const events = [];
-    for (const group of groups) {
-      const { events: page } = await fetchWatchEvents({
-        ...queryState(),
-        ...groupDrilldownFilters(group, { splitByCamera }),
-        limit: Math.max(1, group.count),
-        offset: 0,
-      });
-      events.push(...page);
-    }
+    for (const { events: page } of pages) events.push(...page);
     return events;
   }
 
@@ -1111,7 +1110,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
     const folded = sessions.reduce((sum, s) => sum + s.count, 0);
     summary.textContent = total
-      ? `${total} visit${total === 1 ? '' : 's'}${folded > sessions.length ? ` — ${folded} events on this page` : ''}`
+      ? `${total} grouping${total === 1 ? '' : 's'}${folded > sessions.length ? ` — ${folded} events on this page` : ''}`
       : '';
     renderPager();
   }

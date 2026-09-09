@@ -82,7 +82,7 @@ export function buildSessionCard(session, { onOpen, sourceNames = new Map() } = 
   // would make the badge stop meaning "several of these were folded together".
   if (session.count > 1) {
     const badge = el('span', 'event-card__badge event-card__badge--repeat', `×${session.count}`);
-    badge.title = `${session.count} events, grouped as one visit because no long gap separates them.`;
+    badge.title = `${session.count} events, folded into one grouping because no long gap separates them.`;
     badge.dataset.testid = 'event-session-repeat-badge';
     media.appendChild(badge);
   }
