@@ -152,6 +152,69 @@ class TestReviewStateFlagging:
         assert r.json()["event"]["reviewState"] == "unreviewed"
 
 
+class TestPinningViaTheApi:
+    """The HTTP surface of `WatchEvent.pinned` — the db-level sweeps/delete-refusal
+    behavior itself is covered against the manager in
+    tests/db_server/test_recording_retention.py::TestPinnedEvents; this is the
+    request-validation layer those tests never touch.
+    """
+
+    async def test_pinning_is_filterable_and_toggles_back(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        pinned = await _make_event(http_client, profile_uuid, ruleName="pinned one")
+        await _make_event(http_client, profile_uuid, ruleName="left alone")
+
+        r = await http_client.patch(f"/api/watch-events/{pinned['uuid']}", json={"pinned": True})
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["event"]["pinned"] is True
+
+        pinned_list = await _list(http_client, pinned=True)
+        assert {e["uuid"] for e in pinned_list["events"]} == {pinned["uuid"]}
+
+        r = await http_client.patch(f"/api/watch-events/{pinned['uuid']}", json={"pinned": False})
+        assert r.json()["event"]["pinned"] is False
+        assert (await _list(http_client, pinned=True))["total"] == 0
+
+    async def test_explicit_null_is_rejected_not_a_500_or_a_silent_no_op(self, http_client):
+        """Unlike `cropPath`/`snapshotPath`, `pinned` has no "clear this" meaning —
+        the column is NOT NULL — so this must 422 before touching the row, the same
+        shape as an unknown `reviewState`."""
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+
+        r = await http_client.patch(f"/api/watch-events/{event['uuid']}", json={"pinned": None})
+        assert r.status_code == 422
+
+        r = await http_client.get(f"/api/watch-events/{event['uuid']}")
+        assert r.json()["event"]["pinned"] is False
+
+    async def test_bulk_endpoint_pins_and_unpins(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        a = await _make_event(http_client, profile_uuid, ruleName="a")
+        b = await _make_event(http_client, profile_uuid, ruleName="b")
+
+        r = await http_client.post("/api/watch-events/pinned", json={"uuids": [a["uuid"], b["uuid"]]})
+        body = r.json()
+        assert body["status"] == "success", body
+        assert body["updated"] == 2
+        assert (await _list(http_client, pinned=True))["total"] == 2
+
+        r = await http_client.post("/api/watch-events/pinned", json={"uuids": [a["uuid"]], "pinned": False})
+        assert r.json()["updated"] == 1
+        pinned_list = await _list(http_client, pinned=True)
+        assert {e["uuid"] for e in pinned_list["events"]} == {b["uuid"]}
+
+    async def test_deleting_a_pinned_event_is_refused(self, http_client):
+        profile_uuid = await _make_profile(http_client)
+        event = await _make_event(http_client, profile_uuid)
+        await http_client.patch(f"/api/watch-events/{event['uuid']}", json={"pinned": True})
+
+        r = await http_client.delete(f"/api/watch-events/{event['uuid']}")
+        assert r.json()["status"] == "failure"
+        assert (await http_client.get(f"/api/watch-events/{event['uuid']}")).json()["status"] == "success"
+
+
 class TestCorrectingTheWatchersVerdict:
     """The event's subject/target are the watcher's *opinion*, and a human may overrule it.
 

@@ -1367,6 +1367,18 @@ class WatchEventUpdate(Payload):
             raise ValueError(f"unknown review_state {v!r}")
         return v
 
+    @field_validator("pinned")
+    @classmethod
+    def _pinned_is_not_nullable(cls, v: Optional[bool]) -> Optional[bool]:
+        """Unlike `crop_path`/`snapshot_path`, `pinned` has no "clear this" meaning —
+        the column is `NOT NULL` — so an explicit `{"pinned": null}` must fail here,
+        with a clean 422, rather than reach `setattr` and fail SQLite's constraint at
+        commit with an opaque error string.
+        """
+        if v is None:
+            raise ValueError("pinned cannot be null")
+        return v
+
 
 class StorageBucketRead(BaseModel):
     """One independently-bounded pile of files on disk.
