@@ -217,6 +217,15 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
   // they did when there could only ever be one: two absolutely positioned badges land
   // on precisely the same pixels.
   const badges = el('div', 'event-card__badges');
+  // First, so it reads before what the event's media even is — a pinned event is
+  // "kept" regardless of what it shows, and that is the more important fact at a
+  // glance when scanning a grid for what quota eviction is about to skip over.
+  if (event.pinned) {
+    const badge = el('span', 'event-card__badge event-card__badge--pinned', '📌 Pinned');
+    badge.title = "Protected from PurrView's storage-quota and retention cleanup, and from delete.";
+    badge.dataset.testid = 'event-card-pinned-badge';
+    badges.appendChild(badge);
+  }
   if (findRecording(event, 'clip')) {
     const badge = el('span', 'event-card__badge event-card__badge--video', '▶ Video');
     badge.dataset.testid = 'event-card-video-badge';

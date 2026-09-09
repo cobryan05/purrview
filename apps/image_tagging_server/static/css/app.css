@@ -2252,6 +2252,10 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   color: #1b1b1f;
 }
 
+.event-card__badge--pinned {
+  background: var(--color-accent);
+}
+
 /* ===== Toolbar / Canvas ===== */
 .canvas-toolbar button {
   flex: 1 1 0;
