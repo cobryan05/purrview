@@ -21,7 +21,6 @@ web_app = WebApp(manager=manager, app_name=config.name)
 # ones so the log stays readable (see helpers/logUtils).
 quiet_poll_access_logs()
 
-# Get the uvicorn app
 app = web_app.app()
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=config.port)

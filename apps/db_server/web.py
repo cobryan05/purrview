@@ -1643,13 +1643,6 @@ class WebApp:
     """Web application for managing the database"""
 
     def __init__(self, app_name: str, manager: Manager):
-        """
-        Initialize the WebApp with the application name and manager.
-
-        Args:
-            app_name (str): Name of the application.
-            manager (Manager): Instance of the Manager class for handling models.
-        """
         self._manager: Manager = manager
         self._app_name: str = app_name
         self._app: FastAPI = FastAPI(lifespan=self._lifespan)
@@ -1699,26 +1692,14 @@ class WebApp:
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
-        """
-        Lifespan event handler for startup and shutdown logic.
-
-        Args:
-            app (FastAPI): The FastAPI application instance.
-        """
         logging.info("Application is starting up...")
 
-        self._manager.start()  # Start the manager's periodic task
-        yield  # This allows the app to run
+        self._manager.start()
+        yield
 
         logging.info("Application is shutting down...")
 
     def app(self) -> FastAPI:
-        """
-        Return the FastAPI application instance.
-
-        Returns:
-            FastAPI: The FastAPI application instance.
-        """
         return self._app
 
     def _register_routes(self):
@@ -1861,15 +1842,7 @@ class WebApp:
             operation_id="list_image_providers",
         )
         async def list_image_providers_api() -> ListImageProvidersResponse:
-            """
-            API endpoint to return a list of available image provider types
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                ListImageProvidersResponse: A response containing the list of models.
-            """
+            """Return a list of available image provider types."""
             try:
                 providers_list = await self._manager.list_avail_image_providers()
                 return ListImageProvidersResponse(status=JsonValues.SUCCESS, image_providers=providers_list)
@@ -1957,15 +1930,7 @@ class WebApp:
         async def create_source_api(
             payload: CreateSourcePayload,
         ) -> CreateSourceResponse:
-            """
-            API endpoint for creating a new source.
-
-            Args:
-                req (CreateSourceRequest): Request object with source type and parameters.
-
-            Returns:
-                CreateSourceResponse: Response with new source ID or error.
-            """
+            """Create a new source."""
             try:
                 source: Source = await self._manager.create_new_source(
                     image_provider=payload.image_provider,
@@ -2009,14 +1974,7 @@ class WebApp:
             operation_id="get_sources",
         )
         async def get_sources_api() -> GetSourcesResponse:
-            """
-            API endpoint to return a list of available sources
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                GetSourcesResponse: A JSON response containing the list of sources
-            """
+            """Return a list of available sources."""
             try:
                 sources: list[Source] = await self._manager.get_avail_sources()
                 sources_dict: dict[str, Source] = {source.uuid: source for source in sources}
@@ -2123,14 +2081,7 @@ class WebApp:
             operation_id="list_tags",
         )
         async def list_tags_api() -> ListTagsResponse:
-            """
-            API endpoint to return a list of tags with metadata.
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                ListTagsResponse: A response containing the list of tags.
-            """
+            """Return a list of tags with metadata."""
             try:
                 tags = await self._manager.get_tags()
                 return ListTagsResponse(status=JsonValues.SUCCESS, tags=tags)

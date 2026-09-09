@@ -31,17 +31,11 @@ let _rendering = false;
 let _navGuardController = null;
 
 // ── "show me that run" ───────────────────────────────────────────────────────
-//
-// Pressing a launch card whose run is already going brings the user here. A
-// pane listing every job, three sections deep, is not an answer on its own — the
-// run they asked about has to be findable at a glance, so it is scrolled to and
-// marked.
-//
-// The mark has to outlive a re-render: this pane rebuilds every card whenever a
-// running task appends a log line (see the flash-free swap below), which would
-// otherwise wipe the highlight within a second of arriving. So it is held as
-// state with a deadline and re-applied after each swap, rather than being a
-// class set once on a node.
+// Pressing a launch card whose run is already going brings the user here and
+// scrolls/highlights that row. The highlight is held as state with a
+// deadline and re-applied after each render, rather than a class set once on
+// a node, because this pane rebuilds every card on each log line (see the
+// flash-free swap below) and a one-shot class would be wiped within a second.
 
 /** How long an arriving-from-a-card highlight stays on the row. */
 const HIGHLIGHT_MS = 6000;

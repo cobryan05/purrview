@@ -135,46 +135,35 @@ def preprocess_image(
             - Scaling factor used to resize the image.
             - Padding added to the image (dw, dh) to maintain aspect ratio.
     """
-    # Original image dimensions
     h0, w0 = image.shape[:2]
     input_h, input_w = input_shape
 
-    # Compute the scaling factor to fit the image within the target dimensions
-    r = min(input_w / w0, input_h / h0)  # Scale factor to maintain aspect ratio
-    new_unpad = (int(round(w0 * r)), int(round(h0 * r)))  # New dimensions after scaling
+    r = min(input_w / w0, input_h / h0)
+    new_unpad = (int(round(w0 * r)), int(round(h0 * r)))
 
     if anchor == "top_left":
         dw = 0.0
         dh = 0.0
     else:
-        # Compute padding to center the image within the target dimensions
-        dw = (input_w - new_unpad[0]) / 2  # Padding width (left and right)
-        dh = (input_h - new_unpad[1]) / 2  # Padding height (top and bottom)
+        dw = (input_w - new_unpad[0]) / 2
+        dh = (input_h - new_unpad[1]) / 2
 
-    # Resize the image to the new dimensions
     resized = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
 
-    # Add padding to the resized image, filling the canvas regardless of anchor
+    # Pad to the target canvas regardless of anchor; top/left absorb all the
+    # padding for "top_left", split evenly for "center".
     top = int(dh)
     left = int(dw)
     bottom = input_h - new_unpad[1] - top
     right = input_w - new_unpad[0] - left
     padded = cv2.copyMakeBorder(
-        resized,
-        top=top,
-        bottom=bottom,
-        left=left,
-        right=right,
-        borderType=cv2.BORDER_CONSTANT,
-        value=(114, 114, 114),  # Use a gray color for padding
+        resized, top=top, bottom=bottom, left=left, right=right, borderType=cv2.BORDER_CONSTANT, value=(114, 114, 114)
     )
 
-    # Normalize the image to [0, 1] and convert to NCHW format
-    img = padded.astype(np.float32) / 255.0  # Normalize pixel values
-    img = np.transpose(img, (2, 0, 1))  # Convert from HWC to CHW format
-    img = np.expand_dims(img, 0)  # Add batch dimension (NCHW format)
+    img = padded.astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))  # HWC -> CHW
+    img = np.expand_dims(img, 0)  # -> NCHW
 
-    # Return the preprocessed image, scaling factor, and padding
     return img, r, (dw, dh)
 
 

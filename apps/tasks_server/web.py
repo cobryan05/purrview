@@ -239,41 +239,20 @@ class WebApp:
     TASKS_API_TAG_NAME = "tasks"
 
     def __init__(self, app_name: str, manager: Manager):
-        """
-        Initialize the WebApp with the application name and manager.
+        self._manager: Manager = manager
+        self._app_name: str = app_name
+        self._app: FastAPI = FastAPI(lifespan=self._lifespan)
+        self._templates: Jinja2Templates = Jinja2Templates(directory="/app/templates")
+        self._dflt_args: dict[str, str] = {"app_name": self._app_name}
 
-        Args:
-            app_name (str): Name of the application.
-            manager (Manager): Instance of the Manager class
-        """
-        self._manager: Manager = manager  # Manager instance
-        self._app_name: str = app_name  # Name of the application
-        self._app: FastAPI = FastAPI(lifespan=self._lifespan)  # FastAPI instance with lifespan events
-        self._templates: Jinja2Templates = Jinja2Templates(
-            directory="/app/templates"
-        )  # Template engine for rendering HTML
-        self._dflt_args: dict[str, str] = {"app_name": self._app_name}  # Default arguments for templates
-
-        # Mount static files
         self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
 
-        # Register routes
         self._register_routes()
         self._register_exception()
 
     def _register_exception(self):
         @self._app.exception_handler(RequestValidationError)
         async def validation_exception_handler(request: Request, exc: RequestValidationError):
-            """
-            Custom exception handler for validation errors.
-
-            Args:
-                request (Request): The incoming request.
-                exc (RequestValidationError): The validation exception.
-
-            Returns:
-                JSONResponse: A JSON-formatted error response.
-            """
             exc_str = f"{exc}".replace("\n", " ").replace("   ", " ")
             # logger.error(msg, *args) does printf-style formatting: passing the
             # Request as the message and exc_str as an arg made logging try
@@ -285,12 +264,6 @@ class WebApp:
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
-        """
-        Lifespan event handler for startup and shutdown logic.
-
-        Args:
-            app (FastAPI): The FastAPI application instance.
-        """
         logging.info("Application is starting up...")
 
         # Register SIGUSR1 as a live task-stack dumper.
@@ -313,32 +286,17 @@ class WebApp:
         signal.signal(signal.SIGUSR1, _dump_asyncio_tasks)
         logging.info("SIGUSR1 handler registered — send 'kill -USR1 <pid>' to dump asyncio tasks to stderr")
 
-        self._manager.start()  # Start the manager's periodic task
-        yield  # This allows the app to run
+        self._manager.start()
+        yield
 
         logging.info("Application is shutting down...")
         await self._manager.stop()
 
     def app(self) -> FastAPI:
-        """
-        Return the FastAPI application instance.
-
-        Returns:
-            FastAPI: The FastAPI application instance.
-        """
         return self._app
 
     def _error_response(self, request: Request, message: str):
-        """
-        Render an error response using the dynamic response template.
-
-        Args:
-            request (Request): The request object.
-            message (str): The error message to display.
-
-        Returns:
-            TemplateResponse: Rendered HTML error response.
-        """
+        """Render an error response using the dynamic response template."""
         return self._templates.TemplateResponse(
             "dynamic_response.html",
             {
@@ -354,15 +312,7 @@ class WebApp:
 
         @self._app.get("/", response_class=HTMLResponse)
         async def index(request: Request):
-            """
-            Render the home page with navigation buttons.
-
-            Args:
-                request (Request): The incoming request.
-
-            Returns:
-                HTMLResponse: Rendered homepage with buttons.
-            """
+            """Render the home page with navigation buttons."""
             buttons = []
             return self._templates.TemplateResponse(
                 "dynamic_index.html",
@@ -380,15 +330,7 @@ class WebApp:
         )
         @self._app.get("/server-config", response_class=JSONResponse)
         async def server_config(request: Request):
-            """
-            Get server configuration params
-
-            Args:
-                request (Request): The incoming request.
-
-            Returns:
-                JSONResponse: Server configuration parameters.
-            """
+            """Get server configuration params."""
             try:
                 server_config = await self._manager.get_server_config()
                 response_data = {"status": WebApp.SUCCESS_KEY, "config": server_config}
@@ -434,15 +376,7 @@ class WebApp:
             operation_id="list_task_types",
         )
         async def list_task_types_api(request: Request) -> ListTaskTypesResponse:
-            """
-            API endpoint to return a list of task types.
-
-            Args:
-                request (Request): The FastAPI request object.
-
-            Returns:
-                ListTaskTypesResponse: A response containing the list of task types.
-            """
+            """Return the list of task types."""
             try:
                 types_list = await self._manager.list_task_types()
                 accents = await self._manager.list_task_accents()
@@ -466,15 +400,7 @@ class WebApp:
         async def get_task_type_schema_api(
             payload: TasksTypeSchemaPayload,
         ) -> TasksTypeSchemaResponse:
-            """
-            API endpoint for getting the schema of a specific task type.
-
-            Args:
-                payload (TasksSchemaPayload): Request payload containing the task type.
-
-            Returns:
-                TasksTypeSchemaResult: Response with task type schema or error.
-            """
+            """Return the config schema for the given task type(s)."""
             try:
                 schemas = await self._manager.get_tasks_type_schema(typenames=payload.task_typenames)
                 return TasksTypeSchemaResponse(status=WebApp.SUCCESS_KEY, schemas=schemas)
@@ -706,15 +632,7 @@ class WebApp:
             response_model=StartTasksResponse,
         )
         async def start_task_api(payload: StartTasksPayload) -> StartTasksResponse:
-            """
-            API endpoint for starting a new task.
-
-            Args:
-                req (StartTaskRequest): Request object with task parameters.
-
-            Returns:
-                StartTasksResponse: Response with new task ID or error.
-            """
+            """Start a new task instance from a saved task config."""
             msg = None
             try:
                 task_info: TaskInfo | None = await self._manager.start_new_task(task_config_uuid=payload.config_uuid)
@@ -731,15 +649,7 @@ class WebApp:
             response_model=TasksInfoResponse,
         )
         async def task_tasks_info_api(payload: TasksInfoPayload) -> TasksInfoResponse:
-            """
-            API endpoint for getting status of one or more tasks.
-
-            Args:
-                req (TaskStatusRequest): Request object with task IDs.
-
-            Returns:
-                TasksInfoResponse: Response with task information or error.
-            """
+            """Return status info for one or more task instances."""
             try:
                 tasks_info = await self._manager.get_tasks_instance_info(payload.task_uuids)
                 models = {uuid: TaskInfoRead.from_task_info(task) for uuid, task in tasks_info.items()}
@@ -756,15 +666,7 @@ class WebApp:
         async def get_tasks_result_api(
             payload: TasksResultPayload,
         ) -> TasksResultResponse:
-            """
-            API endpoint for getting result of a specific task.
-
-            Args:
-                req (TaskResultRequest): Request object with task ID.
-
-            Returns:
-                TasksResultResponse: A response containing task result.
-            """
+            """Return the one-shot result for a specific task (auto-deleted after fetch)."""
             try:
                 tasks_result = await self._manager.get_tasks_result(payload.task_uuids)
                 models = {uuid: TaskResult.model_validate(result) for uuid, result in tasks_result.items()}
@@ -779,15 +681,7 @@ class WebApp:
             response_model=PauseTasksResponse,
         )
         async def pause_tasks_api(payload: PauseTasksPayload) -> PauseTasksResponse:
-            """
-            API endpoint to pause tasks.
-
-            Args:
-                req (PauseTasksRequest): Request object with task IDs to pause.
-
-            Returns:
-                JSONResponse: JSON response with pause result.
-            """
+            """Pause the given task instances."""
             try:
                 paused_tasks = await self._manager.pause_tasks(payload.task_uuids)
                 return PauseTasksResponse(task_uuids=paused_tasks)
@@ -802,15 +696,7 @@ class WebApp:
             response_model=DeleteTasksResponse,
         )
         async def delete_tasks_api(payload: DeleteTasksPayload) -> DeleteTasksResponse:
-            """
-            API endpoint to delete tasks.
-
-            Args:
-                req (DeleteTasksRequest): Request object with task IDs to delete.
-
-            Returns:
-                JSONResponse: JSON response with delete result.
-            """
+            """Delete the given task instances."""
             try:
                 deleted_uuids = await self._manager.delete_tasks(payload.task_uuids)
                 return DeleteTasksResponse(task_uuids=deleted_uuids)
@@ -825,15 +711,7 @@ class WebApp:
             response_model=ResumeTasksResponse,
         )
         async def resume_tasks_api(payload: ResumeTasksPayload) -> ResumeTasksResponse:
-            """
-            API endpoint to resume tasks.
-
-            Args:
-                req (ResumeTasksRequest): Request object with task IDs to resume.
-
-            Returns:
-                ResumeTasksResponse: A response containing the UUIDs of the resumed tasks.
-            """
+            """Resume the given task instances."""
             try:
                 resumed_uuids = await self._manager.resume_tasks(payload.task_uuids)
                 return ResumeTasksResponse(task_uuids=resumed_uuids)
@@ -882,15 +760,7 @@ class WebApp:
             response_model=CancelTasksResponse,
         )
         async def cancel_tasks_api(payload: CancelTasksPayload) -> CancelTasksResponse:
-            """
-            API endpoint to cancel tasks.
-
-            Args:
-                req (ResumeTasksRequest): Request object with task IDs to cancel.
-
-            Returns:
-                JSONResponse: JSON response with resume result.
-            """
+            """Cancel the given task instances."""
             try:
                 outcome = await self._manager.cancel_tasks(payload.task_uuids)
                 return CancelTasksResponse(
@@ -911,15 +781,7 @@ class WebApp:
         async def create_task_config_api(
             payload: CreateTaskConfigPayload,
         ) -> CreateTaskConfigResponse:
-            """
-            API endpoint for creating a new task configuration.
-
-            Args:
-                req (CreateTaskRequest): Request object with task type and parameters.
-
-            Returns:
-                JSONResponse: Response with new task ID or error.
-            """
+            """Create a new task configuration."""
             try:
                 task_config = await self._manager.create_new_task_config(
                     name=payload.name,
@@ -941,15 +803,7 @@ class WebApp:
         async def delete_task_configs_api(
             payload: DeleteTaskConfigsPayload,
         ) -> DeleteTaskConfigsResponse:
-            """
-            API endpoint to delete tasks configs
-
-            Args:
-                req (DeleteTasksRequest): Request object with task IDs to delete.
-
-            Returns:
-                JSONResponse: JSON response with deletion result.
-            """
+            """Delete the given task configs."""
             try:
                 await self._manager.delete_task_configs(payload.config_uuids)
                 return DeleteTaskConfigsResponse(config_uuids=payload.config_uuids)
@@ -966,15 +820,7 @@ class WebApp:
         async def get_task_configs_api(
             payload: GetTaskConfigsPayload,
         ) -> GetTaskConfigResponse:
-            """
-            API endpoint to get tasks configs
-
-            Args:
-                req (GetTaskConfigsPayload): Request object with task IDs to get
-
-            Returns:
-                JSONResponse: JSON response with task configs.
-            """
+            """Get task configs by uuid."""
             try:
                 task_configs = await self._manager.get_task_configs(
                     payload.config_uuids,
@@ -995,12 +841,7 @@ class WebApp:
         async def update_task_config_api(
             payload: UpdateTaskConfigPayload,
         ) -> UpdateTaskConfigResponse:
-            """
-            API endpoint for updating an existing task configuration.
-
-            Args:
-                payload (UpdateTaskConfigPayload): Update data.
-            """
+            """Update an existing task configuration."""
             try:
                 await self._manager.update_task_config(
                     config_uuid=payload.config_uuid,
@@ -1022,15 +863,7 @@ class WebApp:
             response_class=HTMLResponse,
         )
         async def get_task_schema(typename: str = Form(...)) -> HTMLResponse:
-            """
-            Endpoint to retrieve and display the schema for a given task type.
-
-            Args:
-                typename (str): The name of the task type to retrieve the schema for.
-
-            Returns:
-                HTMLResponse: Rendered HTML content of the JSON schema or error message.
-            """
+            """Retrieve and render the schema for a given task type as HTML."""
             try:
                 schema = await self._manager.get_task_schema(typename=typename)
                 pretty = json.dumps(schema, indent=2)

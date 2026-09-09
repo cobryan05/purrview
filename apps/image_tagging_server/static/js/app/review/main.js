@@ -77,7 +77,7 @@ import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
 
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_ENTRIES = 1000; // hard cap on total cards per page
-const SCROLL_LOAD_MARGIN_PX = 400; // infinite-scroll (M2) preload distance from the bottom of the scroll container
+const SCROLL_LOAD_MARGIN_PX = 400; // infinite-scroll preload distance from the bottom of the scroll container
 
 // How far around the canvas modal's current position to prefetch images, as
 // offsets from _navIndex. Two each way rather than one so a second keypress
@@ -230,16 +230,10 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     return sep;
   }
 
-  // Filter toggle — only visible in full-filter mode
-  // Slice 3, PR 3.2: no longer a "☰ Filters (n)" toggle for a hidden inline
-  // panel — the chip bar below is always visible and shows what's active, so
-  // this only opens the popover editor.
-  //
-  // That popover is now the ONE place every filter lives. The Tags and Labels
-  // dropdowns used to be spliced into the toolbar below (filterPanel's old
-  // `toolbarControls`), which meant label/tag filtering was split across two
-  // surfaces with nothing to say which held what — and this button's tooltip
-  // listed only some of what was actually behind it. Keep the tooltip in step
+  // Filter toggle — only visible in full-filter mode. Opens the popover editor;
+  // the chip bar below stays always-visible and shows what's active. The
+  // popover is the one place every filter lives now (Tags/Labels dropdowns
+  // used to be split into the toolbar separately) — keep the tooltip in step
   // with filterPanel.element if a dimension is added.
   const filterToggleBtn = document.createElement('button');
   filterToggleBtn.className = 'review-toolbar__btn review-filter-chip-bar__add';
@@ -473,7 +467,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   refreshBtn.textContent = '⟳ Refresh';
   refreshBtn.title = 'Reload the current page';
 
-  // ── Persistent utility group (slice 3, PR 3.1) ─────────────────────
+  // ── Persistent utility group ─────────────────────────────────────
   // "Most Unique First", "Open in Datasets Tab", and any
   // caller-supplied controls (e.g. a similarity-search threshold slider)
   // read as one "toolbar" cluster instead of being scattered across
@@ -487,7 +481,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   if (toolbarControls) persistentUtilityGroup.appendChild(toolbarControls);
 
   // Pagination — filter mode only. Custom/fetchImages mode uses infinite
-  // scroll instead (M2), so Prev/Next never apply there.
+  // scroll instead, so Prev/Next never apply there.
   const pageInfo = document.createElement('span');
   pageInfo.className = 'review-toolbar__page-info';
   const prevBtn = document.createElement('button');
@@ -624,7 +618,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     makeToolbarGroup(statusMsg, refreshBtn),
   );
 
-  // ── Filter-scoped action bar (slice 3, PR 3.3) ─────────────────────
+  // ── Filter-scoped action bar ─────────────────────────────────────
   // Apply to Filtered Images / Apply to All / Run Model on Results… / Run
   // Filter Chain on Results… all operate on the current filter or candidate
   // scope, NOT a checked selection — none of them are disabled or hidden by
@@ -642,7 +636,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   filterScopedActionsBar.append(bulkAllImagesBtn, bulkAllBtn, runModelBtn, verifyModelBtn, runChainBtn);
   if (!fetchImages) filterScopedActionsBar.insertBefore(savedPreviewsBtn, runChainBtn);
 
-  // ── Contextual action bar (slice 3, PR 3.3) ────────────────────────
+  // ── Contextual action bar ────────────────────────────────────────
   // Appears only with an active selection — hidden the rest of the time.
   // Apply to Selected always shows; Apply to Parent Images additionally requires a
   // bbox-kind selection (unchanged condition from updateBulkBtn below).
@@ -663,7 +657,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   contextualRightGroup.classList.add('review-contextual-action-bar__right');
   contextualActionBar.append(bulkBtn, bulkParentImagesBtn, contextualRightGroup);
 
-  // ── Filter chip bar (slice 3, PR 3.2) ──────────────────────────────
+  // ── Filter chip bar ──────────────────────────────────────────────
   // Always-visible summary of active filters, replacing the old "☰ Filters
   // (n)" toggle-to-reveal-a-hidden-panel pattern. filterPanel.element (Date /
   // Filename / Config Ready / Bbox Verification / Image Label Filters) is
@@ -794,8 +788,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // sort and actions, not for a subset of the filters.
 
     // ── Views (server-backed saved searches) + dataset export (hidden in
-    // modal/preview contexts) — UI_REDESIGN_PLAN.md slice 5, PR 5.2. Replaces
-    // the old per-browser `localStorage['review-filter-presets']` store: a
+    // modal/preview contexts). Replaces the old per-browser
+    // `localStorage['review-filter-presets']` store: a
     // "preset" was already exactly a View (name + full filter state), just
     // stored client-side. Views are unpromoted rows in the `datasets` table
     // (decision register #10) — createDataset/updateDataset default to
@@ -915,8 +909,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       openDissimilarGlobalModal({ candidateUuids });
     });
     // Insert before exportToDatasetBtn so the group reads ★ Most Unique First →
-    // ⊞ Open in Datasets Tab, matching creation-order-independent display order
-    // (UI_REDESIGN_PLAN.md, slice 3, PR 3.1).
+    // ⊞ Open in Datasets Tab, matching creation-order-independent display order.
     persistentUtilityGroup.insertBefore(uniqueFirstBtn, exportToDatasetBtn);
     } // end if (datasetActions)
   }
@@ -1235,7 +1228,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   async function _getFilteredImageUuids() {
     if (fetchImages) {
       const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
-      // Apply the curated predicate (M1) so "search with current filters" from
+      // Apply the curated predicate so "search with current filters" from
       // inside a modal reflects the curated Verification/Label/Tag selection,
       // parallel to how filter-mode already re-runs the full server query below.
       return images.filter(img => imageMatchesFilter(img, _curated, labels)).map(i => i.uuid);
@@ -1472,7 +1465,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     bulkBtn.disabled = _selected.size === 0;
     selectAllCb.checked = _selected.size > 0 && _selected.size === activeCount;
     selectAllCb.indeterminate = _selected.size > 0 && _selected.size < activeCount;
-    // Contextual action bar (slice 3, PR 3.3) — only visible with a selection.
+    // Contextual action bar — only visible with a selection.
     contextualActionBar.hidden = _selected.size === 0;
 
     // "Apply to Parent Images" only makes sense for a bbox-kind selection —
@@ -1894,7 +1887,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       let totalCount = 0;
       try {
         if (fetchImages) {
-          // M2: infinite-scroll bootstrap. Fetch chunks (chunk size = _pageSize)
+          // Infinite-scroll bootstrap: fetch chunks (chunk size = _pageSize)
           // until the first screenful is filled or the candidate list is
           // exhausted; `_loadMoreCurated()` (wired to a scroll sentinel) takes
           // over from `_curatedCursor` as the user scrolls further. Entries are
@@ -1975,7 +1968,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       const bboxMatches = makeBboxFilterPredicate({ fetchImagesMode: !!fetchImages, bboxFilterFn, fs, labels });
 
       for (const img of images) {
-        // In fetchImages/custom mode (M1), further narrow by the curated
+        // In fetchImages/custom mode, further narrow by the curated
         // result-filter predicate (Verification/Label/Tag) on top of whatever
         // the caller's bboxFilterFn already narrowed (e.g. a similarity modal
         // pre-narrows img.bboxes to the matched-similar set) — compose, don't
@@ -2050,7 +2043,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     refreshBtn.disabled = false;
     _rendering = false;
 
-    // M2: top up past the bootstrap chunk if the viewport isn't full yet.
+    // Top up past the bootstrap chunk if the viewport isn't full yet.
     // Don't rely solely on the IntersectionObserver's own initial callback —
     // it can race `_rendering` above and, being edge-triggered, never retry
     // if that one callback is dropped (see _loadMoreCurated's doc comment).
@@ -3031,26 +3024,17 @@ export async function init() {
 /**
  * Open a modal window containing a full review panel.
  *
- * @param {{
- *   title?: string,
- *   fetchImages?: (params: object) => Promise<object[]>,
- *   editableDataset?: {
- *     filterJson: object,
- *     labelUuids: string[],
- *     onUpdateFilters: (filterJson: object, labelUuids: string[]) => void
- *   }
- * }} options
- *   title           — shown in the modal header bar.
- *   fetchImages     — passed straight through to createReviewPanel; see its docs.
- *   editableDataset — when provided, shows a live filter panel pre-populated from
- *                     the dataset's conditions. "Update Dataset" button pushes changes
- *                     back to the caller via onUpdateFilters (caller must still Save).
- */
-/**
  * @param {object} [opts]
- * @param {{uuid: string, name: string}} [opts.gapsConfig]
- *   Training run whose unresolved labels are annotated onto each image card. Pass the
- *   run the modal was opened from (a gaps/coverage cell) so the cards are judged by the
+ * @param {string} [opts.title] - shown in the modal header bar.
+ * @param {(params: object) => Promise<object[]>} [opts.fetchImages] - passed
+ *   straight through to createReviewPanel; see its docs.
+ * @param {{filterJson: object, labelUuids: string[], onUpdateFilters: (filterJson: object, labelUuids: string[]) => void}} [opts.editableDataset]
+ *   When provided, shows a live filter panel pre-populated from the dataset's
+ *   conditions. "Update Dataset" pushes changes back via onUpdateFilters
+ *   (caller must still Save).
+ * @param {{uuid: string, name: string}} [opts.gapsConfig] - training run whose
+ *   unresolved labels are annotated onto each image card. Pass the run the
+ *   modal was opened from (a gaps/coverage cell) so cards are judged by the
  *   same run the numbers came from; omit to fall back to the session's active run.
  */
 export async function showReviewModal({ title = 'Browse Images', fetchImages, editableDataset, toolbarControls, referenceBboxUuids = new Set(), referenceImageUuids = new Set(), initialViewFilter = 'images', bboxFilterFn = null, gapsConfig = null } = {}) {

@@ -70,15 +70,11 @@ const DEFAULT_BINDINGS = {
 /**
  * Add defaults for actions the stored map has never heard of.
  *
- * Bindings are persisted whole, so an action added to DEFAULT_BINDINGS after a
- * user already has a saved map would otherwise arrive unbound for them — the
- * new hotkey silently does nothing until they open the config panel. Only
- * actions with *no* combo at all get one, and only if their default combo is
- * still free, so a rebound or reassigned key is never disturbed.
- *
- * The one cost: an action the user deliberately cleared comes back the next
- * time its default combo is free. Rebinding it to something else — or to a
- * combo they never press — sticks, which is the practical way to opt out.
+ * Bindings persist whole, so an action added to DEFAULT_BINDINGS after a user
+ * already has a saved map would otherwise arrive unbound. Only fills actions
+ * with no combo at all, and only into a still-free default combo, so a
+ * rebound key is never disturbed. Cost: a deliberately-cleared action comes
+ * back once its default combo frees up; rebinding it elsewhere sticks.
  *
  * @param {Record<string,string>} stored - mutated in place
  * @returns {boolean} true if anything was added
@@ -100,17 +96,13 @@ function _defaultComboFor(action) {
 /**
  * Move the tools off V and R if they are still sitting on the old defaults.
  *
- * _mergeNewDefaults alone cannot help here: it skips a default whose combo is
- * taken, and for every pre-existing user V and R *were* taken — by the very
- * tools whose defaults moved in the same release. Reset and Verify therefore
- * arrived permanently unbound for everyone who had ever saved a map, reachable
- * only by rebinding them by hand.
- *
- * Deliberately narrow: only the two known old defaults, only when the stored
- * combo still holds exactly the action it used to, and only into a combo that
- * is free. A user who rebound either tool elsewhere is left alone, and a future
- * default change gets no automatic reshuffle — it would have to make the same
- * judgement about its own users.
+ * _mergeNewDefaults alone can't fix this: it skips a default whose combo is
+ * taken, and V/R were taken by the very tools that moved off them — so Reset
+ * and Verify arrived permanently unbound for every existing user. Deliberately
+ * narrow: only migrates the two known old defaults, only when the stored combo
+ * still holds the action it used to, and only into a free target combo. A user
+ * who rebound either tool elsewhere is left alone; a future default change
+ * needs its own migration, not an extension of this one.
  *
  * @param {Record<string,string>} stored - mutated in place
  * @returns {boolean} true if anything moved

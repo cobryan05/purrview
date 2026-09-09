@@ -160,14 +160,8 @@ class Manager:
     IMPLICIT_PIN_ID: str = "__implicit_keepwarm__"
 
     def __init__(self, models_path: str):
-        """
-        Initialize the Manager with a models directory path.
-
-        Args:
-            models_path (str): Path to the directory containing model files.
-        """
         self._task: Optional[asyncio.Task] = None  # Background task for periodic operations
-        self._models_path: str = models_path  # Store the models directory path
+        self._models_path: str = models_path
         self._avail_models: Dict[str, str] = {}  # {basename (no .onnx): full_path}
         self._pinned_models: Dict[str, InferenceModel] = {}  # {model_name: PinnedModel}
         self._loading_models: Dict[str, asyncio.Future] = {}  # in-progress loads; awaited by concurrent pin requests
@@ -200,16 +194,7 @@ class Manager:
             return json.load(f)
 
     async def list_models(self, pattern: Optional[str] = "*.onnx") -> List[str]:
-        """
-        List all files in the models directory, optionally filtered by a glob pattern.
-        Updates the available models cache.
-
-        Args:
-            pattern (Optional[str]): A glob pattern to filter files (default: "*.onnx").
-
-        Returns:
-            List[str]: A list of filenames in the models directory.
-        """
+        """List model files matching a glob pattern, and refresh the available-models cache."""
         if not self._models_path:
             logger.warning("Models path is not set.")
             return []
@@ -218,7 +203,6 @@ class Manager:
             search_path = os.path.join(self._models_path, pattern)
             model_files = [f for f in glob(search_path) if os.path.isfile(f)]
 
-            # Update the available models cache
             self._avail_models = {os.path.splitext(os.path.basename(f))[0]: f for f in model_files}
             return list(self._avail_models.keys())
         except Exception as e:
@@ -226,19 +210,10 @@ class Manager:
             return []
 
     async def get_models_classes(self, model_names: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
-        """
-        Get the classes for a specific model.
-
-        Args:
-            model_name (str): The name of the model to get classes for.
-
-        Returns:
-            Dict[str, str]: A dictionary mapping class names to class IDs.
-        """
-
+        """Get each model's class name -> label uuid mapping."""
         model_paths = {name: self._avail_models[name] for name in model_names if name in self._avail_models}
 
-        # Create metadata but don't entirely fail on get_model_metadata failrule just leave that one out
+        # Don't fail the whole batch if one model's metadata can't be read — skip it.
         ret = {}
         for model_name, model_path in model_paths.items():
             try:
@@ -335,17 +310,7 @@ class Manager:
             return None
 
     async def set_model_class_label_uuid(self, model_name: str, model_class: str, label_uuid: Optional[str]) -> bool:
-        """
-        Associate a model's class label with a label uuid
-
-        Args:
-            model_name (str): The name of the model to set the association on
-            model_class (str): The class label to associate with the UUID
-            label_uuid (Optional[str]): The UUID of the label to associate, or to clear if None
-
-        Returns:
-            bool: True if the association was successful, False otherwise.
-        """
+        """Associate a model's class label with a label uuid, or clear it if label_uuid is None."""
         if model_name in self._avail_models:
             model_path = self._avail_models[model_name]
         else:
@@ -367,16 +332,7 @@ class Manager:
         return True
 
     async def set_model_device(self, model_name: str, device: str) -> bool:
-        """
-        Set a model's device preference (auto/gpu/cpu), persisted to its sidecar JSON.
-
-        Args:
-            model_name (str): The name of the model to set the preference on
-            device (str): One of "auto", "gpu", "cpu"
-
-        Returns:
-            bool: True if the preference was persisted.
-        """
+        """Set a model's device preference (auto/gpu/cpu), persisted to its sidecar JSON."""
         if device not in VALID_MODEL_DEVICES:
             raise ValueError(f"Invalid device {device!r}; must be one of {VALID_MODEL_DEVICES}")
 
@@ -395,16 +351,8 @@ class Manager:
 
     async def import_model_upload(self, model_name: str, onnx_bytes: bytes, overwrite: bool = False) -> Dict[str, Any]:
         """Write an uploaded ONNX file to the models dir and auto-generate its sidecar
-        (classes parsed from the ONNX itself).
-
-        Args:
-            model_name (str): Bare model name (no extension, no path separators).
-            onnx_bytes (bytes): Raw ONNX file content.
-            overwrite (bool): If True, replace an existing model + sidecar. If False and
-                the model already exists, raise FileExistsError.
-
-        Returns:
-            Dict[str, Any]: {"model_name": ..., "classes": [...]}
+        (classes parsed from the ONNX itself). Raises FileExistsError if the model
+        already exists and overwrite is False.
         """
         validate_bare_model_name(model_name)
 
@@ -428,12 +376,6 @@ class Manager:
         same tar to $MODELS_ROOT when this server shares a filesystem with tasks_server.
         This is the HTTP path for when it doesn't: tasks_server pushes the artifact here
         directly after saving its own copy.
-
-        Args:
-            tar_bytes (bytes): Raw tar archive containing the artifact files.
-
-        Returns:
-            Dict[str, Any]: {"files": [written filenames]}
         """
         written: list[str] = []
         with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:*") as tf:
@@ -537,13 +479,8 @@ class Manager:
     async def delete_model(self, model_name: str) -> None:
         """Delete a model's ONNX weights and sidecar JSON from the models dir.
 
-        Args:
-            model_name (str): Bare model name (no extension) to delete.
-
-        Raises:
-            FileNotFoundError: If the model is not in the available-models list.
-            ValueError: If the model is currently pinned (in use) and can't be
-                safely removed.
+        Raises FileNotFoundError if the model isn't in the available-models list,
+        or ValueError if it's currently pinned (in use) and can't be safely removed.
         """
         if model_name not in self._avail_models:
             raise FileNotFoundError(f"Model '{model_name}' not found in available models")
@@ -589,13 +526,7 @@ class Manager:
     def detect_uploaded_model(self, filename: str, header: bytes) -> Dict[str, Any]:
         """Detect the format of an about-to-be-uploaded model file from its filename and
         leading bytes (torch-free — see apps/helpers/modelFormat.py). Pure/sync, no I/O.
-
-        Args:
-            filename (str): The original filename of the uploaded file.
-            header (bytes): The first chunk of the file's bytes (used for magic-byte sniffing).
-
-        Returns:
-            Dict[str, Any]: {"format": ..., "is_onnx": ..., "conversion_supported": ...}
+        Returns {"format": ..., "is_onnx": ..., "conversion_supported": ...}.
         """
         fmt = detect_model_format(filename, header)
         return {
@@ -612,13 +543,8 @@ class Manager:
 
     async def stage_source_model(self, data: bytes) -> str:
         """Write raw uploaded model bytes to the shared staging dir under a fresh id.
-
-        Args:
-            data (bytes): Raw file content to stage.
-
-        Returns:
-            str: The generated staging id (bare hex token, no extension); the caller
-                (a conversion task) can resolve it back to a path via `staged_model_path`.
+        Returns the staging id (bare hex token, no extension); the caller (a conversion
+        task) can resolve it back to a path via `staged_model_path`.
         """
         if not data:
             raise ValueError("Cannot stage empty model data")
@@ -633,13 +559,8 @@ class Manager:
         return staging_id
 
     def staged_model_path(self, staging_id: str) -> Path:
-        """Resolve a staging id (as returned by `stage_source_model`) to its file path.
-
-        Args:
-            staging_id (str): Bare staging id — must not contain path separators or '..'.
-
-        Returns:
-            Path: The path to the staged file (may not exist).
+        """Resolve a staging id (as returned by `stage_source_model`) to its file path
+        (may not exist). staging_id must not contain path separators or '..'.
         """
         validate_bare_model_name(staging_id)
         return self._staging_dir() / f"{staging_id}.bin"
@@ -701,21 +622,13 @@ class Manager:
         existing.weights_mtime_ns = current_mtime
 
     async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME, pin_id: Optional[str] = None) -> str:
-        """
-        Pin a model into memory, keeping it loaded until unpinned.
+        """Pin a model into memory, keeping it loaded until unpinned. Returns the pin id.
 
-        Args:
-            model_name (str): Name of the model to pin.
-            timeout (float): Timeout in seconds for the pin.
-            pin_id (Optional[str]): Reuse a specific pin id instead of generating a
-                fresh one. Passing an id that is already pinned refreshes its expiry
-                rather than adding a second pin — used for IMPLICIT_PIN_ID so pinless
-                callers share one long-lived pin per model.
-
-        Returns:
-            str: A unique pin ID that can be used to unpin the model.
+        `pin_id` lets a caller reuse a specific id instead of generating a fresh one —
+        passing an id that is already pinned refreshes its expiry rather than adding a
+        second pin, which is how IMPLICIT_PIN_ID lets pinless callers share one
+        long-lived pin per model.
         """
-        # Determine the model path
         if model_name in self._avail_models:
             model_path = self._avail_models[model_name]
         else:
@@ -758,20 +671,11 @@ class Manager:
             return pin_id
 
     async def unpin_model(self, model_name: str, pin_id: str) -> None:
-        """
-        Unpin a model using the provided pin ID.
-
-        Args:
-            model_name (str): Name of the model to unpin.
-            pin_id (str): The unique pin ID returned by `pin_model`.
-
-        Raises:
-            ValueError: If the model or pin ID is not found.
-        """
+        """Unpin a model using the pin ID returned by `pin_model`. Raises ValueError if
+        the model or pin ID is not found."""
         if model_name not in self._pinned_models or pin_id not in self._pinned_models[model_name].pins:
             raise ValueError(f"Pin ID '{pin_id}' for model '{model_name}' not found.")
 
-        # Remove the pin
         del self._pinned_models[model_name].pins[pin_id]
         logger.debug(f"Model '{model_name}' unpinned with ID '{pin_id}'.")
 
@@ -874,20 +778,8 @@ class Manager:
         shared_pre: Optional["_SharedPreprocess"] = None,
         **kwargs,
     ) -> InferenceResult:
-        """
-        Recognize objects in an image using a specified model.
-
-        Args:
-            model_name (str): Name of the model to use for recognition.
-            image (np.ndarray): The input image in BGR format.
-            conf_thresh (float): Confidence threshold for detections.
-            pin_id (str): pin_id to refresh if using a pinned model
-            return_annotated_img (bool): Whether to return the annotated image.
-            **kwargs: Additional parameters to pass to the inference backend.
-
-        Returns:
-            Tuple[InferenceResult, Optional[np.ndarray]]:
-                - An InferenceResult with information from the recognition
+        """Run object recognition on an image (BGR) with the given model. `pin_id`, if
+        given, refreshes that pin's expiry rather than borrowing a fresh one.
         """
         model = await self._ensure_loaded(model_name, pin_id)
 

@@ -44,9 +44,7 @@ ORIGIN = {"name": "PurrView"}
 #: and sortable as one family in the device list instead of N unrelated rows. Neither
 #: touches `ids`, so no entity is re-registered by adding them.
 #:
-#: The stronger grouping is `via_device`, which `_device` sets — see there. An earlier
-#: version of this comment claimed the discovery device object had no such key; that was
-#: wrong, and the flat device list it resigned itself to was the consequence.
+#: The stronger grouping is `via_device`, which `_device` sets — see there.
 MANUFACTURER = "PurrView"
 
 #: Namespace on every device id this app publishes, and — via `owns_config_topic` —
@@ -200,10 +198,9 @@ def _device(ids: str, name: str, model: str, via: bool = True) -> Dict[str, Any]
     That is the at-a-glance "these are one integration" view; MQTT-discovered devices
     otherwise land in one flat list with everything else on the broker.
 
-    This contradicts an earlier comment here claiming the discovery device object has no
-    `via_device`. It does — verified against HA 2026.7.4 by publishing a device
-    declaring one and reading `via_device_id` back off the device registry. The key is
-    not abbreviated, unlike its neighbours.
+    Verified against HA 2026.7.4 by publishing a device declaring `via_device` and
+    reading `via_device_id` back off the device registry. The key is not abbreviated,
+    unlike its neighbours.
 
     It does not touch `ids`, so adding it re-registers nothing.
     """

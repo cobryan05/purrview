@@ -569,7 +569,6 @@ class Manager:
         """
         Deletes a label from the database
         """
-        # Check if the label has a parent
         child_uuids = await self._db_client.get_label_children(label_uuid)
         if child_uuids:
             raise ValueError(f"Cannot delete label '{label_uuid}' because it has child labels.")
@@ -591,26 +590,17 @@ class Manager:
         """
         Update a label's name, color, label_type, scope, and/or parent.
 
-        Args:
-            label_uuid (str): uuid of the label to update.
-            name (Optional[str]): New name for the label.
-            color (Optional[str]): New color for the label.
-            label_type (Optional[LabelType]): New label type.
-            scope (Optional[LabelScope]): New label scope.
-            publish_to_ha (Optional[bool]): Whether this label gets a Home Assistant
-                device at all. Does not affect detection, events or history.
-            publish_per_source (Optional[bool]): Whether it also gets the finest
-                (label x rule x source) counter tier. Off by default — see the column's
-                comment in `types.py` for why this one is the cardinality risk.
-            parent_uuid: New parent uuid ("move" the label), or None to promote
-                the label to root. Uses the sentinel default `_PARENT_UUID_NOT_SET`
-                (rather than `None`) because `None` is itself a meaningful value
-                here (promote to root) distinct from "the caller didn't ask to
-                change the parent at all".
+        `publish_to_ha` controls whether the label gets a Home Assistant device at all;
+        `publish_per_source` additionally opts into the finest (label x rule x source)
+        counter tier — see the column's comment in `types.py` for why that one is the
+        cardinality risk.
 
-        Raises:
-            ValueError: if `parent_uuid` would make the label its own parent, or
-                a descendant of itself (a cycle).
+        `parent_uuid` moves the label (None promotes it to root); it defaults to the
+        sentinel `_PARENT_UUID_NOT_SET` rather than `None` because `None` is itself a
+        meaningful value here, distinct from "don't touch the parent".
+
+        Raises ValueError if `parent_uuid` would make the label its own parent or
+        descendant (a cycle).
         """
         # `None` means "not supplied" for every key here, which is why the two booleans
         # can live in the same filtered dict: `False` is not `None`, so turning a flag
@@ -680,9 +670,7 @@ class Manager:
         return uuid_to_node
 
     async def get_labels(self) -> List[Label]:
-        """
-        Gets a list of all labels
-        """
+        """Get a list of all labels."""
         return list((await self.get_label_uuid_map()).values())
 
     ################################################################################
@@ -690,9 +678,7 @@ class Manager:
     ################################################################################
 
     async def get_avail_sources(self) -> List[Source]:
-        """
-        List all sources managed by the Manager.
-        """
+        """List all sources managed by the Manager."""
         sources = await self._db_client.get_sources()
         return sources
 
@@ -724,14 +710,7 @@ class Manager:
         return tiers
 
     async def create_new_source(self, image_provider: str, provider_params: Dict[str, Any], source_name: str) -> Source:
-        """
-        Create a new source from an image source as a preset image_provider/params
-
-        Args:
-            image_provider (str): The image provider for this source
-            params (Dict[str, Any]): The parameters to pass to the image provider
-            source_name (str): The name given for the new source
-        """
+        """Create a new source from a preset image_provider/params."""
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
@@ -741,12 +720,7 @@ class Manager:
         return ret
 
     async def delete_sources(self, uuid_list: list[str]) -> None:
-        """
-        Delete sources by their UUIDs.
-
-        Args:
-            uuid_list (list[str]): List of source UUIDs to delete.
-        """
+        """Delete sources by their UUIDs."""
         await self._db_client.delete_sources(uuid_list)
 
     async def update_source(
@@ -756,12 +730,7 @@ class Manager:
         provider_params: Dict[str, Any],
         source_name: str,
     ) -> Source:
-        """
-        Updates sources by their UUIDs.
-
-        Args:
-            uuid_list (list[str]): List of source UUIDs to delete.
-        """
+        """Update a source by its UUID."""
         return await self._db_client.update_source(
             source_uuid=source_uuid,
             name=source_name,
@@ -795,21 +764,11 @@ class Manager:
         return saved, sorted(set(orphaned))
 
     async def list_avail_image_providers(self) -> List[str]:
-        """
-        List all available image providers.
-        """
+        """List all available image providers."""
         return list(image_provider_registry.keys())
 
     async def get_image_provider_schema(self, image_provider: str) -> Dict[str, Any]:
-        """
-        Get the schema for a specific image provider.
-
-        Args:
-            image_provider (str): The name of the image provider.
-
-        Returns:
-            Dict[str, Any]: The schema for the image provider.
-        """
+        """Get the params schema for a specific image provider."""
         if image_provider not in image_provider_registry:
             raise ValueError(f"Unknown image provider: {image_provider}")
 
@@ -850,13 +809,7 @@ class Manager:
         return await self._db_client.delete_tag(tag_uuid)
 
     async def update_tag(self, tag_uuid: str, update_data: TagUpdate) -> Optional[Tag]:
-        """
-        Update a tag's fields.
-
-        Args:
-            tag_uuid: The "Who" - used to find the row.
-            update_data: The "What" - the validated fields to change.
-        """
+        """Update a tag's fields (`tag_uuid` selects the row, `update_data` the changes)."""
         changes = update_data.model_dump(exclude_unset=True)
 
         if not changes:
@@ -869,16 +822,12 @@ class Manager:
         return await self._db_client.get_tag_by_uuid(uuid)
 
     async def get_tag_uuid_map(self) -> Dict[str, Tag]:
-        """
-        Get a mapping of tag UUIDs to their SQLModel objects.
-        """
+        """Get a mapping of tag UUIDs to their SQLModel objects."""
         tags: List[Tag] = await self._db_client.list_tags()
         return {tag.uuid: tag for tag in tags}
 
     async def get_tags(self) -> List[Tag]:
-        """
-        Gets a list of all tags
-        """
+        """Get a list of all tags."""
         return await self._db_client.list_tags()
 
     ################################################################################
@@ -898,15 +847,7 @@ class Manager:
     ################################################################################
 
     async def get_image_metadata(self, image_path: Path) -> Optional[ImageRecordRead]:
-        """
-        Get metadata for image by resolving image ID from filename.
-
-        Args:
-            image_path (Path): The path to the image file.
-
-        Returns:
-            Optional[ImageRecordRead]: Full metadata object or None.
-        """
+        """Get metadata for an image by resolving its ID from the filename."""
         safe_path = get_safe_path(self._files_root, image_path)
         if not safe_path or not safe_path.exists():
             return None
@@ -927,17 +868,11 @@ class Manager:
     async def update_image_metadata(self, image_rel_path: str, update: ImageRecordUpdate) -> Optional[ImageRecordRead]:
         """
         Replace the bboxes for an image, persisting to both the DB and the JSON sidecar.
+        Returns the updated ImageRecordRead, or None if the image path is invalid.
 
         The sidecar is written after re-reading the DB so that label and tag *names* are
         stored alongside UUIDs.  Names serve as fallback resolution keys if UUIDs change
         on a future DB rebuild.
-
-        Args:
-            image_rel_path (str): Relative image path.
-            update (ImageRecordUpdate): New bbox data.
-
-        Returns:
-            The updated ImageRecordRead, or None if the image path is invalid.
         """
         safe_path = get_safe_path(self._files_root, image_rel_path)
         if safe_path is None or not safe_path.exists():
@@ -2135,21 +2070,9 @@ class Manager:
         offset: int = 0,
         limit: int = 200,
     ) -> tuple[List[FileEntryRead], bool]:
-        """
-        List files and directories in the given relative path under the root directory.
-
-        Args:
-            rel_path (str): Relative path from the root directory (default: "/").
-            patterns (List[str]): Glob pattern(s) to include (default: "*").
-            exclude_patterns (List[str]): Glob pattern(s) to exclude (default: "").
-            recursive (bool): Whether to list files recursively (default: False).
-            include_db_status (bool): When True, populate uuid on entries that are
-                registered in the image database (default: False).
-            offset (int): Number of entries to skip (default: 0).
-            limit (int): Maximum number of entries to return (default: 200).
-
-        Returns:
-            Tuple of (entries page, has_more flag).
+        """List files and directories under `rel_path`, relative to the root directory.
+        Returns (entries page, has_more flag). `include_db_status=True` populates
+        uuid/bbox_count on entries that are registered in the image database.
         """
         if not self._files_root or not self._files_root.is_dir():
             return [], False
@@ -2208,14 +2131,8 @@ class Manager:
         return entries, has_more
 
     async def create_directory(self, rel_path: str) -> None:
-        """
-        Create a directory under FILES_ROOT.
-
-        Args:
-            rel_path: Path relative to FILES_ROOT (must resolve inside it).
-
-        Raises:
-            ValueError: If the path resolves outside FILES_ROOT or already exists as a file.
+        """Create a directory under FILES_ROOT. Raises ValueError if `rel_path` resolves
+        outside FILES_ROOT or already exists as a file.
         """
         if not self._files_root or not self._files_root.is_dir():
             raise ValueError("FILES_ROOT is not configured")
@@ -2251,17 +2168,12 @@ class Manager:
         already have is a real thing to want to do (a better scan of the same
         frame, say), so the caller is told and decides.
 
-        Args:
-            rel_dir: Destination directory, relative to FILES_ROOT.
-            filename: Client-supplied name; only its basename is honoured.
-            data: Raw file bytes.
-            overwrite: Replace an existing file instead of uniquifying the name.
+        `filename` is client-supplied; only its basename is honoured. `overwrite`
+        replaces an existing file instead of uniquifying the name.
 
-        Returns:
-            {path, uuid, duplicate_of, duplicate_distance, renamed_from}
-
-        Raises:
-            ValueError: unusable destination, rejected extension, or undecodable image.
+        Returns {path, uuid, duplicate_of, duplicate_distance, renamed_from}.
+        Raises ValueError for an unusable destination, rejected extension, or
+        undecodable image.
         """
         if not self._files_root or not self._files_root.is_dir():
             raise ValueError("FILES_ROOT is not configured")
@@ -3878,15 +3790,7 @@ class Manager:
         return png_bytes
 
     async def open_file(self, rel_path: str) -> Optional[Tuple[aiofiles.threadpool.binary.AsyncBufferedReader, str]]:
-        """
-        Securely open a file under the root and return an aiofiles stream and filename.
-
-        Args:
-            rel_path (str): Relative path under the image root.
-
-        Returns:
-            Tuple[aiofiles.AsyncBufferedReader, str] or None
-        """
+        """Securely open a file under the root; returns (stream, filename) or None."""
         if not self._files_root or not os.path.isdir(self._files_root):
             logger.warning("Root directory not set or invalid")
             return None

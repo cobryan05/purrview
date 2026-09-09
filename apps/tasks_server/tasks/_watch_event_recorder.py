@@ -84,13 +84,11 @@ logger = logging.getLogger(__name__)
 #: The clip is on the relay's record clock and the boxes are on the watcher's fetch
 #: clock (see `build_overlay`), and this is the knob for the disagreement between them.
 #:
-#: **Defaults to 0, and the reason is worth keeping.** A value of 1.0 was set from
-#: `scripts/measure_overlay_lag.py`, which reported boxes lagging the picture by ~1.2 s.
-#: Direct observation of a clip then showed the boxes running *ahead* — the opposite
-#: sign — and the correction had made it worse. The script's peaks were barely above
-#: their baseline, and the sidecar samples at well under 1 Hz, so its resolution is no
-#: better than the effect it is measuring. Do not set this from that script alone;
-#: set it from what a clip actually looks like.
+#: Defaults to 0. `scripts/measure_overlay_lag.py` once suggested 1.0, but direct
+#: observation showed boxes running *ahead* after that correction — the opposite of what
+#: the script reported — and its resolution is no better than the effect it measures (the
+#: sidecar samples at well under 1 Hz). Don't set this from that script alone; set it from
+#: what a clip actually looks like.
 #:
 #: An env var rather than a per-source column because it describes the deployment's
 #: ingest path — same relay, same ffmpeg, same buffering for every camera behind it.

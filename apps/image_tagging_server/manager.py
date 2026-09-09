@@ -239,7 +239,6 @@ class Manager:
                 "message": f"Wrong server type — expected '{expected_service}', got '{actual_service}'",
             }
 
-        # Build a human-readable info string from the config
         info_parts = [actual_service]
         if "models_path" in config:
             info_parts.append(f"models path: {config['models_path']}")

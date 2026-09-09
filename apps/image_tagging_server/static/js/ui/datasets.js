@@ -347,7 +347,7 @@ export async function renderDatasetManager({ target = 'dataset-management-box' }
                 labelUuids: formHandle.getLabelUuids(),
                 // "+ New" on this screen means a Dataset. Stated explicitly
                 // rather than leaning on the server default: with one table and
-                // two nouns, every creating path must name the flag (PR 5.1).
+                // two nouns, every creating path must name the flag.
                 promoted: true,
               });
               setDirty(false);

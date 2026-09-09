@@ -20,11 +20,10 @@ const STATUS_COLORS = {
   error: '#F44336',
 };
 
-// The base Task ships a status_schema() that reproduces this exact layout
-// (progress bar + status/error message + log tail) — this is the fallback
-// used when the backend hasn't landed yet, the fetch fails, or a typename
-// has no schema registered. It is what makes every pre-Phase-3 task card
-// render identically to before.
+// Fallback layout (progress bar + status/error message + log tail), used when
+// the schema fetch fails or a typename has no schema registered. Matches what
+// the base Task's own status_schema() ships, so any task without a custom
+// schema still renders correctly.
 const DEFAULT_STATUS_SCHEMA = [
   { id: 'progress', type: 'progress_bar', source: 'summary' },
   { id: 'statusMessage', type: 'text', source: 'summary' },
@@ -38,14 +37,11 @@ const STATUS_DATA_POLL_MS = 5000;
 /**
  * Last status-data payload seen per task uuid.
  *
- * renderActiveTasks rebuilds every card whenever the poll fingerprint changes,
- * and a running task changes it constantly (each new log line). A freshly built
- * card starts with empty widget slots and only fills them once its own
- * status-data fetch returns — so an expanded card briefly collapses to a
- * fraction of its height, the browser clamps the page scroll to the shorter
- * document, and the user is thrown to the top mid-read. Seeding the rebuilt card
- * from this cache keeps its height stable across the swap (and stops the widgets
- * flashing empty every few seconds).
+ * renderActiveTasks rebuilds every card on each poll fingerprint change (every
+ * log line, for a running task). A freshly built card starts with empty widget
+ * slots until its own status-data fetch returns, which briefly collapses the
+ * card's height and throws page scroll to the top mid-read. Seeding the
+ * rebuilt card from this cache keeps its height stable across the swap.
  */
 const _lastStatusDataByTask = new Map();
 // Rebuilt cards are keyed by uuid, so the map would otherwise grow for the life

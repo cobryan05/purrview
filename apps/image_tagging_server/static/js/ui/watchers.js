@@ -41,16 +41,13 @@ const RELATIONS = [
 ];
 
 // Whether the event spans the rule or is an instant at one of its edges. Worded as the
-// tail of the row's sentence rather than as `while / on_enter / on_exit`, which name the
-// implementation and not the choice.
+// tail of the row's sentence rather than `while / on_enter / on_exit`, which name the
+// implementation, not the choice.
 //
-// ⚠️ These say **event**, never "records". A rule does not record anything and cannot
-// know whether it ever will — recording is one of several actions, scoped separately,
-// and a rule may well have none attached. The wording used to promise "Records the whole
-// time", which is wrong twice over: it claims an action the rule does not own, and for
-// the two impulses it is not even true of the action, whose footage comes entirely from
-// its own pre-roll and post-roll (see the tooltip, and `RuleSpec.trigger` in
-// `apps/helpers/watch/rules.py`). What the user is picking is how long the *event* lasts.
+// ⚠️ Say **event**, never "records": a rule doesn't own recording (that's a separately
+// scoped action, and a rule may have none attached), and the footage itself comes from
+// the action's own pre-roll/post-roll regardless of this setting (see `RuleSpec.trigger`
+// in apps/helpers/watch/rules.py). The old "Records the whole time" wording claimed both.
 const RULE_TRIGGERS = [
   { key: 'while', text: 'Event the whole time' },
   { key: 'on_enter', text: 'Event the moment it starts' },
@@ -1036,11 +1033,10 @@ function bufferBadgeFor(plan) {
  * The `buffer s` field's help. A constant because `refreshBadge` rewrites the input's
  * own title to explain an unbuffered source, and has to be able to put this back.
  */
-// Deliberately opens by saying what this is *not*. The previous wording — "so a clip can
-// start before the rule fired" — described this field by naming the pre-roll setting's
-// job, and the reasonable conclusion was that this is where you choose your lead-in.
-// Shortening it to a preferred pre-roll then quietly starves the clip drain, and the only
-// symptom is that long events lose their opening.
+// Deliberately opens by saying what this is *not* — the previous wording described the
+// pre-roll setting's job instead, which read as "this is where you choose your lead-in."
+// Shortening the buffer to a preferred pre-roll starves the clip drain instead, and the
+// only symptom is that long events lose their opening.
 const BUFFER_SECONDS_HELP =
   'How much video this camera keeps rewindable, in seconds. Blank uses the default, which is '
   + 'almost always right. This is NOT the pre-roll setting: how much lead-in a clip gets is set '

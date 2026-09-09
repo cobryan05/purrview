@@ -1,19 +1,12 @@
 /**
- * "Run Model on Results" — Chunk B.
+ * "Run Model on Results": wires the review-browser toolbar button to resolve
+ * the candidate bbox/image scope from the current selection/filter, warn and
+ * let the user cap large candidate counts, run a detector via a temporary
+ * `PreviewModelRelabelTask` (polled to completion, cancelable), and hand the
+ * resulting candidate relabels off to `openRelabelConfirmationModal`.
  *
- * Wires the review-browser toolbar button to:
- *  1. resolve the candidate bbox/image scope from whatever the user currently
- *     has selected/filtered (mirrors the existing Bulk Apply / Apply to All split),
- *  2. warn on large candidate counts (above WARN_THRESHOLD) and let the user cap
- *     how many to process — but with no hard ceiling; "process all" is allowed,
- *  3. let the user pick a detector model + conf/IoU thresholds in a run dialog,
- *  4. launch `PreviewModelRelabelTask` (a temporary, one-shot task config),
- *     poll it to completion with a cancel button, and
- *  5. hand the resulting candidate relabels off to the (Chunk C) confirmation
- *     modal via `openRelabelConfirmationModal`.
- *
- * This module owns all of that logic so review/main.js only needs a button
- * and a one-line call into `runModelOnResultsFlow`.
+ * Owns all of that so review/main.js only needs a button and a one-line call
+ * into `runModelOnResultsFlow`.
  */
 
 import {
@@ -363,7 +356,7 @@ export function makeCandidateBboxAdapter(candidate, cardEl, previewController) {
 }
 
 /**
- * Confirmation modal for "Run Model on Results" (Chunk C). Lets the user
+ * Confirmation modal for "Run Model on Results". Lets the user
  * review the server's proposed relabels, pick relabel-vs-delete, check/uncheck
  * individual candidates, and apply the result via `bulkApplyBboxesByUuids`
  * (grouped by proposed label for the relabel case, one call for delete).
@@ -2034,7 +2027,7 @@ async function _showRunDialog(bboxScope, ctx, preResolvedImageScope = null) {
  * @param {Map<string, object>} ctx.labels
  * @param {string} ctx.sortBy
  * @param {string} ctx.sortOrder
- * @param {() => void} ctx.refresh - reload the current review-panel page after apply (Chunk C).
+ * @param {() => void} ctx.refresh - reload the current review-panel page after apply.
  */
 export async function runModelOnResultsFlow(ctx) {
   let scope;

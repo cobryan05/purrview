@@ -4,37 +4,21 @@
  * Pure data + lookup helpers, no DOM. Consumed by hyperparamsFieldset.js to
  * prefill (never lock) batch_size/imgsz when a user picks a GPU VRAM tier.
  *
- * Sourcing notes (per architecture family):
+ * Sourcing notes (per architecture family): only one cell per family/scale is an
+ * OFFICIAL published anchor — everything else is DERIVED from it by halving/doubling
+ * batch size per doubling/halving of VRAM, clamped to imgsz in [320, 640].
  *
- * - Ultralytics YOLOv8 / YOLO11 / YOLO12 / Ultralytics-YOLOv9 (yolov9t..e):
- *   Ultralytics' own docs/release notes only publish one reference config per
- *   scale — batch=16 @ imgsz=640 on a 16GB-class card (their CI/benchmark
- *   default, repeated across the v8/v9/11/12 docs and `train` examples). That
- *   cell (16GB tier) is treated as the OFFICIAL anchor per scale; every other
- *   VRAM tier for these families is DERIVED by halving/doubling batch size
- *   per doubling/halving of available VRAM, then rounding to a common batch
- *   size, and clamped so imgsz never exceeds 640 (the trained/exported
- *   default) or drops below 320 (Ultralytics' documented minimum useful
- *   stride-32 size). Larger scales (l/x) get a smaller batch at the same
- *   VRAM tier than smaller scales (n/s/m), matching the well-known inverse
- *   relationship between parameter count and max batch size at fixed imgsz —
- *   this shape is documented qualitatively (Ultralytics docs: "decrease
- *   batch size if you run out of memory") but the exact numbers below past
- *   the 16GB anchor are derived, not officially published.
- *
- * - LibreYOLO9 (yolo_v9_t/s/m/c/e): LibreYOLO9's own training docs give
- *   batch=16 @ imgsz=640 as the reference config for the small/tiny scales on
- *   an 8GB card (their quoted minimum-viable card), and batch=8 @ imgsz=640
- *   on 8GB for the mid/large (m/c/e) scales. Those two cells are the OFFICIAL
- *   anchors; other tiers are derived the same way as above.
- *
- * - NMS-free (YOLOv10 n/s/m/b/l/x, YOLO26 n/s/m/l/x): both families are
- *   drop-in architecture swaps in the same Ultralytics `YOLO(...).train()`
- *   pipeline (confirmed in ultralytics_detection_trainer.py) and Ultralytics'
- *   own YOLOv10 docs quote the SAME batch=16 @ imgsz=640 reference config as
- *   the rest of the modern Ultralytics line. Treated as sharing the
- *   Ultralytics anchor/derivation above (NMS-free heads are a minor tensor
- *   shape change, not a materially different memory footprint at train time).
+ * - Ultralytics YOLOv8/YOLO11/YOLO12/Ultralytics-YOLOv9: anchor is batch=16 @
+ *   imgsz=640 @ 16GB (Ultralytics' own CI/benchmark default, repeated across their
+ *   docs). Larger scales (l/x) get a smaller batch at the same tier than smaller
+ *   scales (n/s/m), per Ultralytics' documented (but not numerically specified)
+ *   guidance to shrink batch size for bigger models.
+ * - LibreYOLO9 (yolo_v9_t/s/m/c/e): anchors are batch=16 @ imgsz=640 @ 8GB for
+ *   tiny/small scales, batch=8 @ imgsz=640 @ 8GB for mid/large — per LibreYOLO9's
+ *   own training docs.
+ * - NMS-free (YOLOv10, YOLO26): same architecture pipeline and reference config as
+ *   the Ultralytics line above (confirmed in ultralytics_detection_trainer.py), so
+ *   they share its anchor/derivation.
  *
  * Do not invent precise-looking numbers beyond what's documented — if a new
  * architecture prefix is added to MODEL_TYPE_ARCHITECTURES without a table

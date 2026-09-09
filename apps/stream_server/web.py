@@ -72,15 +72,7 @@ class WebApp:
         )
         @self._app.get("/server-config", response_class=JSONResponse)
         async def server_config(request: Request):
-            """
-            Get server configuration params
-
-            Args:
-                request (Request): The incoming request.
-
-            Returns:
-                JSONResponse: Server configuration parameters.
-            """
+            """Get server configuration params."""
             try:
                 server_config = await self._manager.get_server_config()
                 response_data = {"status": "success", "config": server_config}

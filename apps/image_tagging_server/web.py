@@ -306,16 +306,10 @@ class WebApp:
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
-        """
-        Lifespan event handler for startup and shutdown logic.
-
-        Args:
-            app (FastAPI): The FastAPI application instance.
-        """
         logging.info("Application is starting up...")
         await self._manager.start()
 
-        yield  # This allows the app to run
+        yield
 
         logging.info("Application is shutting down...")
 
@@ -387,15 +381,7 @@ class WebApp:
         )
         @self._app.get("/server-config", response_class=JSONResponse)
         async def server_config(request: Request):
-            """
-            Get server configuration params
-
-            Args:
-                request (Request): The incoming request.
-
-            Returns:
-                JSONResponse: Server configuration parameters.
-            """
+            """Get server configuration params."""
             try:
                 server_config = await self._manager.get_server_config()
                 response_data = {"status": WebApp.SUCCESS_KEY, "config": server_config}

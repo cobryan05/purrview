@@ -341,11 +341,10 @@ function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
 //
 //     [rails][caret][swatch][name][kids?] ……… [mode extras][hover actions]
 //
-// The rows this replaced were assembled from createGenericRow + EditableField,
-// which put four bordered 28px emoji buttons *before* the name — ~32px of height
-// per row, and a name whose x position moved with depth, so there was no column
-// to scan. Actions are now icon-only, right-aligned and revealed on hover; depth
-// is carried by hairline rails instead of raw padding.
+// Replaces the old createGenericRow + EditableField rows, which put bordered
+// emoji buttons before the name (taller rows, no scannable name column).
+// Actions are now icon-only, right-aligned and hover-revealed; depth is
+// carried by hairline rails instead of raw padding.
 
 // ── Collapse state ──────────────────────────────────────────────────────────
 // Kept outside the component because every mutation re-mounts the whole list
@@ -1116,19 +1115,13 @@ async function mountSelectMode(container, { runtime, filter }) {
   /**
    * Re-apply unsaved marks on top of a freshly fetched server snapshot.
    *
-   * Every server read is a snapshot from the moment the request was *issued*, so
-   * anything the user marked while it was in flight is missing from it. Writing
-   * the response straight into `serverStates` therefore silently undoes those
-   * marks on screen — the "I hit Mark absent, it showed absent, then reverted"
-   * bug. The marks themselves are still queued in `pendingFlush` and would land
-   * on the next save, which makes the UI actively lie about what will be
-   * written. The fetch window widens with database size (the label-state read
-   * competes with the training-run stats/readiness aggregates), which is why
-   * this only shows up on a busy install.
-   *
-   * `pendingFlush` is the authority for anything it holds: it is cleared when
-   * the image changes and when a flush succeeds, so an entry in it always means
-   * "the user asked for this, and the server has not been told yet".
+   * A server read is a snapshot from when the request was issued, so a mark
+   * made while it was in flight is missing from it — writing the response
+   * straight into `serverStates` would silently revert marks still queued in
+   * `pendingFlush` for the next save (mark absent, see absent, watch it flip
+   * back). `pendingFlush` is the authority for anything it holds: cleared on
+   * image change and on successful flush, so an entry always means "asked for,
+   * not yet told to the server".
    * @param {Map<string, 'present'|'absent'>} states
    */
   function applyPendingOver(states) {

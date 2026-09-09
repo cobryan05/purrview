@@ -125,9 +125,7 @@ export async function setCanvasViewport(canvas, viewport, size) {
     }
   });
 
-  // Sync Transformer
-  // This ensures that if a box is selected, the selection handles
-  // move with the box during zoom/pan.
+  // Keep the selection handles glued to the box during zoom/pan.
   if (transformer && transformer.nodes().length > 0) {
     transformer.forceUpdate();
   }

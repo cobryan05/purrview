@@ -3,12 +3,10 @@
 // A list-beside-editor screen (ui/utils/listEditorScreen.js), the same shape as
 // Datasets / Model Shapes / Training Runs / Filter Chains.
 //
-// It used to be a `.config-column` holding the source list *and* a permanently
-// expanded "Create Source" form, with editing done inline inside a list row.
-// That put the schema form in half a pane, under everything else, so filling one
-// in meant scrolling past every existing source first. Here the list is a narrow
-// column, the form owns the rest of the pane, and Save/Delete/Test live in bars
-// that don't scroll away.
+// Used to be a `.config-column` with the list plus a permanently expanded
+// "Create Source" form and inline row editing — the schema form ended up in
+// half a pane, under everything, so filling one in meant scrolling past every
+// existing source. Now the list is a narrow column and the form owns the rest.
 
 import { runPreviewSourceTest, showPaneError, toast } from './utils/index.js';
 import { buildPanelEditorBar } from '/app-static/js/ui/utils/panelEditorBar.js';

@@ -68,19 +68,12 @@ async function settle(fn) {
 }
 
 // ── "+N since last run" on training cards ────────────────────────────────────
-//
-// Images that would go into a run started now, minus the images that trained the
-// model this config last produced — the delta the training config's coverage
-// panel shows, on the screen where the decision to start a run is made.
-//
-// Split into positives and negatives, and never shown as a single total: these
-// datasets are overwhelmingly background, so "+1,100 since last run" routinely
-// means 1,100 confirmed-absence images and no new training signal at all. The
-// same reason readiness itself carries ready_positive_count/ready_negative_count.
-//
-// It costs two readiness queries plus a sidecar read per config — measured
-// 0.05–0.4s each against the live database — so it is loaded off the render
-// path, a few at a time, and cached briefly.
+// Delta between images that would go into a run now vs. images that trained
+// the config's last model. Shown as separate pos/neg counts, never a single
+// total — these datasets are overwhelmingly background, so a combined
+// "+1,100" routinely means zero new training signal. Costs two readiness
+// queries + a sidecar read per config (~0.05-0.4s each), so it's loaded off
+// the render path, a few at a time, and cached briefly.
 
 /** @type {Map<string, {at: number, value: {text: string, tone: string, title: string}}>} */
 const _deltaCache = new Map();
@@ -179,15 +172,11 @@ async function trainingDelta(config) {
 }
 
 // ── "Training in progress" on training cards ─────────────────────────────────
-//
-// A recipe whose model is training right now is the one card you should not be
-// pressing, and the launcher had no way to say so: the run is visible on Running,
-// one sub-tab away, and nowhere else.
-//
-// This deliberately owns no SSE stream. Jobs already holds exactly one (opened
+// Flags a card whose recipe is already training, so it isn't pressed twice.
+// Deliberately owns no SSE stream of its own: Jobs already holds one (opened
 // in app/runs/main.js, closed when the last job ends off-tab — the leak
 // test_leaks_and_races.py guards), so the launcher is *pushed* the task list
-// that stream already delivers rather than subscribing to it a second time.
+// that stream already delivers.
 
 /** Live training runs by training-config uuid, rebuilt on every render. */
 let _runStateByConfig = new Map();

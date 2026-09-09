@@ -410,25 +410,14 @@ class WebApp:
     """Web application for managing inference models and running recognitions"""
 
     def __init__(self, app_name: str, manager: Manager):
-        """
-        Initialize the WebApp with the application name and manager.
+        self._manager: Manager = manager
+        self._app_name: str = app_name
+        self._app: FastAPI = FastAPI(lifespan=self._lifespan)
+        self._templates: Jinja2Templates = Jinja2Templates(directory="/app/templates")
+        self._dflt_args: dict[str, str] = {"app_name": self._app_name}
 
-        Args:
-            app_name (str): Name of the application.
-            manager (Manager): Instance of the Manager class for handling models.
-        """
-        self._manager: Manager = manager  # Manager instance
-        self._app_name: str = app_name  # Name of the application
-        self._app: FastAPI = FastAPI(lifespan=self._lifespan)  # FastAPI instance with lifespan events
-        self._templates: Jinja2Templates = Jinja2Templates(
-            directory="/app/templates"
-        )  # Template engine for rendering HTML
-        self._dflt_args: dict[str, str] = {"app_name": self._app_name}  # Default arguments for templates
-
-        # Mount static files
         self._app.mount("/static", StaticFiles(directory="/app/static", check_dir=False), name="static")
 
-        # Register routes
         self._register_routes()
         self._register_exception()
 
@@ -447,26 +436,14 @@ class WebApp:
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
-        """
-        Lifespan event handler for startup and shutdown logic.
-
-        Args:
-            app (FastAPI): The FastAPI application instance.
-        """
         logging.info("Application is starting up...")
 
-        self._manager.start()  # Start the manager's periodic task
-        yield  # This allows the app to run
+        self._manager.start()
+        yield
 
         logging.info("Application is shutting down...")
 
     def app(self) -> FastAPI:
-        """
-        Return the FastAPI application instance.
-
-        Returns:
-            FastAPI: The FastAPI application instance.
-        """
         return self._app
 
     def _error_response(self, request: Request, message: str):
@@ -540,15 +517,7 @@ class WebApp:
         )
         @self._app.get("/server-config", response_class=JSONResponse)
         async def server_config(request: Request):
-            """
-            Get server configuration params
-
-            Args:
-                request (Request): The incoming request.
-
-            Returns:
-                JSONResponse: Server configuration parameters.
-            """
+            """Get server configuration params."""
             try:
                 server_config = await self._manager.get_server_config()
                 response_data = {

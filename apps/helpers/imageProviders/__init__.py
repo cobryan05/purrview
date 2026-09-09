@@ -1,7 +1,6 @@
 import importlib
 import pathlib
 
-# Get the directory this file is in
 image_provider_dir = pathlib.Path(__file__).parent
 
 # Discover all Python files ending in Provider.py

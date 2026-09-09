@@ -1,30 +1,23 @@
 /**
  * Shared subscription to the task SSE stream (`/api/tasks/stream`).
  *
- * Every open EventSource against this endpoint costs the server a full
- * image_tagging -> tasks -> db round trip per tick, for as long as it stays open.
- * Three separate call sites used to each open their own — the Operations tab, the
- * task-runner section and the source-preview runner — so a single browser tab
- * sitting on Operations with a preview modal open multiplied that cost by three
- * while receiving three copies of the identical payload.
+ * Every open EventSource against this endpoint costs a full image_tagging ->
+ * tasks -> db round trip per tick. Three call sites (Operations tab, task
+ * runners, source-preview runner) used to each open their own, multiplying
+ * that cost on any tab with more than one open. This module keeps exactly one
+ * EventSource alive, fanning it out to every subscriber; it opens on the
+ * first subscriber and closes when the last one leaves.
  *
- * This module keeps exactly one EventSource alive and fans it out to every
- * subscriber. It opens on the first subscriber and closes when the last one
- * leaves, so an idle app still holds no connection at all.
+ * Recovery lives here too because the socket is shared: an EventSource
+ * retries transient drops on its own, but a fully CLOSED one (what the
+ * browser gives you after a 502 or wrong content-type, i.e. a service
+ * restart) never reconnects and would otherwise be handed to every later
+ * subscriber as a dead handle.
  *
- * Sharing one socket means sharing its failures, so recovery lives here too. An
- * EventSource retries transient drops by itself but a fully CLOSED one never
- * comes back — that is what the browser gives you when the endpoint answers 502
- * or a wrong content type, i.e. whenever the service restarts. Left alone it is
- * a dead handle that this module would hand to every later subscriber as well.
- *
- * A hidden tab holds no connection either. Subscribers stay subscribed — the Jobs
- * badge deliberately outlives tab focus while something is running — but a tab
- * parked in the background for the afternoon should not keep costing a round trip
- * twice a second, which is the whole reason that stream is expensive. Everything
- * downstream re-derives from the full payload on each frame, so the only cost of
- * the gap is that the badge is as old as the tab is stale, and it is correct again
- * on the first frame after the user comes back.
+ * A hidden tab drops its connection too — subscribers stay subscribed (the
+ * Jobs badge outlives tab focus on purpose) but a backgrounded tab shouldn't
+ * keep polling twice a second. The badge just goes stale until the tab
+ * regains focus and the next frame catches it up.
  */
 
 import { suspendWhileHidden } from '/app-static/js/shared/visibility.js';

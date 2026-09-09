@@ -9,27 +9,22 @@
  * anchored popups and context menus all share this one stack, so their
  * relative order is defined rather than incidental.
  *
- * ⚠️ The counter is **bounded and self-resetting**. It used to increment
- * forever, which made `#bottom-bars`' documented "above all modals (max
- * ~9999)" arithmetic rather than an invariant: ~900 opens in one session
- * inverted it. Allocation is now clamped to [base, max] from the --layer-*
- * tokens, and rewinds to base once every acquired layer has been released.
+ * ⚠️ The counter is **bounded and self-resetting**, clamped to [base, max] from
+ * the --layer-* tokens and rewound to base once every acquired layer releases.
+ * Unbounded incrementing used to invert `#bottom-bars`' "above all modals (max
+ * ~9999)" arithmetic after ~900 opens in one session.
  *
- * ⚠️ Layer lifetime is tracked by the acquire/release pair, **not** by the ESC
- * stack. The two are not the same interval: overlays routinely allocate their
- * z-index, append themselves, and only register an ESC handler after some
- * awaits (see the review canvas modal). Rewinding the band when the ESC stack
- * happened to empty therefore handed the same z-index to an overlay that had to
- * stack above one already on screen.
+ * ⚠️ Layer lifetime is tracked by the acquire/release pair, **not** the ESC
+ * stack — overlays often allocate their z-index and append before registering
+ * an ESC handler (see the review canvas modal), so rewinding on an empty ESC
+ * stack could hand out a z-index already in use on screen.
  *
- * ⚠️ Backdrop dimming is owned here too, for the same reason: every dialog used
- * to append its **own** full-viewport dimmed overlay, so two nested dialogs
- * compounded two translucent black layers into near-black and three were
- * effectively opaque. Pass the overlay element to acquireModalLayer and only the
- * topmost dialog overlay dims (`data-backdrop="dim"`); the ones below it go
- * transparent (`data-backdrop="clear"`) and are re-dimmed as the stack unwinds.
- * It is driven off acquire/release — the authoritative lifetime — not the ESC
- * stack, so closing the top modal restores the one underneath it exactly.
+ * ⚠️ Backdrop dimming is owned here too, for the same reason: dialogs used to
+ * each append their own full-viewport dimmed overlay, so nested dialogs
+ * compounded into near-black. Pass the overlay to acquireModalLayer to join
+ * the shared backdrop stack — only the topmost dialog dims
+ * (`data-backdrop="dim"`), others go `"clear"` and re-dim as the stack unwinds,
+ * driven off acquire/release rather than the ESC stack.
  */
 
 /** Layer scale, read from tokens.css so the order lives in exactly one place. */
@@ -60,16 +55,12 @@ let _openLayers = 0;
 let _openDialogs = 0;
 
 // ── Background scroll lock ──────────────────────────────────────────────
-// Trapping focus inside a dialog (trapModalFocus) stops the browser from
-// scrolling some OTHER focused/scrollable element, but it does not stop
-// arrow keys / Space / Page Up-Down from falling through to their *default*
-// action of scrolling the viewport itself — that fallback fires whenever the
-// key isn't otherwise handled, independent of what has focus, as long as the
-// focused element doesn't consume it. A dialog full of buttons (or nothing
-// focusable at all) never consumes those keys, so without this the page
-// behind an open dialog kept scrolling on every arrow-key press. Locked on
-// html AND body — whichever one is document.scrollingElement varies by
-// browser/quirks-mode, and locking both is cheap and safe either way.
+// trapModalFocus keeps focus inside the dialog, but arrow keys/Space/PageUp-Down
+// still fall through to the browser's default viewport-scroll action when nothing
+// focused consumes them (a dialog full of buttons never does) — so without this
+// lock, the page behind an open dialog scrolled on every arrow-key press. Locked
+// on both html and body since which one is document.scrollingElement varies by
+// browser/quirks-mode.
 let _scrollLockCount = 0;
 let _prevHtmlOverflow = null;
 let _prevBodyOverflow = null;
@@ -194,23 +185,18 @@ function _bounce(depth, step, halfRange) {
 }
 
 /**
- * How many centred dialogs (createModalShell / the hand-rolled modals that
- * share its acquire/release pair) are currently open. Anchored popups and
- * context menus don't count (see acquireModalLayer's `dialog` param) — those
- * are transient and dismiss on outside click, not the kind of thing a
- * background hotkey should be blocked by.
+ * How many centred dialogs (createModalShell / hand-rolled modals sharing its
+ * acquire/release pair) are currently open. Anchored popups and context menus
+ * don't count — they're transient and dismiss on outside click, not something
+ * a background hotkey should be blocked by.
  *
- * Consumed by hotkeys.js as a per-context baseline, not a plain "is anything
- * open" flag: the canvas editor modal is itself a dialog, so its own hotkeys
- * must keep working while only it is open — they should stop only once
- * something opens *on top* of it (e.g. the "unsaved changes?" confirm shown
- * mid-navigation). hotkeys.js records this count at attach time and compares
- * against it on every keydown, rather than gating on `> 0`.
- *
- * Focus alone can't do this job: a dialog full of buttons never becomes
- * "text entry" focus, so without this a hotkey like ']' (next image) kept
- * reaching the canvas underneath an open confirm dialog — each press re-ran
- * the same guarded navigation and popped another stacked copy of it.
+ * hotkeys.js records this count at attach time and compares against it on
+ * every keydown, rather than gating on `> 0` — a dialog like the canvas editor
+ * modal must keep its own hotkeys working while only it is open, and stop only
+ * once something opens on top of it (e.g. an "unsaved changes?" confirm).
+ * Focus can't do this job: a dialog full of buttons never becomes "text entry"
+ * focus, so without this, hotkeys like ']' (next image) reached the canvas
+ * underneath an open confirm dialog.
  */
 export function openDialogCount() {
   return _openDialogs;

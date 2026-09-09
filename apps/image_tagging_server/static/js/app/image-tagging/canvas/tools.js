@@ -33,7 +33,6 @@ export function clearSelection() {
   // state.imageTagging?.canvas?.stage?.batchDraw();
 }
 
-// Set the current tool, update UI and cursor
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {string} tool

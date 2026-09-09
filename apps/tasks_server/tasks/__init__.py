@@ -1,7 +1,6 @@
 import importlib
 import pathlib
 
-# Get the directory this file is in
 task_dir = pathlib.Path(__file__).parent
 
 # Discover all Python files ending in _task.py

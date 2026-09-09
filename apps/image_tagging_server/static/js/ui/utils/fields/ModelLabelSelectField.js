@@ -39,7 +39,6 @@ export class ModelLabelSelectField extends Field {
     const models = await fetchModelsList();
     await instance._handleModelChange(modelName, labelValues);
 
-    // Initialize DropDownField with onChange
     instance._dropDownField = new DropDownField({
       options: models,
       value: modelName,

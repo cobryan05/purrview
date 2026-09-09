@@ -59,7 +59,6 @@ export async function loadImageOntoCanvas(runtime, imageName, { allowCached = fa
   // Unsaved-changes guarding happens at navigation triggers (files.js) *before*
   // the file index moves, so this loader stays a pure load.
 
-  // Create a new load id and invalidate all previous loads for this canvas instance
   const loadId = ++runtime.canvas.activeImageLoadId;
   /** @type {import('@domain_image').UIImage} */
   const imageInfo = await fetchImage(imageName, { allowCached });

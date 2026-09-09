@@ -126,13 +126,11 @@ export function buildFilenameTerms(conditions, filenameMatchMode = 'any') {
  * rather than each re-deriving the same term-assembly logic independently,
  * which had drifted out of sync between them.
  *
- * As of PR 1.4b the request body carries a single `terms` list (the
- * discriminated-union filter-term model) instead of the old flat fields
- * (tagUuids, labelUuids, imageLabelFilters, filenameSearch, ...) — those
- * flat ImageSearchParams fields were deleted server-side. This function's
- * *option* shape (the caller-facing opts object) is unchanged; only what it
- * serialises onto the wire changed, so every call site below keeps working
- * unmodified.
+ * The request body carries a single `terms` list (the discriminated-union
+ * filter-term model), not the old flat fields (tagUuids, labelUuids,
+ * imageLabelFilters, filenameSearch, ...) — those were deleted server-side.
+ * This function's *option* shape (the caller-facing opts object) is
+ * unchanged; only what it serialises onto the wire changed.
  *
  * @param {object} opts - same shape as fetchReviewQueue's opts, plus `limit`
  *   left `undefined` to omit the field entirely (bulkApplyImages paginates
@@ -264,15 +262,14 @@ function buildReviewFilterBody({
   for (const c of imageLabelConditions) {
     // 'uncertain' (the condition-panel's "never assessed" state) maps to the
     // term model's 'unreviewed' (NOT EXISTS any row) — the correct semantic
-    // equivalent; the pre-1.4b flat ImageLabelFilter.status='uncertain' path
-    // queried image_labels.status == 'uncertain', which per the tri-state
-    // invariant (a row only ever exists for present/absent) always matched
-    // zero rows. See PR 1.4b report for detail.
+    // equivalent. A status='uncertain' row can never exist (the tri-state
+    // invariant only stores present/absent), so querying for it literally
+    // would always match zero rows.
     const state = c.state === 'uncertain' ? 'unreviewed' : c.state;
-    // rollUp/negate (slice 3, PR 3.2): default to the server's own defaults
-    // (roll_up: true, negate: false — apps/helpers/db/types.py's
-    // ImageLabelTerm) when the condition predates the UI control that sets
-    // them, so existing saved presets/datasets keep behaving as before.
+    // rollUp/negate default to the server's own defaults (roll_up: true,
+    // negate: false — apps/helpers/db/types.py's ImageLabelTerm) when the
+    // condition predates the UI control that sets them, so existing saved
+    // presets/datasets keep behaving as before.
     terms.push({ kind: 'imageLabel', labelUuid: c.labelUuid, state, rollUp: c.rollUp ?? true, negate: c.negate ?? false });
   }
   for (const c of imageTagConditions) {
