@@ -20,7 +20,7 @@ ALEMBIC_INI_PATH = Path(__file__).parent / "alembic.ini"
 import jstyleson
 from alembic.runtime.migration import MigrationContext
 from pydantic import TypeAdapter
-from sqlalchemy import Select, and_, case, delete, event, exists, func, or_, text, true, union
+from sqlalchemy import Select, and_, case, delete, distinct, event, exists, func, or_, text, true, union
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -5029,25 +5029,25 @@ class DbClient:
     ) -> Optional[dict]:
         """Return ready/needs-review/not-started counts for a training config's datasets (union).
 
-        An image is 'ready' when every target label has an explicit PRESENT or ABSENT
-        row in image_labels (verified_count >= readiness_threshold); 'needs_review' when
-        it has partial coverage (0 < verified_count < readiness_threshold) AND at least
-        one target label is verified PRESENT (i.e. the image actually contains one of
-        the training-set labels); 'not_started' otherwise — including images whose only
-        verifications are ABSENT, since they haven't surfaced any in-scope label yet.
+        An image is 'ready' when every *class* is accounted for — a verified bbox or
+        an explicit ABSENT for an object-scope class, any explicit PRESENT/ABSENT for
+        an image-scope one. 'needs_review' is partial coverage plus something
+        positive; 'not_started' is everything else, including images whose only
+        decisions are ABSENT, since they haven't surfaced any in-scope class yet.
 
         ready_count is further split into positive/negative samples: an image is a
-        POSITIVE sample when at least one in-scope label is verified PRESENT, and a
-        NEGATIVE (background) sample when it is fully verified but every in-scope label
-        is ABSENT. The split matters because a dataset can be overwhelmingly background
-        — 'ready' alone reads as far more training signal than actually exists.
+        POSITIVE sample when at least one class is positive on it, and a NEGATIVE
+        (background) sample when it is fully accounted for and none are. The split
+        matters because a dataset can be overwhelmingly background — 'ready' alone
+        reads as far more training signal than actually exists.
         ready_positive_count + ready_negative_count == ready_count.
 
-        When rollup is active (any node has roll_up_unchecked=True) an image is
-        considered ready as soon as ANY ONE of the in-scope labels is verified,
-        because child annotations all roll up to their parent label. Since the
-        readiness_threshold is then 1, there is no possible partial state, so
-        needs_review_count is always 0 under rollup.
+        Rollup children are not classes: they annotate their parent, so verifying one
+        accounts for the parent and the parent alone. This is emphatically NOT "any
+        one verified label makes the image ready", which is what rollup used to mean
+        here — under that rule an image could be ready with most of its classes never
+        looked at, and the images went to the trainer as though those classes were
+        absent. See _class_coverage.
 
         *restrict_to_image_uuids* narrows every count to that subset of the dataset
         union (None = the whole union). Mirrors get_training_config_label_stats:
@@ -5064,8 +5064,9 @@ class DbClient:
             return None
         dataset_uuids = tc.dataset_uuids
 
-        label_uuids, rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
-        is_rollup = bool(rollup_map)
+        label_uuids, class_uuids, effective_for_class, labels_map, is_rollup = await self._readiness_class_shape(
+            tc.model_config_node_uuid
+        )
 
         if not label_uuids:
             return {
@@ -5079,13 +5080,11 @@ class DbClient:
                 "roll_up_active": False,
             }
 
-        # With rollup, any one verified label means the image is ready.
-        readiness_threshold = 1 if is_rollup else len(label_uuids)
-
         counts = await self._readiness_counts(
             dataset_uuids,
-            label_uuids,
-            readiness_threshold,
+            class_uuids,
+            effective_for_class,
+            labels_map,
             restrict_to_image_uuids,
         )
         return {
@@ -5094,6 +5093,82 @@ class DbClient:
             "label_uuids": label_uuids,
             "roll_up_active": is_rollup,
         }
+
+    async def _readiness_class_shape(
+        self, model_config_node_uuid: Optional[str]
+    ) -> tuple[List[str], List[str], Dict[str, List[str]], Dict[str, Any], bool]:
+        """(label_uuids, class_uuids, effective_for_class, labels_map, is_rollup).
+
+        A rollup child is not a class of its own — it annotates its parent — so the
+        classes are the label list minus every rollup child, and each class carries
+        the raw label UUIDs that can speak for it.
+        """
+        label_uuids, rollup_map = await self._derive_labels_for_node(model_config_node_uuid)
+        if not label_uuids:
+            return [], [], {}, {}, False
+
+        rollup_children = {child for children in rollup_map.values() for child in children}
+        class_uuids = [lu for lu in label_uuids if lu not in rollup_children]
+        effective_for_class = {cu: [cu, *rollup_map.get(cu, [])] for cu in class_uuids}
+
+        async with self._async_session_maker() as session:
+            rows = (await session.exec(select(Label).where(Label.uuid.in_(class_uuids)))).all()
+        return label_uuids, class_uuids, effective_for_class, {lbl.uuid: lbl for lbl in rows}, bool(rollup_map)
+
+    async def _class_coverage(
+        self,
+        image_uuids: List[str],
+        class_uuids: List[str],
+        effective_for_class: Dict[str, List[str]],
+        labels_map: Dict[str, Any],
+    ) -> tuple[Dict[str, int], set]:
+        """(image -> how many classes are accounted for, images carrying a positive).
+
+        The per-image form of ``_class_coverage_sources``, for the callers that hold a
+        list of image UUIDs rather than a dataset-union select. Same two subqueries, so
+        this cannot drift from what readiness counts.
+        """
+        if not class_uuids or not image_uuids:
+            return {}, set()
+
+        coverage_sel, positives_sel = self._class_coverage_sources(class_uuids, effective_for_class, labels_map)
+        coverage = coverage_sel.subquery()
+        positives_sq = positives_sel.subquery()
+
+        covered: Dict[str, int] = {}
+        positives: set = set()
+        async with self._async_session_maker() as session:
+            for chunk in _chunked(image_uuids):
+                rows = (
+                    await session.exec(
+                        select(coverage.c.image_uuid, func.count(distinct(coverage.c.class_idx)))
+                        .where(coverage.c.image_uuid.in_(chunk))
+                        .group_by(coverage.c.image_uuid)
+                    )
+                ).all()
+                covered.update(dict(rows))
+                positives.update(
+                    (
+                        await session.exec(
+                            select(positives_sq.c.image_uuid).where(positives_sq.c.image_uuid.in_(chunk))
+                        )
+                    ).all()
+                )
+        return covered, positives
+
+    def _readiness_bucket(self, covered: int, total_classes: int, positive: bool) -> str:
+        """The bucket an image falls in. One definition, so the counts, the browse
+        lists and the trainer's manifest cannot disagree about the same image.
+
+        An image whose only decisions are ABSENT has surfaced no in-scope class, so
+        it reads as not_started rather than needs_review — partial coverage alone is
+        not enough to claim someone started reviewing it.
+        """
+        if covered >= total_classes:
+            return "ready_positive" if positive else "ready_negative"
+        if covered > 0 and positive:
+            return "needs_review"
+        return "not_started"
 
     async def _readiness_scope_selects(self, dataset_uuids: List[str]) -> List[Select]:
         """One `SELECT images.uuid` per dataset, carrying that dataset's filters.
@@ -5121,34 +5196,87 @@ class DbClient:
             )
         return selects
 
+    @staticmethod
+    def _class_coverage_sources(
+        class_uuids: List[str],
+        effective_for_class: Dict[str, List[str]],
+        labels_map: Dict[str, Any],
+    ) -> tuple[Select, Select]:
+        """(coverage, positives) as `SELECT image_uuid, class_idx` / `SELECT image_uuid`.
+
+        The same rule ``_class_coverage`` applies in Python, expressed as SQL so
+        readiness can stay a single aggregate over the dataset union rather than
+        enumerating it (see TestReadinessIsAnAggregateNotAnEnumeration — the
+        enumeration cost ~0.6s of event-loop CPU per call, paid twice per config).
+
+        Both halves are keyed on the *class* a raw label speaks for, not the label,
+        which is the whole correction: rollup means more labels than classes, and a
+        count of verified labels cannot tell which classes they landed on.
+        """
+        class_idx = {cu: i for i, cu in enumerate(class_uuids)}
+        raw_to_idx: Dict[str, int] = {}
+        for class_uuid in class_uuids:
+            if labels_map.get(class_uuid) is None:
+                continue
+            for raw in effective_for_class[class_uuid]:
+                raw_to_idx[raw] = class_idx[class_uuid]
+
+        all_raw = set(raw_to_idx)
+        verified_boxes = select(BBoxTagLink.bbox_uuid).where(BBoxTagLink.tag_uuid == VERIFIED_TAG_UUID)
+
+        il_case = case(raw_to_idx, value=ImageLabel.label_uuid)
+        bbox_case = case(raw_to_idx, value=BBox.label_uuid)
+
+        coverage = union(
+            select(ImageLabel.image_uuid.label("image_uuid"), il_case.label("class_idx")).where(
+                ImageLabel.label_uuid.in_(all_raw),
+                ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
+            ),
+            select(BBox.image_uuid.label("image_uuid"), bbox_case.label("class_idx")).where(
+                BBox.label_uuid.in_(all_raw),
+                BBox.uuid.in_(verified_boxes),
+            ),
+        )
+
+        # Positive = the image has surfaced a class, by either medium. Scope is not the
+        # discriminator it looks like: object-scope labels are routinely trained by an
+        # image_classifier node with no boxes drawn at all, so requiring a box here
+        # would read those whole configs as background.
+        positives = union(
+            select(ImageLabel.image_uuid.label("image_uuid")).where(
+                ImageLabel.label_uuid.in_(all_raw),
+                ImageLabel.status == ImageItemStatus.PRESENT,
+            ),
+            select(BBox.image_uuid.label("image_uuid")).where(
+                BBox.label_uuid.in_(all_raw),
+                BBox.uuid.in_(verified_boxes),
+            ),
+        )
+
+        return coverage, positives
+
     async def _readiness_counts(
         self,
         dataset_uuids: List[str],
-        label_uuids: List[str],
-        readiness_threshold: int,
+        class_uuids: List[str],
+        effective_for_class: Dict[str, List[str]],
+        labels_map: Dict[str, Any],
         restrict_to_image_uuids: Optional[list[str]] = None,
     ) -> Dict[str, int]:
         """The five readiness buckets, counted by SQLite rather than in Python.
 
-        This used to enumerate the whole dataset union into memory, fetch a
-        verification count per image, and bucket the result in a Python loop. That
-        is a `GROUP BY` written out by hand: it materialised ~2,200 stub rows and
-        re-read ~88,000 image_label rows per call, and cost ~0.6s of event-loop CPU
-        — paid twice per training config by the launcher, which on a page with ten
-        configs pointing at one dataset meant the same work twenty times over.
+        The bucket definitions mirror ``_readiness_bucket`` (which the list endpoints
+        use) one for one:
 
-        The bucket definitions are unchanged and deliberately mirror the list
-        endpoints one for one:
+        - ready         every class accounted for, split by whether anything is positive
+        - needs_review  partially covered AND something positive (an image whose only
+                        decisions are ABSENT has surfaced no class yet, so it is
+                        not started)
+        - not_started   everything else, including images with no rows at all — hence
+                        the OUTER joins
 
-        - ready         verified >= threshold, split by whether anything is PRESENT
-        - needs_review  partially verified AND something PRESENT (an image whose
-                        only verifications are ABSENT has surfaced no in-scope
-                        label yet, so it is not started)
-        - not_started   everything else, including images with no image_label rows
-                        at all — hence the OUTER join
-
-        `not_started` is derived as the remainder rather than counted, so the
-        buckets cannot drift apart from the total no matter what the predicates do.
+        `not_started` is derived as the remainder rather than counted, so the buckets
+        cannot drift apart from the total no matter what the predicates do.
         """
         empty = {
             "ready_count": 0,
@@ -5157,6 +5285,8 @@ class DbClient:
             "needs_review_count": 0,
             "not_started_count": 0,
         }
+        if not class_uuids:
+            return empty
 
         scope_selects = await self._readiness_scope_selects(dataset_uuids)
         if not scope_selects:
@@ -5168,52 +5298,48 @@ class DbClient:
         # filter can still fan out over a join, so that case needs DISTINCT itself.
         scope = (scope_selects[0].distinct() if len(scope_selects) == 1 else union(*scope_selects)).subquery()
 
-        # The label restriction belongs in the JOIN condition, not a WHERE: an image
-        # with no matching image_label rows must survive as verified=0, and a WHERE
-        # would filter it out of the scope entirely.
+        coverage_sel, positives_sel = self._class_coverage_sources(class_uuids, effective_for_class, labels_map)
+        coverage = coverage_sel.subquery()
+        positives = positives_sel.subquery()
+
+        # Both joins are one-to-many, so the row set is a product — safe here because
+        # COUNT(DISTINCT class_idx) and MAX() are both insensitive to duplicated rows.
         per_image = (
             select(
                 scope.c.uuid.label("uuid"),
-                func.count(case((ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]), 1))).label(
-                    "verified"
-                ),
-                func.count(case((ImageLabel.status == ImageItemStatus.PRESENT, 1))).label("present"),
+                func.count(distinct(coverage.c.class_idx)).label("covered"),
+                func.max(case((positives.c.image_uuid.isnot(None), 1), else_=0)).label("positive"),
             )
             .select_from(
-                scope.outerjoin(
-                    ImageLabel,
-                    and_(
-                        ImageLabel.image_uuid == scope.c.uuid,
-                        ImageLabel.label_uuid.in_(label_uuids),
-                    ),
+                scope.outerjoin(coverage, coverage.c.image_uuid == scope.c.uuid).outerjoin(
+                    positives, positives.c.image_uuid == scope.c.uuid
                 )
             )
             .group_by(scope.c.uuid)
         )
 
-        # Chunked for the same reason _get_image_label_verification_counts is: a
-        # restrict list can exceed SQLite's bind-variable cap. Chunks are disjoint
-        # and every image lands in exactly one bucket, so the per-chunk totals add.
+        # Chunked because a restrict list can exceed SQLite's bind-variable cap.
+        # Chunks are disjoint and every image lands in exactly one bucket, so the
+        # per-chunk totals add.
         chunks: List[Optional[Sequence[str]]] = (
             [None] if restrict_to_image_uuids is None else list(_chunked(list(restrict_to_image_uuids)))
         )
 
+        n_classes = len(class_uuids)
         totals = dict(empty)
         for chunk in chunks:
             stmt = per_image if chunk is None else per_image.where(scope.c.uuid.in_(chunk))
             sq = stmt.subquery()
-            is_ready = sq.c.verified >= readiness_threshold
+            is_ready = sq.c.covered >= n_classes
+            is_positive = sq.c.positive > 0
             agg = select(
                 func.count().label("total"),
                 func.sum(case((is_ready, 1), else_=0)).label("ready"),
-                func.sum(case((and_(is_ready, sq.c.present > 0), 1), else_=0)).label("ready_positive"),
-                func.sum(case((and_(is_ready, sq.c.present == 0), 1), else_=0)).label("ready_negative"),
-                func.sum(
-                    case(
-                        (and_(sq.c.verified < readiness_threshold, sq.c.verified > 0, sq.c.present > 0), 1),
-                        else_=0,
-                    )
-                ).label("needs_review"),
+                func.sum(case((and_(is_ready, is_positive), 1), else_=0)).label("ready_positive"),
+                func.sum(case((and_(is_ready, ~is_positive), 1), else_=0)).label("ready_negative"),
+                func.sum(case((and_(sq.c.covered < n_classes, sq.c.covered > 0, is_positive), 1), else_=0)).label(
+                    "needs_review"
+                ),
             ).select_from(sq)
 
             async with self._async_session_maker() as session:
@@ -5392,9 +5518,6 @@ class DbClient:
 
         in_scope_label_uuids: set[str] = set(class_label_uuids) | set(remap.keys())
 
-        # Collect eligible images: every in-scope label must have a verified PRESENT/ABSENT row.
-        n_labels = len(class_label_uuids)  # number of distinct classes to verify
-
         all_images = await self._enumerate_dataset_union_stubs(dataset_uuids)
 
         if not all_images:
@@ -5402,27 +5525,17 @@ class DbClient:
 
         image_uuids = [img.uuid for img in all_images]
 
-        # Require each distinct top-level class to be verified for the image to qualify.
-        # Rollup children collapse into their parent's class index, so n_labels already
-        # reflects the number of independent annotation decisions needed.
-        readiness_threshold = n_labels
-
         if require_verification:
-            verified_by_image: Dict[str, int] = {}
-            async with self._async_session_maker() as session:
-                for chunk in _chunked(image_uuids):
-                    result = await session.exec(
-                        select(ImageLabel.image_uuid, func.count(ImageLabel.label_uuid))
-                        .where(
-                            ImageLabel.image_uuid.in_(chunk),
-                            ImageLabel.label_uuid.in_(list(in_scope_label_uuids)),
-                            ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
-                        )
-                        .group_by(ImageLabel.image_uuid)
-                    )
-                    verified_by_image.update(dict(result.all()))
+            # Every class must be accounted for individually. Counting verified rows
+            # instead — which is what this did — passes an image whose rows all sit on
+            # a couple of classes while the rest have never been looked at, and those
+            # images then train as though the unreviewed classes were absent.
+            effective_for_class: dict[str, list[str]] = {cu: [cu] for cu in class_label_uuids}
+            for child_uuid, parent_uuid in remap.items():
+                effective_for_class[parent_uuid].append(child_uuid)
 
-            eligible_images = [img for img in all_images if verified_by_image.get(img.uuid, 0) >= readiness_threshold]
+            covered, _ = await self._class_coverage(image_uuids, class_label_uuids, effective_for_class, labels_by_uuid)
+            eligible_images = [img for img in all_images if covered.get(img.uuid, 0) >= len(class_label_uuids)]
         else:
             eligible_images = list(all_images)
 
@@ -6112,14 +6225,10 @@ class DbClient:
     ) -> tuple[list["ImageRecord"], bool]:
         """Shared implementation backing the readiness-bucket image list methods.
 
-        ``bucket`` selects which readiness bucket to return, matching the counts computed by
-        ``get_training_config_readiness``:
-          - "ready"          — verified_count >= readiness_threshold
-          - "ready_positive" — ready AND at least one in-scope label verified PRESENT
-          - "ready_negative" — ready AND every in-scope label verified ABSENT (background)
-          - "needs_review"  — 0 < verified_count < readiness_threshold (partial coverage)
-                              AND at least one target label verified PRESENT
-          - "not_started"   — everything else (untouched, or only ABSENT verifications)
+        ``bucket`` selects which readiness bucket to return. The buckets themselves are
+        ``_readiness_bucket``'s, the same predicate ``get_training_config_readiness``
+        counts with, so a count and the list it is clickable through to cannot disagree
+        about an image; "ready" is the union of ready_positive and ready_negative.
 
         v1: in-memory merge across datasets, same approach as
         ``get_training_config_needs_review_images``. Push to SQL union if datasets grow large.
@@ -6128,12 +6237,14 @@ class DbClient:
         if tc is None:
             return [], False
 
-        label_uuids, rollup_map = await self._derive_labels_for_node(tc.model_config_node_uuid)
+        label_uuids, class_uuids, effective_for_class, labels_map, _is_rollup = await self._readiness_class_shape(
+            tc.model_config_node_uuid
+        )
         if not label_uuids:
             return [], False
 
-        is_rollup = bool(rollup_map)
-        readiness_threshold = 1 if is_rollup else len(label_uuids)
+        if bucket not in ("ready", "ready_positive", "ready_negative", "needs_review", "not_started"):
+            raise ValueError(f"Unknown readiness bucket: {bucket!r}")
 
         # Collect all images across all linked datasets (union, de-duped by uuid).
         all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids)
@@ -6142,25 +6253,14 @@ class DbClient:
             return [], False
 
         image_uuids = [img.uuid for img in all_images]
+        covered, positives = await self._class_coverage(image_uuids, class_uuids, effective_for_class, labels_map)
 
-        verified_by_image, present_by_image = await self._get_image_label_verification_counts(image_uuids, label_uuids)
+        def _matches(image_uuid: str) -> bool:
+            actual = self._readiness_bucket(covered.get(image_uuid, 0), len(class_uuids), image_uuid in positives)
+            # "ready" is the union of its two halves; every other bucket is exact.
+            return actual == bucket or (bucket == "ready" and actual.startswith("ready_"))
 
-        def _matches(verified_count: int, present_count: int) -> bool:
-            if bucket == "ready":
-                return verified_count >= readiness_threshold
-            elif bucket == "ready_positive":
-                return verified_count >= readiness_threshold and present_count > 0
-            elif bucket == "ready_negative":
-                return verified_count >= readiness_threshold and present_count == 0
-            elif bucket == "needs_review":
-                return 0 < verified_count < readiness_threshold and present_count > 0
-            elif bucket == "not_started":
-                return verified_count < readiness_threshold and not (verified_count > 0 and present_count > 0)
-            raise ValueError(f"Unknown readiness bucket: {bucket!r}")
-
-        bucket_images = [
-            img for img in all_images if _matches(verified_by_image.get(img.uuid, 0), present_by_image.get(img.uuid, 0))
-        ]
+        bucket_images = [img for img in all_images if _matches(img.uuid)]
 
         if not bucket_images:
             return [], False
