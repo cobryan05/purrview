@@ -26,9 +26,16 @@ async def db_client(tmp_path, files_root):
 
 
 @pytest.fixture
-async def http_client(db_client, files_root):
-    manager = Manager(db_client=db_client, files_root=files_root)
-    manager._db_ready = True  # db_client.init_db() was already called directly above
+def manager(db_client, files_root):
+    """The same Manager `http_client` serves, for tests that need to reach past
+    the HTTP surface (patching an internal, asserting cache state, …)."""
+    mgr = Manager(db_client=db_client, files_root=files_root)
+    mgr._db_ready = True  # db_client.init_db() was already called directly above
+    return mgr
+
+
+@pytest.fixture
+async def http_client(manager, files_root):
     web_app = WebApp(app_name="test", manager=manager)
     transport = ASGITransport(app=web_app.app())
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

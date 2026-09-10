@@ -137,23 +137,40 @@ fi
 UID_VAL="$(id -u)"
 GID_VAL="$(id -g)"
 
-# The Dockerfile uses BuildKit-only syntax (--mount=type=cache). Without the
-# buildx plugin, `docker compose build` silently falls back to the legacy
-# builder and fails deep into the build with an opaque "--mount option
-# requires BuildKit" error. Warn up front instead, with the actual fix —
-# this script doesn't build by default, so it's advisory, not fatal.
-if ! docker buildx version >/dev/null 2>&1; then
+# The Dockerfile uses BuildKit-only syntax (a `# syntax=` directive and
+# `--mount=type=cache`). Without the buildx plugin, `docker compose build`
+# silently falls back to the legacy builder and fails deep into the build with
+# an opaque "--mount option requires BuildKit" error. Warn up front instead,
+# with the actual fix — this script doesn't build by default, so it's advisory,
+# not fatal.
+#
+# Called twice on purpose: once here, and again immediately before the build
+# prompt at the end. The interactive questionnaire in between is long enough
+# that a warning shown only up front has scrolled well off screen by the time
+# the user answers "Build and start now?" — which is the moment it matters.
+#
+# The install snippet is written to survive a copy-paste on any host:
+#   * `sed -n 's/../\1/p'` rather than `grep -oP` — GNU-only -P is absent on
+#     macOS/BSD, where it leaves BUILDX_VERSION empty and builds a 404 URL.
+#   * `uname -m` mapped to Docker's arch names rather than a hardcoded amd64,
+#     which installs a non-executable binary on arm64.
+#   * `curl -f` so a 404 errors out instead of writing the "Not Found" body to
+#     the plugin path and chmod +x'ing it.
+warn_missing_buildx() {
+  docker buildx version >/dev/null 2>&1 && return 0
   echo "!! 'docker buildx' plugin not found — 'docker compose build' will fail on this"
   echo "   Dockerfile's BuildKit cache mounts. Install it before building, no root needed:"
   echo
   echo "     mkdir -p ~/.docker/cli-plugins"
-  echo "     BUILDX_VERSION=\$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep -oP '\"tag_name\": *\"\K[^\"]+')"
-  echo "     curl -sL \"https://github.com/docker/buildx/releases/download/\$BUILDX_VERSION/buildx-\$BUILDX_VERSION.linux-amd64\" -o ~/.docker/cli-plugins/docker-buildx"
+  echo "     BUILDX_VERSION=\$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p')"
+  echo "     BUILDX_ARCH=\$(uname -m | sed -e 's/^x86_64\$/amd64/' -e 's/^aarch64\$/arm64/')"
+  echo "     curl -fsSL \"https://github.com/docker/buildx/releases/download/\$BUILDX_VERSION/buildx-\$BUILDX_VERSION.linux-\$BUILDX_ARCH\" -o ~/.docker/cli-plugins/docker-buildx"
   echo "     chmod +x ~/.docker/cli-plugins/docker-buildx"
   echo
   echo "   Or, with root: sudo apt-get install docker-buildx-plugin"
   echo
-fi
+}
+warn_missing_buildx
 
 echo "=========================================================="
 echo " PurrView setup"
@@ -362,6 +379,8 @@ echo
 # they're already owned by APPUSER_UID/APPUSER_GID before Docker gets a
 # chance to create them itself.
 mkdir -p logs data models image_datasets
+
+warn_missing_buildx
 
 if ask "Build and start now (docker compose up -d --build)?" n; then
   exec docker compose up -d --build

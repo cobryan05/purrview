@@ -13,20 +13,29 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# The Dockerfile uses BuildKit-only syntax (--mount=type=cache). Without the
-# buildx plugin, `docker compose build` silently falls back to the legacy
-# builder and fails deep into the build with an opaque "--mount option
-# requires BuildKit" error. Catch it here instead, with the actual fix.
+# The Dockerfile uses BuildKit-only syntax (a `# syntax=` directive and
+# `--mount=type=cache`). Without the buildx plugin, `docker compose build`
+# silently falls back to the legacy builder and fails deep into the build with
+# an opaque "--mount option requires BuildKit" error. This script always
+# builds, so catch it here instead, with the actual fix.
+#
+# The install snippet is written to survive a copy-paste on any host: POSIX
+# `sed` rather than GNU-only `grep -oP`, the arch derived from `uname -m`
+# rather than hardcoded to amd64, and `curl -f` so a 404 errors out instead of
+# writing the "Not Found" body into the plugin path.
 if ! docker buildx version >/dev/null 2>&1; then
-  echo "'docker buildx' plugin not found — the build would fail on this Dockerfile's" >&2
-  echo "BuildKit cache mounts. Install it, no root needed:" >&2
-  echo >&2
-  echo "  mkdir -p ~/.docker/cli-plugins" >&2
-  echo "  BUILDX_VERSION=\$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep -oP '\"tag_name\": *\"\K[^\"]+')" >&2
-  echo "  curl -sL \"https://github.com/docker/buildx/releases/download/\$BUILDX_VERSION/buildx-\$BUILDX_VERSION.linux-amd64\" -o ~/.docker/cli-plugins/docker-buildx" >&2
-  echo "  chmod +x ~/.docker/cli-plugins/docker-buildx" >&2
-  echo >&2
-  echo "Or, with root: sudo apt-get install docker-buildx-plugin" >&2
+  {
+    echo "'docker buildx' plugin not found — the build would fail on this Dockerfile's"
+    echo "BuildKit cache mounts. Install it, no root needed:"
+    echo
+    echo "  mkdir -p ~/.docker/cli-plugins"
+    echo "  BUILDX_VERSION=\$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p')"
+    echo "  BUILDX_ARCH=\$(uname -m | sed -e 's/^x86_64\$/amd64/' -e 's/^aarch64\$/arm64/')"
+    echo "  curl -fsSL \"https://github.com/docker/buildx/releases/download/\$BUILDX_VERSION/buildx-\$BUILDX_VERSION.linux-\$BUILDX_ARCH\" -o ~/.docker/cli-plugins/docker-buildx"
+    echo "  chmod +x ~/.docker/cli-plugins/docker-buildx"
+    echo
+    echo "Or, with root: sudo apt-get install docker-buildx-plugin"
+  } >&2
   exit 1
 fi
 
