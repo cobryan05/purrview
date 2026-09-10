@@ -17,6 +17,10 @@ the cache is an implementation detail and the contract is "the count agrees with
 the images returned beside it".
 """
 
+from httpx import ASGITransport, AsyncClient
+
+from apps.db_server.manager import Manager
+from apps.db_server.web import WebApp
 from tests.conftest import make_png
 
 
@@ -108,3 +112,59 @@ class TestReviewCountFollowsDeletes:
 
         assert first["totalCount"] == second["totalCount"] == 2
         assert len(second["images"]) == 2
+
+
+class TestReviewCountSurvivesConcurrentWrite:
+    """A write that lands *during* the count query, not between requests.
+
+    The cache stores `(total_count, timestamp, epoch)` and only trusts the
+    count while the stored epoch still matches the live one. That guard is
+    worthless if the epoch it stores was read *after* the count query
+    finished: a write landing mid-query bumps the epoch before the read, so
+    the stale count gets stamped with the new epoch and looks fresh forever
+    (until the next write or the TTL). The fix is to tag the cache entry with
+    the epoch as of when the query *started*.
+    """
+
+    async def test_write_during_count_query_is_not_masked_by_a_late_epoch_read(self, db_client, files_root):
+        manager = Manager(db_client=db_client, files_root=files_root)
+        manager._db_ready = True
+        web_app = WebApp(app_name="test", manager=manager)
+        transport = ASGITransport(app=web_app.app())
+
+        for name in ("a.png", "b.png", "c.png"):
+            (files_root / name).write_bytes(make_png())
+
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+            for name in ("a.png", "b.png", "c.png"):
+                await _register(http_client, name)
+
+            real_count = manager._count_images_bounded
+            deleted = {"done": False}
+
+            async def racing_count(params):
+                # Simulate a delete committing (and bumping write_epoch) after the
+                # count query has already read the pre-delete row set, but before
+                # this coroutine returns control to the caller.
+                result = await real_count(params)
+                if not deleted["done"]:
+                    deleted["done"] = True
+                    uuid = await _uuid_of(http_client, "b.png")
+                    r = await http_client.delete(f"/api/images/{uuid}")
+                    assert r.status_code == 200, r.text
+                return result
+
+            manager._count_images_bounded = racing_count
+            try:
+                first = await _review(http_client)
+            finally:
+                manager._count_images_bounded = real_count
+
+            assert first["totalCount"] == 3, "count query ran before the delete, so it should see all 3"
+
+            after = await _review(http_client)
+            assert len(after["images"]) == 2
+            assert after["totalCount"] == 2, (
+                "the cache entry from the raced request was stamped with the epoch "
+                "read after the delete, so it looked fresh and masked the delete"
+            )

@@ -13,6 +13,23 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+# The Dockerfile uses BuildKit-only syntax (--mount=type=cache). Without the
+# buildx plugin, `docker compose build` silently falls back to the legacy
+# builder and fails deep into the build with an opaque "--mount option
+# requires BuildKit" error. Catch it here instead, with the actual fix.
+if ! docker buildx version >/dev/null 2>&1; then
+  echo "'docker buildx' plugin not found — the build would fail on this Dockerfile's" >&2
+  echo "BuildKit cache mounts. Install it, no root needed:" >&2
+  echo >&2
+  echo "  mkdir -p ~/.docker/cli-plugins" >&2
+  echo "  BUILDX_VERSION=\$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep -oP '\"tag_name\": *\"\K[^\"]+')" >&2
+  echo "  curl -sL \"https://github.com/docker/buildx/releases/download/\$BUILDX_VERSION/buildx-\$BUILDX_VERSION.linux-amd64\" -o ~/.docker/cli-plugins/docker-buildx" >&2
+  echo "  chmod +x ~/.docker/cli-plugins/docker-buildx" >&2
+  echo >&2
+  echo "Or, with root: sudo apt-get install docker-buildx-plugin" >&2
+  exit 1
+fi
+
 # Keep bind-mount ownership aligned with the host user for this run.
 export APPUSER_UID="$(id -u)"
 export APPUSER_GID="$(id -g)"

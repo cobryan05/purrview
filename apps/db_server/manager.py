@@ -2009,9 +2009,13 @@ class Manager:
                     # A write landed while the list query above was in flight — the
                     # cached count is now describing rows the list no longer agrees
                     # with. Recount rather than serve a total that raced the write.
+                    # Tag the result with the epoch as of *before* this recount runs:
+                    # if another write lands mid-recount, that later epoch must not be
+                    # stamped onto a count that doesn't reflect it.
+                    recount_epoch = self._db_client.write_epoch
                     total_count = await self._count_images_bounded(params)
                     if total_count >= 0:
-                        self._count_cache[cache_key] = (total_count, time.monotonic(), self._db_client.write_epoch)
+                        self._count_cache[cache_key] = (total_count, time.monotonic(), recount_epoch)
             else:
                 logger.info(
                     "[review] count cache miss (key=%s) — running list+count in parallel",
@@ -2029,9 +2033,11 @@ class Manager:
                     total_count,
                 )
                 if total_count >= 0:
-                    # Re-read the epoch: a write that landed while the count was
-                    # in flight must not be cached as though it were included.
-                    self._count_cache[cache_key] = (total_count, now, self._db_client.write_epoch)
+                    # Tag with the epoch captured before this query ran (`epoch`,
+                    # above), not whatever it is now: a write that lands while the
+                    # count is in flight must not be cached as though it were
+                    # included, and re-reading the epoch here would do exactly that.
+                    self._count_cache[cache_key] = (total_count, now, epoch)
                     self._evict_expired_counts(now)
         else:
             t1 = time.monotonic()

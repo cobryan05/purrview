@@ -137,6 +137,24 @@ fi
 UID_VAL="$(id -u)"
 GID_VAL="$(id -g)"
 
+# The Dockerfile uses BuildKit-only syntax (--mount=type=cache). Without the
+# buildx plugin, `docker compose build` silently falls back to the legacy
+# builder and fails deep into the build with an opaque "--mount option
+# requires BuildKit" error. Warn up front instead, with the actual fix —
+# this script doesn't build by default, so it's advisory, not fatal.
+if ! docker buildx version >/dev/null 2>&1; then
+  echo "!! 'docker buildx' plugin not found — 'docker compose build' will fail on this"
+  echo "   Dockerfile's BuildKit cache mounts. Install it before building, no root needed:"
+  echo
+  echo "     mkdir -p ~/.docker/cli-plugins"
+  echo "     BUILDX_VERSION=\$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep -oP '\"tag_name\": *\"\K[^\"]+')"
+  echo "     curl -sL \"https://github.com/docker/buildx/releases/download/\$BUILDX_VERSION/buildx-\$BUILDX_VERSION.linux-amd64\" -o ~/.docker/cli-plugins/docker-buildx"
+  echo "     chmod +x ~/.docker/cli-plugins/docker-buildx"
+  echo
+  echo "   Or, with root: sudo apt-get install docker-buildx-plugin"
+  echo
+fi
+
 echo "=========================================================="
 echo " PurrView setup"
 echo "=========================================================="
