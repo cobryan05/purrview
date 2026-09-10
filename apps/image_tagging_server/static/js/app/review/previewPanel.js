@@ -692,15 +692,16 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
   }
 
   /**
-   * Open the shared canvas editor on a candidate's box. Geometry edited here
-   * lands on the candidate and is PATCHed — it must not touch the real bbox,
-   * which only the apply path may write.
+   * Build the canvas-modal nav item for one candidate: the image/bbox pair the
+   * modal loads, plus `candidate` (so persist can find the right record after
+   * navigating) and `seedBboxes` (so an `isNew` candidate's box — which has no
+   * DB row — survives navigating away and back; see the seedBboxes doc on
+   * `showCanvasModal` in main.js).
    */
-  async function _openCandidateEditor(entry) {
+  function _buildNavItem(entry) {
     const c = entry.candidate;
-    const { showCanvasModal } = await import('/app-static/js/app/review/main.js');
     const img = { uuid: c.imageUuid, filename: c.imageFilename, bboxes: [] };
-    const candidateBbox = {
+    const bbox = {
       uuid: c.isNew ? 'new' : c.bboxUuid,
       labelUuid: c.proposedLabelUuid,
       label: _labels.get(c.proposedLabelUuid) ?? null,
@@ -717,11 +718,30 @@ export async function createPreviewPanel(container, { runUuid, labels = null, on
           dirty: false,
         }]
       : null;
-    showCanvasModal(candidateBbox, img, _labels, async () => {}, null, {
-      allowNavigation: false,
+    return { img, bbox, candidate: c, seedBboxes };
+  }
+
+  /**
+   * Open the shared canvas editor on a candidate's box, navigable across the
+   * rest of the current page via the modal's own [ ]/Prev/Next. Geometry
+   * edited here lands on whichever candidate is on screen when saved and is
+   * PATCHed — it must not touch the real bbox, which only the apply path may
+   * write.
+   */
+  async function _openCandidateEditor(entry) {
+    const { showCanvasModal } = await import('/app-static/js/app/review/main.js');
+    const navItems = _visibleEntries.map(_buildNavItem);
+    const startIndex = _visibleEntries.indexOf(entry);
+    const start = navItems[startIndex] ?? _buildNavItem(entry);
+    showCanvasModal(start.bbox, start.img, _labels, async () => {}, {
+      items: navItems,
+      startIndex,
+    }, {
+      allowNavigation: true,
       broadcast: false,
-      seedBboxes,
-      persist: (runtime) => {
+      seedBboxes: start.seedBboxes,
+      persist: (runtime, navItem) => {
+        const c = navItem?.candidate ?? entry.candidate;
         const uiBboxes = [...runtime.state.image.bboxes.values()];
         const box = c.isNew
           ? (uiBboxes.find(b => b.uuid === 'new') ?? uiBboxes[0])

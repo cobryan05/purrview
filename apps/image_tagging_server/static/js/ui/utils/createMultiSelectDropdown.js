@@ -433,9 +433,51 @@ export function createMultiSelectDropdown({
   searchInput?.addEventListener('input', _applySearch);
 
   // ── Open / close ────────────────────────────────────────────────────────────
+  /**
+   * Anchor the panel to the trigger via `position: fixed` rather than the CSS
+   * default (`absolute`, relative to `.ms-dropdown`). A modal dialog the panel
+   * lives in (e.g. the preview-run modal) has `overflow: hidden` on its own
+   * bounding box, so an absolutely-positioned panel that doesn't fit clips at
+   * the dialog edge with no way to scroll to what's cut off. `fixed` escapes
+   * that ancestor clip entirely, and clamping `max-height` to actual viewport
+   * room (flipping above the trigger when that has more room) means the
+   * panel's own scrollbar — not the dialog's clip — is what runs out first.
+   */
+  function _positionPanel() {
+    if (inline) return;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    const openAbove = spaceBelow < 150 && spaceAbove > spaceBelow;
+
+    panelEl.style.position = 'fixed';
+    panelEl.style.left = `${Math.round(rect.left)}px`;
+    if (openAbove) {
+      panelEl.style.top = 'auto';
+      panelEl.style.bottom = `${Math.round(window.innerHeight - rect.top + 3)}px`;
+      panelEl.style.maxHeight = `${Math.max(120, Math.round(spaceAbove))}px`;
+    } else {
+      panelEl.style.top = `${Math.round(rect.bottom + 3)}px`;
+      panelEl.style.bottom = 'auto';
+      panelEl.style.maxHeight = `${Math.max(120, Math.round(spaceBelow))}px`;
+    }
+
+    // Keep the panel on-screen horizontally too — a trigger near the right
+    // edge would otherwise hang the panel off the viewport.
+    const panelWidth = panelEl.offsetWidth;
+    if (panelWidth && rect.left + panelWidth > window.innerWidth - margin) {
+      panelEl.style.left = `${Math.max(margin, Math.round(window.innerWidth - panelWidth - margin))}px`;
+    }
+  }
+
   function _openPanel() {
     _open = true;
     panelEl.style.display = '';
+    _positionPanel();
+    if (!inline) {
+      window.addEventListener('resize', _positionPanel);
+    }
 
     // Wire up ResizeObserver to persist panel size when user drags the handle.
     if (_sizeKey && typeof ResizeObserver !== 'undefined' && !_resizeObserver) {
@@ -468,6 +510,7 @@ export function createMultiSelectDropdown({
   function _closePanel() {
     _open = false;
     panelEl.style.display = 'none';
+    window.removeEventListener('resize', _positionPanel);
     if (_outsideListener) {
       document.removeEventListener('mousedown', _outsideListener);
       _outsideListener = null;

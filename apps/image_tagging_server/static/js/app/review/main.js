@@ -3281,9 +3281,13 @@ export function _mergeExternalBboxChanges(runtime, updatedBboxes, deletedBboxUui
  *   Called after a successful save. `updatedBbox` is the updated UIBBox for the
  *   initially-opened bbox (undefined if deleted). `currentImg` is the image that
  *   was on-screen when Save & Close was pressed (may differ from `img` after nav).
- * @param {{ items: {img,bbox}[], startIndex: number, onClose?: (img) => void }|null} [navContext]
+ * @param {{ items: {img,bbox,seedBboxes?}[], startIndex: number, onClose?: (img) => void }|null} [navContext]
  *   Optional navigation context. When provided, the [ ] hotkeys navigate through
  *   `items`; `onClose` is called after the modal closes with the last-viewed image.
+ *   An item's `seedBboxes`, if present, is re-injected after its image loads —
+ *   the same not-yet-persisted-box mechanism `editOpts.seedBboxes` uses for the
+ *   initial image, needed because navigation reloads real DB bboxes and would
+ *   otherwise drop a proposed box that has no DB row (preview's `isNew` case).
  */
 export async function showCanvasModal(bbox, img, labels, onSaved, navContext = null, editOpts = {}) {
   if (_modalOpen) return;
@@ -3307,6 +3311,11 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
   let _navIndex = navContext?.startIndex ?? 0;
   let _currentImg = img;
   let _currentBbox = bbox;
+  // What persist() should act on: the caller's own record for whichever item
+  // is currently displayed, not always the one the modal was opened on.
+  // Undefined once navigation is off, so `_persist(runtime, undefined)` reads
+  // exactly as it did before nav existed.
+  const _currentNavItem = () => navContext?.items?.[_navIndex];
 
   // ── Build DOM ─────────────────────────────────────────────────────
   const overlay = document.createElement('div');
@@ -3721,6 +3730,10 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
           // what the server would return. Save/external-change reloads below
           // stay uncached on purpose.
           await instance.loadImage(item.img.filename, { allowCached: true });
+          // See the navContext seedBboxes doc above: a candidate with no DB row
+          // (isNew) has nothing for loadImage to find, so it has to be re-injected
+          // every time nav lands on it, not just on the modal's first image.
+          if (item.seedBboxes?.length) seedRuntimeBboxes(instance.runtime, item.seedBboxes);
         } catch (err) {
           Logger.error('Canvas modal: failed to load image during navigation', err);
           toast('Failed to load image', 3000, 'error');
@@ -3872,7 +3885,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
       if (choice === 'cancel') return;
       if (choice === 'save') {
         _setAllButtonsDisabled(true);
-        const saved = await _persist(instance.runtime);
+        const saved = await _persist(instance.runtime, _currentNavItem());
         if (!saved) {
           _setAllButtonsDisabled(false);
           _updateSaveBtn();
@@ -3947,7 +3960,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
     let saved = false;
     try {
-      saved = await _persist(instance.runtime);
+      saved = await _persist(instance.runtime, _currentNavItem());
     } catch (err) {
       Logger.error('Canvas modal: save failed', err);
     }
@@ -3985,7 +3998,7 @@ export async function showCanvasModal(bbox, img, labels, onSaved, navContext = n
 
     let saved = false;
     try {
-      saved = await _persist(instance.runtime);
+      saved = await _persist(instance.runtime, _currentNavItem());
     } catch (err) {
       Logger.error('Canvas modal: save failed', err);
     }
