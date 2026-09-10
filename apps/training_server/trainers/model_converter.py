@@ -269,7 +269,11 @@ class ModelConverter(Trainer):
 
             def _ultralytics_export():
                 m = YOLO(source_path)
-                exported = m.export(format="onnx")
+                # nms=False selects the NMS-free head on e2e checkpoints (v10/YOLO26);
+                # the exporter does `end2end = args.nms is False`, so the default
+                # nms=None would export a v10 as a classic (1, 84, 8400) graph.
+                # No-op for classic heads, which have no one-to-one branch.
+                exported = m.export(format="onnx", nms=False)
                 return exported, dict(m.names or {})
 
             progress_cb({"progress": 0.5, "log": "Exporting to ONNX via ultralytics..."})
