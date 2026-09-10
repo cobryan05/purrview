@@ -672,6 +672,9 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
           : [],
         frameWidth: preview.frameWidth,
         frameHeight: preview.frameHeight,
+        // The camera actually requested, not something read back off `preview` — the
+        // live-preview response describes the frame, not which source it was polled for.
+        sourceUuid: state.sourceUuid || '',
         extra: {
           source_watcher: preview.profileName || '',
           source_camera: preview.sourceName || '',

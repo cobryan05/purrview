@@ -947,6 +947,7 @@ export function openEventDetailModal(
           boxes: applyLabelRemap(boxes, remap),
           frameWidth: frame.width,
           frameHeight: frame.height,
+          sourceUuid: event.sourceUuid || '',
           extra: {
             source_camera: camera,
             source_event: event.uuid,
@@ -1079,6 +1080,7 @@ export function openEventDetailModal(
         // event's own boxes belong to one analysed instant and would land around empty
         // space on any other frame — so an overlay-less clip still saves bare.
         ...overlayBoxes(frame),
+        sourceUuid: event.sourceUuid || '',
         extra: {
           source_camera: camera,
           source_event: event.uuid,

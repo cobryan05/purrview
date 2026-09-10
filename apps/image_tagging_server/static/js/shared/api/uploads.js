@@ -49,18 +49,22 @@ export async function setUploadTarget(path, remembered) {
  * @param {File[]} opts.files
  * @param {string} [opts.path] - destination, FILES_ROOT-relative
  * @param {boolean} [opts.overwrite] - replace rather than uniquify on collision
+ * @param {string} [opts.sourceUuid] - camera/stream this image was captured from,
+ *   if any (sources table). Omitted for a hand-picked file import, where there
+ *   is no camera to attribute it to.
  * @returns {Promise<Array<{
  *   filename: string, ok: boolean, path?: string, uuid?: string,
  *   message?: string, duplicateOf?: string, duplicateDistance?: number,
  *   renamedFrom?: string,
  * }>>}
  */
-export async function uploadImages({ files, path = '', overwrite = false }) {
+export async function uploadImages({ files, path = '', overwrite = false, sourceUuid = '' }) {
   const form = new FormData();
   for (const file of files) form.append('files', file, file.name);
   // The server reads these as form fields, not JSON — booleans go as strings.
   form.append('path', path ?? '');
   form.append('overwrite', overwrite ? 'true' : 'false');
+  form.append('source_uuid', sourceUuid ?? '');
 
   // No Content-Type header: the browser has to set it, because only it knows
   // the multipart boundary it generated.

@@ -96,6 +96,11 @@ export function normaliseBox(bbox, frameWidth, frameHeight) {
  * @param {number} [opts.frameWidth] - required if boxes are given
  * @param {number} [opts.frameHeight] - required if boxes are given
  * @param {Object} [opts.extra] - per-box metadata merged into metadata_json (provenance)
+ * @param {string} [opts.sourceUuid] - camera/stream this frame was captured from. Without
+ *   it the image's `source_uuid` is left NULL, which makes it invisible to *both* sides
+ *   of a source filter — it won't show up "from" its camera, but it also won't get
+ *   filtered out "not from" some other camera. The `extra.source_camera` field some
+ *   callers also set is free-text provenance for display; it is not this.
  * @returns {Promise<{path: string, uuid: ?string, boxesSaved: number, renamedFrom: ?string}>}
  * @throws {Error} if the upload itself fails
  */
@@ -107,9 +112,10 @@ export async function saveFrameForAnnotation({
   frameWidth = 0,
   frameHeight = 0,
   extra = {},
+  sourceUuid = '',
 }) {
   const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
-  const [result] = await uploadImages({ files: [file], path });
+  const [result] = await uploadImages({ files: [file], path, sourceUuid });
   if (!result?.ok) throw new Error(result?.message || 'Could not save the frame');
 
   const savedPath = result.path;
