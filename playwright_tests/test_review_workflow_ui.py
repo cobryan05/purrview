@@ -1339,6 +1339,37 @@ class TestFilterToggleButton:
         expect(chip_bar.locator(".review-filter-chip")).to_have_count(0)
         expect(toggle_btn).not_to_have_class(re.compile(r"\bfilter-active\b"))
 
+    def test_clear_filters_button_appears_only_when_active_and_resets_all(self, page: Page, base_url: str):
+        """A single "Clear filters" button resets every active dimension at once,
+        instead of requiring one click per chip. Hidden when there's nothing to
+        clear, so it doesn't sit there as dead chrome on a fresh page load."""
+        _mock_review_queue(page, PAGE_1_IMAGES)
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [{**UNVERIFIED_TAG, "name": "Unverified", "color": "#888", "kind": "system"}])
+
+        _navigate_to_review(page, base_url)
+        clear_btn = page.get_by_test_id("review-filter-clear-all")
+        chip_bar = page.get_by_test_id("review-filter-chip-bar")
+
+        expect(clear_btn).to_be_hidden()
+
+        page.get_by_test_id("review-filter-toggle").click()
+        labels_trigger = page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] .ms-dropdown__trigger")
+        labels_trigger.wait_for(state="visible", timeout=5000)
+        labels_trigger.click()
+        page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] input[value='lbl-cat']").check()
+        page.locator("#review-root .ms-dropdown[data-filter-key='labels-v2'] input[value='lbl-dog']").check()
+        page.mouse.click(0, 0)  # close dropdown
+        page.wait_for_timeout(300)
+
+        expect(clear_btn).to_be_visible()
+        expect(chip_bar.locator(".review-filter-chip")).to_have_count(1)
+
+        clear_btn.click()
+        page.wait_for_timeout(300)
+        expect(chip_bar.locator(".review-filter-chip")).to_have_count(0)
+        expect(clear_btn).to_be_hidden()
+
 
 class TestFilterPopoverDismissal:
     """Pressing "+ Add filter" again was the only way to close the popover, and

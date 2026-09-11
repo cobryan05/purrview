@@ -888,6 +888,14 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
     emit();
   }
 
+  /**
+   * Reset every filter dimension back to its default and re-fetch. Used by
+   * the chip bar's "Clear all" button.
+   */
+  function resetAll() {
+    setState(DEFAULT_STATE());
+  }
+
   function destroy() {
     _destroyed = true;
     tagsDropdown.destroy();
@@ -923,6 +931,7 @@ export function createFilterPanel(labels, tags, onFilterChange, { inlineControls
       showAllBboxes: _state.tagUuids.length === 0,
     }),
     setState,
+    resetAll,
     isDefault,
     getActiveFilterCount,
     getChipDescriptors,

@@ -3332,7 +3332,8 @@ button.lt-swatch:hover {
   background: var(--color-danger-soft, var(--color-danger-soft));
 }
 
-.review-filter-chip-bar__add {
+.review-filter-chip-bar__add,
+.review-filter-chip-bar__clear {
   font-size: var(--text-xs, 0.78rem);
 }
 

@@ -242,6 +242,15 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   filterToggleBtn.title = 'Tags, labels, source, date, filename, confidence and verification filters';
   if (fetchImages) filterToggleBtn.hidden = true;
 
+  // Only shown once a filter is active (see renderChipBar) — resets every
+  // dimension back to default in one click, same path as a per-chip ✕.
+  const clearFiltersBtn = document.createElement('button');
+  clearFiltersBtn.className = 'review-toolbar__btn review-filter-chip-bar__clear';
+  clearFiltersBtn.dataset.testid = 'review-filter-clear-all';
+  clearFiltersBtn.textContent = 'Clear filters';
+  clearFiltersBtn.title = 'Clear all active filters';
+  clearFiltersBtn.hidden = true;
+
   // Sort controls — hidden when a custom fetchImages is provided (caller controls ordering)
   const sortLabel = document.createElement('span');
   sortLabel.className = 'review-toolbar__sort-label';
@@ -696,7 +705,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const tags = await tagsPromise;
 
     function renderChipBar() {
-      filterToggleBtn.classList.toggle('filter-active', !filterPanel.isDefault());
+      const isDefault = filterPanel.isDefault();
+      filterToggleBtn.classList.toggle('filter-active', !isDefault);
+      clearFiltersBtn.hidden = isDefault;
       filterChipBar.querySelectorAll('.review-filter-chip').forEach(el => el.remove());
       for (const { key, label, onRemove } of filterPanel.getChipDescriptors()) {
         const chip = document.createElement('span');
@@ -712,7 +723,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
         remove.title = 'Remove filter';
         remove.addEventListener('click', onRemove);
         chip.append(text, remove);
-        filterChipBar.insertBefore(chip, filterToggleBtn);
+        filterChipBar.insertBefore(chip, clearFiltersBtn);
       }
     }
 
@@ -728,7 +739,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     filterPanel.element.hidden = true;
     filterPanel.element.classList.add('review-filter-popover');
     filterChipBarWrap.appendChild(filterPanel.element);
-    filterChipBar.appendChild(filterToggleBtn);
+    clearFiltersBtn.addEventListener('click', () => filterPanel.resetAll());
+    filterChipBar.append(clearFiltersBtn, filterToggleBtn);
     renderChipBar(); // reflect initial state (Unverified checked → shows a chip)
     // Config Ready (V2) is whole-image-only — start disabled if we're opening
     // straight into bboxes view. Kept in sync by the view-toggle handler below.
