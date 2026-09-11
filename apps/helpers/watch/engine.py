@@ -109,6 +109,19 @@ class WatchEngine:
         """
         return list(dict.fromkeys(rule_uuid for rule_uuid, _a, _b in self._machines))
 
+    def trigger_for(self, rule_uuid: str) -> Optional[str]:
+        """The `RuleTrigger` a rule was configured with, or None if it isn't scoped here.
+
+        Every slot-key machine for a rule shares one spec, so the first match answers
+        for all of them. Lets a caller downstream of a signal (which carries no trigger
+        of its own — see `WatchEventSignal`) tell an `on_exit` impulse apart from an
+        `on_enter`/`while` one without threading the trigger through every signal.
+        """
+        for (machine_rule_uuid, _a, _b), machine in self._machines.items():
+            if machine_rule_uuid == rule_uuid:
+                return machine.spec.trigger
+        return None
+
     # ------------------------------------------------------------------ step
 
     def step(

@@ -27,6 +27,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,7 +73,7 @@ from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventCloseReason, EventPhase, WatchEventSignal
 from apps.helpers.watch.geometry import zone_from_row
 from apps.helpers.watch.motion import MotionDetector
-from apps.helpers.watch.rules import RuleSpec, expand_descendants
+from apps.helpers.watch.rules import TRIGGER_ON_EXIT, RuleSpec, expand_descendants
 from apps.helpers.watch.scoping import FRAME_ANALYSED, action_applies, in_scope
 
 from ._filter_chain_runner import FilterChainRunner
@@ -2003,7 +2004,7 @@ class StreamWatcherTask(Task):
             # Holds the row's raw material, including the card art for this frame. Writes
             # nothing: whether the event earns a row is not known until an action reports
             # what it wrote.
-            await self._recorder.record(signal, context)
+            await self._recorder.record(signal, await self._card_art_context(signal, context, pipeline))
             # Reuses that same encode - see publish_snapshot_to_ha. Gated on `logged`
             # like the encode itself: a rule with no in-scope action never holds a
             # pending snapshot to publish, opt-in flag or not.
@@ -2338,6 +2339,99 @@ class StreamWatcherTask(Task):
         start = datetime.fromtimestamp(signal.started_at + self._wallclock_offset, tz=timezone.utc)
         end = datetime.fromtimestamp(signal.at + self._wallclock_offset, tz=timezone.utc)
         return drain.chunks_for(start, end)
+
+    async def _card_art_context(
+        self, signal, context: ActionContext, pipeline: Optional[WatchPipeline]
+    ) -> ActionContext:
+        """`context`, with its frame swapped for a rewound one on an `on_exit` signal.
+
+        `on_exit`'s anchor (`signal.started_at`) is the moment the subject actually left,
+        but the signal itself is not dispatched until `rearm_delay_s` later, once the
+        departure is believed — see `RuleMachine._impulse` in `apps.helpers.watch.rules`.
+        Between those two moments the pipeline's live frame has moved on to the now-empty
+        scene, so encoding the card art from `context.frame` at dispatch time shows the
+        gap where the subject used to be rather than the subject itself.
+
+        Gated on the rule's actual trigger, not on how old `started_at` looks: a `while`
+        rule's dwell (`min_duration_s`) leaves the same gap between `started_at` and
+        dispatch, but its live frame is still accurate — the subject held the predicate
+        the whole time — so timing alone can't tell the two apart.
+
+        Pulled from the same rewind sources `record_clip`'s pre-roll already reads from,
+        so this needs no buffer of its own: the frame ring for a source with no
+        continuous stream, or a short cut from the relay's recorded segments otherwise.
+        Only `frame`/`full_frame`/`detections` change — `tracks` is left as the live (now
+        empty) set on purpose, so `_focus_rect` falls through to "no worthwhile crop"
+        rather than drawing a box around nothing. A wide, boxless shot of the subject
+        beats a crop drawn from stale geometry.
+        """
+        if pipeline is None or pipeline.engine.trigger_for(signal.rule_uuid) != TRIGGER_ON_EXIT:
+            return context
+        frame = await self._historical_frame(pipeline, signal.started_at)
+        if frame is None:
+            return context
+        import dataclasses
+
+        return dataclasses.replace(context, frame=frame, full_frame=frame, detections=[])
+
+    async def _historical_frame(self, pipeline: WatchPipeline, at: float):
+        """A frame near monotonic time `at`, or None if no rewind source has one.
+
+        `at` is on the rule engine's monotonic clock; both rewind sources are addressed
+        by wallclock, hence the offset.
+        """
+        target_wall = at + self._wallclock_offset
+        try:
+            if pipeline.buffered:
+                return await self._historical_frame_from_relay(pipeline, target_wall)
+            return self._historical_frame_from_ring(pipeline, target_wall)
+        except Exception:
+            logger.debug("No historical frame for %s at %.3f", pipeline.source_uuid, target_wall, exc_info=True)
+            return None
+
+    def _historical_frame_from_ring(self, pipeline: WatchPipeline, target_wall: float):
+        """The frame ring's closest frame to `target_wall`, decoded, or None."""
+        ring = self._frame_rings.get(pipeline.source_uuid)
+        if ring is None:
+            return None
+        jpeg = ring.closest(target_wall, tolerance=pipeline.ring_seconds)
+        if jpeg is None:
+            return None
+        import cv2
+        import numpy as np
+
+        frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        return frame if frame is not None else None
+
+    async def _historical_frame_from_relay(self, pipeline: WatchPipeline, target_wall: float):
+        """One frame cut from the relay's recorded segments near `target_wall`, or None.
+
+        Reuses `PlaybackClipBackend`'s extraction path with a 1s window rather than
+        adding a second network call: a still is just a clip nobody plays past frame one.
+        Written to a throwaway temp file — not under the managed clips root, so a failed
+        cleanup here can never be mistaken for an orphaned event clip by the retention
+        sweep.
+        """
+        relay_path = getattr(pipeline.provider, "_relayed_name", None)
+        if not relay_path:
+            return None
+        relay = self._manager.get_relay_api_client()
+        start = datetime.fromtimestamp(target_wall, tz=timezone.utc)
+        with tempfile.TemporaryDirectory(prefix="watch-still-") as tmp_dir:
+            dest = Path(tmp_dir) / "still.mp4"
+            await relay.extract_clip(path=relay_path, start=start, duration_s=1.0, dest=dest)
+            return await asyncio.to_thread(self._first_frame, dest)
+
+    @staticmethod
+    def _first_frame(path: Path):
+        import cv2
+
+        cap = cv2.VideoCapture(str(path))
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        return frame if ok else None
 
     def _label_colours(self) -> dict:
         """label uuid → colour, for actions that draw boxes.

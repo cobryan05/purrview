@@ -18,6 +18,8 @@ import base64
 import json
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
 import pytest
 
 from apps.helpers.actions.action import ActionContext
@@ -28,6 +30,8 @@ from apps.helpers.actions.recordClipAction import (
     RingClipBackend,
 )
 from apps.helpers.watch.engine import WatchEngine
+from apps.helpers.watch.events import EventPhase, WatchEventSignal
+from apps.helpers.watch.rules import RuleSpec
 from apps.tasks_server.tasks._watch_pipeline import WatchPipeline
 from apps.tasks_server.tasks.StreamWatcherTask import StreamWatcherTask
 
@@ -185,6 +189,26 @@ class TestFrameRingWiring:
         ring = task._frame_rings["src-1"]
         assert ring.frame_count == 1
         assert ring._frames[0][1] == b"\xff\xd8new"
+
+
+class TestFrameRingClosest:
+    """`closest()` is what an on_exit event's still-image preview reads instead of the
+    live frame — see `StreamWatcherTask._historical_frame_from_ring`."""
+
+    def test_picks_the_nearer_of_the_two_straddling_frames(self):
+        ring = FrameRing(max_seconds=30.0)
+        ring.push(100.0, b"a")
+        ring.push(104.0, b"b")
+        assert ring.closest(101.9, tolerance=10.0) == b"a"
+        assert ring.closest(102.1, tolerance=10.0) == b"b"
+
+    def test_outside_tolerance_returns_none_even_if_the_ring_has_frames(self):
+        ring = FrameRing(max_seconds=30.0)
+        ring.push(100.0, b"a")
+        assert ring.closest(150.0, tolerance=5.0) is None
+
+    def test_an_empty_ring_returns_none(self):
+        assert FrameRing().closest(100.0, tolerance=10.0) is None
 
 
 class TestDetectionTrackAllocation:
@@ -466,3 +490,173 @@ def _dt(task, monotonic_s):
     from datetime import datetime, timezone
 
     return datetime.fromtimestamp(monotonic_s + task._wallclock_offset, tz=timezone.utc)
+
+
+def _solid_jpeg(fill: int) -> bytes:
+    frame = np.full((4, 4, 3), fill, dtype=np.uint8)
+    ok, buf = cv2.imencode(".jpg", frame)
+    assert ok
+    return buf.tobytes()
+
+
+def _engine_pipeline(trigger: str, source_uuid: str = "src-1") -> WatchPipeline:
+    engine = WatchEngine(
+        rules=[
+            RuleSpec(
+                uuid="rule-1",
+                name="cat present",
+                subject_a_kind="label",
+                subject_a_refs=["label-cat"],
+                trigger=trigger,
+            )
+        ],
+        zones=[],
+        source_uuid=source_uuid,
+    )
+    return WatchPipeline(
+        source_uuid=source_uuid,
+        source_name="cam",
+        provider=SimpleNamespace(),
+        tracker=SimpleNamespace(update=lambda dets, now: []),
+        engine=engine,
+        buffered=False,
+        buffer_mode="auto",
+        ring_seconds=20.0,
+        ring_max_mb=32.0,
+    )
+
+
+def _start_signal(rule_uuid="rule-1", source_uuid="src-1", started_at=60.0):
+    return WatchEventSignal(
+        rule_uuid=rule_uuid,
+        rule_name="cat left the scene",
+        phase=EventPhase.START,
+        at=started_at,
+        started_at=started_at,
+        source_uuid=source_uuid,
+        track_ids=[1],
+    )
+
+
+class TestCardArtContextForOnExit:
+    """The bug this fixes: an on_exit ("left the scene") event's still-image preview
+    showed the empty room. `_hold_event` encodes card art from the pipeline's *live*
+    frame at dispatch time, but on_exit dispatches `rearm_delay_s` after the subject
+    actually left (see TestImpulseTriggers in test_watch_engine.py) — so the live
+    frame is of the now-empty scene, not the departure. `_card_art_context` is what
+    swaps it for a frame near the true departure moment, and only for on_exit.
+    """
+
+    async def test_on_exit_swaps_the_live_frame_for_the_departure_frame(self):
+        pipeline = _engine_pipeline("on_exit")
+        task = _task([pipeline])
+        task._wallclock_offset = 0.0
+        ring = FrameRing(max_seconds=30.0)
+        ring.push(60.0, _solid_jpeg(10))  # the departure moment
+        ring.push(70.0, _solid_jpeg(200))  # dispatch time: the room is now empty
+        task._frame_rings["src-1"] = ring
+
+        live_frame = np.full((4, 4, 3), 200, dtype=np.uint8)
+        context = ActionContext(
+            profile_uuid="p", profile_name="P", source_uuid="src-1", frame=live_frame, full_frame=live_frame
+        )
+
+        result = await task._card_art_context(_start_signal(started_at=60.0), context, pipeline)
+
+        assert result is not context
+        assert not np.array_equal(result.frame, live_frame)
+        assert int(result.frame[0, 0, 0]) < 50  # the departure frame, not the empty one
+
+    async def test_while_trigger_keeps_the_live_frame(self):
+        """A while rule's dwell leaves the same gap between started_at and dispatch —
+        confirming the swap is gated on the rule's trigger, not on that gap."""
+        pipeline = _engine_pipeline("while")
+        task = _task([pipeline])
+        task._wallclock_offset = 0.0
+        ring = FrameRing(max_seconds=30.0)
+        ring.push(60.0, _solid_jpeg(10))
+        task._frame_rings["src-1"] = ring
+
+        live_frame = np.full((4, 4, 3), 200, dtype=np.uint8)
+        context = ActionContext(
+            profile_uuid="p", profile_name="P", source_uuid="src-1", frame=live_frame, full_frame=live_frame
+        )
+
+        result = await task._card_art_context(_start_signal(started_at=60.0), context, pipeline)
+
+        assert result is context
+
+    async def test_no_pipeline_leaves_context_untouched(self):
+        task = _task([])
+        context = ActionContext(profile_uuid="p", profile_name="P")
+
+        result = await task._card_art_context(_start_signal(), context, None)
+
+        assert result is context
+
+    async def test_nothing_in_the_ring_falls_back_to_the_live_frame(self):
+        """A ring too young to reach the departure (e.g. a just-armed watcher) must not
+        leave the card art blank — the live frame, empty as it is, still beats nothing."""
+        pipeline = _engine_pipeline("on_exit")
+        task = _task([pipeline])
+        task._wallclock_offset = 0.0
+        task._frame_rings["src-1"] = FrameRing(max_seconds=30.0)
+
+        live_frame = np.full((4, 4, 3), 200, dtype=np.uint8)
+        context = ActionContext(
+            profile_uuid="p", profile_name="P", source_uuid="src-1", frame=live_frame, full_frame=live_frame
+        )
+
+        result = await task._card_art_context(_start_signal(started_at=60.0), context, pipeline)
+
+        assert result is context
+
+    async def test_buffered_source_pulls_a_still_from_the_relay(self):
+        """The other rewind tier: no frame ring at all, so the departure frame has to
+        come from a short cut of the relay's own recorded segments instead."""
+        pipeline = _engine_pipeline("on_exit")
+        pipeline.buffered = True
+        pipeline.provider = SimpleNamespace(_relayed_name="cam/relay")
+
+        calls = []
+
+        class _Relay:
+            async def extract_clip(self, *, path, start, duration_s, dest):
+                calls.append((path, start, duration_s))
+                dest.write_bytes(b"stand-in mp4 bytes; _first_frame is stubbed below")
+
+        task = _task([pipeline], relay_client=_Relay())
+        task._wallclock_offset = 0.0
+        historical = np.full((4, 4, 3), 10, dtype=np.uint8)
+        task._first_frame = lambda path: historical
+
+        live_frame = np.full((4, 4, 3), 200, dtype=np.uint8)
+        context = ActionContext(
+            profile_uuid="p", profile_name="P", source_uuid="src-1", frame=live_frame, full_frame=live_frame
+        )
+
+        result = await task._card_art_context(_start_signal(started_at=60.0), context, pipeline)
+
+        assert calls and calls[0][0] == "cam/relay" and calls[0][2] == 1.0
+        assert np.array_equal(result.frame, historical)
+
+    async def test_a_relay_extraction_failure_falls_back_to_the_live_frame(self):
+        pipeline = _engine_pipeline("on_exit")
+        pipeline.buffered = True
+        pipeline.provider = SimpleNamespace(_relayed_name="cam/relay")
+
+        class _FailingRelay:
+            async def extract_clip(self, **kwargs):
+                raise RuntimeError("buffer aged out")
+
+        task = _task([pipeline], relay_client=_FailingRelay())
+        task._wallclock_offset = 0.0
+
+        live_frame = np.full((4, 4, 3), 200, dtype=np.uint8)
+        context = ActionContext(
+            profile_uuid="p", profile_name="P", source_uuid="src-1", frame=live_frame, full_frame=live_frame
+        )
+
+        result = await task._card_art_context(_start_signal(started_at=60.0), context, pipeline)
+
+        assert result is context

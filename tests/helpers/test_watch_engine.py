@@ -777,6 +777,26 @@ class TestWatchEngine:
             engine.step(inside, now=i * 0.5)
         assert engine.tuning_hints() == []
 
+    def test_trigger_for_reports_the_rules_configured_trigger(self):
+        # StreamWatcherTask reads this to tell an on_exit impulse apart from a while
+        # rule's START, which a signal alone cannot: both leave the same gap between
+        # `started_at` and dispatch time (see TestImpulseTriggers), so the trigger has
+        # to come from the rule, not be guessed from timing.
+        engine = WatchEngine(
+            rules=[
+                _rule(uuid="r-while", trigger="while"),
+                _rule(uuid="r-exit", trigger="on_exit"),
+            ],
+            zones=[LITTER_ZONE],
+            source_uuid="src-1",
+        )
+        assert engine.trigger_for("r-while") == "while"
+        assert engine.trigger_for("r-exit") == "on_exit"
+
+    def test_trigger_for_an_unscoped_rule_is_none(self):
+        engine = self._engine()
+        assert engine.trigger_for("some-other-rule") is None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Multi-ref slots and the slot values they report

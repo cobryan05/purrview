@@ -20,6 +20,7 @@ as `expired` rather than retried forever.
 """
 
 import asyncio
+import bisect
 import logging
 import subprocess
 import tempfile
@@ -171,6 +172,24 @@ class FrameRing:
 
     def frames_between(self, start: float, end: float) -> List[Tuple[float, bytes]]:
         return [f for f in self._frames if start <= f[0] <= end]
+
+    def closest(self, ts: float, tolerance: float) -> Optional[bytes]:
+        """The frame nearest `ts`, if the ring holds one within `tolerance` seconds.
+
+        For a source with no rewind buffer, this is the same ring `RecordClipAction`
+        already cuts pre-roll from — reused here so an on_exit event's still-image
+        preview can show the subject instead of the empty frame the ring has moved on
+        to by the time the debounced departure signal is dispatched.
+        """
+        if not self._frames:
+            return None
+        times = [f[0] for f in self._frames]
+        i = bisect.bisect_left(times, ts)
+        candidates = [self._frames[j] for j in (i - 1, i) if 0 <= j < len(self._frames)]
+        if not candidates:
+            return None
+        best = min(candidates, key=lambda f: abs(f[0] - ts))
+        return best[1] if abs(best[0] - ts) <= tolerance else None
 
     @property
     def size_bytes(self) -> int:
