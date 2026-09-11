@@ -36,13 +36,6 @@ export async function reloadImage(runtime) {
   await loadImageOntoCanvas(runtime, imageName);
 }
 
-// runtimeId -> Set<bboxUuid> flagged on a previous Verify-all press and now
-// armed to be accepted on the next one (see verifyAllBboxes). Module-level
-// rather than on the runtime object: this is UI interaction state for one
-// specific action, not part of the canvas/image model. Cleared on navigation
-// in loadImageOntoCanvas.
-const _pendingVerifyFlags = new Map();
-
 /**
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  * @param {string} imageName
@@ -70,11 +63,6 @@ export async function loadImageOntoCanvas(runtime, imageName, { allowCached = fa
   }
 
   runtime.setImage(imageInfo);
-  // A second Verify-all press landing on a DIFFERENT image than the one that
-  // armed it would blind-accept that image's flagged boxes — the exact
-  // failure the two-press gate exists to prevent, made worse by being
-  // invisible. Every navigation clears it, cached-load or not.
-  _pendingVerifyFlags.delete(runtime.id);
   events.publish(EventTypes.IMAGE_LOADED_ONTO_CANVAS, { path: imageName, runtimeId: runtime.id });
 }
 
@@ -105,60 +93,38 @@ export function clearAnnotations(runtime) {
  * tags, adds VERIFIED). Bboxes already carrying VERIFIED are left untouched.
  *
  * A bbox flagged `flaggedForReview` (a detector-miss box whose interpolated
- * position was ambiguous — plan §5) needs two presses: the first verifies
- * everything else and flashes the flagged ones instead of touching them; a
- * second press accepts them too. Nothing changes for an image with no
- * flagged boxes.
+ * position was ambiguous) is verified along with everything else, but flashed
+ * so the user's eye lands on it — a heads-up, not a gate.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
  */
 export function verifyAllBboxes(runtime) {
   if (!runtime.canvas) return;
   const { layer } = runtime.canvas;
 
-  // Boxes flagged on a PRIOR press are already armed to accept this time —
-  // this is what makes a plain second press behave as "accept the flagged
-  // ones too" with no extra state to check beyond this set (plan §5).
-  const accepted = _pendingVerifyFlags.get(runtime.id);
-
   let changed = 0;
-  const newlyFlagged = [];
+  const flagged = [];
   [...layer.getChildren()].forEach(child => {
     if (child.name() !== 'bbox' || !(child instanceof BboxView)) return;
     if (child.uiBBox.tags?.some(t => t.uuid === VERIFIED_TAG_UUID)) return;
 
-    if (child.uiBBox.flaggedForReview && !accepted?.has(child.uiBBox.uuid)) {
-      // First press on this box: leave it unverified and flash it, rather
-      // than excluding it from the button entirely — the user's eye lands on
-      // exactly the box that earned a second look, and a plain second press
-      // still accepts it (plan §5: "a speed bump, not a wall").
-      newlyFlagged.push(child);
-      return;
-    }
+    if (child.uiBBox.flaggedForReview) flagged.push(child);
 
     applyVerifiedTag(child.uiBBox);
     child.refreshIcons(child.uiBBox.tags);
     changed++;
   });
 
-  if (newlyFlagged.length) {
-    _pendingVerifyFlags.set(runtime.id, new Set(newlyFlagged.map(v => v.uiBBox.uuid)));
-    newlyFlagged.forEach(view => view.flash(GLOW_FLAGGED_FOR_REVIEW));
-  } else {
-    _pendingVerifyFlags.delete(runtime.id);
-  }
-  const flaggedNote = `${newlyFlagged.length} flagged for a second look — press again to accept.`;
+  flagged.forEach(view => view.flash(GLOW_FLAGGED_FOR_REVIEW));
 
   if (!changed) {
-    toast(newlyFlagged.length ? flaggedNote : 'All bboxes are already verified.');
+    toast('All bboxes are already verified.');
     return;
   }
 
-  // Verifying the unambiguous boxes is a real change even on a press that
-  // also left some flagged — it must be saved/undo-able like any other edit,
-  // not held back until the flagged ones are accepted too.
   runtime.pushState();
   events.publish(EventTypes.CANVAS_BBOXES_CHANGED, { runtimeId: runtime.id });
-  toast(newlyFlagged.length ? `Verified ${changed} · ${flaggedNote}` : `Verified ${changed} bbox${changed === 1 ? '' : 'es'}.`);
+  const flaggedNote = flagged.length ? ` (${flagged.length} flagged for a second look)` : '';
+  toast(`Verified ${changed} bbox${changed === 1 ? '' : 'es'}${flaggedNote}.`);
 }
 
 /**

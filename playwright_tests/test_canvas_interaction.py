@@ -1034,9 +1034,10 @@ class TestVerifyAllBboxes:
         assert UNVERIFIED_TAG_UUID not in result["afterVerify"]
         assert result["afterUndo"] == [UNVERIFIED_TAG_UUID]
 
-    def test_first_press_leaves_a_flagged_bbox_unverified_and_flashes_it(self, shared_page: Page):
-        """Plan §5: a detector-miss box whose position was ambiguous gets a
-        second look rather than a blind Verify-all sweep."""
+    def test_verify_all_accepts_a_flagged_bbox_on_the_first_press_but_flashes_it(self, shared_page: Page):
+        """A detector-miss box whose position was ambiguous is verified along with
+        everything else on one press — it just gets flashed so the user notices it,
+        rather than being held back for a second press."""
         page = shared_page
         result = page.evaluate(f"""async () => {{
             const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
@@ -1071,78 +1072,9 @@ class TestVerifyAllBboxes:
             }};
         }}""")
         assert VERIFIED_TAG_UUID in result["normalTags"]
-        assert result["flaggedTags"] == [UNVERIFIED_TAG_UUID]
+        assert VERIFIED_TAG_UUID in result["flaggedTags"]
+        assert UNVERIFIED_TAG_UUID not in result["flaggedTags"]
         assert result["flaggedWasFlashed"] is True
-
-    def test_second_press_accepts_the_flagged_bbox(self, shared_page: Page):
-        page = shared_page
-        result = page.evaluate(f"""async () => {{
-            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
-            const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
-            const {{ rerenderBboxViews }} = await import('/app-static/js/app/image-tagging/canvas/manager.js');
-            const {{ verifyAllBboxes }} = await import('/app-static/js/app/image-tagging/canvas/image.js');
-
-            {_SETUP}
-
-            const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
-
-            runtime.state.image.bboxes.set('flagged', createUIBBbox({{
-                uuid: 'flagged', x: 0.5, y: 0.5, width: 0.2, height: 0.2,
-                tags: [{{ uuid: UNVERIFIED, icon: null }}],
-                flaggedForReview: true,
-            }}));
-            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
-
-            verifyAllBboxes(runtime);  // first press: flagged, left unverified
-            verifyAllBboxes(runtime);  // second press: same runtime, same image
-
-            return [...runtime.state.image.bboxes.get('flagged').tags].map(t => t.uuid);
-        }}""")
-        assert VERIFIED_TAG_UUID in result
-        assert UNVERIFIED_TAG_UUID not in result
-
-    def test_pending_flags_do_not_leak_across_images(self, shared_page: Page):
-        """A second press landing on a DIFFERENT image than the one that armed
-        it must not blind-accept that image's flagged boxes — the exact
-        failure the two-press gate exists to prevent (plan §5). Modelled here
-        with two separate runtimes rather than a real navigation, since the
-        flag store is keyed by runtime identity the same way a real navigation
-        (a new image loaded onto the same runtime) clears it."""
-        page = shared_page
-        result = page.evaluate(f"""async () => {{
-            const {{ createImageTaggingRuntime }} = await import('/app-static/js/app/image-tagging/runtime.js');
-            const {{ createUIBBbox }} = await import('/app-static/js/shared/domain/image/mapper.js');
-            const {{ rerenderBboxViews }} = await import('/app-static/js/app/image-tagging/canvas/manager.js');
-            const {{ verifyAllBboxes }} = await import('/app-static/js/app/image-tagging/canvas/image.js');
-
-            const UNVERIFIED = '{UNVERIFIED_TAG_UUID}';
-
-            async function buildRuntime() {{
-                {_SETUP}
-                return runtime;
-            }}
-
-            const runtimeA = await buildRuntime();
-            runtimeA.state.image.bboxes.set('flagged', createUIBBbox({{
-                uuid: 'flagged', x: 0.5, y: 0.5, width: 0.2, height: 0.2,
-                tags: [{{ uuid: UNVERIFIED, icon: null }}],
-                flaggedForReview: true,
-            }}));
-            rerenderBboxViews(runtimeA.canvas, runtimeA.state.image.bboxes, runtimeA.canvas.viewport);
-            verifyAllBboxes(runtimeA);  // arms runtimeA's flag
-
-            const runtimeB = await buildRuntime();
-            runtimeB.state.image.bboxes.set('flagged', createUIBBbox({{
-                uuid: 'flagged', x: 0.5, y: 0.5, width: 0.2, height: 0.2,
-                tags: [{{ uuid: UNVERIFIED, icon: null }}],
-                flaggedForReview: true,
-            }}));
-            rerenderBboxViews(runtimeB.canvas, runtimeB.state.image.bboxes, runtimeB.canvas.viewport);
-            verifyAllBboxes(runtimeB);  // a DIFFERENT runtime's first press must not be pre-armed
-
-            return [...runtimeB.state.image.bboxes.get('flagged').tags].map(t => t.uuid);
-        }}""")
-        assert result == [UNVERIFIED_TAG_UUID]
 
 
 # ---------------------------------------------------------------------------
