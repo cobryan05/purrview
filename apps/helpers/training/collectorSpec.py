@@ -529,7 +529,7 @@ def build_review_actions(task_tag_uuid: Optional[str], spec: "CollectorSpec") ->
                 "payload": {
                     **scope,
                     "tag_uuids": [*(scope["tag_uuids"] or []), CONFUSABLE_TAG_UUID],
-                    "bbox_verification": "any",
+                    "bbox_verification": "unverified",
                 },
             }
         )

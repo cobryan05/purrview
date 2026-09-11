@@ -5173,8 +5173,11 @@ class TestFrameProvenance:
         task = _make_task(params=_AMBIGUITY_PARAMS)
         await task._init(_AMBIGUITY_PARAMS, resume_data=None)
         task._collector._task_tag_uuid = "task-tag"
-        labels = [a["label"] for a in task._review_actions()]
+        actions = task._review_actions()
+        labels = [a["label"] for a in actions]
         assert "Browse confusable" in labels
+        action = next(a for a in actions if a["label"] == "Browse confusable")
+        assert action["payload"]["bbox_verification"] == "unverified"
 
         off = _make_task(params=_PARAMS)
         await off._init(_PARAMS, resume_data=None)
