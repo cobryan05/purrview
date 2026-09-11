@@ -5141,9 +5141,7 @@ class DbClient:
             for chunk in _chunked(image_uuids):
                 rows = (
                     await session.exec(
-                        select(coverage.c.image_uuid, func.count(distinct(coverage.c.class_idx)))
-                        .where(coverage.c.image_uuid.in_(chunk))
-                        .group_by(coverage.c.image_uuid)
+                        select(coverage.c.image_uuid, coverage.c.covered).where(coverage.c.image_uuid.in_(chunk))
                     )
                 ).all()
                 covered.update(dict(rows))
@@ -5202,7 +5200,7 @@ class DbClient:
         effective_for_class: Dict[str, List[str]],
         labels_map: Dict[str, Any],
     ) -> tuple[Select, Select]:
-        """(coverage, positives) as `SELECT image_uuid, class_idx` / `SELECT image_uuid`.
+        """(coverage, positives) as `SELECT image_uuid, covered` / `SELECT image_uuid`.
 
         The same rule ``_class_coverage`` applies in Python, expressed as SQL so
         readiness can stay a single aggregate over the dataset union rather than
@@ -5212,6 +5210,14 @@ class DbClient:
         Both halves are keyed on the *class* a raw label speaks for, not the label,
         which is the whole correction: rollup means more labels than classes, and a
         count of verified labels cannot tell which classes they landed on.
+
+        ``coverage`` is pre-aggregated to one row per image (COUNT DISTINCT class_idx)
+        rather than left as the raw per-class rows. Left as raw rows, joining it against
+        the (much larger) dataset scope gives SQLite a many-rows-per-image side it
+        refuses to build an automatic index for — a full nested-loop scan, O(images ×
+        coverage rows). On a real config that was 3.1k images × 10.3k coverage rows =
+        32M comparisons for a 2.5s query. Pre-aggregating first makes both sides of the
+        join one-row-per-image, which SQLite auto-indexes, at ~30ms.
         """
         class_idx = {cu: i for i, cu in enumerate(class_uuids)}
         raw_to_idx: Dict[str, int] = {}
@@ -5227,7 +5233,7 @@ class DbClient:
         il_case = case(raw_to_idx, value=ImageLabel.label_uuid)
         bbox_case = case(raw_to_idx, value=BBox.label_uuid)
 
-        coverage = union(
+        coverage_raw = union(
             select(ImageLabel.image_uuid.label("image_uuid"), il_case.label("class_idx")).where(
                 ImageLabel.label_uuid.in_(all_raw),
                 ImageLabel.status.in_([ImageItemStatus.PRESENT, ImageItemStatus.ABSENT]),
@@ -5236,7 +5242,11 @@ class DbClient:
                 BBox.label_uuid.in_(all_raw),
                 BBox.uuid.in_(verified_boxes),
             ),
-        )
+        ).subquery()
+        coverage = select(
+            coverage_raw.c.image_uuid.label("image_uuid"),
+            func.count(distinct(coverage_raw.c.class_idx)).label("covered"),
+        ).group_by(coverage_raw.c.image_uuid)
 
         # Positive = the image has surfaced a class, by either medium. Scope is not the
         # discriminator it looks like: object-scope labels are routinely trained by an
@@ -5302,20 +5312,18 @@ class DbClient:
         coverage = coverage_sel.subquery()
         positives = positives_sel.subquery()
 
-        # Both joins are one-to-many, so the row set is a product — safe here because
-        # COUNT(DISTINCT class_idx) and MAX() are both insensitive to duplicated rows.
-        per_image = (
-            select(
-                scope.c.uuid.label("uuid"),
-                func.count(distinct(coverage.c.class_idx)).label("covered"),
-                func.max(case((positives.c.image_uuid.isnot(None), 1), else_=0)).label("positive"),
+        # coverage and positives are both pre-aggregated to one row per image, so this
+        # join is 1:1:1 — no GROUP BY needed, and (critically) each side is small enough
+        # for SQLite to auto-index instead of falling back to a nested-loop scan of the
+        # dataset scope against the raw per-class rows.
+        per_image = select(
+            scope.c.uuid.label("uuid"),
+            func.coalesce(coverage.c.covered, 0).label("covered"),
+            case((positives.c.image_uuid.isnot(None), 1), else_=0).label("positive"),
+        ).select_from(
+            scope.outerjoin(coverage, coverage.c.image_uuid == scope.c.uuid).outerjoin(
+                positives, positives.c.image_uuid == scope.c.uuid
             )
-            .select_from(
-                scope.outerjoin(coverage, coverage.c.image_uuid == scope.c.uuid).outerjoin(
-                    positives, positives.c.image_uuid == scope.c.uuid
-                )
-            )
-            .group_by(scope.c.uuid)
         )
 
         # Chunked because a restrict list can exceed SQLite's bind-variable cap.
