@@ -120,11 +120,18 @@ export async function fetchTrainingConfigNeedsReview({
   sortBy = 'created_at',
   sortOrder = 'desc',
   limit = 50,
+  sourceUuids = [],
+  sourceExcludeUuids = [],
+  filenameConditions = [],
+  filenameMatchMode = 'any',
 }) {
   const res = await apiFetch(`/api/training-configs/${uuid}/needs-review-images`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ labelUuids, afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({
+      labelUuids, afterUuid, afterSortValue, sortBy, sortOrder, limit,
+      sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode,
+    }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
@@ -140,11 +147,18 @@ export async function fetchTrainingConfigReadyImages({
   sortBy = 'created_at',
   sortOrder = 'desc',
   limit = 50,
+  sourceUuids = [],
+  sourceExcludeUuids = [],
+  filenameConditions = [],
+  filenameMatchMode = 'any',
 }) {
   const res = await apiFetch(`/api/training-configs/${uuid}/ready-images`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({
+      afterUuid, afterSortValue, sortBy, sortOrder, limit,
+      sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode,
+    }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
@@ -160,11 +174,18 @@ export async function fetchTrainingConfigReadyPositiveImages({
   sortBy = 'created_at',
   sortOrder = 'desc',
   limit = 50,
+  sourceUuids = [],
+  sourceExcludeUuids = [],
+  filenameConditions = [],
+  filenameMatchMode = 'any',
 }) {
   const res = await apiFetch(`/api/training-configs/${uuid}/ready-positive-images`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({
+      afterUuid, afterSortValue, sortBy, sortOrder, limit,
+      sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode,
+    }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
@@ -180,11 +201,18 @@ export async function fetchTrainingConfigReadyNegativeImages({
   sortBy = 'created_at',
   sortOrder = 'desc',
   limit = 50,
+  sourceUuids = [],
+  sourceExcludeUuids = [],
+  filenameConditions = [],
+  filenameMatchMode = 'any',
 }) {
   const res = await apiFetch(`/api/training-configs/${uuid}/ready-negative-images`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({
+      afterUuid, afterSortValue, sortBy, sortOrder, limit,
+      sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode,
+    }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
@@ -200,11 +228,18 @@ export async function fetchTrainingConfigPartialReviewImages({
   sortBy = 'created_at',
   sortOrder = 'desc',
   limit = 50,
+  sourceUuids = [],
+  sourceExcludeUuids = [],
+  filenameConditions = [],
+  filenameMatchMode = 'any',
 }) {
   const res = await apiFetch(`/api/training-configs/${uuid}/partial-review-images`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({
+      afterUuid, afterSortValue, sortBy, sortOrder, limit,
+      sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode,
+    }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {
@@ -220,11 +255,18 @@ export async function fetchTrainingConfigNotStartedImages({
   sortBy = 'created_at',
   sortOrder = 'desc',
   limit = 50,
+  sourceUuids = [],
+  sourceExcludeUuids = [],
+  filenameConditions = [],
+  filenameMatchMode = 'any',
 }) {
   const res = await apiFetch(`/api/training-configs/${uuid}/not-started-images`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ afterUuid, afterSortValue, sortBy, sortOrder, limit }),
+    body: JSON.stringify({
+      afterUuid, afterSortValue, sortBy, sortOrder, limit,
+      sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode,
+    }),
   });
   const data = await res.json();
   if (!res.ok || data.status !== 'success') {

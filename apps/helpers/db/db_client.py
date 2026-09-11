@@ -6107,6 +6107,52 @@ class DbClient:
 
         return needs_review
 
+    # Mirrors NO_SOURCE_KEY in shared/api/review.js — the client sends this sentinel
+    # inside sourceUuids/sourceExcludeUuids for "no source recorded" rather than a real
+    # source uuid, since NULL never satisfies an IN clause on its own.
+    _NO_SOURCE_KEY = "__no_source__"
+
+    @classmethod
+    def _build_scope_filter_terms(
+        cls,
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
+    ) -> List[Any]:
+        """Extra ImageSourceTerm/FilenameTerm terms for source and filename filtering,
+        for callers (the training-config readiness/needs-review image lists) that
+        enumerate a dataset union themselves rather than going through the main
+        Review page's search. Mirrors buildImageSourceTerms/buildFilenameTerms in
+        shared/api/review.js term for term, so the same curated filter state behaves
+        identically whether it lands in a training-config modal or the Review tab.
+        """
+        terms: List[Any] = []
+
+        inc = source_uuids or []
+        inc_uuids = [u for u in inc if u and u != cls._NO_SOURCE_KEY]
+        inc_unknown = cls._NO_SOURCE_KEY in inc
+        if inc_uuids or inc_unknown:
+            terms.append(ImageSourceTerm(source_uuids=inc_uuids, include_unknown=inc_unknown))
+        for u in source_exclude_uuids or []:
+            if u == cls._NO_SOURCE_KEY:
+                terms.append(ImageSourceTerm(source_uuids=[], include_unknown=True, negate=True))
+            elif u:
+                terms.append(ImageSourceTerm(source_uuids=[u], include_unknown=False, negate=True))
+
+        conditions = [c for c in (filename_conditions or []) if (c.get("pattern") or "").strip()]
+        includes = [c["pattern"] for c in conditions if not c.get("negate")]
+        if includes:
+            term = FilenameTerm(patterns=includes)
+            if len(includes) > 1:
+                term.match_mode = filename_match_mode if filename_match_mode in ("any", "all") else "all"
+            terms.append(term)
+        for c in conditions:
+            if c.get("negate"):
+                terms.append(FilenameTerm(patterns=[c["pattern"]], negate=True))
+
+        return terms
+
     async def get_training_config_needs_review_images(
         self,
         uuid: str,
@@ -6117,6 +6163,10 @@ class DbClient:
         sort_by: str = "created_at",
         sort_order: str = "desc",
         extra_label_uuids: Optional[List[str]] = None,
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Return (images, has_more) for images that need verification in a training config.
 
@@ -6130,6 +6180,10 @@ class DbClient:
 
         extra_label_uuids — when provided, additionally narrows the pool to images that
         also have bboxes with these labels (applied on top of each dataset's own filters).
+
+        source_uuids/source_exclude_uuids/filename_conditions/filename_match_mode — see
+        _build_scope_filter_terms; applied per-dataset in SQL via _narrow_pool below,
+        same as extra_label_uuids.
 
         v1: in-memory merge across datasets. Push to SQL union if datasets grow large.
         """
@@ -6175,6 +6229,11 @@ class DbClient:
                     pool_term.label_uuids = list(set(pool_term.label_uuids) | set(extra_label_uuids))
                 else:
                     params.terms.append(ObjectLabelTerm(label_uuids=list(extra_label_uuids), roll_up=False))
+            params.terms.extend(
+                self._build_scope_filter_terms(
+                    source_uuids, source_exclude_uuids, filename_conditions, filename_match_mode
+                )
+            )
 
         all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids, mutate_params=_narrow_pool)
 
@@ -6222,6 +6281,10 @@ class DbClient:
         after_sort_value: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Shared implementation backing the readiness-bucket image list methods.
 
@@ -6229,6 +6292,10 @@ class DbClient:
         ``_readiness_bucket``'s, the same predicate ``get_training_config_readiness``
         counts with, so a count and the list it is clickable through to cannot disagree
         about an image; "ready" is the union of ready_positive and ready_negative.
+
+        source_uuids/source_exclude_uuids/filename_conditions/filename_match_mode — see
+        _build_scope_filter_terms; applied per-dataset in SQL, same as the dataset's own
+        filters, before the readiness bucket is computed over the (already narrowed) pool.
 
         v1: in-memory merge across datasets, same approach as
         ``get_training_config_needs_review_images``. Push to SQL union if datasets grow large.
@@ -6246,8 +6313,15 @@ class DbClient:
         if bucket not in ("ready", "ready_positive", "ready_negative", "needs_review", "not_started"):
             raise ValueError(f"Unknown readiness bucket: {bucket!r}")
 
+        def _apply_scope_filters(params: ImageSearchParams) -> None:
+            params.terms.extend(
+                self._build_scope_filter_terms(
+                    source_uuids, source_exclude_uuids, filename_conditions, filename_match_mode
+                )
+            )
+
         # Collect all images across all linked datasets (union, de-duped by uuid).
-        all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids)
+        all_images = await self._enumerate_dataset_union_stubs(tc.dataset_uuids, mutate_params=_apply_scope_filters)
 
         if not all_images:
             return [], False
@@ -6297,6 +6371,10 @@ class DbClient:
         after_sort_value: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Return (images, has_more) for images that are ready for training in a training config.
 
@@ -6314,6 +6392,10 @@ class DbClient:
             after_sort_value=after_sort_value,
             sort_by=sort_by,
             sort_order=sort_order,
+            source_uuids=source_uuids,
+            source_exclude_uuids=source_exclude_uuids,
+            filename_conditions=filename_conditions,
+            filename_match_mode=filename_match_mode,
         )
 
     async def get_training_config_ready_positive_images(
@@ -6325,6 +6407,10 @@ class DbClient:
         after_sort_value: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Return (images, has_more) for READY images that are POSITIVE samples — fully
         verified and carrying at least one in-scope label verified PRESENT.
@@ -6340,6 +6426,10 @@ class DbClient:
             after_sort_value=after_sort_value,
             sort_by=sort_by,
             sort_order=sort_order,
+            source_uuids=source_uuids,
+            source_exclude_uuids=source_exclude_uuids,
+            filename_conditions=filename_conditions,
+            filename_match_mode=filename_match_mode,
         )
 
     async def get_training_config_ready_negative_images(
@@ -6351,6 +6441,10 @@ class DbClient:
         after_sort_value: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Return (images, has_more) for READY images that are NEGATIVE (background) samples —
         fully verified with every in-scope label verified ABSENT.
@@ -6363,6 +6457,10 @@ class DbClient:
             after_sort_value=after_sort_value,
             sort_by=sort_by,
             sort_order=sort_order,
+            source_uuids=source_uuids,
+            source_exclude_uuids=source_exclude_uuids,
+            filename_conditions=filename_conditions,
+            filename_match_mode=filename_match_mode,
         )
 
     async def get_training_config_partial_review_images(
@@ -6374,6 +6472,10 @@ class DbClient:
         after_sort_value: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Return (images, has_more) for images with PARTIAL label coverage (the readiness
         panel's "needs review" bucket): 0 < verified_count < readiness_threshold.
@@ -6390,6 +6492,10 @@ class DbClient:
             after_sort_value=after_sort_value,
             sort_by=sort_by,
             sort_order=sort_order,
+            source_uuids=source_uuids,
+            source_exclude_uuids=source_exclude_uuids,
+            filename_conditions=filename_conditions,
+            filename_match_mode=filename_match_mode,
         )
 
     async def get_training_config_not_started_images(
@@ -6401,6 +6507,10 @@ class DbClient:
         after_sort_value: Optional[datetime] = None,
         sort_by: str = "created_at",
         sort_order: str = "desc",
+        source_uuids: Optional[List[str]] = None,
+        source_exclude_uuids: Optional[List[str]] = None,
+        filename_conditions: Optional[List[Dict[str, Any]]] = None,
+        filename_match_mode: str = "any",
     ) -> tuple[list["ImageRecord"], bool]:
         """Return (images, has_more) for images with ZERO label coverage (verified_count == 0) —
         i.e. images that have never been reviewed at all, as opposed to partially reviewed.
@@ -6413,6 +6523,10 @@ class DbClient:
             after_sort_value=after_sort_value,
             sort_by=sort_by,
             sort_order=sort_order,
+            source_uuids=source_uuids,
+            source_exclude_uuids=source_exclude_uuids,
+            filename_conditions=filename_conditions,
+            filename_match_mode=filename_match_mode,
         )
 
     async def get_training_config_label_stats(

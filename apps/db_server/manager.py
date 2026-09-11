@@ -5601,6 +5601,10 @@ class Manager:
             sort_by=payload.sort_by,
             sort_order=payload.sort_order,
             extra_label_uuids=payload.label_uuids or None,
+            source_uuids=payload.source_uuids or None,
+            source_exclude_uuids=payload.source_exclude_uuids or None,
+            filename_conditions=[c.model_dump() for c in payload.filename_conditions] or None,
+            filename_match_mode=payload.filename_match_mode,
         )
         results = []
         for img in images:
@@ -5619,6 +5623,10 @@ class Manager:
             after_sort_value=payload.after_sort_value,
             sort_by=payload.sort_by,
             sort_order=payload.sort_order,
+            source_uuids=payload.source_uuids or None,
+            source_exclude_uuids=payload.source_exclude_uuids or None,
+            filename_conditions=[c.model_dump() for c in payload.filename_conditions] or None,
+            filename_match_mode=payload.filename_match_mode,
         )
         results = []
         for img in images:
@@ -5637,6 +5645,10 @@ class Manager:
             after_sort_value=payload.after_sort_value,
             sort_by=payload.sort_by,
             sort_order=payload.sort_order,
+            source_uuids=payload.source_uuids or None,
+            source_exclude_uuids=payload.source_exclude_uuids or None,
+            filename_conditions=[c.model_dump() for c in payload.filename_conditions] or None,
+            filename_match_mode=payload.filename_match_mode,
         )
         results = []
         for img in images:
@@ -5655,6 +5667,10 @@ class Manager:
             after_sort_value=payload.after_sort_value,
             sort_by=payload.sort_by,
             sort_order=payload.sort_order,
+            source_uuids=payload.source_uuids or None,
+            source_exclude_uuids=payload.source_exclude_uuids or None,
+            filename_conditions=[c.model_dump() for c in payload.filename_conditions] or None,
+            filename_match_mode=payload.filename_match_mode,
         )
         results = []
         for img in images:
@@ -5673,6 +5689,10 @@ class Manager:
             after_sort_value=payload.after_sort_value,
             sort_by=payload.sort_by,
             sort_order=payload.sort_order,
+            source_uuids=payload.source_uuids or None,
+            source_exclude_uuids=payload.source_exclude_uuids or None,
+            filename_conditions=[c.model_dump() for c in payload.filename_conditions] or None,
+            filename_match_mode=payload.filename_match_mode,
         )
         results = []
         for img in images:
@@ -5691,6 +5711,10 @@ class Manager:
             after_sort_value=payload.after_sort_value,
             sort_by=payload.sort_by,
             sort_order=payload.sort_order,
+            source_uuids=payload.source_uuids or None,
+            source_exclude_uuids=payload.source_exclude_uuids or None,
+            filename_conditions=[c.model_dump() for c in payload.filename_conditions] or None,
+            filename_match_mode=payload.filename_match_mode,
         )
         results = []
         for img in images:

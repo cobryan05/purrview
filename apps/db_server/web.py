@@ -840,6 +840,11 @@ class TrainingConfigImageSubsetPayload(Payload):
     image_uuids: List[str] = Field(default_factory=list)
 
 
+class FilenameConditionPayload(Payload):
+    pattern: str
+    negate: bool = False
+
+
 class NeedsReviewImagesPayload(Payload):
     label_uuids: List[str] = Field(default_factory=list)
     after_uuid: Optional[str] = None
@@ -847,6 +852,16 @@ class NeedsReviewImagesPayload(Payload):
     sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = 50
+    # Source and filename filters, applied server-side per dataset via
+    # DbClient.build_extra_scope_terms — same shape and semantics as the main Review
+    # page's curated filter state (filterPredicate.js), so a modal opened from a
+    # training config's readiness panel filters the same way the Review tab does.
+    # sourceUuids/sourceExcludeUuids may contain NO_SOURCE_KEY ("__no_source__") for
+    # "no source recorded".
+    source_uuids: List[str] = Field(default_factory=list)
+    source_exclude_uuids: List[str] = Field(default_factory=list)
+    filename_conditions: List[FilenameConditionPayload] = Field(default_factory=list)
+    filename_match_mode: Literal["any", "all"] = "any"
 
 
 class ReadyImagesPayload(Payload):
@@ -855,6 +870,13 @@ class ReadyImagesPayload(Payload):
     sort_by: Literal["uuid", "created_at", "updated_at"] = "created_at"
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = 50
+    # See NeedsReviewImagesPayload — same source/filename filter fields, applied
+    # server-side to every readiness-bucket list (ready/ready-positive/ready-negative/
+    # partial-review/not-started all share DbClient._get_training_config_images_by_readiness_bucket).
+    source_uuids: List[str] = Field(default_factory=list)
+    source_exclude_uuids: List[str] = Field(default_factory=list)
+    filename_conditions: List[FilenameConditionPayload] = Field(default_factory=list)
+    filename_match_mode: Literal["any", "all"] = "any"
 
 
 class TrainingTargetDetectionDatasetPayload(Payload):

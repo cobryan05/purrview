@@ -22,7 +22,7 @@
  * `labels` is the standard Map<uuid, labelRecord> (records carry `parentUuid`)
  * used throughout the review UI (see ui/labelList.js).
  */
-import { VERIFICATION_TAG_BY_STATE } from '/app-static/js/shared/api/review.js';
+import { VERIFICATION_TAG_BY_STATE, NO_SOURCE_KEY } from '/app-static/js/shared/api/review.js';
 import { readConfidence } from '/app-static/js/shared/domain/image/confidence.js';
 import { parseApiDateMs } from '/app-static/js/shared/time.js';
 import { expandWithDescendants } from '/app-static/js/ui/labelList.js';
@@ -63,6 +63,20 @@ export function defaultCuratedFilterState() {
     // Image-scoped (NOT bbox-scoped — see `imageMatchesFilename`): a
     // case-insensitive substring test over `img.filename`. '' is the no-op.
     filenameSearch: '',
+    // Image-scoped, multi-condition filename filter — the curated-surface
+    // counterpart of the main filter panel's filenameConditions (filters.js):
+    // [{ pattern, negate }]. Independent of filenameSearch above (both are
+    // applied, ANDed, by imageMatchesFilenameConditions/imageMatchesFilename —
+    // filenameSearch predates this and nothing writes both at once). '' patterns
+    // are ignored. Includes are combined by filenameMatchMode; every exclude applies.
+    filenameConditions: [],
+    filenameMatchMode: 'any', // 'any' | 'all'
+    // Image-scoped: which source (images.source_uuid) produced the image — "the
+    // camera that took it". Mirrors the main filter panel's sourceUuids/
+    // sourceExcludeUuids (filters.js) one for one, including the NO_SOURCE_KEY
+    // sentinel for "no source recorded".
+    sourceUuids: [],
+    sourceExcludeUuids: [],
     // Image-scoped date range over `img.createdAt`, mirroring the main page's
     // DateTerm (`field: 'created'`). ISO strings, as produced by
     // `new Date(input.value).toISOString()`; null is the no-op.
@@ -121,6 +135,55 @@ export function imageMatchesFilename(img, state) {
   const needle = (state.filenameSearch || '').trim().toLowerCase();
   if (!needle) return true;
   return (img.filename || '').toLowerCase().includes(needle);
+}
+
+/**
+ * Image-scoped multi-condition filename test — the client-side counterpart of
+ * the server's `FilenameTerm` list built by `_build_scope_filter_terms`
+ * (db_client.py) / `buildFilenameTerms` (shared/api/review.js). Independent of
+ * (and ANDed with) `imageMatchesFilename`'s single `filenameSearch` field —
+ * see that field's doc comment in `defaultCuratedFilterState`.
+ *
+ * @param {{filename?: string}} img
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function imageMatchesFilenameConditions(img, state) {
+  const conditions = (state.filenameConditions || []).filter(c => (c.pattern || '').trim());
+  if (conditions.length === 0) return true;
+
+  const haystack = (img.filename || '').toLowerCase();
+  const includes = conditions.filter(c => !c.negate);
+  const excludes = conditions.filter(c => c.negate);
+
+  for (const c of excludes) {
+    if (haystack.includes(c.pattern.trim().toLowerCase())) return false;
+  }
+  if (includes.length === 0) return true;
+
+  const test = (c) => haystack.includes(c.pattern.trim().toLowerCase());
+  return state.filenameMatchMode === 'all' ? includes.every(test) : includes.some(test);
+}
+
+/**
+ * Image-scoped source test — the client-side counterpart of the server's
+ * `ImageSourceTerm` (db_client.py `_build_scope_filter_terms`). `NO_SOURCE_KEY`
+ * stands for "no source recorded" (img.sourceUuid == null), mirroring the main
+ * filter panel's sourcesDropdown (filters.js).
+ *
+ * @param {{sourceUuid?: ?string}} img
+ * @param {ReturnType<typeof defaultCuratedFilterState>} state
+ * @returns {boolean}
+ */
+export function imageMatchesSource(img, state) {
+  const includes = state.sourceUuids || [];
+  const excludes = state.sourceExcludeUuids || [];
+  const src = img.sourceUuid ?? null;
+  const matches = (u) => (u === NO_SOURCE_KEY ? src === null : u === src);
+
+  if (excludes.length > 0 && excludes.some(matches)) return false;
+  if (includes.length > 0 && !includes.some(matches)) return false;
+  return true;
 }
 
 /**
@@ -294,6 +357,8 @@ export function bboxMatchesFilter(bbox, state, labels) {
  */
 export function imageMatchesFilter(img, state, labels) {
   if (!imageMatchesFilename(img, state)) return false;
+  if (!imageMatchesFilenameConditions(img, state)) return false;
+  if (!imageMatchesSource(img, state)) return false;
   if (!imageMatchesDate(img, state)) return false;
 
   // 'no_boxes' is image-scoped, unlike every other verification state: it asks

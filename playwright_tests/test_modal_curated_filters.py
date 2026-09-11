@@ -264,8 +264,13 @@ class TestCuratedFilenameFilter:
         _open_curated_modal(page, base_url, candidates=self.IMAGES)
 
     def _search(self, page: Page, text: str):
-        page.locator("[data-testid='curated-filename-input']").fill(text)
+        page.locator("[data-testid='filename-condition-input']").first.fill(text)
         # The input is debounced by 400ms before it triggers a re-render.
+        page.wait_for_timeout(700)
+
+    def _exclude(self, page: Page, text: str):
+        page.locator("[data-testid='filename-condition-input']").first.fill(text)
+        page.locator("[data-testid='filename-condition-negate']").first.check()
         page.wait_for_timeout(700)
 
     def test_substring_narrows_to_one_image(self, page: Page, base_url: str):
@@ -299,7 +304,14 @@ class TestCuratedFilenameFilter:
         self._search(page, "")
         expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
         expect(page.locator("[data-bbox-uuid='bbox-2']")).to_be_visible()
-        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
+
+    def test_negated_condition_excludes_matches(self, page: Page, base_url: str):
+        self._open(page, base_url)
+        self._exclude(page, "rear")
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
 
     def test_ands_with_the_bbox_filters(self, page: Page, base_url: str):
         self._open(page, base_url)
@@ -319,6 +331,74 @@ class TestCuratedFilenameFilter:
 
         page.locator("button", has_text="Apply to All").click()
         expect(page.locator("strong", has_text="Apply to all 2 matched bbox")).to_be_visible()
+
+
+def _mock_sources(page: Page, sources: dict):
+    page.route(
+        "**/api/sources/get",
+        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"sources": sources})),
+    )
+
+
+class TestCuratedSourceFilter:
+    """The source control is image-scoped, same as filename — imageMatchesSource
+    tests img.sourceUuid rather than anything on a bbox."""
+
+    SOURCES = {
+        "src-front": {"uuid": "src-front", "name": "Front Camera"},
+        "src-rear": {"uuid": "src-rear", "name": "Rear Camera"},
+    }
+    IMAGES = [
+        {"uuid": "img-1", "filename": "a1.jpg", "sourceUuid": "src-front", "bboxes": [BBOX_1]},
+        {"uuid": "img-2", "filename": "a2.jpg", "sourceUuid": "src-rear", "bboxes": [BBOX_2]},
+        {"uuid": "img-3", "filename": "a3.jpg", "sourceUuid": None, "bboxes": [BBOX_3]},
+    ]
+
+    def _open(self, page: Page, base_url: str):
+        _mock_labels(page, [LABEL_CAT, LABEL_DOG])
+        _mock_tags(page, [UNVERIFIED_TAG, VERIFIED_TAG, REVIEWED_TAG])
+        _mock_image_labels_batch(page)
+        _mock_sources(page, self.SOURCES)
+        _open_curated_modal(page, base_url, candidates=self.IMAGES)
+
+    def test_include_one_source(self, page: Page, base_url: str):
+        self._open(page, base_url)
+
+        page.locator(".ms-dropdown[data-filter-key='curated-source'] .ms-dropdown__trigger").click()
+        page.wait_for_timeout(100)
+        page.locator(".ms-dropdown[data-filter-key='curated-source'] input[value='src-front']").check()
+        page.wait_for_timeout(200)
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_have_count(0)
+
+    def test_no_source_recorded_option_matches_null_source(self, page: Page, base_url: str):
+        self._open(page, base_url)
+
+        page.locator(".ms-dropdown[data-filter-key='curated-source'] .ms-dropdown__trigger").click()
+        page.wait_for_timeout(100)
+        page.locator(".ms-dropdown[data-filter-key='curated-source'] input[value='__no_source__']").check()
+        page.wait_for_timeout(200)
+
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
+
+    def test_exclude_source_hides_its_image(self, page: Page, base_url: str):
+        self._open(page, base_url)
+
+        page.locator(".ms-dropdown[data-filter-key='curated-source'] .ms-dropdown__trigger").click()
+        page.wait_for_timeout(100)
+        row = page.locator(
+            ".ms-dropdown[data-filter-key='curated-source'] .ms-item", has=page.locator("input[value='src-rear']")
+        )
+        row.locator(".ms-item__not-btn").click()
+        page.wait_for_timeout(200)
+
+        expect(page.locator("[data-bbox-uuid='bbox-1']")).to_be_visible()
+        expect(page.locator("[data-bbox-uuid='bbox-2']")).to_have_count(0)
+        expect(page.locator("[data-bbox-uuid='bbox-3']")).to_be_visible()
 
 
 class TestCuratedDateFilter:

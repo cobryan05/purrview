@@ -72,13 +72,17 @@ export async function openBboxNeedsReviewModal(config, labelUuid, modalTitle, ro
     gapsConfig: config,
     initialViewFilter: 'bboxes',
     bboxFilterFn: (b) => effectiveUuids.has(b.labelUuid) && (b.tags || []).some(t => t.uuid === UNVERIFIED_TAG_UUID),
-    fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
+    fetchImages: async ({ afterUuid = null, afterSortValue = null, limit, sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode }) => {
       return fetchTrainingConfigNeedsReview({
         uuid: config.uuid,
         labelUuids: [labelUuid, ...rollupChildUuids],
         afterUuid,
         afterSortValue,
         limit,
+        sourceUuids,
+        sourceExcludeUuids,
+        filenameConditions,
+        filenameMatchMode,
       });
     },
   });
@@ -125,8 +129,13 @@ export function renderReadinessStats(content, { config, readiness, previousRun =
     await showReviewModal({
       title: modalTitle,
       gapsConfig: config,
-      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit }) => {
-        return fetchImages({ uuid: config.uuid, afterUuid, afterSortValue, limit });
+      // Source/filename are forwarded straight to the server (see fetchTrainingConfig*
+      // in shared/api/trainingConfigs.js) — these bucket endpoints enumerate a real
+      // dataset union, so the SQL-side filter (DbClient._build_scope_filter_terms)
+      // narrows the pool before pagination instead of filtering an already-paged
+      // client-side list.
+      fetchImages: async ({ afterUuid = null, afterSortValue = null, limit, sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode }) => {
+        return fetchImages({ uuid: config.uuid, afterUuid, afterSortValue, limit, sourceUuids, sourceExcludeUuids, filenameConditions, filenameMatchMode });
       },
     });
   }

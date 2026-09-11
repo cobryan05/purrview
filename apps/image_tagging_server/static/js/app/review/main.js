@@ -28,6 +28,7 @@ import {
   REJECTION_TAG_UUID,
   VERIFICATION_TAG_UUIDS,
   swapVerificationTag,
+  NO_SOURCE_KEY,
 } from '/app-static/js/shared/api/review.js';
 import { fetchImageLabels, fetchImageLabelsBatch, setImageLabel } from '/app-static/js/shared/api/imageLabels.js';
 import { activeTrainingConfig } from '/app-static/js/shared/activeTrainingConfig.js';
@@ -71,9 +72,11 @@ import { runFilterChainOnResultsFlow } from '/app-static/js/app/review/runFilter
 import { showImageBulkActionModal, executeBulkImageAction, isRemovalAction, confirmRemovalAction, countImagesWithVerifiedWork, HIGH_RISK_REMOVAL_COUNT, removeSingleImage } from '/app-static/js/app/review/imageBulkActionModal.js';
 import { createBboxVerificationControl } from '/app-static/js/app/review/bboxVerificationControl.js';
 import { createConfidenceRangeControl } from '/app-static/js/app/review/confidenceRangeControl.js';
+import { createFilenameConditions } from '/app-static/js/app/review/filenameConditions.js';
 import { defaultCuratedFilterState, bboxMatchesFilter, imageMatchesFilter } from '/app-static/js/app/review/filterPredicate.js';
 import { createMultiSelectDropdown, flashHighlight } from '/app-static/js/ui/utils/index.js';
 import { flattenHierarchy } from '/app-static/js/ui/labelList.js';
+import { fetchSourceList } from '/app-static/js/shared/api/sources.js';
 
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_ENTRIES = 1000; // hard cap on total cards per page
@@ -943,6 +946,18 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // `_curated` starts at the no-op default so an unfiltered modal behaves
   // exactly as before this unit landed.
   let _curated = defaultCuratedFilterState();
+  // Source/filename slice of _curated, passed to every fetchImages() call.
+  // Callers backed by a real server query (trainingConfigs.js) use it to filter
+  // in SQL; callers with no server query of their own (similarity search) ignore
+  // it, and imageMatchesFilter below does the filtering instead.
+  function _curatedScopeParams() {
+    return {
+      sourceUuids: _curated.sourceUuids,
+      sourceExcludeUuids: _curated.sourceExcludeUuids,
+      filenameConditions: _curated.filenameConditions,
+      filenameMatchMode: _curated.filenameMatchMode,
+    };
+  }
   if (fetchImages) {
     const tags = await tagsPromise;
 
@@ -1049,34 +1064,58 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       },
     });
 
-    // Filename substring — image-scoped, so unlike the three controls above it
-    // is not part of the bbox predicate; `imageMatchesFilter` applies it as its
-    // own gate. Same 400ms debounce + `.trim()` as filters.js's filename input
-    // so typing in a modal doesn't re-render (and, in modal mode, re-page) on
-    // every keystroke. Matches the FILES_ROOT-*relative* path — see
-    // `imageMatchesFilename` for why that differs from the main page's
-    // server-side LIKE.
+    // Filename — same component as filters.js's filenameConditions, so it gets
+    // per-row negate and any/all matching instead of the include-only substring
+    // box this replaced. Training-config endpoints filter this server-side
+    // (shared/api/trainingConfigs.js); other fetchImages callers filter client-side
+    // via imageMatchesFilter below.
     const filenameContainer = document.createElement('div');
     filenameContainer.className = 'curated-filename';
-    const filenameLabel = document.createElement('span');
-    filenameLabel.className = 'filter-label';
-    filenameLabel.textContent = 'File:';
-    const filenameInput = document.createElement('input');
-    filenameInput.type = 'text';
-    filenameInput.placeholder = 'substring…';
-    filenameInput.title = 'Filter to images whose path contains this text (case-insensitive)';
-    filenameInput.setAttribute('data-testid', 'curated-filename-input');
-    let _filenameDebounce = null;
-    filenameInput.addEventListener('input', () => {
-      clearTimeout(_filenameDebounce);
-      _filenameDebounce = setTimeout(() => {
-        const next = filenameInput.value.trim();
-        if (next === _curated.filenameSearch) return;
-        _curated = { ..._curated, filenameSearch: next };
-        _onCuratedChange();
-      }, 400);
+    const filenameConditionsComp = createFilenameConditions(({ conditions, matchMode }) => {
+      _curated = { ..._curated, filenameConditions: conditions, filenameMatchMode: matchMode };
+      _onCuratedChange();
     });
-    filenameContainer.append(filenameLabel, filenameInput);
+    filenameConditionsComp.setState({ conditions: [{ pattern: '', negate: false }], matchMode: 'any' });
+    filenameContainer.appendChild(filenameConditionsComp.element);
+
+    // Source — same as filters.js's sourcesDropdown. Fetched here, not passed in.
+    const sourceContainer = document.createElement('div');
+    sourceContainer.className = 'curated-source';
+    let _sources = new Map();
+    let _sourceDropdown = null;
+    function _buildCuratedSourceDropdown() {
+      const items = [...(_sources?.values?.() ?? [])]
+        .map(s => ({ uuid: s.uuid, name: s.name || s.uuid }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      items.push({ isSeparator: true, label: 'Other' });
+      items.push({ uuid: NO_SOURCE_KEY, name: 'No source recorded' });
+      return createMultiSelectDropdown({
+        label: 'Source',
+        items,
+        defaultSelected: _curated.sourceUuids,
+        // An image has exactly one source, so "all of" would match nothing.
+        showModeToggle: false,
+        filterKey: 'curated-source',
+        defaultWidth: '220px',
+        defaultHeight: '300px',
+        onChange: (selected, excluded) => {
+          _curated = { ..._curated, sourceUuids: selected, sourceExcludeUuids: excluded };
+          _onCuratedChange();
+        },
+      });
+    }
+    _sourceDropdown = _buildCuratedSourceDropdown();
+    sourceContainer.appendChild(_sourceDropdown.element);
+    fetchSourceList()
+      .then((map) => {
+        _sources = map;
+        _sourceDropdown.destroy();
+        sourceContainer.innerHTML = '';
+        _sourceDropdown = _buildCuratedSourceDropdown();
+        sourceContainer.appendChild(_sourceDropdown.element);
+        _sourceDropdown.setState(_curated.sourceUuids, undefined, undefined, _curated.sourceExcludeUuids);
+      })
+      .catch(() => { /* leave the "No source recorded" entry as the only option */ });
 
     // Created-date range — also image-scoped, also client-side. Mirrors
     // filters.js's pair of datetime-local inputs, including the conversion to
@@ -1109,7 +1148,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     // the "append, don't insert" rule keeps caller-built controls from shifting
     // position (NOTES.md). This is the curated/modal toolbar — the main page's
     // filters all live in the filter popover instead.
-    const curatedGroup = makeToolbarGroup(verificationControl.element, confidenceControl.element, labelsContainer, tagsContainer, filenameContainer, dateContainer);
+    const curatedGroup = makeToolbarGroup(verificationControl.element, confidenceControl.element, labelsContainer, tagsContainer, sourceContainer, filenameContainer, dateContainer);
     curatedGroup.classList.add('modal-toolbar-row');
     toolbar.append(makeToolbarSep(), curatedGroup);
   }
@@ -1239,7 +1278,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // queries.
   async function _getFilteredImageUuids() {
     if (fetchImages) {
-      const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
+      const images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER, ..._curatedScopeParams() });
       // Apply the curated predicate so "search with current filters" from
       // inside a modal reflects the curated Verification/Label/Tag selection,
       // parallel to how filter-mode already re-runs the full server query below.
@@ -1797,6 +1836,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
             afterUuid: _curatedCursor,
             afterSortValue: _curatedCursorSortValue,
             limit: _pageSize + 1,
+            ..._curatedScopeParams(),
           });
           if (_renderGeneration !== _gen) return; // superseded by a full render() mid-flight
 
@@ -1915,6 +1955,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
               afterUuid: _curatedCursor,
               afterSortValue: _curatedCursorSortValue,
               limit: _pageSize + 1,
+              ..._curatedScopeParams(),
             });
             // Re-check after the await before touching shared cursor/entry state:
             // a filter change or Refresh mid-fetch starts a newer render() that
@@ -2396,7 +2437,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     statusMsg.textContent = 'Loading candidates…';
     let images;
     try {
-      images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER });
+      images = await fetchImages({ afterUuid: null, limit: Number.MAX_SAFE_INTEGER, ..._curatedScopeParams() });
     } catch (err) {
       statusMsg.classList.remove('review-toolbar__status--loading');
       statusMsg.textContent = `Error: ${err.message}`;
