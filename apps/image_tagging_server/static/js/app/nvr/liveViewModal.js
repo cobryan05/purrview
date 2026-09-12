@@ -25,6 +25,7 @@ import { createModalShell, Logger, toast } from '/app-static/js/ui/utils/index.j
 import { fetchTaskLivePreview, sendTaskCommand } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 // Shared with the Live card thumbnails: the same box must mean the same thing in the
 // overview and in this drill-down. See overlay.js.
 import {
@@ -180,6 +181,17 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   goLiveBtn.title = 'Wake this camera onto its live stream instead of waiting for the next snapshot.';
   goLiveBtn.hidden = true;
   bar.appendChild(goLiveBtn);
+
+  const browseEventsBtn = button('Browse events', () => {
+    if (!state.sourceUuid) return;
+    const sourceName = sourceSelect.options[sourceSelect.selectedIndex]?.textContent || '';
+    // Closed first: left open, it sits on top of the Events tab we are about to
+    // switch to, which reads as the navigation having failed.
+    shell.close();
+    events.publish(EventTypes.OPEN_NVR_EVENTS_FOR_SOURCE, { sourceUuid: state.sourceUuid, sourceName });
+  }, { testid: 'watch-live-browse-events' });
+  browseEventsBtn.title = "Switch to this camera's recorded events.";
+  bar.appendChild(browseEventsBtn);
 
   bar.appendChild(checkbox('Detections', true, v => { state.show.detections = v; draw(); }, 'watch-live-show-detections'));
   bar.appendChild(checkbox('Tracks', true, v => { state.show.tracks = v; draw(); }, 'watch-live-show-tracks'));

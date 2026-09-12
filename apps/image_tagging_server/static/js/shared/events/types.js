@@ -113,6 +113,16 @@ export const EventTypes = Object.freeze({
    */
   OPEN_EVENT_CLIP: "nvr:event:open_clip",
   /**
+   * "Browse recorded events for this camera." Published by the Live View modal's
+   * toolbar button, so a diagnostic glance at the live feed can jump straight to that
+   * source's event history without hunting for it in the filter bar.
+   *
+   * Handled in app/main.js, same reason as OPEN_EVENT_CLIP: NVR's Live view and its
+   * Events page are siblings and neither should import the other's module directly.
+   * Payload: { sourceUuid: string, sourceName?: string }
+   */
+  OPEN_NVR_EVENTS_FOR_SOURCE: "nvr:events:open_for_source",
+  /**
    * Fired after canvas annotations (bboxes + image labels) have been successfully saved.
    * Payload: { runtimeId: string }
    */

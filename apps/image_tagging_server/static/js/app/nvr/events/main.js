@@ -145,6 +145,32 @@ export async function openEventClipAt(eventUuid, { atS = null } = {}) {
   openEventDetailModal(event, { sourceNames, seekToS: atS });
 }
 
+/** The mounted page's own "filter to one source" handler, so a call from outside (the
+ *  Live View button) can reach a panel that already exists — set near the end of
+ *  `renderEvents`, cleared by nothing: the page is never unmounted, only re-rendered
+ *  on top of itself, so the latest render's closure is always the live one. */
+let _activeApplySourceFilter = null;
+/** Queued source, applied once `renderEvents` has actually mounted — same reason
+ *  Review's `applyFilterWhenReady` queues: the Events page inits lazily on first tab
+ *  focus, and a caller can arrive before that has happened. */
+let _pendingSourceFilter = null;
+
+/**
+ * Switch the mounted Events page to show only events from one camera. Queues the
+ * request if the page has not mounted yet.
+ *
+ * @param {string} sourceUuid
+ * @param {string} [sourceName]
+ */
+export function openEventsForSource(sourceUuid, sourceName) {
+  if (!sourceUuid) return;
+  if (_activeApplySourceFilter) {
+    _activeApplySourceFilter(sourceUuid, sourceName);
+  } else {
+    _pendingSourceFilter = { sourceUuid, sourceName };
+  }
+}
+
 async function loadSourceNames() {
   try {
     // A Map of uuid → source record, not an array — see the `fetchLabels` gotcha; a
@@ -498,6 +524,27 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     selectedGroups.clear();
     focus.clear();
     syncViewUi();
+    void search();
+  }
+
+  /**
+   * Narrow to one camera and show its events — the Live View toolbar button's action.
+   *
+   * Same shape as `drilldown`, minus the session/window handling a group card carries:
+   * the Live View only ever knows a source, not a rule or a time window.
+   */
+  function applySourceFilter(sourceUuid, sourceName) {
+    filters.setState({ sourceUuids: [sourceUuid] }, {
+      silent: true,
+      // The camera may be a watcher's source that has never yet produced a logged
+      // event, so it will not be in the facet list `createEventFilters` loaded at
+      // mount — seed it in, same reason `groupFacetSeeds` exists for drilldown.
+      seed: { sources: [{ ref: sourceUuid, name: sourceName || sourceUuid }] },
+    });
+    offset = 0;
+    selected.clear();
+    selectedGroups.clear();
+    focus.clear();
     void search();
   }
 
@@ -1208,5 +1255,12 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
   splitBox.checked = splitByCamera;
   syncViewUi();
+  _activeApplySourceFilter = applySourceFilter;
+  if (_pendingSourceFilter) {
+    const { sourceUuid, sourceName } = _pendingSourceFilter;
+    _pendingSourceFilter = null;
+    applySourceFilter(sourceUuid, sourceName);
+    return;
+  }
   await search();
 }

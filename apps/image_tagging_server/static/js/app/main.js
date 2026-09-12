@@ -171,6 +171,18 @@ export async function init(appState) {
     }
   });
 
+  events.subscribe(EventTypes.OPEN_NVR_EVENTS_FOR_SOURCE, async ({ sourceUuid, sourceName = '' }) => {
+    if (!sourceUuid) return;
+    try {
+      const { openEventsForSource } = await import('/app-static/js/app/nvr/events/main.js');
+      navigateTabs('tab-nvr', 'tab-nvr-events');
+      openEventsForSource(sourceUuid, sourceName);
+    } catch (err) {
+      Logger.error(err);
+      toast('Could not open events for this camera', 5000, 'error');
+    }
+  });
+
   events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({
     tagUuids, imageTagUuids, labelUuids, verificationCheck, bboxVerification,
   }) => {

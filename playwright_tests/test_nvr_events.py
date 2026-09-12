@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Page, Route, expect
 
-from playwright_tests.test_nvr_live_view import FRAME_B64
+from playwright_tests.test_nvr_live_view import FRAME_B64, _mock_nvr, _open_live_view
 from playwright_tests.waits import issues_a_request, wait_until
 
 PROFILE_UUID = "99999999-eeee-0000-0000-000000000002"
@@ -826,6 +826,26 @@ class TestFiltersReachTheServer:
         _open_events_pane(page, base_url)
 
         expect(page.locator("[data-testid='event-search-empty']")).to_be_visible()
+
+
+class TestBrowseEventsFromLiveView:
+    """The Live View toolbar's "Browse events" button — liveViewModal.js publishes
+    `OPEN_NVR_EVENTS_FOR_SOURCE`, and `events/main.js`'s `openEventsForSource` is what
+    turns that into an actual filtered search, not just a tab switch that happens to
+    land on the same camera's data by coincidence."""
+
+    def test_clicking_browse_events_filters_to_the_cameras_own_events(self, page: Page, base_url: str):
+        queries = _mock(page)
+        _mock_nvr(page)
+        _open_live_view(page, base_url)
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='watch-live-browse-events']").click()
+
+        # The live view does not linger on top of the tab it just switched to.
+        expect(page.locator("[data-testid='watch-live-dialog']")).to_have_count(0)
+        expect(page.locator("[data-testid='event-search']")).to_be_visible()
+        assert queries[-1].get("source_uuids") == "src-1"
 
 
 class TestTheDetailModal:
