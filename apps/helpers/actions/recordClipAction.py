@@ -158,6 +158,25 @@ class FrameRing:
         self._max_bytes = int(max_mb * 1024 * 1024)
         self._frames: List[Tuple[float, bytes]] = []
         self._bytes = 0
+        self._hold_from: Optional[float] = None
+
+    def hold_from(self, floor: float) -> None:
+        """Suspend time-based eviction for frames at/after `floor`.
+
+        `_evict`'s `max_seconds` cutoff climbs with every push, so a visit longer than
+        `max_seconds` has its own pre-roll evicted out from under it before
+        `RecordClipAction` ever reads the ring at `EventPhase.END`. Call this once an
+        event opens, with `floor` at the pre-roll start that event's clip will ask for,
+        and `release()` once it closes. The byte cap still applies underneath this —
+        only the age-based cap is suspended.
+        """
+        self._hold_from = floor
+
+    def release(self) -> None:
+        """Resume normal age-based eviction once the event that called `hold_from` closes."""
+        self._hold_from = None
+        if self._frames:
+            self._evict(self._frames[-1][0])
 
     def push(self, timestamp: float, jpeg: bytes) -> None:
         self._frames.append((timestamp, jpeg))
@@ -166,12 +185,26 @@ class FrameRing:
 
     def _evict(self, now: float) -> None:
         cutoff = now - self._max_seconds
+        if self._hold_from is not None:
+            cutoff = min(cutoff, self._hold_from)
         while self._frames and (self._frames[0][0] < cutoff or self._bytes > self._max_bytes):
             _, data = self._frames.pop(0)
             self._bytes -= len(data)
 
     def frames_between(self, start: float, end: float) -> List[Tuple[float, bytes]]:
         return [f for f in self._frames if start <= f[0] <= end]
+
+    def first_at_or_after(self, ts: float) -> Optional[Tuple[float, bytes]]:
+        """The earliest held frame at or after `ts`, or None.
+
+        Used to draw a still from the same pre-roll instant a clip's own window starts
+        from, rather than a separately-tolerant nearest-frame search that can land on a
+        different moment than the video ever contains.
+        """
+        for f in self._frames:
+            if f[0] >= ts:
+                return f
+        return None
 
     def closest(self, ts: float, tolerance: float) -> Optional[bytes]:
         """The frame nearest `ts`, if the ring holds one within `tolerance` seconds.

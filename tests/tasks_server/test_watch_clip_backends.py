@@ -56,6 +56,7 @@ def _task(pipelines, *, relay_client=object()):
     task._frame_rings = {}
     task._wallclock_offset = 1_700_000_000.0
     task._manager = SimpleNamespace(get_relay_api_client=lambda: relay_client)
+    task._actions = []
     task.log = lambda *a, **k: None
     return task
 
@@ -209,6 +210,44 @@ class TestFrameRingClosest:
 
     def test_an_empty_ring_returns_none(self):
         assert FrameRing().closest(100.0, tolerance=10.0) is None
+
+
+class TestFrameRingHoldFrom:
+    """The bug this fixes: `_evict`'s age cutoff climbs with every push, so a visit
+    longer than `max_seconds` evicted its own arrival frame before `RecordClipAction`
+    ever read the ring at `EventPhase.END` — losing pre-roll on any long-enough event.
+    `hold_from`/`release` pin the cutoff for the life of an open event."""
+
+    def test_a_long_open_event_loses_its_preroll_without_a_hold(self):
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, b"arrival")
+        for t in range(1, 31):
+            ring.push(float(t), b"frame")
+        assert ring.frames_between(0.0, 1.0) == []
+
+    def test_hold_from_keeps_the_prerolled_frame_alive_through_a_long_event(self):
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, b"arrival")
+        ring.hold_from(0.0)
+        for t in range(1, 31):
+            ring.push(float(t), b"frame")
+        assert ring.frames_between(0.0, 0.5) == [(0.0, b"arrival")]
+
+    def test_release_resumes_normal_eviction(self):
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, b"arrival")
+        ring.hold_from(0.0)
+        ring.push(30.0, b"frame")
+        ring.release()
+        assert ring.frames_between(0.0, 1.0) == []
+
+    def test_first_at_or_after_returns_the_earliest_matching_frame(self):
+        ring = FrameRing(max_seconds=30.0)
+        ring.push(10.0, b"a")
+        ring.push(20.0, b"b")
+        assert ring.first_at_or_after(15.0) == (20.0, b"b")
+        assert ring.first_at_or_after(5.0) == (10.0, b"a")
+        assert ring.first_at_or_after(25.0) is None
 
 
 class TestDetectionTrackAllocation:
@@ -624,6 +663,7 @@ class TestCardArtContextForOnExit:
             async def extract_clip(self, *, path, start, duration_s, dest):
                 calls.append((path, start, duration_s))
                 dest.write_bytes(b"stand-in mp4 bytes; _first_frame is stubbed below")
+                return {"partialPreroll": False}
 
         task = _task([pipeline], relay_client=_Relay())
         task._wallclock_offset = 0.0

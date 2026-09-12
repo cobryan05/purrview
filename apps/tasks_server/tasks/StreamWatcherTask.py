@@ -2000,6 +2000,13 @@ class StreamWatcherTask(Task):
         context = self._action_context(signal, pipeline)
         logged = self._event_is_logged(signal)
 
+        ring = self._frame_rings.get(pipeline.source_uuid) if pipeline is not None and not pipeline.buffered else None
+        if ring is not None and signal.phase is EventPhase.START:
+            # Protect this event's own pre-roll from the ring's age-based eviction for
+            # as long as the event stays open — see `FrameRing.hold_from`.
+            preroll = min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
+            ring.hold_from(signal.started_at + self._wallclock_offset - preroll)
+
         if logged and signal.phase is EventPhase.START:
             # Holds the row's raw material, including the card art for this frame. Writes
             # nothing: whether the event earns a row is not known until an action reports
@@ -2011,6 +2018,11 @@ class StreamWatcherTask(Task):
             self._publish_bridge_snapshot(signal)
 
         media, wrote = await self._run_actions(self._actions_for(signal, trigger), signal, context)
+
+        if ring is not None and signal.phase is EventPhase.END:
+            # record_clip has read the ring by now (it runs inside _run_actions above);
+            # safe to let normal eviction resume.
+            ring.release()
 
         event_uuid = self._recorder.event_uuid_for(signal)
         if logged and wrote and event_uuid is None:
@@ -2390,17 +2402,24 @@ class StreamWatcherTask(Task):
             return None
 
     def _historical_frame_from_ring(self, pipeline: WatchPipeline, target_wall: float):
-        """The frame ring's closest frame to `target_wall`, decoded, or None."""
+        """The ring's earliest frame from the same pre-roll window `record_clip` will cut, decoded, or None.
+
+        Anchored at `target_wall - preroll`, the same floor `_dispatch` passes to
+        `FrameRing.hold_from` at EventPhase.START — so the still and the clip's own
+        opening frame are drawn from the same instant, not two independently-tolerant
+        searches that can land on different moments.
+        """
         ring = self._frame_rings.get(pipeline.source_uuid)
         if ring is None:
             return None
-        jpeg = ring.closest(target_wall, tolerance=pipeline.ring_seconds)
-        if jpeg is None:
+        preroll = min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
+        found = ring.first_at_or_after(target_wall - preroll)
+        if found is None:
             return None
         import cv2
         import numpy as np
 
-        frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        frame = cv2.imdecode(np.frombuffer(found[1], dtype=np.uint8), cv2.IMREAD_COLOR)
         return frame if frame is not None else None
 
     async def _historical_frame_from_relay(self, pipeline: WatchPipeline, target_wall: float):
@@ -2419,7 +2438,12 @@ class StreamWatcherTask(Task):
         start = datetime.fromtimestamp(target_wall, tz=timezone.utc)
         with tempfile.TemporaryDirectory(prefix="watch-still-") as tmp_dir:
             dest = Path(tmp_dir) / "still.mp4"
-            await relay.extract_clip(path=relay_path, start=start, duration_s=1.0, dest=dest)
+            result = await relay.extract_clip(path=relay_path, start=start, duration_s=1.0, dest=dest)
+            if result.get("partialPreroll"):
+                # The buffer had already aged out target_wall; extract_clip silently
+                # clamped to whatever it did have, which is not the requested moment.
+                # A thumbnail from the wrong time is worse than no thumbnail.
+                return None
             return await asyncio.to_thread(self._first_frame, dest)
 
     @staticmethod
