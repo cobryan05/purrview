@@ -390,7 +390,7 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
     flex-direction: row;
     flex-wrap: wrap;
     gap: var(--space-3);
-    position: static;
+    position: sticky;
     border-right: none;
     border-bottom: 1px solid var(--border);
     padding-right: 0;
@@ -2025,6 +2025,18 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* Sticky to the top of `.event-detail__body` (the scrolling ancestor): the tracking-
+     problems list in `.event-detail__side` can run taller than the player, and without
+     this, scrolling down to a lower blip's play button scrolls the player itself out of
+     view. A background is required — sticky content is otherwise transparent, so the
+     side column's text would show through underneath as it scrolls past. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* Matches `.app-modal-dialog`'s own background — the dialog's padding means this
+     never has to blend with anything else, only cover the side column scrolling
+     underneath it. */
+  background: var(--pico-background-color);
 }
 
 .event-detail__side {
@@ -3561,7 +3573,7 @@ button.filter-active {
 }
 
 .ms-dropdown--inline .ms-dropdown__panel {
-  position: static;
+  position: sticky;
   box-shadow: none;
   resize: vertical;
   overflow: auto;
@@ -8018,6 +8030,21 @@ progress.progress-indeterminate:indeterminate {
   padding-top: var(--space-1, 0.25rem);
 }
 
+/* The per-source override lives behind a popup rather than a row of its own (see
+   buildSourceRow) — this is the only on-screen sign an override is active while the
+   popup is closed, so it borrows the same "on" treatment the help button's own
+   aria-expanded state uses. */
+.watch-source-tracker-btn--active {
+  border-color: var(--pico-primary, var(--color-info)) !important;
+  color: var(--pico-primary, var(--color-info)) !important;
+}
+
+.watch-tracker-override-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
 .watch-hint {
   color: var(--pico-muted-color, #999);
   font-size: 0.85em;
@@ -9052,7 +9079,7 @@ progress.progress-indeterminate:indeterminate {
   }
 
   .watch-live-side {
-    position: static;
+    position: sticky;
     width: 100%;
     max-height: 40vh;
   }

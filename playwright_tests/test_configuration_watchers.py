@@ -1300,6 +1300,57 @@ class TestTrackingSection:
         self._open_profile(page, base_url)
         expect(page.locator("[data-testid='watch-tracker-params']")).to_be_hidden()
 
+    def test_a_source_can_override_tracker_sensitivity(self, page: Page, base_url: str):
+        """A watcher with several cameras shares one tracker algorithm, but a single
+        camera whose subjects move much faster between frames (e.g. a doorbell cam) may
+        need a more tolerant threshold than the rest — without loosening it watcher-wide.
+        Lives behind a popup rather than an inline control: the row has no spare line for
+        it (`TestWatcherEditorDensity` holds every row to exactly one)."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=saved.update)
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+        row = page.locator("[data-testid='watch-source-row']").first
+        row.locator("[data-testid='watch-source-tracker-btn']").click()
+        panel = page.locator("[data-testid='watch-source-tracker-panel']")
+        override = panel.locator("[data-testid='watch-source-tracker-override']")
+        params_host = panel.locator(".watch-tracker-params-host")
+
+        expect(override).not_to_be_checked()
+        expect(params_host).to_be_hidden()
+
+        override.check()
+        expect(params_host).to_be_visible()
+        panel.locator("[data-testid='watch-tracker-param-min_confidence']").fill("0.15")
+
+        page.get_by_role("button", name="Save", exact=True).first.click()
+
+        wait_until(page, lambda: saved.get("sources"), "the save never reached the API")
+        source = saved["sources"][0]
+        assert source["trackerParamsJson"] == {"min_confidence": 0.15}
+
+    def test_a_source_leaves_tracker_params_null_when_the_override_is_off(self, page: Page, base_url: str):
+        """Toggling the override on and back off — a user who tries it out and decides
+        against it — must still save `null`, not an empty override object."""
+        saved = {}
+        _mock_watch_apis(page, profiles=[FAKE_PROFILE], on_update=saved.update)
+        _navigate_to_watchers(page, base_url)
+        page.locator("[data-testid='watcher-list-item']").first.click()
+        expect(page.locator("[data-testid='watch-rule-row']").first).to_be_visible()
+
+        row = page.locator("[data-testid='watch-source-row']").first
+        row.locator("[data-testid='watch-source-tracker-btn']").click()
+        override = page.locator("[data-testid='watch-source-tracker-override']")
+        override.check()
+        override.uncheck()
+
+        page.get_by_role("button", name="Save", exact=True).first.click()
+
+        wait_until(page, lambda: saved.get("sources"), "the save never reached the API")
+        assert saved["sources"][0]["trackerParamsJson"] is None
+
     def test_a_label_lifetime_can_be_added_and_is_saved(self, page: Page, base_url: str):
         """The headline case: a litter box outlives a cat by 30x."""
         saved = {}

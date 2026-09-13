@@ -15,11 +15,12 @@
  *   above it. Judging a tracking mistake from a still is the same ambiguity that caused
  *   the mistake.
  *
- * A blip that cannot be harvested is shown with the *reason*, not hidden and not merely
- * greyed out. The commonest one — the tracker was at fault — is not a lesser finding;
- * it means the detector already got those frames right, and training on them would pad
- * the set with cases the model handles. That is worth one sentence in front of a user
- * who is about to wonder why the checkbox is missing.
+ * Tracker-fault blips (the tracker lost or swapped a track the detector never got wrong)
+ * are excluded entirely — see `harvestable: true` below. They carry no actionable
+ * content today, so listing them would only be a "check off" with nothing behind it.
+ * A harvestable blip that is currently blocked for some other reason (its clip expired,
+ * or it was already harvested) is still shown with the *reason*, not hidden — those are
+ * real findings, just not ones this panel can act on right now.
  */
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
@@ -83,7 +84,7 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
     root.innerHTML = '';
     try {
       const [result, resolvedLabels] = await Promise.all([
-        fetchEventBlips({ eventUuid: nextEvent.uuid }),
+        fetchEventBlips({ eventUuid: nextEvent.uuid, harvestable: true }),
         Promise.resolve(labelsInput).catch(() => new Map()),
       ]);
       if (mine !== seq) return;

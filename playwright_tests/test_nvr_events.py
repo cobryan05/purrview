@@ -450,10 +450,19 @@ def _mock(
                 body=json.dumps({"status": "success", "updated": len(payload["uuids"])}),
             )
             return
+        # The panel now asks for `harvestable=true` (production filters tracker-fault
+        # blips out server-side) — honoring it here keeps the mock's shape true to what
+        # the real endpoint would answer, rather than a mock that always returns
+        # everything and would silently hide a regression in that filter.
+        harvestable_param = parse_qs(urlparse(route.request.url).query).get("harvestable", [None])[0]
+        rows = rows_blips
+        if harvestable_param is not None:
+            want = harvestable_param == "true"
+            rows = [b for b in rows_blips if bool(b.get("harvestable")) == want]
         route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps({"status": "success", "blips": rows_blips, "total": len(rows_blips)}),
+            body=json.dumps({"status": "success", "blips": rows, "total": len(rows)}),
         )
 
     page.route(re.compile(r"/api/watch-events"), _fulfil_events)
@@ -1511,10 +1520,11 @@ class TestTheTrackingBlipsPanel:
         expect(row).to_contain_text("12.0–15.5s")
         expect(page.locator("[data-testid='event-blip-claim']")).to_contain_text("9 of 121 frames")
 
-    def test_a_tracker_fault_offers_no_checkbox_and_says_why(self, page: Page, base_url: str):
-        """The load-bearing distinction of the whole feature. Harvesting a tracker fault
-        pads the set with frames the model already gets right — and from the outside a
-        poisoned harvest looks exactly like a successful one."""
+    def test_a_tracker_fault_is_not_listed_at_all(self, page: Page, base_url: str):
+        """Harvesting a tracker fault pads the set with frames the model already gets
+        right, and it carries no diagnostic detail a user could act on either — so
+        rather than show an inert row explaining itself, the panel asks for
+        `harvestable=true` and the finding never appears."""
         self._open_modal(
             page,
             base_url,
@@ -1525,12 +1535,9 @@ class TestTheTrackingBlipsPanel:
         )
 
         rows = page.locator("[data-testid='event-blip-row']")
-        expect(rows).to_have_count(2)
-        # The conditional is the point: the harvestable row has a checkbox, this one
-        # does not, and it explains itself rather than merely being inert.
-        expect(rows.nth(0).locator("[data-testid='event-blip-check']")).to_have_count(1)
-        expect(rows.nth(1).locator("[data-testid='event-blip-check']")).to_have_count(0)
-        expect(rows.nth(1).locator("[data-testid='event-blip-blocked']")).to_contain_text("tracker was at fault")
+        expect(rows).to_have_count(1)
+        expect(page.locator("[data-testid='event-blips-title']")).to_contain_text("1")
+        expect(rows.locator("[data-testid='event-blip-check']")).to_have_count(1)
 
     def test_an_expired_finding_cannot_be_harvested_or_played(self, page: Page, base_url: str):
         """Its clip has been swept. Offering either would open a dead player or start a
@@ -1686,6 +1693,24 @@ class TestTheTrackingBlipsPanel:
         expect(row.locator("[data-testid='event-blip-blocked']")).to_contain_text("dismissed")
         expect(row.locator("[data-testid='event-blip-check']")).to_have_count(1)
 
+    def test_the_player_stays_visible_while_the_blip_list_scrolls(self, page: Page, base_url: str):
+        """`.event-detail__media` and `.event-detail__side` share one scroll container
+        (`.event-detail__body`). With enough findings the list runs taller than the
+        player, and reaching a play button far down it must not require scrolling the
+        video itself out of view — it's sticky to the top of that shared container."""
+        blips = [_blip(uuid=f"blip-uuid-{i:04d}", startS=float(i), endS=float(i) + 1, trackId=i) for i in range(40)]
+        self._open_modal(page, base_url, blips=blips)
+
+        body = page.locator(".event-detail__body")
+        video = page.locator(".event-detail__video, .event-detail__image").first
+        before = video.bounding_box()
+
+        body.evaluate("el => el.scrollTop = el.scrollHeight")
+
+        after = video.bounding_box()
+        assert after is not None, "the player must still be on screen after scrolling the blip list"
+        assert abs(after["y"] - before["y"]) <= 2, "the player should stay pinned, not scroll away"
+
     def test_the_panel_follows_the_walk(self, page: Page, base_url: str):
         """The modal walks events in place. A panel that kept the previous event's
         findings would attribute one event's mistakes to another."""
@@ -1710,14 +1735,14 @@ class TestTheCardSaysWhenTrackingWentWrong:
         """Without this the findings are only discoverable by opening every event in the
         grid, which for a feature whose value is "these are the frames worth training
         on" makes it unfindable."""
-        _mock(page, events=[_event(blipCounts={"identity_flip": 2, "tracker_dropout": 1})])
+        _mock(page, events=[_event(blipCounts={"identity_flip": 2, "full_dropout": 1})])
         _open_events_pane(page, base_url)
 
         badge = page.locator("[data-testid='event-card-blip-badge']")
         expect(badge).to_be_visible()
-        # Every blip counts, the unharvestable ones included: the badge says "the
-        # analyser found something here", and a card that stayed quiet while its detail
-        # view listed three problems would be a lie.
+        # The card sums whatever `blipCounts` it is handed — the server is what decides
+        # which kinds count (harvestable and not yet resolved, see `_attach_event_blip_
+        # counts`); this only tests that the card adds them up correctly.
         expect(badge).to_contain_text("3")
 
     def test_a_clean_card_is_not_badged(self, page: Page, base_url: str):

@@ -247,6 +247,43 @@ class TestBlipCountsOnTheEvent:
 
         assert event["blipCounts"] == {"identity_flip": 2, "full_dropout": 1}
 
+    async def test_tracker_fault_blips_are_not_counted(self, http_client, event_uuid):
+        """Tracker faults carry no actionable content, so they must not inflate a badge
+        that means "something to review here" — a user "checking off" every actionable
+        finding on the event should see the badge disappear, and it can't if an
+        unreviewable tracker fault is still sitting in the total."""
+        await _replace(
+            http_client,
+            event_uuid,
+            [
+                _blip(kind="identity_flip", fault="detector", harvestable=True),
+                _blip(kind="tracker_dropout", fault="tracker", harvestable=False, track_id=9),
+            ],
+        )
+        r = await http_client.get("/api/watch-events", params={"limit": 50})
+        event = next(e for e in r.json()["events"] if e["uuid"] == event_uuid)
+
+        assert event["blipCounts"] == {"identity_flip": 1}
+
+    async def test_resolved_blips_stop_counting_once_triaged(self, http_client, event_uuid):
+        """The whole point of harvesting or dismissing a finding is to make the badge go
+        away — a count that keeps a resolved blip forever would mean "check it off"
+        never actually clears anything."""
+        created = await _replace(
+            http_client,
+            event_uuid,
+            [_blip(kind="identity_flip"), _blip(kind="full_dropout", track_id=9)],
+        )
+        r = await http_client.post(
+            "/api/event-blips/states", json={"uuids": [created[0]["uuid"]], "state": "dismissed"}
+        )
+        assert r.status_code == 200, r.text
+
+        r = await http_client.get("/api/watch-events", params={"limit": 50})
+        event = next(e for e in r.json()["events"] if e["uuid"] == event_uuid)
+
+        assert event["blipCounts"] == {"full_dropout": 1}
+
     async def test_the_has_blips_filter_separates_flagged_from_clean(self, http_client):
         profile = await _make_profile(http_client)
         flagged = await _make_event(http_client, profile)

@@ -1250,6 +1250,79 @@ function buildSourceRow(src, ctx) {
     renderMasks();
   });
 
+  // ── Tracker sensitivity override ──
+  // The tracker *algorithm* is one choice for the whole watcher (Tracking, above) — only
+  // its numeric thresholds can differ per camera. That is enough for the case this exists
+  // for: one camera whose subjects cross the frame in far fewer samples than the others on
+  // the same watcher (a doorbell cam versus an indoor one) needs a more tolerant tracker
+  // without loosening it for every other source.
+  // Behind an anchored popup, like the `(?)` help buttons — not inline: the row is
+  // already a full control line, and the watcher editor has zero slack left for a line
+  // every source row would carry whether or not it's ever used (see
+  // TestWatcherEditorDensity). The popup's content is rebuilt fresh each time it opens,
+  // reading the current tracker type straight from `ctx`, so it needs no refresh hook
+  // when the watcher-level tracker choice changes while it's closed.
+  let trackerOverrideEnabled = src.trackerParamsJson != null;
+  let trackerOverrideParams = { ...(src.trackerParamsJson || {}) };
+  // Icon-sized like the `(?)` help buttons, not a labelled `.panel-btn` — a third
+  // full-width button in `.watch-row-actions` was enough extra width to wrap the
+  // actions group onto its own second line on every source row.
+  const trackerBtn = el('button', 'watch-template-help__btn watch-source-tracker-btn', '⚙');
+  trackerBtn.type = 'button';
+  trackerBtn.dataset.testid = 'watch-source-tracker-btn';
+  trackerBtn.title = 'Override this camera’s tracker sensitivity, instead of the watcher’s default.';
+  trackerBtn.setAttribute('aria-label', trackerBtn.title);
+  trackerBtn.classList.toggle('watch-source-tracker-btn--active', trackerOverrideEnabled);
+  let trackerPopup = null;
+  trackerBtn.addEventListener('click', () => {
+    if (trackerPopup) {
+      trackerPopup.close();
+      trackerPopup = null;
+      return;
+    }
+    const panel = el('div', 'watch-template-help__panel watch-tracker-override-panel');
+    panel.dataset.testid = 'watch-source-tracker-panel';
+
+    const overrideBox = document.createElement('input');
+    overrideBox.type = 'checkbox';
+    overrideBox.checked = trackerOverrideEnabled;
+    overrideBox.dataset.testid = 'watch-source-tracker-override';
+    overrideBox.title =
+      'Use different tracker sensitivity for this camera instead of the watcher’s default. '
+      + 'The tracker algorithm itself is chosen once for the whole watcher, up in Tracking — '
+      + 'this only overrides its numeric thresholds for this one source.';
+    panel.appendChild(wfield('Override for this camera', overrideBox, { help: overrideBox.title }));
+
+    const paramsHost = el('div', 'watch-tracker-params-host');
+    panel.appendChild(paramsHost);
+
+    function renderParams() {
+      paramsHost.innerHTML = '';
+      paramsHost.hidden = !overrideBox.checked;
+      if (!overrideBox.checked) return;
+      const chosen = ctx.trackers?.find(t => t.typename === ctx.getTrackerTypename?.());
+      const form = buildTrackerParams(
+        chosen?.paramsSchema || {},
+        // Only reuse the saved override while the selected tracker is the one it was
+        // saved for — another tracker's keys are meaningless to this one. Same
+        // reasoning as the watcher-level params.
+        ctx.getTrackerTypename?.() === ctx.savedTrackerTypename ? trackerOverrideParams : null,
+        () => { trackerOverrideParams = form.getParams(); ctx.onAnyChange(); },
+      );
+      paramsHost.appendChild(form.element);
+    }
+    overrideBox.addEventListener('change', () => {
+      trackerOverrideEnabled = overrideBox.checked;
+      trackerBtn.classList.toggle('watch-source-tracker-btn--active', trackerOverrideEnabled);
+      renderParams();
+      ctx.onAnyChange();
+    });
+    renderParams();
+
+    trackerPopup = openAnchoredPopup(trackerBtn, panel);
+  });
+  actions.insertBefore(trackerBtn, actions.lastElementChild);
+
   return {
     element: row,
     getSourceUuid: () => sourceSel.value,
@@ -1280,6 +1353,10 @@ function buildSourceRow(src, ctx) {
         .masksForSource(sourceSel.value)
         .filter(m => disabledMasks.has(m.uuid))
         .map(m => m.uuid),
+      // null falls back to the watcher's own tracker params (StreamWatcherTask reads
+      // `source.trackerParamsJson or profile.trackerParamsJson`) — only sent as an object
+      // when the override is actually turned on for this camera.
+      trackerParamsJson: trackerOverrideEnabled ? trackerOverrideParams : null,
     }),
   };
 }
@@ -2682,6 +2759,9 @@ export async function renderWatchProfileManager({ target }) {
           onRegionsChanged: () => refreshRegions(),
           onSourceChanged: () => { refreshScopes(); for (const rule of ruleRows) rule.refreshZones?.(); },
           onAnyChange,
+          trackers,
+          getTrackerTypename: () => trackerSel.value,
+          savedTrackerTypename: profile?.trackerTypename,
           onDelete: () => {
             entry.element.remove();
             sourceRows.splice(sourceRows.indexOf(entry), 1);

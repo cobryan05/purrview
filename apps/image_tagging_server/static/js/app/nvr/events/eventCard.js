@@ -236,13 +236,13 @@ export function buildEventCard(event, { onOpen, onToggleSelect, selected = false
     badge.dataset.testid = 'event-card-timelapse-badge';
     badges.appendChild(badge);
   }
-  // What the tracking analyser found, if anything. Without this the findings are only
-  // discoverable by opening every event in the grid, which for a feature whose whole
-  // value is "these are the frames worth training on" makes it unfindable.
-  //
-  // Every blip counts toward it, including the ones the tracker caused and which can
-  // never be harvested: the badge says "the analyser found something here", and a card
-  // that stayed silent while its detail view listed three problems would be a lie.
+  // What the tracking analyser found, if anything, and still unresolved. Without this
+  // the findings are only discoverable by opening every event in the grid, which for a
+  // feature whose whole value is "these are the frames worth training on" makes it
+  // unfindable. `blipCounts` (see `_attach_event_blip_counts`) already excludes
+  // tracker-fault blips (never actionable) and ones already harvested/dismissed, so
+  // this total is exactly "still needs your attention" — checking every blip off makes
+  // the badge go away.
   const blipTotal = Object.values(event.blipCounts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
   if (blipTotal) {
     // Count only, with the wording in the tooltip: spelled out, the badge ran most of

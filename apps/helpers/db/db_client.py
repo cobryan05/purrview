@@ -8530,9 +8530,10 @@ class DbClient:
         a badge per event, and a query per card would make the list cost scale with the
         page size.
 
-        Counts every blip, including the ones attributed to the tracker. The badge is
-        "the analyser found things here", and hiding the unharvestable ones would make
-        a card that says nothing while its detail view lists three problems.
+        Only counts harvestable (detector-fault) blips still in `new`/`confirmed` —
+        tracker-fault blips carry no actionable content (the detector already got those
+        frames right) so they never belong in a badge that means "something to review
+        here", and a harvested/dismissed blip is a problem the user already resolved.
         """
         if not events:
             return events
@@ -8541,6 +8542,8 @@ class DbClient:
             await session.exec(
                 select(EventBlip.event_uuid, EventBlip.kind, func.count())
                 .where(EventBlip.event_uuid.in_(uuids))
+                .where(EventBlip.harvestable == True)  # noqa: E712
+                .where(EventBlip.state.not_in([BlipState.HARVESTED.value, BlipState.DISMISSED.value]))
                 .group_by(EventBlip.event_uuid, EventBlip.kind)
             )
         ).all()
