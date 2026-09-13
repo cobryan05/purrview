@@ -14,9 +14,14 @@ protecting against all return a *plausible wrong answer* rather than an error.
   to prevent.
 """
 
+import json
 import uuid as _uuid
 
+import cv2
+import numpy as np
 import pytest
+
+from apps.helpers.db.types import Recording
 
 
 async def _make_profile(http_client) -> str:
@@ -299,3 +304,89 @@ class TestBlipCountsOnTheEvent:
         r = await http_client.get("/api/watch-events", params={"has_blips": False, "limit": 50})
         assert clean in [e["uuid"] for e in r.json()["events"]]
         assert flagged not in [e["uuid"] for e in r.json()["events"]]
+
+
+def _write_clip(path, *, seconds=2, fps=10.0):
+    """A tiny real clip cv2 can seek in — the decode is what's under test, not a mock."""
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (64, 48))
+    for i in range(int(seconds * fps)):
+        writer.write(np.full((48, 64, 3), (i * 5) % 256, dtype=np.uint8))
+    writer.release()
+
+
+class TestBlipCropPreview:
+    """Before/after crops for an `identity_switch` blip, pulled straight from the clip
+    and its sidecar rather than run through the harvest task's preview-candidate
+    pipeline — this backs a live look, not a durable artifact."""
+
+    async def _make_recording(self, db_client, tmp_path, *, track_id=1, times=(0.0, 0.5, 1.0, 1.5)):
+        clip = tmp_path / "clip.mp4"
+        _write_clip(clip)
+        overlay = tmp_path / "clip.boxes.json"
+        overlay.write_text(
+            json.dumps(
+                {
+                    "frames": [
+                        {"t": t, "tracks": [{"id": track_id, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}]} for t in times
+                    ]
+                }
+            )
+        )
+        return await db_client.create_recording(
+            Recording(kind="clip", file_path=str(clip), overlay_path=str(overlay), status="complete")
+        )
+
+    async def test_returns_a_crop_from_each_side_of_the_switch(self, db_client, manager, tmp_path, event_uuid):
+        recording = await self._make_recording(db_client, tmp_path)
+
+        created = await db_client.replace_event_blips(
+            event_uuid,
+            [
+                {
+                    "kind": "identity_switch",
+                    "trackId": 1,
+                    "startS": 1.0,
+                    "endS": 1.5,
+                    "severity": 0.4,
+                    "fault": "tracker",
+                    "harvestable": False,
+                    "detail": {"modalLabel": "cat_a", "sawLabel": "cat_b"},
+                },
+            ],
+            recording_uuid=recording.uuid,
+        )
+        blip_uuid = created[0].uuid
+
+        result = await manager.get_blip_crop_preview(blip_uuid)
+
+        assert result["status"] == "success", result
+        assert result["before"]["dataUrl"].startswith("data:image/jpeg;base64,")
+        assert result["before"]["label"] == "cat_a"
+        assert result["after"]["dataUrl"].startswith("data:image/jpeg;base64,")
+        assert result["after"]["label"] == "cat_b"
+        # Different instants of a clip whose brightness changes every frame — a real
+        # regression here would be the seek landing on the same frame for both.
+        assert result["before"]["dataUrl"] != result["after"]["dataUrl"]
+
+    async def test_a_missing_blip_fails_without_raising(self, manager):
+        result = await manager.get_blip_crop_preview("no-such-blip")
+        assert result["status"] == "failure"
+
+    async def test_a_blip_with_no_clip_on_disk_fails_without_raising(self, db_client, manager, event_uuid):
+        created = await db_client.replace_event_blips(
+            event_uuid,
+            [
+                {
+                    "kind": "identity_switch",
+                    "trackId": 1,
+                    "startS": 1.0,
+                    "endS": 1.5,
+                    "fault": "tracker",
+                    "harvestable": False,
+                    "detail": {"modalLabel": "cat_a", "sawLabel": "cat_b"},
+                },
+            ],
+            recording_uuid="rec-with-no-row",
+        )
+        result = await manager.get_blip_crop_preview(created[0].uuid)
+        assert result["status"] == "failure"

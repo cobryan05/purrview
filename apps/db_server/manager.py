@@ -4556,6 +4556,9 @@ class Manager:
     async def set_event_blip_states(self, uuids: Sequence[str], state: str) -> int:
         return await self._db_client.set_event_blip_states(uuids, state)
 
+    async def get_blip_crop_preview(self, blip_uuid: str) -> Dict[str, Any]:
+        return await self._db_client.get_blip_crop_preview(blip_uuid)
+
     async def set_watch_event_review_states(self, uuids: Sequence[str], state: str) -> int:
         return await self._db_client.set_watch_event_review_states(uuids, state)
 

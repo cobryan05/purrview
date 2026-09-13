@@ -506,51 +506,16 @@ def _read_json(path: str) -> Dict[str, Any]:
 def _grab_frame(clip_path: str, at_s: float) -> Optional[bytes]:
     """One frame of the clip as JPEG bytes, at `at_s` seconds from its start.
 
-    Seeks to shortly *before* the target and then reads forward. A bare
-    `CAP_PROP_POS_MSEC` seek lands on the nearest keyframe, which on a clip with a
-    two-second GOP can be well over a second away — and the proposed box comes from the
-    sidecar at `at_s`, so a frame from elsewhere would carry a box that does not match
-    the picture. That is the one failure mode this whole feature exists to remove.
+    The seek itself is `grab_frame_array` (shared with the blip crop-preview endpoint,
+    which crops before encoding); this just encodes the whole frame for a proposal that
+    keeps the geometry separate.
     """
     import cv2
 
-    capture = cv2.VideoCapture(clip_path)
-    if not capture.isOpened():
+    from apps.helpers.recordings.frameGrab import grab_frame_array
+
+    frame = grab_frame_array(clip_path, at_s)
+    if frame is None:
         return None
-    try:
-        fps = capture.get(cv2.CAP_PROP_FPS) or 0.0
-        if fps <= 0:
-            # A clip that will not report its rate cannot be addressed by frame index.
-            # Fall back to a plain time seek and accept whatever keyframe it lands on,
-            # which is still better than refusing to harvest the incident at all.
-            capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, at_s) * 1000.0)
-            ok, frame = capture.read()
-            if not ok:
-                return None
-        else:
-            target = int(round(at_s * fps))
-            total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            if total and target >= total:
-                return None
-            # Land a little before and read forward. Counting in *frames* rather than
-            # milliseconds is what makes this exact: `CAP_PROP_POS_MSEC` read after a
-            # decode reports where the next frame starts, so comparing against it stops
-            # one frame early — close enough to look right and wrong enough to pair a
-            # picture with a box from a neighbouring instant.
-            lead_in = 15
-            capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, target - lead_in))
-            frame = None
-            for _ in range(lead_in * 4 + 2):
-                position = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
-                ok, candidate = capture.read()
-                if not ok:
-                    break
-                frame = candidate
-                if position >= target:
-                    break
-            if frame is None:
-                return None
-        ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-        return buffer.tobytes() if ok else None
-    finally:
-        capture.release()
+    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    return buffer.tobytes() if ok else None

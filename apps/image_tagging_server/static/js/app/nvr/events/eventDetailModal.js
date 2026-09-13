@@ -43,6 +43,7 @@ import {
   eventCorrectionFor,
   framesHoldingLabels,
   labelTallyAcrossClip,
+  NO_BBOX,
   openLabelCorrectionModal,
   pickTrainingFrames,
 } from './labelCorrectionModal.js';
@@ -357,6 +358,10 @@ export function openEventDetailModal(
     // Handed over in flight. The claims name labels by uuid, and the panel is drawn
     // from a fetch that usually answers first.
     labels: fetchLabels().catch(() => new Map()),
+    // A reviewer who confirms an identity_switch was a real change (not a tracker
+    // mistake) already knows the correction — opening the full picker again and asking
+    // them to find it in a list would throw away the answer they just gave.
+    onRelabel: (fromLabelUuid, toLabelUuid) => relabelEvent({ presetRemap: new Map([[fromLabelUuid, toLabelUuid]]) }),
   });
 
   /**
@@ -787,7 +792,13 @@ export function openEventDetailModal(
    * event's own subject label describes a single analysed instant and cannot say where
    * in the clip the box was, so without per-frame boxes there is nothing to relabel.
    */
-  async function relabelEvent() {
+  /**
+   * @param {Object} [opts]
+   * @param {Map<string, string>} [opts.presetRemap] - pre-select a correction the caller
+   *   already knows, e.g. from confirming an identity_switch finding was a real change
+   *   rather than a tracker mistake — see `blipsPanel.js`'s `onRelabel`.
+   */
+  async function relabelEvent({ presetRemap = null } = {}) {
     // The button is rendered when the sidecar is loaded, but the sidebar is not redrawn
     // when the media pane switches to the timelapse or to a snapshot — both of which drop
     // the overlay. Said out loud rather than returning silently, which is how a
@@ -815,6 +826,7 @@ export function openEventDetailModal(
       // Handed the event so the dialog can offer to correct the row itself, not just
       // the training data harvested from it.
       event,
+      presetRemap,
       estimateFrames: labelUuids => pickTrainingFrames(framesHoldingLabels(overlayDoc, labelUuids)).length,
       onConfirm: (remap, { fixEvent } = {}) => saveCorrectedFrames(remap, labels, { fixEvent }),
     });
@@ -925,7 +937,9 @@ export function openEventDetailModal(
     savedHint.textContent = `Saving ${times.length} frame${times.length === 1 ? '' : 's'}…`;
     const camera = sourceNames.get(event.sourceUuid) || 'camera';
     const nameOf = uuid => labels?.get(uuid)?.name || uuid;
-    const correctedFrom = [...remap.entries()].map(([from, to]) => `${nameOf(from)} → ${nameOf(to)}`).join(', ');
+    const correctedFrom = [...remap.entries()]
+      .map(([from, to]) => `${nameOf(from)} → ${to === NO_BBOX ? 'no bbox' : nameOf(to)}`)
+      .join(', ');
     const saved = [];
     try {
       const captured = await captureFramesAt(times);

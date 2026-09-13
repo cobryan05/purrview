@@ -15,21 +15,27 @@
  *   above it. Judging a tracking mistake from a still is the same ambiguity that caused
  *   the mistake.
  *
- * Tracker-fault blips (the tracker lost or swapped a track the detector never got wrong)
- * are excluded entirely — see `harvestable: true` below. They carry no actionable
- * content today, so listing them would only be a "check off" with nothing behind it.
- * A harvestable blip that is currently blocked for some other reason (its clip expired,
- * or it was already harvested) is still shown with the *reason*, not hidden — those are
- * real findings, just not ones this panel can act on right now.
+ * Most tracker-fault blips (the tracker lost or swapped a track the detector never got
+ * wrong) are excluded entirely — fetched with `harvestable: true` below, they carry no
+ * actionable content and listing them would only be a "check off" with nothing behind
+ * it. `identity_switch` is the one exception: it gets its own review action (a
+ * before/after crop compare — was this really the same animal, or a genuine identity
+ * change?) instead of the harvest checkbox, so it's fetched too — see `buildRow` and
+ * `openIdentitySwitchReview`. A harvestable blip that is currently blocked for some
+ * other reason (its clip expired, or it was already harvested) is still shown with the
+ * *reason*, not hidden — those are real findings, just not ones this panel can act on
+ * right now.
  */
 import { Logger, toast } from '/app-static/js/ui/utils/index.js';
 import { launchRun } from '/app-static/js/ui/utils/launchRun.js';
-import { fetchEventBlips, setEventBlipStates } from '/app-static/js/shared/api/eventBlips.js';
+import { createModalShell } from '/app-static/js/ui/utils/modalShell.js';
+import { fetchBlipCropPreview, fetchEventBlips, setEventBlipStates } from '/app-static/js/shared/api/eventBlips.js';
 import { blipKindText, describeBlip, harvestBlocker } from '/app-static/js/shared/domain/blips.js';
 import { TaskStatus, taskResultData } from '/app-static/js/shared/api/tasks.js';
 import { subscribeTaskStream } from '/app-static/js/shared/api/taskStream.js';
 
 const HARVEST_TYPENAME = 'HarvestBlipFramesTask';
+const KIND_IDENTITY_SWITCH = 'identity_switch';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -57,9 +63,13 @@ export function formatSpan(startS, endS) {
  *   in claims. A promise is accepted and awaited before the first render, so the modal
  *   can hand over an in-flight fetch rather than either blocking on it or rendering a
  *   claim with the names missing and no second chance to fill them in.
+ * @param {?(fromLabelUuid: string, toLabelUuid: string) => void} [opts.onRelabel] - open
+ *   the wrong-label flow with this correction pre-selected, offered after confirming an
+ *   `identity_switch` was a real change rather than a tracker mistake. Omitted where
+ *   there is no relabel flow to hand off to, in which case that option is not offered.
  * @returns {{show: (event: Object) => Promise<void>, clear: () => void}}
  */
-export function createBlipsPanel(container, { onSeek = null, labels: labelsInput = new Map() } = {}) {
+export function createBlipsPanel(container, { onSeek = null, labels: labelsInput = new Map(), onRelabel = null } = {}) {
   let labels = labelsInput instanceof Map ? labelsInput : new Map();
   // Bumped on every `show`. The modal walks events with `[` / `]`, so a slow fetch for
   // the event you just left must not paint its findings onto the one you are looking at
@@ -83,15 +93,24 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
     // yet" — and it is the one that would be wrong here.
     root.innerHTML = '';
     try {
-      const [result, resolvedLabels] = await Promise.all([
+      // Two calls, not one unfiltered fetch client-filtered afterwards: `harvestable`
+      // is a real server-side filter (see `_attach_event_blip_counts`'s own reasoning),
+      // and asking for exactly the two groups this panel shows keeps that rule in one
+      // place rather than re-deciding it here from raw `fault`/`kind` values.
+      const [harvestable, identitySwitches, resolvedLabels] = await Promise.all([
         fetchEventBlips({ eventUuid: nextEvent.uuid, harvestable: true }),
+        fetchEventBlips({ eventUuid: nextEvent.uuid, kinds: [KIND_IDENTITY_SWITCH] }),
         Promise.resolve(labelsInput).catch(() => new Map()),
       ]);
       if (mine !== seq) return;
       // A claim reads "carried cat_a, showed cat_b" or it reads nothing — never the raw
       // uuids, which say less than silence does.
       if (resolvedLabels instanceof Map) labels = resolvedLabels;
-      blips = result.blips;
+      // Each call is already worst-first on its own; re-sort the merge so the combined
+      // list still reads worst-first rather than "every harvestable one, then every
+      // identity switch" regardless of how sure the detector or tracker was.
+      blips = [...harvestable.blips, ...identitySwitches.blips]
+        .sort((a, b) => (Number(b.severity) || 0) - (Number(a.severity) || 0));
     } catch (err) {
       if (mine !== seq) return;
       Logger.error(err);
@@ -140,9 +159,24 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
     row.dataset.blipUuid = blip.uuid;
     row.dataset.kind = blip.kind;
 
+    const isIdentitySwitch = blip.kind === KIND_IDENTITY_SWITCH;
     const head = el('div', 'event-blips__head');
     const blocker = harvestBlocker(blip);
-    if (blocker === null) {
+    if (isIdentitySwitch) {
+      // Its own review action rather than the harvest checkbox — harvestable is always
+      // false for this kind (the tracker was at fault), but unlike every other
+      // tracker-fault kind, this one has a real question a reviewer can answer.
+      if (blip.state !== 'dismissed' && blip.state !== 'harvested' && blip.state !== 'expired') {
+        const reviewBtn = el('button', 'panel-btn event-blips__review', 'Review…');
+        reviewBtn.type = 'button';
+        reviewBtn.dataset.testid = 'event-blip-review';
+        reviewBtn.title =
+          'Compare a frame from just before and just after the switch — was this really '
+          + 'the same animal (a tracker mistake), or a genuine identity change worth correcting?';
+        reviewBtn.addEventListener('click', () => void openIdentitySwitchReview(blip));
+        head.appendChild(reviewBtn);
+      }
+    } else if (blocker === null) {
       const check = document.createElement('input');
       check.type = 'checkbox';
       check.dataset.testid = 'event-blip-check';
@@ -176,7 +210,17 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
       row.appendChild(line);
     }
 
-    if (blocker) {
+    if (isIdentitySwitch) {
+      if (blip.state === 'dismissed') {
+        const note = el('div', 'event-blips__blocked', 'reviewed');
+        note.dataset.testid = 'event-blip-blocked';
+        row.appendChild(note);
+      } else if (blip.state === 'expired') {
+        const note = el('div', 'event-blips__blocked', 'the clip has been deleted, so this can no longer be reviewed');
+        note.dataset.testid = 'event-blip-blocked';
+        row.appendChild(note);
+      }
+    } else if (blocker) {
       const why = el('div', 'event-blips__blocked', blocker);
       why.dataset.testid = 'event-blip-blocked';
       row.appendChild(why);
@@ -188,6 +232,97 @@ export function createBlipsPanel(container, { onSeek = null, labels: labelsInput
       row.appendChild(note);
     }
     return row;
+  }
+
+  /**
+   * "Was this really the same animal?" — a before/after crop either side of the switch,
+   * with the two outcomes a reviewer can reach: it was the tracker's mistake (dismiss),
+   * or it was a genuine change worth correcting (dismiss *and* hand the correction to
+   * the wrong-label flow, pre-filled, via `onRelabel`).
+   */
+  async function openIdentitySwitchReview(blip) {
+    const detail = blip.detailJson || {};
+    const modalName = labels.get(detail.modalLabel)?.name || detail.modalLabel || 'the earlier label';
+    const sawName = labels.get(detail.sawLabel)?.name || detail.sawLabel || 'the new label';
+
+    const shell = createModalShell();
+    shell.dialog.classList.add('event-blips__review-dialog');
+    shell.dialog.dataset.testid = 'blip-review-modal';
+    shell.dialog.appendChild(el('h3', null, 'Was this a real identity change?'));
+    shell.dialog.appendChild(el(
+      'p', 'event-blips__note',
+      `Carried ${modalName} until ${formatSpan(blip.startS, blip.endS)}, then showed ${sawName}. `
+      + 'One frame from just before, one from just after.',
+    ));
+
+    const body = el('div', 'event-blips__review-body');
+    body.dataset.testid = 'blip-review-body';
+    body.appendChild(el('p', 'event-blips__note', 'Loading…'));
+    shell.dialog.appendChild(body);
+
+    const actions = el('div', 'event-blips__review-actions');
+    const glitchBtn = el('button', 'panel-btn', 'Same animal — tracker mistake');
+    glitchBtn.type = 'button';
+    glitchBtn.dataset.testid = 'blip-review-glitch';
+    const relabelBtn = el('button', 'panel-btn', `Different animal — really ${sawName}`);
+    relabelBtn.type = 'button';
+    relabelBtn.dataset.testid = 'blip-review-relabel';
+    relabelBtn.disabled = !onRelabel || !detail.modalLabel || !detail.sawLabel;
+    relabelBtn.title = relabelBtn.disabled
+      ? 'This finding is missing a label to correct to.'
+      : `Open the wrong-label flow with ${modalName} → ${sawName} already chosen.`;
+    const cancelBtn = el('button', 'panel-btn', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', () => shell.close());
+    actions.append(glitchBtn, relabelBtn, cancelBtn);
+    shell.dialog.appendChild(actions);
+
+    async function resolve(relabel) {
+      shell.close();
+      try {
+        await setEventBlipStates([blip.uuid], 'dismissed');
+      } catch (err) {
+        Logger.error(err);
+        toast('Could not update that finding', 4000, 'error');
+      }
+      // After the dismiss, not before: the relabel flow opens its own modal on top of
+      // this one, and closing that dismiss request behind it would race the repaint
+      // below against whichever one answers last.
+      if (relabel) onRelabel?.(detail.modalLabel, detail.sawLabel);
+      if (event) await show(event);
+    }
+    glitchBtn.addEventListener('click', () => void resolve(false));
+    relabelBtn.addEventListener('click', () => void resolve(true));
+
+    shell.open();
+
+    try {
+      const { before, after } = await fetchBlipCropPreview(blip.uuid);
+      body.innerHTML = '';
+      body.appendChild(buildCropColumn('Before', before, modalName));
+      body.appendChild(buildCropColumn('After', after, sawName));
+    } catch (err) {
+      Logger.error(err);
+      body.innerHTML = '';
+      // Still lets the reviewer decide from the claim above alone — a clip that can no
+      // longer be read must not trap a finding that could otherwise still be resolved.
+      body.appendChild(el('p', 'event-blips__note', err.message || 'Could not load a preview.'));
+    }
+  }
+
+  function buildCropColumn(title, crop, labelName) {
+    const col = el('div', 'event-blips__review-col');
+    col.appendChild(el('h4', 'event-blips__review-col-title', `${title} · ${labelName}`));
+    if (crop?.dataUrl) {
+      const img = document.createElement('img');
+      img.className = 'event-blips__review-img';
+      img.src = crop.dataUrl;
+      img.alt = `${title.toLowerCase()} the switch, ${labelName}`;
+      col.appendChild(img);
+    } else {
+      col.appendChild(el('p', 'event-blips__note', 'No frame available.'));
+    }
+    return col;
   }
 
   let harvestBtn = null;

@@ -32,8 +32,9 @@ from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from apps import FILES_ROOT
-from apps.helpers.consts import TaskStatus
+from apps.helpers.consts import JsonValues, TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.recordings.blips import KIND_IDENTITY_SWITCH
 from apps.helpers.watch.events import EventCloseReason
 
 from .types import (
@@ -744,6 +745,49 @@ _READINESS_PAGE_SIZE = 1000
 # 999 on older ones — so any query filtering by an unbounded uuid list must be
 # chunked. 10k keeps a wide margin on every build at negligible query overhead.
 _UUID_IN_CHUNK = 10_000
+
+
+def _crop_blip_frame(
+    clip_path: str,
+    document: Dict[str, Any],
+    track_id: int,
+    label_uuid: str,
+    at_s: float,
+) -> Optional[Dict[str, Any]]:
+    """One before/after crop for `get_blip_crop_preview`, as a data URL.
+
+    Run off the event loop (see its `asyncio.to_thread` callers) — both the video seek
+    and the JPEG encode are blocking CPU/IO work. Cropped to the track's own box when the
+    sidecar has one for this label at this instant (`proposed_box_at` — exact if the
+    track was seen, interpolated and still usable otherwise); the whole frame is
+    returned uncropped rather than nothing when it has none, since seeing the room is
+    still more useful than no picture at all.
+    """
+    import base64
+
+    import cv2
+
+    from apps.helpers.recordings.blips import proposed_box_at
+    from apps.helpers.recordings.eventCrop import CROP_WIDTH, crop_to_rect, focus_rect
+    from apps.helpers.recordings.frameGrab import grab_frame_array
+
+    frame = grab_frame_array(clip_path, at_s)
+    if frame is None:
+        return None
+
+    height, width = frame.shape[:2]
+    box = proposed_box_at(document, track_id, label_uuid, at_s) if label_uuid else None
+    rect = focus_rect([(box.x, box.y, box.w, box.h)], width / height) if box and height else None
+    cropped = crop_to_rect(frame, rect, CROP_WIDTH) if rect else frame
+
+    ok, buffer = cv2.imencode(".jpg", cropped, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    if not ok:
+        return None
+    return {
+        "atS": at_s,
+        "label": label_uuid or None,
+        "dataUrl": f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode('ascii')}",
+    }
 
 
 def _chunked(seq: List, size: Optional[int] = None):
@@ -8530,10 +8574,13 @@ class DbClient:
         a badge per event, and a query per card would make the list cost scale with the
         page size.
 
-        Only counts harvestable (detector-fault) blips still in `new`/`confirmed` —
-        tracker-fault blips carry no actionable content (the detector already got those
-        frames right) so they never belong in a badge that means "something to review
-        here", and a harvested/dismissed blip is a problem the user already resolved.
+        Counts harvestable (detector-fault) blips, plus `identity_switch` — the one
+        tracker-fault kind with a real review action of its own (the crop-compare
+        prompt in `blipsPanel.js`, confirm-or-dismiss) — still in `new`/`confirmed`.
+        Every other tracker-fault blip carries no actionable content (the detector
+        already got those frames right) so it never belongs in a badge that means
+        "something to review here", and a harvested/dismissed/resolved blip is a
+        problem the user already handled.
         """
         if not events:
             return events
@@ -8542,7 +8589,7 @@ class DbClient:
             await session.exec(
                 select(EventBlip.event_uuid, EventBlip.kind, func.count())
                 .where(EventBlip.event_uuid.in_(uuids))
-                .where(EventBlip.harvestable == True)  # noqa: E712
+                .where(or_(EventBlip.harvestable == True, EventBlip.kind == KIND_IDENTITY_SWITCH))  # noqa: E712
                 .where(EventBlip.state.not_in([BlipState.HARVESTED.value, BlipState.DISMISSED.value]))
                 .group_by(EventBlip.event_uuid, EventBlip.kind)
             )
@@ -8647,6 +8694,51 @@ class DbClient:
             result = await session.exec(sa_update(EventBlip).where(EventBlip.uuid.in_(list(uuids))).values(state=state))
             await session.commit()
             return int(result.rowcount or 0)
+
+    async def get_blip_crop_preview(self, blip_uuid: str) -> Dict[str, Any]:
+        """Before/after crops around an `identity_switch` blip's own instant.
+
+        Lets a reviewer see the two without opening the clip at all: is this really the
+        same animal carrying a wrong label for a stretch (a tracker mistake — dismiss it),
+        or a genuine identity change worth correcting (relabel it)? "Before" is half a
+        second ahead of `start_s` under the track's `modalLabel`; "after" is `start_s`
+        itself under `sawLabel` — the two labels `detail_json` already recorded for this
+        blip, from `_identity_blips` in `apps.helpers.recordings.blips`.
+
+        Returns `{"status": "failure", "message": ...}` for any reason a picture can't be
+        produced (blip gone, clip swept, sidecar missing, frame undecodable) rather than
+        raising — this backs a preview a user is looking at, not a durable artifact.
+        """
+        blips, _ = await self.list_event_blips(uuids=[blip_uuid], limit=1)
+        if not blips:
+            return {"status": JsonValues.FAILURE, "message": "that finding no longer exists"}
+        blip = blips[0]
+        if not blip.recording_uuid:
+            return {"status": JsonValues.FAILURE, "message": "this finding has no clip attached"}
+
+        recording = await self.get_recording(blip.recording_uuid)
+        if recording is None or not recording.file_path or not recording.overlay_path:
+            return {"status": JsonValues.FAILURE, "message": "the clip is no longer available"}
+
+        try:
+            document = json.loads(Path(recording.overlay_path).read_text())
+        except OSError:
+            return {"status": JsonValues.FAILURE, "message": "the clip's detection sidecar is missing"}
+
+        detail = blip.detail_json or {}
+        modal_label = str(detail.get("modalLabel") or "")
+        saw_label = str(detail.get("sawLabel") or "")
+        # Half a second back, not the track's first frame: the switch is a boundary, and
+        # what matters is the pose right up against it, not the start of the whole visit.
+        before_s = max(0.0, blip.start_s - 0.5)
+
+        before, after = await asyncio.gather(
+            asyncio.to_thread(_crop_blip_frame, recording.file_path, document, blip.track_id, modal_label, before_s),
+            asyncio.to_thread(_crop_blip_frame, recording.file_path, document, blip.track_id, saw_label, blip.start_s),
+        )
+        if before is None and after is None:
+            return {"status": JsonValues.FAILURE, "message": "could not read any frames from the clip"}
+        return {"status": JsonValues.SUCCESS, "before": before, "after": after}
 
     async def set_watch_event_review_states(self, uuids: Sequence[str], state: str) -> int:
         """Bulk triage for events, mirroring `set_event_blip_states` for blips.

@@ -1114,6 +1114,20 @@ class UpdatedCountResponse(StatusResponse):
     updated: int = 0
 
 
+class BlipCropRead(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    at_s: float
+    label: Optional[str] = None
+    #: `data:image/jpeg;base64,...` — small enough (one cropped frame) to inline rather
+    #: than round-trip through a second request the way a thumbnail URL would.
+    data_url: str
+
+
+class BlipCropPreviewResponse(StatusResponse):
+    before: Optional[BlipCropRead] = None
+    after: Optional[BlipCropRead] = None
+
+
 class DeleteWatchEventsRequest(Payload):
     uuids: List[str] = Field(default_factory=list)
 
@@ -5233,6 +5247,24 @@ class WebApp:
             except Exception as e:
                 logger.error(e, exc_info=True)
                 return UpdatedCountResponse(status=JsonValues.FAILURE, message=str(e))
+
+        # Its own path rather than `/{uuid}` + a query flag: this returns pixels, not a
+        # blip, and GET (not POST) because it changes nothing — safe to prefetch or retry.
+        @self._app.get(
+            "/api/event-blips/{blip_uuid}/crop-preview",
+            response_model=BlipCropPreviewResponse,
+            tags=[ApiTags.WATCH_PROFILES],
+            operation_id="get_blip_crop_preview",
+        )
+        async def get_blip_crop_preview(blip_uuid: str) -> BlipCropPreviewResponse:
+            """Before/after crops for an `identity_switch` blip's own instant — see
+            `Manager.get_blip_crop_preview` for what the two moments mean."""
+            try:
+                result = await self._manager.get_blip_crop_preview(blip_uuid)
+                return BlipCropPreviewResponse(**result)
+            except Exception as e:
+                logger.error(e, exc_info=True)
+                return BlipCropPreviewResponse(status=JsonValues.FAILURE, message=str(e))
 
         # ⚠️ Before `/{uuid}`, same reason as `facets`, `counts`, `groups` and the rest:
         # a literal segment declared after a path parameter of the same shape is

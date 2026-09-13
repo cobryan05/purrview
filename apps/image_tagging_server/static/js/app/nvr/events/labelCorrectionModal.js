@@ -53,6 +53,14 @@ export const MIN_FRAME_GAP_S = 0.75;
 const KEEP = '';
 
 /**
+ * The select option meaning "the detector saw something that wasn't there" — a false
+ * positive, not a mislabel. Distinct from every real label uuid so `applyLabelRemap`
+ * can tell "call this something else" from "this box shouldn't exist" apart, and from
+ * `KEEP` so "leave it alone" and "remove it" are never the same choice.
+ */
+export const NO_BBOX = '__no_bbox__';
+
+/**
  * What a remap would do to the event row's own subject and target.
  *
  * The event carries the watcher's verdict about the *whole* visit — "Maple drinks
@@ -65,8 +73,12 @@ const KEEP = '';
  * label that was never the event's own subject, where offering to "fix the event"
  * would be offering to change nothing.
  *
+ * A `NO_BBOX` target never touches the event row: "this box shouldn't exist" says
+ * nothing about what actually happened, so there is no corrected identity to write —
+ * unlike a relabel, which is itself the answer to "what was it really?".
+ *
  * @param {?Object} event - a watch event row
- * @param {Map<string, string>} remap - old label uuid → new label uuid
+ * @param {Map<string, string>} remap - old label uuid → new label uuid (or `NO_BBOX`)
  * @param {Map<string, Object>} [labels] - uuid → label, for the new names
  * @returns {?{patch: Object, changes: Array<{slot: string, from: string, to: string}>}}
  */
@@ -80,7 +92,7 @@ export function eventCorrectionFor(event, remap, labels) {
     ['target', 'targetRef', 'targetName'],
   ]) {
     const ref = event[refKey];
-    if (!ref || !remap.has(ref)) continue;
+    if (!ref || !remap.has(ref) || remap.get(ref) === NO_BBOX) continue;
     const to = remap.get(ref);
     patch[refKey] = to;
     // The name goes with the ref, always — see `WatchEventUpdate` on why a row that
@@ -206,19 +218,27 @@ export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, min
 /**
  * Apply a remap to a frame's boxes.
  *
+ * A box mapped to `NO_BBOX` is dropped rather than relabelled — a false positive isn't
+ * a mislabel, there is no correct label to give it. A frame left with no boxes at all
+ * is still filed: the caller's own "skip empty frames" guard exists for a frame that
+ * never had anything worth saving, not for one that had exactly one box and this is
+ * what removing it looks like.
+ *
  * Returns a new array — the caller's overlay boxes belong to the running redraw loop
  * and must not be rewritten under it.
  *
  * @param {Array<Object>} boxes
- * @param {Map<string, string>} remap - old label uuid → new label uuid
+ * @param {Map<string, string>} remap - old label uuid → new label uuid (or `NO_BBOX`)
  * @returns {Array<Object>}
  */
 export function applyLabelRemap(boxes, remap) {
-  return (boxes ?? []).map(box => (
-    box?.labelUuid && remap.has(box.labelUuid)
-      ? { ...box, labelUuid: remap.get(box.labelUuid) }
-      : box
-  ));
+  return (boxes ?? [])
+    .filter(box => !(box?.labelUuid && remap.get(box.labelUuid) === NO_BBOX))
+    .map(box => (
+      box?.labelUuid && remap.has(box.labelUuid)
+        ? { ...box, labelUuid: remap.get(box.labelUuid) }
+        : box
+    ));
 }
 
 /**
@@ -234,18 +254,24 @@ export function applyLabelRemap(boxes, remap) {
  *   given selection would harvest, for the live count
  * @param {(remap: Map<string, string>, opts: {fixEvent: boolean}) => (void | Promise<void>)}
  *   opts.onConfirm - non-empty remap, plus whether the event row itself should be corrected
+ * @param {?Map<string, string>} [opts.presetRemap] - a correction the caller already
+ *   knows (old label uuid → new label uuid), pre-selected on open rather than left for
+ *   the reviewer to find again in a list they just answered a question about — see
+ *   `eventDetailModal.js`'s `onRelabel`. Ignored for any `from` not present in `detected`.
  * @returns {{close: () => void}}
  */
-export function openLabelCorrectionModal({ detected, labels, event = null, estimateFrames, onConfirm }) {
+export function openLabelCorrectionModal({ detected, labels, event = null, estimateFrames, onConfirm, presetRemap = null }) {
   const shell = createModalShell();
   shell.dialog.classList.add('label-correction');
   shell.dialog.dataset.testid = 'label-correction-modal';
 
   shell.dialog.appendChild(el('h3', 'label-correction__title', 'What did the watcher get wrong?'));
   shell.dialog.appendChild(el('p', 'label-correction__note',
-    'A spread of frames from across this clip is saved with these boxes relabelled and '
-    + 'left unverified for review — not every frame, because consecutive frames of the '
-    + 'same subject are near-duplicates. The event is flagged so you can find it again.'));
+    'A spread of frames from across this clip is saved, left unverified for review — '
+    + 'not every frame, because consecutive frames of the same subject are near-duplicates. '
+    + 'A relabelled box keeps its geometry; "No bbox" removes the box instead, for a '
+    + 'detection that should never have been made. The event is flagged so you can find it '
+    + 'again.'));
 
   const rows = el('div', 'label-correction__rows');
   /** @type {Array<{from: string, select: HTMLSelectElement}>} */
@@ -272,6 +298,10 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     keep.value = KEEP;
     keep.textContent = '(leave as-is)';
     select.appendChild(keep);
+    const noBbox = document.createElement('option');
+    noBbox.value = NO_BBOX;
+    noBbox.textContent = 'No bbox — false positive';
+    select.appendChild(noBbox);
     for (const label of allLabels) {
       if (label.uuid === row.labelUuid) continue;
       const option = document.createElement('option');
@@ -279,6 +309,11 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
       option.textContent = label.name;
       select.appendChild(option);
     }
+    // Preset before the row is appended, not after — so the estimate and the "also fix
+    // this event" line both read the real starting state on their very first render
+    // rather than flashing from "nothing chosen" once `syncConfirm()` runs below.
+    const preset = presetRemap?.get(row.labelUuid);
+    if (preset && [...select.options].some(o => o.value === preset)) select.value = preset;
     line.appendChild(select);
     rows.appendChild(line);
     pickers.push({ from: row.labelUuid, select });

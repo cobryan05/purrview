@@ -37,6 +37,16 @@ EVENT_UUID = "event-uuid-0001"
 RECORDING_UUID = "recording-uuid-0001"
 TIMELAPSE_UUID = "recording-uuid-0002"
 
+# A syntactically real (if 1x1) JPEG data URL — enough for an <img> to actually decode
+# and render, which is what the crop-preview modal's tests check for.
+_FAKE_DATA_URL = (
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkI"
+    "CQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEA"
+    "AAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCd"
+    "ABmX/9k="
+)
+
 
 def _clip_summary(**overrides) -> dict:
     """One entry of `event.recordings`, as the events list sends it.
@@ -252,6 +262,7 @@ def _mock(
     sessions=None,
     review_states=None,
     playable=False,
+    crop_previews=None,
 ):
     """Route every call the Events page makes, and record the search queries.
 
@@ -435,9 +446,11 @@ def _mock(
         )
 
     rows_blips = list(blips) if blips is not None else []
+    crop_previews = crop_previews or {}
 
     def _fulfil_blips(route):
-        if route.request.url.endswith("/states"):
+        url = route.request.url
+        if url.endswith("/states"):
             payload = json.loads(route.request.post_data)
             # Actually move them, so a panel that re-reads after dismissing shows the new
             # state rather than the old one served again.
@@ -450,15 +463,32 @@ def _mock(
                 body=json.dumps({"status": "success", "updated": len(payload["uuids"])}),
             )
             return
-        # The panel now asks for `harvestable=true` (production filters tracker-fault
-        # blips out server-side) — honoring it here keeps the mock's shape true to what
-        # the real endpoint would answer, rather than a mock that always returns
-        # everything and would silently hide a regression in that filter.
-        harvestable_param = parse_qs(urlparse(route.request.url).query).get("harvestable", [None])[0]
+        if "/crop-preview" in url:
+            blip_uuid = url.split("/api/event-blips/", 1)[1].split("/crop-preview", 1)[0]
+            body = crop_previews.get(
+                blip_uuid,
+                {
+                    "status": "success",
+                    "before": {"atS": 0.5, "label": None, "dataUrl": _FAKE_DATA_URL},
+                    "after": {"atS": 1.0, "label": None, "dataUrl": _FAKE_DATA_URL},
+                },
+            )
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+            return
+        # The panel asks for two disjoint slices — `harvestable=true`, and `kinds=
+        # identity_switch` — rather than one unfiltered fetch (see blipsPanel.js's
+        # module docstring). Honoring both here keeps the mock's shape true to what the
+        # real endpoint would answer, rather than a mock that always returns everything
+        # and would silently hide a regression in either filter.
+        query = parse_qs(urlparse(url).query)
+        harvestable_param = query.get("harvestable", [None])[0]
+        kinds_param = query.get("kinds")
         rows = rows_blips
         if harvestable_param is not None:
             want = harvestable_param == "true"
             rows = [b for b in rows_blips if bool(b.get("harvestable")) == want]
+        elif kinds_param:
+            rows = [b for b in rows_blips if b.get("kind") in kinds_param]
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -1520,11 +1550,11 @@ class TestTheTrackingBlipsPanel:
         expect(row).to_contain_text("12.0–15.5s")
         expect(page.locator("[data-testid='event-blip-claim']")).to_contain_text("9 of 121 frames")
 
-    def test_a_tracker_fault_is_not_listed_at_all(self, page: Page, base_url: str):
+    def test_a_tracker_dropout_is_not_listed_at_all(self, page: Page, base_url: str):
         """Harvesting a tracker fault pads the set with frames the model already gets
-        right, and it carries no diagnostic detail a user could act on either — so
-        rather than show an inert row explaining itself, the panel asks for
-        `harvestable=true` and the finding never appears."""
+        right, and (unlike identity_switch, below) a dropout carries no diagnostic
+        detail a user could act on either — so rather than show an inert row explaining
+        itself, the panel never fetches it in the first place."""
         self._open_modal(
             page,
             base_url,
@@ -1538,6 +1568,82 @@ class TestTheTrackingBlipsPanel:
         expect(rows).to_have_count(1)
         expect(page.locator("[data-testid='event-blips-title']")).to_contain_text("1")
         expect(rows.locator("[data-testid='event-blip-check']")).to_have_count(1)
+
+    def test_an_identity_switch_gets_a_review_button_not_a_checkbox(self, page: Page, base_url: str):
+        """The one tracker-fault kind the panel still lists — it has a real question a
+        reviewer can answer (crop-compare), unlike a bare checkbox it could never earn."""
+        self._open_modal(
+            page,
+            base_url,
+            blips=[
+                _blip(
+                    uuid="blip-uuid-0002",
+                    kind="identity_switch",
+                    fault="tracker",
+                    harvestable=False,
+                    detailJson={"modalLabel": "lbl-1", "sawLabel": "lbl-2"},
+                ),
+            ],
+        )
+
+        row = page.locator("[data-testid='event-blip-row']")
+        expect(row).to_have_count(1)
+        expect(row.locator("[data-testid='event-blip-check']")).to_have_count(0)
+        expect(row.locator("[data-testid='event-blip-review']")).to_be_visible()
+
+    def test_reviewing_as_a_tracker_mistake_dismisses_it(self, page: Page, base_url: str):
+        """ "Same animal" needs no relabel flow — it just resolves the finding."""
+        switch = _blip(
+            uuid="blip-uuid-0002",
+            kind="identity_switch",
+            fault="tracker",
+            harvestable=False,
+            detailJson={"modalLabel": "lbl-1", "sawLabel": "lbl-2"},
+        )
+        self._open_modal(page, base_url, blips=[switch])
+        _route_labels(page)
+
+        page.locator("[data-testid='event-blip-review']").click()
+        modal = page.locator("[data-testid='blip-review-modal']")
+        expect(modal).to_be_visible()
+        expect(modal.locator(".event-blips__review-img")).to_have_count(2)
+
+        modal.locator("[data-testid='blip-review-glitch']").click()
+
+        expect(modal).to_be_hidden()
+        row = page.locator("[data-testid='event-blip-row']")
+        expect(row.locator("[data-testid='event-blip-blocked']")).to_contain_text("reviewed")
+        expect(page.locator("[data-testid='label-correction-modal']")).to_have_count(0)
+
+    def test_reviewing_as_a_real_change_hands_off_to_the_relabel_flow_prefilled(self, page: Page, base_url: str):
+        """ "Different animal" is a correction the reviewer already made — the wrong-label
+        flow should open with it chosen, not ask the reviewer to find it again."""
+        switch = _blip(
+            uuid="blip-uuid-0002",
+            kind="identity_switch",
+            fault="tracker",
+            harvestable=False,
+            detailJson={"modalLabel": "lbl-1", "sawLabel": "lbl-2"},
+        )
+        # Registered before navigation, not after: `fetchLabels()` caches its result and
+        # a route added once the panel has already fetched (and cached an empty map) is
+        # too late to change what the correction modal renders.
+        _route_labels(page)
+        self._open_modal(page, base_url, blips=[switch], overlay=_two_label_overlay())
+
+        page.locator("[data-testid='event-blip-review']").click()
+        modal = page.locator("[data-testid='blip-review-modal']")
+        expect(modal).to_be_visible()
+        modal.locator("[data-testid='blip-review-relabel']").click()
+
+        correction = page.locator("[data-testid='label-correction-modal']")
+        expect(correction).to_be_visible()
+        # lbl-1 is Tabby, the row this preset targets — filtered by its select's own
+        # `data-label-uuid` rather than row text, since "Tabby" also appears as an
+        # option inside the *other* row's select (every row offers every other label).
+        select = correction.locator("[data-testid='label-correction-select'][data-label-uuid='lbl-1']")
+        expect(select).to_have_value("lbl-2")
+        expect(correction.locator("[data-testid='label-correction-confirm']")).to_be_enabled()
 
     def test_an_expired_finding_cannot_be_harvested_or_played(self, page: Page, base_url: str):
         """Its clip has been swept. Offering either would open a dead player or start a
@@ -2850,6 +2956,60 @@ class TestCorrectingAWrongLabel:
         # The overlay's boxes belong to a running redraw loop; rewriting them in place
         # would change what is painted over the video.
         assert result["untouched"] == ["lbl-1", "lbl-1", "lbl-2"], "the caller's boxes must not be mutated"
+
+    def test_no_bbox_drops_the_box_instead_of_relabelling_it(self, page: Page, base_url: str):
+        """A false positive isn't a mislabel — there is no correct label to give it, so
+        `NO_BBOX` removes the box rather than renaming it. A frame left with no boxes at
+        all is still returned: dropping empty frames is the *caller's* job, for a frame
+        that never had anything worth saving in the first place."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        result = page.evaluate("""async () => {
+                const { applyLabelRemap, NO_BBOX } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const boxes = [
+                  { labelUuid: 'lbl-1', bbox: [0, 0, 1, 1] },
+                  { labelUuid: 'lbl-2', bbox: [2, 2, 3, 3] },
+                ];
+                return {
+                  oneDropped: applyLabelRemap(boxes, new Map([['lbl-1', NO_BBOX]])).map(b => b.labelUuid),
+                  allDropped: applyLabelRemap(boxes, new Map([['lbl-1', NO_BBOX], ['lbl-2', NO_BBOX]])),
+                };
+            }""")
+
+        assert result["oneDropped"] == ["lbl-2"]
+        assert result["allDropped"] == []
+
+    def test_no_bbox_never_touches_the_event_row(self, page: Page, base_url: str):
+        """Deleting a box says nothing about what actually happened — unlike a relabel,
+        which is itself the corrected identity — so it must never rewrite the event's
+        own subject/target the way a real correction would."""
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+
+        result = page.evaluate("""async () => {
+                const { eventCorrectionFor, NO_BBOX } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const event = { subjectRef: 'lbl-1', subjectName: 'Tabby', targetRef: 'zone-box', targetName: 'litter box' };
+                return eventCorrectionFor(event, new Map([['lbl-1', NO_BBOX]]), new Map());
+            }""")
+
+        assert result is None
+
+    def test_no_bbox_is_offered_and_saveable(self, page: Page, base_url: str):
+        self._open_modal(page, base_url, overlay=_two_label_overlay())
+        page.locator("[data-testid='event-detail-relabel-event']").click()
+
+        select = page.locator("[data-testid='label-correction-select']").first
+        options = select.locator("option").all_text_contents()
+        assert "No bbox — false positive" in options
+
+        confirm = page.locator("[data-testid='label-correction-confirm']")
+        expect(confirm).to_be_disabled()
+        select.select_option(label="No bbox — false positive")
+        expect(confirm).to_be_enabled()
+        # Deleting a box is not itself a correction to the event's own identity, so the
+        # "also fix this event" offer must not appear even for the subject's own row.
+        expect(page.locator("[data-testid='label-correction-fix-event']")).to_be_hidden()
 
     def test_the_tally_counts_boxes_and_frames_separately(self, page: Page, base_url: str):
         """Two boxes in one frame and two boxes across a minute are the same box count

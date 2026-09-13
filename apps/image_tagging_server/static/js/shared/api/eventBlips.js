@@ -56,6 +56,24 @@ export async function fetchEventBlips({
 }
 
 /**
+ * Before/after crops around an `identity_switch` blip's own instant — see
+ * `db_server`'s `get_blip_crop_preview` for what the two moments mean. Either side may
+ * come back `null` (the clip couldn't be read at that instant); the caller decides
+ * whether a one-sided preview is still worth showing.
+ *
+ * @param {string} blipUuid
+ * @returns {Promise<{before: ?Object, after: ?Object}>}
+ */
+export async function fetchBlipCropPreview(blipUuid) {
+  const res = await apiFetch(`/api/event-blips/${blipUuid}/crop-preview`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'success') {
+    throw new Error(data.message || 'Could not load a preview for this finding');
+  }
+  return { before: data.before || null, after: data.after || null };
+}
+
+/**
  * Move a selection of blips to one triage state.
  *
  * Note that `harvested` is not set from here: the harvest task sets it itself, once
