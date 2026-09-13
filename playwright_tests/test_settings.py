@@ -29,13 +29,35 @@ from playwright_tests.waits import wait_until
 
 
 def _navigate_to_settings(page: Page, base_url: str):
-    """Open the app and activate the Settings tab."""
-    # Service status moved to the Operations tab, so Settings no longer probes it.
+    """Open the app and activate the Settings tab.
+
+    Lands on the rail's default pane (Service Status) — every other section's
+    fields are built into the DOM already but sit in a hidden pane until its
+    rail item is clicked, see `_open_settings_section`.
+    """
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-settings']").click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector("#tab-settings .settings-wrap")
+    page.wait_for_selector("#tab-settings .config-rail")
+
+
+def _open_settings_section(page: Page, tab: str):
+    """Click a Settings rail item and wait for its pane to become the visible one."""
+    page.locator(f"#tab-settings .config-rail__item[data-tab='{tab}']").click()
+    expect(page.locator(f"#{tab}")).to_be_visible()
+
+
+def _put_for(put_calls, key):
+    """Filter captured (url, body) PUTs down to the ones for settings key `key`.
+
+    All Settings panes build concurrently (settings/main.js), and Keyboard Shortcuts
+    fires its own background `hotkey_bindings` migration PUT independent of anything
+    a test clicked. Under load that PUT can land after a test's own save PUT is
+    issued, so indexing `put_calls[0]` is a race — filter by key instead. See
+    FLAKY_TESTS.md (test_save_writes_json_under_mqtt_broker).
+    """
+    return [c for c in put_calls if c[0].rstrip("/").endswith(f"/{key}")]
 
 
 def _navigate_to_files(page: Page, base_url: str):
@@ -132,6 +154,7 @@ class TestServerConfigRows:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-servers")
 
         rows = page.locator("#settings-section-server .settings-server-row")
         expect(rows).to_have_count(2)
@@ -151,6 +174,7 @@ class TestServerConfigRows:
         _mock_server_config(page, {"inference_server_url_override": "http://my-inference:9001"})
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-servers")
 
         inf_row = page.locator("#tab-settings .settings-server-row").nth(0)
         expect(inf_row.locator(".settings-server-input")).to_have_value("http://my-inference:9001")
@@ -170,6 +194,7 @@ class TestSaveOverride:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-servers")
 
         put_calls = []
 
@@ -186,9 +211,12 @@ class TestSaveOverride:
         inf_row = page.locator("#tab-settings .settings-server-row").nth(0)
         inf_row.locator(".settings-server-input").fill("http://override.example.com:9999")
         inf_row.locator("button", has_text="Save").click()
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/{key}")
-        url, body = put_calls[0]
-        assert url.rstrip("/").endswith("/inference_server_url")
+        wait_until(
+            page,
+            lambda: _put_for(put_calls, "inference_server_url"),
+            "Expected PUT to /api/settings/inference_server_url",
+        )
+        _, body = _put_for(put_calls, "inference_server_url")[0]
         assert body == {"value": "http://override.example.com:9999"}
         # The reload POST is fired *after* the PUT resolves, so it needs its own
         # wait — arriving at the PUT says nothing about the reload having landed.
@@ -203,6 +231,7 @@ class TestSaveOverride:
         _mock_server_config(page, {"inference_server_url_override": "http://old-override:1234"})
         _mock_settings_get(page, {"inference_server_url": "http://old-override:1234"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-servers")
 
         put_calls = []
 
@@ -219,8 +248,12 @@ class TestSaveOverride:
         inf_row = page.locator("#tab-settings .settings-server-row").nth(0)
         inf_row.locator(".settings-server-input").fill("")
         inf_row.locator("button", has_text="Save").click()
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/{key}")
-        _, body = put_calls[0]
+        wait_until(
+            page,
+            lambda: _put_for(put_calls, "inference_server_url"),
+            "Expected PUT to /api/settings/inference_server_url",
+        )
+        _, body = _put_for(put_calls, "inference_server_url")[0]
         assert body == {"value": ""}
         expect(inf_row.locator(".settings-server-status")).to_have_text("Using default: http://localhost:8001")
         expect(inf_row.locator(".settings-server-status")).to_have_attribute("data-state", "muted")
@@ -237,6 +270,7 @@ class TestTestConnection:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-servers")
         calls = _mock_test_server(page, success=True, message="Connected OK")
 
         train_row = page.locator("#tab-settings .settings-server-row").nth(1)
@@ -252,6 +286,7 @@ class TestTestConnection:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-servers")
         _mock_test_server(page, success=False, message="Connection refused")
 
         inf_row = page.locator("#tab-settings .settings-server-row").nth(0)
@@ -263,30 +298,59 @@ class TestTestConnection:
 
 
 # ---------------------------------------------------------------------------
-# 3b. Layout — panels in a grid, controls inside their panel
+# 3b. Layout — a left rail of destinations, one pane visible at a time
 # ---------------------------------------------------------------------------
+
+# Every rail destination the tab is expected to expose, grouped the way the
+# rail groups them. A section silently dropped from the rail (e.g. a typo in
+# its `data-tab`) would otherwise only be noticed by whatever test happens to
+# open it directly — this is the one place that checks the full roster.
+SETTINGS_RAIL_SECTIONS = [
+    "tab-settings-status",
+    "tab-settings-servers",
+    "tab-settings-mqtt",
+    "tab-settings-retention",
+    "tab-settings-timelapse",
+    "tab-settings-models",
+    "tab-settings-storage",
+    "tab-settings-security",
+    "tab-settings-dedup",
+    "tab-settings-interface",
+    "tab-settings-hotkeys",
+]
 
 
 class TestSettingsLayout:
-    def test_sections_render_as_panel_boxes_in_a_grid(self, page: Page, base_url: str):
-        """Every section is a `.panel-box` and the wrap lays them out as a multi-column
-        grid — the tab used to be one 560px-wide column of bespoke sections."""
+    def test_rail_lists_every_section_and_defaults_to_service_status(self, page: Page, base_url: str):
+        """Mirrors Configuration's left-rail layout: a nav of destinations, one active pane."""
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
 
-        wrap = page.locator("#tab-settings .settings-wrap")
-        expect(wrap).to_have_css("display", "grid")
-        # Servers, Security, MQTT Broker, Recording Retention, Timelapse Retention,
-        # Model History, Storage, Deduplication, Interface, Keyboard Shortcuts
-        expect(wrap.locator("> .panel-box.settings-panel")).to_have_count(10)
+        items = page.locator("#tab-settings .config-rail__item")
+        expect(items).to_have_count(len(SETTINGS_RAIL_SECTIONS))
+        tabs = items.evaluate_all("els => els.map(el => el.dataset.tab)")
+        assert set(tabs) == set(SETTINGS_RAIL_SECTIONS)
 
-        # At a desktop width the grid resolves to more than one column.
-        columns = page.evaluate(
-            "() => getComputedStyle(document.querySelector('#tab-settings .settings-wrap'))"
-            ".gridTemplateColumns.split(' ').length"
-        )
-        assert columns > 1, f"expected a multi-column settings grid, got {columns}"
+        # Lands on Service Status without any click, and it's the only visible pane.
+        expect(page.locator("#tab-settings-status")).to_be_visible()
+        expect(page.locator("#tab-settings-servers")).to_be_hidden()
+
+    def test_selecting_a_rail_item_shows_only_that_pane(self, page: Page, base_url: str):
+        """Every section is built into the DOM up front (so switching is instant), but
+        only the selected one is on screen — the rest sit behind `display: none`."""
+        _mock_server_config(page)
+        _mock_settings_get(page)
+        _navigate_to_settings(page, base_url)
+
+        _open_settings_section(page, "tab-settings-mqtt")
+        expect(page.locator("#tab-settings-mqtt")).to_be_visible()
+        expect(page.locator("#tab-settings-status")).to_be_hidden()
+        expect(page.locator("#tab-settings-servers")).to_be_hidden()
+
+        _open_settings_section(page, "tab-settings-servers")
+        expect(page.locator("#tab-settings-servers")).to_be_visible()
+        expect(page.locator("#tab-settings-mqtt")).to_be_hidden()
 
     def test_narrow_controls_stay_narrow_and_inside_their_panel(self, page: Page, base_url: str):
         """Layout invariant, not a regression test: the sized controls stay small and
@@ -298,16 +362,31 @@ class TestSettingsLayout:
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
 
-        measured = page.evaluate("""() => [...document.querySelectorAll(
-                '#tab-settings .settings-server-input--narrow, #tab-settings .settings-server-input--select'
-            )].map(el => {
-                const panel = el.closest('.panel-box').getBoundingClientRect();
-                const r = el.getBoundingClientRect();
-                return { cls: el.className, width: r.width, overflow: r.right - panel.right,
-                         panelWidth: panel.width };
-            })""")
-        assert measured, "expected narrow controls in the Deduplication / Interface panels"
-        for m in measured:
+        # Checked one pane at a time: a hidden pane's controls report a zero-size
+        # rect, which would misread as "narrow" rather than "not on screen".
+        sections_with_narrow_controls = [
+            "tab-settings-mqtt",
+            "tab-settings-retention",
+            "tab-settings-timelapse",
+            "tab-settings-models",
+            "tab-settings-dedup",
+            "tab-settings-interface",
+        ]
+        all_measured = []
+        for tab in sections_with_narrow_controls:
+            _open_settings_section(page, tab)
+            measured = page.evaluate(f"""() => [...document.querySelectorAll(
+                    '#{tab} .settings-server-input--narrow, #{tab} .settings-server-input--select'
+                )].map(el => {{
+                    const panel = el.closest('.panel-box').getBoundingClientRect();
+                    const r = el.getBoundingClientRect();
+                    return {{ cls: el.className, width: r.width, overflow: r.right - panel.right,
+                             panelWidth: panel.width }};
+                }})""")
+            all_measured.extend(measured)
+
+        assert all_measured, "expected narrow controls somewhere across the sections checked"
+        for m in all_measured:
             assert m["overflow"] <= 0, f"{m['cls']} overflows its panel by {m['overflow']:.0f}px"
             # A control that lost the width fight fills the row; a sized one is a
             # small fraction of the panel.
@@ -348,6 +427,7 @@ class TestMqttSettings:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
         expect(_mqtt_field(page, "settings-mqtt-port")).to_have_value("1883")
@@ -376,6 +456,7 @@ class TestMqttSettings:
             },
         )
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("broker.local")
         expect(_mqtt_field(page, "settings-mqtt-port")).to_have_value("8883")
@@ -391,14 +472,18 @@ class TestMqttSettings:
         _mock_server_config(page)
         _mock_settings_get(page, {"mqtt_broker": "not json"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
 
         expect(_mqtt_field(page, "settings-mqtt-host")).to_have_value("")
-        expect(page.locator("#tab-settings .settings-wrap > .panel-box.settings-panel")).to_have_count(10)
+        # Every other section still built fine — a hand-edited row must not break the
+        # whole tab's render. All panes build up front regardless of which is visible.
+        expect(page.locator("#tab-settings .config-rail-body .panel-box.settings-panel")).to_have_count(10)
 
     def test_save_writes_json_under_mqtt_broker(self, page: Page, base_url: str):
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
 
         put_calls = []
 
@@ -416,9 +501,8 @@ class TestMqttSettings:
         _mqtt_field(page, "settings-mqtt-tls").check()
         page.locator("[data-testid='settings-mqtt-save']").click()
 
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/mqtt_broker")
-        url, body = put_calls[0]
-        assert url.rstrip("/").endswith("/mqtt_broker")
+        wait_until(page, lambda: _put_for(put_calls, "mqtt_broker"), "Expected PUT to /api/settings/mqtt_broker")
+        _, body = _put_for(put_calls, "mqtt_broker")[0]
         saved = json.loads(body["value"])
         assert saved["host"] == "broker.local"
         assert saved["port"] == 8883
@@ -435,12 +519,13 @@ class TestMqttSettings:
         _mock_server_config(page)
         _mock_settings_get(page, {"mqtt_broker": json.dumps({"host": "broker.local"})})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
 
         put_calls = []
 
         def handle_put(route: Route):
             if route.request.method == "PUT":
-                put_calls.append(json.loads(route.request.post_data))
+                put_calls.append((route.request.url, json.loads(route.request.post_data)))
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"status": "success"}))
 
         page.route(lambda url: "/api/settings/" in url, handle_put)
@@ -448,8 +533,8 @@ class TestMqttSettings:
         _mqtt_field(page, "settings-mqtt-host").fill("")
         page.locator("[data-testid='settings-mqtt-save']").click()
 
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/mqtt_broker")
-        assert put_calls[0] == {"value": ""}
+        wait_until(page, lambda: _put_for(put_calls, "mqtt_broker"), "Expected PUT to /api/settings/mqtt_broker")
+        assert _put_for(put_calls, "mqtt_broker")[0][1] == {"value": ""}
         expect(_mqtt_status(page)).to_have_text("Saved: MQTT publishing disabled.")
 
     def test_test_button_probes_the_form_values(self, page: Page, base_url: str):
@@ -458,6 +543,7 @@ class TestMqttSettings:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
         calls = _mock_test_mqtt(page, success=True, message="Connected to broker.local:1883")
 
         _mqtt_field(page, "settings-mqtt-host").fill("broker.local")
@@ -478,6 +564,7 @@ class TestMqttSettings:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
         _mock_test_mqtt(page, success=False, message="bad username or password")
 
         _mqtt_field(page, "settings-mqtt-host").fill("broker.local")
@@ -490,6 +577,7 @@ class TestMqttSettings:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-mqtt")
         calls = _mock_test_mqtt(page)
 
         page.locator("[data-testid='settings-mqtt-test']").click()
@@ -505,49 +593,38 @@ class TestMqttSettings:
 
 
 class TestHotkeysPanel:
-    def test_clicking_header_expands_and_collapses_panel(self, page: Page, base_url: str):
-        """Clicking the Keyboard Shortcuts header toggles the body's visibility and chevron."""
+    """Reset-to-defaults semantics (resetBindings) are covered by
+    test_hotkey_bindings.py; this file only checks the panel is reachable and
+    renders as its own rail destination — it no longer collapses behind a
+    chevron, since Configuration's rail already hides everything but the
+    selected section."""
+
+    def test_selecting_the_section_shows_the_hotkey_grid_immediately(self, page: Page, base_url: str):
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
 
-        title_row = page.locator("#tab-settings .settings-section-header--collapsible > div").first
-        chevron = title_row.locator(".settings-collapse-chevron")
-        body = page.locator("#tab-settings .settings-hotkey-body").locator("xpath=..")
+        expect(page.locator("#tab-settings-hotkeys")).to_be_hidden()
+        _open_settings_section(page, "tab-settings-hotkeys")
 
-        expect(chevron).to_have_text("▶")
-        expect(body).to_be_hidden()
-
-        title_row.click()
-        page.wait_for_timeout(300)
-        expect(chevron).to_have_text("▼")
-        expect(body).to_be_visible()
-        expect(page.locator("#tab-settings .settings-hotkey-body")).not_to_be_empty()
         # Rows flow into a grid rather than one row-per-line column — with one row
         # per label *and* per visible tag, a single column runs arbitrarily tall.
-        grid = page.locator("#tab-settings .settings-hotkey-body .hotkey-grid").first
+        grid = page.locator("#tab-settings-hotkeys .hotkey-grid").first
+        expect(grid).to_be_visible()
         expect(grid).to_have_css("display", "grid")
         assert grid.locator(".hotkey-row").count() > 0
 
-        title_row.click()
-        page.wait_for_timeout(200)
-        expect(chevron).to_have_text("▶")
-        expect(body).to_be_hidden()
-
-    def test_reset_button_does_not_toggle_panel(self, page: Page, base_url: str):
-        """Clicking 'Reset to defaults' must not also collapse/expand the panel (stopPropagation)."""
+    def test_reset_button_stays_on_the_hotkeys_section(self, page: Page, base_url: str):
+        """Clicking 'Reset to defaults' must not navigate away from the section."""
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-hotkeys")
 
-        chevron = page.locator("#tab-settings .settings-collapse-chevron")
-        body = page.locator("#tab-settings .settings-hotkey-body").locator("xpath=..")
+        page.locator("#tab-settings-hotkeys button", has_text="Reset to defaults").click()
 
-        page.locator("#tab-settings button", has_text="Reset to defaults").click()
-        page.wait_for_timeout(200)
-
-        expect(chevron).to_have_text("▶")
-        expect(body).to_be_hidden()
+        expect(page.locator("#tab-settings-hotkeys")).to_be_visible()
+        expect(page.locator("#tab-settings-hotkeys .hotkey-grid").first).to_be_visible()
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +951,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_field(page)).to_have_value("30")
         expect(_retention_status(page)).to_contain_text("30 days")
@@ -882,6 +960,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"recording_retention_days": "7"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_field(page)).to_have_value("7")
         expect(_retention_status(page)).to_contain_text("7 days")
@@ -891,6 +970,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"recording_retention_days": "0"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_field(page)).to_have_value("0")
         expect(_retention_status(page)).to_contain_text("No age limit")
@@ -899,6 +979,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"recording_retention_days": "forever"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_field(page)).to_have_value("30")
 
@@ -906,6 +987,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         put_calls = []
 
@@ -919,9 +1001,12 @@ class TestRecordingRetention:
         _retention_field(page).fill("14")
         page.locator("[data-testid='settings-retention-days-save']").click()
 
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/recording_retention_days")
-        url, body = put_calls[0]
-        assert url.rstrip("/").endswith("/recording_retention_days")
+        wait_until(
+            page,
+            lambda: _put_for(put_calls, "recording_retention_days"),
+            "Expected PUT to /api/settings/recording_retention_days",
+        )
+        _, body = _put_for(put_calls, "recording_retention_days")[0]
         assert body["value"] == "14"
 
     def test_a_negative_value_is_refused_rather_than_saved(self, page: Page, base_url: str):
@@ -929,6 +1014,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         put_calls = []
         page.route(
@@ -949,6 +1035,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_size_field(page)).to_have_value("10240")
         expect(_retention_status(page, 1)).to_contain_text("10240 MB")
@@ -957,6 +1044,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"recording_max_total_mb": "512"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_size_field(page)).to_have_value("512")
         expect(_retention_status(page, 1)).to_contain_text("512 MB")
@@ -967,6 +1055,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"recording_retention_days": "0", "recording_max_total_mb": "2048"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(_retention_status(page, 0)).to_contain_text("No age limit")
         expect(_retention_status(page, 0)).to_contain_text("size limit")
@@ -976,6 +1065,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         put_calls = []
 
@@ -989,9 +1079,12 @@ class TestRecordingRetention:
         _retention_size_field(page).fill("4096")
         page.locator("[data-testid='settings-retention-max-mb-save']").click()
 
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/recording_max_total_mb")
-        url, body = put_calls[0]
-        assert url.rstrip("/").endswith("/recording_max_total_mb")
+        wait_until(
+            page,
+            lambda: _put_for(put_calls, "recording_max_total_mb"),
+            "Expected PUT to /api/settings/recording_max_total_mb",
+        )
+        _, body = _put_for(put_calls, "recording_max_total_mb")[0]
         assert body["value"] == "4096"
 
     def test_the_unmanaged_folder_caveat_is_stated(self, page: Page, base_url: str):
@@ -1000,6 +1093,7 @@ class TestRecordingRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-retention")
 
         expect(page.locator("[data-testid='settings-retention-caveat']")).to_contain_text("custom output folder")
 
@@ -1030,19 +1124,26 @@ class TestTimelapseRetention:
     serve both without the bulkier material silently evicting the other.
     """
 
-    def test_it_is_a_panel_of_its_own(self, page: Page, base_url: str):
+    def test_it_is_a_rail_destination_of_its_own(self, page: Page, base_url: str):
+        """Its own rail item, distinct from Recording Retention — selecting one hides
+        the other, so the two panels' values are never both on screen to conflate."""
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
 
+        _open_settings_section(page, "tab-settings-timelapse")
         expect(page.locator("#settings-section-timelapse-retention")).to_be_visible()
-        # And distinct from the recording one, whose values it must not share.
+        expect(page.locator("#settings-section-retention")).to_be_hidden()
+
+        _open_settings_section(page, "tab-settings-retention")
         expect(page.locator("#settings-section-retention")).to_be_visible()
+        expect(page.locator("#settings-section-timelapse-retention")).to_be_hidden()
 
     def test_defaults_when_unset(self, page: Page, base_url: str):
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-timelapse")
 
         expect(_timelapse_field(page)).to_have_value("14")
         expect(_timelapse_size_field(page)).to_have_value("20480")
@@ -1051,6 +1152,7 @@ class TestTimelapseRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"timelapse_retention_days": "3", "timelapse_max_total_mb": "512"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-timelapse")
 
         expect(_timelapse_field(page)).to_have_value("3")
         expect(_timelapse_status(page, 0)).to_contain_text("3 days")
@@ -1062,6 +1164,7 @@ class TestTimelapseRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"recording_retention_days": "99", "recording_max_total_mb": "99"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-timelapse")
 
         expect(_timelapse_field(page)).to_have_value("14")
         expect(_timelapse_size_field(page)).to_have_value("20480")
@@ -1070,6 +1173,7 @@ class TestTimelapseRetention:
         _mock_server_config(page)
         _mock_settings_get(page, {"timelapse_retention_days": "0"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-timelapse")
 
         expect(_timelapse_status(page, 0)).to_contain_text("No age limit")
 
@@ -1077,6 +1181,7 @@ class TestTimelapseRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-timelapse")
 
         put_calls = []
 
@@ -1089,15 +1194,21 @@ class TestTimelapseRetention:
 
         _timelapse_field(page).fill("7")
         page.locator("[data-testid='settings-timelapse-days-save']").click()
-        wait_until(page, lambda: put_calls, "Expected PUT to /api/settings/timelapse_retention_days")
-        assert put_calls[0][0].rstrip("/").endswith("/timelapse_retention_days")
-        assert put_calls[0][1]["value"] == "7"
+        wait_until(
+            page,
+            lambda: _put_for(put_calls, "timelapse_retention_days"),
+            "Expected PUT to /api/settings/timelapse_retention_days",
+        )
+        assert _put_for(put_calls, "timelapse_retention_days")[0][1]["value"] == "7"
 
         _timelapse_size_field(page).fill("4096")
         page.locator("[data-testid='settings-timelapse-max-mb-save']").click()
-        wait_until(page, lambda: len(put_calls) > 1, "Expected PUT to /api/settings/timelapse_max_total_mb")
-        assert put_calls[1][0].rstrip("/").endswith("/timelapse_max_total_mb")
-        assert put_calls[1][1]["value"] == "4096"
+        wait_until(
+            page,
+            lambda: _put_for(put_calls, "timelapse_max_total_mb"),
+            "Expected PUT to /api/settings/timelapse_max_total_mb",
+        )
+        assert _put_for(put_calls, "timelapse_max_total_mb")[0][1]["value"] == "4096"
 
     def test_the_sweep_scope_is_stated(self, page: Page, base_url: str):
         """These folders live under the image datasets, beside a user's annotated images.
@@ -1105,6 +1216,7 @@ class TestTimelapseRetention:
         _mock_server_config(page)
         _mock_settings_get(page)
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-timelapse")
 
         caveat = page.locator("[data-testid='settings-timelapse-caveat']")
         expect(caveat).to_contain_text("JSON sidecar")
@@ -1123,6 +1235,7 @@ class TestModelHistorySettings:
         _mock_server_config(page)
         _mock_settings_get(page, {"model_versions_keep": "3", "training_artifacts_keep": "3"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-models")
 
         put_calls = []
 
@@ -1135,21 +1248,23 @@ class TestModelHistorySettings:
 
         page.get_by_test_id("settings-model-versions-keep").fill("5")
         page.get_by_test_id("settings-model-versions-keep-save").click()
-        wait_until(page, lambda: put_calls, "Expected PUT for the model-versions bound")
+        wait_until(
+            page, lambda: _put_for(put_calls, "model_versions_keep"), "Expected PUT for the model-versions bound"
+        )
 
         page.get_by_test_id("settings-training-artifacts-keep").fill("1")
         page.get_by_test_id("settings-training-artifacts-keep-save").click()
-        wait_until(page, lambda: len(put_calls) == 2, "Expected PUT for the artifacts bound")
+        wait_until(page, lambda: _put_for(put_calls, "training_artifacts_keep"), "Expected PUT for the artifacts bound")
 
-        by_key = {url.rstrip("/").rsplit("/", 1)[-1]: body for url, body in put_calls}
-        assert by_key["model_versions_keep"] == {"value": "5"}
-        assert by_key["training_artifacts_keep"] == {"value": "1"}
+        assert _put_for(put_calls, "model_versions_keep")[0][1] == {"value": "5"}
+        assert _put_for(put_calls, "training_artifacts_keep")[0][1] == {"value": "1"}
 
     def test_zero_versions_is_described_as_no_rollback(self, page: Page, base_url: str):
         """0 is a legal value with real consequences, so the row has to say what it means."""
         _mock_server_config(page)
         _mock_settings_get(page, {"model_versions_keep": "0"})
         _navigate_to_settings(page, base_url)
+        _open_settings_section(page, "tab-settings-models")
 
         row = page.locator(".settings-server-row").filter(has=page.get_by_test_id("settings-model-versions-keep"))
         expect(row.locator(".settings-server-status")).to_contain_text("No history")

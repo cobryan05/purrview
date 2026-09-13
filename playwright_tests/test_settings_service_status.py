@@ -33,10 +33,11 @@ def _mock_service_status(page: Page, services=None):
 
 
 def _navigate_to_settings(page: Page, base_url: str):
+    """Lands on Service Status: it's the rail's default (first, ungrouped) item."""
     page.goto(base_url)
     page.wait_for_load_state("networkidle")
     page.locator(".main-tab-button[data-tab='tab-settings']").click()
-    page.wait_for_selector("#tab-settings .settings-wrap")
+    page.wait_for_selector("#tab-settings-status .service-status-panel")
     page.wait_for_load_state("networkidle")
 
 

@@ -1,4 +1,5 @@
 import { renderHotkeyPanel } from '/app-static/js/app/image-tagging/hotkeyModal.js';
+import { setupWorkspaceTabs } from '/app-static/js/app/utils/tabs.js';
 import { apiFetch } from '/app-static/js/shared/api/apiUtils.js';
 import {
   getSetting,
@@ -26,10 +27,58 @@ import {
 } from '/app-static/js/shared/dedupDefaults.js';
 
 let _initialized = false;
-let _hotkeyHandle = null;
+
+/**
+ * Settings sections, in rail order and grouped the way Configuration's rail
+ * groups its own destinations (a heading per group, an ungrouped leading item).
+ * Each `build` returns (or resolves to) the panel element that goes inside its
+ * pane — sync where a section has nothing to await, async otherwise.
+ */
+function _settingsRailGroups() {
+  return [
+    {
+      items: [
+        { tab: 'tab-settings-status', label: 'Service Status', build: () => _buildServiceStatusSection() },
+      ],
+    },
+    {
+      heading: 'Connections',
+      items: [
+        { tab: 'tab-settings-servers', label: 'Servers', build: () => _buildServerSection() },
+        { tab: 'tab-settings-mqtt', label: 'MQTT Broker', build: () => _buildMqttSection() },
+      ],
+    },
+    {
+      heading: 'Storage',
+      items: [
+        { tab: 'tab-settings-retention', label: 'Recording Retention', build: () => _buildRetentionSection() },
+        { tab: 'tab-settings-timelapse', label: 'Timelapse Retention', build: () => _buildTimelapseRetentionSection() },
+        { tab: 'tab-settings-models', label: 'Model History', build: () => _buildModelHistorySection() },
+        // Not awaited by its own tab either: the usage figures come from a directory
+        // walk, and the pane renders its own placeholder and fills in when it lands.
+        { tab: 'tab-settings-storage', label: 'Storage Usage', build: () => _buildStorageSection() },
+      ],
+    },
+    {
+      heading: 'System',
+      items: [
+        { tab: 'tab-settings-security', label: 'Security', build: () => _buildSecuritySection() },
+        { tab: 'tab-settings-dedup', label: 'Deduplication', build: () => _buildDedupSection() },
+        { tab: 'tab-settings-interface', label: 'Interface', build: () => _buildUiSettingsSection() },
+        { tab: 'tab-settings-hotkeys', label: 'Keyboard Shortcuts', build: () => _buildHotkeySection() },
+      ],
+    },
+  ];
+}
 
 /**
  * Initialise the Settings tab. Safe to call multiple times (no-op after first call).
+ *
+ * Mirrors Configuration's left-rail layout (`.config-rail-layout`): a nav of
+ * destinations grouped by purpose, and one pane visible at a time, rather than
+ * every panel stacked into one long scrolling grid. Built in JS, not the
+ * template, because this tab always has been — Configuration's rail markup
+ * lives in index.html only because its panes' *contents* also mostly do.
  */
 export async function init() {
   if (_initialized) return;
@@ -40,45 +89,65 @@ export async function init() {
 
   container.innerHTML = '';
 
-  const wrap = document.createElement('div');
-  wrap.className = 'settings-wrap';
+  const layout = document.createElement('div');
+  layout.className = 'config-rail-layout';
 
-  // The settings panels load their values concurrently — each awaits its
-  // own settings reads, so building them in sequence would serialise round-trips
-  // that have nothing to do with each other.
-  const [
-    serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, modelHistoryPanel, dedupPanel, uiPanel,
-  ] = await Promise.all([
-    _buildServerSection(),
-    _buildSecuritySection(),
-    _buildMqttSection(),
-    _buildRetentionSection(),
-    _buildTimelapseRetentionSection(),
-    _buildModelHistorySection(),
-    _buildDedupSection(),
-    _buildUiSettingsSection(),
-  ]);
+  const nav = document.createElement('nav');
+  nav.className = 'config-rail';
+  nav.setAttribute('aria-label', 'Settings sections');
 
-  // Not in that Promise.all: the usage figures come from a directory walk, and
-  // making the whole Settings tab wait on it would put a visible delay in front of
-  // six panels that were ready immediately. The panel renders its own placeholder
-  // and fills in when the measurement lands.
-  const storagePanel = _buildStorageSection();
+  const body = document.createElement('div');
+  body.className = 'config-rail-body';
 
-  // Service status leads: it's the first thing worth checking on this tab, and
-  // sits directly above the Servers panel that configures those same services —
-  // "is the training server up" and "which URL is it" are the same question two
-  // minutes apart. It is a collapsed strip, so leading with it costs a row.
-  //
-  // Hotkeys is next: the panel is collapsed by default, so further down a tall
-  // grid it was effectively undiscoverable. It costs one row collapsed.
-  wrap.append(
-    _buildServiceStatusSection(),
-    _buildHotkeySection(),
-    serverPanel, securityPanel, mqttPanel, retentionPanel, timelapsePanel, modelHistoryPanel,
-    storagePanel, dedupPanel, uiPanel,
-  );
-  container.appendChild(wrap);
+  const groups = _settingsRailGroups();
+  const panes = new Map();
+
+  for (const group of groups) {
+    const groupEl = document.createElement('div');
+    groupEl.className = 'config-rail__group';
+
+    if (group.heading) {
+      const heading = document.createElement('span');
+      heading.className = 'config-rail__heading';
+      heading.textContent = group.heading;
+      groupEl.appendChild(heading);
+    }
+
+    for (const item of group.items) {
+      const button = document.createElement('span');
+      button.className = 'workspace-tab-button config-rail__item';
+      button.dataset.tab = item.tab;
+      button.textContent = item.label;
+      groupEl.appendChild(button);
+
+      const pane = document.createElement('div');
+      pane.id = item.tab;
+      pane.className = 'workspace-tab-pane';
+      body.appendChild(pane);
+
+      panes.set(item.tab, { pane, build: item.build });
+    }
+
+    nav.appendChild(groupEl);
+  }
+
+  layout.append(nav, body);
+  container.appendChild(layout);
+
+  // Wired before any pane content loads, same as Configuration's rail — the
+  // buttons must be clickable the instant they're on screen. Waiting for
+  // Promise.all below to attach listeners left a window where the rail looked
+  // ready but a click silently did nothing, because no listener existed yet.
+  setupWorkspaceTabs('#tab-settings', () => {});
+
+  // Every pane's content loads concurrently — each section awaits its own
+  // settings reads, so building them in sequence would serialise round-trips
+  // that have nothing to do with each other. All panes are built up front
+  // (not lazily on first activation) so switching sections is instant and
+  // every field is reachable without waiting on a fetch mid-click.
+  await Promise.all([...panes.values()].map(async ({ pane, build }) => {
+    pane.appendChild(await build());
+  }));
 }
 
 /* ── Panel scaffolding ──────────────────────────────────────────────────────
@@ -1158,7 +1227,7 @@ async function _buildSecuritySection() {
 /* ── Deduplication ─────────────────────────────────────────────────────────── */
 
 async function _buildDedupSection() {
-  const { section, body } = _panel('Deduplication', { extraClass: 'settings-panel--tall' });
+  const { section, body } = _panel('Deduplication', { id: 'settings-section-dedup' });
 
   const warning = document.createElement('p');
   warning.className = 'settings-dedup-warning';
@@ -1329,7 +1398,7 @@ function _buildThresholdRow({ key, label, description, currentVal, max }) {
 /* ── UI settings ───────────────────────────────────────────────────────────── */
 
 async function _buildUiSettingsSection() {
-  const { section, body } = _panel('Interface');
+  const { section, body } = _panel('Interface', { id: 'settings-section-interface' });
 
   // ── Hover thumbnail delay ────────────────────────────────────────────
   const HOVER_DELAY_KEY = 'ui_hover_delay_ms';
@@ -1382,69 +1451,37 @@ async function _buildUiSettingsSection() {
   return section;
 }
 
-/* ── Service status (collapsible, full width) ───────────────────────────────── */
+/* ── Service status ───────────────────────────────────────────────────────── */
 
 /**
- * The live service-health strip, hosted in Settings.
- *
- * The panel builds and refreshes itself; all Settings adds is the full-row span,
- * because collapsed it is a one-line summary and expanded it is a row per
- * service — neither belongs in a 360px column.
+ * The live service-health strip, hosted in its own rail destination. Builds
+ * and refreshes itself; collapsed it is a one-line summary, expanded it is a
+ * row per service — that own internal collapse (see serviceStatus.js) is
+ * unrelated to which rail item is active.
  */
 function _buildServiceStatusSection() {
-  const panel = createServiceStatusPanel();
-  panel.classList.add('settings-panel--full');
-  return panel;
+  return createServiceStatusPanel();
 }
 
-/* ── Keyboard shortcuts (collapsible, full width) ──────────────────────────── */
+/* ── Keyboard shortcuts ───────────────────────────────────────────────────── */
 
-function _buildHotkeySection() {
-  const { section, bar, body, heading } = _panel('Keyboard Shortcuts', { extraClass: 'settings-panel--full' });
-  bar.classList.add('settings-section-header--collapsible');
-
-  // The chevron and the title move into one wrapper so the whole heading — not
-  // just the word — is the toggle target.
-  const toggleRow = document.createElement('div');
-  toggleRow.className = 'settings-collapse-toggle';
-
-  const collapseToggle = document.createElement('span');
-  collapseToggle.className = 'settings-collapse-chevron';
-  collapseToggle.textContent = '▶';
-
-  bar.insertBefore(toggleRow, heading);
-  toggleRow.append(collapseToggle, heading);
+/**
+ * No longer collapsible — it used to hide behind a chevron because it sat
+ * partway down a long scrolling grid; now it's its own rail destination, so
+ * hiding its own content behind a second click would just be redundant.
+ */
+async function _buildHotkeySection() {
+  const { section, bar, body } = _panel('Keyboard Shortcuts', { id: 'settings-section-hotkeys' });
 
   const resetBtn = _rowButton('Reset to defaults', { secondary: true });
-  resetBtn.onclick = (e) => {
-    e.stopPropagation();
-    _hotkeyHandle?.reset();
-  };
-
   bar.appendChild(resetBtn);
-
-  // The panel body carries the collapse (inline display:none); the inner div is
-  // what renderHotkeyPanel fills. Keeping them separate means the panel's own
-  // `display: flex` never has to fight the collapse.
-  body.style.display = 'none';
 
   const hotkeyInner = document.createElement('div');
   hotkeyInner.className = 'settings-hotkey-body';
   body.appendChild(hotkeyInner);
 
-  let hotkeyLoaded = false;
-
-  async function toggleHotkeys() {
-    const isCollapsed = body.style.display === 'none';
-    body.style.display = isCollapsed ? '' : 'none';
-    collapseToggle.textContent = isCollapsed ? '▼' : '▶';
-    if (isCollapsed && !hotkeyLoaded) {
-      hotkeyLoaded = true;
-      _hotkeyHandle = await renderHotkeyPanel(hotkeyInner);
-    }
-  }
-
-  toggleRow.addEventListener('click', toggleHotkeys);
+  const handle = await renderHotkeyPanel(hotkeyInner);
+  resetBtn.addEventListener('click', () => handle?.reset());
 
   return section;
 }

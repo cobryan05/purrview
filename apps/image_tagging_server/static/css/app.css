@@ -7105,18 +7105,18 @@ button.filter-active {
   padding: var(--space-1) 0 0;
 }
 
-/* In Settings the strip sits in a grid of bordered `.panel-box` cards, so it
-   borrows their frame — a borderless strip between two framed panels reads as a
-   rendering glitch. The header's own rule already draws the divider under it,
-   which only makes sense once the panel is open. */
-.settings-wrap > .service-status-panel {
+/* In Settings the strip is the sole content of its own rail pane, so it borrows
+   the `.panel-box` frame — a borderless strip reads as a rendering glitch. The
+   header's own rule already draws the divider under it, which only makes sense
+   once the panel is open. */
+#tab-settings-status > .service-status-panel {
   padding: 0;
   border: 1px solid var(--pico-muted-border-color, var(--border-strong));
   border-radius: 6px;
   overflow: hidden;
 }
 
-.settings-wrap > .service-status-panel:not([open]) .service-status-panel__header {
+#tab-settings-status > .service-status-panel:not([open]) .service-status-panel__header {
   border-bottom: none;
 }
 
@@ -7283,34 +7283,11 @@ button.filter-active {
 }
 
 /* ===== Settings tab =====
-   Panels flow into as many ~360px columns as the window gives, instead of the
-   single 560px column the tab used to be — that column left the right-hand ~60%
-   of the tab empty at any normal width while running well over a viewport tall.
-   Each section is a `.panel-box`, so Settings inherits the same bar+body chrome
-   as the Configuration screens rather than carrying its own section styling. */
-.settings-wrap {
-  max-width: 1400px;
-  padding: var(--space-4) var(--space-2);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: var(--space-4);
-  align-items: start;
-}
-
-/* Sections that want the full row regardless of the current column count —
-   the hotkey list is one row per label *and* per tag, so it never belongs in a
-   narrow column beside a four-row panel. */
-.settings-panel--full {
-  grid-column: 1 / -1;
-}
-
-/* Deduplication is several times taller than the panels beside it. Without the
-   row span, a two-column layout puts it alone in row 1 and leaves the space
-   under Servers empty; spanning lets the short panels stack in the other column. */
-.settings-panel--tall {
-  grid-row: span 2;
-}
-
+   Left rail of destinations (`.config-rail-layout`, shared with Configuration)
+   with one section visible at a time in `.config-rail-body`, replacing the
+   grid of `.panel-box` tiles the tab used to lay out all at once. Each section
+   is still a `.panel-box`, so it keeps the same bar+body chrome as before —
+   just one per pane instead of many per screen. */
 .settings-panel__body {
   display: flex;
   flex-direction: column;
@@ -7347,26 +7324,6 @@ button.filter-active {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-}
-
-/* Collapsible sections */
-.settings-section-header--collapsible {
-  user-select: none;
-}
-
-.settings-collapse-toggle {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  cursor: pointer;
-  min-width: 0;
-}
-
-.settings-collapse-chevron {
-  font-size: 0.65em;
-  color: var(--pico-muted-color, var(--text-muted));
-  line-height: 1;
 }
 
 /* Settings rows — label and controls share one line, with the hint and status
