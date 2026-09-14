@@ -389,3 +389,122 @@ class TestClassMapCache:
             "was blocked by the sidecar stat() until it finished (~0.2s) instead of letting the "
             "timer run concurrently"
         )
+
+
+class TestSuppressionGroupsPreviewAndApply:
+    """/api/models/suppression-groups/{preview,apply} — the label editor's "N
+
+    trained models affected" notice after an exclusive_variants edit. See
+    apps/helpers/suppressionGroups.py for the grouping rule itself.
+    """
+
+    @staticmethod
+    def _write_detector_sidecar(models_dir, name: str, label_uuids: list, existing_groups=None, thresholds=None):
+        metadata = {
+            "model_kind": "object_detection",
+            "classes": [f"class-{i}" for i in range(len(label_uuids))],
+            "label_uuids": label_uuids,
+        }
+        if existing_groups is not None:
+            metadata["suppression_group_uuids"] = existing_groups
+            metadata["suppression_group_iou_thresholds"] = thresholds
+        (models_dir / f"{name}.onnx").write_bytes(b"fake onnx")
+        (models_dir / f"{name}.json").write_text(json.dumps(metadata))
+
+    @staticmethod
+    def _labels_payload(parent, children, threshold=0.9):
+        return [
+            {"uuid": parent, "parentUuid": None, "exclusiveVariants": True, "exclusiveVariantsIouThreshold": threshold},
+            *[
+                {"uuid": c, "parentUuid": parent, "exclusiveVariants": False, "exclusiveVariantsIouThreshold": None}
+                for c in children
+            ],
+        ]
+
+    async def test_preview_reports_a_model_with_no_prior_grouping(self, http_client, models_dir):
+        self._write_detector_sidecar(models_dir, "detector1", ["parent-a", "child-a", "child-b"])
+        await http_client.get("/api/models")  # refresh Manager._avail_models
+
+        resp = await http_client.post(
+            "/api/models/suppression-groups/preview",
+            json={"labels": self._labels_payload("parent-a", ["child-a", "child-b"])},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert [m["modelName"] for m in data["models"]] == ["detector1"]
+        # All 3 classes count as changed: child-a/child-b newly join the group,
+        # and parent-a's own threshold goes from unset to 0.9 — its suppression
+        # key ("parent-a") doesn't move, but it now actually competes against the
+        # two children it previously suppressed independently of.
+        assert data["models"][0]["changedClasses"] == 3
+        assert data["models"][0]["totalClasses"] == 3
+
+    async def test_preview_omits_a_model_already_up_to_date(self, http_client, models_dir):
+        self._write_detector_sidecar(
+            models_dir,
+            "detector1",
+            ["parent-a", "child-a", "child-b"],
+            existing_groups=["parent-a", "parent-a", "parent-a"],
+            thresholds=[0.9, 0.9, 0.9],
+        )
+        await http_client.get("/api/models")
+
+        resp = await http_client.post(
+            "/api/models/suppression-groups/preview",
+            json={"labels": self._labels_payload("parent-a", ["child-a", "child-b"])},
+        )
+        assert resp.json()["models"] == []
+
+    async def test_preview_omits_unrelated_models(self, http_client, models_dir):
+        """A model whose label_uuids never mention the changed label tree at all
+
+        must not show up as "affected" just because it's an object_detection
+        model with no suppression_group fields yet."""
+        self._write_detector_sidecar(models_dir, "unrelated", ["some-other-label"])
+        await http_client.get("/api/models")
+
+        resp = await http_client.post(
+            "/api/models/suppression-groups/preview",
+            json={"labels": self._labels_payload("parent-a", ["child-a", "child-b"])},
+        )
+        assert resp.json()["models"] == []
+
+    async def test_apply_writes_the_sidecar_and_is_picked_up_without_a_restart(self, http_client, models_dir):
+        self._write_detector_sidecar(models_dir, "detector1", ["parent-a", "child-a", "child-b"])
+        await http_client.get("/api/models")
+
+        resp = await http_client.post(
+            "/api/models/suppression-groups/apply",
+            json={
+                "labels": self._labels_payload("parent-a", ["child-a", "child-b"]),
+                "modelNames": ["detector1"],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["updated"] == ["detector1"]
+
+        sidecar = json.loads((models_dir / "detector1.json").read_text())
+        assert sidecar["suppression_group_uuids"] == ["parent-a", "parent-a", "parent-a"]
+        assert sidecar["suppression_group_iou_thresholds"] == [0.9, 0.9, 0.9]
+
+        # A second preview against the same tree now reports nothing left to do.
+        resp2 = await http_client.post(
+            "/api/models/suppression-groups/preview",
+            json={"labels": self._labels_payload("parent-a", ["child-a", "child-b"])},
+        )
+        assert resp2.json()["models"] == []
+
+    async def test_apply_only_touches_the_named_models(self, http_client, models_dir):
+        self._write_detector_sidecar(models_dir, "detector1", ["parent-a", "child-a"])
+        self._write_detector_sidecar(models_dir, "detector2", ["parent-a", "child-a"])
+        await http_client.get("/api/models")
+
+        resp = await http_client.post(
+            "/api/models/suppression-groups/apply",
+            json={"labels": self._labels_payload("parent-a", ["child-a"]), "modelNames": ["detector1"]},
+        )
+        assert resp.json()["updated"] == ["detector1"]
+        assert "suppression_group_uuids" not in json.loads((models_dir / "detector2.json").read_text())

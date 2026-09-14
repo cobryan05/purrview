@@ -38,11 +38,12 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps import DB_DIR  # noqa: E402
+from apps.helpers.suppressionGroups import suppression_group_for  # noqa: E402
 
 logger = logging.getLogger("backfill_suppression_groups")
 logger.setLevel(logging.INFO)
@@ -74,24 +75,6 @@ def _load_labels(db: sqlite3.Connection) -> Dict[str, _LabelRow]:
     }
 
 
-def _suppression_group(uuid: str, labels: Dict[str, _LabelRow]) -> Tuple[str, Optional[float]]:
-    """Mirrors DbClient._suppression_group (apps/helpers/db/db_client.py) exactly —
-
-    keep the two in sync; this script exists only because that one runs inside a
-    request against the live DB, and a sidecar may need updating with no service
-    running at all.
-    """
-    lbl = labels.get(uuid)
-    if lbl is not None and lbl.exclusive_variants:
-        return uuid, lbl.exclusive_variants_iou_threshold
-    parent_uuid = lbl.parent_uuid if lbl is not None else None
-    if parent_uuid is not None:
-        parent = labels.get(parent_uuid)
-        if parent is not None and parent.exclusive_variants:
-            return parent_uuid, parent.exclusive_variants_iou_threshold
-    return uuid, None
-
-
 def _sidecar_paths() -> List[Path]:
     if not MODELS_ROOT.is_dir():
         return []
@@ -100,6 +83,10 @@ def _sidecar_paths() -> List[Path]:
 
 def backfill(labels: Dict[str, _LabelRow], force: bool, dry_run: bool) -> Dict[str, int]:
     stats = {"seen": 0, "updated": 0, "unchanged": 0, "not_object_detection": 0, "no_label_uuids": 0, "failed": 0}
+
+    parent_of = {u: lbl.parent_uuid for u, lbl in labels.items()}
+    exclusive_variants_of = {u: lbl.exclusive_variants for u, lbl in labels.items()}
+    threshold_of = {u: lbl.exclusive_variants_iou_threshold for u, lbl in labels.items()}
 
     for path in _sidecar_paths():
         stats["seen"] += 1
@@ -119,7 +106,7 @@ def backfill(labels: Dict[str, _LabelRow], force: bool, dry_run: bool) -> Dict[s
             stats["no_label_uuids"] += 1
             continue
 
-        groups = [_suppression_group(uuid, labels) for uuid in label_uuids]
+        groups = [suppression_group_for(uuid, parent_of, exclusive_variants_of, threshold_of) for uuid in label_uuids]
         new_group_uuids = [g for g, _thr in groups]
         new_thresholds = [thr for _g, thr in groups]
 

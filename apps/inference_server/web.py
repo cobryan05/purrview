@@ -232,6 +232,43 @@ class SetModelDeviceResponse(StatusResponse):
     device_set: bool = False
 
 
+class LabelTreeEntry(Payload):
+    """One label's shape of the tree, as needed by suppression-group recomputation.
+
+    Callers already hold the full label map (`fetchLabels()` on the frontend), so
+    this is that map's rows narrowed to the three fields the computation actually
+    reads — see apps/helpers/suppressionGroups.py.
+    """
+
+    uuid: str
+    parent_uuid: Optional[str] = None
+    exclusive_variants: bool = False
+    exclusive_variants_iou_threshold: Optional[float] = None
+
+
+class PreviewSuppressionGroupsPayload(Payload):
+    labels: List[LabelTreeEntry] = Field(default_factory=list)
+
+
+class SuppressionGroupsImpact(Payload):
+    model_name: str
+    changed_classes: int
+    total_classes: int
+
+
+class PreviewSuppressionGroupsResponse(StatusResponse):
+    models: List[SuppressionGroupsImpact] = Field(default_factory=list)
+
+
+class ApplySuppressionGroupsPayload(Payload):
+    labels: List[LabelTreeEntry] = Field(default_factory=list)
+    model_names: List[str] = Field(default_factory=list)
+
+
+class ApplySuppressionGroupsResponse(StatusResponse):
+    updated: List[str] = Field(default_factory=list)
+
+
 class ImportModelUploadPayload(Payload):
     model_name: str
     onnx_base64: str
@@ -648,6 +685,59 @@ class WebApp:
                 return SetModelDeviceResponse(status=JsonValues.SUCCESS, device_set=ret)
             except Exception as e:
                 return SetModelDeviceResponse(status=JsonValues.FAILURE, message=str(e))
+
+        def _label_tree_maps(labels: List[LabelTreeEntry]):
+            return (
+                {l.uuid: l.parent_uuid for l in labels},
+                {l.uuid: l.exclusive_variants for l in labels},
+                {l.uuid: l.exclusive_variants_iou_threshold for l in labels},
+            )
+
+        @self._app.post(
+            "/api/models/suppression-groups/preview",
+            response_model=PreviewSuppressionGroupsResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="preview_suppression_groups",
+        )
+        async def preview_suppression_groups_api(payload: PreviewSuppressionGroupsPayload):
+            """Which currently-available object_detection models would get different
+
+            suppression-group data if `payload.labels` (the caller's current label
+            tree — no DB access here, see the manager method) were applied right
+            now. Read-only. Powers the label editor's "N trained models affected"
+            notice after an exclusive_variants edit.
+            """
+            try:
+                parent_of, exclusive_of, threshold_of = _label_tree_maps(payload.labels)
+                impacted = await self._manager.preview_suppression_groups(parent_of, exclusive_of, threshold_of)
+                return PreviewSuppressionGroupsResponse(
+                    status=JsonValues.SUCCESS,
+                    models=[SuppressionGroupsImpact(**m) for m in impacted],
+                )
+            except Exception as e:
+                return PreviewSuppressionGroupsResponse(status=JsonValues.FAILURE, message=str(e))
+
+        @self._app.post(
+            "/api/models/suppression-groups/apply",
+            response_model=ApplySuppressionGroupsResponse,
+            tags=[ApiTags.MODELS],
+            operation_id="apply_suppression_groups",
+        )
+        async def apply_suppression_groups_api(payload: ApplySuppressionGroupsPayload):
+            """Write freshly-computed suppression groups into the named models' sidecars.
+
+            The model's next pin/recognize call picks this up automatically
+            (`Manager._reload_if_stale` also checks the sidecar's mtime) — no
+            restart, no retrain.
+            """
+            try:
+                parent_of, exclusive_of, threshold_of = _label_tree_maps(payload.labels)
+                updated = await self._manager.apply_suppression_groups(
+                    parent_of, exclusive_of, threshold_of, payload.model_names
+                )
+                return ApplySuppressionGroupsResponse(status=JsonValues.SUCCESS, updated=updated)
+            except Exception as e:
+                return ApplySuppressionGroupsResponse(status=JsonValues.FAILURE, message=str(e))
 
         @self._app.get(
             "/api/models/curated",

@@ -150,6 +150,56 @@ export function toast(message, duration = 5000, type = "info", maxToasts = 3) {
   }, duration);
 }
 
+/**
+ * A persistent, dismissible notice for content that needs to stay up until the
+ * user acts on it — unlike toast(), which always fades after `duration` and only
+ * ever holds plain text. Shares toast()'s fixed top-of-screen stack so the two
+ * never overlap, but does not auto-remove itself.
+ *
+ * `buildContent(el, close)` populates `el` (already styled and attached) and
+ * gets `close` to wire up its own dismiss/apply actions. Returns `close` too,
+ * for a caller that wants to remove the notice programmatically (e.g. because
+ * the thing it was about got deleted out from under it).
+ */
+export function actionNotice(buildContent) {
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    Object.assign(container.style, {
+      position: 'fixed',
+      top: '20px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      zIndex: 100000,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      pointerEvents: 'none',
+    });
+    document.body.appendChild(container);
+  }
+
+  const notice = document.createElement('div');
+  notice.dataset.testid = 'action-notice';
+  Object.assign(notice.style, {
+    background: '#b8620a',
+    color: '#fff',
+    padding: '10px 14px',
+    marginTop: '6px',
+    borderRadius: '6px',
+    boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+    fontSize: '14px',
+    pointerEvents: 'auto',
+    maxWidth: '420px',
+  });
+  container.appendChild(notice);
+
+  const close = () => notice.remove();
+  buildContent(notice, close);
+  return close;
+}
+
 export function showPaneError(el, message) {
   el.innerHTML = '';
   const div = document.createElement('div');

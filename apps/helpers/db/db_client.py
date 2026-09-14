@@ -35,6 +35,7 @@ from apps import FILES_ROOT
 from apps.helpers.consts import JsonValues, TaskStatus
 from apps.helpers.logUtils import LOG_LEVEL
 from apps.helpers.recordings.blips import KIND_IDENTITY_SWITCH
+from apps.helpers.suppressionGroups import suppression_group_for
 from apps.helpers.watch.events import EventCloseReason
 
 from .types import (
@@ -5045,24 +5046,15 @@ class DbClient:
                 current = _parent(current)
             return None
 
-        def _suppression_group(uuid: str) -> tuple[str, Optional[float]]:
-            """Nearest exclusive-variants group `uuid` belongs to, or itself if none.
+        # Built once for the shared suppression_group_for() — see
+        # apps/helpers/suppressionGroups.py for why this computation is factored out
+        # rather than inlined here.
+        _parent_of = {uuid: lbl.parent_uuid for uuid, lbl in all_labels.items()}
+        _exclusive_variants_of = {uuid: lbl.exclusive_variants for uuid, lbl in all_labels.items()}
+        _threshold_of = {uuid: lbl.exclusive_variants_iou_threshold for uuid, lbl in all_labels.items()}
 
-            A label with `exclusive_variants=True` is a group root — it and its direct
-            children (siblings, alternate guesses for the same physical object) share
-            its group and its threshold, so raw-NMS treats them as mutually exclusive
-            instead of by class_id. Unrelated labels fall through to `(uuid, None)`,
-            which callers must treat as "no grouping" — today's per-class_id behavior.
-            """
-            lbl = all_labels.get(uuid)
-            if lbl is not None and lbl.exclusive_variants:
-                return uuid, lbl.exclusive_variants_iou_threshold
-            parent_uuid = _parent(uuid)
-            if parent_uuid is not None:
-                parent_lbl = all_labels.get(parent_uuid)
-                if parent_lbl is not None and parent_lbl.exclusive_variants:
-                    return parent_uuid, parent_lbl.exclusive_variants_iou_threshold
-            return uuid, None
+        def _suppression_group(uuid: str) -> tuple[str, Optional[float]]:
+            return suppression_group_for(uuid, _parent_of, _exclusive_variants_of, _threshold_of)
 
         def _build_target(node: ModelConfigNode, role: str, class_uuids: list[str]) -> dict:
             class_set = set(class_uuids)

@@ -192,7 +192,7 @@ def atomic_write_bytes(dest: Path, data: bytes) -> None:
     A plain `write_bytes()` leaves a window where the file on disk is a truncated
     ONNX. That window is reachable: the inference server stats model files on every
     inference and reloads when the mtime moves
-    (`inference_server.manager._reload_if_weights_changed`), so a retrain landing
+    (`inference_server.manager._reload_if_stale`), so a retrain landing
     under a live detection task can be read mid-write. It degrades gracefully there
     — the failed load keeps the previous session — but the load is wasted work and
     the model stays stale until the *next* mtime bump. Writing a sibling temp file

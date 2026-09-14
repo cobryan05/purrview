@@ -255,6 +255,62 @@ class TestRetrainedModelIsReloaded:
         assert len(load_counter) == 1
 
 
+class TestSidecarOnlyChangeIsReloaded:
+    """A metadata-only edit (e.g. `scripts/backfill_suppression_groups.py`, or the
+
+    label editor's "Exclusive Variants" toggle taking effect through a retrain)
+    rewrites only the .json sidecar, never the .onnx — so the weights-mtime check
+    alone would never notice it, and a warm session would keep answering with
+    whatever suppression grouping was loaded when it was built.
+    """
+
+    @staticmethod
+    def _overwrite_sidecar(tmp_path, metadata: dict) -> None:
+        """Land new sidecar content the way an out-of-process metadata edit does.
+
+        mtime is pushed forward explicitly for the same reason `_overwrite` does
+        in TestRetrainedModelIsReloaded — the write happens well inside one
+        filesystem timestamp granule.
+        """
+        target = tmp_path / "clf.json"
+        target.write_text(json.dumps(metadata))
+        stat = target.stat()
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    async def test_recognize_after_sidecar_edit_reloads_with_unchanged_weights(
+        self, keepwarm_manager, tmp_path, load_counter
+    ):
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+        assert len(load_counter) == 1
+
+        self._overwrite_sidecar(tmp_path, {**MODEL_METADATA, "suppression_group_uuids": ["a", "a"]})
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        assert len(load_counter) == 2, "a sidecar-only edit must still trigger exactly one reload"
+        # The .onnx never changed, so the reloaded session is built from the same bytes.
+        assert keepwarm_manager._pinned_models["clf"].inference.weights == b"fake onnx"
+
+    async def test_unchanged_sidecar_is_not_reloaded(self, keepwarm_manager, load_counter):
+        for _ in range(5):
+            await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5)
+
+        assert len(load_counter) == 1
+
+    async def test_recognize_under_a_caller_pin_sees_sidecar_edit(self, keepwarm_manager, tmp_path, load_counter):
+        """Same reasoning as the weights case: a long-running task pins once and
+
+        loops on recognize() without re-entering pin_model, so the reload check
+        must live on the recognize path, not only on pin_model.
+        """
+        pin_id = await keepwarm_manager.pin_model("clf")
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id)
+
+        self._overwrite_sidecar(tmp_path, {**MODEL_METADATA, "suppression_group_uuids": ["a", "a"]})
+        await keepwarm_manager.recognize("clf", _img(), conf_thresh=0.5, pin_id=pin_id)
+
+        assert len(load_counter) == 2, "a sidecar edit under a caller-held pin must still trigger a reload"
+
+
 class TestDeleteModelWithImplicitPin:
     async def test_delete_succeeds_when_only_implicit_pin_held(self, keepwarm_manager):
         """A keep-warm pin means 'used recently', not 'reserved by a caller'."""

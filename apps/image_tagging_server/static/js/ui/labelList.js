@@ -25,7 +25,8 @@ import { prefs } from '/app-static/js/shared/prefs.js';
 import { setTool } from '../app/image-tagging/canvas/tools.js';
 import { verifyAllBboxes } from '../app/image-tagging/canvas/image.js';
 import { registerCanvasAction } from '../app/image-tagging/canvasActions.js';
-import { toast, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
+import { toast, actionNotice, makeLabelFilterNotice } from '/app-static/js/ui/utils/index.js';
+import { previewSuppressionGroups, applySuppressionGroups } from '/app-static/js/shared/api/models.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import {
   ICONS,
@@ -421,6 +422,122 @@ function toggleVariantsPicker(anchorRow, { label, indentLevel, onSave }) {
   anchorRow.after(variantsRow);
 }
 
+/**
+ * After an Exclusive Variants save, check whether any already-trained models
+ * still carry the old grouping and, if so, surface a dismissible notice
+ * offering to apply the change to them right away (`Manager._reload_if_stale`
+ * then picks the sidecar edit up on that model's next call — no restart).
+ *
+ * Best-effort: a preview failure (e.g. inference_server unreachable) is logged
+ * rather than shown as an error — the label save itself already succeeded, and
+ * this is only telling the user about a knock-on effect of it.
+ */
+async function notifySuppressionGroupsImpact(labelName) {
+  let labelsMap;
+  let impacted;
+  try {
+    labelsMap = await fetchLabels();
+    impacted = await previewSuppressionGroups(labelsMap);
+  } catch (err) {
+    console.warn('Could not preview suppression-group impact:', err);
+    return;
+  }
+  if (!impacted.length) return;
+
+  actionNotice((el, close) => {
+    const count = impacted.length;
+    const header = document.createElement('div');
+    header.textContent = `(!) "${labelName}" isn't applied to ${count} trained model${count === 1 ? '' : 's'} yet.`;
+    header.style.marginBottom = '6px';
+    el.appendChild(header);
+
+    const list = document.createElement('div');
+    list.style.cssText =
+      'display:flex; flex-direction:column; gap:2px; margin-bottom:8px; max-height:140px; overflow-y:auto;';
+    const checks = impacted.map(({ modelName, changedClasses, totalClasses }) => {
+      const wrap = document.createElement('label');
+      wrap.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:13px;';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.dataset.testid = 'suppression-impact-model';
+      wrap.append(box, document.createTextNode(`${modelName} (${changedClasses}/${totalClasses} classes)`));
+      list.appendChild(wrap);
+      return { modelName, box };
+    });
+    el.appendChild(list);
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex; gap:8px;';
+
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'label-move-apply';
+    applyBtn.textContent = 'Apply now';
+    applyBtn.onclick = async () => {
+      const chosen = checks.filter(c => c.box.checked).map(c => c.modelName);
+      if (!chosen.length) return;
+      applyBtn.disabled = true;
+      try {
+        await applySuppressionGroups(labelsMap, chosen);
+        toast(
+          `Updated ${chosen.length} model${chosen.length === 1 ? '' : 's'} — takes effect on their next call, no restart needed.`,
+          5000,
+          'success',
+        );
+        close();
+      } catch (err) {
+        toast(err.message, 5000, 'error');
+        applyBtn.disabled = false;
+      }
+    };
+
+    const laterBtn = document.createElement('button');
+    laterBtn.type = 'button';
+    laterBtn.className = 'label-move-cancel';
+    laterBtn.textContent = 'Not now';
+    laterBtn.onclick = close;
+
+    actions.append(applyBtn, laterBtn);
+    el.appendChild(actions);
+  });
+}
+
+/**
+ * A move (re-parent) can shift which model each label trains as part of — a
+ * boundary label's sub-model gains or loses a class, an Exclusive Variants
+ * group's membership changes, class_remap targets move. Unlike the
+ * suppression-groups case, there's no cheap read-only preview for "which
+ * trained models does this actually change and how" — that would mean
+ * re-deriving training targets for every model config that references this
+ * label's subtree and diffing the result, which isn't done here. So this is a
+ * static advisory, not a computed impact list: it tells the user what CAN
+ * change without claiming to know whether it did for this specific move.
+ */
+function notifyHierarchyMoveImpact(labelName) {
+  actionNotice((el, close) => {
+    const header = document.createElement('div');
+    header.textContent = `(!) Moving "${labelName}" only affects future training runs.`;
+    header.style.marginBottom = '6px';
+    el.appendChild(header);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'font-size:13px; margin-bottom:8px;';
+    body.textContent =
+      'Already-trained models keep using the class set and grouping they were trained with. '
+      + 'Retrain a model (or, for an Exclusive Variants change specifically, use the notice that '
+      + 'appears after that edit) to bring it up to date.';
+    el.appendChild(body);
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'label-move-cancel';
+    dismissBtn.textContent = 'Got it';
+    dismissBtn.onclick = close;
+    el.appendChild(dismissBtn);
+  });
+}
+
 // ─── Shared row builder ──────────────────────────────────────────────────────
 //
 // One compact row shape for every mode:
@@ -712,6 +829,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
           onMove: async (newParentUuid) => {
             await updateLabel(uuid, name, color, { parentUuid: newParentUuid });
             onRerender();
+            notifyHierarchyMoveImpact(name);
           },
         }),
       }),
@@ -732,6 +850,10 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
           onSave: async (flags) => {
             await updateLabel(uuid, name, color, flags);
             onRerender();
+            // Not awaited: this is a side notice about a save that already
+            // succeeded, so it must not hold the panel open or the Save
+            // button disabled while it round-trips to inference_server.
+            notifySuppressionGroupsImpact(name);
           },
         }),
       }),

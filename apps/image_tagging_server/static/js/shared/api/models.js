@@ -391,3 +391,52 @@ export async function deleteModelPreview(previewName) {
     throw new Error(data.message || 'Failed to clean up the version preview');
   }
 }
+
+/** Narrow a labels Map (as returned by fetchLabels()) to what suppression-group
+
+ * recomputation actually reads — inference_server has no DB of its own, so the
+ * caller supplies its already-cached label tree instead of it querying one.
+ */
+function _labelTreePayload(labelsMap) {
+  return Array.from(labelsMap.values()).map(l => ({
+    uuid: l.uuid,
+    parentUuid: l.parentUuid ?? null,
+    exclusiveVariants: l.exclusiveVariants === true,
+    exclusiveVariantsIouThreshold: l.exclusiveVariantsIouThreshold ?? null,
+  }));
+}
+
+/** Which currently-available object_detection models would get different
+
+ * suppression-group data if `labelsMap` were applied right now. Read-only.
+ */
+export async function previewSuppressionGroups(labelsMap) {
+  const res = await apiFetch('/api/models/suppression-groups/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labels: _labelTreePayload(labelsMap) }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to preview suppression-group impact');
+  }
+  return data.models ?? [];
+}
+
+/** Write freshly-computed suppression groups into the named models' sidecars.
+
+ * Each model's next pin/recognize call picks this up automatically — no
+ * restart, no retrain.
+ */
+export async function applySuppressionGroups(labelsMap, modelNames) {
+  const res = await apiFetch('/api/models/suppression-groups/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labels: _labelTreePayload(labelsMap), modelNames }),
+  });
+  const data = await res.json();
+  if (!res.ok || data.status === 'failure') {
+    throw new Error(data.message || 'Failed to apply the suppression-group update');
+  }
+  return data.updated ?? [];
+}

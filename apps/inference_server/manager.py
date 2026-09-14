@@ -62,6 +62,7 @@ from apps.helpers.modelVersions import (
     versions_usage,
 )
 from apps.helpers.serviceStatus import fmt_bytes, fmt_duration, row, section
+from apps.helpers.suppressionGroups import suppression_group_for
 from apps.helpers.yoloUtils import get_input_shape_from_file, load_yolo_onnx
 
 logging.basicConfig(stream=sys.stdout)
@@ -99,6 +100,10 @@ class InferenceModel:
     # warm session apart from a stale one after the file is replaced underneath
     # it. None only if the stat failed at load time.
     weights_mtime_ns: Optional[int] = None
+    # mtime_ns of the .json sidecar this session's provider was built from — see
+    # _reload_if_stale. Metadata-only edits (e.g. exclusive_variants suppression
+    # groups) rewrite just this file, never the .onnx.
+    sidecar_mtime_ns: Optional[int] = None
 
 
 class _SharedPreprocess:
@@ -349,6 +354,102 @@ class Manager:
         save_model_json_metadata(model_path, metadata=metadata)
         return True
 
+    async def preview_suppression_groups(
+        self,
+        parent_of: Dict[str, Optional[str]],
+        exclusive_variants_of: Dict[str, bool],
+        threshold_of: Dict[str, Optional[float]],
+    ) -> List[Dict[str, Any]]:
+        """For every available object_detection model, recompute suppression groups
+
+        against the given label tree and report which models would actually
+        change if applied. Read-only: nothing on disk is touched.
+
+        `inference_server` has no DB of its own (see the split-container topology
+        note — it may be remote), so the label tree is supplied by a caller that
+        already has it. The label editor already caches the full label map via
+        fetchLabels(), so calling this costs no extra DB round-trip there.
+        """
+        changed: List[Dict[str, Any]] = []
+        for model_name, model_path in list(self._avail_models.items()):
+            try:
+                metadata = get_model_metadata(model_path)
+            except FileNotFoundError:
+                continue
+            if metadata.get("model_kind") != "object_detection":
+                continue
+            label_uuids = metadata.get("label_uuids") or []
+            if not label_uuids:
+                continue
+
+            # Missing/mismatched-length sidecar fields default to "ungrouped" per
+            # class (own uuid / no threshold) — the same fallback decode_detections
+            # uses for a model with no suppression_group_uuids at all — so a model
+            # that was never touched by this feature only shows up here when the
+            # new label tree actually gives at least one of its classes a
+            # different group than "ungrouped" already meant.
+            old_group_uuids = metadata.get("suppression_group_uuids") or []
+            if len(old_group_uuids) != len(label_uuids):
+                old_group_uuids = list(label_uuids)
+            old_thresholds = metadata.get("suppression_group_iou_thresholds") or []
+            if len(old_thresholds) != len(label_uuids):
+                old_thresholds = [None] * len(label_uuids)
+
+            groups = [suppression_group_for(u, parent_of, exclusive_variants_of, threshold_of) for u in label_uuids]
+            new_group_uuids = [g for g, _thr in groups]
+            new_thresholds = [thr for _g, thr in groups]
+
+            changed_classes = sum(
+                1
+                for og, ng, ot, nt in zip(old_group_uuids, new_group_uuids, old_thresholds, new_thresholds)
+                if og != ng or ot != nt
+            )
+            if changed_classes == 0:
+                continue
+
+            changed.append(
+                {
+                    "model_name": model_name,
+                    "changed_classes": changed_classes,
+                    "total_classes": len(label_uuids),
+                }
+            )
+        return changed
+
+    async def apply_suppression_groups(
+        self,
+        parent_of: Dict[str, Optional[str]],
+        exclusive_variants_of: Dict[str, bool],
+        threshold_of: Dict[str, Optional[float]],
+        model_names: List[str],
+    ) -> List[str]:
+        """Write freshly-computed suppression groups into the given models' sidecars.
+
+        Only touches models actually named — the label editor lets the user pick
+        which affected models to update now versus leave for their next retrain.
+        Writing the sidecar bumps its mtime, which `_reload_if_stale` (see above)
+        picks up on that model's next pin/recognize call — no restart needed.
+        """
+        updated: List[str] = []
+        for model_name in model_names:
+            model_path = self._avail_models.get(model_name)
+            if model_path is None:
+                continue
+            try:
+                metadata = get_model_metadata(model_path)
+            except FileNotFoundError:
+                continue
+            label_uuids = metadata.get("label_uuids") or []
+            if not label_uuids:
+                continue
+
+            groups = [suppression_group_for(u, parent_of, exclusive_variants_of, threshold_of) for u in label_uuids]
+            metadata["suppression_group_uuids"] = [g for g, _thr in groups]
+            metadata["suppression_group_iou_thresholds"] = [thr for _g, thr in groups]
+            save_model_json_metadata(model_path, metadata=metadata)
+            updated.append(model_name)
+        return updated
+
     async def import_model_upload(self, model_name: str, onnx_bytes: bytes, overwrite: bool = False) -> Dict[str, Any]:
         """Write an uploaded ONNX file to the models dir and auto-generate its sidecar
         (classes parsed from the ONNX itself). Raises FileExistsError if the model
@@ -382,7 +483,7 @@ class Manager:
             members = [m for m in tf.getmembers() if m.isfile()]
             # .onnx lands last — see the matching comment in _save_artifact. Any
             # in-flight (un-)pin here still resolves off the old weights until the
-            # write completes and _reload_if_weights_changed picks up the new mtime.
+            # write completes and _reload_if_stale picks up the new mtime.
             members.sort(key=lambda m: Path(m.name).name.endswith(".onnx"))
 
             # Archive the generation about to be replaced, before any of it is
@@ -571,8 +672,8 @@ class Manager:
         path = self.staged_model_path(staging_id)
         path.unlink(missing_ok=True)
 
-    async def _reload_if_weights_changed(self, model_name: str, model_path: str) -> None:
-        """Rebuild a loaded session if its .onnx has been rewritten under it.
+    async def _reload_if_stale(self, model_name: str, model_path: str) -> None:
+        """Rebuild a loaded session if its .onnx or sidecar .json has changed under it.
 
         Retraining lands new weights over $MODELS_ROOT/<name>.onnx from a different
         process entirely (tasks_server's `_training_job_runner._save_artifact`), so
@@ -581,6 +682,14 @@ class Manager:
         model's weights until its pin happens to idle out — a retrained detector
         scored 0.0006 on an image its new weights scored 0.94 on. Compared on
         mtime_ns, matching how _class_map_cache invalidates sidecars.
+
+        The sidecar half exists because not every metadata edit rewrites the
+        weights: `scripts/backfill_suppression_groups.py` and the label editor's
+        "Exclusive Variants" toggle both change only the JSON (suppression-group
+        keys/thresholds `load_yolo_onnx` reads into the provider at construction
+        time), so a session already warm from before the edit would otherwise keep
+        running the old grouping indefinitely — there was previously no reload
+        trigger for a sidecar-only change at all, only for the .onnx.
 
         No-ops if the model isn't loaded. Callers must hold the model's lock, so
         this can't interleave with a concurrent load or delete.
@@ -592,13 +701,17 @@ class Manager:
         # Stat before loading, never after: a write landing *during* the load
         # would otherwise be recorded as already-loaded and stay stale. Re-reading
         # once too often is harmless; missing a write is the bug this prevents.
-        current_mtime = await self._weights_mtime_ns(model_path)
-        if current_mtime is None or current_mtime == existing.weights_mtime_ns:
+        current_weights_mtime = await self._weights_mtime_ns(model_path)
+        current_sidecar_mtime = await self._sidecar_mtime_ns(model_path)
+        weights_changed = current_weights_mtime is not None and current_weights_mtime != existing.weights_mtime_ns
+        sidecar_changed = current_sidecar_mtime is not None and current_sidecar_mtime != existing.sidecar_mtime_ns
+        if not weights_changed and not sidecar_changed:
             return
 
         logger.info(
-            f"Model '{model_name}' changed on disk (mtime {existing.weights_mtime_ns} -> "
-            f"{current_mtime}); reloading the in-memory session."
+            f"Model '{model_name}' changed on disk (weights mtime {existing.weights_mtime_ns} -> "
+            f"{current_weights_mtime}, sidecar mtime {existing.sidecar_mtime_ns} -> "
+            f"{current_sidecar_mtime}); reloading the in-memory session."
         )
         try:
             # Mutated in place rather than replaced so `pins` survives: dropping the
@@ -610,16 +723,17 @@ class Manager:
             # _save_artifact lands the new weights with a plain write_bytes(), so
             # there is a window where the file is a truncated ONNX. Keep answering
             # from the session we already have rather than failing the request
-            # outright — degraded (stale) beats down. The mtime is still recorded so
-            # a permanently broken file doesn't re-attempt a ~30MB load on every
-            # call; the completing write bumps mtime again, which is what makes the
+            # outright — degraded (stale) beats down. The mtimes are still recorded
+            # so a permanently broken file doesn't re-attempt a load on every call;
+            # the completing write bumps mtime again, which is what makes a
             # torn-write case self-heal on a later call.
             logger.warning(
                 f"Model '{model_name}' changed on disk but the new file failed to load; "
                 f"continuing with the previously loaded session.",
                 exc_info=True,
             )
-        existing.weights_mtime_ns = current_mtime
+        existing.weights_mtime_ns = current_weights_mtime
+        existing.sidecar_mtime_ns = current_sidecar_mtime
 
     async def pin_model(self, model_name: str, timeout: float = MODEL_PIN_TIME, pin_id: Optional[str] = None) -> str:
         """Pin a model into memory, keeping it loaded until unpinned. Returns the pin id.
@@ -644,16 +758,18 @@ class Manager:
             if model_name not in self._avail_models:
                 raise FileNotFoundError(f"Model '{model_name}' not found in available models")
 
-            await self._reload_if_weights_changed(model_name, model_path)
+            await self._reload_if_stale(model_name, model_path)
 
             if model_name not in self._pinned_models:
                 load_future: asyncio.Future = asyncio.get_running_loop().create_future()
                 self._loading_models[model_name] = load_future
                 try:
                     mtime_at_load = await self._weights_mtime_ns(model_path)
+                    sidecar_mtime_at_load = await self._sidecar_mtime_ns(model_path)
                     new_model = InferenceModel(model_name=model_name, path=model_path)
                     new_model.inference = await asyncio.to_thread(load_yolo_onnx, model_path)
                     new_model.weights_mtime_ns = mtime_at_load
+                    new_model.sidecar_mtime_ns = sidecar_mtime_at_load
                     self._pinned_models[model_name] = new_model
                     logger.info(f"Model '{model_name}' loaded into memory.")
                     load_future.set_result(None)
@@ -717,7 +833,7 @@ class Manager:
                 model_path = self._avail_models.get(model_name)
                 if model_path is None:
                     raise ValueError(f"Model '{model_name}' is not available. Please check the model name.")
-                await self._reload_if_weights_changed(model_name, model_path)
+                await self._reload_if_stale(model_name, model_path)
         else:
             # Pinless caller: load once and keep the model warm under the shared
             # implicit pin (refreshing its expiry), rather than tearing the session
