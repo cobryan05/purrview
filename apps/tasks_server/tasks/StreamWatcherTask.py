@@ -1864,7 +1864,11 @@ class StreamWatcherTask(Task):
         except Exception:
             logger.debug("Could not unpack frame for the ring on %s", pipeline.source_uuid, exc_info=True)
             return
-        ring.push(now + self._wallclock_offset, jpeg)
+        # `is_live` only exists on RingMqttImageProvider; every other provider is a
+        # continuous source with no idle tier, so `getattr` defaults to "not idle" and
+        # the sticky lead-in cache (see FrameRing._recent_idle) simply never engages.
+        idle = not getattr(pipeline.provider, "is_live", True)
+        ring.push(now + self._wallclock_offset, jpeg, idle=idle)
 
     def _resolve_slot_names(self, signal, pipeline: Optional[WatchPipeline]) -> None:
         """Turn the engine's slot uuids into display names, in place.

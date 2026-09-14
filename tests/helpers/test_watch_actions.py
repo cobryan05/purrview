@@ -752,6 +752,40 @@ class TestFrameRing:
     def test_an_empty_ring_reports_no_coverage(self):
         assert FrameRing().coverage_s() == 0.0
 
+    def test_idle_snapshots_survive_past_the_dense_rings_age_cutoff(self):
+        """The bug this guards: ring-mqtt polls idle snapshots every 30-90s, far slower
+        than the dense ring's `max_seconds` (default 20s) — so before this, every idle
+        snapshot was age-evicted from the ring before the next one even arrived, and a
+        Ring event's clip had zero pre-roll unless it started within seconds of a poll."""
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, b"idle-snapshot", idle=True)
+        ring.push(90.0, b"live-frame", idle=False)
+
+        assert ring.frames_between(0.0, 1.0) == []  # aged out of the dense ring
+        assert ring.lead_in_frames(before=90.0) == [(0.0, b"idle-snapshot")]
+
+    def test_only_the_live_frame_is_returned_after_it_ages_out_the_dense_ring(self):
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, b"live-frame", idle=False)
+        ring.push(90.0, b"another-live-frame", idle=False)
+
+        # Never marked idle, so it is never sticky — it is simply gone, as before.
+        assert ring.lead_in_frames(before=90.0) == []
+
+    def test_only_the_most_recent_sticky_snapshots_are_kept(self):
+        ring = FrameRing(max_seconds=20.0, sticky_idle_count=2)
+        for i in range(5):
+            ring.push(float(i) * 90.0, f"snap-{i}".encode(), idle=True)
+
+        assert ring.lead_in_frames(before=1e9) == [(270.0, b"snap-3"), (360.0, b"snap-4")]
+
+    def test_lead_in_frames_excludes_ones_at_or_after_the_cutoff(self):
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, b"before", idle=True)
+        ring.push(50.0, b"after", idle=True)
+
+        assert ring.lead_in_frames(before=10.0) == [(0.0, b"before")]
+
     def test_the_ring_really_encodes_an_mp4(self, tmp_path):
         """Against the real ffmpeg, writing to the `.part` name the backend uses.
 
@@ -771,7 +805,7 @@ class TestFrameRing:
             frames.append((float(i), buffer.tobytes()))
 
         dest = tmp_path / "ring.mp4"
-        size = RingClipBackend._write_mp4(frames, dest)
+        size = RingClipBackend._write_mp4([], frames, dest)
 
         assert dest.is_file() and size > 0
         # No `.part` left behind, and the file is one a browser's <video> can open.
@@ -782,6 +816,75 @@ class TestFrameRing:
             assert capture.read()[0]
         finally:
             capture.release()
+
+    def test_a_lead_in_is_really_concatenated_ahead_of_the_dense_segment(self, tmp_path):
+        """Against real ffmpeg: the two segments are encoded separately (the lead-in at
+        a fixed 1fps, since its frames are minutes apart) and stream-copy concatenated,
+        so the output must open and play longer than the dense segment alone."""
+        from apps.helpers.actions.recordClipAction import RingClipBackend
+
+        def _frame(fill):
+            ok, buffer = cv2.imencode(".jpg", np.full((240, 320, 3), fill, dtype=np.uint8))
+            assert ok
+            return buffer.tobytes()
+
+        lead_in = [(0.0, _frame(10)), (60.0, _frame(20))]
+        dense = [(float(i), _frame(40 + i)) for i in range(90, 94)]
+
+        dest = tmp_path / "ring.mp4"
+        size = RingClipBackend._write_mp4(lead_in, dense, dest)
+
+        assert dest.is_file() and size > 0
+        assert not dest.with_suffix(".mp4.part").exists()
+        capture = cv2.VideoCapture(str(dest))
+        try:
+            assert capture.isOpened()
+            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = capture.get(cv2.CAP_PROP_FPS)
+            # 2 lead-in frames @ 1fps (~2s) + 4 dense frames at their own derived fps.
+            assert frame_count / max(fps, 1e-6) > 2.0
+        finally:
+            capture.release()
+
+    async def test_extract_splices_a_lead_in_when_the_dense_ring_has_no_preroll(self, tmp_path):
+        """End-to-end through `RingClipBackend.extract`: an event whose dense pre-roll
+        window is empty (the escalation-latency gap) still gets a couple of honest
+        lead-in stills instead of either nothing or a mismatched thumbnail."""
+        from apps.helpers.actions.recordClipAction import RingClipBackend
+
+        def _frame(fill):
+            ok, buffer = cv2.imencode(".jpg", np.full((240, 320, 3), fill, dtype=np.uint8))
+            assert ok
+            return buffer.tobytes()
+
+        ring = FrameRing(max_seconds=20.0)
+        ring.push(0.0, _frame(10), idle=True)  # a stale idle snapshot, long since aged out
+        for i in range(90, 94):
+            ring.push(float(i), _frame(40 + i), idle=False)  # the live tier, once escalated
+
+        backend = RingClipBackend(ring)
+        result = await backend.extract(
+            context=_context(),
+            start=datetime.fromtimestamp(85.0, tz=timezone.utc),
+            duration_s=15.0,
+            dest=tmp_path / "clip.mp4",
+        )
+
+        assert result["leadInFrames"] == 1
+        assert (tmp_path / "clip.mp4").is_file()
+
+    async def test_extract_with_no_frames_at_all_still_raises(self, tmp_path):
+        from apps.helpers.actions.recordClipAction import RingClipBackend
+
+        backend = RingClipBackend(FrameRing())
+
+        with pytest.raises(ValueError):
+            await backend.extract(
+                context=_context(),
+                start=datetime.fromtimestamp(0.0, tz=timezone.utc),
+                duration_s=10.0,
+                dest=tmp_path / "clip.mp4",
+            )
 
 
 class TestSaveSnapshotAction:

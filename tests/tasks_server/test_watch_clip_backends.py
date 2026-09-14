@@ -192,6 +192,42 @@ class TestFrameRingWiring:
         assert ring._frames[0][1] == b"\xff\xd8new"
 
 
+class TestPushToRingIdleTagging:
+    """`_push_to_ring` has to know whether a frame came off the live tier or the slow
+    idle poll to feed `FrameRing`'s sticky lead-in cache correctly — see
+    `RingMqttImageProvider.is_live`."""
+
+    def test_a_live_provider_frame_is_not_tagged_idle(self):
+        pipeline = _pipeline("src-1")
+        pipeline.provider = SimpleNamespace(is_live=True)
+        task = _task([pipeline])
+
+        task._push_to_ring(pipeline, _packet(), now=100.0)
+
+        assert task._frame_rings["src-1"].lead_in_frames(before=1e12) == []
+
+    def test_an_idle_provider_frame_is_tagged_idle(self):
+        pipeline = _pipeline("src-1")
+        pipeline.provider = SimpleNamespace(is_live=False)
+        task = _task([pipeline])
+
+        task._push_to_ring(pipeline, _packet(b"\xff\xd8snap"), now=100.0)
+
+        assert task._frame_rings["src-1"].lead_in_frames(before=1e12) == [
+            (100.0 + task._wallclock_offset, b"\xff\xd8snap")
+        ]
+
+    def test_a_provider_with_no_tier_concept_defaults_to_not_idle(self):
+        """Every non-ring provider (RTSP, etc.) has no `is_live` at all — the sticky
+        cache must simply never engage for them, not crash."""
+        pipeline = _pipeline("src-1")
+        task = _task([pipeline])
+
+        task._push_to_ring(pipeline, _packet(), now=100.0)
+
+        assert task._frame_rings["src-1"].lead_in_frames(before=1e12) == []
+
+
 class TestFrameRingClosest:
     """`closest()` is what an on_exit event's still-image preview reads instead of the
     live frame — see `StreamWatcherTask._historical_frame_from_ring`."""

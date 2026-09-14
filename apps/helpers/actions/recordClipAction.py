@@ -77,11 +77,19 @@ class RingClipBackend(ClipBackend):
 
     async def extract(self, context: ActionContext, start: datetime, duration_s: float, dest: Path) -> Dict[str, Any]:
         frames = self._ring.frames_between(start.timestamp(), start.timestamp() + duration_s)
-        if not frames:
+        lead_in: List[Tuple[float, bytes]] = []
+        if not frames or frames[0][0] > start.timestamp() + 0.5:
+            # The dense ring didn't reach back to the requested pre-roll start — see
+            # `FrameRing._recent_idle`. Splice in whatever sticky idle stills predate
+            # it, so the clip opens on an honest lead-in instead of either nothing or a
+            # still that never appears in the video (the bug this replaces).
+            lead_in = self._ring.lead_in_frames(before=start.timestamp())
+        if not frames and not lead_in:
             raise ValueError("Frame ring holds nothing for the requested window")
-        size = await asyncio.to_thread(self._write_mp4, frames, dest)
-        actual_start = datetime.fromtimestamp(frames[0][0], tz=timezone.utc)
-        actual_duration = max(0.1, frames[-1][0] - frames[0][0])
+        size = await asyncio.to_thread(self._write_mp4, lead_in, frames, dest)
+        all_frames = lead_in + frames
+        actual_start = datetime.fromtimestamp(all_frames[0][0], tz=timezone.utc)
+        actual_duration = max(0.1, all_frames[-1][0] - all_frames[0][0])
         return {
             "path": str(dest),
             "sizeBytes": size,
@@ -90,18 +98,88 @@ class RingClipBackend(ClipBackend):
             "requestedStart": start.isoformat(),
             "requestedDurationS": duration_s,
             # A ring clip is inherently partial pre-roll relative to a real timeline;
-            # only flag it when the ring genuinely did not reach back far enough.
-            "partialPreroll": frames[0][0] > start.timestamp() + 0.5,
+            # only flag it when even the lead-in stills did not reach back far enough.
+            "partialPreroll": all_frames[0][0] > start.timestamp() + 0.5,
             "lowFps": True,
+            "leadInFrames": len(lead_in),
         }
 
     @staticmethod
-    def _write_mp4(frames: List[Tuple[float, bytes]], dest: Path) -> int:
-        """Encode JPEG frames to mp4 via image2pipe. Runs in a worker thread."""
+    def _write_mp4(lead_in: List[Tuple[float, bytes]], frames: List[Tuple[float, bytes]], dest: Path) -> int:
+        """Encode ring frames to mp4, with an optional frozen-still lead-in prepended.
+
+        `lead_in` (see `FrameRing.lead_in_frames`) is encoded as its own low-fps segment
+        and concatenated ahead of the dense `frames` segment via `-c copy` — both come
+        from this same encoder with matching settings, so stream-copy concat is safe and
+        avoids re-encoding the (potentially much larger) dense segment a second time.
+        """
         dest.parent.mkdir(parents=True, exist_ok=True)
-        span = max(0.1, frames[-1][0] - frames[0][0])
-        fps = max(1.0, min(30.0, len(frames) / span))
-        partial = dest.with_suffix(dest.suffix + ".part")
+        if not lead_in:
+            return RingClipBackend._encode_segment(frames, dest, atomic=True)
+
+        with tempfile.TemporaryDirectory(prefix="ring-clip-") as tmp:
+            tmp_dir = Path(tmp)
+            lead_path = tmp_dir / "lead.mp4"
+            # One still per second: slow enough to read as "the lead-up", not a blur.
+            RingClipBackend._encode_segment(lead_in, lead_path, fps=1.0, atomic=False)
+            parts = [lead_path]
+            if frames:
+                main_path = tmp_dir / "main.mp4"
+                RingClipBackend._encode_segment(frames, main_path, atomic=False)
+                parts.append(main_path)
+
+            list_path = tmp_dir / "concat.txt"
+            list_path.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts))
+            partial = dest.with_suffix(dest.suffix + ".part")
+            # `-f mp4` at the end is load-bearing, same as in `_encode_segment`: ffmpeg
+            # picks its output muxer from the destination's extension, and `.part`
+            # matches nothing, so without it this fails "Unable to find a suitable
+            # output format" on every concat.
+            cmd = [
+                "ffmpeg",
+                "-nostdin",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_path),
+                "-c",
+                "copy",
+                "-f",
+                "mp4",
+                str(partial),
+            ]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, timeout=120)
+                if proc.returncode != 0 or not partial.exists():
+                    raise RuntimeError(
+                        f"ffmpeg failed concatenating ring clip: {proc.stderr[-300:].decode('utf-8', 'replace')}"
+                    )
+                size = partial.stat().st_size
+                partial.replace(dest)
+                return size
+            except BaseException:
+                partial.unlink(missing_ok=True)
+                raise
+
+    @staticmethod
+    def _encode_segment(
+        frames: List[Tuple[float, bytes]], dest: Path, fps: Optional[float] = None, atomic: bool = True
+    ) -> int:
+        """Encode JPEG frames to mp4 via image2pipe. Runs in a worker thread.
+
+        `fps=None` derives playback speed from the frames' own timestamps, so a dense
+        segment plays at wall speed rather than as a slideshow at an invented rate.
+        A fixed `fps` is for a lead-in segment, whose frames are minutes apart and would
+        otherwise imply an absurd span.
+        """
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if fps is None:
+            span = max(0.1, frames[-1][0] - frames[0][0])
+            fps = max(1.0, min(30.0, len(frames) / span))
+        target = dest.with_suffix(dest.suffix + ".part") if atomic else dest
         cmd = [
             "ffmpeg",
             "-nostdin",
@@ -131,17 +209,19 @@ class RingClipBackend(ClipBackend):
             # this every ring clip failed with "Unable to find a suitable output format".
             "-f",
             "mp4",
-            str(partial),
+            str(target),
         ]
         try:
             proc = subprocess.run(cmd, input=b"".join(f[1] for f in frames), capture_output=True, timeout=120)
-            if proc.returncode != 0 or not partial.exists():
+            if proc.returncode != 0 or not target.exists():
                 raise RuntimeError(f"ffmpeg failed writing ring clip: {proc.stderr[-300:].decode('utf-8', 'replace')}")
-            size = partial.stat().st_size
-            partial.replace(dest)
+            size = target.stat().st_size
+            if atomic:
+                target.replace(dest)
             return size
         except BaseException:
-            partial.unlink(missing_ok=True)
+            if atomic:
+                target.unlink(missing_ok=True)
             raise
 
 
@@ -153,12 +233,22 @@ class FrameRing:
     for the same configuration.
     """
 
-    def __init__(self, max_seconds: float = 20.0, max_mb: float = 32.0) -> None:
+    def __init__(self, max_seconds: float = 20.0, max_mb: float = 32.0, sticky_idle_count: int = 2) -> None:
         self._max_seconds = max_seconds
         self._max_bytes = int(max_mb * 1024 * 1024)
         self._frames: List[Tuple[float, bytes]] = []
         self._bytes = 0
         self._hold_from: Optional[float] = None
+        #: The most recent idle-tier snapshots, kept outside the age/byte-bounded ring
+        #: above. Ring cameras only push idle snapshots every 30-90s (the ring-mqtt
+        #: bridge's own poll interval), far slower than `max_seconds` (default 20s), so
+        #: every idle snapshot is age-evicted from `_frames` before the next one even
+        #: arrives — the ring holds real pre-roll only for events lucky enough to start
+        #: within seconds of a poll. This is a separate, small, deliberately unbounded-
+        #: by-age cache so `lead_in_frames` can still offer *something* — a couple of
+        #: stale-but-honest stills — as a clip's lead-in when the dense ring has nothing.
+        self._recent_idle: List[Tuple[float, bytes]] = []
+        self._sticky_idle_count = int(sticky_idle_count)
 
     def hold_from(self, floor: float) -> None:
         """Suspend time-based eviction for frames at/after `floor`.
@@ -178,10 +268,16 @@ class FrameRing:
         if self._frames:
             self._evict(self._frames[-1][0])
 
-    def push(self, timestamp: float, jpeg: bytes) -> None:
+    def push(self, timestamp: float, jpeg: bytes, idle: bool = False) -> None:
+        """`idle=True` marks a slow-poll snapshot (see `_recent_idle`) rather than a
+        dense live frame — callers pass it through from the provider's own tier."""
         self._frames.append((timestamp, jpeg))
         self._bytes += len(jpeg)
         self._evict(timestamp)
+        if idle:
+            self._recent_idle.append((timestamp, jpeg))
+            if len(self._recent_idle) > self._sticky_idle_count:
+                self._recent_idle.pop(0)
 
     def _evict(self, now: float) -> None:
         cutoff = now - self._max_seconds
@@ -205,6 +301,17 @@ class FrameRing:
             if f[0] >= ts:
                 return f
         return None
+
+    def lead_in_frames(self, before: float) -> List[Tuple[float, bytes]]:
+        """Sticky idle snapshots strictly before `before`, oldest first.
+
+        For a Ring-style source, `before` is a clip's requested pre-roll start. The
+        dense ring frequently has nothing that far back (see `_recent_idle`'s docstring
+        above) — this is what `RingClipBackend` prepends instead, so the clip opens on
+        a couple of honest, if stale, stills rather than jumping straight into the event
+        with no lead-in at all.
+        """
+        return [f for f in self._recent_idle if f[0] < before]
 
     def closest(self, ts: float, tolerance: float) -> Optional[bytes]:
         """The frame nearest `ts`, if the ring holds one within `tolerance` seconds.

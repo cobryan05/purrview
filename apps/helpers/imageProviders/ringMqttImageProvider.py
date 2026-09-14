@@ -221,6 +221,15 @@ class RingMqttImageProvider(ImageProvider):
         return f"RingMqttImageProvider [{self._camera_id} ({tier})]"
 
     @property
+    def is_live(self) -> bool:
+        """Whether the frame this provider is about to hand back came off the live tier.
+
+        `StreamWatcherTask._push_to_ring` reads this to tag idle-tier snapshots when
+        feeding the frame ring — see `FrameRing._recent_idle`.
+        """
+        return self._live_provider is not None
+
+    @property
     def live_url(self) -> str:
         return f"rtsp://{self._rtsp_host}:{self._rtsp_port}/{self._camera_id}{LIVE_SUFFIX}"
 
