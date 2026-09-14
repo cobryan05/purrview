@@ -52,11 +52,19 @@ KNOWN_PROFILES=(app training mono dev dev-mono)
 down_profile_args=()
 for p in "${KNOWN_PROFILES[@]}"; do down_profile_args+=(--profile "$p"); done
 
+# Build BEFORE stopping anything. `docker compose build` only produces an image —
+# it never touches a running container — so the old stack keeps serving for the
+# full build time, and the only outage left is the swap below. `COMPOSE_PROFILES`
+# in .env scopes this to the active topology's services, same as the old
+# `up -d --build` did.
+echo "Building..."
+docker compose build
+
 echo "Stopping any running stack (all known profiles, to clear host ports)..."
 docker compose "${down_profile_args[@]}" down --remove-orphans
 
-echo "Rebuilding and starting..."
-docker compose up -d --build
+echo "Starting..."
+docker compose up -d
 
 # Reclaim what this rebuild just orphaned.
 #
