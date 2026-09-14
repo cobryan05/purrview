@@ -258,6 +258,27 @@ class TestDecodeDetectionsNms:
         assert len(dets) == 1
         assert dets[0][4] == pytest.approx(0.9, abs=1e-6)
 
+    def test_overlapping_boxes_of_different_classes_both_survive(self):
+        """NMS must be class-aware: a cat detection and the litter_box it's
+
+        standing in produce near-identical boxes (real IoU well above the
+        0.45 threshold), but they're different objects and both should be
+        kept — only same-class overlaps get suppressed.
+        """
+        boxes_xyxy = np.array([[100.0, 100.0, 200.0, 200.0], [102.0, 102.0, 198.0, 198.0]], dtype=np.float32)
+        scores = np.array([[0.9, 0.0], [0.0, 0.8]], dtype=np.float32)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+        )
+        assert len(dets) == 2
+        assert {dets[0][5], dets[1][5]} == {0.0, 1.0}
+
 
 class TestExtractUltralyticsE2eFormat:
     """UltralyticsE2eInferenceProvider._extract — YOLOv10/YOLO26 NMS-free

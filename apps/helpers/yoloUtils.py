@@ -285,12 +285,18 @@ def decode_detections(
         # Apply Non-Maximum Suppression (NMS). cv2.dnn.NMSBoxes expects boxes as
         # (x, y, w, h) rects, not (x1, y1, x2, y2) corners — convert here; `boxes`
         # itself (used for the returned detections) stays in xyxy.
+        #
+        # Class-aware: NMSBoxesBatched groups suppression by class_ids, so two
+        # different-class boxes that nearly coincide (e.g. a cat detection
+        # sharing almost the same rect as the litter_box it's standing in)
+        # don't suppress each other. Only same-class overlaps get suppressed.
         nms_boxes = boxes.copy()
         nms_boxes[:, 2] -= nms_boxes[:, 0]  # width = x2 - x1
         nms_boxes[:, 3] -= nms_boxes[:, 1]  # height = y2 - y1
-        indices = cv2.dnn.NMSBoxes(
+        indices = cv2.dnn.NMSBoxesBatched(
             bboxes=nms_boxes.tolist(),
             scores=confidences.tolist(),
+            class_ids=class_ids_int.tolist(),
             score_threshold=conf_thresh,
             nms_threshold=iou_thresh,
         )
