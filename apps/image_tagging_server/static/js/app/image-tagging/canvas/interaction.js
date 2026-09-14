@@ -151,6 +151,45 @@ function findGroupAtPoint(runtime, pos) {
 }
 
 /**
+ * Reorders the smallest bbox under the pointer to the top of its layer, so
+ * Konva's OWN native drag machinery (bboxes are `draggable: true` in the
+ * select tool — see syncBboxDraggable in tools.js) grabs it instead of a
+ * larger box that fully or partially contains it.
+ *
+ * Must run on the raw DOM event, in the capture phase, BEFORE Konva's own
+ * native listener processes the same mousedown — Konva locks its drag target
+ * to whichever shape is topmost in paint order at the moment its internal
+ * hit-test runs, and that happens synchronously as part of dispatching the
+ * event to the target node, which is already finished by the time a
+ * `stage.on('mousedown', ...)` listener (Konva's own bubble-phase dispatch)
+ * would get a chance to reorder anything — too late to change what this
+ * gesture is already dragging. See main.js's capture-phase wiring.
+ *
+ * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime
+ * @param {MouseEvent} domEvent - The raw (not Konva-wrapped) native event.
+ */
+export function preemptDragTarget(runtime, domEvent) {
+  const stage = runtime.canvas?.stage;
+  if (!stage || domEvent.button !== 0 || runtime.tool !== 'select') return;
+
+  stage.setPointersPositions(domEvent);
+  const pos = getPointerPosition(runtime.canvas);
+  if (!pos) return;
+
+  const group = findGroupAtPoint(runtime, pos);
+  if (!group) return;
+
+  group.moveToTop();
+  // moveToTop() only reorders the node tree; Konva's native mousedown handler
+  // (about to run, synchronously, right after this) reads its offscreen hit
+  // canvas to resolve the target, and that canvas only reflects the new order
+  // once redrawn. batchDraw() defers that redraw to the next animation frame
+  // — too late for the hit-test that's about to happen in this same tick.
+  // drawHit() forces the redraw now.
+  runtime.canvas.layer?.drawHit();
+}
+
+/**
  * @param {Konva.KonvaEventObject<MouseEvent>} e - The mouse event object from Konva.
  * @param {import('@image_tagging_types').ImageTaggingRuntime} runtime - The image tagging runtime for this canvas.
  * @returns {Promise<void>}

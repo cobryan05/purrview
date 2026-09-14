@@ -732,6 +732,68 @@ class TestOverlapCycling:
         assert result["afterDoubleClick"] == "big"
         assert result["afterReset"] == "big"  # only big covers (300,200)
 
+    def test_drag_moves_the_smallest_bbox_not_the_larger_one_under_it(self, shared_page: Page):
+        """Real OS-level mouse drag (not direct handler calls, so Konva's own
+
+        native drag machinery is genuinely exercised) over two overlapping
+        bboxes must move the smaller one — the same box a click would select —
+        not whichever box happens to be topmost in Konva's paint order.
+        """
+        page = shared_page
+        setup = page.evaluate(
+            """async () => {
+            const { createImageTaggingRuntime } = await import('/app-static/js/app/image-tagging/runtime.js');
+            const { createUIBBbox } = await import('/app-static/js/shared/domain/image/mapper.js');
+            const { rerenderBboxViews } = await import('/app-static/js/app/image-tagging/canvas/manager.js');
+            const { initCanvasStage } = await import('/app-static/js/app/image-tagging/canvas/main.js');
+            const { setTool } = await import('/app-static/js/app/image-tagging/canvas/tools.js');
+
+            """
+            + _SETUP
+            + """
+
+            const big   = createUIBBbox({ uuid: 'big',   x: 0, y: 0, width: 0.5, height: 0.5 });
+            const small = createUIBBbox({ uuid: 'small', x: 0.1, y: 0.1, width: 0.1, height: 0.1 });
+            // small inserted FIRST so big paints on top by default (z-order =
+            // insertion order in rerenderBboxViews) — the actual bug scenario:
+            // a larger box added/rendered after a smaller nested one.
+            runtime.state.image.bboxes.set('small', small);
+            runtime.state.image.bboxes.set('big', big);
+            rerenderBboxViews(runtime.canvas, runtime.state.image.bboxes, runtime.canvas.viewport);
+
+            // Wires stage.on('mousedown', ...) etc. — the real production path,
+            // unlike the direct handleMouseDown()/handleMouseUp() calls the
+            // other tests in this file use.
+            await initCanvasStage(runtime);
+            setTool(runtime, 'select');
+
+            window.__dragTest = runtime;
+            const rect = div.getBoundingClientRect();
+            return { x: rect.x, y: rect.y };
+        }"""
+        )
+
+        # (120, 90) in canvas-local coords is inside both boxes (small nested in big).
+        start_x, start_y = setup["x"] + 120, setup["y"] + 90
+        end_x, end_y = setup["x"] + 300, setup["y"] + 200
+
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        page.mouse.move(end_x, end_y, steps=10)
+        page.mouse.up()
+
+        result = page.evaluate("""() => {
+            const runtime = window.__dragTest;
+            const small = runtime.state.image.bboxes.get('small');
+            const big = runtime.state.image.bboxes.get('big');
+            return {
+                smallMoved: small.x !== 0.1 || small.y !== 0.1,
+                bigUnchanged: big.x === 0 && big.y === 0,
+            };
+        }""")
+        assert result["smallMoved"], "dragging over the nested small box must move it"
+        assert result["bigUnchanged"], "the larger enclosing box must not move instead"
+
 
 # ---------------------------------------------------------------------------
 # Right-click context menu (handleContextMenu)

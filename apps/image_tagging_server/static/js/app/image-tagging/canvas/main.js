@@ -5,7 +5,8 @@ import {
   handleMouseMove,
   handleMouseUp,
   handleResize,
-  handleWheel
+  handleWheel,
+  preemptDragTarget
 } from './interaction.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { blurTextEntryFocus } from '/app-static/js/ui/utils/focus.js';
@@ -30,6 +31,12 @@ export async function initCanvasStage(runtime) {
   // long as the canvas is open, which no amount of clicking on the canvas undoes.
   // Blur it ourselves.
   stage.on('mousedown touchstart', () => blurTextEntryFocus());
+
+  // Capture-phase, on the raw DOM event: must run before Konva's own native
+  // mousedown handling, which is what actually locks the drag target — by the
+  // time the Konva-level stage.on('mousedown', ...) below fires, that
+  // decision has already been made. See preemptDragTarget's own docstring.
+  stage.container().addEventListener('mousedown', e => preemptDragTarget(runtime, e), { capture: true });
 
   stage.on('mousedown', e => handleMouseDown(e, runtime));
   stage.on('mousemove', e => handleMouseMove(e, runtime));
