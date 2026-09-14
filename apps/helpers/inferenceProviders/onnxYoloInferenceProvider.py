@@ -54,6 +54,8 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         class_names: Optional[List[str]] = None,
         conf_thresh: float = 0.251,
         iou_thresh: float = 0.45,
+        class_groups: Optional[List[Optional[str]]] = None,
+        class_group_iou_thresholds: Optional[List[Optional[float]]] = None,
         providers: Optional[List[str]] = None,
     ):
         self.session = ort.InferenceSession(
@@ -86,6 +88,9 @@ class OnnxYoloInferenceProvider(InferenceProvider):
         self.class_names = class_names
         self.conf_thresh = conf_thresh
         self.iou_thresh = iou_thresh
+        # Per-class exclusive-variants grouping for NMS — see YoloUtils.decode_detections.
+        self.class_groups = class_groups
+        self.class_group_iou_thresholds = class_group_iou_thresholds
 
     @abstractmethod
     def _extract(self, preds: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -184,6 +189,8 @@ class OnnxYoloInferenceProvider(InferenceProvider):
             original_shape=original_shape,
             skip_nms=self.SKIP_NMS,
             top_k=top_k,
+            class_groups=self.class_groups,
+            class_group_iou_thresholds=self.class_group_iou_thresholds,
         )
         # decode_detections follows the numpy return_* idiom: bare array unless
         # top_k was requested.

@@ -110,7 +110,38 @@ def load_yolo_onnx(model_path: str) -> InferenceProvider:
     provider_cls = inference_provider_registry.get(model_family)
     if provider_cls is None:
         raise Exception(f"Unhandled model family {model_family!r}. Registered: {sorted(inference_provider_registry)}")
-    return provider_cls(model_path, classes, providers=providers)
+    class_groups, class_group_iou_thresholds = _resolve_class_groups(metadata)
+    return provider_cls(
+        model_path,
+        classes,
+        class_groups=class_groups,
+        class_group_iou_thresholds=class_group_iou_thresholds,
+        providers=providers,
+    )
+
+
+def _resolve_class_groups(metadata: dict) -> Tuple[Optional[list], Optional[list]]:
+    """Per-class exclusive-variants suppression key + threshold from a sidecar.
+
+    `suppression_group_uuids`/`label_uuids` are positional, aligned with `classes`
+    (see the trainer's sidecar write and DbClient.derive_training_targets). A class
+    whose group equals its own label_uuid was never assigned a real group — that's
+    "ungrouped", represented here as `None` so decode_detections falls back to
+    suppressing it by its own raw class_id, unchanged from before this feature.
+
+    Returns (None, None) for older sidecars that predate this field — the caller
+    then passes no grouping into decode_detections at all.
+    """
+    label_uuids: list = metadata.get("label_uuids") or []
+    group_uuids: list = metadata.get("suppression_group_uuids") or []
+    group_thresholds: list = metadata.get("suppression_group_iou_thresholds") or []
+    if not label_uuids or not group_uuids or len(label_uuids) != len(group_uuids):
+        return None, None
+    class_groups = [grp if grp != lbl else None for lbl, grp in zip(label_uuids, group_uuids)]
+    if not any(g is not None for g in class_groups):
+        return None, None
+    class_group_iou_thresholds = list(group_thresholds) if len(group_thresholds) == len(group_uuids) else None
+    return class_groups, class_group_iou_thresholds
 
 
 def preprocess_image(
@@ -167,6 +198,35 @@ def preprocess_image(
     return img, r, (dw, dh)
 
 
+# Default suppression threshold for an exclusive_variants group whose Label left
+# `exclusive_variants_iou_threshold` unset. Deliberately stricter than a model's
+# general `iou_thresh` (0.45): two distinct objects in the same identity group (e.g.
+# two individuals of the same tracked kind) can sit close together with moderate box
+# overlap, and a low threshold would wrongly collapse them. Only near-total overlap
+# should read as "one object, ambiguous identity" rather than "two objects".
+DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESH = 0.85
+
+
+def _nms_batched_subset(
+    nms_boxes: np.ndarray,
+    confidences: np.ndarray,
+    group_ids: np.ndarray,
+    conf_thresh: float,
+    iou_thresh: float,
+) -> np.ndarray:
+    """cv2.dnn.NMSBoxesBatched over a subset; returns surviving row indices into it."""
+    if len(nms_boxes) == 0:
+        return np.zeros((0,), dtype=np.int64)
+    indices = cv2.dnn.NMSBoxesBatched(
+        bboxes=nms_boxes.tolist(),
+        scores=confidences.tolist(),
+        class_ids=group_ids.tolist(),
+        score_threshold=conf_thresh,
+        nms_threshold=iou_thresh,
+    )
+    return np.array(indices, dtype=np.int64).flatten() if len(indices) else np.zeros((0,), dtype=np.int64)
+
+
 def decode_detections(
     boxes_xyxy: np.ndarray,
     scores: np.ndarray,
@@ -177,6 +237,8 @@ def decode_detections(
     original_shape: Tuple[int, int],
     skip_nms: bool = False,
     top_k: int = 0,
+    class_groups: Optional[list] = None,
+    class_group_iou_thresholds: Optional[list] = None,
 ) -> np.ndarray:
     """
     Shared NMS + rescale/clip tail for YOLO-family raw outputs.
@@ -209,6 +271,17 @@ def decode_detections(
             array through the same row ordering (see
             `ultralyticsE2eInferenceProvider.py`'s `_extract`, which returns
             `scores` as (num_preds, 2): [confidence, class_id]).
+        class_groups (list | None): Per-class suppression-group key, aligned with
+            `scores`' columns (index = class_id). `None` at an index means that class
+            is NOT in an exclusive-variants group and suppresses only against its own
+            class_id at `iou_thresh` (today's default). Any other value means "suppress
+            together with every other currently-present class sharing this same key",
+            at `class_group_iou_thresholds[class_id]` (or
+            `DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESH` if that's also None). Ignored when
+            `skip_nms` is True — NMS-free/E2E exports have no NMS step to group.
+        class_group_iou_thresholds (list | None): Per-class override IoU threshold,
+            aligned the same way as `class_groups`. Only consulted for classes that
+            have a `class_groups` entry.
         top_k (int): When > 0, also return the per-detection **n-best runners-up**
             — the classes that scored next-highest on the same prediction row.
             This is the "confident but confused" signal (AMBIGUITY_REVIEW_PLAN.md):
@@ -289,24 +362,71 @@ def decode_detections(
         # Class-aware: NMSBoxesBatched groups suppression by class_ids, so two
         # different-class boxes that nearly coincide (e.g. a cat detection
         # sharing almost the same rect as the litter_box it's standing in)
-        # don't suppress each other. Only same-class overlaps get suppressed.
+        # don't suppress each other. Only same-class overlaps get suppressed —
+        # EXCEPT for classes in an `exclusive_variants` group (e.g. alternate
+        # identity guesses for one physical object), which run a second,
+        # separate NMSBoxesBatched pass grouped by that shared key instead of
+        # by raw class_id, usually at a stricter IoU threshold so two distinct
+        # objects of the same group don't wrongly collapse into one.
         nms_boxes = boxes.copy()
         nms_boxes[:, 2] -= nms_boxes[:, 0]  # width = x2 - x1
         nms_boxes[:, 3] -= nms_boxes[:, 1]  # height = y2 - y1
-        indices = cv2.dnn.NMSBoxesBatched(
-            bboxes=nms_boxes.tolist(),
-            scores=confidences.tolist(),
-            class_ids=class_ids_int.tolist(),
-            score_threshold=conf_thresh,
-            nms_threshold=iou_thresh,
-        )
 
-        if len(indices) == 0:
+        if class_groups is not None and len(class_groups) >= int(scores.shape[1]):
+            group_keys = [class_groups[c] for c in class_ids_int]
+            is_grouped = np.array([k is not None for k in group_keys], dtype=bool)
+        else:
+            is_grouped = np.zeros(len(boxes), dtype=bool)
+            group_keys = [None] * len(boxes)
+
+        selected: list = []
+
+        ungrouped_idx = np.nonzero(~is_grouped)[0]
+        if len(ungrouped_idx) > 0:
+            picked = _nms_batched_subset(
+                nms_boxes[ungrouped_idx],
+                confidences[ungrouped_idx],
+                class_ids_int[ungrouped_idx],
+                conf_thresh,
+                iou_thresh,
+            )
+            selected.extend(ungrouped_idx[picked].tolist())
+
+        grouped_idx = np.nonzero(is_grouped)[0]
+        if len(grouped_idx) > 0:
+            # Different exclusive-variant labels can carry different thresholds, and
+            # cv2 only accepts one nms_threshold per call — bucket by threshold value
+            # so each subset gets the right one. Virtually always a single bucket.
+            thresholds = np.array(
+                [
+                    (
+                        class_group_iou_thresholds[class_ids_int[i]]
+                        if class_group_iou_thresholds and class_group_iou_thresholds[class_ids_int[i]] is not None
+                        else DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESH
+                    )
+                    for i in grouped_idx
+                ],
+                dtype=np.float32,
+            )
+            _, group_ints = np.unique([group_keys[i] for i in grouped_idx], return_inverse=True)
+            for thr in np.unique(thresholds):
+                bucket = np.nonzero(thresholds == thr)[0]
+                sub_idx = grouped_idx[bucket]
+                picked = _nms_batched_subset(
+                    nms_boxes[sub_idx],
+                    confidences[sub_idx],
+                    group_ints[bucket],
+                    conf_thresh,
+                    float(thr),
+                )
+                selected.extend(sub_idx[picked].tolist())
+
+        if len(selected) == 0:
             empty = np.zeros((0, 6), dtype=np.float32)
             return (empty, _empty_alternates(0)) if top_k > 0 else empty
 
         # Keep only the selected boxes, confidences, and class IDs
-        indices = np.array(indices).flatten()
+        indices = np.array(sorted(selected), dtype=np.int64)
         boxes = boxes[indices]
         confidences = confidences[indices]
         class_ids = class_ids_int[indices].astype(np.float32)

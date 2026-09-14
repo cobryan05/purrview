@@ -182,8 +182,8 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         # the backend's single authority (derive_training_targets) so trained
         # artifacts can self-describe their place in the model tree. Threaded into
         # every job_config below and from there into each trainer's sidecar.
-        role, target_label_uuids, class_remap = self._resolve_training_target_fields(
-            mc_api, model_config_uuid, node_uuid, label_uuid
+        role, target_label_uuids, class_remap, suppression_group_uuids, suppression_group_iou_thresholds = (
+            self._resolve_training_target_fields(mc_api, model_config_uuid, node_uuid, label_uuid)
         )
 
         # Object-detection nodes use a bbox-based dataset assembly; dispatch before the
@@ -199,6 +199,8 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
                 node_uuid=node_uuid,
                 target_label_uuids=target_label_uuids,
                 class_remap=class_remap,
+                suppression_group_uuids=suppression_group_uuids,
+                suppression_group_iou_thresholds=suppression_group_iou_thresholds,
                 dataset_uuids=dataset_uuids,
                 record_image_manifest=record_image_manifest,
             )
@@ -273,15 +275,18 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     def _resolve_training_target_fields(
         self, mc_api, model_config_uuid: str, node_uuid: str, label_uuid: str
-    ) -> tuple[str, list[str], dict[str, str]]:
-        """Look up this node's role + in-scope label_uuids (+ class_remap) from the
-        backend's single source of truth (GET .../training-targets, backed by
-        DbClient.derive_training_targets).
+    ) -> tuple[str, list[str], dict[str, str], list[str], list[Optional[float]]]:
+        """Look up this node's role + in-scope label_uuids (+ class_remap +
+        suppression groups) from the backend's single source of truth (GET
+        .../training-targets, backed by DbClient.derive_training_targets).
 
         Falls back to a locally-derived role/label list if the node isn't a
         recognised sub-model boundary target (e.g. its spec is identical to its
         inherited spec, so it's not its own target) — training must never fail on
         this lookup, it only enriches descriptive metadata.
+
+        suppression_group_uuids/suppression_group_iou_thresholds are aligned with
+        the returned label_uuids — see TrainingTarget in db_server/web.py.
         """
         try:
             resp = mc_api.get_model_config_training_targets(model_config_uuid)
@@ -296,10 +301,16 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
         for target in targets:
             if getattr(target, "node_uuid", None) == node_uuid:
-                return target.role, list(target.label_uuids or []), dict(target.class_remap or {})
+                return (
+                    target.role,
+                    list(target.label_uuids or []),
+                    dict(target.class_remap or {}),
+                    list(target.suppression_group_uuids or []),
+                    list(target.suppression_group_iou_thresholds or []),
+                )
 
         role = "top" if not label_uuid else "submodel"
-        return role, ([label_uuid] if label_uuid else []), {}
+        return role, ([label_uuid] if label_uuid else []), {}, [], []
 
     def _resolve_root_node(
         self,
@@ -373,6 +384,8 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
         node_uuid: str,
         target_label_uuids: list[str],
         class_remap: dict[str, str],
+        suppression_group_uuids: list[str],
+        suppression_group_iou_thresholds: list[Optional[float]],
         dataset_uuids: list[str],
         record_image_manifest: bool = True,
     ) -> tuple[str, list[dict], dict]:
@@ -431,6 +444,8 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
             "model_config_uuid": model_config_uuid,
             "model_config_node_uuid": node_uuid,
             "label_uuids": target_label_uuids,
+            "suppression_group_uuids": suppression_group_uuids,
+            "suppression_group_iou_thresholds": suppression_group_iou_thresholds,
             **hyperparams,
             "record_image_manifest": record_image_manifest,
         }

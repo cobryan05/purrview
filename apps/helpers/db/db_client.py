@@ -2918,6 +2918,8 @@ class DbClient:
         scope: LabelScope = LabelScope.OBJECT,
         publish_to_ha: bool = False,
         publish_per_source: bool = False,
+        exclusive_variants: bool = False,
+        exclusive_variants_iou_threshold: Optional[float] = None,
     ) -> Label:
         """Insert a label and return the created object.
 
@@ -2933,6 +2935,8 @@ class DbClient:
             scope=scope,
             publish_to_ha=publish_to_ha,
             publish_per_source=publish_per_source,
+            exclusive_variants=exclusive_variants,
+            exclusive_variants_iou_threshold=exclusive_variants_iou_threshold,
         )
 
         async with self._async_session_maker() as session:
@@ -4963,6 +4967,11 @@ class DbClient:
           - class_remap: {in-scope label uuid -> class label uuid} for labels whose
             bboxes train as another class. A label in neither label_uuids nor
             class_remap is out of scope for that target.
+          - suppression_group_uuids / suppression_group_iou_thresholds: aligned with
+            label_uuids. A class's group is its nearest exclusive_variants=True
+            ancestor-or-self; group == the class's own label_uuid means ungrouped.
+            Consumed by the trainer's sidecar export so inference-time NMS can suppress
+            same-group classes together instead of by raw class_id.
 
         Class-set semantics:
           - Top model: assigned labels with no boundary ancestor; every other
@@ -5036,6 +5045,25 @@ class DbClient:
                 current = _parent(current)
             return None
 
+        def _suppression_group(uuid: str) -> tuple[str, Optional[float]]:
+            """Nearest exclusive-variants group `uuid` belongs to, or itself if none.
+
+            A label with `exclusive_variants=True` is a group root — it and its direct
+            children (siblings, alternate guesses for the same physical object) share
+            its group and its threshold, so raw-NMS treats them as mutually exclusive
+            instead of by class_id. Unrelated labels fall through to `(uuid, None)`,
+            which callers must treat as "no grouping" — today's per-class_id behavior.
+            """
+            lbl = all_labels.get(uuid)
+            if lbl is not None and lbl.exclusive_variants:
+                return uuid, lbl.exclusive_variants_iou_threshold
+            parent_uuid = _parent(uuid)
+            if parent_uuid is not None:
+                parent_lbl = all_labels.get(parent_uuid)
+                if parent_lbl is not None and parent_lbl.exclusive_variants:
+                    return parent_uuid, parent_lbl.exclusive_variants_iou_threshold
+            return uuid, None
+
         def _build_target(node: ModelConfigNode, role: str, class_uuids: list[str]) -> dict:
             class_set = set(class_uuids)
             ordered = self._sort_labels_hierarchically(class_uuids, all_labels)
@@ -5050,6 +5078,7 @@ class DbClient:
                     continue
                 for child in children:
                     class_remap[child] = cls
+            suppression_groups = [_suppression_group(lu) for lu in ordered]
             return {
                 "node_uuid": node.uuid,
                 "role": role,
@@ -5059,6 +5088,10 @@ class DbClient:
                 "label_uuids": ordered,
                 "class_names": [all_labels[lu].name if lu in all_labels else lu for lu in ordered],
                 "class_remap": class_remap,
+                # Parallel to label_uuids/class_names. group_uuid == the class's own
+                # label_uuid means "not grouped" (today's per-class_id NMS behavior).
+                "suppression_group_uuids": [grp for grp, _thr in suppression_groups],
+                "suppression_group_iou_thresholds": [thr for _grp, thr in suppression_groups],
             }
 
         top_classes = [a for a in assigned if _boundary_ancestor(a) is None]

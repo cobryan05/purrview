@@ -39,7 +39,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from ..augmentation import resolve_yolo_augmentation_kwargs
 from ..dataset import build_yolo_detection_dataset
@@ -140,6 +140,12 @@ class UltralyticsDetectionTrainer(Trainer):
         model_config_uuid: str = str(config.get("model_config_uuid", ""))
         model_config_node_uuid: str = str(config.get("model_config_node_uuid", ""))
         label_uuids: list[str] = list(config.get("label_uuids") or [])
+        # Aligned with label_uuids/class_names — see DbClient.derive_training_targets.
+        # Empty when the source model config used no exclusive-variant grouping.
+        suppression_group_uuids: list[str] = list(config.get("suppression_group_uuids") or [])
+        suppression_group_iou_thresholds: list[Optional[float]] = list(
+            config.get("suppression_group_iou_thresholds") or []
+        )
 
         max_epochs: int = int(config.get("max_epochs", d["max_epochs"]))
         imgsz: int = int(config.get("imgsz", d["imgsz"]))
@@ -376,6 +382,8 @@ class UltralyticsDetectionTrainer(Trainer):
                 "model_config_uuid": model_config_uuid,
                 "model_config_node_uuid": model_config_node_uuid,
                 "label_uuids": label_uuids,
+                "suppression_group_uuids": suppression_group_uuids,
+                "suppression_group_iou_thresholds": suppression_group_iou_thresholds,
             }
             sidecar_path = artifact_path / f"{model_name}.json"
             sidecar_path.write_text(json.dumps(sidecar, indent=2))

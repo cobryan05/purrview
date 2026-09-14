@@ -240,6 +240,8 @@ class AddLabelPayload(ApiPayload):
     #: the difference between creating an opted-in label and having to patch it after.
     publish_to_ha: bool = False
     publish_per_source: bool = False
+    exclusive_variants: bool = False
+    exclusive_variants_iou_threshold: Optional[float] = None
 
 
 class AddLabelResponse(StatusResponse):
@@ -1509,6 +1511,9 @@ class TrainingTarget(ApiModel):
     label_uuids: List[str] = Field(default_factory=list)
     class_names: List[str] = Field(default_factory=list)
     class_remap: Dict[str, str] = Field(default_factory=dict)
+    # Aligned with label_uuids/class_names — see DbClient.derive_training_targets.
+    suppression_group_uuids: List[str] = Field(default_factory=list)
+    suppression_group_iou_thresholds: List[Optional[float]] = Field(default_factory=list)
 
 
 class TrainingTargetsResponse(StatusResponse):
@@ -1792,6 +1797,8 @@ class WebApp:
                     scope=request.scope,
                     publish_to_ha=request.publish_to_ha,
                     publish_per_source=request.publish_per_source,
+                    exclusive_variants=request.exclusive_variants,
+                    exclusive_variants_iou_threshold=request.exclusive_variants_iou_threshold,
                 )
 
                 return AddLabelResponse(status=JsonValues.SUCCESS, label=label)
@@ -1860,6 +1867,8 @@ class WebApp:
                     scope=request.scope,
                     publish_to_ha=request.publish_to_ha,
                     publish_per_source=request.publish_per_source,
+                    exclusive_variants=request.exclusive_variants,
+                    exclusive_variants_iou_threshold=request.exclusive_variants_iou_threshold,
                     **parent_uuid_kwargs,
                 )
                 return UpdateLabelResponse(status=JsonValues.SUCCESS)

@@ -546,6 +546,8 @@ class Manager:
         scope: LabelScope = LabelScope.OBJECT,
         publish_to_ha: bool = False,
         publish_per_source: bool = False,
+        exclusive_variants: bool = False,
+        exclusive_variants_iou_threshold: Optional[float] = None,
     ) -> Label:
         """
         Adds a new label to the database
@@ -561,6 +563,8 @@ class Manager:
             scope=scope,
             publish_to_ha=publish_to_ha,
             publish_per_source=publish_per_source,
+            exclusive_variants=exclusive_variants,
+            exclusive_variants_iou_threshold=exclusive_variants_iou_threshold,
         )
         # TODO CJO: await self._db_client.export_labels_from_db_to_json(str(self._labels_json))
         return ret
@@ -585,6 +589,8 @@ class Manager:
         scope: Optional[LabelScope] = None,
         publish_to_ha: Optional[bool] = None,
         publish_per_source: Optional[bool] = None,
+        exclusive_variants: Optional[bool] = None,
+        exclusive_variants_iou_threshold: Optional[float] = None,
         parent_uuid: Any = _PARENT_UUID_NOT_SET,
     ) -> None:
         """
@@ -594,6 +600,13 @@ class Manager:
         `publish_per_source` additionally opts into the finest (label x rule x source)
         counter tier — see the column's comment in `types.py` for why that one is the
         cardinality risk.
+
+        `exclusive_variants` marks this label's children as mutually-exclusive alternate
+        guesses for one physical object (see the column's comment in `types.py`);
+        `exclusive_variants_iou_threshold` tunes how much box overlap counts as "the
+        same object" for that grouping. Like the two booleans above, `None` here means
+        "not supplied" — there is currently no way to explicitly clear an already-set
+        threshold back to "use the default" via this call.
 
         `parent_uuid` moves the label (None promotes it to root); it defaults to the
         sentinel `_PARENT_UUID_NOT_SET` rather than `None` because `None` is itself a
@@ -614,6 +627,8 @@ class Manager:
                 "scope": scope,
                 "publish_to_ha": publish_to_ha,
                 "publish_per_source": publish_per_source,
+                "exclusive_variants": exclusive_variants,
+                "exclusive_variants_iou_threshold": exclusive_variants_iou_threshold,
             }.items()
             if v is not None
         }

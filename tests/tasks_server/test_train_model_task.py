@@ -126,18 +126,27 @@ class TestResolveBundleTargetFields:
     def test_returns_matching_target_role_and_labels(self):
         task = self._task()
         target = MagicMock(
-            node_uuid="node-1", role="submodel", label_uuids=["lbl-a", "lbl-b"], class_remap={"lbl-c": "lbl-a"}
+            node_uuid="node-1",
+            role="submodel",
+            label_uuids=["lbl-a", "lbl-b"],
+            class_remap={"lbl-c": "lbl-a"},
+            suppression_group_uuids=["lbl-a", "lbl-a"],
+            suppression_group_iou_thresholds=[0.9, 0.9],
         )
         other = MagicMock(node_uuid="node-other", role="top", label_uuids=["lbl-z"], class_remap={})
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[other, target])
 
-        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap, suppression_group_uuids, suppression_group_iou_thresholds = (
+            task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        )
 
         mc_api.get_model_config_training_targets.assert_called_once_with("cfg-1")
         assert role == "submodel"
         assert label_uuids == ["lbl-a", "lbl-b"]
         assert class_remap == {"lbl-c": "lbl-a"}
+        assert suppression_group_uuids == ["lbl-a", "lbl-a"]
+        assert suppression_group_iou_thresholds == [0.9, 0.9]
 
     def test_falls_back_when_node_not_a_bundle_target(self):
         """A node whose spec matches its inherited spec isn't its own boundary target —
@@ -146,33 +155,45 @@ class TestResolveBundleTargetFields:
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
 
-        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap, suppression_group_uuids, suppression_group_iou_thresholds = (
+            task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        )
 
         assert role == "submodel"
         assert label_uuids == ["lbl-a"]
         assert class_remap == {}
+        assert suppression_group_uuids == []
+        assert suppression_group_iou_thresholds == []
 
     def test_falls_back_to_top_role_for_root_node(self):
         task = self._task()
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.return_value = MagicMock(targets=[])
 
-        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "root-node", "")
+        role, label_uuids, class_remap, suppression_group_uuids, suppression_group_iou_thresholds = (
+            task._resolve_training_target_fields(mc_api, "cfg-1", "root-node", "")
+        )
 
         assert role == "top"
         assert label_uuids == []
         assert class_remap == {}
+        assert suppression_group_uuids == []
+        assert suppression_group_iou_thresholds == []
 
     def test_swallows_lookup_errors_and_falls_back(self):
         task = self._task()
         mc_api = MagicMock()
         mc_api.get_model_config_training_targets.side_effect = RuntimeError("db_server unreachable")
 
-        role, label_uuids, class_remap = task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        role, label_uuids, class_remap, suppression_group_uuids, suppression_group_iou_thresholds = (
+            task._resolve_training_target_fields(mc_api, "cfg-1", "node-1", "lbl-a")
+        )
 
         assert role == "submodel"
         assert label_uuids == ["lbl-a"]
         assert class_remap == {}
+        assert suppression_group_uuids == []
+        assert suppression_group_iou_thresholds == []
 
 
 class TestJobConfigBundleFields:
@@ -275,6 +296,8 @@ class TestJobConfigBundleFields:
             node_uuid="node-uuid",
             target_label_uuids=["lbl-a", "lbl-b"],
             class_remap={},
+            suppression_group_uuids=["lbl-a", "lbl-a"],
+            suppression_group_iou_thresholds=[0.9, 0.9],
             dataset_uuids=["ds-1"],
         )
 
@@ -282,6 +305,8 @@ class TestJobConfigBundleFields:
         assert job_config["model_config_uuid"] == "cfg-uuid"
         assert job_config["model_config_node_uuid"] == "node-uuid"
         assert job_config["label_uuids"] == ["lbl-a", "lbl-b"]
+        assert job_config["suppression_group_uuids"] == ["lbl-a", "lbl-a"]
+        assert job_config["suppression_group_iou_thresholds"] == [0.9, 0.9]
         mc_api.get_training_target_detection_dataset.assert_called_once()
         call_args = mc_api.get_training_target_detection_dataset.call_args[0]
         assert call_args[0] == "cfg-uuid"
@@ -398,6 +423,8 @@ class TestRecordImageManifestFlag:
             node_uuid="node-uuid",
             target_label_uuids=["lbl-a"],
             class_remap={},
+            suppression_group_uuids=[],
+            suppression_group_iou_thresholds=[],
             dataset_uuids=["ds-1"],
             record_image_manifest=False,
         )
@@ -425,6 +452,8 @@ class TestRecordImageManifestFlag:
             node_uuid="node-uuid",
             target_label_uuids=["lbl-a"],
             class_remap={},
+            suppression_group_uuids=[],
+            suppression_group_iou_thresholds=[],
             dataset_uuids=["ds-1"],
             record_image_manifest=False,
         )

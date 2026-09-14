@@ -279,6 +279,48 @@ class TestDecodeDetectionsNms:
         assert len(dets) == 2
         assert {dets[0][5], dets[1][5]} == {0.0, 1.0}
 
+    def test_exclusive_variants_group_collapses_near_total_overlap(self):
+        """Two classes sharing a `class_groups` key (e.g. alternate identity guesses
+
+        for the same object) suppress each other like same-class boxes do, even
+        though their raw class_ids differ — unlike the ungrouped case above.
+        """
+        boxes_xyxy = np.array([[100.0, 100.0, 200.0, 200.0], [102.0, 102.0, 198.0, 198.0]], dtype=np.float32)
+        scores = np.array([[0.9, 0.0], [0.0, 0.8]], dtype=np.float32)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            class_groups=["variant_group", "variant_group"],
+        )
+        assert len(dets) == 1
+        assert dets[0][4] == pytest.approx(0.9, abs=1e-6)
+
+    def test_exclusive_variants_group_uses_its_own_stricter_threshold(self):
+        """A moderate-overlap pair (IoU=0.6) in the same group must survive when the
+
+        group's threshold is stricter than the model's general iou_thresh — this is
+        the "two real objects standing close together" case the stricter default
+        (DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESH=0.85) exists to protect against.
+        """
+        boxes_xyxy = np.array([[0.0, 0.0, 100.0, 100.0], [25.0, 0.0, 125.0, 100.0]], dtype=np.float32)
+        scores = np.array([[0.9, 0.0], [0.0, 0.8]], dtype=np.float32)
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            class_groups=["variant_group", "variant_group"],
+        )
+        assert len(dets) == 2
+
 
 class TestExtractUltralyticsE2eFormat:
     """UltralyticsE2eInferenceProvider._extract — YOLOv10/YOLO26 NMS-free

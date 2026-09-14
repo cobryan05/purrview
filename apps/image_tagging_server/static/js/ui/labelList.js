@@ -335,6 +335,92 @@ function toggleHaPicker(anchorRow, { label, indentLevel, onSave }) {
   anchorRow.after(haRow);
 }
 
+const DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESHOLD = 0.85;
+
+/**
+ * A panel (mirrors `toggleHaPicker`) for the "Exclusive Variants" grouping used by
+ * inference-time NMS — see the tooltip text below for the user-facing explanation.
+ * The threshold field only appears once the checkbox is on: it is meaningless
+ * otherwise, and showing it unconditionally on every label would just be another
+ * number nobody but the handful of exclusive-variant parents ever touches.
+ */
+function toggleVariantsPicker(anchorRow, { label, indentLevel, onSave }) {
+  const existing = anchorRow.nextElementSibling;
+  if (existing?.dataset?.variantsRowFor === label.uuid) {
+    existing.remove();
+    return;
+  }
+  anchorRow.parentElement?.querySelectorAll('[data-variants-row-for]').forEach((el) => el.remove());
+
+  const variantsRow = document.createElement('div');
+  variantsRow.className = 'label-move-row';
+  variantsRow.dataset.variantsRowFor = label.uuid;
+  variantsRow.dataset.testid = 'label-variants-panel';
+  variantsRow.style.marginLeft = `${indentLevel * 14}px`;
+
+  const wrap = document.createElement('label');
+  wrap.className = 'label-ha-check';
+  wrap.title = 'On: a detection can only match one of this label\'s children at a time, so '
+    + 'overlapping guesses for it collapse to the single best one. Off: children can '
+    + 'legitimately appear together as separate objects, so overlapping detections are all kept.';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = label.exclusiveVariants === true;
+  box.dataset.testid = 'label-exclusive-variants';
+  wrap.append(box, document.createTextNode(' Exclusive Variants'));
+
+  const thresholdWrap = document.createElement('label');
+  thresholdWrap.className = 'label-ha-check';
+  thresholdWrap.title = 'How much two overlapping boxes must overlap before they are treated as '
+    + 'one ambiguous detection and collapsed to the best guess. Higher = only near-total overlap '
+    + 'collapses, so two separate objects standing close together are not wrongly merged.';
+  const thresholdInput = document.createElement('input');
+  thresholdInput.type = 'number';
+  thresholdInput.min = '0';
+  thresholdInput.max = '1';
+  thresholdInput.step = '0.01';
+  thresholdInput.dataset.testid = 'label-exclusive-variants-threshold';
+  thresholdInput.value = String(
+    typeof label.exclusiveVariantsIouThreshold === 'number'
+      ? label.exclusiveVariantsIouThreshold
+      : DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESHOLD,
+  );
+  thresholdWrap.append(document.createTextNode('Overlap threshold '), thresholdInput);
+
+  const syncThresholdVisibility = () => { thresholdWrap.hidden = !box.checked; };
+  box.addEventListener('change', syncThresholdVisibility);
+  syncThresholdVisibility();
+
+  variantsRow.append(wrap, thresholdWrap);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'label-move-apply';
+  applyBtn.textContent = 'Save';
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    try {
+      await onSave({
+        exclusiveVariants: box.checked,
+        exclusiveVariantsIouThreshold: box.checked ? parseFloat(thresholdInput.value) : null,
+      });
+    } catch (err) {
+      toast(err.message, 5000, 'error');
+      applyBtn.disabled = false;
+    }
+  };
+  variantsRow.appendChild(applyBtn);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'label-move-cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => variantsRow.remove();
+  variantsRow.appendChild(cancelBtn);
+
+  anchorRow.after(variantsRow);
+}
+
 // ─── Shared row builder ──────────────────────────────────────────────────────
 //
 // One compact row shape for every mode:
@@ -631,6 +717,16 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
       }),
       iconAction('home', 'Home Assistant', {
         onClick: () => toggleHaPicker(row, {
+          label,
+          indentLevel,
+          onSave: async (flags) => {
+            await updateLabel(uuid, name, color, flags);
+            onRerender();
+          },
+        }),
+      }),
+      iconAction('variants', 'Exclusive Variants', {
+        onClick: () => toggleVariantsPicker(row, {
           label,
           indentLevel,
           onSave: async (flags) => {

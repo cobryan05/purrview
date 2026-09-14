@@ -274,6 +274,19 @@ class LabelBase(SQLModel):
     # rule-level event entity's attributes already answer for automations. Opt in per
     # label where the per-camera breakdown is genuinely wanted as long-term statistics.
     publish_per_source: bool = Field(default=False)
+    # When True, this label's children are alternate guesses for the SAME physical
+    # object (e.g. breed/color variants), not different objects that can coexist. NMS
+    # groups them together at inference time instead of by raw class_id, so an
+    # ambiguous detection collapses to its single best guess instead of drawing one
+    # box per candidate class. Default off: "keep both" is the safe default for a
+    # label tree used purely for organization (e.g. grouping unrelated object types).
+    exclusive_variants: bool = Field(default=False)
+    # Only meaningful when exclusive_variants is True. Deliberately stricter than the
+    # model's general NMS iou_thresh (0.45): two genuinely distinct objects of the same
+    # exclusive-variant group can sit close together with moderate box overlap, and a
+    # low threshold would wrongly collapse them. None means "use the default" (set in
+    # apps/helpers/yoloUtils.py) rather than baking a magic number into every row.
+    exclusive_variants_iou_threshold: Optional[float] = Field(default=None)
 
 
 class Label(LabelBase, TimestampModel, table=True):
@@ -315,6 +328,10 @@ class Label(LabelBase, TimestampModel, table=True):
         default=False,
         sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("0")),
     )
+    exclusive_variants: bool = Field(
+        default=False,
+        sa_column=Column(sa.Boolean(), nullable=False, server_default=sa.text("0")),
+    )
     parent: Optional["Label"] = Relationship(
         back_populates="children", sa_relationship_kwargs={"remote_side": "Label.uuid"}
     )
@@ -337,6 +354,8 @@ class LabelRead(OrmModel):
     #: row serialised before the column existed arrive at the UI ticked.
     publish_to_ha: bool = False
     publish_per_source: bool = False
+    exclusive_variants: bool = False
+    exclusive_variants_iou_threshold: Optional[float] = None
 
 
 class LabelUpdate(ApiModel):
@@ -347,6 +366,8 @@ class LabelUpdate(ApiModel):
     scope: Optional[LabelScope] = None
     publish_to_ha: Optional[bool] = None
     publish_per_source: Optional[bool] = None
+    exclusive_variants: Optional[bool] = None
+    exclusive_variants_iou_threshold: Optional[float] = None
 
 
 class ImageTagLink(SQLModel, table=True):

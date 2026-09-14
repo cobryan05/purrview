@@ -7,11 +7,21 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def _create_label(http_client, name: str, parent_uuid: str | None = None) -> str:
+async def _create_label(
+    http_client,
+    name: str,
+    parent_uuid: str | None = None,
+    exclusive_variants: bool = False,
+    exclusive_variants_iou_threshold: float | None = None,
+) -> str:
     """Create a label and return its uuid."""
     payload: dict = {"name": name, "color": "#ff0000"}
     if parent_uuid is not None:
         payload["parentUuid"] = parent_uuid
+    if exclusive_variants:
+        payload["exclusiveVariants"] = exclusive_variants
+    if exclusive_variants_iou_threshold is not None:
+        payload["exclusiveVariantsIouThreshold"] = exclusive_variants_iou_threshold
     r = await http_client.post("/api/labels", json=payload)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -480,6 +490,38 @@ async def test_targets_flat_config_single_top_target(http_client):
     assert top["classRemap"] == {}
     root_node = next(n for n in cfg["nodes"] if n["labelUuid"] is None)
     assert top["nodeUuid"] == root_node["uuid"]
+
+
+async def test_targets_exclusive_variants_group_siblings_under_their_parent(http_client):
+    """A label with exclusive_variants=True groups itself and its children for
+
+    inference-time NMS — see Label.exclusive_variants in apps/helpers/db/types.py.
+    Labels outside that relationship (Dog here) are ungrouped: group == own uuid.
+    """
+    vehicle = await _create_label(http_client, "Vehicle", exclusive_variants=True, exclusive_variants_iou_threshold=0.9)
+    truck = await _create_label(http_client, "Truck", parent_uuid=vehicle)
+    car = await _create_label(http_client, "Car", parent_uuid=vehicle)
+    dog = await _create_label(http_client, "Dog")
+    cfg = await _create_config(
+        http_client,
+        "TargetsExclusiveVariants",
+        nodes=[
+            _node(None, _ROOT_SPEC),
+            _node(vehicle, _ROOT_SPEC),
+            _node(truck, _ROOT_SPEC),
+            _node(car, _ROOT_SPEC),
+            _node(dog, _ROOT_SPEC),
+        ],
+    )
+
+    targets = await _fetch_targets(http_client, cfg["uuid"])
+    assert len(targets) == 1
+    top = targets[0]
+    assert set(top["labelUuids"]) == {vehicle, truck, car, dog}
+    group_by_label = dict(zip(top["labelUuids"], top["suppressionGroupUuids"]))
+    threshold_by_label = dict(zip(top["labelUuids"], top["suppressionGroupIouThresholds"]))
+    assert group_by_label == {vehicle: vehicle, truck: vehicle, car: vehicle, dog: dog}
+    assert threshold_by_label == {vehicle: 0.9, truck: 0.9, car: 0.9, dog: None}
 
 
 async def test_targets_boundary_produces_submodel(http_client):
