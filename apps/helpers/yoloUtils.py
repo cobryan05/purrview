@@ -359,41 +359,35 @@ def decode_detections(
         # (x, y, w, h) rects, not (x1, y1, x2, y2) corners — convert here; `boxes`
         # itself (used for the returned detections) stays in xyxy.
         #
-        # Class-aware: NMSBoxesBatched groups suppression by class_ids, so two
-        # different-class boxes that nearly coincide (e.g. a cat detection
-        # sharing almost the same rect as the litter_box it's standing in)
-        # don't suppress each other. Only same-class overlaps get suppressed —
-        # EXCEPT for classes in an `exclusive_variants` group (e.g. alternate
-        # identity guesses for one physical object), which run a second,
-        # separate NMSBoxesBatched pass grouped by that shared key instead of
-        # by raw class_id, usually at a stricter IoU threshold so two distinct
-        # objects of the same group don't wrongly collapse into one.
+        # Two stages: (1) always suppress by raw class_id at iou_thresh, so
+        # duplicate anchor predictions of the same class collapse regardless of
+        # grouping; (2) only for exclusive_variants classes, suppress stage 1's
+        # survivors across the group at its (usually stricter) threshold, so
+        # ambiguous identity guesses collapse without merging two distinct
+        # objects of the same group. The group threshold must not apply to
+        # same-class duplicates — it's calibrated for cross-class ambiguity, and
+        # is too strict for anchors that already agree on class.
         nms_boxes = boxes.copy()
         nms_boxes[:, 2] -= nms_boxes[:, 0]  # width = x2 - x1
         nms_boxes[:, 3] -= nms_boxes[:, 1]  # height = y2 - y1
 
+        stage1_picked = _nms_batched_subset(nms_boxes, confidences, class_ids_int, conf_thresh, iou_thresh)
+        if len(stage1_picked) == 0:
+            empty = np.zeros((0, 6), dtype=np.float32)
+            return (empty, _empty_alternates(0)) if top_k > 0 else empty
+
         if class_groups is not None and len(class_groups) >= int(scores.shape[1]):
-            group_keys = [class_groups[c] for c in class_ids_int]
+            group_keys = [class_groups[class_ids_int[i]] for i in stage1_picked]
             is_grouped = np.array([k is not None for k in group_keys], dtype=bool)
         else:
-            is_grouped = np.zeros(len(boxes), dtype=bool)
-            group_keys = [None] * len(boxes)
+            is_grouped = np.zeros(len(stage1_picked), dtype=bool)
+            group_keys = [None] * len(stage1_picked)
 
-        selected: list = []
+        selected: list = stage1_picked[~is_grouped].tolist()
 
-        ungrouped_idx = np.nonzero(~is_grouped)[0]
-        if len(ungrouped_idx) > 0:
-            picked = _nms_batched_subset(
-                nms_boxes[ungrouped_idx],
-                confidences[ungrouped_idx],
-                class_ids_int[ungrouped_idx],
-                conf_thresh,
-                iou_thresh,
-            )
-            selected.extend(ungrouped_idx[picked].tolist())
-
-        grouped_idx = np.nonzero(is_grouped)[0]
-        if len(grouped_idx) > 0:
+        grouped_local_idx = np.nonzero(is_grouped)[0]
+        if len(grouped_local_idx) > 0:
+            grouped_idx = stage1_picked[grouped_local_idx]
             # Different exclusive-variant labels can carry different thresholds, and
             # cv2 only accepts one nms_threshold per call — bucket by threshold value
             # so each subset gets the right one. Virtually always a single bucket.
@@ -408,7 +402,7 @@ def decode_detections(
                 ],
                 dtype=np.float32,
             )
-            _, group_ints = np.unique([group_keys[i] for i in grouped_idx], return_inverse=True)
+            _, group_ints = np.unique([group_keys[i] for i in grouped_local_idx], return_inverse=True)
             for thr in np.unique(thresholds):
                 bucket = np.nonzero(thresholds == thr)[0]
                 sub_idx = grouped_idx[bucket]

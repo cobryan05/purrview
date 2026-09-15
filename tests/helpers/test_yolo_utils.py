@@ -321,6 +321,39 @@ class TestDecodeDetectionsNms:
         )
         assert len(dets) == 2
 
+    def test_same_class_duplicates_in_a_group_still_collapse_at_the_normal_threshold(self):
+        """N near-duplicate SAME-class detections must collapse to one via the
+
+        model's normal iou_thresh, even when that class belongs to an
+        exclusive_variants group — the group's stricter threshold is calibrated
+        for cross-class ambiguity and must not gate ordinary same-class overlap.
+        """
+        # 7 boxes, each a small x-shift of the last (0, 5, 10, ..., 30px), on a
+        # 100x100 box: neighbouring pairs land around IoU~0.9 and the widest pair
+        # around IoU~0.7 — comfortably above the model's iou_thresh (0.45, so
+        # stage 1 must collapse them) and comfortably below the group's stricter
+        # threshold (0.9, so routing them through stage 2 ALONE would not).
+        offsets = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0]
+        boxes_xyxy = np.array(
+            [[100.0 + dx, 100.0, 200.0 + dx, 200.0] for dx in offsets],
+            dtype=np.float32,
+        )
+        scores = np.zeros((7, 2), dtype=np.float32)
+        scores[:, 0] = 0.5 + np.arange(7) * 0.01  # class 0 ("Maple"), distinct confidences
+        dets = decode_detections(
+            boxes_xyxy,
+            scores,
+            conf_thresh=0.25,
+            iou_thresh=0.45,
+            scale=1.0,
+            pad=(0.0, 0.0),
+            original_shape=(640, 640),
+            class_groups=["variant_group", None],
+            class_group_iou_thresholds=[0.9, None],
+        )
+        assert len(dets) == 1
+        assert dets[0][4] == pytest.approx(0.56, abs=1e-6)  # highest-confidence survivor
+
 
 class TestExtractUltralyticsE2eFormat:
     """UltralyticsE2eInferenceProvider._extract — YOLOv10/YOLO26 NMS-free
