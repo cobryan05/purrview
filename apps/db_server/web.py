@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request,
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 from sqlalchemy.exc import IntegrityError
 
@@ -234,14 +234,25 @@ class AddLabelPayload(ApiPayload):
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
     scope: LabelScope = LabelScope.OBJECT
-    #: Both default off, matching `LabelBase`. Accepted at creation because the client
-    #: has always sent them (`shared/api/labels.js`) — the payload simply had no field to
-    #: receive them, so they were dropped. Harmless while the default was on; now it is
-    #: the difference between creating an opted-in label and having to patch it after.
+    #: The client (`createNewLabel` in `shared/api/labels.js`) never sends these at
+    #: creation, so these defaults are the actual value every new label gets.
     publish_to_ha: bool = False
     publish_per_source: bool = False
-    exclusive_variants: bool = False
+    #: None means "not explicitly requested" — resolved below to parent_uuid is None,
+    #: i.e. a new top-level label defaults to being its own variant group (the common
+    #: "Vehicle" case), while a label created under a parent defaults off and defers
+    #: to whatever that immediate parent decides (`suppression_group_for` in
+    #: apps/helpers/suppressionGroups.py only ever looks one level up). Nesting composes
+    #: from there: a child that later gets its own children can independently flip this
+    #: on to start a subgroup scoped to just its own children.
+    exclusive_variants: Optional[bool] = None
     exclusive_variants_iou_threshold: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _default_exclusive_variants_to_parentless(self) -> "AddLabelPayload":
+        if self.exclusive_variants is None:
+            self.exclusive_variants = self.parent_uuid is None
+        return self
 
 
 class AddLabelResponse(StatusResponse):

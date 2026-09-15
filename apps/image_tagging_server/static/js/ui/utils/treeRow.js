@@ -40,13 +40,13 @@ export const ICONS = Object.freeze({
  *
  * @param {keyof ICONS} icon
  * @param {string} title  also the accessible name, and what tests select on
- * @param {{ className?: string, onClick?: (e: MouseEvent) => any }} [opts]
+ * @param {{ className?: string, active?: boolean, onClick?: (e: MouseEvent) => any }} [opts]
  * @returns {HTMLButtonElement}
  */
-export function iconAction(icon, title, { className = '', onClick = null } = {}) {
+export function iconAction(icon, title, { className = '', active = false, onClick = null } = {}) {
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = `lt-act${className ? ` ${className}` : ''}`;
+  btn.className = `lt-act${active ? ' lt-act--active' : ''}${className ? ` ${className}` : ''}`;
   btn.title = title;
   btn.setAttribute('aria-label', title);
   btn.innerHTML = ICONS[icon] ?? '';

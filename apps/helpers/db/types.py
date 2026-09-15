@@ -278,8 +278,10 @@ class LabelBase(SQLModel):
     # object (e.g. breed/color variants), not different objects that can coexist. NMS
     # groups them together at inference time instead of by raw class_id, so an
     # ambiguous detection collapses to its single best guess instead of drawing one
-    # box per candidate class. Default off: "keep both" is the safe default for a
-    # label tree used purely for organization (e.g. grouping unrelated object types).
+    # box per candidate class. Field-level default is off (matches a bare `Label(...)`
+    # construction with nothing said either way); the label-creation API applies a
+    # smarter parent-aware default instead — see `AddLabelPayload.exclusive_variants`
+    # in apps/db_server/web.py.
     exclusive_variants: bool = Field(default=False)
     # Only meaningful when exclusive_variants is True. Deliberately stricter than the
     # model's general NMS iou_thresh (0.45): two genuinely distinct objects of the same
@@ -350,8 +352,8 @@ class LabelRead(OrmModel):
     parent_uuid: Optional[str] = None
     label_type: LabelType = LabelType.STANDARD
     scope: LabelScope = LabelScope.OBJECT
-    #: Matches `LabelBase` — both opt-in. A read model that defaulted on would make a
-    #: row serialised before the column existed arrive at the UI ticked.
+    #: All three opt-in. A read model that defaulted on would make a row serialised
+    #: before the column existed arrive at the UI ticked.
     publish_to_ha: bool = False
     publish_per_source: bool = False
     exclusive_variants: bool = False

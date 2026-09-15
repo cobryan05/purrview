@@ -105,6 +105,45 @@ async def test_create_child_label(http_client):
     assert body["label"]["parentUuid"] == parent_uuid
 
 
+class TestExclusiveVariantsDefault:
+    """A new label's exclusive_variants defaults based on whether it has a parent —
+    see AddLabelPayload._default_exclusive_variants_to_parentless in apps/db_server/web.py.
+    A top-level label defaults on (the common "Vehicle" variant-group case); a label
+    created under a parent defaults off, so it defers to whatever its immediate parent
+    decides instead of becoming its own singleton group and breaking out of the
+    parent's group (suppression_group_for checks the label's own flag before its
+    parent's)."""
+
+    async def test_parentless_label_defaults_on(self, http_client):
+        r = await http_client.post("/api/labels", json={"name": "Vehicle", "color": "#111111"})
+        assert r.json()["label"]["exclusiveVariants"] is True
+
+    async def test_child_label_defaults_off(self, http_client):
+        parent_r = await http_client.post("/api/labels", json={"name": "Vehicle", "color": "#111111"})
+        parent_uuid = parent_r.json()["label"]["uuid"]
+
+        child_r = await http_client.post(
+            "/api/labels",
+            json={"name": "Truck", "color": "#222222", "parentUuid": parent_uuid},
+        )
+        assert child_r.json()["label"]["exclusiveVariants"] is False
+
+    async def test_explicit_value_overrides_the_default(self, http_client):
+        parent_r = await http_client.post("/api/labels", json={"name": "Vehicle", "color": "#111111"})
+        parent_uuid = parent_r.json()["label"]["uuid"]
+
+        child_r = await http_client.post(
+            "/api/labels",
+            json={
+                "name": "Truck",
+                "color": "#222222",
+                "parentUuid": parent_uuid,
+                "exclusiveVariants": True,
+            },
+        )
+        assert child_r.json()["label"]["exclusiveVariants"] is True
+
+
 async def test_label_type_roundtrip_from_migration_default(db_client, http_client):
     """
     Regression: the migration adds label_type with server_default='standard' (lowercase

@@ -2925,7 +2925,9 @@ class DbClient:
         """Insert a label and return the created object.
 
         The two publish flags default off to match `LabelBase`, so a caller that does not
-        mention Home Assistant does not create a device in one.
+        mention Home Assistant does not create a device in one. `exclusive_variants` also
+        defaults off here — the parent-aware smart default (a parentless label defaults
+        on) lives in `AddLabelPayload` (apps/db_server/web.py), not this lower layer.
         """
         new_label = Label(
             uuid=uuid or str(uuid4()),

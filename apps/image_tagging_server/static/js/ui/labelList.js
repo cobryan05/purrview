@@ -834,6 +834,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
         }),
       }),
       iconAction('home', 'Home Assistant', {
+        active: label.publishToHa === true,
         onClick: () => toggleHaPicker(row, {
           label,
           indentLevel,
@@ -844,6 +845,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
         }),
       }),
       iconAction('variants', 'Exclusive Variants', {
+        active: label.exclusiveVariants === true,
         onClick: () => toggleVariantsPicker(row, {
           label,
           indentLevel,

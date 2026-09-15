@@ -2877,6 +2877,20 @@ button.lt-swatch:hover {
   color: var(--color-danger);
 }
 
+/* Reflects a label's own on/off setting (e.g. Home Assistant, Exclusive
+   Variants) without opening its picker — dimmed by default like every other
+   action icon, tinted once the setting is on. */
+.lt-act--active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.lt-act--active:hover {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  filter: brightness(1.1);
+}
+
 .lt-act[disabled] {
   opacity: 0.4;
   cursor: default;
