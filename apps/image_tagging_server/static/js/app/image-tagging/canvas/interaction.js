@@ -180,6 +180,11 @@ export function preemptDragTarget(runtime, domEvent) {
   if (!group) return;
 
   group.moveToTop();
+  // The Transformer (resize anchors) is a sibling of the bbox groups on this
+  // same layer, normally kept on top by selection.js's setSelection(). The
+  // moveToTop() above would otherwise stack this box back over it, burying
+  // the anchors of an already-selected box under their own bbox.
+  runtime.canvas.transformer?.moveToTop();
   // moveToTop() only reorders the node tree; Konva's native mousedown handler
   // (about to run, synchronously, right after this) reads its offscreen hit
   // canvas to resolve the target, and that canvas only reflects the new order
