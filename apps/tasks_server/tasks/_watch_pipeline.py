@@ -19,7 +19,7 @@ import numpy as np
 
 from apps.helpers.cascade import CropSubModel
 from apps.helpers.imageProviders.imageProvider import ImageProvider
-from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, Tracker
+from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, Tracker, merge_duplicate_tracks
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventCloseReason, WatchEventSignal
 from apps.helpers.watch.geometry import Zone, is_masked
@@ -419,7 +419,10 @@ class WatchPipeline:
         # `_last_detections` is what the tracker actually saw, so the live view shows the
         # same picture the rules are reasoning about.
         self._last_detections = list(surviving)
-        self._last_tracks = self.tracker.update(list(surviving), now)
+        # Collapses ghost tracks (two persistent ids for one animal, see
+        # `merge_duplicate_tracks`'s docstring) before anything downstream — rule
+        # engine, overlay, saved frames — ever sees them.
+        self._last_tracks = merge_duplicate_tracks(self.tracker.update(list(surviving), now))
         current_ids = {t.track_id for t in self._last_tracks}
         self._dead_track_ids = [tid for tid in self._prior_track_ids if tid not in current_ids]
         self._prior_track_ids = current_ids

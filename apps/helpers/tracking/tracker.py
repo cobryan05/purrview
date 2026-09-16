@@ -129,3 +129,59 @@ class Tracker(ABC):
     def active_tracks(self) -> List[Track]:
         """Currently live, confirmed tracks. Default implementation returns nothing."""
         return []
+
+
+def _iou(a: BBox, b: BBox) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+#: Same rationale as `DEFAULT_EXCLUSIVE_VARIANTS_IOU_THRESH` in yoloUtils.py: high
+#: enough that two genuinely distinct animals standing close together essentially
+#: never clear it, but well below 1.0 because near-duplicate tracks drift apart
+#: slightly frame to frame rather than sitting pixel-identical.
+DUPLICATE_TRACK_IOU_THRESH = 0.85
+
+
+def merge_duplicate_tracks(tracks: List[Track], iou_threshold: float = DUPLICATE_TRACK_IOU_THRESH) -> List[Track]:
+    """Collapse tracks that are almost certainly the same physical object.
+
+    A tracker occasionally spawns two persistent tracks for one animal — a brief
+    detector dropout breaks association and a new id starts beside the old one
+    instead of continuing it. The two then coast independently, each drawn and
+    classified every frame (sometimes under different guessed identities), until —
+    if ever — a delayed, offline occlusion-merge heuristic notices, sometimes many
+    seconds later and never retroactively. This runs every frame instead, right
+    after `Tracker.update()`, so the duplicate never reaches the rule engine, the
+    overlay, or a saved training frame in the first place.
+
+    Safe to drop a track id outright rather than reconciling it into the survivor:
+    rule/event state is keyed by label+zone, not by track id, and track ids are
+    already documented as not surviving even a watcher restart (see
+    `Tracker.reset()` and STREAM_WATCHER_PLAN.md) — nothing downstream depends on
+    which of two duplicate ids kept living.
+
+    Greedy NMS by confidence, independent of label: two boxes this close together
+    are the same object regardless of whether they currently agree on *who* it is
+    — that disagreement is exactly the case a same-label-only check would miss.
+    """
+    if len(tracks) < 2:
+        return tracks
+    ordered = sorted(tracks, key=lambda t: t.confidence, reverse=True)
+    kept: List[Track] = []
+    for t in ordered:
+        if any(_iou(t.bbox, k.bbox) >= iou_threshold for k in kept):
+            continue
+        kept.append(t)
+    kept_ids = {t.track_id for t in kept}
+    return [t for t in tracks if t.track_id in kept_ids]

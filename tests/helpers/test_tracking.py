@@ -13,7 +13,13 @@ from apps.helpers.tracking.Registry import (
     register_tracker,
     tracker_registry,
 )
-from apps.helpers.tracking.tracker import Detection, LabelLifetimeSpec, Track, Tracker
+from apps.helpers.tracking.tracker import (
+    Detection,
+    LabelLifetimeSpec,
+    Track,
+    Tracker,
+    merge_duplicate_tracks,
+)
 
 CAT = "label-cat"
 BOX = "label-litterbox"
@@ -400,3 +406,48 @@ class TestRecoveryMargin:
 
         owner = next(t.track_id for t in moved if t.bbox == far)
         assert owner != near_id
+
+
+def _track(track_id, x1, y1, x2, y2, conf=0.9, label=CAT) -> Track:
+    return Track(track_id=track_id, bbox=(x1, y1, x2, y2), label_uuid=label, confidence=conf, confirmed=True)
+
+
+class TestMergeDuplicateTracks:
+    """Regression coverage for the ghost-track bug: a tracker spawning two live ids for
+    one physical cat, each drawn and classified independently every frame until (if
+    ever) a slow, offline occlusion-merge heuristic notices. See PR discussion — real
+    saved training frames were found with two ~0.9+ IOU 'Luna' boxes stacked on one cat,
+    traced back to two simultaneously-alive tracks, one of which briefly disagreed on
+    the cat's identity before correction.
+    """
+
+    def test_drops_the_lower_confidence_near_duplicate(self):
+        tracks = [_track(1, 0, 0, 100, 100, conf=0.73), _track(2, 2, 2, 98, 99, conf=0.57)]
+        kept = merge_duplicate_tracks(tracks)
+        assert [t.track_id for t in kept] == [1]
+
+    def test_merges_across_disagreeing_labels(self):
+        """The exact bug found in production: one track guessed Maple, the other Willow,
+        both boxes on the same physical cat. A same-label-only check would miss this."""
+        tracks = [
+            _track(1, 0, 0, 100, 100, conf=0.47, label="label-maple"),
+            _track(2, 3, 3, 97, 98, conf=0.46, label="label-willow"),
+        ]
+        kept = merge_duplicate_tracks(tracks)
+        assert len(kept) == 1
+        assert kept[0].track_id == 1
+
+    def test_distinct_animals_side_by_side_both_survive(self):
+        """Low overlap must never be treated as the same object."""
+        tracks = [_track(1, 0, 0, 10, 10), _track(2, 14, 0, 24, 10)]
+        kept = merge_duplicate_tracks(tracks)
+        assert {t.track_id for t in kept} == {1, 2}
+
+    def test_three_way_duplicate_keeps_only_the_strongest(self):
+        tracks = [
+            _track(1, 0, 0, 100, 100, conf=0.40),
+            _track(2, 1, 1, 99, 99, conf=0.90),
+            _track(3, 2, 2, 98, 98, conf=0.60),
+        ]
+        kept = merge_duplicate_tracks(tracks)
+        assert [t.track_id for t in kept] == [2]

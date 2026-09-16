@@ -241,6 +241,50 @@ export function applyLabelRemap(boxes, remap) {
     ));
 }
 
+function boxIou(a, b) {
+  const [ax1, ay1, ax2, ay2] = a;
+  const [bx1, by1, bx2, by2] = b;
+  const ix1 = Math.max(ax1, bx1), iy1 = Math.max(ay1, by1);
+  const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
+  const iw = Math.max(0, ix2 - ix1), ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  if (inter <= 0) return 0;
+  const areaA = Math.max(0, ax2 - ax1) * Math.max(0, ay2 - ay1);
+  const areaB = Math.max(0, bx2 - bx1) * Math.max(0, by2 - by1);
+  const union = areaA + areaB - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/**
+ * Backstop against the tracker occasionally running two live tracks on one physical
+ * animal (a brief detector dropout breaks association and a new track starts beside
+ * the old one instead of continuing it — see `merge_duplicate_tracks` on the Python
+ * side, which fixes this upstream but can't cover every existing/undeployed watcher).
+ * Applied AFTER the remap, so two tracks that disagreed on identity before correction
+ * (one "Maple", one "Willow") and both got corrected to the same final label are caught
+ * too, not just tracks that already agreed.
+ *
+ * Greedy NMS by confidence: among same-final-label boxes, a box overlapping an
+ * already-kept one at or above `iouThreshold` is dropped rather than kept, since at
+ * that overlap it is essentially always the same animal, not two side by side.
+ *
+ * @param {Array<Object>} boxes - `{labelUuid, bbox:[x1,y1,x2,y2], confidence}` entries
+ * @param {number} [iouThreshold]
+ * @returns {Array<Object>}
+ */
+export function dedupeOverlappingBoxes(boxes, iouThreshold = 0.75) {
+  const ordered = [...(boxes ?? [])].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+  const kept = [];
+  for (const box of ordered) {
+    const dupe = box.labelUuid
+      && kept.some(k => k.labelUuid === box.labelUuid && boxIou(box.bbox, k.bbox) >= iouThreshold);
+    if (!dupe) kept.push(box);
+  }
+  // Restore the caller's original ordering rather than the confidence sort above.
+  const keptSet = new Set(kept);
+  return (boxes ?? []).filter(box => keptSet.has(box));
+}
+
 /**
  * Ask which of this event's labels were wrong, and what they should have been.
  *

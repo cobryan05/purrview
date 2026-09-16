@@ -40,6 +40,7 @@ import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/a
 import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
 import {
   applyLabelRemap,
+  dedupeOverlappingBoxes,
   eventCorrectionFor,
   framesHoldingLabels,
   labelTallyAcrossClip,
@@ -958,7 +959,7 @@ export function openEventDetailModal(
           // one the event's times are quoted in — not the player time the seek used.
           filename: captureFilename(`${camera}_t${sidecarAt.toFixed(1)}`),
           path: DEFAULT_CAPTURE_DIR,
-          boxes: applyLabelRemap(boxes, remap),
+          boxes: dedupeOverlappingBoxes(applyLabelRemap(boxes, remap)),
           frameWidth: frame.width,
           frameHeight: frame.height,
           sourceUuid: event.sourceUuid || '',
