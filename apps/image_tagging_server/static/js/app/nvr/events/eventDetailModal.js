@@ -863,13 +863,51 @@ export function openEventDetailModal(
   }
 
   /**
+   * Wait until the video has actually *presented* a frame at or after `atS`, not merely
+   * finished the seek operation.
+   *
+   * `seeked` fires once the seek completes, but for compressed video the newly decoded
+   * picture is not guaranteed to be composited before the next paint — back-to-back
+   * seeks in a tight loop can `drawImage` the *previous* frame's pixels onto a canvas
+   * meant to hold this one. The visible symptom is a batch of "corrected" frames that
+   * all look identical (and carry boxes for a moment the picture doesn't actually show),
+   * which is worse than a slow capture: it looks like it worked.
+   *
+   * Bounded by `maxAttempts` rather than looping until an exact match — `requestVideoFrameCallback`
+   * reports the frame's own presentation time, which will not land exactly on `atS`, and
+   * "close enough" is what the hold-until-next-sample overlay logic already assumes.
+   *
+   * @param {HTMLVideoElement} video
+   * @param {number} atS
+   * @returns {Promise<void>} resolves immediately where the API is unsupported
+   *   (Firefox, older Safari) — the pre-existing `seeked`-only behaviour there rather
+   *   than a hang.
+   */
+  function waitForPresentedFrame(video, atS, { maxAttempts = 3 } = {}) {
+    if (typeof video.requestVideoFrameCallback !== 'function') return Promise.resolve();
+    return new Promise(resolve => {
+      let attempts = 0;
+      const check = (_now, metadata) => {
+        attempts += 1;
+        if ((metadata?.mediaTime ?? atS) >= atS - 0.02 || attempts >= maxAttempts) {
+          resolve();
+          return;
+        }
+        video.requestVideoFrameCallback(check);
+      };
+      video.requestVideoFrameCallback(check);
+    });
+  }
+
+  /**
    * Seek the clip to each chosen time and capture the frame there.
    *
    * Sequential rather than parallel because there is one `<video>` and one playhead;
    * "seek to all of these at once" is not a thing it can do. Each capture waits for the
-   * `seeked` event rather than a timeout — a decode is not instant and a `drawImage`
-   * issued too early silently paints the *previous* frame, which would put the corrected
-   * boxes on the wrong picture.
+   * `seeked` event, then for an actually-presented frame (`waitForPresentedFrame`) —
+   * `seeked` alone is not enough; see that function for why a decode is not instant and
+   * why a `drawImage` issued too early silently paints the *previous* frame, which would
+   * put the corrected boxes on the wrong picture.
    *
    * The playhead is put back where the user left it: this runs behind a modal they are
    * about to return to, and finding the clip parked somewhere else would read as the
@@ -910,6 +948,7 @@ export function openEventDetailModal(
       const playerT = t + lead;
       video.currentTime = playerT;
       await seeked;
+      await waitForPresentedFrame(video, playerT);
       const frame = await captureVideoFrame(video);
       if (frame) frames.push({ at: playerT, sidecarAt: t, frame });
     }
