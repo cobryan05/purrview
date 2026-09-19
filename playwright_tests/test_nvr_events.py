@@ -2221,6 +2221,10 @@ class TestSessionGroupingFoldsRepeats:
         assert page.locator("[data-testid='event-session-gap']").input_value() == "0"
         assert queries[-1].get("gap_s") is None, "the ungrouped page must not ask for sessions"
 
+        # The "0" above is a per-view override for this drilldown, not a change to the
+        # user's saved grouping preference — it must not be written back to localStorage.
+        assert page.evaluate("localStorage.getItem('nvr.events.sessionGapS')") == "120"
+
 
 class TestReviewTriage:
     def test_marking_a_selection_reviewed_sends_the_state(self, page: Page, base_url: str):

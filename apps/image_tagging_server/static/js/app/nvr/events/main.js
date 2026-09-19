@@ -507,9 +507,10 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   function drilldown(group, { window: win = null, ungroupSessions = false } = {}) {
     windowOverride = win;
     if (ungroupSessions && sessionGapS > 0) {
+      // In-memory/select only — this is a per-view override for the drilldown,
+      // not a change to the user's saved grouping preference.
       sessionGapS = 0;
       gapSelect.value = '0';
-      localStorage.setItem(SESSION_STORAGE_KEY, '0');
     }
     filters.setState(groupDrilldownFilters(group, { splitByCamera }), {
       silent: true,

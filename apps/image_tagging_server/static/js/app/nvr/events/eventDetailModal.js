@@ -31,7 +31,6 @@ import {
   deleteWatchEvent,
   fetchRecording,
   recordingFileUrl,
-  setWatchEventReviewStates,
   updateWatchEvent,
   watchEventSnapshotUrl,
 } from '/app-static/js/shared/api/watchProfiles.js';
@@ -65,6 +64,18 @@ const REVIEW_STATE_LABELS = {
   dismissed: 'Dismissed',
   flagged: 'Flagged — labels were wrong',
 };
+
+/**
+ * How `metadataJson.flag` reads in the sidebar. `reviewState` alone can't tell "still
+ * needs a look" from "already fixed" apart once both have gone through the same
+ * `flagged`/`confirmed` values — this is the field that carries who raised it and
+ * whether it's resolved.
+ */
+function describeFlag(flag) {
+  if (!flag) return null;
+  const origin = flag.source === 'home_assistant' ? 'Home Assistant' : 'in-app correction';
+  return flag.resolvedAt ? `${origin} — fixed` : `${origin} — not yet fixed`;
+}
 
 /**
  * How a timelapse describes itself, from the metadata its action recorded.
@@ -1027,14 +1038,24 @@ export function openEventDetailModal(
       return;
     }
     try {
-      await setWatchEventReviewStates([event.uuid], 'flagged');
-      event.reviewState = 'flagged';
+      // Correcting an event *resolves* it, whether the flag came from Home Assistant
+      // or this is the first anyone's touched it — either way `reviewState: 'flagged'`
+      // would mean the same "still needs a look" that untouched HA flags mean, and the
+      // two would be indistinguishable in the Review filter. `metadataJson.flag` carries
+      // the distinction: `source` says who raised it, `resolvedAt` says whether it's
+      // still open.
+      const existingFlag = event.metadataJson?.flag ?? null;
+      const flag = { ...(existingFlag ?? { source: 'app' }), resolvedAt: new Date().toISOString() };
+      const metadataJson = { ...(event.metadataJson ?? {}), flag };
+      const updated = await updateWatchEvent(event.uuid, { reviewState: 'confirmed', metadataJson });
+      event.reviewState = updated.reviewState;
+      event.metadataJson = updated.metadataJson;
       renderSidebar();
     } catch (err) {
       // Reported, but not allowed to swallow the offer below: the frames — the thing
       // actually worth reviewing — were saved either way.
       Logger.error(err);
-      toast('The corrected frames were saved, but the event could not be flagged', 6000, 'error');
+      toast('The corrected frames were saved, but the event could not be marked reviewed', 6000, 'error');
     }
     await offerToReview(saved);
   }
@@ -1230,6 +1251,10 @@ export function openEventDetailModal(
     // somebody *has* acted on harder to spot, not easier.
     if (REVIEW_STATE_LABELS[event.reviewState]) {
       sidebar.appendChild(detailRow('Review', REVIEW_STATE_LABELS[event.reviewState]));
+    }
+    const flagDesc = describeFlag(event.metadataJson?.flag);
+    if (flagDesc) {
+      sidebar.appendChild(detailRow('Flag', flagDesc));
     }
 
     // Above the delete button, below the facts: the findings are something to act on,
