@@ -212,6 +212,10 @@ ORT_REQUIREMENTS="requirements-cpu.txt"
 COMPOSE_PROFILES=""
 COMPOSE_FILE=""
 TRAINING_SERVER_HOST=""
+TRAINING_SERVER_PORT=""
+# Whether a training container of its own runs here (as opposed to mono, where
+# training shares the app container) — it is the one with its own dashboard.
+SEPARATE_TRAINING="n"
 
 case "$ROLE" in
   1)  # Everything on one box — training needs a GPU; inference GPU is optional
@@ -228,6 +232,7 @@ case "$ROLE" in
       # split: app and training are separate containers, so a CPU-inference
       # frontend can use the slim base and skip CUDA entirely.
       COMPOSE_PROFILES="app,training"
+      SEPARATE_TRAINING="y"
       apply_inference_choice "$GI"
     else
       # mono: one container, so it must be the CUDA base (torch needs it); only
@@ -243,6 +248,10 @@ case "$ROLE" in
     COMPOSE_PROFILES="app"
     if ask "Point at a remote training server?" n; then
       TRAINING_SERVER_HOST="$(ask_str "  Training server hostname/IP:")"
+      # The port that host *publishes* (its TRAINING_PORT), which is only 8005
+      # if its own setup.sh left the default.
+      TRAINING_SERVER_PORT="$(ask_port "  Training server port:" 8005)"
+      [ "$TRAINING_SERVER_PORT" = "8005" ] && TRAINING_SERVER_PORT=""
     fi
     ;;
 
@@ -252,6 +261,7 @@ case "$ROLE" in
       ask "   Continue anyway?" n || { echo "Aborted."; exit 1; }
     fi
     COMPOSE_PROFILES="training"
+    SEPARATE_TRAINING="y"
     # APP_BASE/ORT are irrelevant to the training image (built on the PyTorch
     # base), but keep them consistent for any shared build args.
     APP_BASE="cuda-runtime"
@@ -272,6 +282,7 @@ case "$ROLE" in
       # CPU-inference app-dev can use the slim base and skip the GPU
       # reservation entirely (training-dev still always reserves one).
       COMPOSE_PROFILES="dev"
+      SEPARATE_TRAINING="y"
       apply_inference_choice "$GI"
     else
       # dev-mono: one container, so it must be the CUDA base (torch needs it);
@@ -300,26 +311,41 @@ HAS_MEDIAMTX="y"; [ "$ROLE" = "3" ] && HAS_MEDIAMTX="n"
 HAS_TRAINING="y"; [ "$ROLE" = "2" ] && HAS_TRAINING="n"
 
 # ---- host ports -------------------------------------------------------------
-# Host-side mappings only: inside the container the app is always 7999 and
-# supervisord 9001, so changing these never touches the service config. Asked
-# on every host that runs the app (a training-only node exposes neither).
+# Host-side mappings only: inside the containers the app is always 7999, the
+# training API 8005 and supervisord 9001, so changing these never touches the
+# service config. Each is asked only where this host actually publishes it.
 APP_PORT=""
 SUPERVISORD_PORT=""
-if [ "$HAS_MEDIAMTX" = "y" ]; then
-  echo
-  echo "-- Host ports --"
-  echo "   Where the app and the supervisord dashboard are reachable on this host."
-  while true; do
+TRAINING_PORT=""
+TRAINING_SUPERVISORD_PORT=""
+echo
+echo "-- Host ports --"
+echo "   Where each service is reachable on this host."
+while true; do
+  chosen=""
+  if [ "$HAS_MEDIAMTX" = "y" ]; then
     APP_PORT="$(ask_port "  App (web UI) port:" 7999)"
     SUPERVISORD_PORT="$(ask_port "  Supervisord dashboard port:" 9001)"
-    [ "$APP_PORT" != "$SUPERVISORD_PORT" ] && break
-    echo "  !! The two ports must differ." >&2
-  done
-  # Only a non-default value is written, so an untouched .env stays as short as
-  # it was and the compose defaults keep doing the work.
-  [ "$APP_PORT" = "7999" ] && APP_PORT=""
-  [ "$SUPERVISORD_PORT" = "9001" ] && SUPERVISORD_PORT=""
-fi
+    chosen="$APP_PORT $SUPERVISORD_PORT"
+  fi
+  if [ "$HAS_TRAINING" = "y" ]; then
+    TRAINING_PORT="$(ask_port "  Training API port:" 8005)"
+    chosen="$chosen $TRAINING_PORT"
+  fi
+  if [ "$SEPARATE_TRAINING" = "y" ]; then
+    TRAINING_SUPERVISORD_PORT="$(ask_port "  Training supervisord dashboard port:" 9002)"
+    chosen="$chosen $TRAINING_SUPERVISORD_PORT"
+  fi
+  # shellcheck disable=SC2086
+  [ "$(printf '%s\n' $chosen | sort | uniq -d | wc -l)" -eq 0 ] && break
+  echo "  !! Every port must be different." >&2
+done
+# Only a non-default value is written, so an untouched .env stays as short as
+# it was and the compose defaults keep doing the work.
+[ "$APP_PORT" = "7999" ] && APP_PORT=""
+[ "$SUPERVISORD_PORT" = "9001" ] && SUPERVISORD_PORT=""
+[ "$TRAINING_PORT" = "8005" ] && TRAINING_PORT=""
+[ "$TRAINING_SUPERVISORD_PORT" = "9002" ] && TRAINING_SUPERVISORD_PORT=""
 
 echo
 if ask "Tune cache and buffer sizes? (defaults are fine for most deployments)" n; then
@@ -373,10 +399,13 @@ fi
   echo "ORT_REQUIREMENTS=$ORT_REQUIREMENTS"
   echo
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
+  [ -n "$TRAINING_SERVER_PORT" ] && echo "TRAINING_SERVER_PORT=$TRAINING_SERVER_PORT"
   echo "APPUSER_UID=$UID_VAL"
   echo "APPUSER_GID=$GID_VAL"
   [ -n "$APP_PORT" ] && echo "APP_PORT=$APP_PORT"
   [ -n "$SUPERVISORD_PORT" ] && echo "SUPERVISORD_PORT=$SUPERVISORD_PORT"
+  [ -n "$TRAINING_PORT" ] && echo "TRAINING_PORT=$TRAINING_PORT"
+  [ -n "$TRAINING_SUPERVISORD_PORT" ] && echo "TRAINING_SUPERVISORD_PORT=$TRAINING_SUPERVISORD_PORT"
   # Sizing knobs are only written when the user opted into tuning them; otherwise
   # the compose defaults apply, so an untuned .env stays as short as it was.
   echo
@@ -400,8 +429,17 @@ echo "Profiles: $COMPOSE_PROFILES"
   && echo "App image: SLIM (CPU-only, no CUDA)" \
   || echo "App image: CUDA (GPU inference)"
 if [ "$HAS_MEDIAMTX" = "y" ]; then
-  echo "App:       http://localhost:${APP_PORT:-7999}"
-  echo "Supervisor: http://localhost:${SUPERVISORD_PORT:-9001}"
+  echo "App:                 http://localhost:${APP_PORT:-7999}"
+  echo "Supervisord:         http://localhost:${SUPERVISORD_PORT:-9001}"
+fi
+if [ "$HAS_TRAINING" = "y" ]; then
+  echo "Training API:        http://localhost:${TRAINING_PORT:-8005}"
+fi
+if [ "$SEPARATE_TRAINING" = "y" ]; then
+  echo "Training supervisord: http://localhost:${TRAINING_SUPERVISORD_PORT:-9002}"
+fi
+if [ -n "$TRAINING_SERVER_HOST" ]; then
+  echo "Remote trainer:      http://${TRAINING_SERVER_HOST}:${TRAINING_SERVER_PORT:-8005}"
 fi
 echo
 echo "Note: building the app image runs a one-time OpenAPI/client build stage,"

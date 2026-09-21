@@ -64,7 +64,10 @@ APPS_CONFIG = {
     APPS.TRAINING_SERVER: AppConfig(
         "Training Server",
         os.environ.get("TRAINING_SERVER_HOST", "localhost"),
-        APP_BASE_PORTS[APPS.TRAINING_SERVER] + _port_offset,
+        # The one service that may sit on another machine behind a port of that
+        # machine's choosing, so its port is settable outright rather than only
+        # shifted by PORT_OFFSET. Unset, it is the usual base + offset.
+        int(os.environ.get("TRAINING_SERVER_PORT") or APP_BASE_PORTS[APPS.TRAINING_SERVER] + _port_offset),
     ),
     APPS.MEDIA_MTX_RTSP: AppConfig(
         "MediaMTXRtsp",

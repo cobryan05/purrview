@@ -82,6 +82,10 @@ services:
       # Reach the training node; defaults to the `training` compose service.
       # Point at a remote host for a remote training box.
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training}
+      # The port the frontend dials, not the one this host publishes: a local
+      # `training` service is always reached on its container port 8005, so
+      # only a remote trainer behind a custom port needs this changed.
+      TRAINING_SERVER_PORT: ${TRAINING_SERVER_PORT:-8005}
     # `training` is only part of the compose project when its own profile is
     # active (e.g. the "app,training" split); `required: false` lets `app`
     # start on its own for the "frontend + remote training" topology while
@@ -142,8 +146,8 @@ services:
       - ./logs:/logs
       - training_cache:/training-cache
     ports:
-      - "8005:8005"   # Training API server
-      - "9002:9001"   # Supervisord dashboard
+      - "${TRAINING_PORT:-8005}:8005"   # Training API server
+      - "${TRAINING_SUPERVISORD_PORT:-9002}:9001"   # Supervisord dashboard
     restart: unless-stopped
     profiles: ["training"]
 
@@ -197,7 +201,7 @@ services:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "${APP_PORT:-7999}:7999"   # PurrView main app
-      - "8005:8005"   # Training server
+      - "${TRAINING_PORT:-8005}:8005"   # Training server
       - "8553:8554"   # RTSP relay
       - "${SUPERVISORD_PORT:-9001}:9001"   # Supervisord
     restart: unless-stopped
@@ -227,6 +231,7 @@ services:
       STREAM_BUFFER_SIZE: ${STREAM_BUFFER_SIZE:-512m}
       MODELS_ROOT: /app/models
       TRAINING_SERVER_HOST: ${TRAINING_SERVER_HOST:-training-dev}
+      TRAINING_SERVER_PORT: ${TRAINING_SERVER_PORT:-8005}
     # training-dev is always part of the same "dev" profile as app-dev, so
     # this can be an unconditional dependency (unlike app -> training).
     depends_on:
@@ -282,8 +287,8 @@ services:
       - .:/project
       - training_cache:/training-cache
     ports:
-      - "8005:8005"
-      - "9002:9001"
+      - "${TRAINING_PORT:-8005}:8005"
+      - "${TRAINING_SUPERVISORD_PORT:-9002}:9001"
     restart: "no"
     profiles: ["dev"]
 
@@ -351,7 +356,7 @@ services:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "${APP_PORT:-7999}:7999"
-      - "8005:8005"
+      - "${TRAINING_PORT:-8005}:8005"
       - "8553:8554"
       - "${SUPERVISORD_PORT:-9001}:9001"
     restart: "no"
