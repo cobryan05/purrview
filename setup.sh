@@ -55,6 +55,20 @@ ask_int() {  # ask_int "Question" default -> echoes answer
   done
 }
 
+# Ask for a TCP port. Re-prompts until it is a number in 1..65535, so a typo
+# fails here and not as a compose "invalid port" error at `up` time.
+ask_port() {  # ask_port "Question" default -> echoes answer
+  local prompt="$1" def="$2" reply
+  while true; do
+    read -r -p "$prompt [$def] " reply >&2 || true
+    reply="${reply:-$def}"
+    if printf '%s' "$reply" | grep -Eq '^[0-9]+$' && [ "$reply" -ge 1 ] && [ "$reply" -le 65535 ]; then
+      echo "$reply"; return 0
+    fi
+    echo "  !! Expected a port number from 1 to 65535 — got '$reply'." >&2
+  done
+}
+
 menu() {  # menu "Title" "opt1" "opt2" ... -> echoes chosen index (1-based) on stderr-free stdout
   local title="$1"; shift
   local i=1
@@ -285,6 +299,28 @@ TRAINING_CACHE_SWEEP_INTERVAL_SEC=""
 HAS_MEDIAMTX="y"; [ "$ROLE" = "3" ] && HAS_MEDIAMTX="n"
 HAS_TRAINING="y"; [ "$ROLE" = "2" ] && HAS_TRAINING="n"
 
+# ---- host ports -------------------------------------------------------------
+# Host-side mappings only: inside the container the app is always 7999 and
+# supervisord 9001, so changing these never touches the service config. Asked
+# on every host that runs the app (a training-only node exposes neither).
+APP_PORT=""
+SUPERVISORD_PORT=""
+if [ "$HAS_MEDIAMTX" = "y" ]; then
+  echo
+  echo "-- Host ports --"
+  echo "   Where the app and the supervisord dashboard are reachable on this host."
+  while true; do
+    APP_PORT="$(ask_port "  App (web UI) port:" 7999)"
+    SUPERVISORD_PORT="$(ask_port "  Supervisord dashboard port:" 9001)"
+    [ "$APP_PORT" != "$SUPERVISORD_PORT" ] && break
+    echo "  !! The two ports must differ." >&2
+  done
+  # Only a non-default value is written, so an untouched .env stays as short as
+  # it was and the compose defaults keep doing the work.
+  [ "$APP_PORT" = "7999" ] && APP_PORT=""
+  [ "$SUPERVISORD_PORT" = "9001" ] && SUPERVISORD_PORT=""
+fi
+
 echo
 if ask "Tune cache and buffer sizes? (defaults are fine for most deployments)" n; then
   echo
@@ -339,6 +375,8 @@ fi
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
   echo "APPUSER_UID=$UID_VAL"
   echo "APPUSER_GID=$GID_VAL"
+  [ -n "$APP_PORT" ] && echo "APP_PORT=$APP_PORT"
+  [ -n "$SUPERVISORD_PORT" ] && echo "SUPERVISORD_PORT=$SUPERVISORD_PORT"
   # Sizing knobs are only written when the user opted into tuning them; otherwise
   # the compose defaults apply, so an untuned .env stays as short as it was.
   echo
@@ -361,6 +399,10 @@ echo "Profiles: $COMPOSE_PROFILES"
 [ "$APP_BASE" = "slim-runtime" ] \
   && echo "App image: SLIM (CPU-only, no CUDA)" \
   || echo "App image: CUDA (GPU inference)"
+if [ "$HAS_MEDIAMTX" = "y" ]; then
+  echo "App:       http://localhost:${APP_PORT:-7999}"
+  echo "Supervisor: http://localhost:${SUPERVISORD_PORT:-9001}"
+fi
 echo
 echo "Note: building the app image runs a one-time OpenAPI/client build stage,"
 echo "and the training/mono images build the CUDA/torch wheelhouse. Build on a"

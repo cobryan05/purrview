@@ -111,9 +111,9 @@ services:
     tmpfs:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
-      - "7999:7999"   # PurrView main app
+      - "${APP_PORT:-7999}:7999"   # PurrView main app
       - "8553:8554"   # RTSP relay
-      - "9001:9001"   # Supervisord
+      - "${SUPERVISORD_PORT:-9001}:9001"   # Supervisord
     restart: unless-stopped
     profiles: ["app"]
 
@@ -196,10 +196,10 @@ services:
     tmpfs:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
-      - "7999:7999"   # PurrView main app
+      - "${APP_PORT:-7999}:7999"   # PurrView main app
       - "8005:8005"   # Training server
       - "8553:8554"   # RTSP relay
-      - "9001:9001"   # Supervisord
+      - "${SUPERVISORD_PORT:-9001}:9001"   # Supervisord
     restart: unless-stopped
     profiles: ["mono"]
 
@@ -253,9 +253,9 @@ services:
     tmpfs:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
-      - "7999:7999"
+      - "${APP_PORT:-7999}:7999"
       - "8553:8554"
-      - "9001:9001"
+      - "${SUPERVISORD_PORT:-9001}:9001"
     restart: "no"
     profiles: ["dev"]
 
@@ -350,10 +350,10 @@ services:
     tmpfs:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
-      - "7999:7999"
+      - "${APP_PORT:-7999}:7999"
       - "8005:8005"
       - "8553:8554"
-      - "9001:9001"
+      - "${SUPERVISORD_PORT:-9001}:9001"
     restart: "no"
     profiles: ["dev-mono"]
 
