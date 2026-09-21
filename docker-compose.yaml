@@ -116,7 +116,7 @@ services:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "${APP_PORT:-7999}:7999"   # PurrView main app
-      - "8553:8554"   # RTSP relay
+      - "${RTSP_PORT:-8553}:8554"   # RTSP relay
       - "${SUPERVISORD_PORT:-9001}:9001"   # Supervisord
     restart: unless-stopped
     profiles: ["app"]
@@ -202,7 +202,7 @@ services:
     ports:
       - "${APP_PORT:-7999}:7999"   # PurrView main app
       - "${TRAINING_PORT:-8005}:8005"   # Training server
-      - "8553:8554"   # RTSP relay
+      - "${RTSP_PORT:-8553}:8554"   # RTSP relay
       - "${SUPERVISORD_PORT:-9001}:9001"   # Supervisord
     restart: unless-stopped
     profiles: ["mono"]
@@ -259,7 +259,7 @@ services:
       - /buffer:size=${STREAM_BUFFER_SIZE:-512m},mode=1777
     ports:
       - "${APP_PORT:-7999}:7999"
-      - "8553:8554"
+      - "${RTSP_PORT:-8553}:8554"
       - "${SUPERVISORD_PORT:-9001}:9001"
     restart: "no"
     profiles: ["dev"]
@@ -357,7 +357,7 @@ services:
     ports:
       - "${APP_PORT:-7999}:7999"
       - "${TRAINING_PORT:-8005}:8005"
-      - "8553:8554"
+      - "${RTSP_PORT:-8553}:8554"
       - "${SUPERVISORD_PORT:-9001}:9001"
     restart: "no"
     profiles: ["dev-mono"]

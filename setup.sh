@@ -312,10 +312,12 @@ HAS_TRAINING="y"; [ "$ROLE" = "2" ] && HAS_TRAINING="n"
 
 # ---- host ports -------------------------------------------------------------
 # Host-side mappings only: inside the containers the app is always 7999, the
-# training API 8005 and supervisord 9001, so changing these never touches the
-# service config. Each is asked only where this host actually publishes it.
+# training API 8005, supervisord 9001 and the RTSP relay 8554, so changing these
+# never touches the service config. Each is asked only where this host actually
+# publishes it.
 APP_PORT=""
 SUPERVISORD_PORT=""
+RTSP_PORT=""
 TRAINING_PORT=""
 TRAINING_SUPERVISORD_PORT=""
 echo
@@ -326,7 +328,8 @@ while true; do
   if [ "$HAS_MEDIAMTX" = "y" ]; then
     APP_PORT="$(ask_port "  App (web UI) port:" 7999)"
     SUPERVISORD_PORT="$(ask_port "  Supervisord dashboard port:" 9001)"
-    chosen="$APP_PORT $SUPERVISORD_PORT"
+    RTSP_PORT="$(ask_port "  RTSP relay port:" 8553)"
+    chosen="$APP_PORT $SUPERVISORD_PORT $RTSP_PORT"
   fi
   if [ "$HAS_TRAINING" = "y" ]; then
     TRAINING_PORT="$(ask_port "  Training API port:" 8005)"
@@ -344,6 +347,7 @@ done
 # it was and the compose defaults keep doing the work.
 [ "$APP_PORT" = "7999" ] && APP_PORT=""
 [ "$SUPERVISORD_PORT" = "9001" ] && SUPERVISORD_PORT=""
+[ "$RTSP_PORT" = "8553" ] && RTSP_PORT=""
 [ "$TRAINING_PORT" = "8005" ] && TRAINING_PORT=""
 [ "$TRAINING_SUPERVISORD_PORT" = "9002" ] && TRAINING_SUPERVISORD_PORT=""
 
@@ -404,6 +408,7 @@ fi
   echo "APPUSER_GID=$GID_VAL"
   [ -n "$APP_PORT" ] && echo "APP_PORT=$APP_PORT"
   [ -n "$SUPERVISORD_PORT" ] && echo "SUPERVISORD_PORT=$SUPERVISORD_PORT"
+  [ -n "$RTSP_PORT" ] && echo "RTSP_PORT=$RTSP_PORT"
   [ -n "$TRAINING_PORT" ] && echo "TRAINING_PORT=$TRAINING_PORT"
   [ -n "$TRAINING_SUPERVISORD_PORT" ] && echo "TRAINING_SUPERVISORD_PORT=$TRAINING_SUPERVISORD_PORT"
   # Sizing knobs are only written when the user opted into tuning them; otherwise
@@ -431,6 +436,7 @@ echo "Profiles: $COMPOSE_PROFILES"
 if [ "$HAS_MEDIAMTX" = "y" ]; then
   echo "App:                 http://localhost:${APP_PORT:-7999}"
   echo "Supervisord:         http://localhost:${SUPERVISORD_PORT:-9001}"
+  echo "RTSP relay:          rtsp://localhost:${RTSP_PORT:-8553}"
 fi
 if [ "$HAS_TRAINING" = "y" ]; then
   echo "Training API:        http://localhost:${TRAINING_PORT:-8005}"
