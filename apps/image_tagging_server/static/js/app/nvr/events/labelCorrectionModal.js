@@ -169,17 +169,130 @@ export function framesHoldingLabels(doc, labelUuids) {
 }
 
 /**
+ * Slots the spread pass always keeps, however many hard moments there are.
+ *
+ * The first and last frames of a visit are where the animal is entering and leaving —
+ * poses no blip will ever point at — so hard moments may fill the cap only this far.
+ */
+export const SPREAD_RESERVE = 2;
+
+/**
+ * How many of the most- and least-confident wrong-label frames count as hard moments.
+ *
+ * Both ends, deliberately. A detector that was *sure* and wrong is the most damaging
+ * case and the strongest correction; one that was barely sure is the decision
+ * boundary. The middle is where the even spread already looks.
+ */
+export const CONFIDENCE_EXTREMES = 2;
+
+/** A blip moment must land within this of a frame holding the label to count. */
+const SNAP_TOLERANCE_S = 1.0;
+
+/**
+ * The moments in a clip where correcting these labels teaches the model the most.
+ *
+ * Two sources, ranked so a blip always outranks a confidence pick:
+ *
+ *  * **Blips** (`blips.py`): identity flips, dropouts, occlusion merges — the frames the
+ *    analyser already decided the detector failed on. Onset, middle and recovery of each
+ *    incident, the same moments `harvest_times` takes, because the boundaries are where
+ *    the decision actually changed. Weighted by `severity`: a blip the detector was
+ *    sure about is worse than one it hedged on. Tracker-fault blips are included too —
+ *    the harvest excludes them because *the detector* was right, but a correction is
+ *    the user saying it was not.
+ *  * **Confidence extremes** of the wrong-label boxes themselves, `CONFIDENCE_EXTREMES`
+ *    from each end.
+ *
+ * Every moment is snapped to a frame that actually holds one of the labels, so the
+ * picker can return it as-is and the capture lands on a sample with boxes to relabel.
+ *
+ * @param {Object} doc - a clip overlay sidecar
+ * @param {Iterable<string>} labelUuids - the labels being corrected
+ * @param {Array<Object>} [blips] - this event's blips, as `fetchEventBlips` returns them
+ * @returns {Array<{t: number, weight: number, why: string}>} heaviest first, one per frame
+ */
+export function hardMomentsFor(doc, labelUuids, blips = []) {
+  const wanted = new Set(labelUuids ?? []);
+  const times = framesHoldingLabels(doc, wanted);
+  if (!times.length) return [];
+
+  const snap = t => {
+    let best = null;
+    for (const cand of times) {
+      if (best == null || Math.abs(cand - t) < Math.abs(best - t)) best = cand;
+    }
+    return best != null && Math.abs(best - t) <= SNAP_TOLERANCE_S ? best : null;
+  };
+
+  /** @type {Map<number, {t: number, weight: number, why: string}>} */
+  const byFrame = new Map();
+  const offer = (t, weight, why) => {
+    const at = snap(t);
+    if (at == null) return;
+    const have = byFrame.get(at);
+    if (!have || have.weight < weight) byFrame.set(at, { t: at, weight, why });
+  };
+
+  for (const blip of blips ?? []) {
+    const detail = blip?.detail ?? {};
+    const named = [detail.sawLabel, detail.modalLabel, detail.absorbedByLabel].filter(Boolean);
+    // A blip that names labels is only about this correction if one of them is being
+    // corrected; one that names none (a raw-detection ghost) is offered regardless.
+    if (named.length && !named.some(u => wanted.has(u))) continue;
+    const start = Number(blip.startS);
+    const end = Number(blip.endS);
+    if (!Number.isFinite(start)) continue;
+    const severity = Number(blip.severity) || 0;
+    const weight = 2 + severity;
+    const moments = Number.isFinite(end) && end > start ? [start, (start + end) / 2, end] : [start];
+    for (const t of moments) offer(t, weight, blip.kind || 'blip');
+  }
+
+  // Per frame, the most confident box of a corrected label — that is the claim being
+  // corrected, and the number that says how badly.
+  const confAt = [];
+  for (const frame of doc?.frames ?? []) {
+    if (typeof frame?.t !== 'number') continue;
+    let conf = null;
+    for (const box of frame.boxes ?? []) {
+      if (!wanted.has(box?.labelUuid)) continue;
+      const c = Number(box.conf);
+      if (Number.isFinite(c) && (conf == null || c > conf)) conf = c;
+    }
+    if (conf != null) confAt.push({ t: frame.t, conf });
+  }
+  // Strictly beyond the median, or it is not an extreme: on a clip where every box
+  // scored the same, "the top two" would be whichever came first, filed as if the
+  // model had been unusually sure of them.
+  const byConf = [...confAt].sort((a, b) => b.conf - a.conf);
+  const median = byConf.length ? byConf[Math.floor(byConf.length / 2)].conf : 0;
+  for (const { t, conf } of byConf.slice(0, CONFIDENCE_EXTREMES)) {
+    if (conf > median) offer(t, 1 + conf, 'confident_wrong');
+  }
+  for (const { t, conf } of byConf.slice(-CONFIDENCE_EXTREMES).reverse()) {
+    if (conf < median) offer(t, 1 + (1 - conf), 'unsure');
+  }
+
+  return [...byFrame.values()].sort((a, b) => b.weight - a.weight || a.t - b.t);
+}
+
+/**
  * Choose the subset of frames actually worth saving.
  *
- * Two passes, in this order, because they answer different objections:
+ * Three passes, in this order, because they answer different objections:
  *
- *  1. **Thin by time.** Frames closer together than `minGapS` show the same pose. This
- *     pass runs first so the cap is spent on *distinct* frames rather than on whichever
- *     burst happened to be densest.
- *  2. **Spread to the cap.** If more survive than the cap allows, take evenly spaced
- *     ones across the whole span — first and last included, since the beginning and end
- *     of a visit are where the animal is entering and leaving, and those are the poses
- *     the middle of the clip does not have.
+ *  1. **Hard moments first.** Frames `priority` points at — where the detector was
+ *     caught being wrong — are taken heaviest-first, as long as each sits `minGapS`
+ *     from the ones already taken. They may fill the cap only up to `SPREAD_RESERVE`
+ *     short of it: a set that is nothing but the incident is a set with no idea what
+ *     the rest of the visit looked like.
+ *  2. **Thin by time.** Frames closer together than `minGapS` — to each other or to a
+ *     hard moment — show the same pose. This runs before the cap so the cap is spent
+ *     on *distinct* frames rather than on whichever burst happened to be densest.
+ *  3. **Spread to the cap.** If more survive than the remaining cap allows, take evenly
+ *     spaced ones across the whole span — first and last included, since the beginning
+ *     and end of a visit are where the animal is entering and leaving, and those are the
+ *     poses the middle of the clip does not have.
  *
  * Taking the *first* N instead would hand the trainer the first two seconds of every
  * event and nothing else, which is a worse set than a random sample and looks fine.
@@ -188,11 +301,27 @@ export function framesHoldingLabels(doc, labelUuids) {
  * @param {Object} [opts]
  * @param {number} [opts.maxFrames]
  * @param {number} [opts.minGapS]
- * @returns {number[]}
+ * @param {Array<{t: number, weight: number}>} [opts.priority] - as from hardMomentsFor;
+ *   `t` must be one of `times`
+ * @returns {number[]} ascending
  */
-export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, minGapS = MIN_FRAME_GAP_S } = {}) {
+export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, minGapS = MIN_FRAME_GAP_S, priority = [] } = {}) {
+  const all = times ?? [];
+  const have = new Set(all);
+  const picked = [];
+  const clear = t => picked.every(p => Math.abs(p - t) >= minGapS);
+
+  // A short clip has room for everything; the reserve only matters once frames compete.
+  const priorityCap = all.length > maxFrames ? Math.max(0, maxFrames - SPREAD_RESERVE) : maxFrames;
+  const ranked = [...(priority ?? [])].sort((a, b) => b.weight - a.weight || a.t - b.t);
+  for (const { t } of ranked) {
+    if (picked.length >= priorityCap) break;
+    if (have.has(t) && clear(t)) picked.push(t);
+  }
+
   const spaced = [];
-  for (const t of times ?? []) {
+  for (const t of all) {
+    if (!clear(t)) continue;
     if (!spaced.length || t - spaced[spaced.length - 1] >= minGapS) spaced.push(t);
   }
   // The greedy pass always keeps the *first* frame but silently drops the *last* one
@@ -201,18 +330,25 @@ export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, min
   // of the clip does not have. Swapped in over the final keep rather than appended, so
   // the minimum-gap invariant still holds: the frame it replaces was already at least
   // `minGapS` past the one before it, and this one is later still.
-  const last = times?.length ? times[times.length - 1] : null;
-  if (spaced.length >= 2 && last != null && spaced[spaced.length - 1] !== last) {
+  const last = all.length ? all[all.length - 1] : null;
+  if (spaced.length >= 2 && last != null && spaced[spaced.length - 1] !== last && clear(last)) {
     spaced[spaced.length - 1] = last;
   }
-  if (spaced.length <= maxFrames) return spaced;
-  if (maxFrames <= 1) return spaced.slice(0, Math.max(0, maxFrames));
-  const picked = [];
-  // Fenceposts, not buckets: dividing by (maxFrames - 1) is what puts the last pick on
-  // the final frame rather than one step short of it.
-  const step = (spaced.length - 1) / (maxFrames - 1);
-  for (let i = 0; i < maxFrames; i++) picked.push(spaced[Math.round(i * step)]);
-  return [...new Set(picked)];
+
+  const room = Math.max(0, maxFrames - picked.length);
+  let spread;
+  if (spaced.length <= room) {
+    spread = spaced;
+  } else if (room <= 1) {
+    spread = spaced.slice(0, room);
+  } else {
+    // Fenceposts, not buckets: dividing by (room - 1) is what puts the last pick on the
+    // final frame rather than one step short of it.
+    const step = (spaced.length - 1) / (room - 1);
+    spread = [];
+    for (let i = 0; i < room; i++) spread.push(spaced[Math.round(i * step)]);
+  }
+  return [...new Set([...picked, ...spread])].sort((a, b) => a - b);
 }
 
 /**
@@ -294,8 +430,9 @@ export function dedupeOverlappingBoxes(boxes, iouThreshold = 0.75) {
  * @param {Map<string, Object>} opts.labels - every label the DB knows, uuid → label
  * @param {?Object} [opts.event] - the event being corrected. Given, the dialog can also
  *   offer to fix the event's own subject/target — see `eventCorrectionFor`.
- * @param {(labelUuids: string[]) => number} [opts.estimateFrames] - how many frames a
- *   given selection would harvest, for the live count
+ * @param {(labelUuids: string[]) => (number | {frames: number, hard: number})} [opts.estimateFrames] -
+ *   how many frames a given selection would harvest, for the live count; `hard` is how
+ *   many of them sit on a moment `hardMomentsFor` pointed at
  * @param {(remap: Map<string, string>, opts: {fixEvent: boolean}) => (void | Promise<void>)}
  *   opts.onConfirm - non-empty remap, plus whether the event row itself should be corrected
  * @param {?Map<string, string>} [opts.presetRemap] - a correction the caller already
@@ -431,10 +568,13 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
       estimate.textContent = '';
       return;
     }
-    const frames = estimateFrames?.(chosen);
+    const est = estimateFrames?.(chosen);
+    const frames = typeof est === 'number' ? est : est?.frames;
+    const hard = typeof est === 'number' ? 0 : (est?.hard ?? 0);
     estimate.textContent = frames == null
       ? ''
-      : `Will save ${frames} frame${frames === 1 ? '' : 's'} from this clip.`;
+      : `Will save ${frames} frame${frames === 1 ? '' : 's'} from this clip`
+        + (hard ? `, ${hard} at moments the detector was caught out.` : '.');
   }
   for (const picker of pickers) picker.select.addEventListener('change', syncConfirm);
   syncConfirm();

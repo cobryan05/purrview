@@ -2817,7 +2817,11 @@ class TestCorrectingAWrongLabel:
 
         page.locator("[data-testid='event-detail-relabel-event']").click()
 
-        options = page.locator("[data-testid='label-correction-select']").first.locator("option")
+        # The dialog opens once the labels and blips have arrived; `all_text_contents`
+        # does not wait, so the select has to be on the page first.
+        select = page.locator("[data-testid='label-correction-select']").first
+        expect(select).to_be_visible()
+        options = select.locator("option")
         assert "Tabby" not in options.all_text_contents()
         assert "Clover" in options.all_text_contents()
 
@@ -3004,6 +3008,7 @@ class TestCorrectingAWrongLabel:
         page.locator("[data-testid='event-detail-relabel-event']").click()
 
         select = page.locator("[data-testid='label-correction-select']").first
+        expect(select).to_be_visible()
         options = select.locator("option").all_text_contents()
         assert "No bbox — false positive" in options
 
@@ -3072,6 +3077,70 @@ class TestCorrectingAWrongLabel:
         assert capped[1] > 2, capped
         # A short event yields what it has rather than being padded to the cap.
         assert result["short"] == [0, 2, 4]
+
+    def test_the_harvest_takes_the_frames_the_detector_was_caught_out_on(self, page: Page, base_url: str):
+        """An even spread is what you take when you know nothing. A clip whose analyser
+        found an identity flip mid-visit, and whose wrong-label boxes have a confidence
+        the sidecar records, knows plenty — and a spread that ignores it hands the
+        reviewer eight frames of the cat sitting still while the one where the model
+        changed its mind goes unsaved.
+
+        So the flip's onset and recovery must be in the set, ahead of the spread; the
+        most- and least-confident wrong frames must be in it; a blip about a label that
+        is not being corrected must not steer it; and the first and last frames must
+        survive, because hard moments are allowed the cap only up to a reserve.
+        """
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate("""async () => {
+                const { hardMomentsFor, pickTrainingFrames, SPREAD_RESERVE } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const WRONG = 'label-wrong', OTHER = 'label-other';
+                // 20s at 5 fps, one wrong-label box per frame. Confidence is flat at 0.6
+                // except two frames: the model was very sure at 12.0s and barely at 3.0s.
+                const frames = Array.from({ length: 100 }, (_, i) => {
+                  const t = +(i * 0.2).toFixed(1);
+                  const conf = t === 12 ? 0.97 : t === 3 ? 0.21 : 0.6;
+                  return { t, boxes: [{ labelUuid: WRONG, x: 0.1, y: 0.1, w: 0.2, h: 0.2, conf }] };
+                });
+                const doc = { version: 1, frames };
+                const blips = [
+                  { kind: 'identity_flip', startS: 7.0, endS: 8.6, severity: 0.8,
+                    detail: { modalLabel: WRONG, sawLabel: OTHER } },
+                  // About a label that is not being corrected — must not steer the pick.
+                  { kind: 'detector_dropout', startS: 15.0, endS: 16.0, severity: 0.9,
+                    detail: { modalLabel: OTHER } },
+                ];
+                const wanted = [WRONG];
+                const hard = hardMomentsFor(doc, wanted, blips);
+                const times = frames.map(f => f.t);
+                return {
+                  hard,
+                  picked: pickTrainingFrames(times, { maxFrames: 8, minGapS: 0.75, priority: hard }),
+                  reserve: SPREAD_RESERVE,
+                };
+            }""")
+
+        why = {m["t"]: m["why"] for m in result["hard"]}
+        # The flip outranks any confidence pick: the detector was caught changing its mind.
+        assert why[7.0] == "identity_flip" and why[8.6] == "identity_flip", why
+        assert result["hard"][0]["why"] == "identity_flip"
+        assert why[12.0] == "confident_wrong", why
+        assert why[3.0] == "unsure", why
+        # The dropout was about a label that is not being corrected.
+        assert not any(15.0 <= t <= 16.0 for t in why), why
+
+        picked = result["picked"]
+        assert picked == sorted(picked)
+        assert len(picked) == 8, picked
+        for t in (7.0, 8.6, 12.0, 3.0):
+            assert t in picked, f"{t} is a hard moment and must be saved: {picked}"
+        # The reserve: hard moments never crowd out where the animal enters and leaves.
+        assert picked[0] == 0 and picked[-1] == 19.8, picked
+        assert sum(1 for t in picked if t in why) <= 8 - result["reserve"]
+        # Never two pictures of the same pose, hard moment or not.
+        assert all(b - a >= 0.75 for a, b in zip(picked, picked[1:])), picked
 
     def test_the_flagged_events_can_be_found_again(self, page: Page, base_url: str):
         """Flagging is only worth doing if the flagged ones come back. The filter sends

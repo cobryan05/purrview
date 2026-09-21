@@ -36,12 +36,14 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
-import { attachClipOverlay, fetchClipOverlay } from './clipOverlay.js';
+import { attachClipOverlay, fetchClipOverlay, sampleAt } from './clipOverlay.js';
+import { fetchEventBlips } from '/app-static/js/shared/api/eventBlips.js';
 import {
   applyLabelRemap,
   dedupeOverlappingBoxes,
   eventCorrectionFor,
   framesHoldingLabels,
+  hardMomentsFor,
   labelTallyAcrossClip,
   NO_BBOX,
   openLabelCorrectionModal,
@@ -742,7 +744,19 @@ export function openEventDetailModal(
    */
   function overlayBoxes(frame, atS = null) {
     if (!overlay || !video) return {};
-    const boxes = overlay.boxesAt(atS ?? video.currentTime ?? 0)
+    return scaledBoxes(overlay.boxesAt(atS ?? video.currentTime ?? 0), frame);
+  }
+
+  /**
+   * Sidecar boxes scaled into `frame`'s pixel space. The one place that owns the
+   * normalised→pixel convention; both the toolbar and the correction harvest read it.
+   *
+   * @param {Array<Object>} sidecarBoxes - `{labelUuid, x, y, w, h, conf}`, normalised
+   * @param {{width: number, height: number}} frame
+   * @returns {Object} spread into the save call — empty when there is nothing to save
+   */
+  function scaledBoxes(sidecarBoxes, frame) {
+    const boxes = (sidecarBoxes ?? [])
       .filter(b => b.labelUuid)
       .map(b => ({
         labelUuid: b.labelUuid,
@@ -819,6 +833,15 @@ export function openEventDetailModal(
       toast('Switch back to the event clip to correct its labels', 4000);
       return;
     }
+    // The analyser's own findings for this clip — where the detector flipped, dropped
+    // out or merged two animals — alongside the labels, not after them: the dialog
+    // waits on both, and a serial second round trip is what the user would feel.
+    // Fetched here rather than borrowed from the blips panel because the panel filters
+    // to what it can harvest, and a correction wants all of them. Optional: a clip with
+    // no findings still gets an even spread.
+    const blipsReq = fetchEventBlips({ eventUuid: event.uuid })
+      .then(r => r.blips)
+      .catch(err => { Logger.warn(err); return []; });
     let labels;
     try {
       labels = await fetchLabels();
@@ -832,6 +855,7 @@ export function openEventDetailModal(
       toast('The watcher recorded no labelled detections on this clip', 4000);
       return;
     }
+    const picker = framePickerFor(await blipsReq);
     openLabelCorrectionModal({
       detected,
       labels,
@@ -839,9 +863,30 @@ export function openEventDetailModal(
       // the training data harvested from it.
       event,
       presetRemap,
-      estimateFrames: labelUuids => pickTrainingFrames(framesHoldingLabels(overlayDoc, labelUuids)).length,
-      onConfirm: (remap, { fixEvent } = {}) => saveCorrectedFrames(remap, labels, { fixEvent }),
+      estimateFrames: labelUuids => {
+        const { times, reasons } = picker(labelUuids);
+        return { frames: times.length, hard: times.filter(t => reasons.has(t)).length };
+      },
+      onConfirm: (remap, { fixEvent } = {}) => saveCorrectedFrames(remap, labels, { fixEvent, picker }),
     });
+  }
+
+  /**
+   * A picker that puts the frames the detector was caught out on ahead of the even
+   * spread — see `hardMomentsFor` and `pickTrainingFrames`.
+   *
+   * @param {Array<Object>} blips
+   * @returns {(labelUuids: Iterable<string>) => {times: number[], reasons: Map<number, string>}}
+   *   `reasons` names why a time was a hard moment; a time absent from it came from the
+   *   spread
+   */
+  function framePickerFor(blips) {
+    return labelUuids => {
+      const wanted = [...labelUuids];
+      const hard = hardMomentsFor(overlayDoc, wanted, blips);
+      const times = pickTrainingFrames(framesHoldingLabels(overlayDoc, wanted), { priority: hard });
+      return { times, reasons: new Map(hard.map(m => [m.t, m.why])) };
+    };
   }
 
   /**
@@ -975,14 +1020,19 @@ export function openEventDetailModal(
    * frame is an independent training image, and eight-of-eight is better than nothing
    * when the ninth 500s. The count reported at the end is what actually landed.
    */
-  async function saveCorrectedFrames(remap, labels, { fixEvent = false } = {}) {
+  async function saveCorrectedFrames(remap, labels, { fixEvent = false, picker = framePickerFor([]) } = {}) {
     // Before the harvest, and before the early return below it. The row correction is
     // the half the user sees immediately — the headline, the sidebar, the grouping —
     // and it must not be conditional on eight video seeks succeeding, nor skipped
     // entirely for a clip whose sidecar yields no frames worth saving.
     if (fixEvent) await correctEventRow(remap, labels);
-    const times = pickTrainingFrames(framesHoldingLabels(overlayDoc, remap.keys()));
-    if (!times.length) return;
+    const { times, reasons } = picker(remap.keys());
+    if (!times.length) {
+      // Said out loud: a correction that ends in silence reads as a button that did
+      // nothing, and "the frames were never there" is the answer to that.
+      toast('No frames of this clip hold the corrected labels, so nothing was saved', 5000);
+      return;
+    }
     saveBtn.disabled = true;
     annotateBtn.disabled = true;
     savedHint.textContent = `Saving ${times.length} frame${times.length === 1 ? '' : 's'}…`;
@@ -994,12 +1044,13 @@ export function openEventDetailModal(
     const saved = [];
     try {
       const captured = await captureFramesAt(times);
-      for (const { at, sidecarAt, frame } of captured) {
-        // Same normalised→pixel conversion the frame toolbar uses, taken from the one
-        // place that owns it. Inlined here it was a second copy of the coordinate
-        // convention that only the toolbar path had tests for, so a fix to one would
-        // leave the other writing wrongly-scaled boxes with the suite still green.
-        const { boxes = [] } = overlayBoxes(frame, at);
+      for (const { sidecarAt, frame } of captured) {
+        // Looked up by the sidecar time the pick names, not by converting the player
+        // time back. `sidecarAt` IS a sample's `t`, so this lands on it exactly; the
+        // round trip through `t + lead - lead` can come back a float below `t`, which
+        // `sampleAt` resolves to the *previous* sample — empty at the first frame and
+        // after any dropout gap, precisely the frames a correction most wants.
+        const { boxes = [] } = scaledBoxes(sampleAt(overlayDoc, sidecarAt)?.boxes, frame);
         if (!boxes.length) continue;
         const result = await saveFrameForAnnotation({
           blob: frame.blob,
@@ -1022,6 +1073,9 @@ export function openEventDetailModal(
             // was a correction rather than a detection the model got right, and it is
             // the record of what the model is bad at.
             corrected_from: correctedFrom,
+            // Why this frame and not its neighbour: a blip kind, a confidence extreme,
+            // or the even spread. Tells a reviewer which frames are the hard cases.
+            pick_reason: reasons.get(sidecarAt) ?? 'spread',
           },
         });
         saved.push(result);
