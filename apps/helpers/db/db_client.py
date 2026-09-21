@@ -216,7 +216,7 @@ _SYSTEM_TAGS = [
 # Default image-scope labels seeded on startup. These are ordinary labels (not
 # addressable system objects) — seeding only creates them if no label with the
 # same name+scope already exists; it never assigns or relies on a fixed UUID.
-_DEFAULT_IMAGE_LABEL_NAMES = ["Corrupt", "Blurry", "Occluded", "Empty"]
+_DEFAULT_IMAGE_LABEL_NAMES = ["Corrupt", "Blurry"]
 
 logging.basicConfig(stream=sys.stdout)
 logger = logging.getLogger(__file__)

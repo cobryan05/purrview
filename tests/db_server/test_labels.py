@@ -5,14 +5,14 @@ from apps.helpers.db.types import LabelScope, LabelType
 
 
 async def test_list_labels_empty(http_client):
-    """A freshly-seeded DB has no user-created labels — only the four default
-    image-scope labels (Corrupt, Blurry, Occluded, Empty) seeded on startup."""
+    """A freshly-seeded DB has no user-created labels — only the two default
+    image-scope labels (Corrupt, Blurry) seeded on startup."""
     r = await http_client.get("/api/labels")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "success"
     names = {lbl["name"] for lbl in body["labels"]}
-    assert names == {"Corrupt", "Blurry", "Occluded", "Empty"}
+    assert names == {"Corrupt", "Blurry"}
 
 
 async def test_create_label(http_client):
@@ -348,8 +348,8 @@ class TestLabelReparent:
 
 
 class TestSeedSystemLabels:
-    """Coverage for DbClient._seed_system_labels(), which seeds the four default
-    image-scope labels (Corrupt, Blurry, Occluded, Empty) on startup. Unlike
+    """Coverage for DbClient._seed_system_labels(), which seeds the default
+    image-scope labels (Corrupt, Blurry) on startup. Unlike
     _seed_system_tags, these are matched by (name, scope) rather than a fixed
     UUID, since a matching label may pre-exist with annotation rows already
     pointing at its UUID.
@@ -358,9 +358,9 @@ class TestSeedSystemLabels:
     test controls exactly when init_db()/seeding runs relative to its setup.
     """
 
-    _DEFAULT_NAMES = {"Corrupt", "Blurry", "Occluded", "Empty"}
+    _DEFAULT_NAMES = {"Corrupt", "Blurry"}
 
-    async def test_seed_creates_all_four_on_empty_db(self, tmp_path):
+    async def test_seed_creates_all_defaults_on_empty_db(self, tmp_path):
         client = DbClient(db_dir=tmp_path, memory=True)
         await client.init_db()
         try:
@@ -384,7 +384,7 @@ class TestSeedSystemLabels:
 
             labels_after = await client.list_labels()
             image_after = [lbl for lbl in labels_after if lbl.scope == LabelScope.IMAGE]
-            assert len(image_after) == 4
+            assert len(image_after) == len(self._DEFAULT_NAMES)
             uuids_after = {lbl.name: lbl.uuid for lbl in image_after}
             assert uuids_after == uuids_before
         finally:
@@ -412,25 +412,25 @@ class TestSeedSystemLabels:
             await client.close()
 
     async def test_object_scope_same_name_does_not_block_image_scope_seed(self, tmp_path):
-        """An object-scope label named 'Empty' is a distinct label from the
-        image-scope 'Empty' default — its presence must not suppress seeding."""
+        """An object-scope label named 'Blurry' is a distinct label from the
+        image-scope 'Blurry' default — its presence must not suppress seeding."""
         client = DbClient(db_dir=tmp_path, memory=True)
         await client.init_db()
         try:
             labels = await client.list_labels()
-            image_empty = next(lbl for lbl in labels if lbl.name == "Empty" and lbl.scope == LabelScope.IMAGE)
-            await client.delete_label(image_empty.uuid)
-            obj_empty = await client.add_label(name="Empty", scope=LabelScope.OBJECT)
+            image_blurry = next(lbl for lbl in labels if lbl.name == "Blurry" and lbl.scope == LabelScope.IMAGE)
+            await client.delete_label(image_blurry.uuid)
+            obj_blurry = await client.add_label(name="Blurry", scope=LabelScope.OBJECT)
 
             await client._seed_system_labels()
 
             labels_after = await client.list_labels()
-            empties = [lbl for lbl in labels_after if lbl.name == "Empty"]
-            assert len(empties) == 2
-            scopes = {lbl.scope for lbl in empties}
+            blurries = [lbl for lbl in labels_after if lbl.name == "Blurry"]
+            assert len(blurries) == 2
+            scopes = {lbl.scope for lbl in blurries}
             assert scopes == {LabelScope.IMAGE, LabelScope.OBJECT}
-            image_empty_after = next(lbl for lbl in empties if lbl.scope == LabelScope.IMAGE)
-            assert image_empty_after.uuid != obj_empty.uuid
+            image_blurry_after = next(lbl for lbl in blurries if lbl.scope == LabelScope.IMAGE)
+            assert image_blurry_after.uuid != obj_blurry.uuid
         finally:
             await client.close()
 
