@@ -345,6 +345,15 @@ def base_url(live_server: str) -> str:
     return live_server
 
 
+# The mocked workspace is empty (no labels, no sources), which is exactly what
+# makes the getting-started tour offer itself — every test would boot under a
+# spotlight. The app's per-browser kill switch is set before any page script runs;
+# a test that wants the tour clears it (see test_tour.py). Done in localStorage
+# rather than by mocking `tour_state`, because tests that route `/api/settings/**`
+# themselves would silently override that mock and get the tour back.
+_TOURS_OFF_SCRIPT = "try { localStorage.setItem('ww_tours_auto', 'off'); } catch (_) {}"
+
+
 def _block_sse(page) -> None:
     """
     Intercept the two SSE endpoints so they return empty closed responses.
@@ -367,6 +376,7 @@ def page(context, base_url):  # noqa: F811
     All tests that receive a `page: Page` argument get this version.
     """
     p = context.new_page()
+    p.add_init_script(_TOURS_OFF_SCRIPT)
     _block_sse(p)
     # -n auto runs many workers per host; under contention (many chromium
     # processes competing for CPU — see e.g. concurrent agent sessions) a
@@ -393,6 +403,7 @@ def shared_page(browser, base_url):
     containers after each test.
     """
     page = browser.new_page()
+    page.add_init_script(_TOURS_OFF_SCRIPT)
     _block_sse(page)
     page.goto(base_url)
     yield page

@@ -7491,6 +7491,24 @@ button.filter-active {
   flex: 0 0 7.5em;
 }
 
+/* A checkbox with its caption, sitting inline among a row's other controls.
+   Pico's checkbox default is block-ish with a bottom margin; both undone so the
+   pair reads as one control beside the buttons. */
+.settings-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.settings-inline-check input[type="checkbox"] {
+  margin: 0;
+  width: 1em;
+  height: 1em;
+}
+
 /* A select has to fit its longest option plus Pico's caret, which a plain
    number input does not. */
 .settings-server-input--select {
@@ -9226,3 +9244,110 @@ progress.progress-indeterminate:indeterminate {
 }
 
 .watch-live-list__text { min-width: 0; }
+
+/* ── Guided tours (ui/tour/) ──────────────────────────────────────────────── */
+
+/* The dim is this element's shadow and the hole is the element itself, sized to
+   the target by coachMark.js. No pointer events, so the control it frames stays
+   clickable — a "press + New" step has to let the user press it. */
+.tour-spotlight {
+  position: fixed;
+  z-index: var(--layer-tour);
+  pointer-events: none;
+  border-radius: 6px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.55), 0 0 0 2px var(--color-info);
+  transition: top 120ms ease, left 120ms ease, width 120ms ease, height 120ms ease;
+}
+
+.tour-card {
+  position: fixed;
+  z-index: var(--layer-tour);
+  width: min(360px, calc(100vw - 24px));
+  padding: var(--space-3) calc(var(--space-3) + 2px);
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  outline: none;
+}
+
+.tour-card--centred {
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%);
+}
+
+/* Touch: a bottom sheet, for the reason the filter dropdowns are one — nothing
+   on a phone should depend on a bubble finding room beside a 30px button. */
+.tour-card--sheet {
+  top: auto !important;
+  left: 0 !important;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  max-width: 100vw;
+  transform: none;
+  border-radius: 12px 12px 0 0;
+}
+
+.tour-card__progress {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.tour-card__title {
+  margin: 0.2rem 0 0.35rem;
+  font-size: var(--text-md);
+}
+
+.tour-card__body {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.tour-card__optout {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tour-card__optout input[type="checkbox"] {
+  width: 0.9em;
+  height: 0.9em;
+  margin: 0;
+}
+
+.tour-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.tour-card__nav {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.tour-card__actions .panel-btn {
+  margin: 0;
+}
+
+.tour-card__skip {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  width: auto;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}

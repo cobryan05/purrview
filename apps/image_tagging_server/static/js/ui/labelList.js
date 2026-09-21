@@ -897,6 +897,7 @@ async function mountEditMode(container, { filter, onRerender }) {
     const row = document.createElement('div');
     row.className = 'lt-newrow';
     row.dataset.testid = scopeValue === 'object' ? 'label-list-new-object-row' : 'label-list-new-image-row';
+    row.dataset.tour = scopeValue === 'object' ? 'config.labels.newObject' : 'config.labels.newImage';
 
     const well = makeColorWell(DEFAULT_COLOR);
     const input = document.createElement('input');

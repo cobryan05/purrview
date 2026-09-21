@@ -127,6 +127,9 @@ export function createListEditorScreen({
   newBtn.type = 'button';
   newBtn.textContent = newLabel;
   newBtn.className = 'panel-btn panel-btn--block';
+  // Tour anchor, keyed on the screen prefix so every list editor's "+ New" is
+  // addressable without each caller opting in (`list.src.new`, `list.mc.new`, …).
+  newBtn.dataset.tour = `list.${prefix}.new`;
   newBtn.addEventListener('click', () => _invoke(onNew));
   listFooter.appendChild(newBtn);
 

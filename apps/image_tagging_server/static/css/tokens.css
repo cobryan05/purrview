@@ -87,6 +87,9 @@
   --layer-modal-base: 1000;
   --layer-modal-max: 1890;
   --layer-hover-popover: 1900;
+  /* Guided-tour spotlight and card: above every modal (a step may point into one),
+     below the bottom bars so they stay usable while a tour is up. */
+  --layer-tour: 1950;
   --layer-bottom-bars: 2000;
   --layer-bottom-bars-menu: 2100;
 

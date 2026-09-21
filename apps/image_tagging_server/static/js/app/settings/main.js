@@ -17,6 +17,7 @@ import { createServiceStatusPanel } from '/app-static/js/ui/serviceStatus.js';
 import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { promptRestartWatchersUsingMqtt } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
+import { readTourState, resetTourState, runTour, setNeverShowTours, TOURS } from '/app-static/js/ui/tour/index.js';
 import {
   DEFAULT_BBOX_HASH_SIZE,
   DEFAULT_BBOX_THRESHOLD,
@@ -1448,7 +1449,66 @@ async function _buildUiSettingsSection() {
   });
 
   body.appendChild(row);
+  body.appendChild(await _buildToursRow());
   return section;
+}
+
+/**
+ * Guided tours: whether they offer themselves, and a way to run one on purpose.
+ *
+ * Running is always available, switched off or not — "don't pop up" and "never
+ * let me see it again" are different wishes, and the checkbox only means the
+ * first. The reset exists for the case the eligibility check cannot see: someone
+ * who skipped the tour on an empty workspace, filled it in, and wants the walk.
+ */
+async function _buildToursRow() {
+  let state = { neverShow: false, completed: [], dismissed: [] };
+  try {
+    state = await readTourState();
+  } catch (_) {}
+
+  const autoLabel = document.createElement('label');
+  autoLabel.className = 'settings-inline-check';
+  const autoBox = document.createElement('input');
+  autoBox.type = 'checkbox';
+  autoBox.checked = !state.neverShow;
+  autoBox.dataset.testid = 'settings-tours-auto';
+  autoLabel.append(autoBox, document.createTextNode(' Offer tours automatically'));
+
+  const runBtn = _rowButton('Run getting started');
+  runBtn.dataset.testid = 'settings-tours-run';
+  const resetBtn = _rowButton('Forget seen tours', { secondary: true });
+  resetBtn.dataset.testid = 'settings-tours-reset';
+
+  const { row, setStatus } = _buildRow({
+    label: 'Guided tours',
+    description: 'A tour walks you through a screen step by step. One offers itself on an empty '
+      + 'workspace; you can run it again here any time.',
+    controls: [autoLabel, runBtn, resetBtn],
+  });
+
+  autoBox.addEventListener('change', async () => {
+    try {
+      await setNeverShowTours(!autoBox.checked);
+      setStatus(autoBox.checked ? 'Tours will offer themselves.' : 'Tours will not pop up on their own.', 'info');
+    } catch (e) {
+      setStatus(`✗ ${e.message}`, 'error');
+    }
+  });
+  runBtn.addEventListener('click', () => {
+    runTour(TOURS[0].id);
+  });
+  resetBtn.addEventListener('click', async () => {
+    try {
+      await resetTourState();
+      autoBox.checked = true;
+      setStatus('Seen tours forgotten — the next eligible one will offer itself on reload.', 'info');
+    } catch (e) {
+      setStatus(`✗ ${e.message}`, 'error');
+    }
+  });
+
+  return row;
 }
 
 /* ── Service status ───────────────────────────────────────────────────────── */
