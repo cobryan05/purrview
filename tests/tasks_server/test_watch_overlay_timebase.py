@@ -73,6 +73,8 @@ def _harness():
 
     ring, track = _Recorder(), _Recorder()
     task._ring_for = lambda pipeline: ring
+    # `_service_ring_hold` runs on every pass of the frame loop this test drives.
+    task._frame_rings = {}
     task._detection_track_for = lambda pipeline: track
     task._record_inference_time = lambda ms: None
 

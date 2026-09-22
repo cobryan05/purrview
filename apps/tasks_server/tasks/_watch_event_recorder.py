@@ -112,7 +112,7 @@ RECORDING_KIND_CLIP = "clip"
 #: Result keys a media action reports that are worth keeping on the row for the player
 #: to show. Everything else in the result — the path, the sizes, the requested window —
 #: either has its own column or is about the extraction rather than the file.
-MEDIA_METADATA_KEYS = ("frames", "sourceSpanS", "intervalS", "lowFps")
+MEDIA_METADATA_KEYS = ("frames", "sourceSpanS", "intervalS", "lowFps", "stillsOnlyS")
 
 #: A signal carries no event id, so the row a closing edge belongs to has to be found by
 #: what identifies the event. This is the *engine's* current identity — one open event

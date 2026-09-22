@@ -46,7 +46,13 @@ from inference_client.models.pin_model_payload import PinModelPayload
 
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings, load_mqtt_broker_settings
-from apps.helpers.actions.recordClipAction import FrameRing, PlaybackClipBackend, RecordClipAction, RingClipBackend
+from apps.helpers.actions.recordClipAction import (
+    FrameRing,
+    FrameSpool,
+    PlaybackClipBackend,
+    RecordClipAction,
+    RingClipBackend,
+)
 from apps.helpers.actions.recordEventTimelapseAction import sweep_frame_buffers
 from apps.helpers.actions.Registry import create_action
 
@@ -763,10 +769,20 @@ class StreamWatcherTask(Task):
     #: day folders do not.
     CHUNK_DIRNAME = ".drain"
 
+    #: Where a snapshot source's frames are spooled while an event is open. Beside the
+    #: drain's chunks and for the same reasons — inside the clips root so the retention
+    #: sweep's disk accounting sees it, dot-prefixed so the media browser does not.
+    SPOOL_DIRNAME = ".spool"
+
     def _chunk_root(self):
         from apps import RECORDINGS_CLIP_DIR
 
         return RECORDINGS_CLIP_DIR / self.CHUNK_DIRNAME
+
+    def _spool_root(self):
+        from apps import RECORDINGS_CLIP_DIR
+
+        return RECORDINGS_CLIP_DIR / self.SPOOL_DIRNAME
 
     def _drain_for(self, pipeline: WatchPipeline) -> Optional[ClipDrain]:
         """The clip drain for a buffered source, created on first need.
@@ -825,6 +841,34 @@ class StreamWatcherTask(Task):
             if row.kind == CLIP_ACTION_KIND and in_scope(getattr(row, "source_uuids_json", None), source_uuid)
         ]
         return max(lengths) if lengths else 0.0
+
+    def _service_ring_hold(self, pipeline: WatchPipeline) -> None:
+        """Hold the frame ring open across every event currently recording this source.
+
+        The ring's age cap would otherwise evict an open event's own frames out from
+        under it — its cutoff climbs with every push, so a visit longer than
+        `ring_seconds` loses its head before the clip is ever cut.
+
+        Derived from live state once a pass rather than taken and released on the event
+        edges, for the reason `_service_drain` does the same: one camera routinely has
+        several events open at once (the engine runs a machine per rule *and* per
+        subject), and edge-driven holds let a later event overwrite an earlier one's
+        floor and let the first event to close release the hold for all of them. Frames
+        a neighbour was still recording were then evicted on the next push. Re-deriving
+        also means a missed END cannot leak the hold and pin the ring in RAM forever.
+
+        The floor is the earliest open event's pre-roll start, because the later events'
+        material is a subset of what that one already needs.
+        """
+        ring = self._frame_rings.get(pipeline.source_uuid or "")
+        if ring is None:
+            return
+        starts = [e["startedAt"] for e in pipeline.engine.open_events() if e.get("startedAt") is not None]
+        if not starts:
+            ring.hold_from(None)
+            return
+        preroll = min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
+        ring.hold_from(min(starts) + self._wallclock_offset - preroll)
 
     async def _service_drain(self, pipeline: WatchPipeline) -> None:
         """Keep a long event's video alive, one chunk at a time.
@@ -906,7 +950,14 @@ class StreamWatcherTask(Task):
             return None
         ring = self._frame_rings.get(pipeline.source_uuid)
         if ring is None:
-            ring = FrameRing(max_seconds=pipeline.ring_seconds, max_mb=pipeline.ring_max_mb)
+            # The ring keeps only the retroactive pre-roll window in RAM; everything
+            # from the moment an event opens is spooled to disk instead, so a long
+            # visit costs disk rather than losing its head to the byte cap.
+            ring = FrameRing(
+                max_seconds=pipeline.ring_seconds,
+                max_mb=pipeline.ring_max_mb,
+                spool=FrameSpool(self._spool_root() / (pipeline.source_uuid or "unknown")),
+            )
             self._frame_rings[pipeline.source_uuid] = ring
             self.log(
                 f"Source {pipeline.source_name} has no rewind buffer — keeping a "
@@ -1758,7 +1809,9 @@ class StreamWatcherTask(Task):
 
             # After dispatch, so an event that just closed has already had its clip cut from
             # the chunks before they are discarded — and an event that just opened arms the
-            # drain on this same pass rather than one frame late.
+            # drain on this same pass rather than one frame late. The frame ring's hold is
+            # serviced here for both halves of that reason.
+            self._service_ring_hold(pipeline)
             await self._service_drain(pipeline)
 
             # After `step`, not before: the pipeline's `detections` are the mask-filtered
@@ -2004,13 +2057,6 @@ class StreamWatcherTask(Task):
         context = self._action_context(signal, pipeline)
         logged = self._event_is_logged(signal)
 
-        ring = self._frame_rings.get(pipeline.source_uuid) if pipeline is not None and not pipeline.buffered else None
-        if ring is not None and signal.phase is EventPhase.START:
-            # Protect this event's own pre-roll from the ring's age-based eviction for
-            # as long as the event stays open — see `FrameRing.hold_from`.
-            preroll = min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
-            ring.hold_from(signal.started_at + self._wallclock_offset - preroll)
-
         if logged and signal.phase is EventPhase.START:
             # Holds the row's raw material, including the card art for this frame. Writes
             # nothing: whether the event earns a row is not known until an action reports
@@ -2022,11 +2068,6 @@ class StreamWatcherTask(Task):
             self._publish_bridge_snapshot(signal)
 
         media, wrote = await self._run_actions(self._actions_for(signal, trigger), signal, context)
-
-        if ring is not None and signal.phase is EventPhase.END:
-            # record_clip has read the ring by now (it runs inside _run_actions above);
-            # safe to let normal eviction resume.
-            ring.release()
 
         event_uuid = self._recorder.event_uuid_for(signal)
         if logged and wrote and event_uuid is None:
@@ -2408,10 +2449,10 @@ class StreamWatcherTask(Task):
     def _historical_frame_from_ring(self, pipeline: WatchPipeline, target_wall: float):
         """The ring's earliest frame from the same pre-roll window `record_clip` will cut, decoded, or None.
 
-        Anchored at `target_wall - preroll`, the same floor `_dispatch` passes to
-        `FrameRing.hold_from` at EventPhase.START — so the still and the clip's own
-        opening frame are drawn from the same instant, not two independently-tolerant
-        searches that can land on different moments.
+        Anchored at `target_wall - preroll`, the same floor `_service_ring_hold` holds
+        the ring open to — so the still and the clip's own opening frame are drawn from
+        the same instant, not two independently-tolerant searches that can land on
+        different moments.
         """
         ring = self._frame_rings.get(pipeline.source_uuid)
         if ring is None:

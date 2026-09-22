@@ -805,7 +805,7 @@ class TestFrameRing:
             frames.append((float(i), buffer.tobytes()))
 
         dest = tmp_path / "ring.mp4"
-        size = RingClipBackend._write_mp4([], frames, dest)
+        size = RingClipBackend._write_timeline([], frames, dest)
 
         assert dest.is_file() and size > 0
         # No `.part` left behind, and the file is one a browser's <video> can open.
@@ -817,10 +817,12 @@ class TestFrameRing:
         finally:
             capture.release()
 
-    def test_a_lead_in_is_really_concatenated_ahead_of_the_dense_segment(self, tmp_path):
-        """Against real ffmpeg: the two segments are encoded separately (the lead-in at
-        a fixed 1fps, since its frames are minutes apart) and stream-copy concatenated,
-        so the output must open and play longer than the dense segment alone."""
+    def test_a_lead_in_is_really_encoded_ahead_of_the_dense_frames(self, tmp_path):
+        """Against real ffmpeg: one encode over one timeline, so the output opens and
+        runs the whole span — lead-in included — rather than the dense frames alone.
+
+        Previously these were two constant-rate segments stream-copied together, which
+        put the two halves on different clocks and re-timed every box after the seam."""
         from apps.helpers.actions.recordClipAction import RingClipBackend
 
         def _frame(fill):
@@ -832,7 +834,7 @@ class TestFrameRing:
         dense = [(float(i), _frame(40 + i)) for i in range(90, 94)]
 
         dest = tmp_path / "ring.mp4"
-        size = RingClipBackend._write_mp4(lead_in, dense, dest)
+        size = RingClipBackend._write_timeline(lead_in, dense, dest)
 
         assert dest.is_file() and size > 0
         assert not dest.with_suffix(".mp4.part").exists()
@@ -841,7 +843,8 @@ class TestFrameRing:
             assert capture.isOpened()
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = capture.get(cv2.CAP_PROP_FPS)
-            # 2 lead-in frames @ 1fps (~2s) + 4 dense frames at their own derived fps.
+            # The lead-in still sits 60s before the dense frames, and that gap is real
+            # video time now — a compressed seam would come back far shorter.
             assert frame_count / max(fps, 1e-6) > 2.0
         finally:
             capture.release()

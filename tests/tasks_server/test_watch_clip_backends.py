@@ -16,6 +16,8 @@ allocate none, which is what most of these tests are guarding.
 
 import base64
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -24,10 +26,13 @@ import pytest
 
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.actions.recordClipAction import (
+    LAST_FRAME_HOLD_S,
     FrameRing,
+    FrameSpool,
     PlaybackClipBackend,
     RecordClipAction,
     RingClipBackend,
+    encode_timeline,
 )
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventPhase, WatchEventSignal
@@ -64,6 +69,13 @@ def _task(pipelines, *, relay_client=object()):
 def _packet(payload: bytes = b"\xff\xd8jpegbytes") -> str:
     """A frame as `base64_encode_jpg` produces it — a JSON packet, not bare base64."""
     return json.dumps({"format": "jpeg", "metadata": {}, "data": base64.b64encode(payload).decode()})
+
+
+def _spill(tmp_path, index, blob: bytes) -> Path:
+    """The timeline encoder reads frames from disk; tests hold theirs as bytes."""
+    path = Path(tmp_path) / f"spill{index:05d}.jpg"
+    path.write_bytes(blob)
+    return path
 
 
 def _context(source_uuid="src-1"):
@@ -252,7 +264,10 @@ class TestFrameRingHoldFrom:
     """The bug this fixes: `_evict`'s age cutoff climbs with every push, so a visit
     longer than `max_seconds` evicted its own arrival frame before `RecordClipAction`
     ever read the ring at `EventPhase.END` — losing pre-roll on any long-enough event.
-    `hold_from`/`release` pin the cutoff for the life of an open event."""
+    `hold_from` pins the cutoff while any event is open; `hold_from(None)` lifts it.
+    The floor itself is re-derived from the engine's open events once a pass — see
+    `TestOverlappingEventsDoNotEvictEachOthersFrames` for why it cannot be taken and
+    released on the event edges."""
 
     def test_a_long_open_event_loses_its_preroll_without_a_hold(self):
         ring = FrameRing(max_seconds=20.0)
@@ -269,12 +284,12 @@ class TestFrameRingHoldFrom:
             ring.push(float(t), b"frame")
         assert ring.frames_between(0.0, 0.5) == [(0.0, b"arrival")]
 
-    def test_release_resumes_normal_eviction(self):
+    def test_clearing_the_hold_resumes_normal_eviction(self):
         ring = FrameRing(max_seconds=20.0)
         ring.push(0.0, b"arrival")
         ring.hold_from(0.0)
         ring.push(30.0, b"frame")
-        ring.release()
+        ring.hold_from(None)
         assert ring.frames_between(0.0, 1.0) == []
 
     def test_first_at_or_after_returns_the_earliest_matching_frame(self):
@@ -736,3 +751,365 @@ class TestCardArtContextForOnExit:
         result = await task._card_art_context(_start_signal(started_at=60.0), context, pipeline)
 
         assert result is context
+
+
+class TestARingClipIsAsLongAsTheEventItRecords:
+    """A ring clip's playback length must match the span of frames it holds.
+
+    A snapshot camera delivering a frame every three seconds is 0.32 fps, and the
+    encoder floored its derived rate at 1.0 — so an 88-second visit was written as a
+    28-second file played at 3x, while the recordings row, the sidecar and the overlay
+    all went on believing it was 88 seconds long. Seeking past the real end of a video
+    does not fail: the playhead clamps to the final frame. A correction harvesting eight
+    moments across the event therefore captured the same last picture seven times, each
+    saved with the corrected boxes of a moment the file did not contain.
+
+    These are integration tests against the real encoder, because the bug was in what
+    ffmpeg was told, not in the arithmetic around it.
+    """
+
+    @staticmethod
+    def _frames(count: int, spacing_s: float, start: float = 1000.0):
+        return [(start + i * spacing_s, _solid_jpeg(i * 7 % 255)) for i in range(count)]
+
+    @staticmethod
+    def _duration(path) -> float:
+        import subprocess
+
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return float(out.stdout.strip())
+
+    @pytest.mark.parametrize("spacing_s", [3.2, 1.0, 0.25])
+    def test_playback_matches_the_frames_wall_span(self, tmp_path, spacing_s):
+        """Sub-1 fps included — that is the rate real snapshot cameras deliver."""
+        frames = self._frames(28, spacing_s)
+        wall_span = frames[-1][0] - frames[0][0]
+        dest = tmp_path / f"ring-{spacing_s}.mp4"
+
+        encode_timeline([(t, _spill(tmp_path, i, blob)) for i, (t, blob) in enumerate(frames)], dest)
+
+        played = self._duration(dest)
+        assert played == pytest.approx(
+            wall_span, rel=0.1
+        ), f"{spacing_s}s spacing: {wall_span:.1f}s of frames became a {played:.1f}s file"
+
+    async def test_the_reported_duration_describes_the_file_not_the_frames(self, tmp_path, monkeypatch):
+        """Whatever the encoder does, `durationS` is what a player can seek within.
+
+        Measured from the written file rather than assumed from the frames, because a
+        clip that claims to be longer than it is sends every seek past its end — which
+        is how a harvest of eight moments came back as the same picture seven times.
+        """
+        ring = FrameRing()
+        lead = self._frames(6, 6.0)
+        dense = self._frames(20, 0.5, start=lead[-1][0] + 6.0)
+        monkeypatch.setattr(ring, "frames_between", lambda *a, **k: list(dense))
+        monkeypatch.setattr(ring, "lead_in_frames", lambda **k: list(lead))
+        backend = RingClipBackend(ring)
+        dest = tmp_path / "lead-in.mp4"
+
+        result = await backend.extract(
+            _context("snap"), datetime.fromtimestamp(lead[0][0], tz=timezone.utc), 120.0, dest
+        )
+
+        played = self._duration(dest)
+        assert result["durationS"] == pytest.approx(played, rel=0.05), result
+        # The lead-in still is clamped to the window start, so the span the clip covers
+        # is the window itself rather than the age of the oldest sticky still.
+        assert result["sourceSpanS"] == pytest.approx(dense[-1][0] - lead[0][0], rel=0.01)
+        # And the video is that span — no longer compressed against it, which is what
+        # made boxes after the still seam point at the wrong moment.
+        assert result["durationS"] == pytest.approx(result["sourceSpanS"], abs=LAST_FRAME_HOLD_S + 0.1)
+
+
+class TestOverlappingEventsDoNotEvictEachOthersFrames:
+    """One frame ring serves every rule watching a source, and the engine runs a state
+    machine per `(rule, subject, target)` — so several events are routinely open over one
+    camera at once. Two cats in the yard is the ordinary case, not the exotic one.
+
+    The hold protecting open events' frames from age-based eviction used to be taken and
+    released on the event edges. A second event's START overwrote the first's floor, and
+    whichever event closed first released the hold for *all* of them: the next push
+    evicted everything older than `max_seconds`, so a neighbour still recording had its
+    clip cut from a ring holding only the last few seconds. An 88-second visit produced
+    26 seconds of video, the rest replaced by two stills.
+
+    The floor is now re-derived from the engine's open events once a pass, which also
+    means a missed END cannot leak it and pin the ring in RAM.
+    """
+
+    @staticmethod
+    def _fill(ring: FrameRing, start: float, count: int, step: float = 0.5) -> float:
+        for i in range(count):
+            ring.push(start + i * step, _solid_jpeg(i % 255))
+        return start + (count - 1) * step
+
+    @staticmethod
+    def _task_with_ring(ring, open_events, *, ring_seconds=20.0, preroll=5.0):
+        pipeline = _pipeline("src-1", ring_seconds=ring_seconds)
+        pipeline.engine.open_events = lambda: list(open_events)
+        task = _task([pipeline])
+        task._frame_rings["src-1"] = ring
+        task._wallclock_offset = 0.0
+        task._max_preroll_for = lambda _uuid: preroll
+        return task, pipeline
+
+    def test_the_floor_follows_the_earliest_open_event(self):
+        ring = FrameRing(max_seconds=20.0, max_mb=32.0)
+        # Two events, one per cat, both matched by the same rule.
+        events = [
+            {"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"},
+            {"startedAt": 140.0, "ruleUuid": "r1", "subjectRef": "cat-b"},
+        ]
+        task, pipeline = self._task_with_ring(ring, events)
+        # Serviced once a pass, so the hold is in place while the frames arrive — not
+        # applied retroactively to frames the age cap has already dropped.
+        task._service_ring_hold(pipeline)
+        last = self._fill(ring, 100.0, 180)
+        task._service_ring_hold(pipeline)
+        ring.push(last + 0.5, _solid_jpeg(1))
+
+        held = ring.frames_between(0.0, last + 1.0)
+        assert held[0][0] <= 100.5, (
+            f"the earliest open event needs its own pre-roll; earliest held was "
+            f"{held[0][0]} and the age cap alone would have left {last + 0.5 - 20.0}"
+        )
+        assert len(held) > 170, f"only {len(held)} frames survived"
+
+    def test_a_closing_event_keeps_its_neighbours_frames(self):
+        """The bug, stated directly: the survivor's frames must outlive its neighbour."""
+        ring = FrameRing(max_seconds=20.0, max_mb=32.0)
+        open_events = [
+            {"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"},
+            {"startedAt": 140.0, "ruleUuid": "r1", "subjectRef": "cat-b"},
+        ]
+        task, pipeline = self._task_with_ring(ring, open_events)
+        task._service_ring_hold(pipeline)
+        last = self._fill(ring, 100.0, 180)
+
+        # The first cat leaves; the second is still in frame.
+        open_events.pop(0)
+        task._service_ring_hold(pipeline)
+        ring.push(last + 0.5, _solid_jpeg(1))
+
+        held = ring.frames_between(0.0, last + 1.0)
+        assert held[0][0] <= 135.5, f"the surviving event still needs its pre-roll; earliest held was {held[0][0]}"
+        # Frames older than the survivor's floor are correctly gone — the hold is the
+        # open event's, not the departed one's.
+        assert held[0][0] >= 135.0, held[0][0]
+
+    def test_the_last_event_closing_resumes_normal_eviction(self):
+        """The hold is a reprieve, not a leak: once nothing is open the ring goes back to
+        its age cap, or a busy camera would keep every frame it ever saw."""
+        ring = FrameRing(max_seconds=20.0, max_mb=32.0)
+        open_events = [{"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"}]
+        task, pipeline = self._task_with_ring(ring, open_events)
+        task._service_ring_hold(pipeline)
+        last = self._fill(ring, 100.0, 180)
+
+        open_events.clear()
+        task._service_ring_hold(pipeline)
+
+        held = ring.frames_between(0.0, last + 1.0)
+        assert held[0][0] >= last - 20.0, "age eviction must resume once nothing is open"
+
+    def test_a_source_with_no_ring_is_left_alone(self):
+        """Buffered cameras cut from the relay and never allocate a ring; servicing one
+        must not invent state for them."""
+        pipeline = _pipeline("src-1", buffered=True)
+        pipeline.engine.open_events = lambda: [{"startedAt": 100.0}]
+        task = _task([pipeline])
+        task._max_preroll_for = lambda _uuid: 5.0
+
+        task._service_ring_hold(pipeline)
+
+        assert task._frame_rings == {}
+
+
+class TestATruncatedHeadIsReported:
+    """The ring's byte cap evicts under the hold, so a visit longer than the ring can
+    afford loses its head however long `ring_seconds` is.
+
+    That stretch is not missing from the clip, which is worse: `lead_in_frames` fills it
+    with a couple of held stills, so it plays as footage in which nothing moves. The old
+    `partialPreroll` was computed across the spliced stills *and* the dense frames, so
+    the presence of a still made it read "complete" in exactly the case a reviewer needs
+    told about.
+    """
+
+    @staticmethod
+    def _ring_with(lead, dense):
+        ring = FrameRing()
+        ring.frames_between = lambda *a, **k: list(dense)
+        ring.lead_in_frames = lambda **k: list(lead)
+        return RingClipBackend(ring)
+
+    async def test_stills_standing_in_for_evicted_video_are_reported(self, tmp_path):
+        t0 = 1000.0
+        # The event ran from t0, but the ring only still holds its last 20 seconds.
+        lead = [(t0 + i * 6.0, _solid_jpeg(i)) for i in range(2)]
+        dense = [(t0 + 60.0 + i * 0.4, _solid_jpeg(100 + i)) for i in range(50)]
+        backend = self._ring_with(lead, dense)
+
+        result = await backend.extract(
+            _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "c.mp4"
+        )
+
+        assert result["stillsOnlyS"] == pytest.approx(60.0, abs=1.0), result
+        assert result["partialPreroll"] is True, "a minute of stills is not a complete clip"
+
+    async def test_a_clip_the_ring_fully_covered_is_not_flagged(self):
+        """The negative half: flagging every ring clip would make the warning noise."""
+        t0 = 1000.0
+        dense = [(t0 + i * 0.4, _solid_jpeg(i)) for i in range(50)]
+        backend = self._ring_with([], dense)
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = await backend.extract(
+                _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 20.0, Path(tmp) / "c.mp4"
+            )
+
+        assert result["stillsOnlyS"] == pytest.approx(0.0, abs=0.5), result
+        assert result["partialPreroll"] is False
+
+
+class TestAnOpenEventSpoolsToDisk:
+    """Why a clip's length is a question about disk, not RAM.
+
+    The ring exists to answer a retroactive question — "what did the seconds before this
+    event look like?" — so it must hold frames nobody has asked for, which is why it is
+    bounded and why it evicts. Once an event opens that justification is gone: every
+    frame from then on is known to be wanted. Before spooling, the byte cap evicted
+    those frames *while the event was still recording*, and the clip was cut from
+    whatever survived: an 88-second visit whose video was 26 seconds, the hole papered
+    over with two held stills.
+
+    The pre-roll must survive the change. It is the one thing spooling cannot
+    reconstruct, so opening an event seeds the spool from the RAM the ring already has.
+    """
+
+    @staticmethod
+    def _ring(tmp_path, **kwargs):
+        return FrameRing(spool=FrameSpool(Path(tmp_path) / "spool"), **kwargs)
+
+    def test_frames_outlive_the_byte_cap_once_an_event_opens(self, tmp_path):
+        # A cap far too small to hold the event, which is the case that used to truncate.
+        ring = self._ring(tmp_path, max_seconds=20.0, max_mb=0.05)
+        ring.hold_from(100.0)
+
+        for i in range(200):
+            ring.push(100.0 + i * 0.4, _solid_jpeg(i % 255))
+
+        assert ring.frame_count < 200, "the RAM ring is still bounded — that is the point"
+        assert ring._spool.frame_count == 200, "every frame of an open event must reach disk"
+
+    def test_opening_an_event_keeps_the_preroll_already_in_ram(self, tmp_path):
+        """Retroactive pre-roll is exactly what a spool cannot go back and capture."""
+        ring = self._ring(tmp_path, max_seconds=20.0)
+        ring.push(95.0, _solid_jpeg(1))  # before anything was open
+        ring.push(97.0, _solid_jpeg(2))
+
+        ring.hold_from(96.0)  # an event opens, asking for pre-roll from 96s
+
+        spooled = [t for t, _ in ring._spool.frames_between(0.0, 200.0)]
+        assert 97.0 in spooled, "pre-roll inside the requested window must be kept"
+        assert 95.0 not in spooled, "frames older than the window are not this event's"
+
+    def test_the_spool_is_dropped_once_nothing_is_open(self, tmp_path):
+        """A spool that outlived its event would fill the disk a watcher runs on."""
+        ring = self._ring(tmp_path, max_seconds=20.0)
+        ring.hold_from(100.0)
+        for i in range(10):
+            ring.push(100.0 + i * 0.4, _solid_jpeg(i))
+        spool_dir = ring._spool._dir
+        assert spool_dir is not None and spool_dir.exists()
+
+        ring.hold_from(None)
+
+        assert not spool_dir.exists(), "the spooled frames must go with the event"
+        assert ring._spool.frame_count == 0
+
+    def test_a_ring_with_no_spool_still_works(self, tmp_path):
+        """The spool is optional: a ring built without one behaves exactly as before."""
+        ring = FrameRing(max_seconds=20.0)
+
+        ring.hold_from(100.0)
+        ring.push(100.0, _solid_jpeg(1))
+        ring.hold_from(None)
+
+        assert ring.frame_count == 1
+
+    async def test_the_clip_is_cut_from_the_spool_not_the_surviving_ram(self, tmp_path):
+        """End to end, against real ffmpeg: the finished video covers the whole event."""
+        ring = self._ring(tmp_path, max_seconds=20.0, max_mb=0.05)
+        t0 = 1000.0
+        ring.push(t0, _solid_jpeg(0))
+        ring.hold_from(t0)
+        for i in range(1, 200):
+            ring.push(t0 + i * 0.4, _solid_jpeg(i % 255))
+        wall_span = 199 * 0.4
+
+        result = await RingClipBackend(ring).extract(
+            _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "out.mp4"
+        )
+
+        assert result["durationS"] == pytest.approx(
+            wall_span, rel=0.1
+        ), f"{wall_span:.1f}s of event became a {result['durationS']:.1f}s clip"
+        assert result["stillsOnlyS"] == pytest.approx(0.0, abs=0.5)
+        assert result["partialPreroll"] is False
+
+
+class TestVideoTimeEqualsEventTime:
+    """The contract every consumer of a clip assumes: a box the sidecar records at t=41s
+    is at t=41s in the video.
+
+    It was broken in two places at once. Each segment was encoded at one constant rate,
+    so a 0.32fps camera played back at 1fps — three times too fast. And a spliced still
+    lead-in was encoded at a *different* constant rate and stream-copied on, so the two
+    halves ran on different clocks: 61s of wall time became 2s of video, and every box
+    after the seam pointed at the wrong moment.
+    """
+
+    async def test_the_seam_after_a_still_lead_in_does_not_shift_the_timeline(self, tmp_path):
+        t0 = 1000.0
+        ring = FrameRing(max_seconds=20.0)
+        # A sticky still from long before the window, and dense frames 40s into it.
+        ring.push(t0 - 600.0, _solid_jpeg(5), idle=True)
+        for i in range(40):
+            ring.push(t0 + 40.0 + i * 0.4, _solid_jpeg(i % 255))
+
+        result = await RingClipBackend(ring).extract(
+            _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "seam.mp4"
+        )
+
+        assert result["leadInFrames"] == 1, "one still, not a parade of them"
+        # The clip starts where it was asked to start, not ten minutes earlier.
+        started = datetime.fromisoformat(result["startedAt"]).timestamp()
+        assert started == pytest.approx(t0, abs=0.5), result["startedAt"]
+        # And it runs the full requested span: 40s of still plus ~16s of dense frames.
+        # A capped or re-rated lead-in would land far short of that.
+        assert result["durationS"] == pytest.approx(40.0 + 39 * 0.4, rel=0.1), result["durationS"]
+        # The gap is reported rather than presented as footage.
+        assert result["stillsOnlyS"] == pytest.approx(40.0, abs=1.0)
+        assert result["partialPreroll"] is True
+
+    async def test_a_dense_clip_runs_at_wall_speed(self, tmp_path):
+        """No stills involved: the plain case must be exact, not merely close."""
+        t0 = 1000.0
+        ring = FrameRing(max_seconds=200.0, max_mb=64.0)
+        for i in range(100):
+            ring.push(t0 + i * 0.4, _solid_jpeg(i % 255))
+
+        result = await RingClipBackend(ring).extract(
+            _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "dense.mp4"
+        )
+
+        assert result["durationS"] == pytest.approx(99 * 0.4, rel=0.05), result["durationS"]
+        assert result["sourceSpanS"] == pytest.approx(99 * 0.4, rel=0.01)
