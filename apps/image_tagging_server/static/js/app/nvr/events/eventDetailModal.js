@@ -36,6 +36,7 @@ import {
 } from '/app-static/js/shared/api/watchProfiles.js';
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
+import { frameIsTrustworthy, nextPresentedFrame, whenPageVisible } from '/app-static/js/ui/utils/videoFrames.js';
 import { attachClipOverlay, fetchClipOverlay, sampleAt } from './clipOverlay.js';
 import { fetchEventBlips } from '/app-static/js/shared/api/eventBlips.js';
 import {
@@ -647,9 +648,15 @@ export function openEventDetailModal(
 
     if (recording.partialPreroll) {
       // Never present a truncated clip as though its lead-in were intact — the buffer
-      // is RAM and had already evicted part of what was asked for.
-      const warn = el('p', 'event-detail__warn',
-        'The rewind buffer had already dropped part of the requested lead-in, so this clip starts later than intended.');
+      // is RAM and had already evicted part of what was asked for. On a snapshot camera
+      // the evicted stretch is not missing from the video, which is worse: it is filled
+      // with a couple of held stills, so it looks like footage until you notice the
+      // picture never changes. Quantified where the recorder knew the figure.
+      const stillsOnly = Number(recording.metadataJson?.stillsOnlyS) || 0;
+      const warn = el('p', 'event-detail__warn', stillsOnly > 0.5
+        ? `The first ${stillsOnly.toFixed(0)}s of this event are stills, not video — the frame `
+          + 'buffer filled and dropped those frames while the event was still running.'
+        : 'The rewind buffer had already dropped part of the requested lead-in, so this clip starts later than intended.');
       warn.dataset.testid = 'event-detail-partial';
       mediaPane.appendChild(warn);
     }
@@ -864,11 +871,42 @@ export function openEventDetailModal(
       event,
       presetRemap,
       estimateFrames: labelUuids => {
-        const { times, reasons } = picker(labelUuids);
-        return { frames: times.length, hard: times.filter(t => reasons.has(t)).length };
+        const { times, reasons, beyondClip } = picker(labelUuids);
+        return {
+          frames: times.length,
+          hard: times.filter(t => reasons.has(t)).length,
+          beyondClip,
+        };
       },
       onConfirm: (remap, { fixEvent } = {}) => saveCorrectedFrames(remap, labels, { fixEvent, picker }),
     });
+  }
+
+  /**
+   * The sidecar moments this clip can actually show.
+   *
+   * A sidecar describes the *event*; the mp4 beside it is whatever the recorder managed
+   * to write, and the two routinely disagree — a Ring clip is its own fixed length while
+   * the watcher's event ran minutes, so an 88-second sidecar can sit next to a 28-second
+   * file. Seeking past the end does not fail: the playhead clamps to the final frame, so
+   * every out-of-range pick captures that same last picture, wearing the corrected boxes
+   * of a moment the file does not contain. Eight picks, two real pictures.
+   *
+   * So the range is enforced where the moments are *chosen*, not merely refused at
+   * capture time: the spread is then computed over the frames that exist and yields a
+   * full set from inside the clip, rather than one usable frame and seven refusals.
+   *
+   * @param {number[]} times - sidecar times
+   * @returns {number[]}
+   */
+  function withinClip(times) {
+    const duration = video?.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return times;
+    const lead = overlay?.leadSeconds?.() ?? 0;
+    // A hair inside the end: seeking to exactly `duration` lands on the last frame the
+    // same way seeking past it does.
+    const latest = duration - lead - 0.05;
+    return times.filter(t => t <= latest);
   }
 
   /**
@@ -876,16 +914,24 @@ export function openEventDetailModal(
    * spread — see `hardMomentsFor` and `pickTrainingFrames`.
    *
    * @param {Array<Object>} blips
-   * @returns {(labelUuids: Iterable<string>) => {times: number[], reasons: Map<number, string>}}
+   * @returns {(labelUuids: Iterable<string>) => {times: number[], reasons: Map<number, string>, beyondClip: number}}
    *   `reasons` names why a time was a hard moment; a time absent from it came from the
-   *   spread
+   *   spread. `beyondClip` counts labelled moments the clip is too short to show.
    */
   function framePickerFor(blips) {
     return labelUuids => {
       const wanted = [...labelUuids];
       const hard = hardMomentsFor(overlayDoc, wanted, blips);
-      const times = pickTrainingFrames(framesHoldingLabels(overlayDoc, wanted), { priority: hard });
-      return { times, reasons: new Map(hard.map(m => [m.t, m.why])) };
+      const all = framesHoldingLabels(overlayDoc, wanted);
+      const available = withinClip(all);
+      // Out-of-range hard moments need no separate filtering: pickTrainingFrames only
+      // honours a priority whose time is among the ones it was given.
+      const times = pickTrainingFrames(available, { priority: hard });
+      return {
+        times,
+        reasons: new Map(hard.map(m => [m.t, m.why])),
+        beyondClip: all.length - available.length,
+      };
     };
   }
 
@@ -919,51 +965,19 @@ export function openEventDetailModal(
   }
 
   /**
-   * Wait until the video has actually *presented* a frame at or after `atS`, not merely
-   * finished the seek operation.
-   *
-   * `seeked` fires once the seek completes, but for compressed video the newly decoded
-   * picture is not guaranteed to be composited before the next paint — back-to-back
-   * seeks in a tight loop can `drawImage` the *previous* frame's pixels onto a canvas
-   * meant to hold this one. The visible symptom is a batch of "corrected" frames that
-   * all look identical (and carry boxes for a moment the picture doesn't actually show),
-   * which is worse than a slow capture: it looks like it worked.
-   *
-   * Bounded by `maxAttempts` rather than looping until an exact match — `requestVideoFrameCallback`
-   * reports the frame's own presentation time, which will not land exactly on `atS`, and
-   * "close enough" is what the hold-until-next-sample overlay logic already assumes.
-   *
-   * @param {HTMLVideoElement} video
-   * @param {number} atS
-   * @returns {Promise<void>} resolves immediately where the API is unsupported
-   *   (Firefox, older Safari) — the pre-existing `seeked`-only behaviour there rather
-   *   than a hang.
-   */
-  function waitForPresentedFrame(video, atS, { maxAttempts = 3 } = {}) {
-    if (typeof video.requestVideoFrameCallback !== 'function') return Promise.resolve();
-    return new Promise(resolve => {
-      let attempts = 0;
-      const check = (_now, metadata) => {
-        attempts += 1;
-        if ((metadata?.mediaTime ?? atS) >= atS - 0.02 || attempts >= maxAttempts) {
-          resolve();
-          return;
-        }
-        video.requestVideoFrameCallback(check);
-      };
-      video.requestVideoFrameCallback(check);
-    });
-  }
-
-  /**
    * Seek the clip to each chosen time and capture the frame there.
    *
    * Sequential rather than parallel because there is one `<video>` and one playhead;
    * "seek to all of these at once" is not a thing it can do. Each capture waits for the
-   * `seeked` event, then for an actually-presented frame (`waitForPresentedFrame`) —
-   * `seeked` alone is not enough; see that function for why a decode is not instant and
-   * why a `drawImage` issued too early silently paints the *previous* frame, which would
-   * put the corrected boxes on the wrong picture.
+   * `seeked` event and for an actually-presented frame — `seeked` alone is not enough,
+   * because a decode is not instant and a `drawImage` issued too early silently paints
+   * the *previous* frame.
+   *
+   * A moment that cannot be confirmed is skipped rather than captured. Both waits are
+   * bounded (an unbounded one froze the harvest at "Saving 5 frames…"), and a bound
+   * that expired used to fall through to the capture anyway — which is how one clip
+   * produced eight images of two distinct pictures, each wearing the boxes of a moment
+   * it did not show.
    *
    * The playhead is put back where the user left it: this runs behind a modal they are
    * about to return to, and finding the clip parked somewhere else would read as the
@@ -976,16 +990,27 @@ export function openEventDetailModal(
    * and come back empty, silently dropping most of a harvest the dialog had already
    * promised a count for. Both the seek and the box lookup are done in player time here.
    *
+   * @param {number[]} times
+   * @param {(done: number, total: number) => void} [onProgress] - after each capture
    * @returns {Promise<Array<{at: number, sidecarAt: number, frame: Object}>>} `at` is
    *   player time, for `overlayBoxes`; `sidecarAt` is the clip offset the pick names.
    */
-  async function captureFramesAt(times) {
+  async function captureFramesAt(times, onProgress = null) {
     const lead = overlay?.leadSeconds?.() ?? 0;
     const resumeAt = video.currentTime;
     const wasPlaying = !video.paused;
     video.pause();
     const frames = [];
+    let skipped = 0;
+    // Nothing is composited in a hidden tab, so no frame is ever presented and every
+    // capture would be the same stale picture. Wait for the tab rather than filling
+    // the queue with duplicates.
+    await whenPageVisible();
     for (const t of times) {
+      // Armed BEFORE the playhead moves: a paused video presents exactly one frame per
+      // completed seek, and that frame is the confirmation. Armed after, the callback
+      // it is waiting for has already happened.
+      const presented = nextPresentedFrame(video);
       const seeked = new Promise(resolve => {
         // `once` so a later seek in this same loop cannot resolve an earlier promise.
         const done = () => {
@@ -1004,12 +1029,25 @@ export function openEventDetailModal(
       const playerT = t + lead;
       video.currentTime = playerT;
       await seeked;
-      await waitForPresentedFrame(video, playerT);
+      const frameState = await presented;
+      // Unverified is skipped, never captured: the boxes written beside a frame are the
+      // *corrected* labels for that moment, so pairing them with whatever picture
+      // happened to still be on screen files a confidently wrong training image. Eight
+      // picks that yield six good frames is a better outcome than eight that yield two
+      // real pictures and six duplicates wearing someone else's boxes.
+      if (!frameIsTrustworthy(frameState, video.currentTime, playerT)) {
+        skipped += 1;
+        Logger.warn(`skipped capture at ${t.toFixed(2)}s: the clip never showed that moment`);
+        onProgress?.(frames.length, times.length);
+        continue;
+      }
       const frame = await captureVideoFrame(video);
       if (frame) frames.push({ at: playerT, sidecarAt: t, frame });
+      onProgress?.(frames.length, times.length);
     }
     video.currentTime = resumeAt;
     if (wasPlaying) void video.play().catch(() => {});
+    if (skipped) toast(`${skipped} of ${times.length} moments could not be captured and were skipped`, 5000);
     return frames;
   }
 
@@ -1026,16 +1064,26 @@ export function openEventDetailModal(
     // and it must not be conditional on eight video seeks succeeding, nor skipped
     // entirely for a clip whose sidecar yields no frames worth saving.
     if (fixEvent) await correctEventRow(remap, labels);
-    const { times, reasons } = picker(remap.keys());
+    const { times, reasons, beyondClip } = picker(remap.keys());
     if (!times.length) {
       // Said out loud: a correction that ends in silence reads as a button that did
       // nothing, and "the frames were never there" is the answer to that.
-      toast('No frames of this clip hold the corrected labels, so nothing was saved', 5000);
+      toast(beyondClip
+        ? 'Every labelled moment is past the end of this recording — the clip is shorter '
+          + 'than the event, so no frames could be saved'
+        : 'No frames of this clip hold the corrected labels, so nothing was saved', 6000);
       return;
     }
     saveBtn.disabled = true;
     annotateBtn.disabled = true;
-    savedHint.textContent = `Saving ${times.length} frame${times.length === 1 ? '' : 's'}…`;
+    // Counted rather than announced once. Seeking a clip five times is seconds of
+    // work with nothing else on screen to show for it, and a line that never changes
+    // is indistinguishable from a hang — which is exactly what this used to be.
+    const setProgress = (done, total, verb) => {
+      savedHint.classList.add('event-detail__hint--working');
+      savedHint.textContent = `${verb} ${done} of ${total} frame${total === 1 ? '' : 's'}…`;
+    };
+    setProgress(0, times.length, 'Capturing');
     const camera = sourceNames.get(event.sourceUuid) || 'camera';
     const nameOf = uuid => labels?.get(uuid)?.name || uuid;
     const correctedFrom = [...remap.entries()]
@@ -1043,8 +1091,9 @@ export function openEventDetailModal(
       .join(', ');
     const saved = [];
     try {
-      const captured = await captureFramesAt(times);
+      const captured = await captureFramesAt(times, (done, total) => setProgress(done, total, 'Capturing'));
       for (const { sidecarAt, frame } of captured) {
+        setProgress(saved.length, captured.length, 'Saving');
         // Looked up by the sidecar time the pick names, not by converting the player
         // time back. `sidecarAt` IS a sample's `t`, so this lands on it exactly; the
         // round trip through `t + lead - lead` can come back a float below `t`, which
@@ -1083,10 +1132,15 @@ export function openEventDetailModal(
     } catch (err) {
       Logger.error(err);
       toast(err.message || 'Could not save every corrected frame', 5000, 'error');
+    } finally {
+      // In a `finally` because the alternative is a modal whose two buttons stay dead
+      // and whose hint still reads "Saving…" for the rest of its life — the failure is
+      // silent and the only way out is closing the event.
+      savedHint.classList.remove('event-detail__hint--working');
+      savedHint.textContent = saved.length ? `Saved ${saved.length} frames` : '';
+      saveBtn.disabled = false;
+      annotateBtn.disabled = false;
     }
-    savedHint.textContent = saved.length ? `Saved ${saved.length} frames` : '';
-    saveBtn.disabled = false;
-    annotateBtn.disabled = false;
     if (!saved.length) {
       toast('No frames could be saved', 5000, 'error');
       return;

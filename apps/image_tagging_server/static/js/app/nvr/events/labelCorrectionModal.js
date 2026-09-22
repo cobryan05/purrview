@@ -571,10 +571,15 @@ export function openLabelCorrectionModal({ detected, labels, event = null, estim
     const est = estimateFrames?.(chosen);
     const frames = typeof est === 'number' ? est : est?.frames;
     const hard = typeof est === 'number' ? 0 : (est?.hard ?? 0);
+    // A clip routinely stops short of the event its sidecar describes. Said here rather
+    // than discovered afterwards: "why only 3?" is asked at the moment of agreeing to it.
+    const beyond = typeof est === 'number' ? 0 : (est?.beyondClip ?? 0);
     estimate.textContent = frames == null
       ? ''
       : `Will save ${frames} frame${frames === 1 ? '' : 's'} from this clip`
-        + (hard ? `, ${hard} at moments the detector was caught out.` : '.');
+        + (hard ? `, ${hard} at moments the detector was caught out.` : '.')
+        + (beyond ? ` ${beyond} labelled moment${beyond === 1 ? ' is' : 's are'} past the end of the recording — `
+          + 'the clip is shorter than the event, so they cannot be captured.' : '');
   }
   for (const picker of pickers) picker.select.addEventListener('change', syncConfirm);
   syncConfirm();

@@ -2071,6 +2071,24 @@ body.chrome-hidden .main-tab-pane .review-sticky-top {
   color: var(--text-faint);
 }
 
+/* While a harvest is running. The count beside it already changes, but a clip that
+   seeks slowly can sit on one number for a second or two, and a still line in a
+   modal with nothing else moving reads as a freeze. */
+.event-detail__hint--working {
+  color: var(--pico-primary, var(--color-info));
+  animation: event-detail-hint-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes event-detail-hint-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .event-detail__hint--working {
+    animation: none;
+  }
+}
+
 .event-detail__warn {
   margin: 0;
   font-size: var(--text-xs);

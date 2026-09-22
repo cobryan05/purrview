@@ -3041,6 +3041,110 @@ class TestCorrectingAWrongLabel:
         # stale detection someone wants to correct.
         assert result[1] == ["b", 1, 1]
 
+    def test_moments_past_the_end_of_the_clip_are_never_picked(self, page: Page, base_url: str):
+        """A sidecar describes the event; the mp4 beside it is whatever the recorder
+        managed to write, and the two routinely disagree — an 88-second sidecar sat next
+        to a 28-second Ring clip. Seeking past the end does not fail: the playhead clamps
+        to the final frame, so every out-of-range pick captured that same last picture
+        wearing the corrected boxes of a moment the file did not contain. One real clip
+        produced eight images of two distinct pictures that way.
+
+        The range therefore has to bound *choosing*, not just capturing: a clip that can
+        only show its first 28 seconds must still yield a full spread from inside them.
+        """
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate("""async () => {
+                const { pickTrainingFrames } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                // The real case: detections every 0.5s across 88s, in a file holding 28s.
+                const all = Array.from({ length: 176 }, (_, i) => +(i * 0.5).toFixed(1));
+                const DURATION = 28.5, LEAD = 0;
+                const available = all.filter(t => t <= DURATION - LEAD - 0.05);
+                return {
+                  unbounded: pickTrainingFrames(all, { maxFrames: 8, minGapS: 0.75 }),
+                  bounded: pickTrainingFrames(available, { maxFrames: 8, minGapS: 0.75 }),
+                  duration: DURATION,
+                };
+            }""")
+
+        # What used to happen: most picks are past the end, where every seek clamps to
+        # the same final frame. This is the bug, pinned so the fix cannot quietly lapse.
+        assert max(result["unbounded"]) > result["duration"], result["unbounded"]
+        assert sum(1 for t in result["unbounded"] if t > result["duration"]) >= 5
+
+        bounded = result["bounded"]
+        # A short clip still yields a full spread — refusing out-of-range moments must
+        # not cost the harvest, or a truncated clip would save one frame instead of eight.
+        assert len(bounded) == 8, bounded
+        assert all(t <= result["duration"] for t in bounded), bounded
+        assert bounded == sorted(bounded)
+        # Spread across what the clip does hold, not bunched at its head.
+        assert bounded[-1] > result["duration"] / 2, bounded
+
+    def test_an_unconfirmed_frame_is_never_captured(self, page: Page, base_url: str):
+        """The rule that decides whether the picture on screen is the moment asked for.
+
+        Two shipped failures meet here. The wait for a presented frame was unbounded, so
+        a video the browser was not compositing froze the harvest at "Saving 5 frames…"
+        forever. Bounding it alone then produced the worse outcome: the bound expired and
+        the capture went ahead regardless, so one clip yielded eight images of two
+        distinct pictures, each carrying the corrected boxes of a moment it did not show
+        — training data that is confidently wrong and looks fine in review.
+
+        So an unconfirmed frame must be skipped, and a confirmed one must not be.
+        """
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate("""async () => {
+                const { frameIsTrustworthy, nextPresentedFrame } =
+                  await import('/app-static/js/ui/utils/videoFrames.js');
+                const timed = async (video, opts) => {
+                  const t0 = performance.now();
+                  const state = await nextPresentedFrame(video, opts);
+                  return { state, ms: performance.now() - t0 };
+                };
+                // A video the browser is not compositing: never calls back.
+                const silent = { requestVideoFrameCallback() {} };
+                // Presents its one post-seek frame. Its mediaTime is deliberately far
+                // from the seek target, as it is on any clip with an untrimmed head —
+                // that must not stop the frame counting as presented.
+                const presents = {
+                  requestVideoFrameCallback(cb) { setTimeout(() => cb(0, { mediaTime: 0.1 }), 0); },
+                };
+                const quiet = await timed(silent, { timeoutMs: 150 });
+                const live = await timed(presents, { timeoutMs: 150 });
+                const unsupported = await timed({}, { timeoutMs: 150 });
+                return {
+                  quiet, live, unsupported,
+                  skipUnpresented: frameIsTrustworthy(quiet.state, 5, 5),
+                  keepPresented: frameIsTrustworthy(live.state, 5, 5),
+                  skipWrongPlayhead: frameIsTrustworthy(live.state, 2, 5),
+                  keepWithoutRvfc: frameIsTrustworthy(unsupported.state, 5, 5),
+                  skipWithoutRvfcWhenAdrift: frameIsTrustworthy(unsupported.state, 2, 5),
+                };
+            }""")
+
+        # The wait comes back at all, and at its bound rather than whenever.
+        assert 100 <= result["quiet"]["ms"] < 2000, result
+        assert result["quiet"]["state"]["presented"] is False
+        # A presented frame resolves at once — eight picks must not cost eight timeouts —
+        # and counts as presented despite its mediaTime being nowhere near the target.
+        assert result["live"]["ms"] < 100, result
+        assert result["live"]["state"]["presented"] is True
+
+        # The verdict: confirmed frames are kept, unconfirmed ones are skipped.
+        assert result["skipUnpresented"] is False, "a frame the clip never showed must not be captured"
+        assert result["keepPresented"] is True
+        # A seek that did not land is not the moment asked for, presented or not.
+        assert result["skipWrongPlayhead"] is False
+        # Without rVFC (Firefox) the playhead is the only evidence there is, so a landed
+        # seek is accepted — but an adrift one is still refused.
+        assert result["keepWithoutRvfc"] is True
+        assert result["skipWithoutRvfcWhenAdrift"] is False
+
     def test_the_harvest_is_a_spread_not_the_first_few_frames(self, page: Page, base_url: str):
         """The sampling policy, which is the whole difference between "some subset" and
         "the first two seconds of every event".
