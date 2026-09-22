@@ -279,7 +279,7 @@ export function hardMomentsFor(doc, labelUuids, blips = []) {
 /**
  * Choose the subset of frames actually worth saving.
  *
- * Three passes, in this order, because they answer different objections:
+ * Four passes, in this order, because they answer different objections:
  *
  *  1. **Hard moments first.** Frames `priority` points at — where the detector was
  *     caught being wrong — are taken heaviest-first, as long as each sits `minGapS`
@@ -293,6 +293,10 @@ export function hardMomentsFor(doc, labelUuids, blips = []) {
  *     spaced ones across the whole span — first and last included, since the beginning
  *     and end of a visit are where the animal is entering and leaving, and those are the
  *     poses the middle of the clip does not have.
+ *  4. **Restore the endpoints.** A hard moment within `minGapS` of the true first or
+ *     last frame can keep both of the above passes from ever picking it. Swapped back
+ *     in over whichever kept frame sits closest, so this is the one guarantee that
+ *     holds regardless of what competed for the slot next to it.
  *
  * Taking the *first* N instead would hand the trainer the first two seconds of every
  * event and nothing else, which is a worse set than a random sample and looks fine.
@@ -324,16 +328,6 @@ export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, min
     if (!clear(t)) continue;
     if (!spaced.length || t - spaced[spaced.length - 1] >= minGapS) spaced.push(t);
   }
-  // The greedy pass always keeps the *first* frame but silently drops the *last* one
-  // whenever the tail of the clip falls inside the gap behind the previous keep — and
-  // the end of a visit, where the animal is leaving, is precisely the pose the middle
-  // of the clip does not have. Swapped in over the final keep rather than appended, so
-  // the minimum-gap invariant still holds: the frame it replaces was already at least
-  // `minGapS` past the one before it, and this one is later still.
-  const last = all.length ? all[all.length - 1] : null;
-  if (spaced.length >= 2 && last != null && spaced[spaced.length - 1] !== last && clear(last)) {
-    spaced[spaced.length - 1] = last;
-  }
 
   const room = Math.max(0, maxFrames - picked.length);
   let spread;
@@ -348,7 +342,30 @@ export function pickTrainingFrames(times, { maxFrames = MAX_TRAINING_FRAMES, min
     spread = [];
     for (let i = 0; i < room; i++) spread.push(spaced[Math.round(i * step)]);
   }
-  return [...new Set([...picked, ...spread])].sort((a, b) => a - b);
+  const result = [...new Set([...picked, ...spread])].sort((a, b) => a - b);
+
+  // Guarantee the entering/exiting pose even when a hard moment claimed the slot next
+  // to it, crowding the endpoint out of both `clear()` checks above. Swap in over the
+  // nearest kept frame within `minGapS` — that frame was already at least `minGapS`
+  // from its other neighbor, and the true endpoint is at least as far past it, so the
+  // invariant survives the swap — or append outright if the cap still has room.
+  const restoreEndpoint = t => {
+    if (t == null || result.includes(t)) return;
+    let nearest = -1;
+    let nearestDist = Infinity;
+    result.forEach((p, i) => {
+      const d = Math.abs(p - t);
+      if (d < nearestDist) { nearestDist = d; nearest = i; }
+    });
+    if (nearest !== -1 && nearestDist < minGapS) result[nearest] = t;
+    else if (result.length < maxFrames) result.push(t);
+    else return;
+    result.sort((a, b) => a - b);
+  };
+  restoreEndpoint(all.length ? all[0] : null);
+  restoreEndpoint(all.length ? all[all.length - 1] : null);
+
+  return result;
 }
 
 /**

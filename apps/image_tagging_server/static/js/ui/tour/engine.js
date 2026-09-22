@@ -175,7 +175,12 @@ export function startTour(tour, { startAt = 0 } = {}) {
 
     // The anchor's element can be replaced under us by a pane re-render; find its
     // successor by id and re-point. Nothing to do while the same node is still live.
+    // Scoped to the anchor's own tab pane, not document.body: the whole-document form
+    // would also fire for toasts and unrelated panes re-rendering (see the same rule in
+    // listEditorHeight.js) — every anchor lives inside a *-tab-pane, so that's as narrow
+    // as this can get without knowing which element the pane's own code will replace.
     if (step.target && typeof MutationObserver !== 'undefined') {
+      const scope = target?.closest('.workspace-tab-pane, .main-tab-pane') ?? document.body;
       let pending = 0;
       rebuildWatch = new MutationObserver(() => {
         if (pending) return;
@@ -190,7 +195,7 @@ export function startTour(tour, { startAt = 0 } = {}) {
           }
         });
       });
-      rebuildWatch.observe(document.body, { childList: true, subtree: true });
+      rebuildWatch.observe(scope, { childList: true, subtree: true });
     }
   }
 

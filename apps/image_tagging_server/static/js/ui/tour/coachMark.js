@@ -13,6 +13,8 @@
  * on a bubble finding space beside a 30px button.
  */
 
+import { registerEscHandler, unregisterEscHandler } from '../utils/modalZIndex.js';
+
 const SPOTLIGHT_PAD = 6;
 const CARD_GAP = 12;
 const VIEWPORT_MARGIN = 12;
@@ -133,21 +135,32 @@ export function createCoachMark() {
   }
 
   // Layout settles over a few frames after a tab switch (panes mount, fonts load,
-  // sticky bars measure). Chase it briefly rather than trusting the first rect.
+  // sticky bars measure). Chase it briefly rather than trusting the first rect, but
+  // stop as soon as the target's rect holds steady for a few frames in a row instead
+  // of always burning 30 forced-layout ticks — most tab switches settle in 1-3 frames.
   function settle() {
     cancelAnimationFrame(raf);
     let frames = 0;
+    let stableFor = 0;
+    let lastKey = '';
     const tick = () => {
       place();
-      if (++frames < 30) raf = requestAnimationFrame(tick);
+      const r = current?.target?.isConnected ? current.target.getBoundingClientRect() : null;
+      const key = r ? `${r.top},${r.left},${r.width},${r.height}` : '';
+      stableFor = key === lastKey ? stableFor + 1 : 0;
+      lastKey = key;
+      if (++frames < 30 && stableFor < 3) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
   }
 
+  // Escape goes through the shared stack in modalZIndex.js so a step pointing into an
+  // open modal closes only the topmost overlay, not both at once.
+  const onEsc = () => current?.onSkip();
+
   const onKey = (e) => {
     if (!current) return;
-    if (e.key === 'Escape') { e.preventDefault(); current.onSkip(); }
-    else if (e.key === 'ArrowRight' || e.key === 'Enter') {
+    if (e.key === 'ArrowRight' || e.key === 'Enter') {
       // Enter inside a text field belongs to that field — a step that asks the
       // user to type a label name and press Enter must not also advance the tour.
       if (e.key === 'Enter' && e.target !== nextBtn && e.target !== document.body) return;
@@ -183,6 +196,10 @@ export function createCoachMark() {
     window.addEventListener('resize', place);
     document.addEventListener('scroll', place, true);
     document.addEventListener('keydown', onKey, true);
+    // show() runs again for every step without an intervening hide(); re-registering
+    // without unregistering first would stack a duplicate handler per step.
+    unregisterEscHandler(onEsc);
+    registerEscHandler(onEsc);
     settle();
     // Focus the card, not Next: a "do this" step wants the user's next keystroke
     // in the control being pointed at, and focusing a button would steal it.
@@ -198,6 +215,7 @@ export function createCoachMark() {
     window.removeEventListener('resize', place);
     document.removeEventListener('scroll', place, true);
     document.removeEventListener('keydown', onKey, true);
+    unregisterEscHandler(onEsc);
     spotlight.remove();
     card.remove();
     card.hidden = true;

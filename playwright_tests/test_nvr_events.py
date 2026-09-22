@@ -3246,6 +3246,38 @@ class TestCorrectingAWrongLabel:
         # Never two pictures of the same pose, hard moment or not.
         assert all(b - a >= 0.75 for a, b in zip(picked, picked[1:])), picked
 
+    def test_a_hard_moment_beside_an_endpoint_does_not_crowd_it_out(self, page: Page, base_url: str):
+        """The docstring promises the clip's first and last frame always survive — the
+        entering and exiting pose the middle of the clip does not have. A hard moment
+        that happens to land within `minGapS` of one of them must not silently take that
+        slot instead: the true endpoint has to win, or the training set is missing the
+        animal's entrance or exit with nothing in the UI to say so.
+        """
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+
+        result = page.evaluate("""async () => {
+                const { pickTrainingFrames } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                // 200 frames at 0.1s spacing, 0 to 19.9s.
+                const times = Array.from({ length: 200 }, (_, i) => +(i * 0.1).toFixed(1));
+                const opts = { maxFrames: 8, minGapS: 0.75 };
+                return {
+                  nearLast: pickTrainingFrames(times, { ...opts, priority: [{ t: 19.5, weight: 5 }] }),
+                  nearFirst: pickTrainingFrames(times, { ...opts, priority: [{ t: 0.4, weight: 5 }] }),
+                  first: times[0],
+                  last: times[times.length - 1],
+                };
+            }""")
+
+        for key in ("nearLast", "nearFirst"):
+            picked = result[key]
+            assert picked == sorted(picked)
+            assert all(b - a >= 0.75 for a, b in zip(picked, picked[1:])), (key, picked)
+
+        assert result["last"] in result["nearLast"], result["nearLast"]
+        assert result["first"] in result["nearFirst"], result["nearFirst"]
+
     def test_the_flagged_events_can_be_found_again(self, page: Page, base_url: str):
         """Flagging is only worth doing if the flagged ones come back. The filter sends
         the review state to the server rather than hiding rows client-side, because the

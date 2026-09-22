@@ -919,19 +919,28 @@ export function openEventDetailModal(
    *   spread. `beyondClip` counts labelled moments the clip is too short to show.
    */
   function framePickerFor(blips) {
+    // overlayDoc and blips are fixed for the dialog's lifetime; only the label
+    // selection varies between calls, so cache by that instead of re-walking every
+    // frame and box from scratch on each label-picker toggle.
+    const cache = new Map();
     return labelUuids => {
       const wanted = [...labelUuids];
+      const key = [...wanted].sort().join(' ');
+      const cached = cache.get(key);
+      if (cached) return cached;
       const hard = hardMomentsFor(overlayDoc, wanted, blips);
       const all = framesHoldingLabels(overlayDoc, wanted);
       const available = withinClip(all);
       // Out-of-range hard moments need no separate filtering: pickTrainingFrames only
       // honours a priority whose time is among the ones it was given.
       const times = pickTrainingFrames(available, { priority: hard });
-      return {
+      const result = {
         times,
         reasons: new Map(hard.map(m => [m.t, m.why])),
         beyondClip: all.length - available.length,
       };
+      cache.set(key, result);
+      return result;
     };
   }
 
