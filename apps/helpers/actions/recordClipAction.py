@@ -84,12 +84,12 @@ class RingClipBackend(ClipBackend):
         lead_in: List[Tuple[float, bytes]] = []
         if not frames or frames[0][0] > start.timestamp() + 0.5:
             # The dense ring didn't reach back to the requested pre-roll start — see
-            # `FrameRing._recent_idle`. Splice in whatever sticky idle stills predate
+            # `FrameRing._sticky_recent`. Splice in whatever sticky stills predate
             # it, so the clip opens on an honest lead-in instead of either nothing or a
             # still that never appears in the video (the bug this replaces).
             lead_in = self._ring.lead_in_frames(before=start.timestamp())
             # Only the most recent, and shown at the window's own start rather than at
-            # its true age. A sticky still can be many minutes old (see `_recent_idle`),
+            # its true age. A sticky still can be many minutes old (see `_sticky_recent`),
             # and holding it for its real gap — which is what honest timing demands
             # everywhere else — would open the clip on a ten-minute freeze. Clamping the
             # *frame* instead of capping its duration keeps the timeline exact: the clip
@@ -395,6 +395,22 @@ def sweep_spool_root(spool_root: Path) -> int:
     return removed
 
 
+#: Oldest a sticky still may be, relative to a clip's pre-roll start, to open that clip.
+#:
+#: The lead-in exists to show what the scene looked like just before the event, and a
+#: still only speaks for the moment it was taken. A snapshot camera gives no way to tell
+#: a static scene from a stale one, so the older the still, the more likely the clip
+#: opens on something the world has already moved past.
+#:
+#: 300s deliberately matches `RingMqttImageProvider.IDLE_FRAME_TIMEOUT` — the window
+#: beyond which the provider itself stops expecting a frame. ring-mqtt polls every 90s
+#: by default, so a healthy camera's newest still is never close to this bound; it fires
+#: only once polling has actually stalled, which is exactly when a still stops being
+#: evidence. Past it the clip opens on its own first frame instead, and `stillsOnlyS`
+#: already records the gap that leaves.
+LEAD_IN_MAX_AGE_S = 300.0
+
+
 class FrameRing:
     """Bounded in-RAM JPEG ring for sources with no continuous stream.
 
@@ -408,26 +424,48 @@ class FrameRing:
         max_seconds: float = 20.0,
         max_mb: float = 32.0,
         sticky_idle_count: int = 2,
+        lead_in_max_age_s: float = LEAD_IN_MAX_AGE_S,
         spool: Optional[FrameSpool] = None,
     ) -> None:
         self._max_seconds = max_seconds
         self._max_bytes = int(max_mb * 1024 * 1024)
+        self._lead_in_max_age_s = float(lead_in_max_age_s)
         self._frames: List[Tuple[float, bytes]] = []
         self._bytes = 0
         self._hold_from: Optional[float] = None
         #: Where frames go once an event is open — see `FrameSpool`. Without one the
         #: ring behaves exactly as it did: bounded RAM, and a long event loses its head.
         self._spool = spool
-        #: The most recent idle-tier snapshots, kept outside the age/byte-bounded ring
-        #: above. Ring cameras only push idle snapshots every 30-90s (the ring-mqtt
-        #: bridge's own poll interval), far slower than `max_seconds` (default 20s), so
-        #: every idle snapshot is age-evicted from `_frames` before the next one even
-        #: arrives — the ring holds real pre-roll only for events lucky enough to start
-        #: within seconds of a poll. This is a separate, small, deliberately unbounded-
-        #: by-age cache so `lead_in_frames` can still offer *something* — a couple of
-        #: stale-but-honest stills — as a clip's lead-in when the dense ring has nothing.
-        self._recent_idle: List[Tuple[float, bytes]] = []
+        #: The most recent frames from a source that polls, kept outside the age/byte-
+        #: bounded ring above. Ring cameras only push idle snapshots every 30-90s (the
+        #: ring-mqtt bridge's own poll interval), far slower than `max_seconds` (default
+        #: 20s), so every idle snapshot is age-evicted from `_frames` before the next one
+        #: even arrives — the ring holds real pre-roll only for events lucky enough to
+        #: start within seconds of a poll. This is a separate, small, deliberately
+        #: unbounded-by-age cache so `lead_in_frames` can still offer *something* — a
+        #: couple of stale-but-honest stills — as a clip's lead-in when the dense ring
+        #: has nothing.
+        #:
+        self._sticky_recent: List[Tuple[float, bytes]] = []
         self._sticky_idle_count = int(sticky_idle_count)
+        #: The last frame seen on the *live* tier, offered alongside the idle stills.
+        #:
+        #: A Ring camera stops polling idle the moment it goes live, so an idle-only
+        #: cache is blind to everything a live session saw and keeps offering the last
+        #: poll from before it. That is a clip opening on a scene its next frame
+        #: contradicts — a garage with both cars parked, a hundred seconds after one of
+        #: them drove away.
+        #:
+        #: Kept as one slot of its own rather than pushed into `_sticky_recent`: at 1-2
+        #: fps a live session would flood a two-slot cache with consecutive frames from
+        #: *inside* the next event's window, which `lead_in_frames` then filters out —
+        #: trading a stale lead-in for none at all.
+        self._last_live: Optional[Tuple[float, bytes]] = None
+        #: Whether this source has ever pushed an idle frame. Continuous sources (RTSP)
+        #: never do: their dense ring is the only pre-roll there is, and the sticky cache
+        #: must stay empty rather than start splicing stills into clips that never
+        #: needed them.
+        self._has_idle_tier = False
 
     def hold_from(self, floor: Optional[float]) -> None:
         """Suspend time-based eviction for frames at/after `floor`; `None` resumes it.
@@ -471,8 +509,11 @@ class FrameRing:
                     self._spool.push(stamp, jpeg)
 
     def push(self, timestamp: float, jpeg: bytes, idle: bool = False) -> None:
-        """`idle=True` marks a slow-poll snapshot (see `_recent_idle`) rather than a
-        dense live frame — callers pass it through from the provider's own tier."""
+        """`idle=True` marks a slow-poll snapshot rather than a dense live frame —
+        callers pass it through from the provider's own tier. It is what tells the ring
+        this source *has* an idle tier; after that every frame feeds the sticky lead-in
+        cache regardless of tier, so a live session cannot leave it stale. See
+        `_sticky_recent`."""
         self._frames.append((timestamp, jpeg))
         self._bytes += len(jpeg)
         # To disk as well while an event is open. The RAM copy still ages out under the
@@ -482,9 +523,12 @@ class FrameRing:
             self._spool.push(timestamp, jpeg)
         self._evict(timestamp)
         if idle:
-            self._recent_idle.append((timestamp, jpeg))
-            if len(self._recent_idle) > self._sticky_idle_count:
-                self._recent_idle.pop(0)
+            self._has_idle_tier = True
+            self._sticky_recent.append((timestamp, jpeg))
+            if len(self._sticky_recent) > self._sticky_idle_count:
+                self._sticky_recent.pop(0)
+        elif self._has_idle_tier:
+            self._last_live = (timestamp, jpeg)
 
     def _evict(self, now: float) -> None:
         cutoff = now - self._max_seconds
@@ -510,15 +554,23 @@ class FrameRing:
         return None
 
     def lead_in_frames(self, before: float) -> List[Tuple[float, bytes]]:
-        """Sticky idle snapshots strictly before `before`, oldest first.
+        """Sticky stills strictly before `before`, oldest first.
 
         For a Ring-style source, `before` is a clip's requested pre-roll start. The
-        dense ring frequently has nothing that far back (see `_recent_idle`'s docstring
+        dense ring frequently has nothing that far back (see `_sticky_recent`'s docstring
         above) — this is what `RingClipBackend` prepends instead, so the clip opens on
         a couple of honest, if stale, stills rather than jumping straight into the event
         with no lead-in at all.
         """
-        return [f for f in self._recent_idle if f[0] < before]
+        held = list(self._sticky_recent)
+        if self._last_live is not None:
+            held.append(self._last_live)
+        held.sort(key=lambda f: f[0])
+        # The newest few, because `RingClipBackend` splices only the last of them: what
+        # the camera saw most recently before the window is the honest lead-in, whether
+        # that was an idle poll or the tail of a live session.
+        fresh = [f for f in held if f[0] < before and before - f[0] <= self._lead_in_max_age_s]
+        return fresh[-self._sticky_idle_count :]
 
     def closest(self, ts: float, tolerance: float) -> Optional[bytes]:
         """The frame nearest `ts`, if the ring holds one within `tolerance` seconds.

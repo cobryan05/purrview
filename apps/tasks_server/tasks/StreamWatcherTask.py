@@ -1931,7 +1931,7 @@ class StreamWatcherTask(Task):
             return
         # `is_live` only exists on RingMqttImageProvider; every other provider is a
         # continuous source with no idle tier, so `getattr` defaults to "not idle" and
-        # the sticky lead-in cache (see FrameRing._recent_idle) simply never engages.
+        # the sticky lead-in cache (see FrameRing._sticky_recent) simply never engages.
         idle = not getattr(pipeline.provider, "is_live", True)
         ring.push(now + self._wallclock_offset, jpeg, idle=idle)
 

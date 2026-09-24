@@ -225,7 +225,7 @@ class RingMqttImageProvider(ImageProvider):
         """Whether the frame this provider is about to hand back came off the live tier.
 
         `StreamWatcherTask._push_to_ring` reads this to tag idle-tier snapshots when
-        feeding the frame ring — see `FrameRing._recent_idle`.
+        feeding the frame ring — see `FrameRing._sticky_recent`.
         """
         return self._live_provider is not None
 

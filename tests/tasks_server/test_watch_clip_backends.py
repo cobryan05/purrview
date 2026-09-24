@@ -225,9 +225,8 @@ class TestPushToRingIdleTagging:
 
         task._push_to_ring(pipeline, _packet(b"\xff\xd8snap"), now=100.0)
 
-        assert task._frame_rings["src-1"].lead_in_frames(before=1e12) == [
-            (100.0 + task._wallclock_offset, b"\xff\xd8snap")
-        ]
+        pushed_at = 100.0 + task._wallclock_offset
+        assert task._frame_rings["src-1"].lead_in_frames(before=pushed_at + 60.0) == [(pushed_at, b"\xff\xd8snap")]
 
     def test_a_provider_with_no_tier_concept_defaults_to_not_idle(self):
         """Every non-ring provider (RTSP, etc.) has no `is_live` at all — the sticky
@@ -1080,8 +1079,10 @@ class TestVideoTimeEqualsEventTime:
     async def test_the_seam_after_a_still_lead_in_does_not_shift_the_timeline(self, tmp_path):
         t0 = 1000.0
         ring = FrameRing(max_seconds=20.0)
-        # A sticky still from long before the window, and dense frames 40s into it.
-        ring.push(t0 - 600.0, _solid_jpeg(5), idle=True)
+        # A sticky still from well before the window — but inside `LEAD_IN_MAX_AGE_S`,
+        # since a still older than that is refused outright and there would be no seam
+        # left to measure. Dense frames start 40s into the window.
+        ring.push(t0 - 120.0, _solid_jpeg(5), idle=True)
         for i in range(40):
             ring.push(t0 + 40.0 + i * 0.4, _solid_jpeg(i % 255))
 

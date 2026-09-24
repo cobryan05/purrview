@@ -772,12 +772,81 @@ class TestFrameRing:
         # Never marked idle, so it is never sticky — it is simply gone, as before.
         assert ring.lead_in_frames(before=90.0) == []
 
+    def test_a_live_session_refreshes_the_sticky_stills(self):
+        """The bug: a clip opened on a snapshot the camera had long since disproved.
+
+        `_sticky_recent` was fed only by idle-tier pushes, and a Ring camera stops
+        polling idle the moment it goes live. So everything it saw during a live session
+        — an entire neighbouring event — left the cache untouched, and the next event's
+        lead-in spliced the last idle poll from *before* that session. Observed as a
+        garage clip opening on both cars parked, a hundred seconds after one of them had
+        driven away, with the very next frame showing the empty garage.
+        """
+        ring = FrameRing(max_seconds=20.0, sticky_idle_count=2)
+        ring.push(0.0, b"both-cars-parked", idle=True)
+        # The camera goes live for a neighbouring event: no idle polls for its duration.
+        ring.push(100.0, b"one-car-leaving", idle=False)
+        ring.push(110.0, b"one-car-left", idle=False)
+
+        # `RingClipBackend` splices the *last* of these, so that is the assertion that
+        # matters: the newest still must be what the live session ended on, not the poll
+        # from before it. The older idle still is kept, and is still older.
+        assert ring.lead_in_frames(before=200.0)[-1] == (110.0, b"one-car-left")
+
+    def test_a_live_frame_inside_the_window_is_not_offered_as_its_lead_in(self):
+        """The half that keeps the fix from eating the lead-in it exists to provide.
+
+        A live session running *into* the event means the newest live frame sits inside
+        the requested window, where it is no use as a lead-in — the clip already shows
+        that moment. The older idle still must survive to speak for the pre-roll.
+        """
+        ring = FrameRing(max_seconds=20.0, sticky_idle_count=2)
+        ring.push(0.0, b"idle-snapshot", idle=True)
+        for i in range(90, 94):
+            ring.push(float(i), f"live-{i}".encode(), idle=False)
+
+        assert ring.lead_in_frames(before=85.0) == [(0.0, b"idle-snapshot")]
+
+    def test_a_source_with_no_idle_tier_gains_no_sticky_stills(self):
+        """The half that keeps the fix from reaching continuous sources. An RTSP camera
+        never pushes an idle frame, so its dense ring is the only pre-roll there is and
+        the sticky cache must stay empty rather than start splicing stills into clips
+        that never needed them."""
+        ring = FrameRing(max_seconds=20.0, sticky_idle_count=2)
+        for i in range(5):
+            ring.push(float(i) * 90.0, f"live-{i}".encode(), idle=False)
+
+        assert ring.lead_in_frames(before=1e9) == []
+
     def test_only_the_most_recent_sticky_snapshots_are_kept(self):
         ring = FrameRing(max_seconds=20.0, sticky_idle_count=2)
         for i in range(5):
             ring.push(float(i) * 90.0, f"snap-{i}".encode(), idle=True)
 
-        assert ring.lead_in_frames(before=1e9) == [(270.0, b"snap-3"), (360.0, b"snap-4")]
+        # A cutoff just past the last snapshot, so this measures the count cap rather
+        # than colliding with `LEAD_IN_MAX_AGE_S`.
+        assert ring.lead_in_frames(before=400.0) == [(270.0, b"snap-3"), (360.0, b"snap-4")]
+
+    def test_a_still_older_than_the_bound_is_not_offered(self):
+        """A still only speaks for the moment it was taken, and a snapshot camera gives
+        no way to tell a static scene from a stale one. Past the bound the clip opens on
+        its own first frame instead — `stillsOnlyS` already records the gap that leaves.
+        """
+        ring = FrameRing(max_seconds=20.0, lead_in_max_age_s=300.0)
+        ring.push(0.0, b"ancient", idle=True)
+
+        assert ring.lead_in_frames(before=299.0) == [(0.0, b"ancient")]
+        assert ring.lead_in_frames(before=301.0) == []
+
+    def test_the_bound_drops_only_the_stills_that_are_too_old(self):
+        """A stalled camera's backlog can hold one usable still and one that is not;
+        dropping the pair because the oldest aged out would throw away the evidence the
+        lead-in exists for."""
+        ring = FrameRing(max_seconds=20.0, sticky_idle_count=2, lead_in_max_age_s=300.0)
+        ring.push(0.0, b"too-old", idle=True)
+        ring.push(400.0, b"still-fresh", idle=True)
+
+        assert ring.lead_in_frames(before=500.0) == [(400.0, b"still-fresh")]
 
     def test_lead_in_frames_excludes_ones_at_or_after_the_cutoff(self):
         ring = FrameRing(max_seconds=20.0)
