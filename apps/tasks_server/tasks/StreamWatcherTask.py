@@ -52,6 +52,7 @@ from apps.helpers.actions.recordClipAction import (
     PlaybackClipBackend,
     RecordClipAction,
     RingClipBackend,
+    sweep_spool_root,
 )
 from apps.helpers.actions.recordEventTimelapseAction import sweep_frame_buffers
 from apps.helpers.actions.Registry import create_action
@@ -867,8 +868,13 @@ class StreamWatcherTask(Task):
         if not starts:
             ring.hold_from(None)
             return
-        preroll = min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
+        preroll = self._ring_preroll_for(pipeline)
         ring.hold_from(min(starts) + self._wallclock_offset - preroll)
+
+    def _ring_preroll_for(self, pipeline: WatchPipeline) -> float:
+        """The pre-roll floor a source's ring is held to — shared with `_historical_frame_from_ring`
+        so the held frames and the historical-still lookup are anchored to the same instant."""
+        return min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
 
     async def _service_drain(self, pipeline: WatchPipeline) -> None:
         """Keep a long event's video alive, one chunk at a time.
@@ -1271,6 +1277,12 @@ class StreamWatcherTask(Task):
         swept_buffers = await asyncio.to_thread(sweep_frame_buffers)
         if swept_buffers:
             self.log(f"Swept {swept_buffers} timelapse frame buffer(s) left behind by a previous run")
+
+        # Same reasoning again: an open event's spooled frames (FrameSpool) are only
+        # ever discarded at the closing edge, which a killed watcher never reaches.
+        swept_spool = await asyncio.to_thread(sweep_spool_root, self._spool_root())
+        if swept_spool:
+            self.log(f"Swept {swept_spool} spooled event(s) left behind by a previous run")
 
         self._status_msg = "Building pipelines"
         await self._build_pipelines(db_api_client)
@@ -2457,7 +2469,7 @@ class StreamWatcherTask(Task):
         ring = self._frame_rings.get(pipeline.source_uuid)
         if ring is None:
             return None
-        preroll = min(self._max_preroll_for(pipeline.source_uuid), pipeline.ring_seconds)
+        preroll = self._ring_preroll_for(pipeline)
         found = ring.first_at_or_after(target_wall - preroll)
         if found is None:
             return None

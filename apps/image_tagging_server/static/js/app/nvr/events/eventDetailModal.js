@@ -982,11 +982,10 @@ export function openEventDetailModal(
    * because a decode is not instant and a `drawImage` issued too early silently paints
    * the *previous* frame.
    *
-   * A moment that cannot be confirmed is skipped rather than captured. Both waits are
-   * bounded (an unbounded one froze the harvest at "Saving 5 frames…"), and a bound
-   * that expired used to fall through to the capture anyway — which is how one clip
-   * produced eight images of two distinct pictures, each wearing the boxes of a moment
-   * it did not show.
+   * A moment that cannot be confirmed is skipped rather than captured: both waits are
+   * bounded, and a bound expiring means the frame at that timestamp cannot be trusted,
+   * so falling through to capture anyway would save a wrong frame wearing the boxes of
+   * a moment it did not show.
    *
    * The playhead is put back where the user left it: this runs behind a modal they are
    * about to return to, and finding the clip parked somewhere else would read as the
@@ -1087,7 +1086,7 @@ export function openEventDetailModal(
     annotateBtn.disabled = true;
     // Counted rather than announced once. Seeking a clip five times is seconds of
     // work with nothing else on screen to show for it, and a line that never changes
-    // is indistinguishable from a hang — which is exactly what this used to be.
+    // is indistinguishable from a hang.
     const setProgress = (done, total, verb) => {
       savedHint.classList.add('event-detail__hint--working');
       savedHint.textContent = `${verb} ${done} of ${total} frame${total === 1 ? '' : 's'}…`;

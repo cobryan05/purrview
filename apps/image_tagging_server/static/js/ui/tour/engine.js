@@ -179,8 +179,10 @@ export function startTour(tour, { startAt = 0 } = {}) {
     // would also fire for toasts and unrelated panes re-rendering (see the same rule in
     // listEditorHeight.js) — every anchor lives inside a *-tab-pane, so that's as narrow
     // as this can get without knowing which element the pane's own code will replace.
-    if (step.target && typeof MutationObserver !== 'undefined') {
-      const scope = target?.closest('.workspace-tab-pane, .main-tab-pane') ?? document.body;
+    // Skipped entirely when the anchor never resolved (target is null): there is no
+    // tab pane to scope to, and _waitForAnchor already gave up on finding one.
+    if (target && typeof MutationObserver !== 'undefined') {
+      const scope = target.closest('.workspace-tab-pane, .main-tab-pane') ?? document.body;
       let pending = 0;
       rebuildWatch = new MutationObserver(() => {
         if (pending) return;

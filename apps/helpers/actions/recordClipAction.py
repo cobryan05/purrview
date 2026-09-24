@@ -110,8 +110,10 @@ class RingClipBackend(ClipBackend):
         played = await asyncio.to_thread(self._probe_duration, dest)
         # Seconds at the head of the requested window with no dense frames behind them.
         # `frames` is what the ring still held; anything earlier the caller asked for
-        # was evicted, and only the sticky stills speak for it.
-        stills_only_s = max(0.0, (frames[0][0] if frames else all_frames[-1][0]) - start.timestamp())
+        # was evicted, and only the sticky stills speak for it. When there are no dense
+        # frames at all, the lead-in still's timestamp is clamped to `start` (above), so
+        # it can't be used to measure the gap — the whole requested window is stills-only.
+        stills_only_s = duration_s if not frames else max(0.0, frames[0][0] - start.timestamp())
         return {
             "path": str(dest),
             "sizeBytes": size,
@@ -149,6 +151,15 @@ class RingClipBackend(ClipBackend):
             spooled = spool.frames_between(start, end)
             if spooled:
                 return spooled  # type: ignore[return-value]
+            if spool.frame_count:
+                # The spool has frames, just none in this window — every write for it
+                # failed (see `FrameSpool.push`'s dropped-OSError path), or the window
+                # predates spooling. Either way the RAM-ring fallback below is degraded
+                # coverage silently standing in for what should have come from disk.
+                logger.warning(
+                    "Spool held %d frame(s) but none for the requested window; falling back to the RAM ring",
+                    spool.frame_count,
+                )
         return self._ring.frames_between(start, end)
 
     @staticmethod
@@ -362,6 +373,26 @@ class FrameSpool:
         self._dir = None
         self._frames = []
         self._seq = 0
+
+
+def sweep_spool_root(spool_root: Path) -> int:
+    """Delete spooled events left behind by a previous process. Returns how many.
+
+    Same reasoning as `clipDrain.sweep_chunk_root`: a killed watcher never reaches the
+    closing edge that calls `FrameSpool.discard()`, so its per-event directory is a
+    disk leak nothing else would ever clean up.
+    """
+    root = Path(spool_root)
+    if not root.exists():
+        return 0
+    removed = 0
+    for path in root.glob("*/event-*"):
+        try:
+            shutil.rmtree(path)
+            removed += 1
+        except OSError:
+            logger.debug("Could not sweep spooled event %s", path, exc_info=True)
+    return removed
 
 
 class FrameRing:
