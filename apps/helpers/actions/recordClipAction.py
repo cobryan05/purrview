@@ -30,6 +30,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from PIL import Image
+
 from apps import RECORDINGS_CLIP_DIR
 
 from ..watch.events import EventPhase, WatchEventSignal
@@ -227,6 +229,36 @@ class RingClipBackend(ClipBackend):
 LAST_FRAME_HOLD_S = 0.5
 
 
+def _canvas_for(frames: Sequence[Tuple[float, Path]]) -> Optional[Tuple[int, int]]:
+    """The geometry to encode a mixed-size timeline into: whichever size most frames are.
+
+    One clip's frames are not all one size. A Ring source's sticky idle snapshot and its
+    live frames come off different tiers at different resolutions, and both are spliced
+    into the same timeline. ffmpeg does not complain about that — it configures the filter
+    graph from the *first* frame and silently squeezes every later one into it, so a
+    snapshot leading 1920x1080 footage produced a 640x480 clip with the event body
+    stretched to 4:3 (measured: PSNR 32.5 against 46.3 for the same frames encoded alone).
+
+    Most frames wins rather than the largest, because the event body is what the clip is
+    for and it outnumbers a lead-in still by two orders of magnitude; sizing to the
+    largest would upscale the whole body to match one stale snapshot. A tie goes to the
+    larger frame. Returns even dimensions, which yuv420p requires.
+    """
+    counts: Dict[Tuple[int, int], int] = {}
+    for _stamp, path in frames:
+        try:
+            with Image.open(path) as im:
+                size = im.size
+        except (OSError, ValueError):
+            # A frame ffmpeg may still manage to read; it just gets no say in the canvas.
+            continue
+        counts[size] = counts.get(size, 0) + 1
+    if not counts:
+        return None
+    width, height = max(counts, key=lambda size: (counts[size], size[0] * size[1]))
+    return width + width % 2, height + height % 2
+
+
 def encode_timeline(frames: Sequence[Tuple[float, Path]], dest: Path) -> int:
     """Encode frames so each is shown for the time that actually passed after it.
 
@@ -264,6 +296,16 @@ def encode_timeline(frames: Sequence[Tuple[float, Path]], dest: Path) -> int:
     # unless a file follows it — so the final entry is repeated to give it its hold.
     lines.append(f"file '{ordered[-1][1].as_posix()}'")
 
+    canvas = _canvas_for(ordered)
+    if canvas is None:
+        vf = "pad=ceil(iw/2)*2:ceil(ih/2)*2"
+    else:
+        width, height = canvas
+        vf = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        )
+
     with tempfile.TemporaryDirectory(prefix="ring-timeline-") as tmp:
         list_path = Path(tmp) / "frames.txt"
         list_path.write_text("\n".join(lines) + "\n")
@@ -291,10 +333,12 @@ def encode_timeline(frames: Sequence[Tuple[float, Path]], dest: Path) -> int:
             # browser <video> element, which is the whole point of writing a clip.
             "-pix_fmt",
             "yuv420p",
-            # Odd dimensions are not representable in yuv420p, and a snapshot camera is
-            # under no obligation to deliver even ones.
+            # Every frame into one geometry, so a mixed-resolution timeline is letterboxed
+            # rather than stretched — see `_canvas_for`. Doubles as the even-dimension
+            # guarantee yuv420p needs, which a snapshot camera is under no obligation to
+            # deliver on its own.
             "-vf",
-            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            vf,
             "-f",
             "mp4",
             str(target),
@@ -335,10 +379,37 @@ class FrameSpool:
         self._dir: Optional[Path] = None
         self._frames: List[Tuple[float, Path]] = []
         self._seq = 0
+        #: Latest frame timestamp any open event can still read, or None for no bound.
+        #: See `limit_to` — without it the spool writes for as long as an event stays
+        #: open, and a rule that never closes fills the disk with frames nothing reads.
+        self._deadline: Optional[float] = None
+        self._dropped = 0
 
     @property
     def active(self) -> bool:
         return self._dir is not None
+
+    @property
+    def dropped_count(self) -> int:
+        """Frames refused because they fall past `limit_to`'s deadline."""
+        return self._dropped
+
+    def limit_to(self, deadline: Optional[float]) -> None:
+        """Stop spooling frames later than `deadline`; `None` lifts the bound.
+
+        A clip's window ends at `min(event duration + roll, max_length_s)`, so frames
+        past the last open event's cap are written, counted against the recordings size
+        cap by `_scan_recording_files`, and then never read by anything. A rule that
+        stays open for hours — a lit driveway, a rule whose exit condition never fires —
+        turned that into gigabytes of jpgs whose only effect was to evict real clips.
+
+        The deadline belongs to the *source*, not to one event, for exactly the reason
+        `FrameRing.hold_from` documents: several events are routinely open over one ring,
+        and the one that opened last needs frames the first one does not. It must
+        therefore be the latest deadline any currently open event needs, recomputed from
+        live state each pass — `StreamWatcherTask._service_ring_hold` does both together.
+        """
+        self._deadline = deadline
 
     @property
     def frame_count(self) -> int:
@@ -359,6 +430,13 @@ class FrameSpool:
         """
         if self._dir is None:
             return
+        if self._deadline is not None and timestamp > self._deadline:
+            # Past every open event's cap, so no clip will ever read it. Logged once per
+            # event rather than per frame: at 2 fps a long event would emit thousands.
+            self._dropped += 1
+            if self._dropped == 1:
+                logger.info("Spool reached the longest open clip's cap; later frames are not being kept")
+            return
         path = self._dir / f"{self._seq:08d}.jpg"
         try:
             path.write_bytes(jpeg)
@@ -378,6 +456,8 @@ class FrameSpool:
         self._dir = None
         self._frames = []
         self._seq = 0
+        self._deadline = None
+        self._dropped = 0
 
 
 def sweep_spool_root(spool_root: Path) -> int:
@@ -472,8 +552,13 @@ class FrameRing:
         #: needed them.
         self._has_idle_tier = False
 
-    def hold_from(self, floor: Optional[float]) -> None:
+    def hold_from(self, floor: Optional[float], until: Optional[float] = None) -> None:
         """Suspend time-based eviction for frames at/after `floor`; `None` resumes it.
+
+        `until` is passed straight to the spool as the latest frame any open event can
+        still read (see `FrameSpool.limit_to`). It bounds only the spool: the RAM ring is
+        already bounded by its own caps, and its later frames still answer historical-
+        still lookups.
 
         `_evict`'s `max_seconds` cutoff climbs with every push, so a visit longer than
         `max_seconds` has its own pre-roll evicted out from under it before
@@ -504,6 +589,8 @@ class FrameRing:
             if self._frames:
                 self._evict(self._frames[-1][0])
             return
+        if self._spool is not None:
+            self._spool.limit_to(until)
         if self._spool is not None and not was_holding:
             # An event just opened. The pre-roll it wants is the RAM the ring is already
             # holding, so seed the spool with it — retroactive pre-roll is the one thing

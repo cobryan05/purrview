@@ -1132,3 +1132,173 @@ class TestVideoTimeEqualsEventTime:
 
         assert result["durationS"] == pytest.approx(99 * 0.4, rel=0.05), result["durationS"]
         assert result["sourceSpanS"] == pytest.approx(99 * 0.4, rel=0.01)
+
+
+def _sized_jpeg(fill: int, width: int, height: int) -> bytes:
+    frame = np.full((height, width, 3), fill, dtype=np.uint8)
+    ok, buf = cv2.imencode(".jpg", frame)
+    assert ok
+    return buf.tobytes()
+
+
+class TestAMixedResolutionTimeline:
+    """One clip's frames are not all one size, and ffmpeg does not say so.
+
+    A Ring source's sticky idle snapshot and its live frames come off different tiers at
+    different resolutions and are spliced into the same timeline. ffmpeg configures the
+    filter graph from the *first* frame and silently stretches every later one into it,
+    so a snapshot leading the clip decided the geometry of the whole event body — a
+    640x480 clip of 1920x1080 footage, squashed from 16:9 to 4:3, no error and no warning.
+
+    Integration tests against the real encoder, because the bug is in what ffmpeg is told.
+    """
+
+    @staticmethod
+    def _geometry(path) -> tuple:
+        import subprocess
+
+        out = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        width, height = out.stdout.strip().split(",")
+        return int(width), int(height)
+
+    @pytest.mark.parametrize(
+        "lead_size, dense_size",
+        [
+            ((64, 48), (128, 72)),  # a smaller 4:3 snapshot in front of 16:9 live frames
+            ((128, 72), (64, 48)),  # and the other way round: the snapshot is the larger
+        ],
+    )
+    def test_the_event_body_decides_the_geometry_not_the_frame_that_happens_to_be_first(
+        self, tmp_path, lead_size, dense_size
+    ):
+        """State-dependent by construction: the answer has to follow the dense frames in
+        both directions, so it cannot be satisfied by always taking the first frame or
+        always taking the larger one."""
+        timeline = [(1000.0, _spill(tmp_path, 0, _sized_jpeg(30, *lead_size)))]
+        timeline += [(1001.0 + i * 0.4, _spill(tmp_path, i + 1, _sized_jpeg(i % 255, *dense_size))) for i in range(12)]
+        dest = tmp_path / "mixed.mp4"
+
+        encode_timeline(timeline, dest)
+
+        assert self._geometry(dest) == dense_size, (
+            f"the 12 dense frames are {dense_size}; a clip encoded at "
+            f"{self._geometry(dest)} has stretched the event body into the lead-in still"
+        )
+
+    def test_an_odd_sized_frame_is_still_padded_to_even(self, tmp_path):
+        """yuv420p cannot represent odd dimensions, and a snapshot camera is under no
+        obligation to deliver even ones. The canvas has to round up rather than hand
+        ffmpeg a size it will refuse."""
+        timeline = [(1000.0 + i * 0.4, _spill(tmp_path, i, _sized_jpeg(i % 255, 65, 49))) for i in range(4)]
+        dest = tmp_path / "odd.mp4"
+
+        encode_timeline(timeline, dest)
+
+        assert self._geometry(dest) == (66, 50)
+
+
+class TestTheSpoolStopsAtTheLongestOpenClip:
+    """Spooling is bounded by what a clip can still read, not by how long a rule stays open.
+
+    A clip's window ends at `min(event duration + roll, max_length_s)`, so frames past the
+    last open event's cap are written to disk, counted against the recordings size cap,
+    and then read by nothing. A rule that stays open for hours — a lit driveway, a rule
+    whose exit condition never fires — turned that into gigabytes of jpgs whose only
+    effect was to evict real event clips.
+    """
+
+    @staticmethod
+    def _task_with_ring(ring, open_events, *, preroll=5.0, max_length=60.0):
+        pipeline = _pipeline("src-1")
+        pipeline.engine.open_events = lambda: list(open_events)
+        task = _task([pipeline])
+        task._frame_rings["src-1"] = ring
+        task._wallclock_offset = 0.0
+        task._max_preroll_for = lambda _uuid: preroll
+        task._max_clip_length_for = lambda _uuid: max_length
+        return task, pipeline
+
+    def test_frames_past_the_cap_are_not_spooled(self, tmp_path):
+        ring = FrameRing(max_seconds=20.0, spool=FrameSpool(Path(tmp_path) / "spool"))
+        events = [{"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"}]
+        task, pipeline = self._task_with_ring(ring, events, preroll=5.0, max_length=60.0)
+        task._service_ring_hold(pipeline)
+
+        # The window runs 95s -> 155s; push well past it, as an event that never closes does.
+        for i in range(600):
+            ring.push(100.0 + i * 0.5, _solid_jpeg(i % 255))
+
+        spooled = [t for t, _ in ring._spool.frames_between(0.0, 1e9)]
+        assert spooled, "the event's own window must still be spooled"
+        assert max(spooled) <= 160.0, f"spooled up to {max(spooled)}s for a window ending at 155s"
+        assert ring._spool.dropped_count > 0, "the frames past the cap must be refused, not merely unread"
+
+    def test_the_latest_open_event_sets_the_cap_not_the_earliest(self, tmp_path):
+        """One ring serves every rule watching a camera, and the event that opened *last*
+        is the one whose window reaches furthest forward. Sizing the bound from the
+        earliest event would stop spooling while a neighbour was still recording."""
+        ring = FrameRing(max_seconds=20.0, spool=FrameSpool(Path(tmp_path) / "spool"))
+        open_events = [{"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"}]
+        task, pipeline = self._task_with_ring(ring, open_events, preroll=5.0, max_length=60.0)
+        task._service_ring_hold(pipeline)
+
+        # A second cat arrives 100s in; its own window runs to 255s, long past the first's.
+        open_events.append({"startedAt": 200.0, "ruleUuid": "r1", "subjectRef": "cat-b"})
+        task._service_ring_hold(pipeline)
+        for i in range(500):
+            ring.push(100.0 + i * 0.5, _solid_jpeg(i % 255))
+
+        spooled = [t for t, _ in ring._spool.frames_between(0.0, 1e9)]
+        assert max(spooled) > 250.0, (
+            f"the second event records until 255s; spooling stopped at {max(spooled)}s, "
+            "so its clip would be cut short"
+        )
+
+    def test_no_configured_clip_length_leaves_the_spool_unbounded(self, tmp_path):
+        """A source with no clip action has no cap to derive, and inventing one would
+        silently truncate whatever else reads the spool."""
+        ring = FrameRing(max_seconds=20.0, spool=FrameSpool(Path(tmp_path) / "spool"))
+        events = [{"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"}]
+        task, pipeline = self._task_with_ring(ring, events, max_length=0.0)
+        task._service_ring_hold(pipeline)
+
+        for i in range(400):
+            ring.push(100.0 + i * 0.5, _solid_jpeg(i % 255))
+
+        assert ring._spool.frame_count == 400
+        assert ring._spool.dropped_count == 0
+
+    def test_the_cap_is_forgotten_with_the_event(self, tmp_path):
+        """A deadline that outlived its event would refuse the next event's frames."""
+        ring = FrameRing(max_seconds=20.0, spool=FrameSpool(Path(tmp_path) / "spool"))
+        events = [{"startedAt": 100.0, "ruleUuid": "r1", "subjectRef": "cat-a"}]
+        task, pipeline = self._task_with_ring(ring, events, max_length=60.0)
+        task._service_ring_hold(pipeline)
+        for i in range(600):
+            ring.push(100.0 + i * 0.5, _solid_jpeg(i % 255))
+        assert ring._spool.dropped_count > 0
+
+        events.clear()
+        task._service_ring_hold(pipeline)
+        events.append({"startedAt": 900.0, "ruleUuid": "r1", "subjectRef": "cat-b"})
+        task._service_ring_hold(pipeline)
+        ring.push(900.0, _solid_jpeg(1))
+
+        assert ring._spool.dropped_count == 0, "the previous event's deadline must not bind the next one"
+        assert ring._spool.frame_count == 1

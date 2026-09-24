@@ -106,6 +106,10 @@ BRIDGE_TELEMETRY_INTERVAL_S = 10.0
 #: The one action kind whose output is a playable clip, and so the only one that needs
 #: the rolling buffer, the drain and a detection overlay.
 CLIP_ACTION_KIND = "record_clip"
+#: Spare seconds kept past an open event's clip cap when bounding the frame spool.
+#: Event times are monotonic and frame times are wallclock, so the two agree only as far
+#: as `_wallclock_offset` is current. At snapshot frame rates this is a handful of frames.
+SPOOL_DEADLINE_SLACK_S = 2.0
 #: The one action kind that owns a long-lived TrainingCollector rather than being
 #: stateless — see _build_actions' collector-construction pass, just before the
 #: per-row loop it also participates in.
@@ -859,7 +863,11 @@ class StreamWatcherTask(Task):
         also means a missed END cannot leak the hold and pin the ring in RAM forever.
 
         The floor is the earliest open event's pre-roll start, because the later events'
-        material is a subset of what that one already needs.
+        material is a subset of what that one already needs. The ceiling is the mirror
+        image — the *latest* open event's clip cap, because that is the one whose window
+        reaches furthest forward — and it bounds the spool rather than the ring: nothing
+        past it is ever read, so spooling it only costs disk the recordings cap then
+        reclaims by evicting real clips. See `FrameSpool.limit_to`.
         """
         ring = self._frame_rings.get(pipeline.source_uuid or "")
         if ring is None:
@@ -869,7 +877,15 @@ class StreamWatcherTask(Task):
             ring.hold_from(None)
             return
         preroll = self._ring_preroll_for(pipeline)
-        ring.hold_from(min(starts) + self._wallclock_offset - preroll)
+        max_length = self._max_clip_length_for(pipeline.source_uuid)
+        until: Optional[float] = None
+        if max_length > 0:
+            # The last frame the longest-reaching open event can read, plus slack: the
+            # event clock is monotonic and the frames are stamped in wallclock, so the
+            # two are only as aligned as `_wallclock_offset` is fresh. A few spare frames
+            # cost nothing; cutting a clip's last second short is visible.
+            until = max(starts) + self._wallclock_offset - preroll + max_length + SPOOL_DEADLINE_SLACK_S
+        ring.hold_from(min(starts) + self._wallclock_offset - preroll, until)
 
     def _ring_preroll_for(self, pipeline: WatchPipeline) -> float:
         """The pre-roll floor a source's ring is held to — shared with `_historical_frame_from_ring`
