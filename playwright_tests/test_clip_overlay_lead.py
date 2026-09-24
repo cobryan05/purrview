@@ -22,12 +22,27 @@ Run with:
 import pytest
 from playwright.sync_api import Page
 
+_SEEK_CALL = """
+    async ([times, fps, lead]) => {
+        const { seekTargetFor } = await import('/app-static/js/app/nvr/events/clipOverlay.js');
+        return times.map(t => Math.floor((seekTargetFor(t, lead) - lead) * fps));
+    }
+"""
+
 _CALL = """
     async ([declared, actual]) => {
         const { untrimmedLead } = await import('/app-static/js/app/nvr/events/clipOverlay.js');
         return untrimmedLead(declared, actual);
     }
 """
+
+
+@pytest.fixture
+def landed_on(page: Page, base_url: str):
+    """The frame index a seek for each sidecar time actually presents."""
+    page.goto(base_url)
+    page.wait_for_load_state("networkidle")
+    return lambda times, fps, lead=0: page.evaluate(_SEEK_CALL, [times, fps, lead])
 
 
 @pytest.fixture
@@ -65,3 +80,40 @@ class TestUntrimmedLead:
         then. Guessing an offset from a missing number would move every box on the first
         paint and then move them back."""
         assert lead(declared, actual) == 0
+
+
+class TestSeekTargetFor:
+    """Seeking to the frame a sidecar sample describes.
+
+    `detectionTrack.py` writes sample times to four decimals, so a time generated as
+    `index / fps` can round to just below the boundary of its own frame — 1/12 is
+    written 0.0833 — and a seek there presents the *previous* frame. Playback never
+    shows it, because the overlay looks a sample up from the true `currentTime`; the
+    label-correction harvest seeks to the stated time, and on a timelapse one frame is
+    five seconds of real time, so it saved a picture the boxes never described.
+    """
+
+    @staticmethod
+    def _sidecar_times(count, fps):
+        """As `_round(index / fps)` writes them."""
+        return [round(i / fps, 4) for i in range(count)]
+
+    def test_every_sample_lands_on_its_own_frame(self, landed_on):
+        """The whole point: sample i must present frame i, for every i. Against the
+        unnudged seek this failed for 10 of these 29 — including both frames the
+        correction actually harvested."""
+        times = self._sidecar_times(29, 12)
+        assert landed_on(times, 12) == list(range(29))
+
+    def test_holds_at_the_rates_clips_are_written_at(self, landed_on):
+        """A timelapse is the damaging case, but the same rounding applies to every
+        sidecar; a rate whose reciprocal is exact must not be pushed forward a frame."""
+        for fps in (5, 10, 12, 15, 25, 30):
+            times = self._sidecar_times(40, fps)
+            assert landed_on(times, fps) == list(range(40)), fps
+
+    def test_an_untrimmed_head_shifts_the_seek_without_moving_the_frame(self, landed_on):
+        """The lead and the nudge are independent corrections: one puts the playhead in
+        the right part of the file, the other inside the right frame of it."""
+        times = self._sidecar_times(29, 12)
+        assert landed_on(times, 12, 4.2) == list(range(29))

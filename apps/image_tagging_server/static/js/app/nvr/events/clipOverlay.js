@@ -113,6 +113,34 @@ export function sampleAt(doc, t) {
 }
 
 /**
+ * How far past a sample's stated time to seek to land on the frame it describes.
+ *
+ * Sidecar times are written to four decimals (`_round`, `detectionTrack.py`), so a time
+ * generated as `index / fps` can round to just *below* the boundary of its own frame —
+ * 1/12 is written `0.0833` — and seeking there presents the previous frame.
+ *
+ * Playback never sees this: the overlay looks a sample *up* from the true `currentTime`,
+ * so it stays self-consistent whatever the seek rounded to. A harvest does the opposite,
+ * seeking *to* the stated time, and on a timelapse one frame is several seconds of real
+ * time, so the picture it captures shows a moment the boxes never described.
+ *
+ * Two milliseconds clears the 5e-5 worst case by a wide margin while staying far inside
+ * one frame at any rate a camera produces, so it can never reach the *next* frame.
+ */
+const SEEK_NUDGE_S = 0.002;
+
+/**
+ * The player time to seek to in order to capture the frame sample `t` describes.
+ *
+ * @param {number} t - a sidecar sample time
+ * @param {number} [lead] - untrimmed head, as `leadSeconds()` reports it
+ * @returns {number}
+ */
+export function seekTargetFor(t, lead = 0) {
+  return Number(t) + (Number(lead) || 0) + SEEK_NUDGE_S;
+}
+
+/**
  * Whether the rule was firing at `t`.
  *
  * @param {Object} doc

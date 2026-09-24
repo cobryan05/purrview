@@ -37,7 +37,7 @@ import {
 import { fetchRunningWatcherUuid, fetchTimelapsePreview } from '/app-static/js/shared/api/tasks.js';
 import { saveFrameForAnnotation, captureFilename, DEFAULT_CAPTURE_DIR } from '/app-static/js/ui/utils/saveFrameForAnnotation.js';
 import { frameIsTrustworthy, nextPresentedFrame, whenPageVisible } from '/app-static/js/ui/utils/videoFrames.js';
-import { attachClipOverlay, fetchClipOverlay, sampleAt } from './clipOverlay.js';
+import { attachClipOverlay, fetchClipOverlay, sampleAt, seekTargetFor } from './clipOverlay.js';
 import { fetchEventBlips } from '/app-static/js/shared/api/eventBlips.js';
 import {
   applyLabelRemap,
@@ -46,6 +46,7 @@ import {
   framesHoldingLabels,
   hardMomentsFor,
   labelTallyAcrossClip,
+  MIN_FRAME_GAP_S,
   NO_BBOX,
   openLabelCorrectionModal,
   pickTrainingFrames,
@@ -99,6 +100,31 @@ export function describeTimelapse(recording) {
     : span >= 60 ? `${Math.round(span / 60)} minutes` : `${Math.round(span)} seconds`;
   const speed = played > 0 ? ` (${Math.round(span / played)}x)` : '';
   return `${frames} frames over ${spanText}, played in ${played.toFixed(1)}s${speed}.`;
+}
+
+/**
+ * Real seconds per second of playback, or 1 when the video runs at life speed.
+ *
+ * A timelapse keeps one frame every few seconds and plays them back at the output rate,
+ * so its time base is not the world's: 134 seconds of visit arrive as 2.4 seconds of
+ * video. Anything expressed as "how far apart in *time* should two things be" has to be
+ * converted through this before it can be compared against a playback offset, or it
+ * silently means something ~55x larger than it says.
+ *
+ * Read from the metadata the timelapse action recorded rather than guessed from the
+ * frame spacing: a sidecar's frames are evenly spaced by construction whatever the
+ * source interval was, so they cannot reveal the ratio. Returns 1 for a row that
+ * predates the metadata — treating an unknown scale as life speed keeps the old
+ * behaviour rather than inventing a compression that may not exist.
+ *
+ * @param {?Object} recording
+ * @returns {number} >= 1
+ */
+export function playbackTimeScale(recording) {
+  const span = Number(recording?.metadataJson?.sourceSpanS);
+  const played = Number(recording?.durationS);
+  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(played) || played <= 0) return 1;
+  return Math.max(1, span / played);
 }
 
 function el(tag, className, text) {
@@ -336,6 +362,9 @@ export function openEventDetailModal(
   let saveBtn = null;
   let annotateBtn = null;
   let mediaSwitcher = null;
+  //: The recording the media pane is showing, for the one thing the sidecar cannot
+  //: say: how much real time a second of it covers — see `playbackTimeScale`.
+  let currentRecording = null;
   //: Object URL of a mid-event timelapse preview, held so it can be revoked. The
   //: browser keeps a blob alive until it is, and these are whole videos.
   let previewUrl = null;
@@ -580,6 +609,7 @@ export function openEventDetailModal(
     if (mediaSwitcher) mediaPane.appendChild(mediaSwitcher);
 
     const isTimelapse = recording.kind === 'timelapse';
+    currentRecording = recording;
 
     video = document.createElement('video');
     video.className = 'event-detail__video';
@@ -933,7 +963,13 @@ export function openEventDetailModal(
       const available = withinClip(all);
       // Out-of-range hard moments need no separate filtering: pickTrainingFrames only
       // honours a priority whose time is among the ones it was given.
-      const times = pickTrainingFrames(available, { priority: hard });
+      // The spacing rule is about the *world* — two pictures less than a second apart
+      // show one pose — so it is stated in real seconds and converted here. Left in
+      // playback seconds it means whatever the time base happens to be: on a timelapse
+      // packing two minutes into two seconds, a 0.75 s gap silently demands 40 s of
+      // real separation and a 29-frame sidecar yields two pictures.
+      const minGapS = MIN_FRAME_GAP_S / playbackTimeScale(currentRecording);
+      const times = pickTrainingFrames(available, { priority: hard, minGapS });
       const result = {
         times,
         reasons: new Map(hard.map(m => [m.t, m.why])),
@@ -1034,7 +1070,7 @@ export function openEventDetailModal(
         const timer = setTimeout(done, 2000);
         video.addEventListener('seeked', done, { once: true });
       });
-      const playerT = t + lead;
+      const playerT = seekTargetFor(t, lead);
       video.currentTime = playerT;
       await seeked;
       const frameState = await presented;

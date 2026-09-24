@@ -27,6 +27,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from playwright.sync_api import Page, Route, expect
 
 from playwright_tests.test_nvr_live_view import FRAME_B64, _mock_nvr, _open_live_view
@@ -3304,6 +3305,87 @@ class TestCorrectingAWrongLabel:
             page.locator("[data-testid='event-filter-review']").select_option("")
 
         assert queries[-1].get("review_state") is None
+
+
+class TestTheHarvestSpacingIsRealTime:
+    """How far apart two harvested frames must be.
+
+    `MIN_FRAME_GAP_S` answers a question about the *world* — two pictures less than a
+    second apart show one pose — but it was compared against playback offsets. On a
+    clip those are the same number. A timelapse keeps one frame every few seconds and
+    plays them at the output rate, so 134 seconds of visit arrive as 2.4 seconds of
+    video, and the same 0.75 silently demanded ~40 seconds of real separation: a
+    29-frame sidecar yielded two pictures, both of them near the start.
+    """
+
+    #: A real timelapse row: 29 frames over 134.1 s of visit, played in 2.4167 s.
+    TIMELAPSE = {"durationS": 2.4167, "metadataJson": {"frames": 29, "sourceSpanS": 134.1229, "intervalS": 5.0}}
+
+    @staticmethod
+    def _pick(page: Page, base_url: str, recording, count=29, fps=12):
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+        return page.evaluate(
+            """async ([recording, count, fps]) => {
+                const { MIN_FRAME_GAP_S, MAX_TRAINING_FRAMES, pickTrainingFrames } =
+                  await import('/app-static/js/app/nvr/events/labelCorrectionModal.js');
+                const { playbackTimeScale } =
+                  await import('/app-static/js/app/nvr/events/eventDetailModal.js');
+                const times = Array.from({ length: count }, (_, i) => Math.round(i / fps * 1e4) / 1e4);
+                const scale = playbackTimeScale(recording);
+                return {
+                  scale,
+                  picked: pickTrainingFrames(times, { minGapS: MIN_FRAME_GAP_S / scale }).length,
+                  cap: MAX_TRAINING_FRAMES,
+                };
+            }""",
+            [recording, count, fps],
+        )
+
+    def test_a_timelapse_yields_a_full_spread(self, page: Page, base_url: str):
+        """Every frame of this timelapse is five real seconds from its neighbour, so
+        every one of them clears a 0.75 s rule and the harvest is capped by
+        `MAX_TRAINING_FRAMES` rather than starved by the time base."""
+        result = self._pick(page, base_url, self.TIMELAPSE)
+
+        assert result["scale"] == pytest.approx(55.5, abs=1.0)
+        assert result["picked"] == result["cap"]
+
+    def test_a_life_speed_clip_still_spaces_its_frames(self, page: Page, base_url: str):
+        """The conversion must not amount to switching the rule off. A 12 fps clip of
+        the same 29 frames spans 2.4 real seconds, so a 0.75 s gap genuinely allows
+        only a handful — and that is the answer it has always given."""
+        result = self._pick(page, base_url, {"durationS": 2.4167, "metadataJson": {}})
+
+        assert result["scale"] == 1
+        assert result["picked"] == 4
+
+    @pytest.mark.parametrize(
+        "recording",
+        [
+            None,
+            {"durationS": 2.4167},
+            {"durationS": 2.4167, "metadataJson": {"frames": 29}},
+            {"durationS": 0, "metadataJson": {"sourceSpanS": 134.1}},
+            {"durationS": 30.0, "metadataJson": {"sourceSpanS": 30.0}},
+        ],
+    )
+    def test_a_row_that_cannot_say_is_treated_as_life_speed(self, page: Page, base_url: str, recording):
+        """Rows predate the metadata, and a clip's span is its duration. Inventing a
+        compression for those would spread a real clip's harvest across frames that are
+        genuinely near-duplicates."""
+        page.goto(base_url)
+        page.wait_for_load_state("networkidle")
+        scale = page.evaluate(
+            """async (recording) => {
+                const { playbackTimeScale } =
+                  await import('/app-static/js/app/nvr/events/eventDetailModal.js');
+                return playbackTimeScale(recording);
+            }""",
+            recording,
+        )
+
+        assert scale == 1
 
 
 class TestTheFoldControlsDoNotRefetch:
