@@ -955,7 +955,12 @@ export function openEventDetailModal(
     const cache = new Map();
     return labelUuids => {
       const wanted = [...labelUuids];
-      const key = [...wanted].sort().join(' ');
+      // The clip's own length is part of the key, not just the label selection:
+      // `withinClip` folds it in, and an estimate can be asked for before the video has
+      // reported a duration. Keying on labels alone would freeze that unfiltered answer,
+      // so `beyondClip` would read 0 and the save pass would seek every out-of-range
+      // moment and skip them all after the dialog had already promised the frames.
+      const key = [video?.duration, overlay?.leadSeconds?.() ?? 0, ...[...wanted].sort()].join('|');
       const cached = cache.get(key);
       if (cached) return cached;
       const hard = hardMomentsFor(overlayDoc, wanted, blips);
@@ -1046,6 +1051,7 @@ export function openEventDetailModal(
     video.pause();
     const frames = [];
     let skipped = 0;
+    let attempted = 0;
     // Nothing is composited in a hidden tab, so no frame is ever presented and every
     // capture would be the same stale picture. Wait for the tab rather than filling
     // the queue with duplicates.
@@ -1081,13 +1087,17 @@ export function openEventDetailModal(
       // real pictures and six duplicates wearing someone else's boxes.
       if (!frameIsTrustworthy(frameState, video.currentTime, playerT)) {
         skipped += 1;
+        attempted += 1;
         Logger.warn(`skipped capture at ${t.toFixed(2)}s: the clip never showed that moment`);
-        onProgress?.(frames.length, times.length);
+        onProgress?.(attempted, times.length);
         continue;
       }
       const frame = await captureVideoFrame(video);
       if (frame) frames.push({ at: playerT, sidecarAt: t, frame });
-      onProgress?.(frames.length, times.length);
+      // Counted as attempted, not as kept: a skip still consumed a seek, and a progress
+      // line that stalls short of its own total reads as a hang.
+      attempted += 1;
+      onProgress?.(attempted, times.length);
     }
     video.currentTime = resumeAt;
     if (wasPlaying) void video.play().catch(() => {});
@@ -1136,8 +1146,8 @@ export function openEventDetailModal(
     const saved = [];
     try {
       const captured = await captureFramesAt(times, (done, total) => setProgress(done, total, 'Capturing'));
-      for (const { sidecarAt, frame } of captured) {
-        setProgress(saved.length, captured.length, 'Saving');
+      for (const [index, { sidecarAt, frame }] of captured.entries()) {
+        setProgress(index + 1, captured.length, 'Saving');
         // Looked up by the sidecar time the pick names, not by converting the player
         // time back. `sidecarAt` IS a sample's `t`, so this lands on it exactly; the
         // round trip through `t + lead - lead` can come back a float below `t`, which

@@ -962,6 +962,24 @@ class TestATruncatedHeadIsReported:
         assert result["stillsOnlyS"] == pytest.approx(60.0, abs=1.0), result
         assert result["partialPreroll"] is True, "a minute of stills is not a complete clip"
 
+    async def test_a_late_start_with_no_stills_is_not_reported_as_stills(self, tmp_path):
+        """The player's warning reads "the first N seconds are stills, not video". With no
+        sticky still to splice — none held, or the newest one past `LEAD_IN_MAX_AGE_S` —
+        the clip simply begins late and holds no stills at all, so the figure has to be
+        zero or the warning describes footage the file does not contain. The gap itself is
+        still reported, through `partialPreroll`."""
+        t0 = 1000.0
+        dense = [(t0 + 60.0 + i * 0.4, _solid_jpeg(i)) for i in range(50)]
+        backend = self._ring_with([], dense)
+
+        result = await backend.extract(
+            _context("snap"), datetime.fromtimestamp(t0, tz=timezone.utc), 120.0, tmp_path / "c.mp4"
+        )
+
+        assert result["leadInFrames"] == 0
+        assert result["stillsOnlyS"] == 0.0, result
+        assert result["partialPreroll"] is True, "a clip starting a minute late is still partial"
+
     async def test_a_clip_the_ring_fully_covered_is_not_flagged(self):
         """The negative half: flagging every ring clip would make the warning noise."""
         t0 = 1000.0

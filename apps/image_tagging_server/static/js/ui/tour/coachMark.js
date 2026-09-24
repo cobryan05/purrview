@@ -157,6 +157,7 @@ export function createCoachMark() {
   // Escape goes through the shared stack in modalZIndex.js so a step pointing into an
   // open modal closes only the topmost overlay, not both at once.
   const onEsc = () => current?.onSkip();
+  let escRegistered = false;
 
   const onKey = (e) => {
     if (!current) return;
@@ -196,10 +197,14 @@ export function createCoachMark() {
     window.addEventListener('resize', place);
     document.addEventListener('scroll', place, true);
     document.addEventListener('keydown', onKey, true);
-    // show() runs again for every step without an intervening hide(); re-registering
-    // without unregistering first would stack a duplicate handler per step.
-    unregisterEscHandler(onEsc);
-    registerEscHandler(onEsc);
+    // Registered once for the whole tour, not per step. show() runs again for every
+    // step without an intervening hide(), and re-registering would both stack
+    // duplicates and push the tour back above any modal a previous step opened —
+    // Escape would then skip the tour instead of closing the modal on top of it.
+    if (!escRegistered) {
+      registerEscHandler(onEsc);
+      escRegistered = true;
+    }
     settle();
     // Focus the card, not Next: a "do this" step wants the user's next keystroke
     // in the control being pointed at, and focusing a button would steal it.
@@ -216,6 +221,7 @@ export function createCoachMark() {
     document.removeEventListener('scroll', place, true);
     document.removeEventListener('keydown', onKey, true);
     unregisterEscHandler(onEsc);
+    escRegistered = false;
     spotlight.remove();
     card.remove();
     card.hidden = true;

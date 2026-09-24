@@ -303,6 +303,37 @@ class TestTheOrphanSweep:
         assert result["files"] == 0
         assert mine.exists()
 
+    async def test_the_watchers_scratch_dirs_survive_the_grace_period(self, manager, recording_roots):
+        """An open event's spooled frames and drained chunks are held for as long as the
+        event records — hours, if it is a long visit — and no row names them until it
+        closes. Sweeping them takes the material the clip is cut from out from under a
+        recording that is still running."""
+        clips, _snapshots = recording_roots
+        spool = clips / ".spool" / "cam-uuid" / "event-abc"
+        spool.mkdir(parents=True)
+        drain = clips / ".drain"
+        drain.mkdir()
+        frame = self._orphan(spool, "00000001.jpg")
+        chunk = self._orphan(drain, "000.mp4")
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 0
+        assert frame.exists()
+        assert chunk.exists()
+
+    async def test_a_stray_part_file_is_still_swept(self, manager, recording_roots):
+        """The dot that exempts a directory must not exempt a crashed encoder's output."""
+        clips, _snapshots = recording_roots
+        day = clips / "2026-01-01"
+        day.mkdir()
+        stray = self._orphan(day, "old.mp4.part")
+
+        result = await manager.sweep_orphan_recording_files()
+
+        assert result["files"] == 1
+        assert not stray.exists()
+
     async def test_a_missing_root_is_not_an_error(self, manager, tmp_path):
         manager._recording_roots = (tmp_path / "nope", tmp_path / "also-nope")
         assert await manager.sweep_orphan_recording_files() == {"files": 0, "bytes": 0}

@@ -4844,6 +4844,21 @@ class Manager:
         entries += await asyncio.to_thread(self._stat_external_recordings, referenced, roots)
         return entries
 
+    def _in_watcher_scratch(self, path: Path) -> bool:
+        """Whether `path` sits in a dot-prefixed working directory under a managed root.
+
+        Matched by convention rather than by name so db_server does not have to import
+        the watcher's constants: every such directory is dot-prefixed precisely so the
+        media browser skips it, and the same mark is what marks it as in-flight here.
+        Counted toward the size cap all the same — accounting is not deletion.
+        """
+        real = os.path.realpath(path)
+        for root in self._recording_roots:
+            prefix = os.path.realpath(root) + os.sep
+            if real.startswith(prefix):
+                return any(part.startswith(".") for part in real[len(prefix) :].split(os.sep)[:-1])
+        return False
+
     async def sweep_orphan_recording_files(self, now_ts: Optional[float] = None) -> Dict[str, int]:
         """Delete files under the recordings roots that no row points at.
 
@@ -4861,6 +4876,15 @@ class Manager:
         * anything younger than the grace period is exempt, because a clip exists on
           disk before the row referencing it is written — without this the sweep races
           clip extraction and deletes its output mid-write.
+
+        A third exemption, for a different reason: dot-prefixed directories under a root
+        are the watcher's own scratch space (`.drain` chunks, `.spool`ed event frames),
+        and nothing there is ever named by a row *by design* — the row is written when
+        the event closes. The grace period does not cover them either, because they are
+        held for as long as the event records, which can be hours. Deleting them takes
+        the material out from under an event that is still recording, so the clip it was
+        keeping them for fails outright. `StreamWatcherTask` sweeps its own leftovers at
+        startup instead.
         """
         now_ts = time.time() if now_ts is None else now_ts
         referenced = await self._db_client.referenced_recording_paths()
@@ -4872,6 +4896,8 @@ class Manager:
         removed = 0
         freed = 0
         for path, size, mtime in entries:
+            if self._in_watcher_scratch(path):
+                continue
             if os.path.realpath(path) in safe:
                 continue
             if now_ts - mtime < RECORDINGS_ORPHAN_GRACE_S:

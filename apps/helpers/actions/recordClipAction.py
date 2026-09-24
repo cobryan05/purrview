@@ -110,10 +110,15 @@ class RingClipBackend(ClipBackend):
         played = await asyncio.to_thread(self._probe_duration, dest)
         # Seconds at the head of the requested window with no dense frames behind them.
         # `frames` is what the ring still held; anything earlier the caller asked for
-        # was evicted, and only the sticky stills speak for it. When there are no dense
-        # frames at all, the lead-in still's timestamp is clamped to `start` (above), so
-        # it can't be used to measure the gap — the whole requested window is stills-only.
-        stills_only_s = duration_s if not frames else max(0.0, frames[0][0] - start.timestamp())
+        # was evicted. When there are no dense frames at all, the lead-in still's
+        # timestamp is clamped to `start` (above), so it can't be used to measure the
+        # gap — the whole requested window is missing.
+        head_gap_s = duration_s if not frames else max(0.0, frames[0][0] - start.timestamp())
+        # Only the part a spliced still actually stands in for. With no lead-in — no
+        # sticky still, or one older than `LEAD_IN_MAX_AGE_S` — the clip simply begins
+        # late, and calling that stretch "stills" makes the player describe footage the
+        # file does not contain. `partialPreroll` reports the gap either way.
+        stills_only_s = head_gap_s if lead_in else 0.0
         return {
             "path": str(dest),
             "sizeBytes": size,
@@ -129,7 +134,7 @@ class RingClipBackend(ClipBackend):
             # are two frames standing in for however long the ring could not hold, so
             # counting them as coverage reported a complete clip for an event whose
             # body had been evicted — which is exactly the case a reviewer needs told.
-            "partialPreroll": stills_only_s > 0.5,
+            "partialPreroll": head_gap_s > 0.5,
             # How much of the requested window has stills instead of video, so the
             # event can say so rather than presenting the gap as a lead-in. The byte
             # cap evicts under the hold (see `_evict`), so a visit longer than the ring
