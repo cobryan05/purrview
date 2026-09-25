@@ -30,6 +30,7 @@ import { actionForCombo, comboLabel, combosForAction, eventToCombo } from '/app-
 import {
   deleteWatchEvent,
   fetchRecording,
+  fetchWatchEvent,
   recordingFileUrl,
   updateWatchEvent,
   watchEventSnapshotUrl,
@@ -212,16 +213,28 @@ export async function captureVideoFrame(video) {
  * @param {Map<string, string>} [ctx.sourceNames]
  * @param {() => void} [ctx.onDeleted] - so the grid can drop the card
  * @param {Object[]} [ctx.siblings] - the events the modal can walk, in the grid's order
+ * @param {string[]} [ctx.siblingUuids] - same walk, for a grid whose cards are folded
+ *   (groups, sessions) and therefore hold one representative uuid rather than the event
+ *   itself. Each one is fetched when it is walked onto. Ignored if `siblings` is given.
  * @returns {{close: () => void}}
  */
 export function openEventDetailModal(
   initialEvent,
-  { sourceNames = new Map(), onDeleted, siblings = [], seekToS = null } = {},
+  { sourceNames = new Map(), onDeleted, siblings = [], siblingUuids = [], seekToS = null } = {},
 ) {
   // Copied, not aliased: deleting from inside the modal splices this list so the walk
   // stays coherent, and doing that to the grid's own array would corrupt the selection
   // indices of the page behind us.
-  const walk = siblings.length ? [...siblings] : [initialEvent];
+  //
+  // An entry is either a whole event or a bare `{uuid}` stub that `goTo` resolves on
+  // arrival — a folded grid knows which events its cards stand for but has not fetched
+  // them, and fetching a page of them up front would cost a request per card for a walk
+  // the reader may never take.
+  const walk = siblings.length
+    ? [...siblings]
+    : (siblingUuids.length
+      ? siblingUuids.map(uuid => (uuid === initialEvent.uuid ? initialEvent : { uuid }))
+      : [initialEvent]);
   let index = Math.max(0, walk.findIndex(e => e.uuid === initialEvent.uuid));
   let event = walk[index] ?? initialEvent;
   // Bumped on every navigation. Everything that awaits — recording fetches, overlay
@@ -261,10 +274,10 @@ export function openEventDetailModal(
 
   const nav = el('div', 'event-detail__nav');
   nav.dataset.testid = 'event-detail-nav';
-  const prevBtn = button('‹ Previous', () => goTo(index - 1), { testid: 'event-detail-prev' });
+  const prevBtn = button('‹ Previous', () => void goTo(index - 1), { testid: 'event-detail-prev' });
   const position = el('span', 'event-detail__position');
   position.dataset.testid = 'event-detail-position';
-  const nextBtn = button('Next ›', () => goTo(index + 1), { testid: 'event-detail-next' });
+  const nextBtn = button('Next ›', () => void goTo(index + 1), { testid: 'event-detail-next' });
   // Says which key does this, read from the user's own bindings rather than assuming
   // the defaults — a rebind that the tooltip still describes as `[` is worse than no
   // tooltip.
@@ -309,8 +322,27 @@ export function openEventDetailModal(
    * last one", and silently jumping back to the top of the grid is how a reviewer ends
    * up watching the same ten events twice without noticing.
    */
-  function goTo(i) {
+  async function goTo(i) {
     if (i < 0 || i >= walk.length || i === index) return;
+    if (!walk[i].startedAt) {
+      // A stub from a folded grid. Guarded by `loadSeq`, not by disabling the buttons:
+      // holding the key down should land on the event the reader stopped at, not on
+      // whichever fetch happened to return last.
+      const seq = ++loadSeq;
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+      try {
+        const resolved = await fetchWatchEvent(walk[i].uuid);
+        if (seq !== loadSeq) return;
+        walk[i] = resolved;
+      } catch (err) {
+        if (seq !== loadSeq) return;
+        Logger.error(err);
+        toast(err.message || 'Could not open that event', 5000, 'error');
+        renderHeader();
+        return;
+      }
+    }
     index = i;
     loadEvent();
   }
@@ -330,10 +362,10 @@ export function openEventDetailModal(
     const action = actionForCombo(eventToCombo(e));
     if (action === 'action:prevImage') {
       e.preventDefault();
-      goTo(index - 1);
+      void goTo(index - 1);
     } else if (action === 'action:nextImage') {
       e.preventDefault();
-      goTo(index + 1);
+      void goTo(index + 1);
     }
   }
 

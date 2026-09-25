@@ -184,11 +184,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
 
   const browseEventsBtn = button('Browse events', () => {
     if (!state.sourceUuid) return;
-    const sourceName = sourceSelect.options[sourceSelect.selectedIndex]?.textContent || '';
     // Closed first: left open, it sits on top of the Events tab we are about to
     // switch to, which reads as the navigation having failed.
     shell.close();
-    events.publish(EventTypes.OPEN_NVR_EVENTS_FOR_SOURCE, { sourceUuid: state.sourceUuid, sourceName });
+    events.publish(EventTypes.OPEN_NVR_EVENTS_FOR_SOURCE, { sourceUuid: state.sourceUuid });
   }, { testid: 'watch-live-browse-events' });
   browseEventsBtn.title = "Switch to this camera's recorded events.";
   bar.appendChild(browseEventsBtn);

@@ -976,6 +976,26 @@ class TestBrowseEventsFromLiveView:
         expect(page.locator("[data-testid='event-search']")).to_be_visible()
         assert queries[-1].get("source_uuids") == "src-1"
 
+    def test_it_still_filters_when_the_events_pane_has_already_been_visited(self, page: Page, base_url: str):
+        """Navigating to Events *re-renders* it, so a filter pushed into the render that
+        is on screen when the button is clicked is wiped a moment later by the rebuild.
+        Anyone who had looked at Events earlier in the session — the normal case — landed
+        on an unfiltered grid."""
+        queries = _mock(page)
+        _mock_nvr(page)
+        _open_events_pane(page, base_url)
+
+        page.locator(".workspace-tab-button[data-tab='tab-nvr-live']").click()
+        page.wait_for_selector("#nvr-live-box .nvr-profile-card")
+        page.locator("[data-testid='nvr-live-view']").first.click()
+        page.wait_for_selector("[data-testid='watch-live-dialog']")
+
+        with _issues_a_search(page, queries):
+            page.locator("[data-testid='watch-live-browse-events']").click()
+
+        expect(page.locator("[data-testid='event-search']")).to_be_visible()
+        assert queries[-1].get("source_uuids") == "src-1"
+
 
 class TestTheDetailModal:
     def _open_modal(self, page: Page, base_url: str, **mock_kwargs):

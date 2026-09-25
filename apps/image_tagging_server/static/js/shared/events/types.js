@@ -119,7 +119,7 @@ export const EventTypes = Object.freeze({
    *
    * Handled in app/main.js, same reason as OPEN_EVENT_CLIP: NVR's Live view and its
    * Events page are siblings and neither should import the other's module directly.
-   * Payload: { sourceUuid: string, sourceName?: string }
+   * Payload: { sourceUuid: string }
    */
   OPEN_NVR_EVENTS_FOR_SOURCE: "nvr:events:open_for_source",
   /**

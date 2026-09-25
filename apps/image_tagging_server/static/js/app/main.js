@@ -172,16 +172,14 @@ export async function init(appState) {
     }
   });
 
-  events.subscribe(EventTypes.OPEN_NVR_EVENTS_FOR_SOURCE, async ({ sourceUuid, sourceName = '' }) => {
+  // Carried in the tab's pending-selection drop box rather than handed to the Events
+  // page directly: the navigation re-renders that page, so a filter pushed into the
+  // render that is on screen now would be thrown away a moment later. `selectUuid` also
+  // forces the re-render when Events is already the active sub-tab, and drops the
+  // request if the pane never wires up.
+  events.subscribe(EventTypes.OPEN_NVR_EVENTS_FOR_SOURCE, ({ sourceUuid }) => {
     if (!sourceUuid) return;
-    try {
-      const { openEventsForSource } = await import('/app-static/js/app/nvr/events/main.js');
-      navigateTabs('tab-nvr', 'tab-nvr-events');
-      openEventsForSource(sourceUuid, sourceName);
-    } catch (err) {
-      Logger.error(err);
-      toast('Could not open events for this camera', 5000, 'error');
-    }
+    navigateTabs('tab-nvr', 'tab-nvr-events', { selectUuid: sourceUuid });
   });
 
   events.subscribe(EventTypes.OPEN_REVIEW_WITH_FILTERS, ({

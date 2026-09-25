@@ -42,6 +42,7 @@ import {
   sortGroups,
 } from './identity.js';
 import { openBucketBrowseModal } from './bucketBrowseModal.js';
+import { takePendingSelection } from '/app-static/js/app/utils/tabs.js';
 
 const PAGE_SIZE = 60;
 
@@ -143,32 +144,6 @@ function button(text, onClick, { testid = null, className = 'panel-btn' } = {}) 
 export async function openEventClipAt(eventUuid, { atS = null } = {}) {
   const [event, sourceNames] = await Promise.all([fetchWatchEvent(eventUuid), loadSourceNames()]);
   openEventDetailModal(event, { sourceNames, seekToS: atS });
-}
-
-/** The mounted page's own "filter to one source" handler, so a call from outside (the
- *  Live View button) can reach a panel that already exists — set near the end of
- *  `renderEvents`, cleared by nothing: the page is never unmounted, only re-rendered
- *  on top of itself, so the latest render's closure is always the live one. */
-let _activeApplySourceFilter = null;
-/** Queued source, applied once `renderEvents` has actually mounted — same reason
- *  Review's `applyFilterWhenReady` queues: the Events page inits lazily on first tab
- *  focus, and a caller can arrive before that has happened. */
-let _pendingSourceFilter = null;
-
-/**
- * Switch the mounted Events page to show only events from one camera. Queues the
- * request if the page has not mounted yet.
- *
- * @param {string} sourceUuid
- * @param {string} [sourceName]
- */
-export function openEventsForSource(sourceUuid, sourceName) {
-  if (!sourceUuid) return;
-  if (_activeApplySourceFilter) {
-    _activeApplySourceFilter(sourceUuid, sourceName);
-  } else {
-    _pendingSourceFilter = { sourceUuid, sourceName };
-  }
 }
 
 async function loadSourceNames() {
@@ -1021,7 +996,14 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
           onOpenLatest: async g => {
             try {
               const event = await fetchWatchEvent(g.representativeUuid);
-              openEventDetailModal(event, { sourceNames, onDeleted: () => void search() });
+              openEventDetailModal(event, {
+                sourceNames,
+                // The other groups' representatives, so the modal still walks. A folded
+                // grid has no events in hand, only the uuid each card stands for — the
+                // modal fetches them as it reaches them.
+                siblingUuids: pageGroups.map(other => other.representativeUuid).filter(Boolean),
+                onDeleted: () => void search(),
+              });
             } catch (err) {
               Logger.error(err);
               toast(err.message || 'Could not open that event', 5000, 'error');
@@ -1080,11 +1062,16 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
    * card's "Latest" makes.
    *
    * @param {Object} session
+   * @param {string[]} [walkUuids] - the page's other representatives, so the modal walks
    */
-  async function openSessionEvent(session) {
+  async function openSessionEvent(session, walkUuids = []) {
     try {
       const event = await fetchWatchEvent(session.representativeUuid);
-      openEventDetailModal(event, { sourceNames, onDeleted: () => void search() });
+      openEventDetailModal(event, {
+        sourceNames,
+        siblingUuids: walkUuids,
+        onDeleted: () => void search(),
+      });
     } catch (err) {
       Logger.error(err);
       toast(err.message || 'Could not open that event', 5000, 'error');
@@ -1130,6 +1117,10 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
     if (!sessions.length) {
       renderEmpty();
     } else {
+      // Every visit on the page, in grid order — the walk a reader opening one of them
+      // expects. Visits that folded several events are in it too: their representative
+      // is exactly what their own card opens.
+      const sessionWalkUuids = sessions.map(s => s.representativeUuid).filter(Boolean);
       for (const session of sessions) {
         const card = buildSessionCard(session, {
           sourceNames,
@@ -1140,7 +1131,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
           // bin holding one event.
           onOpen: s => {
             if (s.count === 1 && s.representativeUuid) {
-              void openSessionEvent(s);
+              void openSessionEvent(s, sessionWalkUuids);
               return;
             }
             drilldown(s, {
@@ -1256,11 +1247,13 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
 
   splitBox.checked = splitByCamera;
   syncViewUi();
-  _activeApplySourceFilter = applySourceFilter;
-  if (_pendingSourceFilter) {
-    const { sourceUuid, sourceName } = _pendingSourceFilter;
-    _pendingSourceFilter = null;
-    applySourceFilter(sourceUuid, sourceName);
+  // A caller that navigated here to see one camera (Live View's "Browse events") leaves
+  // the uuid in the tab's drop box rather than reaching into the mounted page: arriving
+  // here *is* a re-render, so anything applied to the previous render's closure was
+  // about to be wiped by the `container.innerHTML = ''` above.
+  const wantedSource = takePendingSelection('tab-nvr-events');
+  if (wantedSource) {
+    applySourceFilter(wantedSource, sourceNames.get(wantedSource));
     return;
   }
   await search();
