@@ -252,6 +252,36 @@ def _pick_facet(page: Page, testid: str, name: str, exclude: bool = False):
     trigger.click()
 
 
+def _label(uuid: str, name: str, parent_uuid: str = None) -> dict:
+    """One label, with every field `/api/labels` really answers.
+
+    A partial object is not a smaller version of this — the SPA reads labels during
+    start-up, and a missing key took the whole workspace down rather than only the
+    dropdown under test.
+    """
+    return {
+        "uuid": uuid,
+        "name": name,
+        "color": "#d8dc3d",
+        "parentUuid": parent_uuid,
+        "labelType": "standard",
+        "scope": "object",
+        "publishToHa": False,
+        "publishPerSource": False,
+        "exclusiveVariants": False,
+        "exclusiveVariantsIouThreshold": None,
+    }
+
+
+def _toggle_facet_hierarchy(page: Page, testid: str):
+    """Flip one facet dropdown's "include child labels" checkbox, and close the panel."""
+    field = page.locator(f"[data-testid='{testid}']")
+    trigger = field.locator(".ms-dropdown__trigger")
+    trigger.click()
+    field.locator(".ms-hierarchy-toggle input[type='checkbox']").click()
+    trigger.click()
+
+
 def _mock(
     page: Page,
     events=None,
@@ -264,6 +294,7 @@ def _mock(
     review_states=None,
     playable=False,
     crop_previews=None,
+    labels=None,
 ):
     """Route every call the Events page makes, and record the search queries.
 
@@ -496,6 +527,11 @@ def _mock(
             body=json.dumps({"status": "success", "blips": rows, "total": len(rows)}),
         )
 
+    if labels is not None:
+        # Only when a test asks for it: the label tree the actor facets are drawn against
+        # otherwise comes from the real test DB, which is what every other test here
+        # already assumes.
+        _route_labels(page, labels)
     page.route(re.compile(r"/api/watch-events"), _fulfil_events)
     page.route(re.compile(r"/api/event-blips"), _fulfil_blips)
     page.route(re.compile(r"/api/recordings"), _fulfil_recordings)
@@ -732,6 +768,59 @@ class TestFiltersReachTheServer:
         with _issues_a_search(page, queries):
             _pick_facet(page, "event-filter-target", "litter box")
         assert queries[-1].get("target_refs") == "zone-box"
+
+    def test_rolling_up_an_actor_sends_its_children(self, page: Page, base_url: str):
+        """ "Include child labels" has to widen the *query*, not merely the display.
+
+        The facets only ever name the labels history actually holds, so `Cat` is offered
+        as a row a user can tick while every event underneath it is recorded against a
+        named cat. A toggle that ticked the parent and sent only the parent's uuid looks
+        identical in the dropdown and returns nothing.
+        """
+        queries = _mock(
+            page,
+            facets=_facets(subjects=[{"ref": "label-tabby", "name": "Tabby"}]),
+            labels=[_label("label-cat", "Cat"), _label("label-tabby", "Tabby", "label-cat")],
+        )
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _toggle_facet_hierarchy(page, "event-filter-subject")
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-subject", "Cat")
+
+        sent = _query_values(queries[-1], "subject_refs")
+        assert sorted(sent) == ["label-cat", "label-tabby"], sent
+
+    def test_the_roll_up_widens_an_exclusion_too(self, page: Page, base_url: str):
+        """One toggle, both halves. Widening only the ticked rows would leave "not any
+        cat" still returning every named cat — an exclusion that visibly did nothing."""
+        queries = _mock(
+            page,
+            facets=_facets(subjects=[{"ref": "label-tabby", "name": "Tabby"}]),
+            labels=[_label("label-cat", "Cat"), _label("label-tabby", "Tabby", "label-cat")],
+        )
+        _open_events_pane(page, base_url)
+
+        with _issues_a_search(page, queries):
+            _toggle_facet_hierarchy(page, "event-filter-subject")
+        with _issues_a_search(page, queries):
+            _pick_facet(page, "event-filter-subject", "Cat", exclude=True)
+
+        sent = _query_values(queries[-1], "exclude_subject_refs")
+        assert sorted(sent) == ["label-cat", "label-tabby"], sent
+
+    def test_a_flat_facet_offers_no_roll_up(self, page: Page, base_url: str):
+        """A camera is not a tree. Offering the toggle there would be a control that
+        cannot change the query — and the expansion it implies has nothing to walk."""
+        _mock(page)
+        _open_events_pane(page, base_url)
+
+        for testid, expected in [("event-filter-source", 0), ("event-filter-subject", 1)]:
+            field = page.locator(f"[data-testid='{testid}']")
+            field.locator(".ms-dropdown__trigger").click()
+            expect(field.locator(".ms-hierarchy-toggle input[type='checkbox']")).to_have_count(expected)
+            field.locator(".ms-dropdown__trigger").click()
 
     def test_excluding_the_acting_thing(self, page: Page, base_url: str):
         """The ≠ toggle has to send the value as an *exclusion*, not as a selection.
@@ -2740,23 +2829,26 @@ def _two_label_overlay() -> dict:
     )
 
 
-def _route_labels(page: Page):
-    """Answer `/api/labels`, which the correction dialog needs for its dropdowns."""
+def _route_labels(page: Page, labels=None):
+    """Answer `/api/labels`, which the correction dialog and the actor facets both read.
+
+    ⚠️ The pattern is anchored. A bare `/api/labels` also matches the SPA's own module
+    `/app-static/js/shared/api/labels.js`; served this JSON, Chromium rejects it on MIME
+    type and the whole workspace never boots — which looks like a missing tab, not a bad
+    mock.
+    """
+    if labels is None:
+        labels = [
+            {"uuid": "lbl-1", "name": "Tabby", "color": "#fff", "parentUuid": None},
+            {"uuid": "lbl-2", "name": "Water bowl", "color": "#fff", "parentUuid": None},
+            {"uuid": "lbl-3", "name": "Clover", "color": "#fff", "parentUuid": None},
+        ]
     page.route(
         re.compile(r"/api/labels$"),
         lambda r: r.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps(
-                {
-                    "status": "success",
-                    "labels": [
-                        {"uuid": "lbl-1", "name": "Tabby", "color": "#fff", "parentUuid": None},
-                        {"uuid": "lbl-2", "name": "Water bowl", "color": "#fff", "parentUuid": None},
-                        {"uuid": "lbl-3", "name": "Clover", "color": "#fff", "parentUuid": None},
-                    ],
-                }
-            ),
+            body=json.dumps({"status": "success", "labels": labels}),
         ),
     )
 

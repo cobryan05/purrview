@@ -12,32 +12,41 @@
  * that have never fired and omit the ones deleted last month that account for half the
  * events on screen.
  */
+import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { fetchWatchEventFacets } from '/app-static/js/shared/api/watchProfiles.js';
 import { localWallClockIso } from '/app-static/js/shared/time.js';
+import { expandWithDescendants, flattenHierarchy } from '/app-static/js/ui/labelList.js';
 import { createMultiSelectDropdown, Logger } from '/app-static/js/ui/utils/index.js';
 
 /** @typedef {{sourceUuids: string[], ruleUuids: string[], subjectRefs: string[],
  *             targetRefs: string[], sourceExcludeUuids: string[], ruleExcludeUuids: string[],
  *             subjectExcludeRefs: string[], targetExcludeRefs: string[],
+ *             subjectIncludeChildren: boolean, targetIncludeChildren: boolean,
  *             startFrom: ?string, startTo: ?string,
  *             hasRecording: ?boolean, recordingKind: ?string,
  *             reviewState: ?string, pinned: ?boolean}} EventFilterState */
 
 /**
  * The four facet filters, as `[state key for includes, state key for excludes, facet key,
- * label, "no filter" text, testid]`.
+ * label, "no filter" text, testid, state key for the roll-up toggle or null]`.
  *
  * One table rather than four near-identical blocks: every one of them is the same
  * control over a different column, and the three places that need them — building,
  * restoring after a facet refresh, and reporting emptiness — were drifting apart when
  * each was written out longhand.
+ *
+ * Only the two actor slots carry a roll-up key. A rule and a camera are flat entities;
+ * a subject or target ref is (usually) a label uuid, and labels are a tree.
  */
 export const FACET_FILTERS = [
-  ['ruleUuids', 'ruleExcludeUuids', 'rules', 'Event type', 'Any event type', 'event-filter-rule'],
-  ['sourceUuids', 'sourceExcludeUuids', 'sources', 'Camera', 'Any camera', 'event-filter-source'],
-  ['subjectRefs', 'subjectExcludeRefs', 'subjects', 'Acting', 'Anything acting', 'event-filter-subject'],
-  ['targetRefs', 'targetExcludeRefs', 'targets', 'Acted on', 'Anything acted on', 'event-filter-target'],
+  ['ruleUuids', 'ruleExcludeUuids', 'rules', 'Event type', 'Any event type', 'event-filter-rule', null],
+  ['sourceUuids', 'sourceExcludeUuids', 'sources', 'Camera', 'Any camera', 'event-filter-source', null],
+  ['subjectRefs', 'subjectExcludeRefs', 'subjects', 'Acting', 'Anything acting', 'event-filter-subject', 'subjectIncludeChildren'],
+  ['targetRefs', 'targetExcludeRefs', 'targets', 'Acted on', 'Anything acted on', 'event-filter-target', 'targetIncludeChildren'],
 ];
+
+/** The roll-up state keys, for the places that must not treat one as a filter. */
+const HIERARCHY_KEYS = FACET_FILTERS.map(([, , , , , , key]) => key).filter(Boolean);
 
 /**
  * The Video select's options, as `[value, label]`.
@@ -203,9 +212,10 @@ export function defaultFilterState() {
     reviewState: null,
     pinned: null,
   };
-  for (const [includeKey, excludeKey] of FACET_FILTERS) {
+  for (const [includeKey, excludeKey, , , , , hierarchyKey] of FACET_FILTERS) {
     state[includeKey] = [];
     state[excludeKey] = [];
+    if (hierarchyKey) state[hierarchyKey] = false;
   }
   return state;
 }
@@ -224,15 +234,64 @@ export function hasActiveFilter(state) {
   // filters — try widening the date range" instead of the one screen that explains where
   // events come from. Only a range that has been changed from the default counts.
   const skipDates = state?.rangeDays === DEFAULT_RANGE_DAYS;
-  const ignored = new Set(
+  const ignored = new Set([
     // `rangeDays` only records which button produced the dates; counting it too would
     // make a range look like two filters and would report "filtered" for a state whose
     // dates had been cleared.
-    skipDates ? ['rangeDays', 'startFrom', 'startTo'] : ['rangeDays'],
-  );
+    'rangeDays',
+    // Same for the roll-up toggles, and here it is not merely tidiness: they are plain
+    // booleans, so a `v != null` test counts `false` and every fresh page would report
+    // itself filtered. A roll-up only widens a selection that already counts on its own.
+    ...HIERARCHY_KEYS,
+    ...(skipDates ? ['startFrom', 'startTo'] : []),
+  ]);
   return Object.entries(state).some(
     ([key, v]) => !ignored.has(key) && (Array.isArray(v) ? v.length > 0 : v != null),
   );
+}
+
+/**
+ * The dropdown rows for one actor facet: its refs arranged as the label tree.
+ *
+ * Two things are not one-to-one with the facet list. **Ancestors are added even when
+ * nothing ever acted as one** — `Bowl` has no events of its own, only its four children
+ * do, and without it there is no row to tick for "at any bowl". That is a deliberate
+ * exception to this file's rule against offering options history cannot match: with the
+ * roll-up on, an ancestor matches exactly the events its descendants hold. **Refs that
+ * are not labels** — a motion zone is named in the watcher profile, not the label tree —
+ * keep their facet name and sit below a divider, since they have no place in the tree.
+ *
+ * @param {Array<{ref: string, name: string}>} options - one facet's values
+ * @param {Map<string, object>} labels
+ * @returns {Array<Object>} createMultiSelectDropdown items
+ */
+export function labelFacetItems(options, labels) {
+  /** @type {Map<string, object>} the labels the tree needs: the refs and their ancestors */
+  const tree = new Map();
+  for (const { ref } of options) {
+    let label = labels.get(ref);
+    while (label && !tree.has(label.uuid)) {
+      const parent = label.parentUuid ? labels.get(label.parentUuid) : null;
+      // A dangling parentUuid — the parent was deleted — is re-rooted rather than left
+      // as is: flattenHierarchy only descends from null, so an orphan keeping a parent
+      // nothing holds would be dropped from the list entirely.
+      tree.set(label.uuid, parent || !label.parentUuid ? label : { ...label, parentUuid: null });
+      label = parent;
+    }
+  }
+  const items = flattenHierarchy(tree).map(l => ({
+    uuid: l.uuid,
+    name: l.name,
+    color: l.color || null,
+    depth: l.depth,
+    parentUuid: l.parentUuid ?? null,
+  }));
+  const others = options.filter(o => !labels.has(o.ref));
+  if (others.length > 0) {
+    if (items.length > 0) items.push({ isSeparator: true, label: 'Zones & other' });
+    for (const o of others) items.push({ uuid: o.ref, name: o.name });
+  }
+  return items;
 }
 
 function el(tag, className, text) {
@@ -296,6 +355,12 @@ export async function createEventFilters(onChange) {
 
   const state = defaultFilterState();
   let facets = { rules: [], subjects: [], targets: [], sources: [] };
+  // The label tree the two actor facets are drawn against, and the same tree the
+  // roll-up expands through. Empty until the first fetch lands, and empty again only if
+  // one fails — `labelFacetItems` then leaves every ref flat under the divider, which
+  // is the old behaviour rather than a blank dropdown.
+  /** @type {Map<string, object>} */
+  let labels = new Map();
 
   const controls = el('div', 'event-filters__row');
   container.appendChild(controls);
@@ -314,12 +379,25 @@ export async function createEventFilters(onChange) {
   const fromInput = dateInput();
   const toInput = dateInput();
 
-  /** A copy no caller can write back through — the list values are arrays. */
+  /**
+   * A copy no caller can write back through — the list values are arrays — with each
+   * rolled-up facet expanded to its descendants.
+   *
+   * The expansion lives here rather than in the state because the state is what the
+   * *dropdown* shows: writing the descendants back would tick eight bowls when the user
+   * ticked one, and the next facet refresh would prune whichever of them history has no
+   * events for. So the control keeps the choice and the query gets its closure.
+   *
+   * Exclusions expand too. One toggle reading "include child labels" that widened only
+   * the ticked rows would leave "not any cat" matching every named cat.
+   */
   function snapshot() {
     const copy = { ...state };
-    for (const [includeKey, excludeKey] of FACET_FILTERS) {
-      copy[includeKey] = [...state[includeKey]];
-      copy[excludeKey] = [...state[excludeKey]];
+    for (const [includeKey, excludeKey, , , , , hierarchyKey] of FACET_FILTERS) {
+      const rollUp = Boolean(hierarchyKey && state[hierarchyKey]);
+      const resolve = refs => (rollUp ? [...expandWithDescendants(refs, labels)] : [...refs]);
+      copy[includeKey] = resolve(state[includeKey]);
+      copy[excludeKey] = resolve(state[excludeKey]);
     }
     return copy;
   }
@@ -333,9 +411,13 @@ export async function createEventFilters(onChange) {
     facetDropdowns = [];
     controls.innerHTML = '';
 
-    for (const [includeKey, excludeKey, facetKey, labelText, anyLabel, testid] of FACET_FILTERS) {
+    for (const [includeKey, excludeKey, facetKey, labelText, anyLabel, testid, hierarchyKey] of FACET_FILTERS) {
       const options = facets[facetKey] ?? [];
-      const known = new Set(options.map(o => o.ref));
+      const items = hierarchyKey ? labelFacetItems(options, labels) : options.map(o => ({ uuid: o.ref, name: o.name }));
+      // The *rows*, not the facet values: a tree adds ancestors history has no events
+      // for, and pruning against the raw facet list would clear a rolled-up parent
+      // selection on the next refresh — the one selection the roll-up exists to make.
+      const known = new Set(items.filter(i => !i.isSeparator).map(i => i.uuid));
       // Drop values history no longer holds (the last event with one was deleted).
       // Keeping them would show an empty result set with no visible cause; the rest of
       // the selection survives the rebuild, because a filter that silently cleared
@@ -345,17 +427,29 @@ export async function createEventFilters(onChange) {
 
       const dropdown = createMultiSelectDropdown({
         label: '',
-        items: options.map(o => ({ uuid: o.ref, name: o.name })),
+        items,
         defaultSelected: [...state[includeKey]],
         // An event has exactly one camera, one rule, one subject and one target, so
         // "all of" could only ever match nothing — offering it would be a dead end.
         showModeToggle: false,
         emptySummary: anyLabel,
         emptyText: 'Nothing recorded yet',
-        searchable: options.length > 8,
+        searchable: items.length > 8,
         filterKey: `event-${facetKey}`,
-        defaultWidth: '220px',
+        // Wider where the rows are a tree: two levels of indent plus a name do not fit
+        // the flat facets' width.
+        defaultWidth: hierarchyKey ? '260px' : '220px',
         defaultHeight: '260px',
+        hierarchyToggle: hierarchyKey
+          ? {
+              label: 'Include child labels',
+              default: state[hierarchyKey],
+              onChange: value => {
+                state[hierarchyKey] = value;
+                commit();
+              },
+            }
+          : null,
         onChange: (selected, excluded) => {
           state[includeKey] = selected;
           state[excludeKey] = excluded;
@@ -583,6 +677,9 @@ export async function createEventFilters(onChange) {
         }
       }
     }
+    // The roll-up toggles are *not* carried over, for the same reason the other facets
+    // are dropped: a drill-down names one identity, and rolling it up would return more
+    // events than the card that opened it counted.
     const next = defaultFilterState();
     next.startFrom = state.startFrom;
     next.startTo = state.startTo;
@@ -597,10 +694,13 @@ export async function createEventFilters(onChange) {
   }
 
   async function refreshFacets() {
-    let next;
-    try {
-      next = await fetchWatchEventFacets();
-    } catch (err) {
+    // Alongside the facets, not before them: the two are independent and the label
+    // fetch is cached, so a refresh after a delete costs one request, not two.
+    const [facetResult, labelResult] = await Promise.allSettled([fetchWatchEventFacets(), fetchLabels()]);
+    // `fetchLabels` answers a Map; the fallback must be a Map too, not `[]`.
+    if (labelResult.status === 'fulfilled') labels = labelResult.value ?? new Map();
+    else Logger.error(labelResult.reason);
+    if (facetResult.status === 'rejected') {
       // A facets failure must not take the page down: the grid can still list events,
       // it just cannot offer *fresh* dropdowns. Logged so the cause is not invisible.
       //
@@ -615,10 +715,10 @@ export async function createEventFilters(onChange) {
       // `renderControls` still runs: it mounts the date inputs and the range controls as
       // well as the dropdowns, so returning early here would leave the whole filter bar
       // empty when the very first load is the one that fails.
-      Logger.error(err);
-      next = facets;
+      Logger.error(facetResult.reason);
+    } else {
+      facets = facetResult.value;
     }
-    facets = next;
     renderControls();
   }
 
