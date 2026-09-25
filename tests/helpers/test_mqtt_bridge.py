@@ -13,6 +13,7 @@ forever.
 import asyncio
 import json
 
+from apps.helpers.actions.mqttPublisher import AsyncMqttPublisher, MqttSettings
 from apps.helpers.mqtt.bridge import (
     APP_CONFIG_TOPIC,
     APP_DEVICE_ID,
@@ -2640,3 +2641,67 @@ class TestPresenceEntitiesDeclareTheirAvailability:
         for key in ("detected", "source_src-1_detected"):
             topics = {a["topic"] for a in self._cmps()[key]["availability"]}
             assert f"{PREFIX}/status" in topics
+
+
+class _RecordingClient:
+    """The paho surface `_on_connect` touches, with every call recorded."""
+
+    def __init__(self):
+        self.published = []
+        self.subscribed = []
+
+    def publish(self, topic, payload=None, retain=False, qos=0):
+        self.published.append({"topic": topic, "payload": payload, "retain": retain})
+
+    def message_callback_add(self, topic, callback):
+        pass
+
+    def subscribe(self, topic, qos=0):
+        self.subscribed.append(topic)
+
+
+class TestAvailabilitySurvivesAReconnect:
+    """The Last Will leaves a retained "offline" on the availability topic whenever the
+    link drops ungracefully, and paho reconnects on its own without telling anyone. If
+    the reconnect does not republish "online", the topic keeps saying offline for the
+    life of the process while state messages keep arriving — which reads in Home
+    Assistant as every entity behind that topic being unavailable, with no failure
+    visible on the publishing side."""
+
+    def _publisher(self):
+        settings = MqttSettings(host="broker.invalid", port=1883, prefix="pv")
+        return AsyncMqttPublisher(settings, availability_topic="pv/status")
+
+    def test_a_reconnect_republishes_online(self):
+        publisher = self._publisher()
+        client = _RecordingClient()
+
+        publisher._on_connect(client)  # first connect
+        client.published.clear()
+        publisher._on_connect(client)  # paho reconnected after a drop
+
+        assert [(c["topic"], c["payload"], c["retain"]) for c in client.published] == [
+            ("pv/status", "online", True)
+        ], client.published
+
+    def test_the_first_connect_publishes_online_too(self):
+        publisher = self._publisher()
+        client = _RecordingClient()
+
+        publisher._on_connect(client)
+
+        assert {"topic": "pv/status", "payload": "online", "retain": True} in client.published
+
+    def test_it_uses_pahos_client_rather_than_the_one_being_assigned(self):
+        """`_on_connect` runs on paho's loop thread and can beat `self._client = client`
+        in `_connect_blocking`. Reading `self._client` there dropped the availability
+        publish and every resubscribe on the first connect."""
+        publisher = self._publisher()
+        client = _RecordingClient()
+        publisher._client = None
+        publisher._subscriptions = {"pv/cmd": (lambda *_: None, 0)}
+
+        publisher._on_connect(client)
+
+        assert client.published, "availability was not published with the client paho supplied"
+        assert client.subscribed == ["pv/cmd"]

@@ -177,10 +177,12 @@ class AsyncMqttPublisher:
 
         try:
             client.connect(self._settings.host, self._settings.port, keepalive=60)
-            # loop_start owns reconnection from here; the caller never waits on it.
-            client.loop_start()
             self._client = client
-            client.publish(self._availability_topic, "online", retain=True)
+            # loop_start owns reconnection from here; the caller never waits on it.
+            # Availability is published from `_on_connect`, which fires on this connect
+            # and on every reconnect after it. `self._client` is assigned first because
+            # that callback runs on the loop thread and can beat this line otherwise.
+            client.loop_start()
         except Exception as e:
             # A down broker must not prevent the watcher from starting. Queued messages
             # are dropped until paho's own reconnect succeeds.
@@ -193,8 +195,22 @@ class AsyncMqttPublisher:
             except Exception:
                 pass
 
-    def _on_connect(self, *_args: Any) -> None:
+    def _on_connect(self, client: Any = None, *_args: Any) -> None:
         self._connected.set()
+        # paho's own client argument, not `self._client`: on the first connect this
+        # callback can run before `_connect_blocking` has finished assigning it.
+        mqtt_client = client if client is not None else self._client
+        if mqtt_client is None:
+            return
+        # Every connect, not just the first. The Last Will leaves a retained "offline"
+        # on this topic whenever the link drops ungracefully, and paho reconnects by
+        # itself — so without a republish here the topic stays "offline" for as long as
+        # the process lives while state keeps flowing, and every Home Assistant entity
+        # whose availability points at it is unavailable behind a working publisher.
+        try:
+            mqtt_client.publish(self._availability_topic, "online", retain=True)
+        except Exception:
+            logger.debug("MQTT availability republish failed", exc_info=True)
         # Re-apply on every connect, not just the first: this fires again after each
         # reconnect, and that is the only place subscriptions can be restored.
         for topic, (callback, qos) in list(self._subscriptions.items()):
@@ -203,8 +219,8 @@ class AsyncMqttPublisher:
                 # no callback attached yet, and re-adding an existing one just replaces
                 # it. Only `subscribe` is strictly lost across a reconnect, but doing
                 # both here keeps the two from ever disagreeing.
-                self._client.message_callback_add(topic, lambda _c, _u, msg, _cb=callback: _cb(msg.topic, msg.payload))
-                self._client.subscribe(topic, qos=qos)
+                mqtt_client.message_callback_add(topic, lambda _c, _u, msg, _cb=callback: _cb(msg.topic, msg.payload))
+                mqtt_client.subscribe(topic, qos=qos)
             except Exception:
                 logger.debug("MQTT resubscribe failed for %s", topic, exc_info=True)
 
