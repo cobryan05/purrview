@@ -38,6 +38,10 @@ class TaskInfoRead(ApiModel):
     # existing determinate 0% rendering.
     progress: Optional[float] = 0.0
     status_message: str = ""
+    # "info" | "warning" — whether `status_message` is narration or something the
+    # user should act on. Drives the app-wide Jobs badge, which cannot tell the
+    # two apart from the text.
+    status_level: str = "info"
     status_actions: list[dict] = Field(default_factory=list)
     log_lines: list[str] = Field(default_factory=list)
     is_paused_in_place: bool = False
@@ -55,6 +59,7 @@ class TaskInfoRead(ApiModel):
             instance=(TaskInstanceRead.model_validate(task_info.instance) if task_info.instance else None),
             progress=(task_info.task.get_progress() if task_info.task else 0.0),
             status_message=(task_info.task.get_status_message() if task_info.task else ""),
+            status_level=(task_info.task.get_status_level() if task_info.task else "info"),
             status_actions=(task_info.task.get_status_actions() if task_info.task else []),
             log_lines=task_info.task.get_log_lines() if task_info.task else [],
             is_paused_in_place=(task_info.task.is_paused_in_place() if task_info.task else False),

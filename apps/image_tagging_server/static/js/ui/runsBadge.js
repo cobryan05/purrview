@@ -15,7 +15,7 @@
  * down into jobs vs continuous for anyone who cares which kind is which.
  */
 import { fetchTasksStatus } from '/app-static/js/shared/api/tasks.js';
-import { countLiveTasks, countLiveTasksByKind } from '/app-static/js/ui/tasks.js';
+import { countLiveTasks, countLiveTasksByKind, liveTaskWarnings } from '/app-static/js/ui/tasks.js';
 
 /**
  * Both places the same count appears: the main Jobs tab button (visible from
@@ -54,13 +54,18 @@ function _badgeTitle({ jobs, continuous }) {
  */
 export function updateRunsBadge(tasks) {
   const n = countLiveTasks(tasks);
-  const title = _badgeTitle(countLiveTasksByKind(tasks));
+  // A warning replaces the tooltip rather than being appended to it: the count
+  // breakdown is trivia next to "your training is running on the CPU", and the
+  // notices bar carries the same message for anyone not hovering the badge.
+  const warnings = liveTaskWarnings(tasks);
+  const title = warnings.length ? warnings.join(' · ') : _badgeTitle(countLiveTasksByKind(tasks));
   for (const id of BADGE_IDS) {
     const badge = document.getElementById(id);
     if (!badge) continue;
     badge.textContent = String(n);
     badge.hidden = n === 0;
     badge.title = title;
+    badge.classList.toggle('tab-badge--warning', warnings.length > 0);
   }
   return n;
 }

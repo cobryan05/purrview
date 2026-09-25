@@ -282,6 +282,14 @@ class TrainHierarchyTask(TrainModelTask):
             return f"{part_msg} — {self._device_warning}" if part_msg else self._device_warning
         return part_msg
 
+    def get_status_level(self) -> str:
+        """Warning only for the CPU fallback — the part counter is narration.
+
+        getattr for the same reason as TrainModelTask: `_device_warning` is set
+        in `_init()`, which has not run during the PENDING window.
+        """
+        return "warning" if getattr(self, "_device_warning", "") else "info"
+
     def get_progress(self) -> Optional[float]:
         """Progress across the whole hierarchy, not within one job.
 

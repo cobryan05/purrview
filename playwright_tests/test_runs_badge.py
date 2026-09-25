@@ -99,3 +99,40 @@ class TestBothBadgesAgree:
 
         expect(page.locator("#task-activity-badge-active")).to_have_text("2")
         expect(_badge(page)).to_have_text("2")
+
+
+def _with_status(task, message, level):
+    return {**task, "statusMessage": message, "statusLevel": level}
+
+
+class TestTheWarningState:
+    """A CPU-only training job is 10-50x slower and otherwise looks like any
+    other run. The badge borrows the warning colour so it is visible from every
+    tab — but only for tasks that asked to be noticed, which is why the level is
+    an explicit field rather than "statusMessage is set"."""
+
+    def test_a_warning_task_colours_the_badge(self, page: Page, base_url: str):
+        task = _with_status(JOB, "WARNING: no GPU detected — training on CPU", "warning")
+        _load(page, base_url, {"t-job": task})
+
+        expect(_badge(page)).to_have_class("tab-badge tab-badge--warning")
+        expect(_badge(page)).to_have_attribute("title", "WARNING: no GPU detected — training on CPU")
+
+    def test_an_ordinary_status_message_does_not(self, page: Page, base_url: str):
+        """The half that matters: a running watcher narrates through the same
+        field all day. Keying the colour on the message being non-empty would
+        pin the badge amber permanently and make it mean nothing."""
+        task = _with_status(WATCHER, "Watching 7 cameras", "info")
+        _load(page, base_url, {"t-watch": task})
+
+        expect(_badge(page)).not_to_have_class("tab-badge tab-badge--warning")
+        expect(_badge(page)).to_have_attribute("title", "1 continuous job — click to see them")
+
+    def test_a_finished_warning_run_does_not_colour_it(self, page: Page, base_url: str):
+        """The warning describes work in progress; a completed job is not live
+        and does not count towards the badge, so it must not tint it either."""
+        done = _with_status(DONE_JOB, "WARNING: no GPU detected", "warning")
+        _load(page, base_url, {"t-job": JOB, "t-done": done})
+
+        expect(_badge(page)).to_have_text("1")
+        expect(_badge(page)).not_to_have_class("tab-badge tab-badge--warning")

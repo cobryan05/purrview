@@ -544,4 +544,49 @@ class Manager:
             },
             "summary": "  ·  ".join(summary_parts),
             "details": details,
+            "notices": self._cpu_training_notices(running),
         }
+
+    @staticmethod
+    def _expects_gpu() -> bool:
+        """Whether this deployment was set up expecting a training GPU.
+
+        Written by ``setup.sh``: 0 only where the operator answered "continue
+        anyway" on a host with no GPU, which makes CPU training the thing they
+        asked for rather than a fault. Anything else — including the variable
+        being absent, as it is for a container built before this existed —
+        counts as expecting one, so the warning fails loud rather than silent.
+        """
+        return os.environ.get("TRAINING_EXPECTS_GPU", "1").strip() not in ("0", "false", "False")
+
+    def _cpu_training_notices(self, running: List[Job]) -> List[Dict[str, Any]]:
+        """A standing notice for a job that fell back to the CPU.
+
+        The trainer already logs this and reports it as the task's status
+        message, but both are only visible to someone who opens that job — and
+        the failure this catches (a container that quietly lost GPU access) is
+        one you otherwise notice by a job taking hours instead of minutes. The
+        notices bar is app-wide, so it is seen without going to look.
+
+        Keyed per job so two CPU jobs do not collapse into one line, and derived
+        from the live queue rather than latched, so it clears when the job ends.
+        """
+        if not self._expects_gpu():
+            return []
+        notices: List[Dict[str, Any]] = []
+        for job in running:
+            if not (job.last_progress or {}).get("device_warning"):
+                continue
+            label = (job.config or {}).get("model_name") or job.job_id[:8]
+            notices.append(
+                {
+                    "key": f"training_cpu_only_{job.job_id}",
+                    "level": "warning",
+                    "message": (
+                        f"Training '{label}' is running on the CPU — roughly 10-50x slower than "
+                        "GPU. This deployment expects a GPU, so check that the container still "
+                        "has access to it."
+                    ),
+                }
+            )
+        return notices

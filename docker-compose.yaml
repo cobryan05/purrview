@@ -137,6 +137,10 @@ services:
     environment:
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      # 1 when this deployment was set up expecting a training GPU, 0 when the
+      # operator knowingly accepted CPU training. Unset means "unknown", which
+      # the training server treats as expecting one.
+      TRAINING_EXPECTS_GPU: ${TRAINING_EXPECTS_GPU:-1}
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
@@ -179,6 +183,10 @@ services:
       DB_SERVER_HOST: localhost
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      # 1 when this deployment was set up expecting a training GPU, 0 when the
+      # operator knowingly accepted CPU training. Unset means "unknown", which
+      # the training server treats as expecting one.
+      TRAINING_EXPECTS_GPU: ${TRAINING_EXPECTS_GPU:-1}
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     command: ["/usr/bin/supervisord", "-c", "/conf/supervisord-monolith.conf"]
@@ -276,6 +284,10 @@ services:
     environment:
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      # 1 when this deployment was set up expecting a training GPU, 0 when the
+      # operator knowingly accepted CPU training. Unset means "unknown", which
+      # the training server treats as expecting one.
+      TRAINING_EXPECTS_GPU: ${TRAINING_EXPECTS_GPU:-1}
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
     volumes:
@@ -328,6 +340,10 @@ services:
       DB_SERVER_HOST: localhost
       TRAINING_CACHE_DIR: /training-cache
       TRAINING_CACHE_MAX_MB: ${TRAINING_CACHE_MAX_MB:-10000}
+      # 1 when this deployment was set up expecting a training GPU, 0 when the
+      # operator knowingly accepted CPU training. Unset means "unknown", which
+      # the training server treats as expecting one.
+      TRAINING_EXPECTS_GPU: ${TRAINING_EXPECTS_GPU:-1}
       TRAINING_CACHE_MAX_AGE_DAYS: ${TRAINING_CACHE_MAX_AGE_DAYS:-30}
       TRAINING_CACHE_SWEEP_INTERVAL_SEC: ${TRAINING_CACHE_SWEEP_INTERVAL_SEC:-3600}
       MODELS_ROOT: /app/models

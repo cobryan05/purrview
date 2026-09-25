@@ -981,3 +981,25 @@ class TestTrainingCurveStatus:
     def test_status_data_epoch_without_total(self):
         task = _task_with_history([{"epoch": 7, "train_loss": 1.0}])
         assert task.get_status_data()["epoch_stats"]["epoch"] == "7"
+
+
+class TestStatusLevel:
+    """The app-wide Jobs badge turns amber on `status_level == "warning"`. It
+    cannot derive that from `status_message`, which most tasks use for ordinary
+    narration — so the level has to say so explicitly."""
+
+    def test_a_plain_run_is_not_a_warning(self):
+        """Also the PENDING window: `_device_warning` is set in `_init()`, and the
+        task summary reads both accessors for any loaded task, so a task that has
+        been constructed but not initialised must answer rather than raise."""
+        task = _make_task({})
+
+        assert task.get_status_message() == ""
+        assert task.get_status_level() == "info"
+
+    def test_the_cpu_fallback_raises_the_level(self):
+        task = _make_task({})
+        task._device_warning = "WARNING: no GPU detected"
+
+        assert task.get_status_level() == "warning"
+        assert task.get_status_message() == "WARNING: no GPU detected"

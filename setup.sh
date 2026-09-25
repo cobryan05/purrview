@@ -216,12 +216,20 @@ TRAINING_SERVER_PORT=""
 # Whether a training container of its own runs here (as opposed to mono, where
 # training shares the app container) — it is the one with its own dashboard.
 SEPARATE_TRAINING="n"
+# Whether training on this host is *meant* to have a GPU. Empty when no training
+# runs here at all. Set to 0 only by the "continue anyway" branches below, where
+# the operator has knowingly accepted CPU training — the training server uses it
+# to decide whether falling back to CPU is worth a standing warning in the app,
+# or simply what was asked for.
+TRAINING_EXPECTS_GPU=""
 
 case "$ROLE" in
   1)  # Everything on one box — training needs a GPU; inference GPU is optional
+    TRAINING_EXPECTS_GPU=1
     if [ "$GPU_DEFAULT" != "y" ]; then
       echo "!! Training needs an NVIDIA GPU, but none was detected."
       ask "   Continue anyway (build will target CUDA)?" n || { echo "Aborted."; exit 1; }
+      TRAINING_EXPECTS_GPU=0
     fi
     LAYOUT="$(menu "How should services be laid out?" \
       "One container (mono) — simplest single-box deploy" \
@@ -256,9 +264,11 @@ case "$ROLE" in
     ;;
 
   3)  # Training only
+    TRAINING_EXPECTS_GPU=1
     if [ "$GPU_DEFAULT" != "y" ]; then
       echo "!! Training needs an NVIDIA GPU, but none was detected."
       ask "   Continue anyway?" n || { echo "Aborted."; exit 1; }
+      TRAINING_EXPECTS_GPU=0
     fi
     COMPOSE_PROFILES="training"
     SEPARATE_TRAINING="y"
@@ -269,9 +279,11 @@ case "$ROLE" in
     ;;
 
   4)  # Development workspace (source-mounted, dev tooling)
+    TRAINING_EXPECTS_GPU=1
     if [ "$GPU_DEFAULT" != "y" ]; then
       echo "!! The dev workspaces assume an NVIDIA GPU (training-dev / mono-dev reserve one)."
       ask "   Continue anyway?" n || { echo "Aborted."; exit 1; }
+      TRAINING_EXPECTS_GPU=0
     fi
     LAYOUT="$(menu "Dev layout?" \
       "Single container — everything + dev tooling" \
@@ -402,6 +414,7 @@ fi
   echo "APP_BASE=$APP_BASE"
   echo "ORT_REQUIREMENTS=$ORT_REQUIREMENTS"
   echo
+  [ -n "$TRAINING_EXPECTS_GPU" ] && echo "TRAINING_EXPECTS_GPU=$TRAINING_EXPECTS_GPU"
   [ -n "$TRAINING_SERVER_HOST" ] && echo "TRAINING_SERVER_HOST=$TRAINING_SERVER_HOST"
   [ -n "$TRAINING_SERVER_PORT" ] && echo "TRAINING_SERVER_PORT=$TRAINING_SERVER_PORT"
   echo "APPUSER_UID=$UID_VAL"

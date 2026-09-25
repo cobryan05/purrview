@@ -548,8 +548,17 @@ class TrainModelTask(Task, TrainingJobRunnerMixin):
 
     def get_status_message(self) -> str:
         """The persistent "statusMessage" widget — currently only used for the
-        CPU-fallback warning, so it's the empty string the rest of the time."""
-        return self._device_warning
+        CPU-fallback warning, so it's the empty string the rest of the time.
+
+        getattr, not attribute access: `_device_warning` is set in `_init()`, and
+        the task summary reads this for any loaded task — including one still in
+        the PENDING window before `_init` has run.
+        """
+        return getattr(self, "_device_warning", "")
+
+    def get_status_level(self) -> str:
+        """The only status message this task sets is the CPU-fallback warning."""
+        return "warning" if self.get_status_message() else "info"
 
     @classmethod
     def status_schema(cls) -> list[dict[str, Any]]:

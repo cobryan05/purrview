@@ -513,6 +513,23 @@ export function countLiveTasksByKind(tasks) {
 }
 
 /**
+ * The status messages of live tasks that asked to be noticed.
+ *
+ * Reads `statusLevel` rather than testing whether `statusMessage` is set: most
+ * tasks narrate ordinary progress through that field, so presence alone would
+ * pin the badge to its warning colour for any running watcher.
+ *
+ * @param {Record<string, any>} tasks
+ * @returns {string[]} one message per warning task, in task-map order
+ */
+export function liveTaskWarnings(tasks) {
+  return Object.values(tasks || {})
+    .filter(t => !TERMINAL_STATUSES.has(t.instance?.status) && t.statusLevel === 'warning')
+    .map(t => t.statusMessage)
+    .filter(Boolean);
+}
+
+/**
  * Count jobs that can still change state on their own.
  *
  * Narrower than the badge count, and for a different question. The badge asks

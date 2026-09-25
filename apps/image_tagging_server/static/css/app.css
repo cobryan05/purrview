@@ -6805,6 +6805,16 @@ button.filter-active {
   vertical-align: middle;
 }
 
+/* A live job is reporting something the user should act on (today: training
+   that fell back to the CPU). The count still means the same thing — only the
+   colour changes — so the badge does not need a second number to explain. */
+.tab-badge--warning {
+  background: var(--color-warning);
+  /* Not --text-on-solid: that is white in every theme, and --color-warning is a
+     pale yellow it cannot be read against. */
+  color: #1a1a1a;
+}
+
 /* "Show system/temporary" toggle, between the config list's filter box and its
    rows. Pico gives a bare <label> a bottom margin and a 1.25em checkbox, both of
    which make a 3-line control out of one line — reset them here (same family as

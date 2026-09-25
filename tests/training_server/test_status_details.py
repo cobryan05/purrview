@@ -149,3 +149,73 @@ class TestJobProgressCapture:
         finally:
             release.set()
             await queue.shutdown()
+
+
+class TestTheCpuFallbackNotice:
+    """A job that fell back to the CPU is 10-50x slower and otherwise looks
+    normal — the only prior signals were a log line and a status message on the
+    job's own card, both of which need you to already be looking at that job.
+    This puts it in the app-wide notices bar instead."""
+
+    def test_a_cpu_job_raises_a_warning_notice(self, manager, monkeypatch):
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
+        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+
+        notices = manager.get_status()["notices"]
+
+        assert len(notices) == 1
+        assert notices[0]["level"] == "warning"
+        assert notices[0]["key"] == "training_cpu_only_j1"
+        assert "cats-v3" in notices[0]["message"]
+
+    def test_a_gpu_job_raises_nothing(self, manager, monkeypatch):
+        """The distinguishing half: a running job on its own must not warn, or
+        the bar would carry a permanent notice through every healthy run."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
+        job.last_progress = {"epoch": 3, "total_epochs": 10}
+
+        assert manager.get_status()["notices"] == []
+
+    def test_a_deployment_that_chose_cpu_is_not_nagged(self, manager, monkeypatch):
+        """setup.sh writes 0 when the operator answered "continue anyway" on a
+        host with no GPU. CPU training is then what they asked for."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "0")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
+        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+
+        assert manager.get_status()["notices"] == []
+
+    def test_an_unset_flag_still_warns(self, manager, monkeypatch):
+        """A container built before the variable existed must not go quiet — an
+        absent answer is 'expects a GPU', so the failure stays loud."""
+        monkeypatch.delenv("TRAINING_EXPECTS_GPU", raising=False)
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
+        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+
+        assert len(manager.get_status()["notices"]) == 1
+
+    def test_the_notice_clears_when_the_job_stops(self, manager, monkeypatch):
+        """Derived from the live queue rather than latched: a finished job's
+        warning must not outlive it."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        job = _job(manager, "j1", "running", config={"model_name": "cats-v3"})
+        job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+        assert len(manager.get_status()["notices"]) == 1
+
+        job.status = "done"
+
+        assert manager.get_status()["notices"] == []
+
+    def test_two_cpu_jobs_keep_their_own_notices(self, manager, monkeypatch):
+        """Keyed per job — the bar counts notices, and collapsing two jobs into
+        one key would under-report."""
+        monkeypatch.setenv("TRAINING_EXPECTS_GPU", "1")
+        for jid in ("j1", "j2"):
+            job = _job(manager, jid, "running", config={"model_name": jid})
+            job.last_progress = {"device_warning": "WARNING: no GPU detected"}
+
+        keys = {n["key"] for n in manager.get_status()["notices"]}
+
+        assert keys == {"training_cpu_only_j1", "training_cpu_only_j2"}

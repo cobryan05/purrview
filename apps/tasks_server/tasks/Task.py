@@ -472,6 +472,16 @@ class Task(ABC):
         """Returns any message to return with task status"""
         return ""
 
+    def get_status_level(self) -> str:
+        """Severity of `get_status_message()` — "info" or "warning".
+
+        Most tasks use the status message for ordinary progress narration, so an
+        app-wide indicator cannot treat "has a status message" as "needs
+        attention". This is the explicit signal instead; matching on the text of
+        the message would break the first time someone rewords it.
+        """
+        return "info"
+
     def get_error_message(self) -> Optional[str]:
         """The message explaining why this task failed, or None if it hasn't.
 
