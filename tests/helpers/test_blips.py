@@ -46,14 +46,26 @@ def box(label=CAT_A, conf=0.9, x=0.10, y=0.10, w=0.20, h=0.20):
     return {"x": x, "y": y, "w": w, "h": h, "label": label, "labelUuid": label, "conf": conf}
 
 
-def track(track_id=7, **kwargs):
-    return {**box(**kwargs), "id": track_id}
+def track(track_id=7, saw=None, saw_conf=None, margin=None, **kwargs):
+    """One track on one frame.
+
+    `saw` is what the detector claimed here, which a v2 sidecar records beside the
+    identity the track settled on. It defaults to agreement, because that is the
+    ordinary case and a test that has to spell it out every time buries the one line
+    that matters in the tests where they differ.
+    """
+    entry = {**box(**kwargs), "id": track_id}
+    entry["sawLabelUuid"] = saw if saw is not None else entry["labelUuid"]
+    entry["sawConf"] = saw_conf if saw_conf is not None else entry["conf"]
+    if margin is not None:
+        entry["margin"] = margin
+    return entry
 
 
 def doc(frames, step=STEP):
     """Wrap per-frame `{boxes, tracks}` dicts into an overlay document."""
     return {
-        "version": 1,
+        "version": 2,
         "durationS": round(len(frames) * step, 4),
         "frames": [
             {"t": round(index * step, 4), "boxes": f.get("boxes", []), "tracks": f.get("tracks", [])}
@@ -65,6 +77,21 @@ def doc(frames, step=STEP):
 def steady(count, label=CAT_A, conf=0.9, track_id=7):
     """`count` frames of one well-behaved track — detection and track agreeing."""
     return [{"boxes": [box(label=label, conf=conf)], "tracks": [track(track_id, label=label, conf=conf)]}] * count
+
+
+def misread(count, settled=CAT_A, saw=CAT_B, conf=0.9, track_id=7, margin=None):
+    """`count` frames where the detector disagreed with the identity the track holds.
+
+    The track keeps reporting `settled` — its vote across the whole clip — while the
+    model's own output for these frames says `saw`. That pairing is what makes the
+    frames harvestable: the box is exact and the right answer is known.
+    """
+    return [
+        {
+            "boxes": [box(label=saw, conf=conf)],
+            "tracks": [track(track_id, label=settled, conf=conf, saw=saw, saw_conf=conf, margin=margin)],
+        }
+    ] * count
 
 
 def kinds_of(blips):
@@ -92,22 +119,90 @@ class TestATrackThatBehaves:
 
 
 class TestIdentity:
-    def test_a_label_that_departs_and_returns_is_a_flip(self):
-        frames = steady(8) + steady(4, label=CAT_B) + steady(8)
+    """Two different failures that used to be conflated, and one that never fired.
+
+    Before a track's label became a vote, `identity_flip` was defined as a track's label
+    departing from its own modal value — which could not happen, because association was
+    gated on label equality and the label was fixed at birth. It fired zero times across
+    1,963 real events. A flickering identity forked a second track instead, so the single
+    most informative failure in a clip produced no training data at all.
+
+    It is now the disagreement between what the track settled on and what the detector
+    said frame by frame, and `identity_switch` keeps the other half: the settled label
+    itself changing hands, which is a tracking fault and must never be harvested.
+    """
+
+    def test_the_detector_contradicting_the_settled_identity_is_a_harvestable_flip(self):
+        frames = steady(8) + misread(4) + steady(8)
         blips = [b for b in analyse_overlay(doc(frames)) if b.kind == KIND_IDENTITY_FLIP]
 
         assert len(blips) == 1
         assert blips[0].fault == FAULT_DETECTOR
-        assert blips[0].detail["modalLabel"] == CAT_A
+        assert blips[0].detail["modalLabel"] == CAT_A, "the proposal must be the corrected label"
         assert blips[0].detail["sawLabel"] == CAT_B
         assert blips[0].harvestable
 
     def test_a_flip_spans_only_the_frames_that_disagreed(self):
-        frames = steady(8) + steady(4, label=CAT_B) + steady(8)
+        frames = steady(8) + misread(4) + steady(8)
         flip = next(b for b in analyse_overlay(doc(frames)) if b.kind == KIND_IDENTITY_FLIP)
 
         assert flip.start_s == pytest.approx(8 * STEP)
         assert flip.end_s == pytest.approx(11 * STEP)
+
+    def test_agreement_reports_nothing(self):
+        """The negative that keeps the detector honest: a clip the model got right must
+        not manufacture training data out of itself."""
+        assert KIND_IDENTITY_FLIP not in kinds_of(analyse_overlay(doc(steady(20))))
+
+    def test_a_single_disagreeing_frame_is_reported(self):
+        """One frame is a fifth of a second of the model being wrong, with an exact box
+        and a known right answer. The old two-sample floor existed only because the
+        reference used to be as noisy as the observation."""
+        frames = steady(8) + misread(1) + steady(8)
+        assert KIND_IDENTITY_FLIP in kinds_of(analyse_overlay(doc(frames)))
+
+    def test_raising_the_floor_suppresses_a_single_frame(self):
+        frames = steady(8) + misread(1) + steady(8)
+        strict = BlipThresholds(min_disagreement_samples=2)
+
+        assert KIND_IDENTITY_FLIP not in kinds_of(analyse_overlay(doc(frames), strict))
+
+    def test_a_confidently_wrong_flip_outranks_an_unsure_one(self):
+        """Severity encodes how sure the detector was about what it got wrong, because
+        confidently-wrong frames are the most valuable training data in the pipeline."""
+        sure = steady(8) + misread(4, conf=0.95) + steady(8)
+        unsure = steady(8) + misread(4, conf=0.30) + steady(8)
+
+        sure_flip = next(b for b in analyse_overlay(doc(sure)) if b.kind == KIND_IDENTITY_FLIP)
+        unsure_flip = next(b for b in analyse_overlay(doc(unsure)) if b.kind == KIND_IDENTITY_FLIP)
+
+        assert sure_flip.severity > unsure_flip.severity
+
+    def test_the_confusion_margin_is_carried_for_triage(self):
+        """A near-tie between two names for one object is a systematic confusion, not a
+        hard frame, and no absolute confidence threshold can tell them apart."""
+        frames = steady(8) + misread(4, conf=0.91, margin=0.03) + steady(8)
+        flip = next(b for b in analyse_overlay(doc(frames)) if b.kind == KIND_IDENTITY_FLIP)
+
+        assert flip.detail["margin"] == pytest.approx(0.03)
+
+    def test_a_sidecar_that_predates_the_record_reports_no_flips(self):
+        """Silence in a v1 document means "not recorded", not "the detector agreed".
+        Inferring agreement would fabricate a clean bill of health for every old clip."""
+        frames = steady(8) + misread(4) + steady(8)
+        for frame in frames:
+            for entry in frame["tracks"]:
+                entry.pop("sawLabelUuid", None)
+
+        assert KIND_IDENTITY_FLIP not in kinds_of(analyse_overlay(doc(frames)))
+
+    def test_a_coasting_frame_is_not_a_disagreement(self):
+        """ "The detector said nothing" is a dropout, and a different fault entirely."""
+        blind = [{"boxes": [], "tracks": [{**track(7), "sawLabelUuid": None, "sawConf": None}]}] * 4
+        blips = analyse_overlay(doc(steady(8) + blind + steady(8)))
+
+        assert KIND_IDENTITY_FLIP not in kinds_of(blips)
+        assert KIND_DETECTOR_DROPOUT in kinds_of(blips)
 
     def test_a_label_that_changes_and_stays_changed_is_a_switch_blamed_on_tracking(self):
         """Track-id reuse across two objects, not the detector misreading one — so it
@@ -119,28 +214,11 @@ class TestIdentity:
         assert blips[0].fault == FAULT_TRACKER
         assert not blips[0].harvestable
 
-    def test_a_single_frame_blink_is_below_the_conservative_floor(self):
-        frames = steady(8) + steady(1, label=CAT_B) + steady(8)
+    def test_a_switch_is_not_also_reported_as_a_flip(self):
+        """One incident, one blip. Double-reporting would harvest a tracking fault
+        through the flip door, which is exactly what fault attribution exists to stop."""
+        frames = steady(12) + steady(8, label=CAT_B)
         assert KIND_IDENTITY_FLIP not in kinds_of(analyse_overlay(doc(frames)))
-
-    def test_lowering_the_floor_surfaces_the_same_blink(self):
-        """The floor is the only thing suppressing it — proves the detector works and
-        the threshold is genuinely doing the filtering."""
-        frames = steady(8) + steady(1, label=CAT_B) + steady(8)
-        loose = BlipThresholds(min_flip_samples=1)
-
-        assert KIND_IDENTITY_FLIP in kinds_of(analyse_overlay(doc(frames), loose))
-
-    def test_a_confidently_wrong_flip_outranks_an_unsure_one(self):
-        """Severity encodes how sure the detector was about what it got wrong, because
-        confidently-wrong frames are the most valuable training data in the pipeline."""
-        sure = steady(8) + steady(4, label=CAT_B, conf=0.95) + steady(8)
-        unsure = steady(8) + steady(4, label=CAT_B, conf=0.30) + steady(8)
-
-        sure_flip = next(b for b in analyse_overlay(doc(sure)) if b.kind == KIND_IDENTITY_FLIP)
-        unsure_flip = next(b for b in analyse_overlay(doc(unsure)) if b.kind == KIND_IDENTITY_FLIP)
-
-        assert sure_flip.severity > unsure_flip.severity
 
 
 class TestWhoActuallyFailed:
@@ -305,10 +383,10 @@ class TestTuningFromAStoredBundle:
 
     def test_raising_the_flip_floor_suppresses_a_flip_that_the_default_finds(self):
         """The override reaching the detectors, not just the dataclass."""
-        frames = steady(8) + steady(3, label=CAT_B) + steady(8)
+        frames = steady(8) + misread(3) + steady(8)
 
         assert KIND_IDENTITY_FLIP in kinds_of(analyse_overlay(doc(frames)))
-        strict = BlipThresholds.from_overrides({"min_flip_samples": 5})
+        strict = BlipThresholds.from_overrides({"min_disagreement_samples": 5})
         assert KIND_IDENTITY_FLIP not in kinds_of(analyse_overlay(doc(frames), strict))
 
     def test_enabled_kinds_arrives_as_a_list_because_json_has_no_set(self):
@@ -369,13 +447,36 @@ class TestProposingTheCorrectedBox:
 
     def test_the_label_is_the_correction_not_what_was_seen(self):
         """The whole point of a flip proposal: geometry from the detector, label from
-        the track's majority."""
-        frames = steady(8) + steady(4, label=CAT_B) + steady(8)
+        the identity the track settled on."""
+        frames = steady(8) + misread(4) + steady(8)
         box = proposed_box_at(self._doc(frames), track_id=7, label_uuid=CAT_A, at_s=8 * STEP)
 
         assert box is not None
         assert box.label_uuid == CAT_A
         assert not box.estimated
+
+    def test_a_flip_proposes_a_corrected_box_at_every_harvested_moment(self):
+        """End to end: the blip the analysis found must yield a usable proposal at each
+        moment the harvest pulls a frame from, carrying the corrected label rather than
+        the one the detector got wrong.
+
+        The onset is asserted exact separately — it is a real sample, where the geometry
+        is the detector's own box and only the label changes. Interior moments may fall
+        between samples and be interpolated across a fifth of a second, which is honest
+        and is flagged as such.
+        """
+        frames = steady(8) + misread(4) + steady(8)
+        document = self._doc(frames)
+        flip = next(b for b in analyse_overlay(document) if b.kind == KIND_IDENTITY_FLIP)
+
+        proposals = [
+            proposed_box_at(document, track_id=flip.track_id, label_uuid=flip.detail["modalLabel"], at_s=at)
+            for at in harvest_times(flip.start_s, flip.end_s)
+        ]
+
+        assert proposals and all(p is not None for p in proposals)
+        assert {p.label_uuid for p in proposals} == {CAT_A}
+        assert not proposals[0].estimated
 
     def test_an_unseen_moment_is_interpolated_and_flagged(self):
         moving = [

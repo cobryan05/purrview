@@ -13,11 +13,17 @@ no database. That is the whole reason the feature is cheap enough to run on ever
 
 **No ground truth is needed as input.** An earlier design had the user confirm each
 event's identities before analysis, which front-loads work onto every event including
-the ones that are fine. Instead the detectors look for *self-inconsistency*: within one
-track, the label carried for the large majority of its life is almost certainly right,
-so a track labelled one thing 112 times and another 9 times is contradictory regardless
-of which is true. Confirmation moves downstream, onto a proposal that is already
-correct, and only for events that flagged.
+the ones that are fine. Instead the detectors look for *self-inconsistency*: a track
+reports the identity it settled on across its whole life, and a frame where the detector
+called it something else is contradictory regardless of which of the two is true.
+Confirmation moves downstream, onto a proposal that is already correct, and only for
+events that flagged.
+
+That comparison is only possible because the tracker records both — what it decided and
+what it saw. Before it did, a label that flickered forked into a second track instead,
+and the contradiction was split across two records that no longer knew they described
+one object: `identity_flip` could not fire at all, and across 1,963 events it never once
+did.
 
 **Fault attribution is the load-bearing part.** `TrackSample` keeps raw detections and
 tracker output apart precisely so "the detector missed it" can be told from "the tracker
@@ -46,13 +52,16 @@ logger = logging.getLogger(__name__)
 # the generated API client, where every field is already a plain string — the same
 # reasoning `_watch_event_recorder` gives for spelling out RECORDING_KIND_CLIP.
 
-#: The track's label left its modal value and came back. Detector fault, high value:
-#: the model contradicted itself about one object inside one clip.
+#: The detector called an object something other than the identity its track settled on,
+#: for one or more frames. Detector fault, and the highest-value training data a clip
+#: holds: the model is wrong about an object the rest of the clip identifies confidently,
+#: so the correction has an exact box and an unambiguous right answer.
 KIND_IDENTITY_FLIP = "identity_flip"
 
-#: The label changed and never changed back. Usually the tracker reusing an id across
-#: two different objects rather than the detector misreading one, so it is attributed
-#: to tracking and is not harvested.
+#: The track's own settled identity changed and never changed back. Since that label is
+#: a vote across the whole track, it moves only when the evidence does — which usually
+#: means the tracker handed one id to a second object rather than one object changing
+#: identity. Attributed to tracking and never harvested.
 KIND_IDENTITY_SWITCH = "identity_switch"
 
 #: The track survived (coasting on its TTL) but no raw detection backed it. The
@@ -123,6 +132,14 @@ class BlipThresholds:
     #: A departure from the modal label must last this many samples to count. At 2, a
     #: single-sample blink is ignored — those are common and usually uninteresting.
     min_flip_samples: int = 2
+
+    #: How many consecutive frames the detector must disagree with the track's settled
+    #: identity before it is reported. One, deliberately: unlike `min_flip_samples` this
+    #: is measured against a reference accumulated over the whole track rather than
+    #: against the track's own wobble, so a single frame is a real observation and not a
+    #: coin-flip promoted to ground truth. At a few frames a second it is also a fifth of
+    #: a second of the model being wrong, with an exact box and a known right answer.
+    min_disagreement_samples: int = 1
 
     #: A gap must last this many samples to count. Below it, the tracker's own TTL
     #: smoothing makes the distinction meaningless.
@@ -304,6 +321,23 @@ class _TrackTimeline:
     def conf_at(self, index: int) -> float:
         return float(self.present[index].get("conf", 0.0) or 0.0)
 
+    def saw_at(self, index: int) -> Optional[str]:
+        """What the detector actually said on this frame, or None if it said nothing.
+
+        None covers two cases that must not be confused with a disagreement: the track
+        coasted with no detection behind it, and the sidecar predates the field (v1),
+        where silence means "not recorded" rather than "not seen".
+        """
+        saw = self.present[index].get("sawLabelUuid")
+        return str(saw) if saw else None
+
+    def saw_conf_at(self, index: int) -> float:
+        return float(self.present[index].get("sawConf", 0.0) or 0.0)
+
+    def margin_at(self, index: int) -> Optional[float]:
+        margin = self.present[index].get("margin")
+        return None if margin is None else float(margin)
+
 
 def _frames_of(document: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Frames in time order. Sorted defensively — the builder appends in order, but a
@@ -373,15 +407,20 @@ def _identity_blips(
     line: _TrackTimeline,
     thresholds: BlipThresholds,
 ) -> List[Blip]:
-    """Departures from the track's modal label.
+    """The track's own settled identity changing hands mid-life.
 
-    A departure bounded by the modal label on both sides is a *flip* — the detector
-    contradicted itself and corrected itself, which is a detector fault and prime
-    training material. A departure that runs to the end of the track is a *switch*:
-    far more likely the tracker handing one id to a second object, so it is attributed
-    to tracking and never harvested.
+    A track's reported label is a decaying vote over the frames it has matched, so it
+    moves only when the evidence really moves. When it does — and does not move back —
+    the likeliest explanation is not that one object changed identity but that the
+    tracker handed one id to a second object. That is a tracking fault, and its frames
+    are worthless as training data: the detector was right each time and the thread
+    between them was not.
+
+    The detector contradicting itself is a different thing entirely and lives in
+    `_disagreement_blips`, which compares each frame against the verdict rather than
+    the verdict against itself.
     """
-    if not line.modal_is_clear:
+    if not line.modal_is_clear or not thresholds.enabled(KIND_IDENTITY_SWITCH):
         return []
 
     wrong = [i for i in sorted(line.present) if line.label_at(i) != line.modal_label]
@@ -393,26 +432,94 @@ def _identity_blips(
         length = end - start + 1
         if length < thresholds.min_flip_samples:
             continue
-
-        returns = end < line.last
-        kind = KIND_IDENTITY_FLIP if returns else KIND_IDENTITY_SWITCH
-        if not thresholds.enabled(kind):
+        # A departure the settled label came back from is the vote wobbling, not an id
+        # changing hands. The per-frame disagreement detector already reports the
+        # detector's part in that, at finer granularity and without double-counting the
+        # same frames into the harvest.
+        if end < line.last:
             continue
 
         confidences = [line.conf_at(i) for i in range(start, end + 1) if i in line.present]
         blips.append(
             Blip(
-                kind=kind,
+                kind=KIND_IDENTITY_SWITCH,
                 track_id=line.track_id,
                 start_s=_t(frames, start),
                 end_s=_t(frames, end),
                 severity=_mean(confidences),
-                fault=FAULT_DETECTOR if returns else FAULT_TRACKER,
+                fault=FAULT_TRACKER,
                 detail={
                     "modalLabel": line.modal_label,
                     "sawLabel": line.label_at(start),
                     "samples": length,
                     "trackSamples": len(line.present),
+                },
+            )
+        )
+    return blips
+
+
+def _disagreement_blips(
+    frames: Sequence[Dict[str, Any]],
+    line: _TrackTimeline,
+    thresholds: BlipThresholds,
+) -> List[Blip]:
+    """Frames where the detector called this object something other than what it is.
+
+    The highest-value training data a clip contains, and until the track label became a
+    vote it was **unreachable**: association was gated on label equality and a track's
+    label was fixed at birth, so a track's label could not depart from itself and this
+    detector's predecessor could never fire. A flickering identity forked into a second
+    track instead, and the contradiction — the whole signal — was spread across two
+    records that no longer knew they described one object.
+
+    Now each frame carries both: `labelUuid` is the identity the track settled on across
+    its whole life, `sawLabelUuid` is what the model claimed on that frame. Where they
+    differ, the model is wrong about an object the rest of the clip identifies
+    confidently — a correction with an exact box and an unambiguous right answer.
+
+    One sample is enough. The old two-sample floor guarded against a reference that was
+    itself one noisy frame; the reference is now an accumulation over the whole track,
+    and at a few frames a second a single disagreeing frame is a real, cheap sample.
+    """
+    if not thresholds.enabled(KIND_IDENTITY_FLIP):
+        return []
+
+    wrong = [i for i in sorted(line.present) if (saw := line.saw_at(i)) is not None and saw != line.label_at(i)]
+    if not wrong:
+        return []
+
+    blips: List[Blip] = []
+    for start, end in _runs(wrong):
+        length = end - start + 1
+        if length < thresholds.min_disagreement_samples:
+            continue
+
+        indices = [i for i in range(start, end + 1) if i in line.present]
+        margins = [m for m in (line.margin_at(i) for i in indices) if m is not None]
+        blips.append(
+            Blip(
+                kind=KIND_IDENTITY_FLIP,
+                track_id=line.track_id,
+                start_s=_t(frames, start),
+                end_s=_t(frames, end),
+                # How sure the detector was about the thing it got wrong — a model that
+                # was certain and wrong is the most valuable correction there is.
+                severity=_mean([line.saw_conf_at(i) for i in indices]),
+                fault=FAULT_DETECTOR,
+                detail={
+                    # The corrected label the harvest will propose. Named `modalLabel`
+                    # because every consumer already reads that key for exactly this —
+                    # "what this track really is" — and the settled label is a better
+                    # answer to it than a count over the track's own wobble ever was.
+                    "modalLabel": line.label_at(start),
+                    "sawLabel": line.saw_at(start),
+                    "samples": length,
+                    "trackSamples": len(line.present),
+                    # Winner minus best rival on these frames. A near-zero margin is the
+                    # model unable to separate two names for one object, which is a
+                    # systematic confusion rather than one hard frame.
+                    **({"margin": round(_mean(margins), 4)} if margins else {}),
                 },
             )
         )
@@ -800,6 +907,7 @@ def analyse_overlay(
     blips: List[Blip] = []
     for line in lines:
         blips.extend(_identity_blips(frames, line, thresholds))
+        blips.extend(_disagreement_blips(frames, line, thresholds))
         blips.extend(_dropout_blips(frames, line, thresholds))
         blips.extend(_confidence_dip_blips(frames, line, thresholds))
     blips.extend(_occlusion_blips(frames, lines, thresholds))

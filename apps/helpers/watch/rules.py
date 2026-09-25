@@ -206,10 +206,17 @@ class RuleSpec:
         one event however many cats are in shot and however often each comes and goes,
         because the recording is the whole frame either way: three tracks sharing a label
         would mean three near-identical videos of one scene. One event per *label* is the
-        line, and it is also what makes a brief relabel harmless — the machine matches on
-        `label_uuid` and never on track identity, so a box that flickers to another label
-        and back rejoins its own event inside `rearm_delay_s`, while the label it briefly
-        borrowed never clears `min_duration_s` and so never opens anything.
+        line, and the machine matches on `label_uuid` and never on track identity.
+
+        ⚠️ That last property was once argued to make a relabel harmless on its own — a
+        flickering box rejoins its own event inside `rearm_delay_s` while the label it
+        briefly borrowed never clears `min_duration_s`. **The reasoning is sound and the
+        premise was wrong.** Observed wrong-label runs lasted 2.4 s and 7.5 s against a
+        2 s `min_duration_s`, and one person crossing a yard opened three events and
+        recorded three clips. Nothing here can fix that: by the time a machine sees two
+        labels there are already two identities. Stability is the tracker's job, and a
+        track now reports a vote across its frames rather than the label of whichever
+        detection started it — see `tracking.LabelVote`.
 
         `None` leaves a slot alone, which is how a rule with nothing to enumerate — a
         subject-less `present`, an `any` subject, a `motion` rule with no zones — keeps

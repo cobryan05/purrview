@@ -422,7 +422,7 @@ class WatchPipeline:
         # Collapses ghost tracks (two persistent ids for one animal, see
         # `merge_duplicate_tracks`'s docstring) before anything downstream — rule
         # engine, overlay, saved frames — ever sees them.
-        self._last_tracks = merge_duplicate_tracks(self.tracker.update(list(surviving), now))
+        self._last_tracks = merge_duplicate_tracks(self.tracker.update(list(surviving), now), now)
         current_ids = {t.track_id for t in self._last_tracks}
         self._dead_track_ids = [tid for tid in self._prior_track_ids if tid not in current_ids]
         self._prior_track_ids = current_ids

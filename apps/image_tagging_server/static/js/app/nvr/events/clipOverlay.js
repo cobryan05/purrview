@@ -30,8 +30,14 @@
  * would invent a detection that never happened.
  */
 
-/** Sidecar shapes this renderer understands. A newer one is ignored, not guessed at. */
-const SUPPORTED_VERSION = 1;
+/**
+ * Sidecar shapes this renderer understands. A newer one is ignored, not guessed at.
+ *
+ * Two, because v2 only *added* keys to each track — the per-frame detection behind a
+ * track whose reported label became a vote across frames. Nothing this file reads moved,
+ * so refusing a v2 document would blank the overlay on every new clip to no purpose.
+ */
+const SUPPORTED_VERSIONS = new Set([1, 2]);
 
 /** Fallback hold when a sidecar omits it. Generous, but still bounded. */
 const DEFAULT_STALENESS_S = 1.5;
@@ -55,7 +61,7 @@ export async function fetchClipOverlay(recordingUuid) {
     const res = await fetch(`/api/recordings/${recordingUuid}/overlay`);
     if (!res.ok) return null;
     const doc = await res.json();
-    if (!doc || doc.version !== SUPPORTED_VERSION || !Array.isArray(doc.frames)) return null;
+    if (!doc || !SUPPORTED_VERSIONS.has(doc.version) || !Array.isArray(doc.frames)) return null;
     return doc;
   } catch {
     // A clip that plays with no overlay is a far better outcome than a modal that fails

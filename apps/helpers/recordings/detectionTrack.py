@@ -43,7 +43,11 @@ logger = logging.getLogger(__name__)
 #: Bumped when the shape changes incompatibly. The player refuses a version it does not
 #: know rather than drawing boxes it has misread — a silently misplaced box is worse
 #: than no overlay, because it looks like a detector bug.
-OVERLAY_VERSION = 1
+#:
+#: v2 added `sawLabelUuid` / `sawConf` / `margin` to each track: the raw per-frame
+#: detection behind a track whose reported label is now a vote across frames rather than
+#: the label it was born with.
+OVERLAY_VERSION = 2
 
 #: Sidecar extension. Appended to the clip's full name rather than replacing its suffix
 #: (`clip.mp4.boxes.json`, not `clip.boxes.json`) so the two sort together and the
@@ -176,6 +180,19 @@ class DetectionTrack:
 
     @staticmethod
     def _track_dict(track: Any, width: int, height: int) -> Optional[Dict[str, Any]]:
+        """One track as an overlay box, with the raw observation behind its verdict.
+
+        `labelUuid` is the track's *settled* identity — a decaying vote over the frames
+        it has matched, not the label of whichever detection started it. `sawLabelUuid`
+        is what the detector actually said about this object on this frame.
+
+        Both are kept because they answer different questions, and the difference is the
+        whole point: the settled label is what the rules acted on, while a frame where
+        the two disagree is a frame the model got wrong about an object whose identity
+        the rest of the clip establishes. That is the most valuable training data a
+        recording contains, and it is invisible in either field alone. Absent when the
+        track coasted with no detection behind it, which is a different fault again.
+        """
         box = _normalise(getattr(track, "bbox", ()) or (), width, height)
         if box is None:
             return None
@@ -183,6 +200,18 @@ class DetectionTrack:
         box["label"] = getattr(track, "label_name", None) or getattr(track, "label_uuid", None) or ""
         box["labelUuid"] = getattr(track, "label_uuid", None) or ""
         box["conf"] = round(float(getattr(track, "confidence", 0.0) or 0.0), 3)
+
+        observed = getattr(track, "observed_label_uuid", None)
+        if observed:
+            box["sawLabelUuid"] = observed
+            box["sawConf"] = round(float(getattr(track, "observed_confidence", 0.0) or 0.0), 3)
+        # Winner minus best in-group rival. Low means the detector could not separate two
+        # names for one object — the calibrated "worth a human's time" signal, which an
+        # absolute confidence threshold cannot see (a confident 0.91 beside a 0.88 rival
+        # is more informative than a lonely 0.42). See AMBIGUITY_REVIEW_PLAN.md.
+        margin = getattr(track, "observed_margin", None)
+        if margin is not None:
+            box["margin"] = round(float(margin), 3)
         return box
 
     def _evict(self, now: float) -> None:

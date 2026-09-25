@@ -79,6 +79,7 @@ def _task() -> StreamWatcherTask:
     task._pin_ids = {}
     task._label_ancestry = {}
     task._label_meta = {CAT: {"text": "Cat", "color": "#ff8800"}}
+    task._label_groups = {}
     task._inference_ms = []
     return task
 
@@ -312,3 +313,96 @@ class TestRealClientBboxShape:
         detections = await _task()._run_inference(api, "base64-image", ["cat-model"], frame_size=(640, 480))
 
         assert detections[0].bbox == pytest.approx((0.0, 0.0, 640.0, 480.0))
+
+
+PERSON = "label-person"
+ALICE = "label-alice"
+PACKAGE = "label-package"
+
+#: As the live tree has it: `Person` is an exclusive-variants root, `Alice` one of its
+#: variants, `Package` unrelated.
+PERSON_GROUP = {PERSON: PERSON, ALICE: PERSON, PACKAGE: PACKAGE, CAT: CAT}
+
+
+def _grouped_task() -> StreamWatcherTask:
+    task = _task()
+    task._label_groups = dict(PERSON_GROUP)
+    task._label_meta = {PERSON: {"text": "Person", "color": "#ffffff"}}
+    return task
+
+
+def _alt(label_uuid: str, confidence: float) -> SimpleNamespace:
+    return SimpleNamespace(label_uuid=label_uuid, confidence=confidence, class_str=None, class_id=0)
+
+
+class TestRunnerUpScores:
+    """The watcher must ask for the runner-up classes and keep the ones it can vote on.
+
+    Without them the label vote sees only per-frame argmax winners, which is the weaker
+    estimator: two classes that genuinely alternate as winner for seconds can still tip
+    a winner-count, but cannot tip a sum over both their scores.
+    """
+
+    @staticmethod
+    def _requested_top_k(payload: Any, model_name: str) -> int:
+        """The n-best ask for one model, through the generated anyOf wrapper.
+
+        `top_k` is unioned per model (see `frameInference._union_requests`), so the
+        wire value is a dict even when one consumer asked with a plain int.
+        """
+        value = getattr(payload.top_k, "actual_instance", payload.top_k)
+        return value.get(model_name, 0) if isinstance(value, dict) else int(value or 0)
+
+    async def test_top_k_covers_the_largest_group(self):
+        api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10, PERSON), confidence=0.9)])
+        task = _grouped_task()
+        # Three cats plus the root is the widest set any vote sums over.
+        task._label_groups.update({"label-luna": CAT, "label-willow": CAT, "label-maple": CAT})
+
+        await task._run_inference(api, "img", ["m"], frame_size=(100, 100))
+
+        asked = self._requested_top_k(api.payloads[0], "m")
+        assert asked >= 4, "a vote cannot see a candidate inference was never asked for"
+
+    async def test_no_groups_means_no_runner_ups_requested(self):
+        """Nothing to vote over is the old behaviour, and must cost nothing."""
+        api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10), confidence=0.9)])
+
+        await _task()._run_inference(api, "img", ["m"], frame_size=(100, 100))
+
+        assert self._requested_top_k(api.payloads[0], "m") == 0
+
+    async def test_in_group_runner_ups_reach_the_detection(self):
+        api = _FakeInferenceApi(
+            [
+                SimpleNamespace(
+                    bbox=_bbox(0, 0, 10, 10, PERSON),
+                    confidence=0.72,
+                    alternates=[_alt(ALICE, 0.68), _alt(PACKAGE, 0.51)],
+                )
+            ]
+        )
+
+        detections = await _grouped_task()._run_inference(api, "img", ["m"], frame_size=(100, 100))
+
+        # `Package` is dropped: it is not an alternate guess about this object, so no
+        # vote can use it and carrying it would only be noise downstream.
+        assert detections[0].alternates == [(ALICE, pytest.approx(0.68))]
+
+    async def test_an_ungrouped_winner_carries_no_alternates(self):
+        api = _FakeInferenceApi(
+            [SimpleNamespace(bbox=_bbox(0, 0, 10, 10, PACKAGE), confidence=0.9, alternates=[_alt(PERSON, 0.4)])]
+        )
+
+        detections = await _grouped_task()._run_inference(api, "img", ["m"], frame_size=(100, 100))
+
+        assert detections[0].alternates == []
+
+    async def test_a_model_that_cannot_produce_them_still_works(self):
+        """NMS-free exports bake the argmax in. The vote degrades, nothing breaks."""
+        api = _FakeInferenceApi([SimpleNamespace(bbox=_bbox(0, 0, 10, 10, PERSON), confidence=0.9)])
+
+        detections = await _grouped_task()._run_inference(api, "img", ["m"], frame_size=(100, 100))
+
+        assert len(detections) == 1
+        assert detections[0].alternates == []

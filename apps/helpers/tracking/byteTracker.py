@@ -22,7 +22,9 @@ codebase already made the opposite call for good reasons:
 * **Class-aware.** Canonical ByteTrack is class-agnostic: it pools every box and
   associates on geometry alone. Here every rule matches on ``label_uuid``, so pooling
   would let a cat track inherit the litter box's id and quietly corrupt every
-  interaction rule. Pairs are only ever formed between matching labels.
+  interaction rule. Pairs are only ever formed within one ``exclusive_variants`` group
+  — see ``Tracker.can_associate``, which is deliberately looser than label equality so
+  that a detector alternating between two names for one object does not fork the track.
 * **Lifetimes in seconds, not frames.** The reference expires tracks after
   ``track_buffer`` *frames*, which silently means 1 s at 30 fps and 15 s at 2 fps —
   and drifts whenever a live source stutters. This tracker expires against each
@@ -158,6 +160,28 @@ class ByteTracker(Tracker):
                 "default": 0.6,
                 "help": "Confidence at which an anchor label's box is latched and held.",
             },
+            "label_vote_half_life_s": {
+                "type": "float",
+                "required": False,
+                "default": 6.0,
+                "help": (
+                    "How long a track remembers what the detector called it, in seconds. A track's "
+                    "reported identity is a decaying, confidence-weighted vote over the labels "
+                    "declared as alternate guesses for one object, not whatever the latest frame "
+                    "said. Raise it if an identity still flickers; lower it if a track is slow to "
+                    "accept that it is now looking at someone else."
+                ),
+            },
+            "label_vote_margin": {
+                "type": "float",
+                "required": False,
+                "default": 1.3,
+                "help": (
+                    "How much better a rival must score before the reported identity changes, and "
+                    "before a specific identity is named at all rather than the general one it sits "
+                    "under. 1.0 disables both and restores per-frame flicker."
+                ),
+            },
         }
 
     # ------------------------------------------------------------------ internals
@@ -178,8 +202,9 @@ class ByteTracker(Tracker):
         """Optimally pair the given tracks and detections by IoU.
 
         Returns (track_index, detection_index) pairs, both indexing into the caller's
-        own lists. Pairs below `threshold`, and pairs whose labels differ, are never
-        formed — the cost matrix makes them infeasible rather than merely expensive.
+        own lists. Pairs below `threshold`, and pairs whose labels belong to different
+        `exclusive_variants` groups, are never formed — the cost matrix makes them
+        infeasible rather than merely expensive.
         """
         if not track_idxs or not det_idxs:
             return []
@@ -194,7 +219,7 @@ class ByteTracker(Tracker):
             track = self._tracks[t_idx]
             for col, d_idx in enumerate(det_idxs):
                 det = detections[d_idx]
-                if track.label_uuid != det.label_uuid:
+                if not self.can_associate(track.label_uuid, det.label_uuid):
                     continue
                 score = iou(track.bbox, det.bbox)
                 if score >= threshold:
@@ -209,14 +234,20 @@ class ByteTracker(Tracker):
 
     def _absorb(self, track: Track, det: Detection, now: float) -> None:
         """Fold a matched detection into an existing track."""
-        spec = self._lifetime_for(det.label_uuid)
+        # The TRACK's label, not the detection's: association is group-wide, so a
+        # `Person` track can absorb a `Alice` box, and reading the spec off the detection
+        # would let one frame's guess swap the track's TTL and anchor rules out from
+        # under it. Expiry below reads `t.label_uuid`, and these two must agree.
+        spec = self._lifetime_for(track.label_uuid)
         # A latched anchor keeps the box it was confident about. Re-detections of a
         # stationary object jitter, and letting that jitter through would make a
         # containment rule flicker at the zone boundary.
         if not (track.is_anchor and det.confidence < self._anchor_confidence):
             track.bbox = det.bbox
         track.confidence = det.confidence
-        track.label_name = det.label_name or track.label_name
+        # Identity is the vote's to decide, not this frame's. `label_uuid` and
+        # `label_name` are both written here.
+        self.record_observation(track, det, now)
         track.last_seen = now
         track.hits += 1
         track.matched_this_update = True
@@ -235,6 +266,7 @@ class ByteTracker(Tracker):
         # created below default to True — a brand-new track did match a detection.
         for track in self._tracks:
             track.matched_this_update = False
+            track.forget_observation()
 
         high_idxs = [i for i, d in enumerate(detections) if d.confidence >= self._track_thresh]
         low_idxs = [i for i, d in enumerate(detections) if self._low_thresh <= d.confidence < self._track_thresh]
@@ -264,20 +296,21 @@ class ByteTracker(Tracker):
                 continue
             det = detections[d_idx]
             spec = self._lifetime_for(det.label_uuid)
-            self._tracks.append(
-                Track(
-                    track_id=self._next_id,
-                    bbox=det.bbox,
-                    label_uuid=det.label_uuid,
-                    label_name=det.label_name,
-                    confidence=det.confidence,
-                    first_seen=now,
-                    last_seen=now,
-                    hits=1,
-                    confirmed=self._min_hits <= 1,
-                    is_anchor=spec.is_anchor and det.confidence >= self._anchor_confidence,
-                )
+            track = Track(
+                track_id=self._next_id,
+                bbox=det.bbox,
+                label_uuid=det.label_uuid,
+                label_name=det.label_name,
+                confidence=det.confidence,
+                first_seen=now,
+                last_seen=now,
+                hits=1,
+                confirmed=self._min_hits <= 1,
+                is_anchor=spec.is_anchor and det.confidence >= self._anchor_confidence,
+                vote=self.new_vote(),
             )
+            self.record_observation(track, det, now)
+            self._tracks.append(track)
             self._next_id += 1
 
         # Expire by wallclock age against the label's own TTL, never by frame count.

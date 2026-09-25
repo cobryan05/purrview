@@ -70,6 +70,7 @@ from apps.helpers.consts import JsonValues, TaskAccent, TaskStatus
 from apps.helpers.detectionMerger import MergePolicy, merge_detections_by_iou_and_hierarchy
 from apps.helpers.frameInference import FrameInferenceRequest, run_frame_inference
 from apps.helpers.imageUtils import base64_encode_jpg
+from apps.helpers.labelHelper import build_label_ancestry_map, build_label_group_map, build_label_metadata_map
 from apps.helpers.recordings.clipDrain import ClipDrain, sweep_chunk_root
 from apps.helpers.recordings.detectionTrack import DEFAULT_TRACK_SECONDS, DetectionTrack
 from apps.helpers.tracking.Registry import create_tracker
@@ -89,7 +90,6 @@ from ._watch_pipeline import WatchPipeline, _format_duration, build_label_lifeti
 from .ApplyFilterChainTask import _CLASSIFIER_KINDS, _HttpInferenceBackend, _read_model_kind
 from .Registry import register_task
 from .Task import Task
-from .utils.labelHelper import build_label_ancestry_map, build_label_metadata_map
 from .utils.sourceHelper import SourceHelper
 
 logger = logging.getLogger(__name__)
@@ -221,6 +221,8 @@ class StreamWatcherTask(Task):
         # label_uuid, so without this every detection, track and live-view box would
         # be captioned with a raw UUID (or nothing at all).
         self._label_meta: Dict[str, Dict[str, Optional[str]]] = {}
+        # label_uuid → exclusive-variants group key, for the tracker's association gate.
+        self._label_groups: Dict[str, str] = {}
         # collector_uuid → TrainingCollector, for every `collect_training_images`
         # action row this watcher has attached. Keyed on the collector, not the
         # action row, so two rows naming the same collector (different source
@@ -480,6 +482,10 @@ class StreamWatcherTask(Task):
         labels_api = LabelsApi(db_api_client)
         self._label_ancestry = await build_label_ancestry_map(labels_api)
         self._label_meta = await build_label_metadata_map(labels_api)
+        # Which labels are alternate guesses about one object. The tracker needs it to
+        # let a box that flips between `Person` and `Alice` continue one track instead of
+        # forking a new one per spelling.
+        self._label_groups = await build_label_group_map(labels_api)
 
         groups_resp = await asyncio.to_thread(ModelGroupsApi(db_api_client).list_model_groups)
         groups_by_uuid = {g.uuid: g for g in (groups_resp.groups or [])}
@@ -531,6 +537,10 @@ class StreamWatcherTask(Task):
             tracker = create_tracker(
                 self._profile.tracker_typename,
                 label_lifetimes=lifetimes,
+                label_groups=self._label_groups,
+                # So a track that settles on a label no detection it matched was named
+                # with is still captioned from the label tree rather than a bare uuid.
+                label_names={uuid: meta["text"] for uuid, meta in self._label_meta.items() if meta.get("text")},
                 **(src.tracker_params_json or self._profile.tracker_params_json or {}),
             )
             # Regions belong to the source, so they are fetched per source rather than
@@ -1178,6 +1188,13 @@ class StreamWatcherTask(Task):
             # server-side. Left off, the endpoint's default takes every classifier's best
             # guess, and a hesitant "probably Willow" would silently replace a true "a cat".
             sub_model_min_confidence=self._SUB_MODEL_MIN_CONFIDENCE,
+            # Runner-up class scores, for the tracker's label vote. Stage-2 NMS already
+            # computes them and throws them away, so this costs no extra inference. The
+            # vote needs the whole group's scores every frame, not just the winner's: in
+            # the yard incident `Person` and `Alice` genuinely alternate as argmax for
+            # seconds at a time, and counting only winners over such a run can still
+            # flip, while summing both classes' scores cannot.
+            top_k=self._inference_top_k(),
         )
 
         started = time.perf_counter()
@@ -1225,9 +1242,47 @@ class StreamWatcherTask(Task):
                 label_uuid=det.bbox.label_uuid,
                 label_name=self._label_display_name(det.bbox),
                 confidence=getattr(det, "confidence", 0.0) or 0.0,
+                alternates=self._group_alternates(det),
             )
             for det in merged
         ]
+
+    def _inference_top_k(self) -> int:
+        """How many classes per box to ask inference for.
+
+        Sized to the largest `exclusive_variants` group, because that is the widest set
+        the label vote ever sums over — asking for more would carry scores for classes
+        no vote can use. Derived from the label tree rather than fixed, so adding a
+        fourth cat does not silently starve the vote of one candidate.
+
+        `top_k` counts the winner, so a group of n needs n to see all n-1 runners-up.
+        Zero when no group exists at all, which is the old behaviour exactly.
+        """
+        if not self._label_groups:
+            return 0
+        sizes: Dict[str, int] = {}
+        for group in self._label_groups.values():
+            sizes[group] = sizes.get(group, 0) + 1
+        largest = max(sizes.values(), default=0)
+        return largest if largest > 1 else 0
+
+    def _group_alternates(self, det: Any) -> List[Tuple[Optional[str], float]]:
+        """This detection's runner-up scores, narrowed to its own suppression group.
+
+        Out-of-group runners-up are dropped here rather than carried and ignored: the
+        vote is only ever over one group, and a `Package` score riding along on a
+        `Person` box is noise to every consumer downstream of this point.
+        """
+        winner = getattr(det.bbox, "label_uuid", None)
+        group = self._label_groups.get(winner or "")
+        if group is None:
+            return []
+        out: List[Tuple[Optional[str], float]] = []
+        for alt in getattr(det, "alternates", None) or ():
+            label = getattr(alt, "label_uuid", None)
+            if label and self._label_groups.get(label) == group:
+                out.append((label, float(getattr(alt, "confidence", 0.0) or 0.0)))
+        return out
 
     def _label_display_name(self, bbox: Any) -> Optional[str]:
         """A human name for one inference bbox.

@@ -145,6 +145,28 @@ class IouTracker(Tracker):
                 "default": 0.6,
                 "help": "Confidence at which an anchor label's box is latched and held.",
             },
+            "label_vote_half_life_s": {
+                "type": "float",
+                "required": False,
+                "default": 6.0,
+                "help": (
+                    "How long a track remembers what the detector called it, in seconds. A track's "
+                    "reported identity is a decaying, confidence-weighted vote over the labels "
+                    "declared as alternate guesses for one object, not whatever the latest frame "
+                    "said. Raise it if an identity still flickers; lower it if a track is slow to "
+                    "accept that it is now looking at someone else."
+                ),
+            },
+            "label_vote_margin": {
+                "type": "float",
+                "required": False,
+                "default": 1.3,
+                "help": (
+                    "How much better a rival must score before the reported identity changes, and "
+                    "before a specific identity is named at all rather than the general one it sits "
+                    "under. 1.0 disables both and restores per-frame flicker."
+                ),
+            },
         }
 
     # ------------------------------------------------------------------ internals
@@ -166,8 +188,10 @@ class IouTracker(Tracker):
 
         Greedy rather than Hungarian: with a handful of objects per frame the optimal
         assignment and the greedy one almost always agree, and greedy has no dependency.
-        Pairs are only formed between matching labels — a cat detection must never
-        inherit the litter box's track id.
+        Pairs are only formed within one `exclusive_variants` group — a cat detection
+        must never inherit the litter box's track id, but `Alice` and `Person` are two
+        guesses about one object and must be allowed to share a track. See
+        `Tracker.can_associate`.
 
         A non-zero `margin` grows both boxes before scoring, which turns the overlap test
         into a proximity test without introducing a second scoring function to reason
@@ -178,7 +202,7 @@ class IouTracker(Tracker):
             track = self._tracks[t_idx]
             for d_idx in det_idxs:
                 det = detections[d_idx]
-                if track.label_uuid != det.label_uuid:
+                if not self.can_associate(track.label_uuid, det.label_uuid):
                     continue
                 a, b = track.bbox, det.bbox
                 if margin > 0.0:
@@ -246,18 +270,25 @@ class IouTracker(Tracker):
         matched_t_idx = {t_idx for t_idx, _ in pairs}
         for idx, track in enumerate(self._tracks):
             track.matched_this_update = idx in matched_t_idx
+            track.forget_observation()
 
         for t_idx, d_idx in pairs:
             track = self._tracks[t_idx]
             det = detections[d_idx]
-            spec = self._lifetime_for(det.label_uuid)
+            # The TRACK's label, not the detection's: association is group-wide, so a
+            # `Person` track can absorb a `Alice` box, and reading the spec off the
+            # detection would swap this track's TTL and anchor rules out from under it
+            # for one frame. Expiry below reads `t.label_uuid`, and the two must agree.
+            spec = self._lifetime_for(track.label_uuid)
             # A latched anchor keeps the box it was confident about. Re-detections of a
             # stationary object jitter, and letting that jitter through would make a
             # containment rule flicker at the zone boundary.
             if not (track.is_anchor and det.confidence < self._anchor_confidence):
                 track.bbox = det.bbox
             track.confidence = det.confidence
-            track.label_name = det.label_name or track.label_name
+            # Identity is the vote's to decide, not this frame's. `label_uuid` and
+            # `label_name` are both written here.
+            self.record_observation(track, det, now)
             track.last_seen = now
             track.hits += 1
             if track.hits >= self._min_hits:
@@ -268,20 +299,21 @@ class IouTracker(Tracker):
         for d_idx in unmatched_dets:
             det = detections[d_idx]
             spec = self._lifetime_for(det.label_uuid)
-            self._tracks.append(
-                Track(
-                    track_id=self._next_id,
-                    bbox=det.bbox,
-                    label_uuid=det.label_uuid,
-                    label_name=det.label_name,
-                    confidence=det.confidence,
-                    first_seen=now,
-                    last_seen=now,
-                    hits=1,
-                    confirmed=self._min_hits <= 1,
-                    is_anchor=spec.is_anchor and det.confidence >= self._anchor_confidence,
-                )
+            track = Track(
+                track_id=self._next_id,
+                bbox=det.bbox,
+                label_uuid=det.label_uuid,
+                label_name=det.label_name,
+                confidence=det.confidence,
+                first_seen=now,
+                last_seen=now,
+                hits=1,
+                confirmed=self._min_hits <= 1,
+                is_anchor=spec.is_anchor and det.confidence >= self._anchor_confidence,
+                vote=self.new_vote(),
             )
+            self.record_observation(track, det, now)
+            self._tracks.append(track)
             self._next_id += 1
 
         # Expire by wallclock age against the label's own TTL. This is what makes

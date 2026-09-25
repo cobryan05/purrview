@@ -625,11 +625,18 @@ class TestPendingSnapshotBytes:
 
 
 class _Trk(_Det):
-    """A stand-in for `apps.helpers.tracking.Track`, which is also read by attribute."""
+    """A stand-in for `apps.helpers.tracking.Track`, which is also read by attribute.
 
-    def __init__(self, bbox, track_id=7, **kwargs):
+    `saw` is what the detector claimed on this frame, beside `label_uuid`, which is the
+    identity the track settled on across its whole life. Defaults to agreement.
+    """
+
+    def __init__(self, bbox, track_id=7, saw=None, **kwargs):
         super().__init__(bbox, **kwargs)
         self.track_id = track_id
+        self.observed_label_uuid = saw if saw is not None else self.label_uuid
+        self.observed_confidence = self.confidence
+        self.observed_margin = None
 
 
 class TestTheTrackingAnalysis:
@@ -645,18 +652,22 @@ class TestTheTrackingAnalysis:
     BOX = (160, 90, 320, 180)
 
     def _ring(self, *, flip_at=None, count=40):
-        """A ring of one well-behaved track, optionally flipping identity mid-way.
+        """A ring of one well-behaved track, optionally misread mid-way.
 
-        Detection and track agree on every sample, so nothing here reads as a dropout —
-        the only anomaly is the one a test asks for.
+        A detection exists on every sample, so nothing here reads as a dropout — the only
+        anomaly is the one a test asks for. During the flip the *detector* calls the
+        object something else while the track holds the identity it settled on, which is
+        what a misread looks like now that a track's label is a vote rather than whatever
+        its first frame said.
         """
         track = DetectionTrack()
         for i in range(count):
-            label = "lbl-b" if flip_at and flip_at <= i < flip_at + 3 else "lbl-a"
+            misread = bool(flip_at) and flip_at <= i < flip_at + 3
+            saw = "lbl-b" if misread else "lbl-a"
             track.push(
                 WALLCLOCK_OFFSET + 90.0 + i,
-                [_Det(self.BOX, label_uuid=label)],
-                [_Trk(self.BOX, label_uuid=label)],
+                [_Det(self.BOX, label_uuid=saw)],
+                [_Trk(self.BOX, label_uuid="lbl-a", saw=saw)],
                 (640, 360),
             )
         return track
@@ -782,7 +793,7 @@ class TestTheAnalysisSwitch:
         monkeypatch.setattr(module, "_payload_models", lambda: (SimpleNamespace, SimpleNamespace, SimpleNamespace))
         monkeypatch.setattr(module, "_blip_payload_models", lambda: (SimpleNamespace, SimpleNamespace))
 
-        strict = self._recorder(store, tmp_path, blip_thresholds={"min_flip_samples": 5})
+        strict = self._recorder(store, tmp_path, blip_thresholds={"min_disagreement_samples": 5})
         await self._run(strict, tmp_path)
 
         assert store.blips == []

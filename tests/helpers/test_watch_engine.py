@@ -12,7 +12,8 @@ from dataclasses import replace
 
 import pytest
 
-from apps.helpers.tracking.tracker import Track
+from apps.helpers.tracking.iouTracker import IouTracker
+from apps.helpers.tracking.tracker import Detection, Track, merge_duplicate_tracks
 from apps.helpers.watch.engine import WatchEngine
 from apps.helpers.watch.events import EventCloseReason, EventPhase
 from apps.helpers.watch.geometry import (
@@ -1865,3 +1866,72 @@ class TestImpulseTriggers:
 
         machine.spec = replace(spec, armed=False)
         assert self._run(machine, [(True, 6.0)]) == []
+
+
+PERSON = "label-person"
+ALICE = "label-alice"
+PERSON_GROUP = {PERSON: PERSON, ALICE: PERSON}
+
+
+class TestSustainedRelabelStillOpensOneEvent:
+    """The incident this whole subsystem was reworked for.
+
+    One person crossed a yard once and produced three events and three clips. The flat
+    model scored `Person` and `Alice` on the same box, stage-2 NMS emitted whichever won
+    that frame, and the wrong-label runs lasted 2.4 s and 7.5 s — comfortably past the
+    2 s `min_duration_s` that `test_a_brief_relabel_does_not_open_an_event_for_the_
+    borrowed_label` relies on. Hysteresis alone cannot fix this: by the time the rule
+    engine sees two labels the damage is done, so the fix is upstream, in the tracker.
+
+    Driven through a real tracker rather than hand-built tracks, because the whole claim
+    under test is that the tracker no longer hands the engine two identities.
+    """
+
+    def _present(self, refs, **overrides):
+        kwargs = dict(
+            relation="present",
+            subject_a_refs=list(refs),
+            subject_b_kind="none",
+            subject_b_refs=[],
+            threshold=0.6,
+            min_duration_s=2.0,
+            rearm_delay_s=10.0,
+            max_duration_s=0.0,
+        )
+        kwargs.update(overrides)
+        return _rule(**kwargs)
+
+    def _run(self, tracker, engine, frames=60, dt=0.25):
+        """A subject walking across frame whose label alternates every sample."""
+        emitted = []
+        for i in range(frames):
+            label, rival = (PERSON, ALICE) if i % 2 == 0 else (ALICE, PERSON)
+            det = Detection(
+                bbox=(10.0 + i * 3, 400.0, 110.0 + i * 3, 600.0),
+                label_uuid=label,
+                label_name=label,
+                confidence=0.9,
+                alternates=[(rival, 0.7)],
+            )
+            now = i * dt
+            tracks = merge_duplicate_tracks(tracker.update([det], now), now)
+            emitted.extend(engine.step(tracks, now))
+        return emitted
+
+    def test_one_subject_one_event(self):
+        engine = WatchEngine([self._present([PERSON, ALICE])], source_uuid="src-1")
+        tracker = IouTracker(min_hits=3, recovery_margin=1.0, label_groups=PERSON_GROUP)
+
+        emitted = self._run(tracker, engine)
+
+        starts = [s for s in emitted if s.phase is EventPhase.START]
+        assert len(starts) == 1, "one person walking through must not open an event per spelling of their name"
+        assert starts[0].subject_ref == PERSON
+
+    def test_the_subject_is_tracked_as_one_object_throughout(self):
+        engine = WatchEngine([self._present([PERSON, ALICE])], source_uuid="src-1")
+        tracker = IouTracker(min_hits=3, recovery_margin=1.0, label_groups=PERSON_GROUP)
+
+        self._run(tracker, engine)
+
+        assert len({t.track_id for t in tracker.all_tracks()}) == 1

@@ -343,3 +343,56 @@ class TestTheTimelapseOverlay:
         assert doc["version"] == OVERLAY_VERSION
         assert doc["startedAt"] == T0.isoformat()
         assert all({"t", "boxes", "tracks"} <= set(f) for f in doc["frames"])
+
+
+class TestTheRawObservationBesideTheVerdict:
+    """A track's reported label is a vote across frames; the sidecar must still say what
+    the detector claimed on each one.
+
+    Losing that would cost the most valuable training data a clip contains — the frames
+    where the model was wrong about an object whose identity the rest of the clip
+    establishes. `boxes` records raw model output and `tracks` the smoothed verdict, and
+    neither on its own can express "these two disagreed here".
+    """
+
+    def _push(self, track):
+        ring = DetectionTrack()
+        ring.push(at=1000.0, detections=[], tracks=[track], frame_size=(100, 100))
+        return ring.samples_between(999.0, 1001.0)[0].tracks[0]
+
+    def test_a_disagreeing_frame_records_both_labels(self):
+        track = _Trk(1, (0, 0, 50, 50), label_uuid="lbl-person", label_name="Person")
+        track.observed_label_uuid = "lbl-alice"
+        track.observed_confidence = 0.88
+        track.observed_margin = 0.05
+
+        box = self._push(track)
+
+        assert box["labelUuid"] == "lbl-person"
+        assert box["sawLabelUuid"] == "lbl-alice"
+        assert box["sawConf"] == pytest.approx(0.88)
+        assert box["margin"] == pytest.approx(0.05)
+
+    def test_a_coasting_frame_records_no_observation(self):
+        """Absent, not equal to the verdict: "the detector said nothing" and "the
+        detector agreed" are different facts, and the blip analysis splits on it."""
+        track = _Trk(1, (0, 0, 50, 50), label_uuid="lbl-person", label_name="Person")
+        track.observed_label_uuid = None
+        track.observed_margin = None
+
+        box = self._push(track)
+
+        assert "sawLabelUuid" not in box
+        assert "margin" not in box
+
+    def test_a_model_with_no_runner_ups_still_records_the_observation(self):
+        """An NMS-free export cannot produce a margin. The label it saw is still a fact."""
+        track = _Trk(1, (0, 0, 50, 50), label_uuid="lbl-person")
+        track.observed_label_uuid = "lbl-person"
+        track.observed_confidence = 0.9
+        track.observed_margin = None
+
+        box = self._push(track)
+
+        assert box["sawLabelUuid"] == "lbl-person"
+        assert "margin" not in box

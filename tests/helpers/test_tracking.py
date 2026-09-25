@@ -423,7 +423,7 @@ class TestMergeDuplicateTracks:
 
     def test_drops_the_lower_confidence_near_duplicate(self):
         tracks = [_track(1, 0, 0, 100, 100, conf=0.73), _track(2, 2, 2, 98, 99, conf=0.57)]
-        kept = merge_duplicate_tracks(tracks)
+        kept = merge_duplicate_tracks(tracks, now=0.0)
         assert [t.track_id for t in kept] == [1]
 
     def test_merges_across_disagreeing_labels(self):
@@ -433,14 +433,14 @@ class TestMergeDuplicateTracks:
             _track(1, 0, 0, 100, 100, conf=0.47, label="label-maple"),
             _track(2, 3, 3, 97, 98, conf=0.46, label="label-willow"),
         ]
-        kept = merge_duplicate_tracks(tracks)
+        kept = merge_duplicate_tracks(tracks, now=0.0)
         assert len(kept) == 1
         assert kept[0].track_id == 1
 
     def test_distinct_animals_side_by_side_both_survive(self):
         """Low overlap must never be treated as the same object."""
         tracks = [_track(1, 0, 0, 10, 10), _track(2, 14, 0, 24, 10)]
-        kept = merge_duplicate_tracks(tracks)
+        kept = merge_duplicate_tracks(tracks, now=0.0)
         assert {t.track_id for t in kept} == {1, 2}
 
     def test_three_way_duplicate_keeps_only_the_strongest(self):
@@ -449,5 +449,185 @@ class TestMergeDuplicateTracks:
             _track(2, 1, 1, 99, 99, conf=0.90),
             _track(3, 2, 2, 98, 98, conf=0.60),
         ]
-        kept = merge_duplicate_tracks(tracks)
+        kept = merge_duplicate_tracks(tracks, now=0.0)
         assert [t.track_id for t in kept] == [2]
+
+
+PERSON = "label-person"
+ALICE = "label-alice"
+DOG = "label-dog"
+
+#: `Person` is an exclusive-variants group root and `Alice` one of its variants, the way
+#: the live label tree has it. `Cat` is its own group and shares nothing with either.
+PERSON_GROUP = {PERSON: PERSON, ALICE: PERSON, CAT: CAT, DOG: DOG}
+
+
+class TestGroupAwareAssociation:
+    """One physical object whose label alternates must stay one track.
+
+    The production failure: a flat model scores `Person` and `Alice` on the same anchor,
+    stage-2 NMS emits whichever won that frame, and a label-gated tracker read the
+    alternation as two objects — nine tracks and three clips for one person crossing a
+    yard.
+    """
+
+    def test_alternating_group_labels_stay_one_track(self):
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        labels = [PERSON, ALICE, PERSON, ALICE, PERSON]
+        for i, label in enumerate(labels):
+            # Drifting, as a walking subject does: this is what defeated the duplicate
+            # merge, which needs 0.85 IoU and cannot collapse a frozen box against a
+            # moving one.
+            tracks = tracker.update([_det(i * 2, 0, 100 + i * 2, 100, label=label)], now=i * 0.2)
+        assert len(tracks) == 1
+
+    def test_ungrouped_labels_still_never_share_a_track(self):
+        """The gate loosened only within a group. `Cat` against `Dog` is still refused."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        tracker.update([_det(0, 0, 100, 100, label=CAT)], now=0.0)
+        tracks = tracker.update([_det(0, 0, 100, 100, label=DOG)], now=0.2)
+        assert len({t.track_id for t in tracks}) == 2
+
+    def test_without_a_group_map_association_is_label_equality(self):
+        """No `exclusive_variants` anywhere in the tree must behave exactly as before."""
+        tracker = IouTracker(min_hits=1)
+        tracker.update([_det(0, 0, 100, 100, label=PERSON)], now=0.0)
+        tracks = tracker.update([_det(0, 0, 100, 100, label=ALICE)], now=0.2)
+        assert len({t.track_id for t in tracks}) == 2
+
+    def test_a_group_mate_does_not_rename_the_track(self):
+        """The caption must not contradict the uuid every rule matches on."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        tracker.update([Detection((0, 0, 100, 100), PERSON, "Person", 0.9)], now=0.0)
+        tracks = tracker.update([Detection((0, 0, 100, 100), ALICE, "Alice", 0.9)], now=0.2)
+        assert len(tracks) == 1
+        assert tracks[0].label_name == "Person"
+
+
+class TestCoastingConfidenceDecay:
+    """A track that stopped matching must stop out-ranking the one that replaced it."""
+
+    def test_stale_high_confidence_loses_to_a_live_lower_one(self):
+        stale = _track(1, 0, 0, 100, 100, conf=0.90)
+        stale.last_seen = 0.0
+        live = _track(2, 2, 2, 98, 99, conf=0.54)
+        live.last_seen = 1.0
+
+        assert [t.track_id for t in merge_duplicate_tracks([stale, live], now=0.0)] == [1]
+        assert [t.track_id for t in merge_duplicate_tracks([stale, live], now=1.0)] == [2]
+
+    def test_equally_fresh_tracks_are_still_ranked_by_confidence(self):
+        weak = _track(1, 0, 0, 100, 100, conf=0.40)
+        strong = _track(2, 1, 1, 99, 99, conf=0.90)
+        for t in (weak, strong):
+            t.last_seen = 5.0
+        assert [t.track_id for t in merge_duplicate_tracks([weak, strong], now=5.0)] == [2]
+
+    def test_a_tie_on_confidence_keeps_the_better_established_track(self):
+        established = _track(1, 0, 0, 100, 100, conf=0.7)
+        established.hits = 40
+        newcomer = _track(2, 1, 1, 99, 99, conf=0.7)
+        newcomer.hits = 1
+        assert [t.track_id for t in merge_duplicate_tracks([newcomer, established], now=0.0)] == [1]
+
+
+def _group_det(x1, label, alternates=(), conf=0.9):
+    return Detection(
+        bbox=(x1, 0, x1 + 100, 100),
+        label_uuid=label,
+        label_name=label,
+        confidence=conf,
+        alternates=list(alternates),
+    )
+
+
+class TestLabelVote:
+    """A track's identity is a decaying vote, not the label of its first frame.
+
+    The originating question: if a track is called `Luna` fifty times and `Cat` once,
+    does it switch? It must not — and one `Cat` frame must not fork a second track
+    either, which is what `TestGroupAwareAssociation` covers.
+    """
+
+    def _alternating(self, tracker, first, second, frames=24, dt=0.2):
+        """A subject whose label alternates every frame, as a tied argmax does."""
+        tracks = []
+        for i in range(frames):
+            winner, loser = (first, second) if i % 2 == 0 else (second, first)
+            det = _group_det(i * 2, winner, alternates=[(loser, 0.70)], conf=0.90)
+            tracks = tracker.update([det], now=i * dt)
+        return tracks
+
+    def test_alternation_resolves_to_the_group_root(self):
+        """Neither variant out-scores the other, so the honest answer is `Person`."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        tracks = self._alternating(tracker, PERSON, ALICE)
+        assert len(tracks) == 1
+        assert tracks[0].label_uuid == PERSON
+
+    def test_a_track_born_on_the_wrong_variant_still_resolves_to_the_root(self):
+        """The first frame must not get to name the object for the rest of its life."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        tracks = self._alternating(tracker, ALICE, PERSON)
+        assert tracks[0].label_uuid == PERSON
+
+    def test_one_stray_frame_does_not_unseat_a_settled_identity(self):
+        """Fifty `Alice` frames and one `Person` frame is still Alice."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        tracks = []
+        for i in range(50):
+            tracks = tracker.update([_group_det(i, ALICE, alternates=[(PERSON, 0.15)], conf=0.95)], now=i * 0.2)
+        assert tracks[0].label_uuid == ALICE
+
+        tracks = tracker.update([_group_det(50, PERSON, alternates=[(ALICE, 0.60)], conf=0.7)], now=10.0)
+        assert tracks[0].label_uuid == ALICE
+
+    def test_a_sustained_identity_change_is_accepted(self):
+        """The negative of the test above: smoothing must not become deafness.
+
+        Asserted as a pair with `test_alternation_resolves_to_the_group_root` — either
+        assertion alone is satisfiable by an implementation that never moves, or by one
+        that moves on every frame.
+        """
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        for i in range(30):
+            tracker.update([_group_det(i, PERSON, alternates=[(ALICE, 0.2)], conf=0.9)], now=i * 0.2)
+
+        tracks = []
+        for i in range(30, 150):
+            tracks = tracker.update([_group_det(i, ALICE, alternates=[(PERSON, 0.15)], conf=0.95)], now=i * 0.2)
+        assert tracks[0].label_uuid == ALICE
+
+    def test_the_settled_label_carries_a_matching_name(self):
+        """The caption must never contradict the uuid the rules match on."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP, label_names={PERSON: "Person", ALICE: "Alice"})
+        tracks = self._alternating(tracker, ALICE, PERSON)
+        assert (tracks[0].label_uuid, tracks[0].label_name) == (PERSON, "Person")
+
+    def test_the_raw_observation_is_kept_beside_the_verdict(self):
+        """Smoothing the report must not erase what the detector actually said —
+        that disagreement is the training signal the whole feature exists to harvest."""
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        # An even frame count ends on the second label, so the last thing the detector
+        # said disagrees with the verdict — which is the case being asserted.
+        tracks = self._alternating(tracker, PERSON, ALICE, frames=24)
+        track = tracks[0]
+        assert track.label_uuid == PERSON
+        assert track.observed_label_uuid == ALICE
+        assert track.observed_margin == pytest.approx(0.20)
+
+    def test_a_coasting_track_records_no_observation(self):
+        """ "The detector disagreed" and "the detector said nothing" are different
+        faults with different fixes, and must not be confused downstream."""
+        tracker = IouTracker(min_hits=1, max_age_s=5.0, label_groups=PERSON_GROUP)
+        tracker.update([_group_det(0, PERSON)], now=0.0)
+        tracks = tracker.update([], now=0.2)
+        assert tracks[0].observed_label_uuid is None
+        assert tracks[0].observed_margin is None
+
+    def test_an_ungrouped_label_is_unaffected(self):
+        tracker = IouTracker(min_hits=1, label_groups=PERSON_GROUP)
+        tracks = []
+        for i in range(5):
+            tracks = tracker.update([_group_det(i, DOG, conf=0.8)], now=i * 0.2)
+        assert tracks[0].label_uuid == DOG
