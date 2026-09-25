@@ -13,7 +13,7 @@ and a dependency for a case that IoU already handles.
 from typing import Any, Dict, List, Optional, Tuple
 
 from .Registry import register_tracker
-from .tracker import BBox, Detection, LabelLifetimeSpec, Track, Tracker
+from .tracker import BBox, Detection, LabelLifetimeSpec, Track, Tracker, shared_param
 
 
 def iou(a: BBox, b: BBox) -> float:
@@ -97,76 +97,45 @@ class IouTracker(Tracker):
                 "required": False,
                 "default": 0.25,
                 "help": (
-                    "Detections below this confidence are ignored entirely. Inference is asked for a "
-                    "lower floor than this so other trackers can use the weak boxes; this tracker "
-                    "has no use for them."
+                    "Sightings the detector is less sure about than this are ignored outright. "
+                    "Raise it if the watcher keeps finding things that are not there; lower it "
+                    "if a real subject is being missed. This tracker throws weak sightings away "
+                    "— ByteTrack instead uses them to carry an object through a bad patch, "
+                    "which is the main reason to prefer it on a busy camera."
                 ),
             },
             "iou_threshold": {
                 "type": "float",
                 "required": False,
                 "default": 0.3,
-                "help": "Minimum box overlap to consider a detection the same object as an existing track.",
+                "help": (
+                    "How much a new sighting has to overlap something already being followed to "
+                    "count as the same object, from 0 (just touching) to 1 (exactly on top). "
+                    "Lower it if a subject that moves quickly keeps being treated as a new "
+                    "object each frame; raise it if two objects passing close together get "
+                    "mistaken for one another."
+                ),
             },
             "recovery_margin": {
                 "type": "float",
                 "required": False,
                 "default": 0.0,
                 "help": (
-                    "How far a subject may move between samples and still be recognised, in "
-                    "multiples of its own width. 0 disables it. Only ever applied to tracks and "
-                    "detections that found no ordinary match, so stationary objects that already "
-                    "pair exactly are never affected. Try 1.0 if a moving subject keeps being "
-                    "given a new track id at a low analysis rate."
+                    "A second, more forgiving attempt at the match above, for a subject that "
+                    "moved too far between frames to overlap itself at all. Measured in "
+                    "multiples of the subject's own width, so 1.0 means \"it may have travelled "
+                    'about its own width" and means the same thing close to the camera and far '
+                    "from it. Only ever tried on objects that found no ordinary match, so "
+                    "things sitting still are never affected. Try 1.0 if a walking subject "
+                    "keeps being counted as a new object on a camera analysed at a low frame "
+                    "rate. 0 turns it off."
                 ),
             },
-            "min_hits": {
-                "type": "int",
-                "required": False,
-                "default": 3,
-                "help": (
-                    "Detections required before a track is reported. Guards against a single "
-                    "spurious detection immediately opening an event."
-                ),
-            },
-            "max_age_s": {
-                "type": "float",
-                "required": False,
-                "default": 2.0,
-                "help": (
-                    "Seconds a track survives without a detection, unless its label overrides it. "
-                    "Seconds rather than frames so the behaviour is identical on a 2 fps and a "
-                    "25 fps camera."
-                ),
-            },
-            "anchor_confidence": {
-                "type": "float",
-                "required": False,
-                "default": 0.6,
-                "help": "Confidence at which an anchor label's box is latched and held.",
-            },
-            "label_vote_half_life_s": {
-                "type": "float",
-                "required": False,
-                "default": 6.0,
-                "help": (
-                    "How long a track remembers what the detector called it, in seconds. A track's "
-                    "reported identity is a decaying, confidence-weighted vote over the labels "
-                    "declared as alternate guesses for one object, not whatever the latest frame "
-                    "said. Raise it if an identity still flickers; lower it if a track is slow to "
-                    "accept that it is now looking at someone else."
-                ),
-            },
-            "label_vote_margin": {
-                "type": "float",
-                "required": False,
-                "default": 1.3,
-                "help": (
-                    "How much better a rival must score before the reported identity changes, and "
-                    "before a specific identity is named at all rather than the general one it sits "
-                    "under. 1.0 disables both and restores per-frame flicker."
-                ),
-            },
+            "min_hits": shared_param("min_hits", 3),
+            "max_age_s": shared_param("max_age_s", 2.0),
+            "anchor_confidence": shared_param("anchor_confidence", 0.6),
+            "label_vote_half_life_s": shared_param("label_vote_half_life_s", 6.0),
+            "label_vote_margin": shared_param("label_vote_margin", 1.3),
         }
 
     # ------------------------------------------------------------------ internals

@@ -51,7 +51,7 @@ from scipy.optimize import linear_sum_assignment
 
 from .iouTracker import iou
 from .Registry import register_tracker
-from .tracker import Detection, LabelLifetimeSpec, Track, Tracker
+from .tracker import Detection, LabelLifetimeSpec, Track, Tracker, shared_param
 
 
 @register_tracker()
@@ -105,8 +105,11 @@ class ByteTracker(Tracker):
                 "required": False,
                 "default": 0.5,
                 "help": (
-                    "Detections at or above this confidence can start a new track. Below it, a "
-                    "detection can only continue a track that already exists."
+                    "How sure the detector has to be before a brand-new object is accepted. A "
+                    "fainter sighting can still keep something you are already following alive "
+                    "— it just cannot introduce anything. Raise it if the watcher keeps finding "
+                    "things that are not there; lower it if a real subject takes too long to be "
+                    "picked up."
                 ),
             },
             "low_thresh": {
@@ -114,74 +117,42 @@ class ByteTracker(Tracker):
                 "required": False,
                 "default": 0.1,
                 "help": (
-                    "Weakest detection considered at all. The whole point of this tracker is that "
-                    "boxes between this and the track threshold keep an occluded object alive "
-                    "rather than being discarded — raising this to the track threshold turns it "
-                    "back into an ordinary single-stage tracker."
+                    "The faintest sighting worth considering at all. Anything between this and "
+                    "the setting above is too weak to start an object but strong enough to "
+                    "carry one through a moment where it is half hidden, badly lit or blurred "
+                    "— which is what stops one cat walking behind a chair from being counted as "
+                    "two. Raising it to meet the setting above gives that recovery up."
                 ),
             },
             "match_thresh": {
                 "type": "float",
                 "required": False,
                 "default": 0.3,
-                "help": "Minimum box overlap to associate a confident detection with an existing track.",
+                "help": (
+                    "How much a new sighting has to overlap something already being followed to "
+                    "count as the same object, from 0 (just touching) to 1 (exactly on top). "
+                    "Lower it if a subject that moves quickly keeps being treated as a new "
+                    "object each frame; raise it if two objects passing close together get "
+                    "mistaken for one another."
+                ),
             },
             "low_match_thresh": {
                 "type": "float",
                 "required": False,
                 "default": 0.2,
                 "help": (
-                    "Overlap required in the second pass. Lower than the first, because a box that "
-                    "scored badly is usually also positioned badly."
+                    "The same overlap test, applied to the faint sightings described above. "
+                    "Deliberately more forgiving, because a sighting the detector was unsure "
+                    "about is usually slightly out of place too. Lower it to hold on through "
+                    "worse obstructions; raise it if those faint sightings drag an object off "
+                    "onto something nearby."
                 ),
             },
-            "min_hits": {
-                "type": "int",
-                "required": False,
-                "default": 3,
-                "help": (
-                    "Detections required before a track is reported. Guards against a single "
-                    "spurious detection immediately opening an event."
-                ),
-            },
-            "max_age_s": {
-                "type": "float",
-                "required": False,
-                "default": 2.0,
-                "help": (
-                    "Seconds a track survives without a detection, unless its label overrides it. "
-                    "Seconds rather than frames so the behaviour is identical on a 2 fps and a "
-                    "25 fps camera."
-                ),
-            },
-            "anchor_confidence": {
-                "type": "float",
-                "required": False,
-                "default": 0.6,
-                "help": "Confidence at which an anchor label's box is latched and held.",
-            },
-            "label_vote_half_life_s": {
-                "type": "float",
-                "required": False,
-                "default": 6.0,
-                "help": (
-                    "How long a track remembers what the detector called it, in seconds. A track's "
-                    "reported identity is a decaying, confidence-weighted vote over the labels "
-                    "declared as alternate guesses for one object, not whatever the latest frame "
-                    "said. Raise it if an identity still flickers; lower it if a track is slow to "
-                    "accept that it is now looking at someone else."
-                ),
-            },
-            "label_vote_margin": {
-                "type": "float",
-                "required": False,
-                "default": 1.3,
-                "help": (
-                    "How much better a rival must score before the reported identity changes, and "
-                    "before a specific identity is named at all rather than the general one it sits "
-                    "under. 1.0 disables both and restores per-frame flicker."
-                ),
-            },
+            "min_hits": shared_param("min_hits", 3),
+            "max_age_s": shared_param("max_age_s", 2.0),
+            "anchor_confidence": shared_param("anchor_confidence", 0.6),
+            "label_vote_half_life_s": shared_param("label_vote_half_life_s", 6.0),
+            "label_vote_margin": shared_param("label_vote_margin", 1.3),
         }
 
     # ------------------------------------------------------------------ internals

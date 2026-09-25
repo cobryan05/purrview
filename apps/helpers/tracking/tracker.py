@@ -56,6 +56,61 @@ LABEL_VOTE_HALF_LIFE_S = 6.0
 LABEL_VOTE_MARGIN = 1.3
 
 
+#: Help text for the settings every tracker shares, so the two implementations cannot
+#: drift into describing the same field differently. These are read by a person tuning a
+#: camera in the Watchers editor, not by anyone who knows what a track is — each one says
+#: what the setting does, then what to do when the symptom you are looking at appears.
+SHARED_PARAM_HELP = {
+    "min_hits": (
+        "How many times in a row an object must be seen before the watcher will act on it. "
+        "This is the false-alarm guard: at 1, a single bad frame is enough to open an event "
+        "and record a clip. At a few frames a second, 3 costs well under a second of delay."
+    ),
+    "max_age_s": (
+        "How long an object is remembered after the detector stops seeing it, in seconds. "
+        "It covers brief misses — a cat behind a chair leg — so one is not counted as having "
+        "left and come back. Too high and something that really did leave lingers; too low "
+        "and a single missed frame splits one visit into two. Set in seconds rather than "
+        "frames, so it means the same thing on a slow camera and a fast one. Individual "
+        "labels can be given their own value in the lifetime rows above."
+    ),
+    "anchor_confidence": (
+        "How sure the detector has to be before it is allowed to move an anchored object. "
+        "Only affects labels you have ticked as Anchor above, which is how a fixed thing "
+        "like a bin or a litter box stops drifting in and out of a zone: once it has been "
+        "seen this confidently, weaker sightings keep it alive but no longer nudge its "
+        "position."
+    ),
+    "label_vote_half_life_s": (
+        "How long an object remembers what it has been called, in seconds. Rather than "
+        "trusting whichever name the newest frame produced, the watcher keeps a fading "
+        "tally of every name that object has been given and reports the winner — so one odd "
+        "frame naming the wrong cat neither renames it nor splits it into a second object. "
+        "Raise it if an identity still flickers; lower it if an object is slow to accept "
+        "that it is now looking at someone else."
+    ),
+    "label_vote_margin": (
+        "How far ahead a name has to be before the watcher uses it. Two jobs, same number: "
+        "a rival name must beat the current one by this much before the object is renamed, "
+        "and a specific name must beat its rivals by this much before it is used in place of "
+        "the general one it belongs to — so a cat the model cannot quite pick out is "
+        'reported as "Cat" rather than as a coin toss between two of them. Raise it to be '
+        "more cautious and fall back to the general name more often. 1.0 turns both off and "
+        "lets the name change every frame."
+    ),
+}
+
+
+def shared_param(name: str, default: Any) -> Dict[str, Any]:
+    """One tracker parameter whose meaning is identical in every tracker."""
+    return {
+        "type": "float" if isinstance(default, float) else "int",
+        "required": False,
+        "default": default,
+        "help": SHARED_PARAM_HELP[name],
+    }
+
+
 @dataclass
 class LabelVote:
     """A track's accumulated evidence for each label in its suppression group.

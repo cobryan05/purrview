@@ -119,7 +119,12 @@ class MqttPublishImageAction(Action):
                     "feed looks. Use max_width to cap bandwidth instead."
                 ),
             },
-            "quality": {"type": "int", "required": False, "default": 80, "help": "JPEG quality, 1-100."},
+            "quality": {
+                "type": "int",
+                "required": False,
+                "default": 80,
+                "help": "JPEG quality, 1-100. Around 90 looks the same as the original to the eye; 70 roughly halves the file at a visible cost on fine detail. Lower it only if disk or bandwidth is the problem.",
+            },
             "max_width": {
                 "type": "int",
                 "required": False,
@@ -148,7 +153,13 @@ class MqttPublishImageAction(Action):
                     "instead of waiting for the next one."
                 ),
             },
-            "qos": {"type": "int", "required": False, "default": 0, "options": [0, 1, 2], "help": "MQTT QoS level."},
+            "qos": {
+                "type": "int",
+                "required": False,
+                "default": 0,
+                "options": [0, 1, 2],
+                "help": "How hard the broker tries to deliver. 0 sends once and does not check, which is right for a frequent topic where the next message is along shortly. 1 keeps resending until the broker acknowledges, so a message cannot be lost but may arrive twice. 2 guarantees exactly once and is the slowest. Leave at 0 unless something downstream is genuinely missing messages.",
+            },
         }
 
     def topic_for(self, signal: WatchEventSignal, context: ActionContext) -> str:

@@ -75,11 +75,22 @@ class MqttPublishAction(Action):
                 "required": False,
                 "default": False,
                 "help": (
-                    "Retain the message on the broker. Appropriate for state-shaped topics; "
-                    "a retained event edge would replay to every new subscriber as if live."
+                    "Ask the broker to keep the last message and hand it to anyone who "
+                    "subscribes later. Useful when the topic describes a lasting state "
+                    '("the cat is in the kitchen"), so a dashboard opened afterwards shows '
+                    "something rather than waiting. Leave it off when the message announces a "
+                    'moment ("an event just started"): a kept copy of that is replayed to '
+                    "every new subscriber as though it were happening now, which can re-trigger "
+                    "whatever is listening."
                 ),
             },
-            "qos": {"type": "int", "required": False, "default": 0, "options": [0, 1, 2], "help": "MQTT QoS level."},
+            "qos": {
+                "type": "int",
+                "required": False,
+                "default": 0,
+                "options": [0, 1, 2],
+                "help": "How hard the broker tries to deliver. 0 sends once and does not check, which is right for a frequent topic where the next message is along shortly. 1 keeps resending until the broker acknowledges, so a message cannot be lost but may arrive twice. 2 guarantees exactly once and is the slowest. Leave at 0 unless something downstream is genuinely missing messages.",
+            },
             "topic_template": {
                 "type": "str",
                 "required": False,

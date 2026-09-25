@@ -211,7 +211,12 @@ class CollectTrainingImagesAction(Action):
                 "type": "float",
                 "required": False,
                 "default": 10.0,
-                "help": "Minimum seconds between offers, per source. Enforced floor: 1.0.",
+                "help": (
+                    "Shortest gap between frames handed to the collector, per camera. The "
+                    "collector still applies its own rules about what is worth keeping — this "
+                    "only stops it being asked on every single frame, which on a busy camera "
+                    "would fill the review queue with near-identical pictures. Minimum 1."
+                ),
             },
         }
 

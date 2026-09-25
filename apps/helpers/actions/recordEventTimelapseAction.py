@@ -358,7 +358,16 @@ class RecordEventTimelapseAction(Action):
                 "default": DEFAULT_MAX_WIDTH,
                 "help": "Shrink frames to at most this width before encoding. 0 keeps their own size.",
             },
-            "quality": {"type": "int", "required": False, "default": 85, "help": "JPEG quality of each frame, 1-100."},
+            "quality": {
+                "type": "int",
+                "required": False,
+                "default": 85,
+                "help": (
+                    "JPEG quality of each frame, 1-100. Around 85 looks the same as the "
+                    "original to the eye once it is playing at speed; lower it if these "
+                    "videos are taking more disk than you want."
+                ),
+            },
             "full_resolution": {
                 "type": "bool",
                 "required": False,

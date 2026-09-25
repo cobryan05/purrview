@@ -132,7 +132,12 @@ class SaveTimelapseAction(Action):
                     ":00 and :30 and stays aligned across a restart. Minimum 1."
                 ),
             },
-            "quality": {"type": "int", "required": False, "default": 90, "help": "JPEG quality, 1-100."},
+            "quality": {
+                "type": "int",
+                "required": False,
+                "default": 90,
+                "help": "JPEG quality, 1-100. Around 90 looks the same as the original to the eye; 70 roughly halves the file at a visible cost on fine detail. Lower it only if disk or bandwidth is the problem.",
+            },
             "full_resolution": {
                 "type": "bool",
                 "required": False,

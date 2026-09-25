@@ -72,7 +72,12 @@ class SaveSnapshotAction(Action):
                     "automatically unless the template already uses {date}."
                 ),
             },
-            "quality": {"type": "int", "required": False, "default": 90, "help": "JPEG quality, 1-100."},
+            "quality": {
+                "type": "int",
+                "required": False,
+                "default": 90,
+                "help": "JPEG quality, 1-100. Around 90 looks the same as the original to the eye; 70 roughly halves the file at a visible cost on fine detail. Lower it only if disk or bandwidth is the problem.",
+            },
         }
 
     def snapshot_path(self, signal: WatchEventSignal, context: ActionContext, when: datetime) -> Path:

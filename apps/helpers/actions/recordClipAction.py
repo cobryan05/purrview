@@ -752,25 +752,47 @@ class RecordClipAction(Action):
                 "required": False,
                 "default": 10.0,
                 "help": (
-                    "Seconds of video before the event starts. This is the setting for how much "
-                    "lead-in a clip has — the source's own rewind seconds is the ceiling on it, "
-                    "not the place to choose it. Clamped to what that buffer actually holds, so "
-                    "asking for more than the rewind is a misconfiguration rather than a runtime "
-                    "surprise."
+                    "Seconds of video to include from before the event began, so the clip shows "
+                    "the approach rather than opening with the subject already in shot. This is "
+                    'the place to choose the lead-in; the camera\'s own "rewind s" setting is '
+                    "only the ceiling on how far back it is able to reach. Asking for more than "
+                    "the camera holds quietly gives you as much as it has."
                 ),
             },
-            "postroll_s": {"type": "float", "required": False, "default": 5.0, "help": "Seconds after the event ends."},
+            "postroll_s": {
+                "type": "float",
+                "required": False,
+                "default": 5.0,
+                "help": (
+                    "Seconds of video to keep after the event ends, so the clip does not cut "
+                    "away the moment the subject stops being detected. Recording continues for "
+                    "this long after the event closes, so a large value delays the clip "
+                    "appearing in the events list by the same amount."
+                ),
+            },
             "max_length_s": {
                 "type": "float",
                 "required": False,
                 "default": 180.0,
-                "help": "Hard cap on clip length regardless of event duration.",
+                "help": (
+                    "Longest a single clip may be, in seconds, however long the event runs. "
+                    "Reaching it ends the video early — the event itself is unaffected, and "
+                    "nothing is recorded for the remainder of it. A safety net against one "
+                    "stuck detection filling the disk."
+                ),
             },
             "output_dir": {
                 "type": "str",
                 "required": False,
                 "default": str(DEFAULT_CLIP_ROOT),
-                "help": "Directory clips are written to. Must be on a bind-mounted path to survive a restart.",
+                "help": (
+                    "Folder clips are written to. Leave this alone unless you know you want "
+                    "them elsewhere: at the default they are stored with the rest of the "
+                    "recordings, played from the events list, and cleaned up on the schedule in "
+                    "Settings → Recording retention. A folder outside that is not tidied up for "
+                    "you, and one that is not on storage mounted into the container is lost "
+                    "whenever it restarts."
+                ),
             },
             "save_overlay": {
                 "type": "bool",

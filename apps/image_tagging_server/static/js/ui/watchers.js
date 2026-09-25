@@ -100,8 +100,11 @@ const THRESHOLD_HELP = {
   },
   iou: {
     label: 'match',
-    title: 'Intersection over union the pair must reach. Only reads as “overlap” for boxes '
-      + 'of similar size; a small box inside a large one scores near zero.',
+    title: 'How closely the two boxes must coincide: their shared area divided by the area '
+      + 'they cover between them, so 1 means they sit exactly on top of one another. This '
+      + 'only behaves the way you expect for boxes of a similar size — a small box wholly '
+      + 'inside a large one still scores near zero, so prefer “is inside” or “overlaps” '
+      + 'when a cat is being compared against something much bigger than it.',
   },
   distance: {
     label: 'within',
@@ -966,7 +969,11 @@ function buildLifetimeRow(lifetime, ctx) {
 
   const ttl = numberInput(lifetime.ttlS ?? 2.0, { step: '0.5', min: 0 });
   ttl.dataset.testid = 'watch-lifetime-ttl';
-  ttl.title = 'Seconds the track survives with no detection before it is assumed gone.';
+  ttl.title = 'How long an object with one of these labels is remembered after the detector '
+    + 'stops seeing it, in seconds. Raise it for something that is really still there while '
+    + 'unseen — a litter box behind a cat, a parked car — so it is not counted as having left '
+    + 'and come back. Leave a moving subject on a short value, or it lingers after it has gone. '
+    + 'Overrides the tracker\u2019s own setting for these labels only.';
   ttl.addEventListener('input', ctx.onAnyChange);
   row.appendChild(wfield('TTL s', ttl, { width: '5rem', help: ttl.title }));
 
