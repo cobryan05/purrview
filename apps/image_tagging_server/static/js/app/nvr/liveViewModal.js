@@ -39,6 +39,15 @@ import {
   trackColour,
 } from '/app-static/js/app/nvr/overlay.js';
 
+/**
+ * How often a held-open live tier is renewed.
+ *
+ * The provider drops back to snapshots `live_hold_s` (15 s) after the last request,
+ * so this has to be comfortably under that — one dropped renewal must not end the
+ * stream. It is not shorter than it needs to be: each renewal is an MQTT publish.
+ */
+const LIVE_KEEPALIVE_MS = 8000;
+
 /** Poll rates offered, in Hz. */
 const POLL_RATES = [
   { label: '0.5 /s', hz: 0.5 },
@@ -104,6 +113,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     fullRes: false,
     /** `fullRes` before fullscreen turned it on, restored on the way back out. */
     fullResBeforeFullscreen: null,
+    /** Whether this view is holding the camera on its live tier. */
+    liveHeld: false,
+    /** Timer renewing that hold; null whenever `liveHeld` is false. */
+    liveTimer: null,
     saveWithBoxes: true,
     /** Last preview payload, whatever it contained. */
     preview: null,
@@ -162,11 +175,59 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   // is already live, and a button offering to make it live again would be noise. The
   // provider says which it is (`supportsGoLive`), so this stays hidden until a poll
   // has answered — never guessed from the source's name or type.
+  /**
+   * A live tier held open by one `request_live` lapses after the provider's
+   * `live_hold_s`, so watching for longer than that means renewing.
+   *
+   * Renewal stops while the tab is hidden rather than running on: a Ring camera
+   * raises no motion events while it is streaming, so holding one live for a tab
+   * nobody is looking at blinds it for nothing. The hold then expires on its own,
+   * and coming back to the tab renews immediately.
+   */
+  async function _renewLive() {
+    if (state.stopped || !state.liveHeld || !state.sourceUuid) return;
+    if (!document.hidden) {
+      try {
+        await sendTaskCommand({ taskUuid, command: 'request_live', params: { sourceUuid: state.sourceUuid } });
+      } catch (err) {
+        Logger.warn('nvr: live renewal failed', err);
+      }
+    }
+    if (state.stopped || !state.liveHeld) return;
+    clearTimeout(state.liveTimer);
+    state.liveTimer = setTimeout(() => void _renewLive(), LIVE_KEEPALIVE_MS);
+  }
+
+  /** Hand the camera back. Fire-and-forget: it also runs while the modal tears down. */
+  function _releaseLive({ notify = false } = {}) {
+    clearTimeout(state.liveTimer);
+    state.liveTimer = null;
+    if (!state.liveHeld) return;
+    state.liveHeld = false;
+    _syncGoLiveLabel();
+    if (!state.sourceUuid) return;
+    sendTaskCommand({ taskUuid, command: 'release_live', params: { sourceUuid: state.sourceUuid } })
+      .then(() => { if (notify) toast('Camera released — back to snapshots.', 3000); })
+      .catch(err => Logger.warn('nvr: live release failed', err));
+  }
+
+  function _syncGoLiveLabel() {
+    goLiveBtn.textContent = state.liveHeld ? 'Stop live' : 'Go live';
+    goLiveBtn.title = state.liveHeld
+      ? 'Hand the camera back to its snapshot tier. It cannot report motion while it is streaming.'
+      : 'Wake this camera onto its live stream instead of waiting for the next snapshot.';
+  }
+
   const goLiveBtn = button('Go live', async () => {
     if (!state.sourceUuid) return;
+    if (state.liveHeld) { _releaseLive({ notify: true }); return; }
     goLiveBtn.disabled = true;
     try {
       await sendTaskCommand({ taskUuid, command: 'request_live', params: { sourceUuid: state.sourceUuid } });
+      state.liveHeld = true;
+      _syncGoLiveLabel();
+      clearTimeout(state.liveTimer);
+      state.liveTimer = setTimeout(() => void _renewLive(), LIVE_KEEPALIVE_MS);
       // Deliberately not "now live": the request is a wake-up published to the camera,
       // and the stream takes several seconds to come up. Promising more than that is
       // how the button reads as broken.
@@ -178,7 +239,7 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
       goLiveBtn.disabled = false;
     }
   }, { testid: 'watch-live-go-live' });
-  goLiveBtn.title = 'Wake this camera onto its live stream instead of waiting for the next snapshot.';
+  _syncGoLiveLabel();
   goLiveBtn.hidden = true;
   bar.appendChild(goLiveBtn);
 
@@ -737,12 +798,18 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
     // Resume promptly when the user comes back rather than waiting out a poll
     // interval on a tab they are now looking at.
     if (!document.hidden && !state.paused) void poll({ immediate: true });
+    // The hold lapsed while the tab was hidden; ask for it back rather than waiting
+    // out a keepalive interval staring at a stale snapshot.
+    if (!document.hidden && state.liveHeld) void _renewLive();
   }
   document.addEventListener('visibilitychange', onVisibility);
 
   function stop() {
     state.stopped = true;
     clearTimeout(state.timer);
+    // Before `stopped` blocks it: closing the view is the clearest signal that
+    // nobody is watching, and the camera is blind to motion until it is released.
+    _releaseLive();
     document.removeEventListener('visibilitychange', onVisibility);
     document.removeEventListener('fullscreenchange', _syncFullscreenLabel);
     // Removing the stage would drop fullscreen anyway, but not before the modal has

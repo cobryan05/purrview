@@ -202,6 +202,11 @@ class StreamWatcherTask(Task):
         #: at loop level rather than in `_service_source` is what makes the button act
         #: while the source is still blocked on its previous (30 s+) snapshot read.
         self._live_requests: Set[str] = set()
+        #: Source uuids the UI has finished watching, drained alongside the above. A
+        #: live tier lapses on its own, but only after `live_hold_s` — during which a
+        #: Ring camera reports no motion — so closing the view says so explicitly
+        #: rather than leaving the camera blind for the rest of the window.
+        self._release_requests: Set[str] = set()
         self._pin_ids: Dict[str, Optional[str]] = {}
         self._dry_run: bool = False
         self._analysis_fps_cap: Optional[float] = None
@@ -1631,7 +1636,8 @@ class StreamWatcherTask(Task):
         return round(max(0.0, deadline - now), 1)
 
     async def _honour_live_requests(self) -> None:
-        """Wake any source the UI asked for live video on, and forget the request.
+        """Wake any source the UI asked for live video on, release the ones it has
+        finished with, and forget both.
 
         Only providers with a live tier of their own can answer this — today that is
         the Ring bridge, whose idle tier is a cloud snapshot every 30–90 s. Anything
@@ -1642,20 +1648,33 @@ class StreamWatcherTask(Task):
         Drained before the attempt, not after: a provider that raises must not leave a
         request behind to be retried on every pass for the life of the run.
         """
-        if not self._live_requests:
-            return
-        requested, self._live_requests = self._live_requests, set()
-        for source_uuid in requested:
-            pipeline = self._pipeline_for(source_uuid)
-            request_live = getattr(pipeline.provider, "request_live", None) if pipeline else None
-            if request_live is None:
-                continue
-            try:
-                await request_live()
-                self.log(f"Live video requested for '{pipeline.source_name}'")
-            except Exception:
-                logger.exception("Failed to request live video for source %s", source_uuid)
-                self.log(f"Could not request live video for '{pipeline.source_name}'")
+        if self._live_requests:
+            requested, self._live_requests = self._live_requests, set()
+            for source_uuid in requested:
+                pipeline = self._pipeline_for(source_uuid)
+                request_live = getattr(pipeline.provider, "request_live", None) if pipeline else None
+                if request_live is None:
+                    continue
+                try:
+                    await request_live()
+                    self.log(f"Live video requested for '{pipeline.source_name}'")
+                except Exception:
+                    logger.exception("Failed to request live video for source %s", source_uuid)
+                    self.log(f"Could not request live video for '{pipeline.source_name}'")
+
+        if self._release_requests:
+            released, self._release_requests = self._release_requests, set()
+            for source_uuid in released:
+                pipeline = self._pipeline_for(source_uuid)
+                release_live = getattr(pipeline.provider, "release_live", None) if pipeline else None
+                if release_live is None:
+                    continue
+                try:
+                    await release_live()
+                except Exception:
+                    # Nothing to tell the user: the hold expires on its own shortly,
+                    # so a failed release costs a few seconds, not the feature.
+                    logger.exception("Failed to release live video for source %s", source_uuid)
 
     def _record_source_failure(self, pipeline: WatchPipeline, now: float, error: str) -> None:
         """Record a failed attempt, and say so the first time it becomes a fault.
@@ -2836,13 +2855,18 @@ class StreamWatcherTask(Task):
         picks up a change made from Home Assistant — there is no second code path, so an
         in-app disarm closes an open event the same way and cannot drift from the switch.
         """
-        if command == "request_live":
+        if command in ("request_live", "release_live"):
             source_uuid = str(params.get("sourceUuid") or "")
             if not source_uuid:
-                raise ValueError("request_live requires a sourceUuid")
+                raise ValueError(f"{command} requires a sourceUuid")
             if self._pipeline_for(source_uuid) is None:
                 raise ValueError(f"No source {source_uuid!r} in this watcher")
-            self._live_requests.add(source_uuid)
+            if command == "request_live":
+                self._live_requests.add(source_uuid)
+                self._release_requests.discard(source_uuid)
+            else:
+                self._release_requests.add(source_uuid)
+                self._live_requests.discard(source_uuid)
             return
         if command != "set_rule_armed":
             raise ValueError(f"Unknown command {command!r}")
