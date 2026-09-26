@@ -54,6 +54,15 @@ x-build-args: &build-args
   APPUSER_UID: ${APPUSER_UID:-1000}
   APPUSER_GID: ${APPUSER_GID:-1000}
 
+# Container-stdout cap. Almost nothing reaches the container log — supervisord
+# redirects every service to its own rotated file under ./logs — but the
+# json-file driver defaults to unbounded, so a crash loop printing to stdout
+# before supervisord takes over has no ceiling at all.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 services:
   # -------------------------------------------------------------------
   # App: frontend + inference group (image_tagging / inference / tasks /
@@ -62,6 +71,7 @@ services:
   # docker-compose.gpu.yaml for GPU inference.
   # -------------------------------------------------------------------
   app:
+    logging: *logging
     container_name: purrview_app
     build:
       context: .
@@ -126,6 +136,7 @@ services:
   # HTTP, so it can live on a separate/remote GPU host.
   # -------------------------------------------------------------------
   training:
+    logging: *logging
     container_name: purrview_training
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
@@ -160,6 +171,7 @@ services:
   # APP_BASE=cuda-runtime + ORT_REQUIREMENTS=requirements-gpu.txt.
   # -------------------------------------------------------------------
   mono:
+    logging: *logging
     container_name: purrview_mono
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
@@ -221,6 +233,7 @@ services:
   # same as the prod `app` service, since it can be built CPU-only.
   # -------------------------------------------------------------------
   app-dev:
+    logging: *logging
     container_name: purrview_app_dev
     build:
       context: .
@@ -273,6 +286,7 @@ services:
     profiles: ["dev"]
 
   training-dev:
+    logging: *logging
     container_name: purrview_training_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     <<: *gpu
@@ -305,6 +319,7 @@ services:
     profiles: ["dev"]
 
   mono-dev:
+    logging: *logging
     container_name: purrview_mono_dev
     shm_size: ${TRAINING_SHM_SIZE:-2gb}
     # No per-container memory limit: this workspace runs training (torch +

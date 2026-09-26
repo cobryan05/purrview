@@ -1,7 +1,7 @@
 api: yes
 apiAddress: :9997
 rtspAddress: :8554
-logLevel: debug
+logLevel: info
 protocols: [tcp]
 
 # Playback server. Recording itself is enabled per-path at runtime by
