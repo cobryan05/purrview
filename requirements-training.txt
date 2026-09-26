@@ -14,7 +14,9 @@ python-multipart
 requests
 uvicorn
 timm
-onnx
+# Same cap as requirements.txt, and see the reasoning there: no released onnxruntime
+# reads onnx 1.23's IR 14, so the exporter must not be allowed to write it.
+onnx<1.23
 onnxscript
 onnxslim
 onnxruntime-gpu<1.27

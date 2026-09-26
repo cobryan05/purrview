@@ -13,7 +13,14 @@ jinja2
 jstyleson
 lz4
 numpy
-onnx
+# Capped because onnx 1.23 emits IR version 14 and NO released onnxruntime reads it —
+# 1.30.0, the newest, still caps at IR 13 (verified against each of 1.26/1.27/1.28/1.30).
+# 1.22.0 is the newest onnx anything can consume. Unpinned, the ONNX this tree *writes*
+# — a converted upload, a training export, a test fixture — stops loading in the
+# inference server, surfacing far from here as "Unsupported model IR version".
+# This is NOT coupled to the onnxruntime <1.27 caps: raising those fixes nothing. Lift
+# this only once a runtime ships IR 14 support; re-check with onnx.helper.VERSION_TABLE.
+onnx<1.23
 opencv-python-headless
 paho-mqtt
 pillow
