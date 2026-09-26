@@ -837,10 +837,13 @@ class HashIndex:
                 "Rebuild the index after changing hash size settings."
             )
 
+    # Called on every remove_*, and the condition is sticky until a rebuild clears the
+    # tombstones, so this reports a standing state rather than an event: DEBUG, or it
+    # writes one line per deleted row for the rest of the index's life.
     def _check_image_tombstone_ratio(self) -> None:
         total = len(self._valid_images) + self._image_tombstones
         if total > 0 and self._image_tombstones / total > self.REBUILD_THRESHOLD:
-            logger.info(
+            logger.debug(
                 "HashIndex image tombstone ratio %.2f exceeded threshold — rebuild deferred",
                 self._image_tombstones / total,
             )
@@ -851,7 +854,7 @@ class HashIndex:
         alive = len(self._valid_bboxes.get(label_uuid, set()))
         total = alive + dead
         if total > 0 and dead / total > self.REBUILD_THRESHOLD:
-            logger.info(
+            logger.debug(
                 "HashIndex bbox tombstone ratio %.2f for label %s — rebuild deferred",
                 dead / total,
                 label_uuid,

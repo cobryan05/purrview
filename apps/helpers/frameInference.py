@@ -49,10 +49,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from inference_client.models.detect_unit_payload import DetectUnitPayload
 from inference_client.models.topk import Topk
+
+from apps.helpers.logUtils import TaskLogFn
 
 logger = logging.getLogger(__file__)
 
@@ -143,7 +145,7 @@ async def run_frame_inference(
     *,
     timeout_s: float,
     max_retries: int,
-    log: Optional[Callable[[str], None]] = None,
+    log: Optional[TaskLogFn] = None,
 ) -> FrameInferenceResult:
     """Union *requests* into one detect-unit call and run it, with retries.
 
@@ -193,11 +195,13 @@ async def run_frame_inference(
                 logger.error("Inference error on model %s: %s", name, message)
             for note in getattr(resp, "notes", None) or []:
                 # A sub-model that could not run leaves detections at their parent label,
-                # which is indistinguishable from a confident coarse answer. Logged every
-                # time rather than once: it is per-frame state, not startup state.
-                logger.warning("Cascade note: %s", note)
+                # which is indistinguishable from a confident coarse answer. This is
+                # per-frame state, so the operator reads it in the task log while the
+                # rotated log only carries it at DEBUG.
                 if log is not None:
-                    log(f"Cascade: {note}")
+                    log(f"Cascade: {note}", logging.DEBUG)
+                else:
+                    logger.debug("Cascade note: %s", note)
             return FrameInferenceResult(results=results, errors=errors)
         except asyncio.TimeoutError:
             if attempt < max_retries - 1:

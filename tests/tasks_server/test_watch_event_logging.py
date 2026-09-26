@@ -11,6 +11,7 @@ being recorded when something *did* write to it looks exactly like a quiet camer
 one that is recorded anyway looks exactly like the list this replaced.
 """
 
+import logging
 from types import SimpleNamespace
 
 from apps.helpers.actions.action import Action, ActionContext, ActionResult
@@ -114,7 +115,7 @@ def _task(actions, recorder=None):
     task._action_failures = 0
     task._last_action_failure = {}
     task._last_clip_path = None
-    task.log = lambda _msg: None
+    task.log = lambda _msg, _level=logging.INFO: None
     task._action_context = lambda signal, pipeline=None: ActionContext(profile_uuid="p", profile_name="p")
     return task
 

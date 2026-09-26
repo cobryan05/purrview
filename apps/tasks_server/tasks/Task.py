@@ -351,9 +351,15 @@ class Task(ABC):
         """Store progress. Pass None for indeterminate progress (striped bar in the UI)."""
         self._progress = percent
 
-    def log(self, msg: str) -> None:
-        """Append a message to the in-memory log ring buffer and emit to logger."""
-        logger.info(msg)
+    def log(self, msg: str, level: int = logging.INFO) -> None:
+        """Append a message to the in-memory log ring buffer and emit to logger.
+
+        The ring buffer is the UI surface and always receives the message;
+        `level` governs only the disk write. Per-frame and per-image callers
+        should pass DEBUG, which keeps them visible in the UI without writing a
+        line to the rotated log for every frame.
+        """
+        logger.log(level, msg)
         self._log_lines.append(msg)
 
     def get_log_lines(self) -> list[str]:

@@ -16,6 +16,7 @@ import asyncio
 import base64
 import itertools
 import json
+import logging
 import os
 import time
 import uuid
@@ -78,7 +79,7 @@ def _detached_collector(params: Optional[dict] = None) -> TrainingCollector:
     return TrainingCollector(
         CollectorSpec.from_params(params or {"output_dir": "out"}),
         CollectorHost(
-            log=lambda _message: None,
+            log=lambda _message, _level=logging.INFO: None,
             db_api_client=lambda: None,
             inference_api_client=lambda: None,
             stop_event=asyncio.Event(),

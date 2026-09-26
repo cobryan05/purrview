@@ -16,6 +16,7 @@ deletions were themselves what made the count stale, so the bug fed itself.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,7 +50,7 @@ def _collector(max_unverified_images: int) -> TrainingCollector:
             }
         ),
         CollectorHost(
-            log=lambda _message: None,
+            log=lambda _message, _level=logging.INFO: None,
             db_api_client=lambda: MagicMock(),
             inference_api_client=lambda: None,
             stop_event=asyncio.Event(),

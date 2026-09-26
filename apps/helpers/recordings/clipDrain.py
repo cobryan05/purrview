@@ -31,7 +31,9 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, List, Optional, Protocol, Sequence
+from typing import Any, Awaitable, List, Optional, Protocol, Sequence
+
+from apps.helpers.logUtils import TaskLogFn
 
 from ..timeUtils import parse_iso_utc
 
@@ -90,7 +92,7 @@ class ClipDrain:
         chunk_root: Path,
         lead_s: float = 10.0,
         interval_s: Optional[float] = None,
-        log: Optional[Callable[[str], None]] = None,
+        log: Optional[TaskLogFn] = None,
     ) -> None:
         self.source_uuid = source_uuid
         self.retention_s = float(retention_s)
@@ -101,7 +103,7 @@ class ClipDrain:
         # pre-roll age out — the one part of the clip that cannot be re-derived.
         self.lead_s = float(lead_s)
         self.interval_s = float(interval_s) if interval_s else self._default_interval(retention_s)
-        self._log = log or (lambda _msg: None)
+        self._log = log or (lambda _msg, _level=logging.INFO: None)
         #: Everything up to here has been copied out. None means no event is open.
         self._cursor: Optional[datetime] = None
         self._chunks: List[DrainedChunk] = []
@@ -185,8 +187,7 @@ class ClipDrain:
         except Exception as e:
             # A failed drain must not advance the cursor: the next pass retries the same
             # window, and only genuine eviction (handled above) is allowed to lose it.
-            logger.warning("Clip drain failed for %s: %s", self.source_uuid, e)
-            self._log(f"Clip drain on {self.source_uuid} failed: {e}")
+            self._log(f"Clip drain on {self.source_uuid} failed: {e}", logging.WARNING)
             return None
 
         # What the extractor actually cut, which is NOT always what was asked for. It

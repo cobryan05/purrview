@@ -788,6 +788,6 @@ class Manager:
                     # status panel; the next tick will try again.
                     logger.error(f"Lease expiry sweep failed: {exc}")
         except asyncio.CancelledError:
-            print("Periodic task was cancelled.")
+            logger.debug("Periodic worker cancelled.")
         finally:
-            print("Periodic task cleanup.")
+            logger.debug("Periodic worker stopped.")

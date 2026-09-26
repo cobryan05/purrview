@@ -8,6 +8,7 @@ frame budget) rather than loudly if it regressed.
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 from apps.helpers.frameInference import (
@@ -142,7 +143,9 @@ class TestRetries:
         logged = []
         req = FrameInferenceRequest(model_names=["a"], conf_floor=0.5)
 
-        result = await run_frame_inference(api, "img", [req], timeout_s=1, max_retries=2, log=logged.append)
+        result = await run_frame_inference(
+            api, "img", [req], timeout_s=1, max_retries=2, log=lambda msg, _level=logging.INFO: logged.append(msg)
+        )
 
         assert result.results == {} and result.errors == {}
         assert api.calls == 2

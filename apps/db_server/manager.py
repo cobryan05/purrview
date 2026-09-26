@@ -525,13 +525,13 @@ class Manager:
                 await self._maybe_prune_expired_recordings()
                 await self._maybe_checkpoint_wal()
         except asyncio.CancelledError:
-            print("Periodic task was cancelled.")
+            logger.debug("Periodic worker cancelled.")
         except Exception as e:
             # _init() already set _init_error and logged before re-raising.
             # The worker stops here; the error notice remains visible in /status.
             logger.error("Worker task terminated after initialization failure: %s", e)
         finally:
-            print("Periodic task cleanup.")
+            logger.debug("Periodic worker stopped.")
 
     ################################################################################
     # LABELS API
@@ -876,9 +876,6 @@ class Manager:
 
     def _get_json_sidefile(self, image_path: Path) -> Path:
         return image_path.with_suffix(".json")
-
-    def _fixup_entry(self, entry):
-        logger.info(f"TODO: Fixup entry {entry}")
 
     async def update_image_metadata(self, image_rel_path: str, update: ImageRecordUpdate) -> Optional[ImageRecordRead]:
         """
@@ -1954,7 +1951,7 @@ class Manager:
         inner: asyncio.Task[int] = asyncio.ensure_future(self._db_client.count_images_search(params))
         try:
             result = await asyncio.wait_for(asyncio.shield(inner), timeout=self._COUNT_QUERY_TIMEOUT)
-            logger.info(
+            logger.debug(
                 "[review] count query completed in %.3fs → %d",
                 time.monotonic() - t0,
                 result,
@@ -1976,7 +1973,9 @@ class Manager:
     async def get_review_queue(self, params: ImageSearchParams) -> tuple[List[ImageRecordRead], bool, int]:
         """Return (images, has_more, total_count) for the review queue."""
         t0 = time.monotonic()
-        logger.info(
+        # The [review] lines are per-request timing instrumentation, so they belong at
+        # DEBUG. Run with LOG_LEVEL=DEBUG to profile the review queue.
+        logger.debug(
             "[review] request: terms=%s require_bboxes=%s after_uuid=%s",
             params.terms,
             params.require_bboxes,
@@ -2006,14 +2005,14 @@ class Manager:
             # any write to a table the count is derived from retires it now.
             epoch = self._db_client.write_epoch
             if cached is not None and cached[2] == epoch and (now - cached[1]) < self._COUNT_CACHE_TTL:
-                logger.info(
+                logger.debug(
                     "[review] count cache hit (key=%s, age=%.1fs)",
                     cache_key[:8],
                     now - cached[1],
                 )
                 t1 = time.monotonic()
                 batch = await self._db_client.list_images_search(fetch_params)
-                logger.info(
+                logger.debug(
                     "[review] list query completed in %.3fs → %d rows",
                     time.monotonic() - t1,
                     len(batch),
@@ -2032,7 +2031,7 @@ class Manager:
                     if total_count >= 0:
                         self._count_cache[cache_key] = (total_count, time.monotonic(), recount_epoch)
             else:
-                logger.info(
+                logger.debug(
                     "[review] count cache miss (key=%s) — running list+count in parallel",
                     cache_key[:8],
                 )
@@ -2041,7 +2040,7 @@ class Manager:
                     self._db_client.list_images_search(fetch_params),
                     self._count_images_bounded(params),
                 )
-                logger.info(
+                logger.debug(
                     "[review] gather done in %.3fs: list=%d rows, total_count=%d",
                     time.monotonic() - t1,
                     len(batch),
@@ -2057,7 +2056,7 @@ class Manager:
         else:
             t1 = time.monotonic()
             batch = await self._db_client.list_images_search(fetch_params)
-            logger.info(
+            logger.debug(
                 "[review] list query (paginated) completed in %.3fs → %d rows",
                 time.monotonic() - t1,
                 len(batch),
@@ -2073,7 +2072,7 @@ class Manager:
             record.filename = self._image_rel_path(img.filename)
             results.append(record)
 
-        logger.info(
+        logger.debug(
             "[review] total handler time %.3fs → %d images, has_more=%s",
             time.monotonic() - t0,
             len(results),

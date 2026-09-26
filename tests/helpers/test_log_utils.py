@@ -135,3 +135,81 @@ class TestQuietPollAccessLogs:
         logUtils.quiet_poll_access_logs()
 
         assert not [f for f in access_logger.filters if isinstance(f, logUtils._QuietPollAccessFilter)]
+
+
+class TestQuietPollAccessFragments:
+    """The fragment list exists for endpoints with an id before the hot segment.
+
+    A prefix wide enough to match `/api/tasks/instances/<uuid>/live-preview`
+    would also swallow every other route under `/api/tasks/instances/`, so these
+    match on a substring instead. The risk is the same as for the prefix list and
+    so is the guarantee: a non-2xx is never dropped.
+    """
+
+    def setup_method(self):
+        self.filter = logUtils._QuietPollAccessFilter()
+
+    @pytest.mark.parametrize("fragment", list(logUtils.ACCESS_LOG_QUIET_FRAGMENTS))
+    def test_drops_successful_fetch_with_fragment_mid_path(self, fragment):
+        rec = _access_record(f"/api/tasks/instances/9f8e7d6c{fragment}", 200)
+
+        assert self.filter.filter(rec) is False
+
+    def test_drops_live_preview_with_id_and_query(self):
+        rec = _access_record("/api/tasks/instances/5c1f/live-preview?source_uuid=abc&since_seq=91&quality=70", 200)
+
+        assert self.filter.filter(rec) is False
+
+    @pytest.mark.parametrize("status", [404, 500])
+    def test_keeps_failing_fetch_with_fragment(self, status):
+        rec = _access_record("/api/tasks/instances/5c1f/live-preview", status)
+
+        assert self.filter.filter(rec) is True
+
+    def test_sibling_route_under_the_same_parent_is_kept(self):
+        # The reason these are fragments and not a `/api/tasks/instances/` prefix.
+        rec = _access_record("/api/tasks/instances/5c1f/results", 200)
+
+        assert self.filter.filter(rec) is True
+
+
+class TestConfigureAppLoggers:
+    """`getLogger(__name__)` modules depend on the `apps` parent carrying the level.
+
+    Without it they inherit root, which sits at WARNING, and every INFO and DEBUG
+    line they write is discarded with no indication that it happened.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_levels(self):
+        names = ("apps", "sqlalchemy.engine", "onnxruntime")
+        saved = {n: logging.getLogger(n).level for n in names}
+        yield
+        for n, lvl in saved.items():
+            logging.getLogger(n).setLevel(lvl)
+
+    def test_module_logger_emits_info_only_after_configuring(self):
+        logging.getLogger("apps").setLevel(logging.NOTSET)
+        child = logging.getLogger("apps.helpers.recordings.clipDrain")
+        child.setLevel(logging.NOTSET)
+        assert child.isEnabledFor(logging.INFO) is False
+
+        logUtils.configure_app_loggers()
+
+        assert child.isEnabledFor(logging.INFO) is True
+
+    def test_debug_stays_off_at_the_default_level(self):
+        logUtils.configure_app_loggers()
+
+        assert logging.getLogger("apps.db_server.manager").isEnabledFor(logging.DEBUG) is False
+
+    def test_third_party_loggers_are_left_alone(self):
+        # Scoping to `apps` rather than root is the whole point: these are verbose
+        # at INFO and turning them on is not this function's business.
+        for name in ("sqlalchemy.engine", "onnxruntime"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        logUtils.configure_app_loggers()
+
+        for name in ("sqlalchemy.engine", "onnxruntime"):
+            assert logging.getLogger(name).isEnabledFor(logging.INFO) is False

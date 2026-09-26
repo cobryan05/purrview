@@ -7,7 +7,7 @@ import uvicorn
 
 from apps import APPS, APPS_CONFIG
 from apps.helpers.apiCall import bind_default_timeout
-from apps.helpers.logUtils import quiet_poll_access_logs
+from apps.helpers.logUtils import configure_app_loggers, quiet_poll_access_logs
 
 from .manager import Manager
 from .web import WebApp
@@ -40,6 +40,7 @@ web_app = WebApp(app_name=config.name, manager=manager)
 
 # Poll endpoints log one access line per tab per tick; quiet the successful
 # ones so the log stays readable (see helpers/logUtils).
+configure_app_loggers()
 quiet_poll_access_logs()
 
 app = web_app.app()

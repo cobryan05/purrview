@@ -1488,8 +1488,8 @@ class DbClient:
 
             try:
                 await session.commit()
-            except Exception as e:
-                logger.exception(e)
+            except Exception:
+                logger.exception("Commit failed while writing image metadata")
                 raise
 
             await session.refresh(db_record)

@@ -150,7 +150,7 @@ class ImageCache:
                     continue
 
                 if required_uuids is not None and uuid not in required_uuids:
-                    logger.warning("Tar member %s not in required uuids, skipping", uuid)
+                    logger.debug("Tar member %s not in required uuids, skipping", uuid)
                     continue
 
                 if member.size > max_bytes:

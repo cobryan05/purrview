@@ -68,6 +68,7 @@ from apps import RECORDINGS_SNAPSHOT_DIR
 from apps.helpers.actions.action import ActionContext
 from apps.helpers.consts import JsonValues
 from apps.helpers.imageUtils import annotate_detections, downscale_to_width, encode_jpg_bytes
+from apps.helpers.logUtils import TaskLogFn
 from apps.helpers.recordings.eventCrop import (
     CROP_QUALITY,
     crop_to_rect,
@@ -180,7 +181,7 @@ class WatchEventRecorder:
         self,
         profile_uuid: str,
         api_client_factory: Callable[[], db_client.ApiClient],
-        log: Callable[[str], None],
+        log: TaskLogFn,
         snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT,
         analyse_blips: bool = True,
         blip_thresholds: Optional[Dict[str, Any]] = None,
@@ -802,7 +803,7 @@ class NullWatchEventRecorder(WatchEventRecorder):
     """
 
     def __init__(self) -> None:
-        super().__init__(profile_uuid="", api_client_factory=lambda: None, log=lambda _msg: None)  # type: ignore[arg-type]
+        super().__init__(profile_uuid="", api_client_factory=lambda: None, log=lambda _msg, _level=logging.INFO: None)  # type: ignore[arg-type]
 
     async def record(self, signal: WatchEventSignal, context: ActionContext) -> Optional[str]:
         return None

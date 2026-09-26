@@ -1633,11 +1633,11 @@ class Manager:
                 self._escalate_stuck_cancels()
                 self._check_wedged_tasks()
         except asyncio.CancelledError:
-            logger.info("Periodic task was cancelled.")
-        except Exception as e:
-            logger.exception(e)
+            logger.debug("Periodic worker cancelled.")
+        except Exception:
+            logger.exception("Periodic worker terminated")
         finally:
-            logger.info("Periodic task cleanup.")
+            logger.debug("Periodic worker stopped.")
 
     def get_status(self) -> dict:
         """Return service health and diagnostic info.

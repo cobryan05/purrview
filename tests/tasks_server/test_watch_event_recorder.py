@@ -12,6 +12,7 @@ The behaviours under test are the ones that are invisible when wrong:
 """
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -106,7 +107,7 @@ def recorder(store, tmp_path, monkeypatch):
     return WatchEventRecorder(
         profile_uuid=PROFILE,
         api_client_factory=lambda: None,
-        log=store.logs.append,
+        log=lambda msg, _level=logging.INFO: store.logs.append(msg),
         snapshot_root=tmp_path / "snapshots",
     )
 
@@ -756,7 +757,7 @@ class TestTheAnalysisSwitch:
         return WatchEventRecorder(
             profile_uuid=PROFILE,
             api_client_factory=lambda: None,
-            log=store.logs.append,
+            log=lambda msg, _level=logging.INFO: store.logs.append(msg),
             snapshot_root=tmp_path / "snapshots",
             **kwargs,
         )

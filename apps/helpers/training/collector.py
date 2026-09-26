@@ -87,7 +87,7 @@ from apps.helpers.hashUtils import (
 from apps.helpers.imageHelper import ImageHelper
 from apps.helpers.imageProviders.imageProvider import ImageProviderType, ImageWithProviderMetadata
 from apps.helpers.labelHelper import build_label_ancestry_map, build_label_metadata_map
-from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.logUtils import LOG_LEVEL, TaskLogFn
 from apps.helpers.training.collectorSpec import (
     AMBIGUITY_KIND_CROSS_MODEL,
     AMBIGUITY_METRIC_RATIO,
@@ -116,7 +116,7 @@ class CollectorHost:
     """
 
     #: Appends to the driver's user-visible log (task log line, watcher log line).
-    log: Callable[[str], None]
+    log: TaskLogFn
     #: Called per use, never cached — see the module docstring.
     db_api_client: Callable[[], Any]
     inference_api_client: Callable[[], Any]
@@ -971,7 +971,7 @@ class TrainingCollector:
                 self._images_saved += 1
                 any_saved = True
                 self._saved_by_reason[reason] = self._saved_by_reason.get(reason, 0) + 1
-                self._log(f"Saved {filename} ({self._images_saved} total)")
+                self._log(f"Saved {filename} ({self._images_saved} total)", logging.DEBUG)
             else:
                 still_pending.append((task, uid, reason))
         self._pending_saves.clear()

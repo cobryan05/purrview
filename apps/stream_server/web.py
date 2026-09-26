@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from mediamtx_client.api_client import ApiClient
 
 from apps.helpers.logUtils import LOG_LEVEL
+from apps.helpers.recordings.playbackClient import PlaybackError
 from apps.helpers.timeUtils import parse_iso_utc
 
 from .manager import Manager
@@ -48,12 +49,12 @@ class WebApp:
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
         """Lifespan event handler for startup and shutdown logic"""
-        logging.info("Application is starting up...")
+        logger.info("Application is starting up...")
         self._manager.start()
 
         yield
 
-        logging.info("Application is shutting down...")
+        logger.info("Application is shutting down...")
         if self._manager._task:
             self._manager._task.cancel()
             await self._manager._task
@@ -118,7 +119,7 @@ class WebApp:
                 )
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, **result.to_dict()})
             except Exception as e:
-                logging.exception(f"Stream ensure failed: {e}")
+                logger.exception(f"Stream ensure failed: {e}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.post(
@@ -135,7 +136,7 @@ class WebApp:
                 released = await self._manager.release_lease(lease_id)
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, "released": released})
             except Exception as e:
-                logging.exception(f"Stream release failed: {e}")
+                logger.exception(f"Stream release failed: {e}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.post(
@@ -157,7 +158,7 @@ class WebApp:
                 renewed = self._manager.renew_lease(lease_id)
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, "renewed": renewed})
             except Exception as e:
-                logging.exception(f"Stream renew failed: {e}")
+                logger.exception(f"Stream renew failed: {e}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.get(
@@ -177,7 +178,7 @@ class WebApp:
                 ranges = await self._manager.get_ranges(name)
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, WebApp.RESULT_KEY: ranges})
             except Exception as e:
-                logging.exception(f"Fetching ranges for {name} failed: {e}")
+                logger.exception(f"Fetching ranges for {name} failed: {e}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.post(
@@ -205,8 +206,14 @@ class WebApp:
                     path=path, start=started_at, duration_s=duration_s, dest=Path(dest)
                 )
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, **result})
+            except PlaybackError as e:
+                # The requested window has aged out of the rolling buffer, which is
+                # expected whenever a drain lags the buffer. recordClipAction emits the
+                # operator-facing line for this, so no traceback is warranted here.
+                logger.debug("Clip extraction failed for %r: %s", path, e)
+                return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
             except Exception as e:
-                logging.exception(f"Clip extraction failed: {e}")
+                logger.exception("Clip extraction failed for %r", path)
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.get(
@@ -221,7 +228,7 @@ class WebApp:
                 usage = self._manager.buffer_usage()
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, **usage.to_dict()})
             except Exception as e:
-                logging.exception(f"Buffer usage failed: {e}")
+                logger.exception(f"Buffer usage failed: {e}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.post(
@@ -236,11 +243,11 @@ class WebApp:
         ) -> JSONResponse:
             """Handle the destruction of a stream"""
             try:
-                logging.info(f"Destroying stream {stream_name}")
+                logger.info(f"Destroying stream {stream_name}")
                 await self._manager.destroy_stream(stream_name=stream_name)
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True})
             except Exception as e:
-                logging.exception(f"Stream destruction failed: {str(e)}")
+                logger.exception(f"Stream destruction failed: {str(e)}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.get(
@@ -255,7 +262,7 @@ class WebApp:
                 config = await self._manager.get_config()
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, WebApp.RESULT_KEY: config})
             except Exception as e:
-                logging.exception(f"Config listing failed: {str(e)}")
+                logger.exception(f"Config listing failed: {str(e)}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})
 
         @self._app.get(
@@ -285,5 +292,5 @@ class WebApp:
                 ]
                 return JSONResponse(content={WebApp.SUCCESS_KEY: True, WebApp.RESULT_KEY: stream_info})
             except Exception as e:
-                logging.exception(f"Fetching streams failed: {str(e)}")
+                logger.exception(f"Fetching streams failed: {str(e)}")
                 return JSONResponse(content={WebApp.SUCCESS_KEY: False, WebApp.ERROR_KEY: str(e)})

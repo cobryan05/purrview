@@ -1,33 +1,52 @@
 """Central log-level policy.
 
-Every module in this repo builds its logger the same way::
+``LOG_LEVEL`` governs how verbose the application loggers are. It defaults to
+INFO; set it to DEBUG for a debugging session::
+
+    LOG_LEVEL=DEBUG docker compose up
+
+Per-frame and per-request instrumentation — inference and preprocess timings,
+query timings, per-image save lines — belongs at DEBUG. Those lines are what
+you want when diagnosing a slow pipeline, and they are also enough volume to
+fill a rotated log in hours, so they are opt-in rather than deleted.
+
+A module picks up the level one of two ways. Either it names its logger after
+the module and lets :func:`configure_app_loggers` set the level on the ``apps``
+parent::
+
+    logger = logging.getLogger(__name__)
+
+or it sets its own::
 
     logging.basicConfig(stream=sys.stdout)
     logger = logging.getLogger(__file__)
     logger.setLevel(LOG_LEVEL)
 
-The level used to be hard-coded to ``logging.DEBUG`` in all ~38 of those call
-sites, which meant the only way to turn verbosity down was to edit source. In
-a running deployment that cost real disk: the per-frame timing lines in the
-inference and task paths (``preprocess=..ms onnx=..ms``, ``Inference HTTP
-round-trip model=..``) accounted for **75% of inference_server's log bytes and
-55% of tasks_server's**, ~380 MB/day between them, on a box doing nothing
-unusual.
+A ``getLogger(__name__)`` logger with no call to :func:`configure_app_loggers`
+in the service's ``main.py`` inherits the root logger at WARNING and drops
+every INFO and DEBUG line it writes.
 
-Those lines are worth keeping — they are exactly what you want when
-diagnosing a slow pipeline — so the fix is to make them opt-in rather than to
-delete them. ``LOG_LEVEL`` defaults to INFO and can be set to DEBUG for a
-debugging session::
-
-    LOG_LEVEL=DEBUG docker compose up
-
-Note this governs the *application* loggers only. Uvicorn's access log is a
-separate stream with its own switch — see ``ACCESS_LOG_QUIET_PATHS``.
+This governs the *application* loggers only. Uvicorn's access log is a separate
+stream with its own switch — see :data:`ACCESS_LOG_QUIET_PATHS` and
+:data:`ACCESS_LOG_QUIET_FRAGMENTS`.
 """
 
 import logging
 import os
-from typing import Final
+from typing import Final, Protocol
+
+
+class TaskLogFn(Protocol):
+    """A task's `log` callable, as injected into helpers that report progress.
+
+    `msg` always reaches the task's in-memory ring buffer, which is what the UI
+    renders. `level` governs only whether the line is also written to the
+    service's rotated log, so a per-frame caller can stay visible in the UI
+    while passing DEBUG to keep itself out of the log file.
+    """
+
+    def __call__(self, msg: str, level: int = logging.INFO) -> None: ...
+
 
 #: Application log level, from the ``LOG_LEVEL`` env var. Accepts any standard
 #: level name (DEBUG/INFO/WARNING/ERROR/CRITICAL), case-insensitive. An
@@ -41,11 +60,10 @@ if not isinstance(LOG_LEVEL, int):
 
 #: Request paths whose *successful* access-log lines are suppressed.
 #:
-#: These are the UI's status-poll endpoints. They are hit a few times a second
-#: per open browser tab and each one logs a line, which is 100% of db_server's
-#: log volume and 44% of tasks_server's — all of it recording that a poll
-#: succeeded, which is the boring case. Non-2xx responses are still logged, so
-#: a poll that starts failing remains visible.
+#: Status polls and timer-driven calls. Each is hit several times a second per
+#: open browser tab or per running watcher, and a 2xx only records that the poll
+#: worked. Non-2xx responses are still logged, so a poll that starts failing
+#: stays visible.
 #:
 #: Matching is by prefix so query strings and path parameters are covered.
 ACCESS_LOG_QUIET_PATHS: Final[tuple[str, ...]] = (
@@ -54,6 +72,29 @@ ACCESS_LOG_QUIET_PATHS: Final[tuple[str, ...]] = (
     "/api/task-instances",
     "/api/task-configs",
     "/status",
+    # Timer-driven, not user-driven: the lease renewer and the clip drain each
+    # fire per camera every few seconds for as long as a watcher is up.
+    "/api/streams/renew",
+    "/api/streams/clip",
+    # One call per analysed frame.
+    "/api/models/detect-unit",
+    # Polled by the Watchers tab and by every watcher task on startup.
+    "/api/watch-profiles",
+    "/api/images/dedup-check",
+    "/api/storage/usage",
+)
+
+#: Path *fragments* whose successful access-log lines are suppressed.
+#:
+#: Separate from the prefix list because these endpoints carry an id before the
+#: interesting segment (``/api/tasks/instances/{uuid}/live-preview``), so a
+#: prefix wide enough to match them would also swallow unrelated routes under
+#: the same parent. Same rationale otherwise: each is fetched in bulk by a UI
+#: that is scrolling or streaming, and a 200 carries no information.
+ACCESS_LOG_QUIET_FRAGMENTS: Final[tuple[str, ...]] = (
+    "/live-preview",
+    "/thumbnail",
+    "/crop",
 )
 
 
@@ -81,7 +122,27 @@ class _QuietPollAccessFilter(logging.Filter):
             return True
         if not isinstance(path, str):
             return True
-        return not path.startswith(ACCESS_LOG_QUIET_PATHS)
+        if path.startswith(ACCESS_LOG_QUIET_PATHS):
+            return False
+        return not any(fragment in path for fragment in ACCESS_LOG_QUIET_FRAGMENTS)
+
+
+def configure_app_loggers() -> None:
+    """Apply LOG_LEVEL to every logger in the ``apps`` package hierarchy.
+
+    Modules that build their logger with ``getLogger(__name__)`` get a name under
+    ``apps``, so setting the level on that one parent governs all of them. Without
+    it they inherit the root logger, which sits at WARNING and silently discards
+    every INFO and DEBUG line they write.
+
+    Deliberately scoped to ``apps`` rather than the root logger: root would also
+    unmute sqlalchemy, onnxruntime and ultralytics, which are verbose at INFO and
+    are not ours to turn on.
+
+    Modules using ``getLogger(__file__)`` are outside this hierarchy and set their
+    own level; calling this does not affect them.
+    """
+    logging.getLogger("apps").setLevel(LOG_LEVEL)
 
 
 def quiet_poll_access_logs() -> None:
