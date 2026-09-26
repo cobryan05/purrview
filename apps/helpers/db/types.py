@@ -2423,6 +2423,38 @@ class WatchEvent(SQLModel, table=True):
     )
 
 
+class WatchEventCounter(SQLModel, table=True):
+    """Lifetime event tallies that outlive the events they counted.
+
+    `watch_events` is not append-only in practice — the age-based retention sweep and
+    the size-cap eviction both delete from it, and a profile save cascades. So
+    `COUNT(*)` over it answers "how many events survive", never "how many happened".
+    Home Assistant is told these counts are `total_increasing`, and it reads any drop as
+    a counter reset and adds the new value on top of the old total, so a falling count
+    corrupts long-term statistics rather than merely denting them.
+
+    Hence a second tally that nothing deletes from, on the same reasoning as
+    `EventBlip.recording_uuid` below: no foreign keys at all, because a hard FK would
+    either block the retention sweep or be taken with it, and `profile_uuid`'s CASCADE
+    is one of the paths that used to zero the count.
+
+    `subject_ref` is `""`, never NULL, for the rule-level tally. A NULL in a composite
+    primary key compares unequal to itself, so the upsert's ON CONFLICT would never
+    match and each rule-level event would insert its own row. `watch_event_counts`
+    converts the sentinel back to `None` at the boundary.
+    """
+
+    __tablename__ = "watch_event_counters"
+    source_uuid: str = Field(primary_key=True)
+    rule_uuid: str = Field(primary_key=True)
+    subject_ref: str = Field(primary_key=True)
+    count: int = Field(default=0)
+    #: Kept here rather than read as `max(started_at)` for the same reason as `count`:
+    #: once retention takes a pair's last surviving event, the live query reports no row
+    #: at all and HA's timestamp sensor drops from a real time to `unknown`.
+    last_seen: Optional[datetime] = Field(default=None, sa_type=UtcDateTime())
+
+
 class EventBlip(TimestampModel, table=True):
     """One stretch of a clip where tracking went wrong.
 

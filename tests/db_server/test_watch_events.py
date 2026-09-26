@@ -1369,3 +1369,149 @@ class TestReviewStateTriage:
         )
         assert r.json()["status"] == "success"
         assert r.json()["updated"] == 1
+
+
+async def _counts(http_client) -> dict:
+    """`/counts` keyed by (source, rule, subject) so a test can assert one pair."""
+    r = await http_client.get("/api/watch-events/counts")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "success", body
+    return {(c["sourceUuid"], c["ruleUuid"], c["subjectRef"]): c for c in body["counts"]}
+
+
+def _counts_at(rows: dict, key: tuple) -> int:
+    """The tally for one (source, rule, subject), or 0 when no row exists — the two are
+    the same thing to Home Assistant, and a test asserting "held at 3" must fail on
+    either."""
+    row = rows.get(key)
+    return 0 if row is None else row["count"]
+
+
+class TestLifetimeCounts:
+    """The tallies that seed Home Assistant's `total_increasing` count sensors.
+
+    These must not fall, ever, for a reason that lives outside this repo: HA reads any
+    drop as a counter reset and adds the new value on top of the running total. So a
+    tally that tracks *surviving* events corrupts a month of long-term statistics the
+    first time retention runs — which is what `COUNT(*)` over `watch_events` did, and
+    why `watch_event_counters` exists. Every test here deletes something and asserts the
+    number held.
+    """
+
+    async def test_a_deleted_event_still_counts(self, http_client):
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
+        uuids = [
+            (
+                await _make_event(
+                    http_client,
+                    profile_uuid,
+                    sourceUuid=source_uuid,
+                    ruleUuid=rule_uuid,
+                    subjectRef=subject_ref,
+                )
+            )["uuid"]
+            for _ in range(3)
+        ]
+        key = (source_uuid, rule_uuid, subject_ref)
+        assert _counts_at(await _counts(http_client), key) == 3
+
+        r = await http_client.post("/api/watch-events/delete", json={"uuids": uuids})
+        assert r.json()["deleted"] == 3
+        assert (await _list(http_client, profile_uuid=profile_uuid))["events"] == []
+
+        assert _counts_at(await _counts(http_client), key) == 3, "retention sweep would read as a counter reset in HA"
+
+    async def test_deleting_the_profile_does_not_zero_the_tally(self, http_client):
+        """`watch_events.profile_uuid` is `ondelete="CASCADE"`, so this path took the
+        whole history with it — and a profile is deleted by ordinary reconfiguration,
+        not just teardown."""
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
+        for _ in range(2):
+            await _make_event(
+                http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid, subjectRef=subject_ref
+            )
+
+        r = await http_client.delete(f"/api/watch-profiles/{profile_uuid}")
+        assert r.json()["status"] == "success", r.text
+
+        assert _counts_at(await _counts(http_client), (source_uuid, rule_uuid, subject_ref)) == 2
+
+    async def test_last_seen_does_not_walk_back_when_the_newest_event_is_deleted(self, http_client):
+        """The companion timestamp sensor. Read as `max(started_at)` over surviving rows
+        it jumps backwards on a delete, and to `unknown` once the pair's last event ages
+        out — for a rule that fires twice a day, that is most of the day."""
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
+        older = datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc)
+        newer = datetime(2026, 3, 1, 17, 0, tzinfo=timezone.utc)
+        for started in (older, newer):
+            event = await _make_event(
+                http_client,
+                profile_uuid,
+                sourceUuid=source_uuid,
+                ruleUuid=rule_uuid,
+                subjectRef=subject_ref,
+                startedAt=started.isoformat(),
+            )
+            if started is newer:
+                newest_uuid = event["uuid"]
+
+        key = (source_uuid, rule_uuid, subject_ref)
+        before = (await _counts(http_client))[key]["lastSeen"]
+        assert before is not None and before.startswith("2026-03-01T17:00")
+
+        await http_client.post("/api/watch-events/delete", json={"uuids": [newest_uuid]})
+
+        after = (await _counts(http_client))[key]["lastSeen"]
+        assert after == before
+
+    async def test_an_event_recorded_out_of_order_does_not_move_last_seen_back(self, http_client):
+        """A long event closes after a short one that began later, so inserts are not in
+        start order. Taking the incoming timestamp unconditionally would rewind it."""
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid, subject_ref = str(_uuid.uuid4()), str(_uuid.uuid4())
+        for started in (
+            datetime(2026, 3, 2, 17, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc),
+        ):
+            await _make_event(
+                http_client,
+                profile_uuid,
+                sourceUuid=source_uuid,
+                ruleUuid=rule_uuid,
+                subjectRef=subject_ref,
+                startedAt=started.isoformat(),
+            )
+
+        row = (await _counts(http_client))[(source_uuid, rule_uuid, subject_ref)]
+        assert row["count"] == 2
+        assert row["lastSeen"].startswith("2026-03-02T17:00")
+
+    async def test_a_rule_with_no_subject_reports_a_null_subject_not_a_sentinel(self, http_client):
+        """The table stores `""` because a NULL in a composite primary key never matches
+        an upsert's ON CONFLICT. That sentinel must not escape: the bridge sums these
+        rows into per-subject tiers, and `""` would become a subject of its own."""
+        source_uuid = await _make_source(http_client)
+        profile_uuid = await _make_profile(http_client)
+        rule_uuid = str(_uuid.uuid4())
+        for _ in range(2):
+            await _make_event(http_client, profile_uuid, sourceUuid=source_uuid, ruleUuid=rule_uuid)
+
+        rows = await _counts(http_client)
+        assert (source_uuid, rule_uuid, "") not in rows
+        assert rows[(source_uuid, rule_uuid, None)]["count"] == 2
+
+    async def test_an_event_without_a_source_or_rule_is_not_tallied(self, http_client):
+        """Matches the filter the endpoint has always applied. A tally keyed on a NULL
+        uuid has no Home Assistant entity to publish to."""
+        profile_uuid = await _make_profile(http_client)
+        before = len(await _counts(http_client))
+        await _make_event(http_client, profile_uuid, ruleName="no ids at all")
+        assert len(await _counts(http_client)) == before

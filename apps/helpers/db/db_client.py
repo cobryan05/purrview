@@ -140,6 +140,7 @@ from .types import (
     WatchAction,
     WatchActionWrite,
     WatchEvent,
+    WatchEventCounter,
     WatchEventRead,
     WatchProfile,
     WatchProfileCreate,
@@ -8545,42 +8546,32 @@ class DbClient:
 
         For MQTT bridge counter seeding — a bridge that just (re)connected needs each
         rule's lifetime total, not zero, so its first published count doesn't read as
-        a reset. No counter table: this is cheap enough to compute on demand and a
-        second source of truth would just be one more thing to keep in sync.
+        a reset.
 
-        Grouped at the *finest* grain the bridge publishes, deliberately, because it
-        publishes three: per subject, per (subject, rule), and per (subject, rule,
-        source). Those are summed up from this one result rather than fetched as three
-        queries — three separate `GROUP BY`s can disagree after a concurrent write, and
-        a subject total that isn't the sum of its rules is the kind of discrepancy
-        nobody can explain later. One query, one snapshot, arithmetic for the rest.
+        Read off `watch_event_counters`, never as a `COUNT(*)` over `watch_events`:
+        that table is deleted from by the retention sweep, the size-cap eviction and a
+        profile-save cascade, and a count that falls is read by Home Assistant as a
+        counter reset and added on top of the running total. See `WatchEventCounter`.
 
-        `subject_ref` is nullable — a rule with no subject slot still produces events —
-        and is returned as None rather than filtered out, so rule-level totals stay
-        complete whether or not a subject was involved.
+        These are the finest grain the bridge publishes; it sums them itself into the
+        per-subject and per-(subject, rule) tiers. Storing one row per tier instead
+        would be three tallies free to disagree.
+
+        `subject_ref` comes back `None` for the rule-level tally, matching the nullable
+        column on `watch_events`; the table stores `""` there, for the primary-key
+        reason in `WatchEventCounter`.
         """
         async with self._async_session_maker() as session:
-            stmt = (
-                select(
-                    WatchEvent.source_uuid,
-                    WatchEvent.rule_uuid,
-                    WatchEvent.subject_ref,
-                    func.count(),
-                    func.max(WatchEvent.started_at),
-                )
-                .where(WatchEvent.source_uuid != None, WatchEvent.rule_uuid != None)  # noqa: E711
-                .group_by(WatchEvent.source_uuid, WatchEvent.rule_uuid, WatchEvent.subject_ref)
-            )
-            rows = (await session.exec(stmt)).all()
+            rows = (await session.exec(select(WatchEventCounter))).all()
             return [
                 {
-                    "source_uuid": source_uuid,
-                    "rule_uuid": rule_uuid,
-                    "subject_ref": subject_ref,
-                    "count": count,
-                    "last_seen": last_seen.isoformat() if last_seen is not None else None,
+                    "source_uuid": row.source_uuid,
+                    "rule_uuid": row.rule_uuid,
+                    "subject_ref": row.subject_ref or None,
+                    "count": row.count,
+                    "last_seen": row.last_seen.isoformat() if row.last_seen is not None else None,
                 }
-                for source_uuid, rule_uuid, subject_ref, count, last_seen in rows
+                for row in rows
             ]
 
     async def get_watch_event(self, uuid: str) -> Optional[WatchEventRead]:
@@ -8835,11 +8826,55 @@ class DbClient:
             return None if event is None else event.crop_path
 
     async def create_watch_event(self, event: WatchEvent) -> WatchEventRead:
+        """Insert the event and bump its lifetime tally in the same transaction.
+
+        The tally has to be bumped where the event is written, not derived where it is
+        read — see `WatchEventCounter`. Events missing either uuid are counted by
+        nothing, matching the filter `watch_event_counts` has always applied: a tally
+        keyed on a NULL has no Home Assistant entity to publish to.
+        """
         async with self._async_session_maker() as session:
             session.add(event)
+            if event.source_uuid is not None and event.rule_uuid is not None:
+                await self._bump_watch_event_counter(session, event)
             await session.commit()
             await session.refresh(event)
             return self._watch_event_to_read(event)
+
+    async def _bump_watch_event_counter(self, session: Any, event: WatchEvent) -> None:
+        """`+1` on the event's counter row, creating it at 1 if this pair is new.
+
+        An upsert rather than read-modify-write because two watchers can close an event
+        on the same pair concurrently, and `count = count + 1` evaluated in SQLite is
+        atomic where a Python round-trip would lose one of them.
+        """
+        stmt = sqlite_insert(WatchEventCounter).values(
+            source_uuid=event.source_uuid,
+            rule_uuid=event.rule_uuid,
+            subject_ref=event.subject_ref or "",
+            count=1,
+            last_seen=event.started_at,
+        )
+        counter = WatchEventCounter.__table__.c
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                WatchEventCounter.source_uuid,
+                WatchEventCounter.rule_uuid,
+                WatchEventCounter.subject_ref,
+            ],
+            set_={
+                "count": counter.count + 1,
+                # Events do not always arrive in start order — a long event closes after
+                # a short one that began later — and `last_seen` must never walk back.
+                # The coalesce is load-bearing: SQLite's `max()` returns NULL if either
+                # argument is NULL, so a first-ever row would erase its own timestamp.
+                "last_seen": func.max(
+                    func.coalesce(counter.last_seen, stmt.excluded.last_seen),
+                    stmt.excluded.last_seen,
+                ),
+            },
+        )
+        await session.exec(stmt)
 
     async def update_watch_event(self, uuid: str, **fields) -> Optional[WatchEventRead]:
         async with self._async_session_maker() as session:
