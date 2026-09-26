@@ -60,6 +60,11 @@ AMBIGUITY_KIND_CROSS_MODEL = "cross_model"
 # a cap-exceeding collector deletes first. See `reviewQueueEviction.py` for the
 # selection logic itself; this module only owns the identifiers and the schema
 # that lets a config name one.
+#: What a newly created collector's review-queue cap starts at. Large enough not to
+#: get in the way of a real collecting run, small enough to stay reviewable by one
+#: person. Applies to the creation form only — see the field's own comment.
+DEFAULT_MAX_UNVERIFIED_IMAGES = 1000
+
 EVICTION_FIFO = "fifo"
 EVICTION_LEAST_UNIQUE = "least_unique"
 EVICTION_LABEL_BALANCE = "label_balance"
@@ -1136,13 +1141,21 @@ def collector_params_schema() -> dict[str, dict[str, Any]]:
                     "type": "int",
                     "label": "Max Unverified Images",
                     "description": (
-                        "Once this many of this collector's images are still unverified, the oldest "
-                        "excess (or the one the eviction strategy below picks) is deleted to make room "
-                        "for new ones. This bounds your review queue, not the collector's lifetime "
-                        "output — a verified image no longer counts against it. Leave blank / 0 for "
-                        "unlimited."
+                        "Once this many of this collector's images are still unverified, the least "
+                        "useful of them (whichever the eviction strategy below picks) is deleted to "
+                        "make room for new ones. This bounds your review queue, not the collector's "
+                        "lifetime output — verifying an image takes it out of the queue and it no "
+                        "longer counts against this. Images the model was confident but confused "
+                        "about, and ones saved in the last few minutes, are only deleted once there "
+                        "is nothing else left to delete. 0 means unlimited, which lets an unattended "
+                        "collector grow a queue too long for anyone to face."
                     ),
-                    "default": 0,
+                    # Bounded by default. An unattended collector with no cap fills the review
+                    # queue until a person gives up on it, which is the failure this section
+                    # exists to prevent — so a new collector starts bounded and someone has to
+                    # type 0 to opt out. Only the form default: a stored collector keeps
+                    # whatever it has, including an absent key, which still reads as unlimited.
+                    "default": DEFAULT_MAX_UNVERIFIED_IMAGES,
                 },
                 "max_unverified_mb": {
                     "type": "float",

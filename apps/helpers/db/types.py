@@ -450,6 +450,10 @@ class ImageRecordRead(OrmModel):
     tags: List["TagRead"] = []
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    #: The stored perceptual hash, so a consumer comparing images for similarity does
+    #: not have to read every file back off disk and recompute what is already here.
+    #: Null for a row written before hashing, or one whose file could not be hashed.
+    phash: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

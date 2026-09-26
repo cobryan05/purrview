@@ -14,13 +14,15 @@ from apps.helpers.training.reviewQueueEviction import EvictionCandidate, select_
 BASE = datetime(2026, 1, 1)
 
 
-def _candidate(uuid, *, age_s=0, labels=(), phash=None):
+def _candidate(uuid, *, age_s=0, labels=(), phash=None, confusable=False, recent=False):
     return EvictionCandidate(
         uuid=uuid,
         filename=f"{uuid}.jpg",
         created_at=BASE + timedelta(seconds=age_s),
         label_uuids=tuple(labels),
         phash=phash,
+        confusable=confusable,
+        recent=recent,
     )
 
 
@@ -121,3 +123,85 @@ class TestLabelBalance:
         ]
         evicted = select_for_eviction(candidates, 1, EVICTION_LABEL_BALANCE)
         assert [c.uuid for c in evicted] == ["older"]
+
+
+class TestTiers:
+    """Some frames are worth more than whatever the strategy thinks of the picture.
+
+    A frame the model scored two classes near-equally on is the scarcest thing in the
+    queue, and `least_unique` actively selects against those: a systematic confusion is
+    the mistake that recurs, so it looks like a near-duplicate. A frame saved moments
+    ago has simply not been seen yet. Both wait until nothing ordinary is left.
+    """
+
+    def test_an_ordinary_frame_goes_before_a_confusable_one(self):
+        candidates = [_candidate("confusable", age_s=0, confusable=True), _candidate("ordinary", age_s=5)]
+
+        assert [c.uuid for c in select_for_eviction(candidates, 1, EVICTION_FIFO)] == ["ordinary"]
+
+    def test_an_ordinary_frame_goes_before_a_recent_one(self):
+        candidates = [_candidate("recent", age_s=0, recent=True), _candidate("ordinary", age_s=5)]
+
+        assert [c.uuid for c in select_for_eviction(candidates, 1, EVICTION_FIFO)] == ["ordinary"]
+
+    def test_a_recent_frame_goes_before_a_confusable_one(self):
+        candidates = [_candidate("confusable", confusable=True), _candidate("recent", recent=True)]
+
+        assert [c.uuid for c in select_for_eviction(candidates, 1, EVICTION_FIFO)] == ["recent"]
+
+    def test_confusable_wins_over_recent_on_the_same_frame(self):
+        """A frame that is both is protected by the stronger of the two reasons."""
+        candidates = [_candidate("both", confusable=True, recent=True), _candidate("recent", recent=True)]
+
+        assert [c.uuid for c in select_for_eviction(candidates, 1, EVICTION_FIFO)] == ["recent"]
+
+    def test_protection_never_makes_the_cap_unenforceable(self):
+        """The whole point of tiering rather than exempting: a queue that is entirely
+        protected must still be trimmable, or a burst of confusable frames would let it
+        grow without bound."""
+        candidates = [_candidate(f"c{i}", age_s=i, confusable=True) for i in range(4)]
+
+        evicted = select_for_eviction(candidates, 3, EVICTION_FIFO)
+
+        assert [c.uuid for c in evicted] == ["c0", "c1", "c2"]
+
+    def test_the_strategy_still_orders_within_a_tier(self):
+        """Tiers decide which round, the strategy decides the order inside it."""
+        candidates = [
+            _candidate("protected-old", age_s=0, confusable=True),
+            _candidate("ordinary-new", age_s=9),
+            _candidate("ordinary-old", age_s=1),
+        ]
+
+        assert [c.uuid for c in select_for_eviction(candidates, 3, EVICTION_FIFO)] == [
+            "ordinary-old",
+            "ordinary-new",
+            "protected-old",
+        ]
+
+    def test_least_unique_cannot_reach_past_a_tier_for_a_near_duplicate(self):
+        """The failure this exists to stop: two confusable frames of the same recurring
+        mistake look like duplicates of each other, and would otherwise be deleted
+        first — before a genuinely redundant ordinary frame."""
+        twin_a = _candidate("confusable-twin-a", phash="ffff0000ffff0000", confusable=True)
+        twin_b = _candidate("confusable-twin-b", phash="ffff0000ffff0001", confusable=True)
+        ordinary = _candidate("ordinary", phash="0f0f0f0f0f0f0f0f")
+
+        evicted = select_for_eviction([twin_a, twin_b, ordinary], 1, EVICTION_LEAST_UNIQUE)
+
+        assert [c.uuid for c in evicted] == ["ordinary"]
+
+    def test_redundancy_is_measured_against_the_whole_queue_not_the_tier(self):
+        """A frame that duplicates a protected one is the clearest deletion there is —
+        the copy being kept is the one worth keeping, so this one adds nothing.
+
+        Ranking each tier in isolation hid exactly that: the duplicate's twin sat in
+        another tier, so it looked unique and a genuinely distinct frame went instead.
+        """
+        protected = _candidate("protected", phash="ffff0000ffff0000", confusable=True)
+        duplicate_of_it = _candidate("duplicate", age_s=5, phash="ffff0000ffff0000")
+        distinct = _candidate("distinct", age_s=1, phash="0f0f0f0f0f0f0f0f")
+
+        evicted = select_for_eviction([protected, duplicate_of_it, distinct], 1, EVICTION_LEAST_UNIQUE)
+
+        assert [c.uuid for c in evicted] == ["duplicate"]

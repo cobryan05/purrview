@@ -994,6 +994,25 @@ class TrainingCollector:
     #: instead of one, rather than risking an unbounded query and hash pass.
     EVICTION_CANDIDATE_CEILING: int = 2000
 
+    #: How new an image has to be to be spared while anything older is still
+    #: deletable. Five minutes is long enough that a frame saved while you are
+    #: looking at the queue does not vanish under you, and short enough that it
+    #: cannot hold a cap open for long. Last-resort, not exempt — see the tiers in
+    #: `reviewQueueEviction`.
+    EVICTION_MIN_AGE_S: float = 300.0
+
+    #: How far under an exceeded cap a pass trims, as a fraction of that cap.
+    #: Trimming exactly to the cap means the next save is over again, so every save
+    #: paid for a full page fetch and a ranking pass to delete one image; a small
+    #: margin makes one pass cover many saves instead.
+    #:
+    #: Applied as a fraction of whichever limit was hit, so it works for a count and
+    #: for a byte total without a second constant. It rounds DOWN, which is what
+    #: makes it safe at small caps: below 50 images the margin is zero and the pass
+    #: trims exactly to the cap, because one extra permanent delete is a worse price
+    #: than the batching is worth on a queue that short.
+    EVICTION_LOW_WATER_MARGIN: float = 0.02
+
     def _maybe_enforce_review_queue_cap(self) -> None:
         """Fire a background eviction pass, unless one is already running.
 
@@ -1060,12 +1079,19 @@ class TrainingCollector:
 
             page_params = count_params.model_copy(update={"limit": min(total, self.EVICTION_CANDIDATE_CEILING)})
             page_resp = await asyncio.to_thread(images_api.get_review_queue, page_params)
+            now = datetime.now(timezone.utc)
             candidates = [
                 EvictionCandidate(
                     uuid=img.uuid,
                     filename=img.filename,
                     created_at=img.created_at,
                     label_uuids=tuple(sorted({b.label_uuid for b in (img.bboxes or []) if b.label_uuid})),
+                    # Both read off the page already in hand — no extra query, and no
+                    # file touched. See `reviewQueueEviction`'s tiers for why these two
+                    # facts outrank whatever the strategy thinks of the picture.
+                    phash=getattr(img, "phash", None),
+                    confusable=self._is_confusable(img),
+                    recent=self._is_too_recent(img.created_at, now),
                 )
                 for img in page_resp.images or []
             ]
@@ -1073,8 +1099,13 @@ class TrainingCollector:
                 return
 
             if self._spec.eviction_strategy == EVICTION_LEAST_UNIQUE:
+                # Only for the rows the store has no hash for. The value is computed
+                # once at save time and kept on the image; re-deriving it here meant
+                # reading and decoding every candidate file on every pass, which at a
+                # full queue is hundreds of images for the sake of one deletion.
                 for candidate in candidates:
-                    candidate.phash = await asyncio.to_thread(self._safe_phash, candidate.filename)
+                    if not candidate.phash:
+                        candidate.phash = await asyncio.to_thread(self._safe_phash, candidate.filename)
 
             sizes: dict[str, int] = {}
             remaining_bytes: Optional[int] = None
@@ -1109,16 +1140,16 @@ class TrainingCollector:
             # other direction: the page comes back short, this pass under-deletes
             # and the next one finishes the job.
             remaining_count = len(candidates)
+            # Trim to slightly under whichever cap was actually exceeded, so the next
+            # save is not immediately over again. A cap that is currently satisfied
+            # keeps its own value as the target, or a pass triggered by one limit would
+            # quietly delete its way into the other one's margin as well.
+            count_target = self._drain_target(self._spec.max_unverified_images, remaining_count)
+            bytes_target = self._drain_target(self._spec.max_unverified_bytes, remaining_bytes)
             to_delete: list[EvictionCandidate] = []
             for candidate in ranked:
-                over_count = self._spec.max_unverified_images is not None and (
-                    remaining_count > self._spec.max_unverified_images
-                )
-                over_bytes = (
-                    self._spec.max_unverified_bytes is not None
-                    and remaining_bytes is not None
-                    and remaining_bytes > self._spec.max_unverified_bytes
-                )
+                over_count = count_target is not None and remaining_count > count_target
+                over_bytes = bytes_target is not None and remaining_bytes is not None and remaining_bytes > bytes_target
                 if not over_count and not over_bytes:
                     break
                 to_delete.append(candidate)
@@ -1136,6 +1167,47 @@ class TrainingCollector:
                 self._log(f"Review queue cap: evicted {len(to_delete)} image(s) ({self._evicted_total} total)")
         except Exception:
             logger.exception("review-queue cap enforcement failed for %s", self._tag_scope_name)
+
+    def _drain_target(self, cap: Optional[int], current: Optional[int]) -> Optional[int]:
+        """How far down to delete for one cap.
+
+        A little under it when it is exceeded, so the next save is not immediately
+        over; the cap itself when it is not, which asks for no deletions at all — a
+        pass triggered by one limit must not delete its way into the other's margin.
+        """
+        if cap is None:
+            return None
+        if current is None or current <= cap:
+            return cap
+        return cap - int(cap * self.EVICTION_LOW_WATER_MARGIN)
+
+    @staticmethod
+    def _is_confusable(image: Any) -> bool:
+        """Whether any box on this image was flagged as a near-tie between two classes.
+
+        Read off the bbox tags the review-queue page already carries. These are the
+        frames ambiguity detection exists to find, and deleting one to make room for a
+        routine weak detection throws away the more informative of the two.
+        """
+        for bbox in getattr(image, "bboxes", None) or ():
+            for tag in getattr(bbox, "tags", None) or ():
+                if getattr(tag, "uuid", None) == CONFUSABLE_TAG_UUID:
+                    return True
+        return False
+
+    def _is_too_recent(self, created_at: Optional[datetime], now: datetime) -> bool:
+        """Whether this image is too new to have been looked at yet.
+
+        A queue that deletes what it saved a moment ago is not a review queue — the
+        image is gone before anyone could open it. Protection only reorders eviction,
+        so a burst that fills the queue with new images still gets trimmed.
+        """
+        if created_at is None or self.EVICTION_MIN_AGE_S <= 0:
+            return False
+        # `created_at` comes back naive from the API despite being stored with a
+        # timezone, so it is read as UTC rather than compared against an aware `now`.
+        stamp = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        return (now - stamp).total_seconds() < self.EVICTION_MIN_AGE_S
 
     def _safe_phash(self, filename: str) -> Optional[str]:
         try:
