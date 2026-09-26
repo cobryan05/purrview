@@ -45,7 +45,12 @@ def _route_tour_state(page: Page, value: str | None, puts: list | None = None):
 
 
 def _stored(**overrides) -> str:
-    """A tour_state payload with every field the app expects."""
+    """A tour_state payload with every field the app expects.
+
+    `fabHintSeen` defaults to True: the one-time callout opens a popup anchored to the
+    ?, which would swallow the first click of any test that opens the menu. The test
+    that covers the callout passes False for itself.
+    """
     state = {
         "neverShow": False,
         "completed": [],
@@ -53,30 +58,18 @@ def _stored(**overrides) -> str:
         "paused": [],
         "progress": {},
         "stack": [],
+        "fabHintSeen": True,
     }
     state.update(overrides)
     return json.dumps(state)
 
 
-def _saved_state(page: Page, puts: list, timeout_ms: int = 10000) -> dict:
-    """The state the app wrote back, waited for rather than slept for.
-
-    Every write in `ui/tour/state.js` reads the setting before it PUTs, so the write
-    is a second round-trip that nothing on screen is gated on: the card disappears
-    first. A fixed delay here is a guess about how fast the machine is.
-    """
-    deadline = time.monotonic() + timeout_ms / 1000
-    while not puts:
-        assert time.monotonic() < deadline, f"no tour_state PUT arrived within {timeout_ms}ms"
-        page.wait_for_timeout(50)
-    return json.loads(puts[-1])
-
-
 def _saved_matching(page: Page, puts: list, predicate, timeout_ms: int = 10000) -> dict:
     """The first written state satisfying `predicate`.
 
-    Pausing writes twice — the pause itself, then whatever the resumed tour records —
-    so the last PUT is not necessarily the one under test.
+    Never "the last PUT": several things write this setting around one user action —
+    the pause or completion itself, and the ? callout recording that it was shown —
+    so the write under test is rarely the newest one.
     """
     deadline = time.monotonic() + timeout_ms / 1000
     while True:
@@ -160,7 +153,7 @@ class TestTheTourOffersItselfOnlyWhenWanted:
         _boot(page, base_url)
 
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
-        expect(_progress(page)).to_have_text("Getting started · 1 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 1 of 7")
         # Step two is the one that lives on Configuration; the tour must take the
         # user there from the default Watch tab rather than point at a hidden tab.
         page.locator("[data-testid='tour-next']").click()
@@ -221,14 +214,13 @@ class TestPausingAndDismissingAreDifferentThings:
         _boot(page, base_url)
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
         page.locator("[data-testid='tour-next']").click()
-        expect(_progress(page)).to_have_text("Getting started · 2 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 2 of 7")
 
         page.locator("[data-testid='tour-skip']").click()
 
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
         expect(page.locator("[data-testid='tour-spotlight']")).to_have_count(0)
-        saved = _saved_state(page, puts)
-        assert "overview" in saved["paused"], saved
+        saved = _saved_matching(page, puts, lambda st: "overview" in st["paused"])
         assert "overview" not in saved["dismissed"], saved
         assert saved["progress"]["overview"] == 1, saved
 
@@ -241,8 +233,7 @@ class TestPausingAndDismissingAreDifferentThings:
         page.locator("[data-testid='tour-dismiss']").click()
 
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
-        saved = _saved_state(page, puts)
-        assert "overview" in saved["dismissed"], saved
+        saved = _saved_matching(page, puts, lambda st: "overview" in st["dismissed"])
         assert "overview" not in saved["paused"], saved
 
     def test_escape_pauses_rather_than_dismisses(self, page: Page, base_url: str):
@@ -253,15 +244,14 @@ class TestPausingAndDismissingAreDifferentThings:
         expect(page.locator("[data-testid='tour-back']")).to_be_hidden()
 
         page.locator("[data-testid='tour-next']").click()
-        expect(_progress(page)).to_have_text("Getting started · 2 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 2 of 7")
         page.locator("[data-testid='tour-back']").click()
-        expect(_progress(page)).to_have_text("Getting started · 1 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 1 of 7")
 
         page.keyboard.press("Escape")
 
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
-        saved = _saved_state(page, puts)
-        assert "overview" in saved["paused"], saved
+        saved = _saved_matching(page, puts, lambda st: "overview" in st["paused"])
         assert "overview" not in saved["dismissed"], saved
 
     def test_the_opt_out_box_switches_tours_off(self, page: Page, base_url: str):
@@ -272,7 +262,7 @@ class TestPausingAndDismissingAreDifferentThings:
 
         page.locator("[data-testid='tour-never-show']").check()
 
-        assert _saved_state(page, puts)["neverShow"] is True
+        assert _saved_matching(page, puts, lambda st: st["neverShow"] is True)
 
     def test_done_on_the_last_step_records_completion(self, page: Page, base_url: str):
         puts: list = []
@@ -281,11 +271,11 @@ class TestPausingAndDismissingAreDifferentThings:
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
 
         next_btn = _walk_to_end(page)
-        expect(_progress(page)).to_have_text("Getting started · 6 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 7 of 7")
         next_btn.click()
 
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
-        assert "overview" in _saved_state(page, puts)["completed"]
+        assert _saved_matching(page, puts, lambda st: "overview" in st["completed"])
 
 
 class TestBranchesReturnToTheTourThatOfferedThem:
@@ -294,7 +284,7 @@ class TestBranchesReturnToTheTourThatOfferedThem:
 
     def _to_the_jobs_step(self, page: Page):
         _advance(page, 4)
-        expect(_progress(page)).to_have_text("Getting started · 5 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 5 of 7")
 
     def test_finishing_a_branch_lands_on_the_step_after_the_one_that_offered_it(self, page: Page, base_url: str):
         _route_tour_state(page, None)
@@ -312,8 +302,8 @@ class TestBranchesReturnToTheTourThatOfferedThem:
 
         # Step 6, not step 5 again and not step 1: the overview resumes *after* the
         # step that branched.
-        expect(_progress(page)).to_have_text("Getting started · 6 of 6")
-        expect(page.locator("[data-testid='tour-title']")).to_have_text("That is the loop")
+        expect(_progress(page)).to_have_text("Getting started · 6 of 7")
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Settings — and the keyboard shortcuts")
 
     def test_pausing_a_branch_does_not_return_to_the_parent(self, page: Page, base_url: str):
         """Pausing is "stop", not "go up one level" — the parent must stay off screen."""
@@ -344,7 +334,7 @@ class TestBranchesReturnToTheTourThatOfferedThem:
         expect(page.locator("[data-testid='tour-branch-0']")).to_be_visible()
         expect(page.locator("[data-testid='tour-next']")).to_have_text("Next tab →")
         page.locator("[data-testid='tour-next']").click()
-        expect(_progress(page)).to_have_text("Getting started · 6 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 6 of 7")
 
     def test_the_last_overview_step_offers_no_branch(self, page: Page, base_url: str):
         _route_tour_state(page, None)
@@ -399,7 +389,7 @@ class TestTheHelpButtonIsPerPage:
         expect(page.locator("[data-testid='tour-help-run-overview']")).to_contain_text("Resume at step 2")
         page.locator("[data-testid='tour-help-run-overview']").click()
 
-        expect(_progress(page)).to_have_text("Getting started · 2 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 2 of 7")
 
     def test_restart_is_offered_separately_and_goes_to_step_one(self, page: Page, base_url: str):
         _route_tour_state(page, _stored(neverShow=True, paused=["overview"], progress={"overview": 3}))
@@ -412,7 +402,7 @@ class TestTheHelpButtonIsPerPage:
         page.locator("[data-testid='tour-help-fab']").click()
         page.locator("[data-testid='tour-help-restart-overview']").click()
 
-        expect(_progress(page)).to_have_text("Getting started · 1 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 1 of 7")
 
     def test_the_button_stands_down_while_a_tour_is_running(self, page: Page, base_url: str):
         _route_tour_state(page, None)
@@ -476,14 +466,14 @@ class TestAPausedTourComesBackOnItsOwnPage:
         page.wait_for_timeout(800)
         page.locator("[data-testid='tour-help-fab']").click()
         page.locator("[data-testid='tour-help-run-overview']").click()
-        expect(_progress(page)).to_have_text("Getting started · 1 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 1 of 7")
 
         # Step two navigates to Configuration, which is the paused tour's page.
         page.locator("[data-testid='tour-next']").click()
 
         expect(page.locator("#tab-configuration")).to_be_visible()
         page.wait_for_timeout(1500)
-        expect(_progress(page)).to_have_text("Getting started · 2 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 2 of 7")
 
 
 class TestStepsReachTheirAnchors:
@@ -579,7 +569,7 @@ class TestSettingsCanRunATour:
         page.locator("[data-testid='settings-tours-run']").click()
 
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
-        expect(_progress(page)).to_have_text("Getting started · 1 of 6")
+        expect(_progress(page)).to_have_text("Getting started · 1 of 7")
 
 
 class TestConfigurationScreensHaveTheirOwnTours:
@@ -628,11 +618,11 @@ class TestConfigurationScreensHaveTheirOwnTours:
         self._open_config(page, base_url, "tab-config-overview")
         page.locator("[data-testid='tour-help-fab']").click()
         page.locator("[data-testid='tour-help-run-configuration']").click()
-        expect(_progress(page)).to_have_text("Configure · 1 of 6")
+        expect(_progress(page)).to_have_text("Configure · 1 of 7")
 
         # 1 → 2 is the Sources step; branch into it because it is the shortest.
         _advance(page, 2)
-        expect(_progress(page)).to_have_text("Configure · 3 of 6")
+        expect(_progress(page)).to_have_text("Configure · 3 of 7")
 
         page.locator("[data-testid='tour-branch-0']").click()
         expect(_progress(page)).to_have_text("Sources · 1 of 2")
@@ -641,7 +631,7 @@ class TestConfigurationScreensHaveTheirOwnTours:
         expect(last).to_have_text("Back to Configure")
         last.click()
 
-        expect(_progress(page)).to_have_text("Configure · 4 of 6")
+        expect(_progress(page)).to_have_text("Configure · 4 of 7")
 
     def test_a_paused_screen_tour_resumes_on_returning_to_that_screen(self, page: Page, base_url: str):
         _route_tour_state(
@@ -660,3 +650,113 @@ class TestConfigurationScreensHaveTheirOwnTours:
 
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
         expect(_progress(page)).to_have_text("Watch Rules · 2 of 5")
+
+
+class TestTheOneTimeHintExplainsTheHighlightedButton:
+    """The dot on the ? is easy to miss, and a user who never notices it never learns
+    the per-screen tours exist. It is said once, and never auto-opens a tour."""
+
+    def test_it_appears_once_on_the_first_page_with_an_unseen_tour(self, page: Page, base_url: str):
+        puts: list = []
+        _route_tour_state(page, _stored(completed=["overview"], fabHintSeen=False), puts)
+        _boot(page, base_url)
+
+        hint = page.locator("[data-testid='tour-help-hint']")
+        expect(hint).to_be_visible()
+        # Explaining the button is the whole job — it must not start the tour.
+        expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
+        assert _saved_matching(page, puts, lambda st: st.get("fabHintSeen") is True)
+
+        page.locator("[data-testid='tour-help-hint-dismiss']").click()
+        expect(hint).to_have_count(0)
+
+    def test_a_workspace_that_has_seen_it_is_not_told_again(self, page: Page, base_url: str):
+        _route_tour_state(page, _stored(completed=["overview"], fabHintSeen=True))
+        _boot(page, base_url)
+        page.wait_for_timeout(1200)
+
+        expect(page.locator("[data-testid='tour-help-hint']")).to_have_count(0)
+        # …and the button is still marked, which is what the callout was about.
+        expect(page.locator("[data-testid='tour-help-fab']")).to_have_class(re.compile(r"tour-help-fab--unseen"))
+
+    def test_a_page_with_nothing_unseen_does_not_trigger_it(self, page: Page, base_url: str):
+        """It is tied to the highlight, not merely to having a ?."""
+        every = ["overview", "watch", "configuration", "labels", "sources", "model-shapes", "watch-rules"]
+        _route_tour_state(page, _stored(completed=every, fabHintSeen=False))
+        _boot(page, base_url)
+        page.wait_for_timeout(1200)
+
+        expect(page.locator("[data-testid='tour-help-fab']")).to_be_visible()
+        expect(page.locator("[data-testid='tour-help-hint']")).to_have_count(0)
+
+
+class TestEveryConfigurationScreenHasATour:
+    def test_each_rail_screen_offers_its_own(self, page: Page, base_url: str):
+        """Landing on Training must offer Training, not a walk through all of Configure."""
+        screens = {
+            "tab-config-overview": "config-overview",
+            "tab-tag-management": "labels",
+            "tab-dataset-management": "datasets",
+            "tab-source-management": "sources",
+            "tab-model-management": "model-shapes",
+            "tab-modelstack-management": "model-stacks",
+            "tab-training-management": "training",
+            "tab-filterchain-management": "filter-chains",
+            "tab-collector-management": "collectors",
+            "tab-task-management": "tasks",
+            "tab-watcher-management": "watch-rules",
+        }
+        _route_tour_state(page, _stored(completed=["overview"]))
+        _boot(page, base_url)
+        page.wait_for_timeout(800)
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+        fab = page.locator("[data-testid='tour-help-fab']")
+
+        for tab, tour_id in screens.items():
+            page.locator(f"#tab-configuration [data-tab='{tab}']").click()
+            page.wait_for_timeout(300)
+            fab.click()
+            expect(page.locator(f"[data-testid='tour-help-run-{tour_id}']")).to_be_visible()
+            fab.click()
+
+    def test_a_screen_tour_starts_on_that_screen_without_the_configure_walk(self, page: Page, base_url: str):
+        _route_tour_state(page, _stored(completed=["overview"]))
+        _boot(page, base_url)
+        page.wait_for_timeout(800)
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+        page.locator("#tab-configuration [data-tab='tab-training-management']").click()
+        page.wait_for_timeout(300)
+
+        page.locator("[data-testid='tour-help-fab']").click()
+        page.locator("[data-testid='tour-help-run-training']").click()
+
+        expect(_progress(page)).to_have_text("Training · 1 of 3")
+
+
+class TestTheTourPointsOutKeyboardShortcuts:
+    def test_the_overview_stops_at_settings_and_branches_to_the_shortcuts(self, page: Page, base_url: str):
+        _route_tour_state(page, _stored(fabHintSeen=True))
+        _boot(page, base_url)
+        expect(page.locator("[data-testid='tour-card']")).to_be_visible()
+        _advance(page, 5)
+
+        expect(_progress(page)).to_have_text("Getting started · 6 of 7")
+        page.locator("[data-testid='tour-branch-0']").click()
+
+        expect(_progress(page)).to_have_text("Settings · 1 of 3")
+        expect(page.locator("#tab-settings-hotkeys")).to_have_class(re.compile(r"\bactive\b"))
+        expect(page.locator("[data-testid='tour-body']")).to_contain_text("keyboard")
+
+    def test_it_says_labels_join_the_shortcut_list_once_they_exist(self, page: Page, base_url: str):
+        """A user looking at a short list on a fresh install needs telling why."""
+        _route_tour_state(page, _stored(completed=["overview"]))
+        _boot(page, base_url)
+        page.wait_for_timeout(800)
+        page.locator(".main-tab-button[data-tab='tab-settings']").click()
+        page.wait_for_timeout(300)
+        page.locator("[data-testid='tour-help-fab']").click()
+        page.locator("[data-testid='tour-help-run-settings']").click()
+
+        expect(_progress(page)).to_have_text("Settings · 1 of 3")
+        _advance(page)
+        expect(page.locator("[data-testid='tour-body']")).to_contain_text("labels exist")

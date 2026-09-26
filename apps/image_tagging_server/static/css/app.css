@@ -9555,3 +9555,25 @@ progress.progress-indeterminate:indeterminate {
   background: var(--color-info);
   box-shadow: 0 0 0 2px var(--bg);
 }
+
+/* One-time callout explaining the highlighted ? (ui/tour/helpButton.js). */
+.tour-help-hint {
+  max-width: min(20rem, calc(100vw - 32px));
+  padding: var(--space-2);
+}
+
+.tour-help-hint__title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.tour-help-hint__body {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tour-help-hint .panel-btn {
+  width: 100%;
+  margin: 0;
+}

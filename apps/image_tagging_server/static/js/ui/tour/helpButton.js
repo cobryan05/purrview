@@ -17,7 +17,8 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { isTourRunning } from './engine.js';
-import { currentTourPage, runTour, toursForPage } from './index.js';
+import { currentTourPage, isAutoStartPending, runTour, toursForPage } from './index.js';
+import { markFabHintSeen, readTourState } from './state.js';
 
 /** @type {?HTMLElement} */
 let button = null;
@@ -42,6 +43,58 @@ function _offerLine(offer) {
 /** Whether any tour on this page has never been started here. */
 function _anyUnseen() {
   return offers.some(offer => offer.unseen);
+}
+
+/** Guards against two _refresh results racing to show the callout twice. */
+let hintShown = false;
+
+/**
+ * The one-time "this page has a tour" callout.
+ *
+ * The dot on the ? is easy to miss, and a user who never notices it never learns
+ * that the deeper per-screen tours exist at all. So the first time a page turns up
+ * with an unseen tour, say so once — and only once per workspace. It is a callout
+ * rather than an auto-started tour on purpose: the point is to make the button
+ * discoverable, not to seize a page the user opened to do something else.
+ */
+async function _maybeShowHint() {
+  if (hintShown || popup || !button) return;
+  if (isTourRunning() || isAutoStartPending() || !_anyUnseen()) return;
+  let state;
+  try {
+    state = await readTourState();
+  } catch (err) {
+    Logger.warn('tour state unreadable, skipping the ? hint', err);
+    return;
+  }
+  // Re-checked after the await: a tour may have started, or the user may have
+  // opened the menu themselves, while the state was in flight.
+  if (state.fabHintSeen || state.neverShow || hintShown || popup) return;
+  if (isTourRunning() || isAutoStartPending() || !_anyUnseen()) return;
+
+  hintShown = true;
+  void markFabHintSeen();
+
+  const card = document.createElement('div');
+  card.className = 'tour-help-hint';
+  card.dataset.testid = 'tour-help-hint';
+  const title = document.createElement('div');
+  title.className = 'tour-help-hint__title';
+  title.textContent = 'There is a tour for this page';
+  const body = document.createElement('p');
+  body.className = 'tour-help-hint__body';
+  body.textContent = 'Whenever this ? is highlighted, the page you are on has a walkthrough you '
+    + 'have not seen — including separate, more detailed ones for individual screens. '
+    + 'Open it whenever you like; it will not start on its own.';
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'panel-btn';
+  dismiss.dataset.testid = 'tour-help-hint-dismiss';
+  dismiss.textContent = 'Got it';
+  dismiss.addEventListener('click', () => _closePopup());
+  card.append(title, body, dismiss);
+
+  popup = openAnchoredPopup(button, card);
 }
 
 function _buildMenu() {
@@ -101,6 +154,7 @@ async function _refresh(tabName, subTabName = '') {
     offers = [];
   }
   _syncVisibility();
+  void _maybeShowHint();
 }
 
 function _syncVisibility() {

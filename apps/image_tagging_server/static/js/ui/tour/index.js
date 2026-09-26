@@ -27,6 +27,19 @@ export { TOURS };
 /** Breathing room after boot before a spotlight lands on a freshly painted page. */
 const AUTO_START_DELAY_MS = 600;
 
+let _autoStartPending = false;
+
+/**
+ * Whether a tour is about to start itself.
+ *
+ * True for the window between deciding to auto-start and the spotlight appearing.
+ * The ? callout asks about it because otherwise, on the fresh install where the
+ * overview auto-starts, the callout pops and is buried by the tour a moment later.
+ */
+export function isAutoStartPending() {
+  return _autoStartPending;
+}
+
 /**
  * Per-browser kill switch for auto-start: `localStorage.ww_tours_auto = 'off'`.
  * Local rather than a workspace setting on purpose — it is for a browser that must
@@ -194,7 +207,11 @@ export async function initTours() {
 
     const tour = await pickAutoTour();
     if (!tour) return;
-    setTimeout(() => { if (!isTourRunning()) startTour(tour); }, AUTO_START_DELAY_MS);
+    _autoStartPending = true;
+    setTimeout(() => {
+      _autoStartPending = false;
+      if (!isTourRunning()) startTour(tour);
+    }, AUTO_START_DELAY_MS);
   } catch (err) {
     Logger.warn('tours not started', err);
   }

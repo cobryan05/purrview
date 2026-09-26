@@ -104,6 +104,15 @@ export const LABELS = {
         + 'retraining it: point its "man" at your Person and its "cat" at your Cat, and it '
         + 'detects into your vocabulary instead of its author\'s.',
     },
+    {
+      id: 'download',
+      target: 'config.labels.classMap',
+      navigate: [CONFIG, 'tab-tag-management'],
+      title: 'Ready-made models are imported here too',
+      body: 'You do not have to train anything to begin. This same panel downloads and imports a '
+        + 'curated base model, or takes an .onnx file you already have — then the class map above '
+        + 'points its classes at your labels. Enough to have something detecting on day one.',
+    },
   ],
 };
 
@@ -144,11 +153,11 @@ export const MODEL_SHAPES = {
       id: 'intro',
       target: 'config.modelShapes',
       navigate: [CONFIG, 'tab-model-management'],
-      title: 'A shape is the vocabulary a model speaks',
-      body: 'A shape is the set of labels a model recognises — its output vocabulary, named and '
-        + 'nested. It says nothing about how that model is trained: that is a Training Config, '
-        + 'which attaches datasets to a shape. Keeping them apart is what lets one shape be '
-        + 'trained several different ways.',
+      title: 'A shape is the list of labels a model recognises',
+      body: 'Nothing more than that: which labels this model can find, named and nested. It says '
+        + 'nothing about how the model is trained — Training Configs, further down the rail, are '
+        + 'where you connect a shape to an image dataset. Keeping the two apart is what lets one '
+        + 'shape be trained several different ways.',
     },
     {
       id: 'nesting',
@@ -157,15 +166,6 @@ export const MODEL_SHAPES = {
       body: 'A coarse "cat" detector can hand off to a finer one that tells your cats apart, '
         + 'along the same hierarchy you built under Labels. Nesting is a choice, not a '
         + 'requirement — one flat shape covering every label is a perfectly good setup.',
-    },
-    {
-      id: 'download',
-      target: 'list.mc.new',
-      requireTarget: true,
-      title: 'Start from a ready-made model',
-      body: 'You do not have to train anything to begin. A base model can be downloaded and '
-        + 'imported here, and the class map under Labels & Tags points its classes at your own '
-        + 'vocabulary — enough to have something detecting on day one.',
     },
   ],
 };
@@ -226,6 +226,234 @@ export const WATCH_RULES = {
 };
 
 /** @type {import('./engine.js').Tour} */
+export const CONFIG_OVERVIEW = {
+  id: 'config-overview',
+  title: 'Configuration Overview',
+  pages: [`${CONFIG}:tab-config-overview`],
+  steps: [
+    {
+      id: 'map',
+      target: 'config.overview',
+      navigate: [CONFIG, 'tab-config-overview'],
+      title: 'Every screen, with a count',
+      body: 'Each entry is one screen on the rail beside it, with a live count of what it holds. '
+        + 'A count of 0 is the fastest way to find what is still missing on a half-built install, '
+        + 'and each entry takes you straight there.',
+    },
+    {
+      id: 'order',
+      target: 'config.labelsAndTags',
+      title: 'They depend on each other in rail order',
+      body: 'Labels first, because everything names them. Then Sources and Datasets, which supply '
+        + 'images; Model Shapes and Training, which produce models; and Watch Rules, which spends '
+        + 'all of it. Every screen has its own ? once you are on it.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const DATASETS = {
+  id: 'datasets',
+  title: 'Datasets',
+  pages: [`${CONFIG}:tab-dataset-management`],
+  steps: [
+    {
+      id: 'intro',
+      target: 'config.datasets',
+      navigate: [CONFIG, 'tab-dataset-management'],
+      title: 'A dataset is a saved filter, not a folder',
+      body: 'Images are not copied into it. A dataset stores the same filter the Review tab uses — '
+        + 'these labels, these tags, this verification state — so it re-evaluates as you annotate '
+        + 'and a model trained tomorrow sees everything added since.',
+    },
+    {
+      id: 'create',
+      target: 'list.ds.new',
+      title: 'Build one from a filter',
+      body: 'Press + New and set the filter here, or build it visually in Review and save the '
+        + 'filter you already have. Training Configs then point at the dataset by name.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const MODEL_STACKS = {
+  id: 'model-stacks',
+  title: 'Model Stacks',
+  pages: [`${CONFIG}:tab-modelstack-management`],
+  steps: [
+    {
+      id: 'intro',
+      target: 'config.modelStacks',
+      navigate: [CONFIG, 'tab-modelstack-management'],
+      title: 'A stack is an ordered list of detectors',
+      body: 'Run several models over the same frame as one unit. A member is either a model or '
+        + 'another stack, expanded recursively at run time, so a stack you already trust can be '
+        + 'reused inside a bigger one rather than restated.',
+    },
+    {
+      id: 'use',
+      target: 'config.modelStacks',
+      title: 'Anywhere a model is chosen, a stack will do',
+      body: 'Inference, collectors and filter-chain steps all accept one. Naming the combination '
+        + 'once means changing it in one place instead of everywhere it is used.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const TRAINING = {
+  id: 'training',
+  title: 'Training',
+  pages: [`${CONFIG}:tab-training-management`],
+  steps: [
+    {
+      id: 'intro',
+      target: 'config.training',
+      navigate: [CONFIG, 'tab-training-management'],
+      title: 'Training joins a dataset to a model shape',
+      body: 'This is the screen that connects the two halves: the images to learn from (a dataset) '
+        + 'and the labels to learn (a model shape), plus which trainer and any hyperparameters. '
+        + 'Saving one defines the run; starting it is a job.',
+    },
+    {
+      id: 'readiness',
+      target: 'config.training',
+      title: 'Readiness tells you whether it is worth starting',
+      body: 'The panel counts how many of the dataset\'s images have every target label explicitly '
+        + 'verified, against how many are still unreviewed. Training on unverified boxes teaches '
+        + 'the model your mistakes, so this number is the one to watch.',
+    },
+    {
+      id: 'run',
+      target: 'config.training',
+      title: 'Starting a run',
+      body: 'A saved config is started from Jobs, where its progress and the resulting model turn '
+        + 'up. The model then needs a class map under Labels & Tags before anything can use it.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const FILTER_CHAINS = {
+  id: 'filter-chains',
+  title: 'Filter Chains',
+  pages: [`${CONFIG}:tab-filterchain-management`],
+  steps: [
+    {
+      id: 'intro',
+      target: 'config.filterChains',
+      navigate: [CONFIG, 'tab-filterchain-management'],
+      title: 'Rules applied to images in bulk',
+      body: 'A chain is an ordered set of steps that act on an image or its boxes: discard the '
+        + 'image, tag it, strip unverified boxes, relabel or tag a box, add a box for a detection '
+        + 'that overlaps nothing. Each step decides for itself whether it applies.',
+    },
+    {
+      id: 'use',
+      target: 'list.fc.new',
+      title: 'Where a chain runs',
+      body: 'Collectors run one as frames arrive, so only images worth keeping are stored, and '
+        + 'Review can run one over a filtered set to fix a mistake across thousands of images at '
+        + 'once instead of by hand.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const COLLECTORS = {
+  id: 'collectors',
+  title: 'Collectors',
+  pages: [`${CONFIG}:tab-collector-management`],
+  steps: [
+    {
+      id: 'intro',
+      target: 'config.collectors',
+      navigate: [CONFIG, 'tab-collector-management'],
+      title: 'A collector gathers training images for you',
+      body: 'It is the whole collect-images parameter set saved as one reusable thing: which '
+        + 'models to run, the per-label confidence bands worth keeping, the filter chain, '
+        + 'deduplication, and where frames land.',
+    },
+    {
+      id: 'bands',
+      target: 'config.collectors',
+      title: 'Confidence bands are the useful part',
+      body: 'Keeping frames a model was *unsure* about is what improves it. Confident detections '
+        + 'teach it nothing it does not already know, so the bands usually want the middle of the '
+        + 'range rather than the top.',
+    },
+    {
+      id: 'use',
+      target: 'list.col.new',
+      title: 'Named once, used twice',
+      body: 'A job names a collector and supplies the sources and pacing; a watcher can name one '
+        + 'too, so frames are gathered while it watches. That reuse is why this is its own screen '
+        + 'rather than thirty knobs on a task.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const TASKS = {
+  id: 'tasks',
+  title: 'Tasks',
+  pages: [`${CONFIG}:tab-task-management`],
+  steps: [
+    {
+      id: 'intro',
+      target: 'config.tasks',
+      navigate: [CONFIG, 'tab-task-management'],
+      title: 'Task configs are saved job settings',
+      body: 'A task config is one job\'s parameters kept under a name — an inference pass over a '
+        + 'folder, a collection run, a timelapse. Defining it here separates deciding what a job '
+        + 'does from deciding when to run it.',
+    },
+    {
+      id: 'run',
+      target: 'list.tc.new',
+      title: 'Running one',
+      body: 'Jobs starts a saved config and reports its progress. The same config can be run again '
+        + 'whenever you like, which is what makes a repeated pass over new images one click.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
+export const SETTINGS = {
+  id: 'settings',
+  title: 'Settings',
+  pages: ['tab-settings'],
+  steps: [
+    {
+      id: 'hotkeys',
+      target: 'settings.hotkeys',
+      navigate: ['tab-settings', 'tab-settings-hotkeys'],
+      title: 'Keyboard shortcuts are worth five minutes',
+      body: 'Annotating is the part of this you will do most, and it is far faster from the '
+        + 'keyboard: switch tool, next image, save, verify — all one key. Every binding is listed '
+        + 'here and every one can be rebound.',
+    },
+    {
+      id: 'labelKeys',
+      target: 'settings.hotkeys',
+      title: 'Your labels get keys of their own',
+      body: 'Once labels exist they appear in this list too, so a key can select one directly '
+        + 'while you draw. If the list looks short, it is because the vocabulary is — come back '
+        + 'after creating labels and assign the ones you use most.',
+    },
+    {
+      id: 'interface',
+      target: 'settings.interface',
+      navigate: ['tab-settings', 'tab-settings-interface'],
+      title: 'Interface holds the tour controls',
+      body: 'Guided tours can be switched off here, restarted, or forgotten so they offer '
+        + 'themselves again — useful when showing someone else around.',
+    },
+  ],
+};
+
+/** @type {import('./engine.js').Tour} */
 export const CONFIGURATION = {
   id: 'configuration',
   title: 'Configure',
@@ -265,11 +493,20 @@ export const CONFIGURATION = {
       id: 'modelShapes',
       target: 'config.modelShapes',
       navigate: [CONFIG, 'tab-model-management'],
-      title: 'Model Shapes — what a model recognises',
-      body: 'A shape is a model\'s output vocabulary. Training Configs, further down the rail, '
-        + 'are what attach datasets to one; this screen is also where a ready-made model is '
-        + 'downloaded.',
+      title: 'Model Shapes — which labels a model knows',
+      body: 'A shape is the list of labels a model recognises. Training Configs, further down the '
+        + 'rail, are where a shape is connected to an image dataset and actually trained.',
       branches: [{ label: DIVE_IN_SCREEN, tour: 'model-shapes' }],
+      nextLabel: NEXT_SCREEN,
+    },
+    {
+      id: 'training',
+      target: 'config.training',
+      navigate: [CONFIG, 'tab-training-management'],
+      title: 'Training — turn a dataset into a model',
+      body: 'Where a model shape and a dataset are joined and actually trained. The readiness '
+        + 'count here is what tells you whether a run is worth starting yet.',
+      branches: [{ label: DIVE_IN_SCREEN, tour: 'training' }],
       nextLabel: NEXT_SCREEN,
     },
     {
@@ -286,10 +523,11 @@ export const CONFIGURATION = {
       id: 'rest',
       target: 'config.overview',
       navigate: [CONFIG, 'tab-config-overview'],
-      title: 'The rest of the rail',
-      body: 'Datasets group annotated images for training; Training turns a dataset and a shape '
-        + 'into a model; Filter Chains, Collectors and Tasks automate the jobs around all of it. '
-        + 'Each has a ? of its own once you are on it.',
+      title: 'Every screen has a tour of its own',
+      body: 'Datasets save a filter over your images; Model Stacks run several detectors as one; '
+        + 'Filter Chains fix boxes in bulk; Collectors gather training frames; Tasks are saved job '
+        + 'settings. Open any of them and the ? in the corner offers that screen\'s own walk — you '
+        + 'never have to sit through this one again to reach it.',
     },
   ],
 };
@@ -462,9 +700,10 @@ export const OVERVIEW = {
       id: 'annotate',
       target: 'nav.annotate',
       navigate: ['tab-image-tagging'],
-      title: 'Annotate — teach it what things look like',
-      body: 'Draw boxes on frames and correct the ones a model got wrong. That corrected set is '
-        + 'the training data, and it is the only part of this the computer cannot do for you.',
+      title: 'Annotate — browse, upload and label images',
+      body: 'Browse every image the workspace holds, upload your own from this computer, and draw '
+        + 'labelled boxes on them. A model can take the first pass and you correct what it got '
+        + 'wrong, and Review verifies boxes in bulk once there are more than a few.',
       branches: [{ label: DIVE_IN, tour: 'annotate' }],
       nextLabel: NEXT_TAB,
     },
@@ -472,10 +711,11 @@ export const OVERVIEW = {
       id: 'watch',
       target: 'nav.nvr',
       navigate: ['tab-nvr'],
-      title: 'Watch — the day job',
-      body: 'A rule points a model at a stream and turns what it sees into events, clips and '
-        + 'Home Assistant sensors. Once this is running, the rest of the app exists to make it '
-        + 'better at its job.',
+      title: 'Watch — live feeds and recorded events',
+      body: 'Two halves: Live shows the feed of every watcher currently running, and Events is the '
+        + 'history of what they saw, with the clip around each one. "+ Add Watcher" in the corner '
+        + 'starts a new one — a watcher is what links image sources to rules, and rules to the '
+        + 'actions that fire when they match.',
       branches: [{ label: DIVE_IN, tour: 'watch' }],
       nextLabel: NEXT_TAB,
     },
@@ -488,6 +728,17 @@ export const OVERVIEW = {
         + 'their results up here.',
       branches: [{ label: DIVE_IN, tour: 'runs' }],
       nextLabel: NEXT_TAB,
+    },
+    {
+      id: 'settings',
+      target: 'nav.settings',
+      navigate: ['tab-settings'],
+      title: 'Settings — and the keyboard shortcuts',
+      body: 'Worth one stop before you start: annotating is much faster from the keyboard, and '
+        + 'every shortcut is listed and rebindable here. Your own labels join that list once they '
+        + 'exist, so a key can pick one while you draw.',
+      branches: [{ label: 'Show me the shortcuts →', tour: 'settings' }],
+      nextLabel: 'Finish →',
     },
     {
       id: 'done',
@@ -510,9 +761,17 @@ export const TOURS = Object.freeze([
   ANNOTATE,
   WATCH,
   RUNS,
+  SETTINGS,
+  CONFIG_OVERVIEW,
   LABELS,
+  DATASETS,
   SOURCES,
   MODEL_SHAPES,
+  MODEL_STACKS,
+  TRAINING,
+  FILTER_CHAINS,
+  COLLECTORS,
+  TASKS,
   WATCH_RULES,
 ]);
 

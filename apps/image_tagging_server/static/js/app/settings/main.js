@@ -119,6 +119,9 @@ export async function init() {
       const button = document.createElement('span');
       button.className = 'workspace-tab-button config-rail__item';
       button.dataset.tab = item.tab;
+      // Tour anchor, keyed on the screen so every Settings destination is
+      // addressable without each one opting in (`settings.hotkeys`, …).
+      button.dataset.tour = `settings.${item.tab.replace('tab-settings-', '')}`;
       button.textContent = item.label;
       groupEl.appendChild(button);
 

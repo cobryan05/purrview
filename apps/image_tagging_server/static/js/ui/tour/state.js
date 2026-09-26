@@ -32,11 +32,14 @@ const CACHE_KEY = 'ww_tour_state';
  * @property {boolean} neverShow - no tour is ever auto-started
  * @property {Record<string, number>} progress - tourId → step index it stopped on
  * @property {TourReturn[]} stack - tours waiting for a branch to finish, outermost first
+ * @property {boolean} fabHintSeen - the "there is a tour here" callout has been shown once
  */
 
 /** @returns {TourState} */
 function _empty() {
-  return { completed: [], dismissed: [], paused: [], neverShow: false, progress: {}, stack: [] };
+  return {
+    completed: [], dismissed: [], paused: [], neverShow: false, progress: {}, stack: [], fabHintSeen: false,
+  };
 }
 
 /** @param {unknown} raw @returns {TourState} */
@@ -47,6 +50,7 @@ function _normalise(raw) {
   if (Array.isArray(raw.dismissed)) state.dismissed = raw.dismissed.filter(id => typeof id === 'string');
   if (Array.isArray(raw.paused)) state.paused = raw.paused.filter(id => typeof id === 'string');
   state.neverShow = raw.neverShow === true;
+  state.fabHintSeen = raw.fabHintSeen === true;
   if (raw.progress && typeof raw.progress === 'object') {
     for (const [id, i] of Object.entries(raw.progress)) {
       if (Number.isInteger(i) && i >= 0) state.progress[id] = i;
@@ -88,15 +92,30 @@ async function _write(state) {
 }
 
 /**
+ * Serialises updates. Every write is read-modify-write against a single setting, so
+ * two overlapping ones lose a change: pausing a tour and recording that the ? hint
+ * was shown happen within a frame of each other, and interleaved they wrote back a
+ * state with no pause in it. Queueing costs a round trip and removes the whole class.
+ * @type {Promise<unknown>}
+ */
+let _writes = Promise.resolve();
+
+/**
  * Apply a change on top of the current state and persist the result.
  * @param {(state: TourState) => void} mutate
  * @returns {Promise<TourState>}
  */
-async function _update(mutate) {
-  const state = await readTourState();
-  mutate(state);
-  await _write(state);
-  return state;
+function _update(mutate) {
+  const run = _writes.then(async () => {
+    const state = await readTourState();
+    mutate(state);
+    await _write(state);
+    return state;
+  });
+  // The queue must survive a failed link, or one unreachable db_server would wedge
+  // every later write; `run` still rejects for the caller.
+  _writes = run.catch(() => {});
+  return run;
 }
 
 /**
@@ -178,7 +197,18 @@ export function resetTourState() {
     state.neverShow = false;
     state.progress = {};
     state.stack = [];
+    state.fabHintSeen = false;
   });
+}
+
+/**
+ * Remember that the one-time "this page has a tour" callout has been shown.
+ *
+ * Once per workspace, not once per page: it explains what the highlighted ? means,
+ * and a user who has read that does not need telling again on the next tab.
+ */
+export function markFabHintSeen() {
+  return _update(state => { state.fabHintSeen = true; });
 }
 
 /**
