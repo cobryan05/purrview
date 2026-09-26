@@ -661,9 +661,17 @@ class TestDecisionCoalescing:
         _open_panel(page, "run-1")
 
         _select_card(page, "c1")
-        page.get_by_test_id("preview-accept").click()
-        page.get_by_test_id("preview-reject").click()
-        page.get_by_test_id("preview-accept").click()
+        # In one browser task, not three Playwright clicks. Each of those is a driver
+        # round-trip with its own actionability checks, so on a loaded box the gap between
+        # them exceeds the 400ms window — the panel then correctly flushes twice and the
+        # failure reads as a coalescing bug when it is click latency. Clicking from inside
+        # the page makes the window a given, which is the premise this test is testing
+        # under, not the thing it is testing.
+        page.evaluate("""() => {
+              for (const id of ['preview-accept', 'preview-reject', 'preview-accept']) {
+                document.querySelector(`[data-testid='${id}']`).click();
+              }
+            }""")
 
         _wait_for_patch(page, api)
         page.wait_for_timeout(300)  # make sure no second (late) PATCH trickles in

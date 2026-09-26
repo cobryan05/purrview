@@ -13,6 +13,7 @@ itself when the user does the thing rather than when they press Next.
 
 import json
 import re
+import time
 
 from playwright.sync_api import Page, expect
 
@@ -38,6 +39,20 @@ def _route_tour_state(page: Page, value: str | None, puts: list | None = None):
             )
 
     page.route(TOUR_STATE_RE, handle)
+
+
+def _saved_state(page: Page, puts: list, timeout_ms: int = 10000) -> dict:
+    """The state the app wrote back, waited for rather than slept for.
+
+    Every write in `ui/tour/state.js` reads the setting before it PUTs, so the write
+    is a second round-trip that nothing on screen is gated on: the card disappears
+    first. A fixed delay here is a guess about how fast the machine is.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not puts:
+        assert time.monotonic() < deadline, f"no tour_state PUT arrived within {timeout_ms}ms"
+        page.wait_for_timeout(50)
+    return json.loads(puts[-1])
 
 
 def _route_labels(page: Page, labels: list):
@@ -117,9 +132,7 @@ class TestSkippingAndFinishingArePersisted:
 
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
         expect(page.locator("[data-testid='tour-spotlight']")).to_have_count(0)
-        page.wait_for_timeout(300)
-        assert puts, "skipping must be written back, or the tour returns on the next load"
-        saved = json.loads(puts[-1])
+        saved = _saved_state(page, puts)
         assert "getting-started" in saved["dismissed"]
         assert "getting-started" not in saved["completed"]
 
@@ -131,8 +144,7 @@ class TestSkippingAndFinishingArePersisted:
 
         page.locator("[data-testid='tour-never-show']").check()
 
-        page.wait_for_timeout(300)
-        assert puts and json.loads(puts[-1])["neverShow"] is True
+        assert _saved_state(page, puts)["neverShow"] is True
 
     def test_done_on_the_last_step_records_completion(self, page: Page, base_url: str):
         puts: list = []
@@ -150,8 +162,7 @@ class TestSkippingAndFinishingArePersisted:
         next_btn.click()
 
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
-        page.wait_for_timeout(300)
-        saved = json.loads(puts[-1])
+        saved = _saved_state(page, puts)
         assert "getting-started" in saved["completed"]
 
 

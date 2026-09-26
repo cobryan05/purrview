@@ -47,11 +47,19 @@ class TestScrollChrome:
             const afterDown = header.getBoundingClientRect().bottom;
             const hiddenClass = document.body.classList.contains('chrome-hidden');
 
-            window.scrollTo(0, 1400);
+            // Scroll up *by* 600 from wherever the page actually is, not *to* a fixed
+            // 1400. scrollChrome keys on the delta from the last sampled position and
+            // ignores anything under DELTA_THRESHOLD (6px), so a fixed target silently
+            // stops being a scroll-up if anything nudged the offset in between — a late
+            // async render changing the document height, and scroll anchoring adjusting
+            // for it, is enough. The delta then falls under the threshold, `update`
+            // returns early, and the chrome stays hidden with no bug in it.
+            const beforeUp = window.scrollY;
+            window.scrollTo(0, window.scrollY - 600);
             await settle();
             const afterUp = header.getBoundingClientRect().top;
 
-            return { atTop, afterDown, hiddenClass, afterUp, scrollY: window.scrollY };
+            return { atTop, afterDown, hiddenClass, afterUp, beforeUp, scrollY: window.scrollY };
         }""" % _ADD_SPACER)
 
         assert result.get("error") is None, result
@@ -60,7 +68,10 @@ class TestScrollChrome:
         assert 0 <= result["atTop"] < 16, f"header not at the top of an unscrolled page: {result['atTop']}"
         assert result["hiddenClass"], "body.chrome-hidden not set after scrolling down"
         assert result["afterDown"] <= 1, f"header still on screen after scrolling down: {result['afterDown']}"
-        assert abs(result["afterUp"]) < 2, f"header did not come back on scroll up: top={result['afterUp']}"
+        assert abs(result["afterUp"]) < 2, (
+            f"header did not come back on scroll up: top={result['afterUp']}, "
+            f"scrolled {result['beforeUp']} -> {result['scrollY']}"
+        )
 
     def test_scrolling_back_to_the_top_always_shows_the_chrome(self, page: Page, base_url: str):
         """Near the top there is nothing to gain by hiding, so it stays visible."""

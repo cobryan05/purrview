@@ -31,7 +31,7 @@ import pytest
 from playwright.sync_api import Page, Route, expect
 
 from playwright_tests.test_nvr_live_view import FRAME_B64, _mock_nvr, _open_live_view
-from playwright_tests.waits import issues_a_request, wait_until
+from playwright_tests.waits import issues_a_request, requests_settle, wait_until
 
 PROFILE_UUID = "99999999-eeee-0000-0000-000000000002"
 EVENT_UUID = "event-uuid-0001"
@@ -307,6 +307,9 @@ def _mock(
     unrouted request would leave the page reaching past the mocks at the real server.
     """
     queries = []
+    # Handed to `_open_events_pane` so it can drain the page's on-open searches before a
+    # test's `issues_a_request` barrier takes its baseline; see that function's docstring.
+    page._ww_search_queries = queries
     # The mock's own copy of the result set: a delete removes rows from it, so the page
     # that follows is genuinely shorter rather than the same one served again.
     rows = list(events) if events is not None else [_event()]
@@ -630,6 +633,13 @@ def _open_events_pane(page: Page, base_url: str, view: str = "all", date_range: 
     page.locator("[data-testid='event-filter-range-select']").select_option(date_range)
     page.locator(f"[data-testid='event-view-{view}']").click()
     page.wait_for_selector(f"[data-testid='event-view-{view}'].event-search__view--active")
+    # The range select and the view click each fire a search that no wait above covers —
+    # the active-class barrier is satisfied by the click alone. Left in flight, one of them
+    # is captured after a test's `issues_a_search` baseline and becomes `queries[-1]`, so
+    # the test reads this setup's query instead of its own interaction's.
+    searches = getattr(page, "_ww_search_queries", None)
+    if searches is not None:
+        requests_settle(page, searches)
 
 
 class TestTheCardAnswersTheObviousQuestions:

@@ -107,3 +107,30 @@ def issues_a_request(page: Page, captured: list, what: str = "request"):
         lambda: len(captured) > before,
         lambda: f"the interaction issued no new {what} (still {len(captured)} captured)",
     )
+
+
+def requests_settle(page: Page, captured: list, quiet_ms: int = 250, timeout: int = DEFAULT_TIMEOUT_MS) -> list:
+    """Wait until `captured` has stopped growing for `quiet_ms`, then return it.
+
+    The companion to `issues_a_request`, for use after *setup* that fires fetches
+    nothing on screen is gated on. That barrier keys on growth from a baseline taken
+    when the block is entered, so a setup request still in flight at that moment is
+    captured afterwards and becomes `captured[-1]` — the following assertion then
+    reads the setup's payload instead of the interaction's, and fails claiming the
+    interaction did nothing. Draining setup first is what makes the baseline honest.
+
+    Unlike `wait_until` this cannot fail: no further request is the expected outcome.
+    """
+    waited = 0
+    seen = len(captured)
+    quiet = 0
+    while quiet < quiet_ms and waited < timeout:
+        page.wait_for_timeout(POLL_INTERVAL_MS)
+        waited += POLL_INTERVAL_MS
+        if len(captured) != seen:
+            seen = len(captured)
+            quiet = 0
+        else:
+            quiet += POLL_INTERVAL_MS
+    _record_near_miss(waited, timeout)
+    return captured
