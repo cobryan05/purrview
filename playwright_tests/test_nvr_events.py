@@ -1929,13 +1929,21 @@ class TestTheTrackingBlipsPanel:
 
         body = page.locator(".event-detail__body")
         video = page.locator(".event-detail__video, .event-detail__image").first
+        # bounding_box() is a one-shot read with no auto-wait and returns None for an
+        # element that has no layout box yet. _open_modal waits only for the modal
+        # container, and with 40 blips the side list is what the first frames go on, so
+        # the premise that there is a player to measure has to be waited on here.
+        expect(video).to_be_visible()
         before = video.bounding_box()
+        assert before is not None, "the player must have a layout box before the list is scrolled"
 
         body.evaluate("el => el.scrollTop = el.scrollHeight")
 
         after = video.bounding_box()
         assert after is not None, "the player must still be on screen after scrolling the blip list"
-        assert abs(after["y"] - before["y"]) <= 2, "the player should stay pinned, not scroll away"
+        assert (
+            abs(after["y"] - before["y"]) <= 2
+        ), f"the player should stay pinned, not scroll away (y {before['y']} -> {after['y']})"
 
     def test_the_panel_follows_the_walk(self, page: Page, base_url: str):
         """The modal walks events in place. A panel that kept the previous event's
