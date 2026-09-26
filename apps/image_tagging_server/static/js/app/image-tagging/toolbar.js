@@ -106,6 +106,10 @@ export function init(runtime, container, options = {}) {
       b.style.flex = btn.flex ?? '1';
       if (btn.flex) b.style.whiteSpace = 'nowrap';
       b.dataset.toolbarKey = btn.key;
+      // Tour anchor, only on the main canvas: `options.buttons` means an editor
+      // modal's toolbar, and a second element carrying the same anchor id would
+      // make the spotlight pick whichever came first in the DOM.
+      if (!options.buttons) b.dataset.tour = `annotate.toolbar.${btn.key}`;
       b.addEventListener('click', btn.onClick);
       if (btn.dataTool) b.dataset.tool = btn.dataTool;
       if (btn.title) b.title = btn.title;

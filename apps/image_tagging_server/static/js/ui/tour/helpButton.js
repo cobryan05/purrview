@@ -17,7 +17,7 @@ import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { openAnchoredPopup } from '/app-static/js/ui/utils/anchoredPopup.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { isTourRunning } from './engine.js';
-import { runTour, toursForPage } from './index.js';
+import { currentTourPage, runTour, toursForPage } from './index.js';
 
 /** @type {?HTMLElement} */
 let button = null;
@@ -37,6 +37,11 @@ function _offerLine(offer) {
   if (startAt > 0) return `Resume at step ${startAt + 1} of ${tour.steps.length}`;
   if (completed) return `Seen — walk it again (${tour.steps.length} steps)`;
   return `${tour.steps.length} steps`;
+}
+
+/** Whether any tour on this page has never been started here. */
+function _anyUnseen() {
+  return offers.some(offer => offer.unseen);
 }
 
 function _buildMenu() {
@@ -65,7 +70,7 @@ function _buildMenu() {
 
     item.addEventListener('click', () => {
       _closePopup();
-      runTour(offer.tour.id, { startAt: offer.startAt });
+      runTour(offer.tour.id, { startAt: offer.startAt, stack: offer.stack });
     });
     menu.appendChild(item);
 
@@ -78,7 +83,7 @@ function _buildMenu() {
       restart.textContent = 'Start from the beginning';
       restart.addEventListener('click', () => {
         _closePopup();
-        runTour(offer.tour.id, { startAt: 0 });
+        runTour(offer.tour.id, { startAt: 0, stack: offer.stack });
       });
       menu.appendChild(restart);
     }
@@ -86,11 +91,11 @@ function _buildMenu() {
   return menu;
 }
 
-/** @param {string} tabName */
-async function _refresh(tabName) {
+/** @param {string} tabName @param {string} [subTabName] */
+async function _refresh(tabName, subTabName = '') {
   if (!button) return;
   try {
-    offers = await toursForPage(tabName);
+    offers = await toursForPage(tabName, subTabName);
   } catch (err) {
     Logger.warn('tour offers unreadable', err);
     offers = [];
@@ -102,6 +107,13 @@ function _syncVisibility() {
   if (!button) return;
   const available = offers.length > 0 && !isTourRunning();
   button.classList.toggle('tour-help-fab--available', available);
+  // The dot is the whole of the "there is a tour here you have not seen" signal —
+  // the alternative, starting it unasked, is an ambush on a page the user opened
+  // to do something else.
+  const unseen = available && _anyUnseen();
+  button.classList.toggle('tour-help-fab--unseen', unseen);
+  button.title = unseen ? 'Guided tour available for this page' : 'Guided tours for this page';
+  button.setAttribute('aria-label', button.title);
   button.setAttribute('aria-hidden', available ? 'false' : 'true');
   button.tabIndex = available ? 0 : -1;
   if (!available) _closePopup();
@@ -129,16 +141,21 @@ export function mountTourHelpButton() {
     popup = openAnchoredPopup(button, _buildMenu());
   });
 
-  events.subscribe(EventTypes.MAIN_TAB_CHANGED, (payload) => { void _refresh(payload?.tabName ?? ''); });
+  function _refreshHere() {
+    const { main, sub } = currentTourPage();
+    if (main) void _refresh(main, sub);
+  }
+
+  // Every tier, not only the main one: moving between Configuration's screens
+  // changes which tour this button should offer.
+  events.subscribe(EventTypes.TAB_CHANGED, _refreshHere);
   // A tour that just ended may have changed what a resume would open on, so the
   // offers are re-read rather than only re-shown.
   events.subscribe(EventTypes.TOUR_STATE_CHANGED, () => {
     _syncVisibility();
-    const active = document.querySelector('.main-tab-button.active')?.dataset.tab;
-    if (!isTourRunning() && active) void _refresh(active);
+    if (!isTourRunning()) _refreshHere();
   });
 
-  const active = document.querySelector('.main-tab-button.active')?.dataset.tab ?? '';
-  void _refresh(active);
+  _refreshHere();
   return button;
 }

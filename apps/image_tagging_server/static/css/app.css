@@ -9487,3 +9487,71 @@ progress.progress-indeterminate:indeterminate {
   padding-top: 0;
   padding-left: calc(var(--space-2) * 2);
 }
+
+/* ── Branching tours (ui/tour/) ─────────────────────────────────────────────
+   A step that offers another tour gets its own row rather than a fourth button
+   beside Back/Next: in sheet mode the action row already spans the viewport. */
+.tour-card__branches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+}
+
+.tour-card__branch {
+  width: 100%;
+  margin: 0;
+}
+
+/* The card is positioned against its target, so the × is placed against the card
+   rather than floated: a float would leave a hole the title flows around. */
+.tour-card__dismiss {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tour-card__dismiss:hover,
+.tour-card__dismiss:focus-visible {
+  color: var(--text);
+}
+
+/* Room for the ×, so a long tour name does not run under it. */
+.tour-card__progress {
+  padding-right: 1.5rem;
+}
+
+.tour-card__progress--nested::before {
+  content: "↳ ";
+  color: var(--color-info);
+}
+
+/* A page whose tour has never been run here. The dot is the entire invitation —
+   the tour does not start itself (ui/tour/index.js). */
+.tour-help-fab--unseen {
+  opacity: 1;
+  color: var(--color-info);
+  border-color: var(--color-info);
+}
+
+.tour-help-fab--unseen::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-info);
+  box-shadow: 0 0 0 2px var(--bg);
+}

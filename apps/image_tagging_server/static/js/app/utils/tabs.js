@@ -1,3 +1,5 @@
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
+
 /**
  * Tab setup helper
  * @param {HTMLElement|string} containerOrSelector - container or selector
@@ -38,6 +40,11 @@ function setupTabs(containerOrSelector, buttonSelector, paneSelector, onTabChang
     if (pane) pane.classList.add('active');
 
     onTabChange?.(tabName, button, pane);
+    // Announced for every tier, not just the main one: "which page am I on" is a
+    // main tab *and* a sub-tab (Configuration › Watch Rules is not Configuration ›
+    // Labels), and only the tier that changed knows it did. Published after the
+    // caller's own hook so a listener reading the DOM sees the finished state.
+    events.publish(EventTypes.TAB_CHANGED, { tabName });
   }
 
   // attach click listeners
@@ -141,35 +148,52 @@ const NAV_POLL_MS = 25;
  * for. If the pane never wires up, the selection is dropped for the same
  * reason.
  *
- * @param {string} mainTabId       e.g. 'tab-configuration'
- * @param {string} workspaceTabId  e.g. 'tab-dataset-management'
+ * Tiers below the first are walked one at a time, each waiting for the one above
+ * to wire before looking for the next: Annotate nests three deep (main → section
+ * → workspace, plus a sidebar tier), and the inner buttons do not exist until the
+ * outer pane has mounted. The button selector is tier-agnostic because every tier
+ * goes through `setupTabs` and so carries `data-tab-wired`.
+ *
+ * @param {string} mainTabId  e.g. 'tab-configuration'
+ * @param {string|string[]} tabPath  one sub-tab id, or a path through nested
+ *   tiers, e.g. ['tab-annotate-workspace', 'tab-files']
  * @param {Object} [opts]
  * @param {?string} [opts.selectUuid] - item the destination pane should open
  *   with selected, for panes that support it (the list-editor screens).
  */
-export function navigateTabs(mainTabId, workspaceTabId, { selectUuid = null } = {}) {
-  if (selectUuid) _pendingSelections.set(workspaceTabId, selectUuid);
+export function navigateTabs(mainTabId, tabPath, { selectUuid = null } = {}) {
+  const path = (Array.isArray(tabPath) ? tabPath : [tabPath]).filter(Boolean);
+  const destination = path[path.length - 1] ?? null;
+  if (selectUuid && destination) _pendingSelections.set(destination, selectUuid);
   document.querySelector(`.main-tab-button[data-tab="${mainTabId}"]`)?.click();
 
-  const deadline = Date.now() + NAV_WIRE_TIMEOUT_MS;
-  const attempt = () => {
-    const button = document.querySelector(`#${mainTabId} [data-tab="${workspaceTabId}"][data-tab-wired]`);
-    if (!button) {
-      if (Date.now() < deadline) {
-        setTimeout(attempt, NAV_POLL_MS);
-      } else if (selectUuid && _pendingSelections.get(workspaceTabId) === selectUuid) {
-        // Nobody is going to consume it now, and leaving it would ambush a
-        // later visit. Only drop our own entry — a newer navigation may have
-        // overwritten it in the meantime.
-        _pendingSelections.delete(workspaceTabId);
+  /** @param {number} depth */
+  const step = (depth) => {
+    const tabId = path[depth];
+    if (!tabId) return;
+    const last = depth === path.length - 1;
+    const deadline = Date.now() + NAV_WIRE_TIMEOUT_MS;
+    const attempt = () => {
+      const button = document.querySelector(`#${mainTabId} [data-tab="${tabId}"][data-tab-wired]`);
+      if (!button) {
+        if (Date.now() < deadline) {
+          setTimeout(attempt, NAV_POLL_MS);
+        } else if (selectUuid && destination && _pendingSelections.get(destination) === selectUuid) {
+          // Nobody is going to consume it now, and leaving it would ambush a
+          // later visit. Only drop our own entry — a newer navigation may have
+          // overwritten it in the meantime.
+          _pendingSelections.delete(destination);
+        }
+        return;
       }
-      return;
-    }
-    // Clicking the already-active tab is a no-op, so the pane would never
-    // re-render and the pending selection would sit unconsumed until some
-    // later visit picked it up. Drop `active` first to force the re-render.
-    if (selectUuid) button.classList.remove('active');
-    button.click();
+      // Clicking the already-active tab is a no-op, so the pane would never
+      // re-render and the pending selection would sit unconsumed until some
+      // later visit picked it up. Drop `active` first to force the re-render.
+      if (selectUuid && last) button.classList.remove('active');
+      button.click();
+      if (!last) step(depth + 1);
+    };
+    setTimeout(attempt, 0);
   };
-  setTimeout(attempt, 0);
+  step(0);
 }

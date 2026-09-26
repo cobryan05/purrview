@@ -1483,8 +1483,9 @@ async function _buildToursRow() {
 
   const { row, setStatus } = _buildRow({
     label: 'Guided tours',
-    description: 'A tour walks you through a screen step by step. One offers itself on an empty '
-      + 'workspace; you can run it again here any time.',
+    description: 'Each tab has a tour, and an overview walks all of them — stop at any tab to go '
+      + 'deeper, and it picks up where it left off. The overview offers itself on an empty '
+      + 'workspace; the ? in the bottom left opens the tour for the page you are on.',
     controls: [autoLabel, runBtn, resetBtn],
   });
 

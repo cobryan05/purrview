@@ -56,6 +56,14 @@ export const EventTypes = Object.freeze({
    * Payload: { tabName: string }  e.g. { tabName: 'tab-configuration' }
    */
   MAIN_TAB_CHANGED: "tabs:main:changed",
+  /**
+   * Fired after *any* tab tier is activated — main, section, workspace or sidebar.
+   * MAIN_TAB_CHANGED still fires for the main tier; this is the one to listen to
+   * when a sub-tab matters, such as telling Configuration › Watch Rules apart from
+   * Configuration › Labels.
+   * Payload: { tabName: string }
+   */
+  TAB_CHANGED: "tabs:changed",
   CANVAS_BBOX_DOUBLE_CLICKED: "canvas:bbox:double_clicked",
   CANVAS_BBOX_CLICKED: "canvas:bbox:clicked",
   /**

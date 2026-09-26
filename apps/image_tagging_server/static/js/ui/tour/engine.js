@@ -20,12 +20,29 @@
  * A step whose subject may simply not exist — the per-row controls on a label the
  * user declined to create — sets `requireTarget`, and the engine passes over it
  * rather than talking about a control that is not on screen.
+ *
+ * Tours branch by *calling* each other. A step's `branches` offer to run another
+ * tour and come back: the current tour and step are pushed on a stack, the branch
+ * runs as an ordinary linear tour, and finishing it pops back to the step after
+ * the one that branched. That is why the overview can hand off to a page's own
+ * tour without losing its place, and why no tour ever jumps into another's step
+ * numbering — "3 of 7" stays true because each tour counts only its own steps.
+ * Pausing or dismissing a branch does *not* pop: the user asked to stop, not to
+ * go back up one level.
  */
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { createCoachMark } from './coachMark.js';
-import { markTourCompleted, markTourDismissed, readTourState, setNeverShowTours } from './state.js';
+import { tourById } from './registry.js';
+import {
+  markTourCompleted,
+  markTourDismissed,
+  markTourPaused,
+  readTourState,
+  setNeverShowTours,
+  writeTourStack,
+} from './state.js';
 
 /** How long a step waits for its anchor after navigating before going on without one. */
 const TARGET_TIMEOUT_MS = 4000;
@@ -38,14 +55,24 @@ const OPTIONAL_TARGET_TIMEOUT_MS = 1500;
 const TARGET_POLL_MS = 50;
 
 /**
+ * @typedef {Object} TourBranch
+ * @property {string} label - the button's text, e.g. "Tour this tab →"
+ * @property {string} tour - id of the tour to run and return from
+ * @property {number} [startAt] - step to open the branch on
+ */
+
+/**
  * @typedef {Object} TourStep
  * @property {string} id - unique within the tour
  * @property {?string} target - a `data-tour` anchor id; null for a step with no spotlight
- * @property {[string, string?]} [navigate] - main tab id and optional workspace tab id to land on first
+ * @property {string[]} [navigate] - a tab path to land on first: the main tab id,
+ *   then one id per nested tier (Annotate needs three)
  * @property {string} title
  * @property {string} body
  * @property {{event: string}} [advanceOn] - an EventTypes value that completes the step
  * @property {boolean} [requireTarget] - skip the step entirely when its anchor is absent
+ * @property {TourBranch[]} [branches] - other tours this step offers to run and return from
+ * @property {string} [nextLabel] - overrides "Next" when the plain word undersells it
  */
 
 /**
@@ -53,17 +80,57 @@ const TARGET_POLL_MS = 50;
  * @property {string} id
  * @property {string} title
  * @property {TourStep[]} steps
+ * @property {boolean} [autoStart] - may offer itself unasked; page tours never do
  * @property {() => Promise<boolean>} [eligible] - whether to auto-start on this workspace
  * @property {string[]} [pages] - main tab ids the help button offers this tour on; all of them when absent
  */
 
-/** @param {string} id */
-export function tourAnchor(id) {
-  return document.querySelector(`[data-tour="${CSS.escape(id)}"]`);
+/**
+ * How long after an engine-driven tab switch the guard stays up.
+ *
+ * A tour step navigates, which fires MAIN_TAB_CHANGED, which is exactly what the
+ * auto-resume listener watches for — without this it would restart the tour the
+ * user is standing in, every step. `navigateTabs` walks nested tiers on timers,
+ * so the guard has to outlast the last of them rather than the first click.
+ */
+const NAV_GUARD_MS = 1200;
+
+let _engineNavigating = 0;
+
+/** Whether a tab change now is the engine's own doing rather than the user's. */
+export function isEngineNavigating() {
+  return _engineNavigating > 0;
 }
+
+/** Tours waiting for a branch to finish, outermost first. @type {import('./state.js').TourReturn[]} */
+let _stack = [];
+
+/** The tour a finished branch would return to, or null. */
+export function pendingReturn() {
+  return _stack.length ? _stack[_stack.length - 1] : null;
+}
+
 
 function _visible(node) {
   return !!node && node.isConnected && node.getClientRects().length > 0;
+}
+
+/**
+ * The element a `data-tour` id points at, preferring one that is actually on screen.
+ *
+ * Anchors are not unique by construction: the list-editor primitive keys its "+ New"
+ * on a screen prefix, and three Configuration screens share `mc`. Only one of their
+ * panes is displayed at a time, but all of them are in the DOM once mounted, so
+ * taking the first match would hand back a hidden twin and the step would wait out
+ * its timeout pointing at nothing. Falls back to the first match so a step whose
+ * pane has not painted yet still resolves once it does.
+ *
+ * @param {string} id
+ */
+export function tourAnchor(id) {
+  const matches = document.querySelectorAll(`[data-tour="${CSS.escape(id)}"]`);
+  if (matches.length <= 1) return matches[0] ?? null;
+  return [...matches].find(_visible) ?? matches[0];
 }
 
 /**
@@ -110,10 +177,14 @@ export function stopTour() {
  * @param {Tour} tour
  * @param {Object} [opts]
  * @param {number} [opts.startAt] - step index to open on
+ * @param {import('./state.js').TourReturn[]} [opts.stack] - tours to return to when
+ *   this one finishes; defaults to clearing the stack, so starting a tour on
+ *   purpose is never haunted by a branch someone abandoned an hour ago
  * @returns {{stop: () => void, next: () => void, back: () => void, currentIndex: () => number}}
  */
-export function startTour(tour, { startAt = 0 } = {}) {
+export function startTour(tour, { startAt = 0, stack = [] } = {}) {
   _active?.stop();
+  _stack = stack.slice();
 
   const coach = createCoachMark();
   let index = -1;
@@ -152,9 +223,14 @@ export function startTour(tour, { startAt = 0 } = {}) {
       body: step.body,
       index,
       count: tour.steps.length,
+      tourTitle: tour.title,
+      returnTo: _stack.length ? tourById(_stack[_stack.length - 1].tourId)?.title ?? null : null,
+      branches: (step.branches ?? []).map(b => ({ label: b.label, onPick: () => _branch(b) })),
+      nextLabel: step.nextLabel ?? null,
       onNext: next,
       onBack: index > 0 ? back : null,
-      onSkip: skip,
+      onPause: pause,
+      onDismiss: dismiss,
       onNeverShow: (value) => {
         neverShow = value;
         void setNeverShowTours(value);
@@ -162,6 +238,23 @@ export function startTour(tour, { startAt = 0 } = {}) {
       neverShow,
       waiting: !!step.advanceOn,
     });
+  }
+
+  /**
+   * Run another tour and come back to the step after this one.
+   * @param {TourBranch} branch
+   */
+  function _branch(branch) {
+    const sub = tourById(branch.tour);
+    if (!sub) {
+      Logger.warn(`tour "${tour.id}" branches to unknown tour "${branch.tour}"`);
+      next();
+      return;
+    }
+    const nextStack = [..._stack, { tourId: tour.id, index }];
+    stop();
+    void writeTourStack(nextStack);
+    startTour(sub, { startAt: branch.startAt ?? 0, stack: nextStack });
   }
 
   /**
@@ -176,8 +269,10 @@ export function startTour(tour, { startAt = 0 } = {}) {
     index = i;
 
     if (step.navigate) {
-      const [mainTab, workspaceTab] = step.navigate;
-      if (workspaceTab) navigateTabs(mainTab, workspaceTab);
+      const [mainTab, ...rest] = step.navigate;
+      _engineNavigating++;
+      setTimeout(() => { _engineNavigating--; }, NAV_GUARD_MS);
+      if (rest.length) navigateTabs(mainTab, rest);
       else document.querySelector(`.main-tab-button[data-tab="${mainTab}"]`)?.click();
     }
 
@@ -240,8 +335,20 @@ export function startTour(tour, { startAt = 0 } = {}) {
   function next() {
     if (stopped) return;
     if (index >= tour.steps.length - 1) {
+      // Captured before stop(), which leaves _stack alone but may be followed by
+      // another startTour that replaces it.
+      const frame = pendingReturn();
+      const popped = _stack.slice(0, -1);
       stop();
-      void markTourCompleted(tour.id).then(_announceSettled, _announceSettled);
+      // The pop rides along with the completion: both are one read-modify-write
+      // against the same setting, and two in flight would lose one another.
+      void markTourCompleted(tour.id, frame ? popped : null)
+        .then(_announceSettled, _announceSettled);
+      if (!frame) return;
+      const parent = tourById(frame.tourId);
+      // The branch came *from* frame.index, so the parent picks up after it.
+      if (parent) startTour(parent, { startAt: frame.index + 1, stack: popped });
+      else _stack = popped;
       return;
     }
     void _show(index + 1);
@@ -252,16 +359,29 @@ export function startTour(tour, { startAt = 0 } = {}) {
     void _show(index - 1, -1);
   }
 
-  function skip() {
+  /**
+   * Stop, meaning to come back. The stack survives, so a paused branch still
+   * knows the overview is waiting behind it.
+   */
+  function pause() {
     if (stopped) return;
     // Read the index before stop() so a resume lands on the step the user walked
     // away from rather than the start.
-    const abandonedAt = index;
+    const at = index;
     stop();
-    void markTourDismissed(tour.id, abandonedAt).then(_announceSettled, _announceSettled);
+    void markTourPaused(tour.id, at).then(_announceSettled, _announceSettled);
   }
 
-  const handle = { stop, next, back, currentIndex: () => index };
+  /** Stop for good: this tour never offers itself again, and the chain is dropped. */
+  function dismiss() {
+    if (stopped) return;
+    const at = index;
+    stop();
+    _stack = [];
+    void markTourDismissed(tour.id, at, []).then(_announceSettled, _announceSettled);
+  }
+
+  const handle = { stop, next, back, pause, dismiss, currentIndex: () => index };
   _active = handle;
   events.publish(EventTypes.TOUR_STATE_CHANGED, { running: true, tourId: tour.id });
   void _show(Math.max(0, Math.min(startAt, tour.steps.length - 1)));

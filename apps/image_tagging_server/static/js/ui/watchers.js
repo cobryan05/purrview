@@ -2749,6 +2749,7 @@ export async function renderWatchProfileManager({ target }) {
       const addSourceBtn = el('button', 'panel-btn', '+ Add source');
       addSourceBtn.type = 'button';
       addSourceBtn.dataset.testid = 'watch-add-source';
+      addSourceBtn.dataset.tour = 'watchRules.addSource';
       addSourceBtn.title = 'Add a camera for this watcher to analyse. Every rule and action below '
         + 'applies to all of them unless you scope it to some.';
       const sourcesBox = el('div', 'watch-rows');
@@ -2891,6 +2892,7 @@ export async function renderWatchProfileManager({ target }) {
       const addRuleBtn = el('button', 'panel-btn', '+ Add rule');
       addRuleBtn.type = 'button';
       addRuleBtn.dataset.testid = 'watch-add-rule';
+      addRuleBtn.dataset.tour = 'watchRules.addRule';
       addRuleBtn.title = 'Add a condition that raises an event while it holds. Rules decide when '
         + 'something happened; the actions below decide what is done about it.';
       const rulesBox = el('div', 'watch-rows');
@@ -3066,6 +3068,7 @@ export async function renderWatchProfileManager({ target }) {
       const addActionBtn = el('button', 'panel-btn', '+ Add action');
       addActionBtn.type = 'button';
       addActionBtn.dataset.testid = 'watch-add-action';
+      addActionBtn.dataset.tour = 'watchRules.addAction';
       addActionBtn.title = 'Add something to do when an event starts or ends, or on every analysed '
         + 'frame — publish MQTT, record a clip, save a snapshot or a timelapse frame.';
       const actionsBox = el('div', 'watch-rows');

@@ -36,9 +36,14 @@ function el(tag, className, text) {
  * @property {string} body
  * @property {number} index - 0-based
  * @property {number} count
+ * @property {string} [tourTitle] - names which tour is counting, once there is more than one
+ * @property {?string} [returnTo] - title of the tour this one branched from, if any
+ * @property {{label: string, onPick: () => void}[]} [branches] - other tours this step offers
+ * @property {?string} [nextLabel] - overrides "Next"
  * @property {() => void} onNext
  * @property {?() => void} onBack - null on the first step
- * @property {() => void} onSkip
+ * @property {() => void} onPause - stop, but resume on coming back to this page
+ * @property {() => void} onDismiss - stop for good
  * @property {(never: boolean) => void} onNeverShow
  * @property {boolean} neverShow - current value of the opt-out box
  * @property {boolean} [waiting] - the step advances itself when the user acts; Next reads "Skip this"
@@ -68,10 +73,24 @@ export function createCoachMark() {
   optOutBox.dataset.testid = 'tour-never-show';
   optOut.append(optOutBox, el('span', null, "Don't offer tours automatically"));
 
+  // Branches get their own row rather than a fourth button beside Back/Next: on a
+  // touch device the card is a bottom sheet and four controls already fill its width.
+  const branchRow = el('div', 'tour-card__branches');
+  branchRow.dataset.testid = 'tour-branches';
+
   const actions = el('div', 'tour-card__actions');
-  const skipBtn = el('button', 'tour-card__skip', 'Skip tour');
+  const skipBtn = el('button', 'tour-card__skip', 'Pause');
   skipBtn.type = 'button';
   skipBtn.dataset.testid = 'tour-skip';
+  skipBtn.title = 'Stop here — the tour picks up where you left off when you come back';
+
+  // Dismissing is the corner ×, not a second button in the row: pausing is the
+  // common case and the one that should be easy to reach by mistake.
+  const dismissBtn = el('button', 'tour-card__dismiss', '×');
+  dismissBtn.type = 'button';
+  dismissBtn.dataset.testid = 'tour-dismiss';
+  dismissBtn.title = 'Dismiss this tour';
+  dismissBtn.setAttribute('aria-label', 'Dismiss this tour');
   const backBtn = el('button', 'panel-btn secondary', 'Back');
   backBtn.type = 'button';
   backBtn.dataset.testid = 'tour-back';
@@ -82,7 +101,7 @@ export function createCoachMark() {
   right.append(backBtn, nextBtn);
   actions.append(skipBtn, right);
 
-  card.append(progress, title, body, optOut, actions);
+  card.append(dismissBtn, progress, title, body, branchRow, optOut, actions);
 
   /** @type {?CoachMarkStep} */
   let current = null;
@@ -158,7 +177,9 @@ export function createCoachMark() {
 
   // Escape goes through the shared stack in modalZIndex.js so a step pointing into an
   // open modal closes only the topmost overlay, not both at once.
-  const onEsc = () => current?.onSkip();
+  // Escape pauses rather than dismisses: it is the reflex for "get this off my
+  // screen", which is not the same as "never show me this again".
+  const onEsc = () => current?.onPause();
   let escRegistered = false;
 
   const onKey = (e) => {
@@ -172,7 +193,8 @@ export function createCoachMark() {
     } else if (e.key === 'ArrowLeft' && current.onBack) { e.preventDefault(); current.onBack(); }
   };
 
-  skipBtn.addEventListener('click', () => current?.onSkip());
+  skipBtn.addEventListener('click', () => current?.onPause());
+  dismissBtn.addEventListener('click', () => current?.onDismiss());
   backBtn.addEventListener('click', () => current?.onBack?.());
   nextBtn.addEventListener('click', () => current?.onNext());
   optOutBox.addEventListener('change', () => current?.onNeverShow(optOutBox.checked));
@@ -194,13 +216,32 @@ export function createCoachMark() {
     current = step;
     mark(step.target);
     if (!spotlight.isConnected) document.body.append(spotlight, card);
-    progress.textContent = `${step.index + 1} of ${step.count}`;
+    const counted = `${step.index + 1} of ${step.count}`;
+    // The tour's own name matters once several exist: "3 of 7" alone cannot tell a
+    // user walking the Configure tour that the overview is still waiting behind it.
+    progress.textContent = step.tourTitle ? `${step.tourTitle} · ${counted}` : counted;
+    progress.title = step.returnTo ? `Returns to ${step.returnTo} when this finishes` : '';
+    progress.classList.toggle('tour-card__progress--nested', !!step.returnTo);
+
     title.textContent = step.title;
     body.textContent = step.body;
     optOutBox.checked = !!step.neverShow;
+
+    branchRow.replaceChildren();
+    for (const branch of step.branches ?? []) {
+      const btn = el('button', 'panel-btn secondary tour-card__branch', branch.label);
+      btn.type = 'button';
+      btn.dataset.testid = `tour-branch-${step.branches.indexOf(branch)}`;
+      btn.addEventListener('click', () => branch.onPick());
+      branchRow.appendChild(btn);
+    }
+    branchRow.hidden = branchRow.childElementCount === 0;
+
     backBtn.hidden = !step.onBack;
     const last = step.index >= step.count - 1;
-    nextBtn.textContent = last ? 'Done' : step.waiting ? 'Skip this step' : 'Next';
+    nextBtn.textContent = last
+      ? (step.returnTo ? `Back to ${step.returnTo}` : 'Done')
+      : step.nextLabel ?? (step.waiting ? 'Skip this step' : 'Next');
     nextBtn.classList.toggle('secondary', !!step.waiting && !last);
     card.hidden = false;
 
