@@ -17,6 +17,7 @@ import { mountNoticesBar } from '/app-static/js/ui/noticesBar.js';
 import { setPendingDatasetPrefill } from '/app-static/js/ui/datasets.js';
 import { seedRunsBadge } from '/app-static/js/ui/runsBadge.js';
 import { initTours } from '/app-static/js/ui/tour/index.js';
+import { mountTourHelpButton } from '/app-static/js/ui/tour/helpButton.js';
 import { Logger, toast } from '/app-static/js/ui/utils/logging.js';
 
 const initializedFeatures = new Set();
@@ -228,6 +229,10 @@ export async function init(appState) {
   // you are. Jobs' own init is lazy, so seed the count here with a single fetch
   // (no SSE stream: the stream is Jobs' to open when it has focus).
   seedRunsBadge();
+
+  // Mounted before initTours so the "?" is already listening when a tour starts
+  // and can hide itself behind the tour's card.
+  mountTourHelpButton();
 
   // Last, and not awaited: a tour is a guest on a booted page, never something
   // boot waits on, and its workspace check is a couple of cached fetches.

@@ -7,8 +7,9 @@ routes `tour_state` to say what a real install would.
 
 What matters here is conditional: the tour appears on an empty, unseen workspace and
 does NOT appear once it has been declined or once the workspace has something in it;
-a step gets its anchor on screen from another tab; and the walkthrough step advances
-itself when the user does the thing rather than when they press Next.
+a step gets its anchor on screen from another tab; the walkthrough step advances
+itself when the user does the thing rather than when they press Next; and the floating
+"?" resumes a cancelled tour on the step it was cancelled on.
 """
 
 import json
@@ -80,7 +81,7 @@ class TestTheTourOffersItselfOnlyWhenWanted:
 
         card = page.locator("[data-testid='tour-card']")
         expect(card).to_be_visible()
-        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 10")
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 14")
         # Step one lives on Configuration: the tour must have taken the user there
         # from the default Watch tab, not pointed at a tab that is not on screen.
         expect(page.locator("#tab-configuration")).to_be_visible()
@@ -152,12 +153,18 @@ class TestSkippingAndFinishingArePersisted:
         _boot(page, base_url)
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
 
+        # The three per-label-row steps have no anchor on a workspace with no labels,
+        # so the engine passes over them — walk until the button offers to finish
+        # rather than counting clicks.
         next_btn = page.locator("[data-testid='tour-next']")
-        for _ in range(9):
+        for _ in range(20):
+            page.wait_for_timeout(200)
+            if next_btn.inner_text().strip() == "Done":
+                break
             next_btn.click()
-            page.wait_for_timeout(150)
-        expect(page.locator("[data-testid='tour-progress']")).to_have_text("10 of 10")
-        expect(next_btn).to_have_text("Done")
+        else:
+            raise AssertionError("the tour never reached its last step")
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("14 of 14")
 
         next_btn.click()
 
@@ -173,13 +180,13 @@ class TestStepsReachTheirAnchors:
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
         next_btn = page.locator("[data-testid='tour-next']")
 
-        # 1 → 2 → 3 → 4: "Create your first label", whose anchor is a row that only
+        # 1 → 2 → 3 → 4: the label-creation step, whose anchor is a row that only
         # exists once the Labels & Tags pane has mounted.
         for _ in range(3):
             next_btn.click()
             page.wait_for_timeout(150)
 
-        expect(page.locator("[data-testid='tour-title']")).to_have_text("Create your first label")
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Create the top of the hierarchy")
         row = page.locator("[data-tour='config.labels.newObject']")
         expect(row).to_be_visible()
         spot = page.locator("[data-testid='tour-spotlight']")
@@ -202,17 +209,30 @@ class TestStepsReachTheirAnchors:
         for _ in range(3):
             next_btn.click()
             page.wait_for_timeout(150)
-        expect(page.locator("[data-testid='tour-title']")).to_have_text("Create your first label")
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Create the top of the hierarchy")
         # A step that waits offers to be skipped, not "Next": the point is doing it.
         expect(next_btn).to_have_text("Skip this step")
 
-        page.evaluate("""async () => {
-                const { events, EventTypes } = await import('/app-static/js/shared/events/index.js');
-                events.publish(EventTypes.LABELS_UPDATED);
-            }""")
+        # Serve the label the creation is about to make — the same route answers the
+        # POST. Routed only now because at boot the workspace had to look empty, or
+        # the tour would not have offered itself at all.
+        _route_labels(page, [{"uuid": "lbl-1", "name": "Cat", "color": "#fff", "parentUuid": None, "scope": "object"}])
+        name = page.locator("[data-tour='config.labels.newObject'] input[type='text']")
+        name.fill("Cat")
+        name.press("Enter")
 
-        expect(page.locator("[data-testid='tour-progress']")).to_have_text("5 of 10")
-        expect(page.locator("[data-testid='tour-title']")).to_have_text("Sources are where frames come from")
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("5 of 14")
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Add a variant under it")
+        # The step that follows points at a control on the new label's own row, which
+        # is opacity:0 until the row is hovered — the pointer is nowhere near it, so
+        # the spotlight has to reveal the cluster or it would ring an invisible button.
+        expect(page.locator("[data-tour='config.labels.addChild']")).to_be_visible()
+        page.wait_for_function(
+            "() => {"
+            " const el = document.querySelector('[data-tour=\"config.labels.addChild\"]');"
+            " return el && getComputedStyle(el.closest('.lt-acts')).opacity === '1';"
+            "}"
+        )
 
     def test_escape_skips_and_back_returns(self, page: Page, base_url: str):
         _route_tour_state(page, None)
@@ -221,12 +241,91 @@ class TestStepsReachTheirAnchors:
         expect(page.locator("[data-testid='tour-back']")).to_be_hidden()
 
         page.locator("[data-testid='tour-next']").click()
-        expect(page.locator("[data-testid='tour-progress']")).to_have_text("2 of 10")
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("2 of 14")
         page.locator("[data-testid='tour-back']").click()
-        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 10")
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 14")
 
         page.keyboard.press("Escape")
         expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
+
+
+class TestTheHelpButtonResumesAbandonedTours:
+    """The floating "?" is the way back into a tour someone walked away from.
+
+    What matters is that it resumes *where they stopped* rather than restarting: the
+    reason a walkthrough gets cancelled is usually that something else needed doing.
+    """
+
+    def test_it_offers_the_step_the_user_walked_away_from(self, page: Page, base_url: str):
+        _route_tour_state(page, None)
+        _boot(page, base_url)
+        expect(page.locator("[data-testid='tour-card']")).to_be_visible()
+        page.locator("[data-testid='tour-next']").click()
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("2 of 14")
+
+        page.locator("[data-testid='tour-skip']").click()
+        expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
+
+        # Route the stored state to what the app just wrote, so the re-read behind the
+        # help button sees a dismissal at step 2 rather than the 404 it booted on.
+        _route_tour_state(
+            page,
+            json.dumps(
+                {
+                    "neverShow": False,
+                    "dismissed": ["getting-started"],
+                    "completed": [],
+                    "progress": {"getting-started": 1},
+                }
+            ),
+        )
+        # The refresh that follows a skip may have read the setting before that route
+        # replaced it, so change tabs to force another read of the new answer.
+        page.locator(".main-tab-button[data-tab='tab-nvr']").click()
+        fab = page.locator("[data-testid='tour-help-fab']")
+        expect(fab).to_be_visible()
+        fab.click()
+        expect(page.locator("[data-testid='tour-help-menu']")).to_be_visible()
+        expect(page.locator("[data-testid='tour-help-run-getting-started']")).to_contain_text("Resume at step 2")
+
+        page.locator("[data-testid='tour-help-run-getting-started']").click()
+
+        expect(page.locator("[data-testid='tour-card']")).to_be_visible()
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("2 of 14")
+
+    def test_restart_is_offered_separately_and_goes_to_step_one(self, page: Page, base_url: str):
+        _route_tour_state(
+            page,
+            json.dumps(
+                {
+                    "neverShow": True,
+                    "dismissed": ["getting-started"],
+                    "completed": [],
+                    "progress": {"getting-started": 5},
+                }
+            ),
+        )
+        _boot(page, base_url)
+        # neverShow is on, so nothing auto-started — but the button still offers it,
+        # because the list only ever appears when someone asks for it.
+        page.wait_for_timeout(800)
+        expect(page.locator("[data-testid='tour-card']")).to_have_count(0)
+
+        page.locator("[data-testid='tour-help-fab']").click()
+        page.locator("[data-testid='tour-help-restart-getting-started']").click()
+
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 14")
+
+    def test_the_button_stands_down_while_a_tour_is_running(self, page: Page, base_url: str):
+        _route_tour_state(page, None)
+        _boot(page, base_url)
+        expect(page.locator("[data-testid='tour-card']")).to_be_visible()
+
+        # Not merely unstyled: hidden, so it cannot be clicked out from under the card.
+        expect(page.locator("[data-testid='tour-help-fab']")).to_be_hidden()
+
+        page.locator("[data-testid='tour-skip']").click()
+        expect(page.locator("[data-testid='tour-help-fab']")).to_be_visible()
 
 
 class TestSettingsCanRunATour:
@@ -244,4 +343,4 @@ class TestSettingsCanRunATour:
         page.locator("[data-testid='settings-tours-run']").click()
 
         expect(page.locator("[data-testid='tour-card']")).to_be_visible()
-        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 10")
+        expect(page.locator("[data-testid='tour-progress']")).to_have_text("1 of 14")

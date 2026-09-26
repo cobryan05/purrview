@@ -40,15 +40,17 @@ export const ICONS = Object.freeze({
  *
  * @param {keyof ICONS} icon
  * @param {string} title  also the accessible name, and what tests select on
- * @param {{ className?: string, active?: boolean, onClick?: (e: MouseEvent) => any }} [opts]
+ * @param {{ className?: string, active?: boolean, onClick?: (e: MouseEvent) => any, tour?: string }} [opts]
+ *   `tour` sets the `data-tour` anchor id a guided tour points its spotlight at.
  * @returns {HTMLButtonElement}
  */
-export function iconAction(icon, title, { className = '', active = false, onClick = null } = {}) {
+export function iconAction(icon, title, { className = '', active = false, onClick = null, tour = '' } = {}) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `lt-act${active ? ' lt-act--active' : ''}${className ? ` ${className}` : ''}`;
   btn.title = title;
   btn.setAttribute('aria-label', title);
+  if (tour) btn.dataset.tour = tour;
   btn.innerHTML = ICONS[icon] ?? '';
   if (onClick) {
     btn.addEventListener('click', async (e) => {

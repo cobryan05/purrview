@@ -756,10 +756,17 @@ function openInlineCreate(anchorRow, { parentUuid, railKinds, onRerender }) {
   });
 }
 
-function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender, labelsMap, collapseKey) {
+/**
+ * @param {boolean} [tourAnchors] - tag this section's first root row for the guided tour.
+ *   Only the first root row carries the anchors: `tourAnchor()` resolves an id with
+ *   querySelector, so repeating them down the tree would leave the spotlight on an
+ *   arbitrary row, and one row is all a walkthrough needs to point at.
+ */
+function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender, labelsMap, collapseKey, tourAnchors = false) {
   const children = byParent.get(parentUuid ?? null) ?? [];
   for (const label of children) {
     const { name, color, uuid } = label;
+    const tourRow = tourAnchors && indentLevel === 0 && label === children[0];
 
     const { row, swatch, nameEl, collapsed } = buildLabelRow(label, {
       byParent,
@@ -806,6 +813,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
     acts.className = 'lt-acts';
     acts.append(
       iconAction('addChild', 'Add Child', {
+        tour: tourRow ? 'config.labels.addChild' : '',
         onClick: () => {
           // A new child is always the last one, so its own rail is a plain
           // elbow; the ancestors above it keep whatever they already had.
@@ -834,6 +842,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
         }),
       }),
       iconAction('home', 'Home Assistant', {
+        tour: tourRow ? 'config.labels.ha' : '',
         active: label.publishToHa === true,
         onClick: () => toggleHaPicker(row, {
           label,
@@ -845,6 +854,7 @@ function renderEditRows(byParent, container, parentUuid, indentLevel, onRerender
         }),
       }),
       iconAction('variants', 'Exclusive Variants', {
+        tour: tourRow ? 'config.labels.variants' : '',
         active: label.exclusiveVariants === true,
         onClick: () => toggleVariantsPicker(row, {
           label,
@@ -931,7 +941,7 @@ async function mountEditMode(container, { filter, onRerender }) {
    * The two sections are already separate trees on screen; this keeps "Move to…"
    * consistent with what's visible.
    */
-  function addSection({ scope, title, collapseKey, extraControls = [] }) {
+  function addSection({ scope, title, collapseKey, extraControls = [], tourAnchors = false }) {
     const scopedMap = new Map([...labelsMap].filter(([, l]) => l.scope === scope));
     const byParent = buildHierarchy(scopedMap, null);
 
@@ -945,7 +955,7 @@ async function mountEditMode(container, { filter, onRerender }) {
       : null;
 
     inner.appendChild(makeSectionHeader(title, scopedMap.size, collapseAll, ...extraControls));
-    renderEditRows(byParent, inner, null, 0, onRerender, scopedMap, collapseKey);
+    renderEditRows(byParent, inner, null, 0, onRerender, scopedMap, collapseKey, tourAnchors);
     if (scopedMap.size === 0) {
       const empty = document.createElement('div');
       empty.className = 'lt-empty';
@@ -959,7 +969,10 @@ async function mountEditMode(container, { filter, onRerender }) {
     onClick: () => { clearLabelsCache(); onRerender(); },
   });
 
-  addSection({ scope: 'object', title: 'Object Labels', collapseKey: 'edit-object', extraControls: [refreshBtn] });
+  addSection({
+    scope: 'object', title: 'Object Labels', collapseKey: 'edit-object',
+    extraControls: [refreshBtn], tourAnchors: true,
+  });
   addSection({ scope: 'image', title: 'Image Labels', collapseKey: 'edit-image' });
 
   return { destroy() {} };

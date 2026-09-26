@@ -18,6 +18,7 @@ import { showConfirmModal } from '/app-static/js/ui/utils/confirmModal.js';
 import { promptRestartWatchersUsingMqtt } from '/app-static/js/ui/utils/restartAffectedTasks.js';
 import { setConfiguredHoverDelay } from '/app-static/js/ui/thumbnailHoverPreview.js';
 import { readTourState, resetTourState, runTour, setNeverShowTours, TOURS } from '/app-static/js/ui/tour/index.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import {
   DEFAULT_BBOX_HASH_SIZE,
   DEFAULT_BBOX_THRESHOLD,
@@ -1502,6 +1503,9 @@ async function _buildToursRow() {
     try {
       await resetTourState();
       autoBox.checked = true;
+      // The help button caches what a resume would open on; forgetting the state
+      // moves every tour back to step one, so tell it to re-read.
+      events.publish(EventTypes.TOUR_STATE_CHANGED, { running: false, tourId: '' });
       setStatus('Seen tours forgotten — the next eligible one will offer itself on reload.', 'info');
     } catch (e) {
       setStatus(`✗ ${e.message}`, 'error');

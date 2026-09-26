@@ -19,11 +19,12 @@ const CACHE_KEY = 'ww_tour_state';
  * @property {string[]} completed - tours walked to the end
  * @property {string[]} dismissed - tours skipped part-way; not offered again
  * @property {boolean} neverShow - no tour is ever auto-started
+ * @property {Record<string, number>} progress - tourId → step index it was abandoned on
  */
 
 /** @returns {TourState} */
 function _empty() {
-  return { completed: [], dismissed: [], neverShow: false };
+  return { completed: [], dismissed: [], neverShow: false, progress: {} };
 }
 
 /** @param {unknown} raw @returns {TourState} */
@@ -33,6 +34,11 @@ function _normalise(raw) {
   if (Array.isArray(raw.completed)) state.completed = raw.completed.filter(id => typeof id === 'string');
   if (Array.isArray(raw.dismissed)) state.dismissed = raw.dismissed.filter(id => typeof id === 'string');
   state.neverShow = raw.neverShow === true;
+  if (raw.progress && typeof raw.progress === 'object') {
+    for (const [id, i] of Object.entries(raw.progress)) {
+      if (Number.isInteger(i) && i >= 0) state.progress[id] = i;
+    }
+  }
   return state;
 }
 
@@ -80,13 +86,19 @@ export function markTourCompleted(tourId) {
   return _update(state => {
     if (!state.completed.includes(tourId)) state.completed.push(tourId);
     state.dismissed = state.dismissed.filter(id => id !== tourId);
+    delete state.progress[tourId];
   });
 }
 
-/** @param {string} tourId */
-export function markTourDismissed(tourId) {
+/**
+ * @param {string} tourId
+ * @param {number} [stepIndex] - the step the user was on; the help button resumes there
+ */
+export function markTourDismissed(tourId, stepIndex) {
   return _update(state => {
     if (!state.dismissed.includes(tourId)) state.dismissed.push(tourId);
+    if (Number.isInteger(stepIndex) && stepIndex > 0) state.progress[tourId] = stepIndex;
+    else delete state.progress[tourId];
   });
 }
 
@@ -101,6 +113,7 @@ export function resetTourState() {
     state.completed = [];
     state.dismissed = [];
     state.neverShow = false;
+    state.progress = {};
   });
 }
 
@@ -111,4 +124,18 @@ export function resetTourState() {
  */
 export function tourIsUnseen(state, tourId) {
   return !state.neverShow && !state.completed.includes(tourId) && !state.dismissed.includes(tourId);
+}
+
+/**
+ * The step a re-run should open on: where the user walked away from, or the start.
+ * A completed tour always restarts from the beginning — its progress is cleared on
+ * completion, so re-running it is a re-watch, not a resume.
+ *
+ * @param {TourState} state
+ * @param {string} tourId
+ * @returns {number}
+ */
+export function tourResumeIndex(state, tourId) {
+  const i = state.progress?.[tourId];
+  return Number.isInteger(i) && i > 0 ? i : 0;
 }

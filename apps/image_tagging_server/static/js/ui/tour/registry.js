@@ -48,15 +48,59 @@ export const GETTING_STARTED = {
       navigate: ['tab-configuration', 'tab-tag-management'],
       title: 'Labels are what you detect',
       body: 'A label is a thing a model can find in a frame: a particular cat, a food bowl, '
-        + 'a person. Tags are notes you attach to an image or a box — "needs review", '
-        + '"night" — and never train anything.',
+        + 'a person. Labels nest, so a broad "Cat" can hold one child per cat you want told '
+        + 'apart — the next few steps build that. Tags are separate: notes you attach to an '
+        + 'image or a box, like "needs review" or "night", and they never train anything.',
     },
     {
       id: 'labels.create',
       target: 'config.labels.newObject',
-      title: 'Create your first label',
-      body: 'Type a name here and press Enter. Start with the subject you most want to watch for.',
+      title: 'Create the top of the hierarchy',
+      body: 'Type a name here and press Enter. Start broad — "Cat", "Person", "Vehicle" — '
+        + 'because a label with children becomes the group and the children are the variants '
+        + 'inside it. A label that never gets children is just a label, so this works either way.',
       advanceOn: { event: EventTypes.LABELS_UPDATED },
+    },
+    {
+      id: 'labels.addChild',
+      target: 'config.labels.addChild',
+      navigate: ['tab-configuration', 'tab-tag-management'],
+      requireTarget: true,
+      title: 'Add a variant under it',
+      body: 'This button adds a child to the label. Add one per variant you want told apart — a '
+        + 'name for each cat under "Cat". Children are their own training classes, and a model '
+        + 'that only knows the parent can hand off to a finer one that knows the children.',
+      advanceOn: { event: EventTypes.LABELS_UPDATED },
+    },
+    {
+      id: 'labels.variants',
+      target: 'config.labels.variants',
+      navigate: ['tab-configuration', 'tab-tag-management'],
+      requireTarget: true,
+      title: 'Exclusive Variants, on the parent',
+      body: 'Tick this on a parent whose children cannot co-occur — one cat is not also another '
+        + '— and overlapping guesses between them collapse to the single best one. Leave it off '
+        + 'when children genuinely appear side by side, such as two people, or real detections '
+        + 'get thrown away.',
+    },
+    {
+      id: 'labels.ha',
+      target: 'config.labels.ha',
+      navigate: ['tab-configuration', 'tab-tag-management'],
+      requireTarget: true,
+      title: 'Home Assistant, per label',
+      body: 'This is where a label earns its own Home Assistant device with a "detected now" '
+        + 'sensor, optionally broken down per camera. Off by default so the vocabulary does not '
+        + 'become a wall of devices — turn it on for the few you automate against.',
+    },
+    {
+      id: 'labels.classMap',
+      target: 'config.labels.classMap',
+      navigate: ['tab-configuration', 'tab-tag-management'],
+      title: 'The class map connects models to labels',
+      body: 'A trained model emits numbered classes, not names. This column maps those numbers '
+        + 'onto the labels you just built, which is what lets a model detect into your own '
+        + 'vocabulary instead of its author\'s.',
     },
     {
       id: 'sources',
@@ -77,10 +121,10 @@ export const GETTING_STARTED = {
       id: 'modelShapes',
       target: 'config.modelShapes',
       navigate: ['tab-configuration', 'tab-model-management'],
-      title: 'A model shape says what a model detects',
-      body: 'A shape maps a model\'s output classes to your labels. One shape per model, and '
-        + 'shapes can nest: a coarse "cat" detector can hand off to a finer one that tells '
-        + 'your cats apart.',
+      title: 'A model shape says which model runs where',
+      body: 'The class map said what one model\'s numbers mean; a shape says which model covers '
+        + 'which label, and shapes nest: a coarse "cat" detector hands off to a finer one that '
+        + 'tells your cats apart — the hierarchy you just built is exactly what it hands off along.',
     },
     {
       id: 'annotate',
@@ -101,8 +145,8 @@ export const GETTING_STARTED = {
       target: 'nav.nvr',
       title: 'Watch is the day job',
       body: 'Once a source, a label and a model are in place, a watch rule turns them into '
-        + 'events: live feeds, clips and a history of what was seen. This tour can be re-run '
-        + 'any time from Settings › Interface.',
+        + 'events: live feeds, clips and a history of what was seen. The ? button in the bottom '
+        + 'left re-opens this tour any time, from wherever you left it.',
     },
   ],
 };

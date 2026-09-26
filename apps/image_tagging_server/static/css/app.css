@@ -2870,6 +2870,13 @@ button.lt-swatch:hover {
   .lt-acts { opacity: 1; }
 }
 
+/* A tour step pointing at one of these buttons sets data-tour-spotlight on it
+   (ui/tour/coachMark.js). The pointer is never over the row, so without this the
+   spotlight rings an invisible button. */
+.lt-acts:has([data-tour-spotlight]) {
+  opacity: 1;
+}
+
 .lt-act {
   width: 20px;
   height: 20px;
@@ -9378,4 +9385,105 @@ progress.progress-indeterminate:indeterminate {
   color: var(--text-muted);
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* The "?" that gets a cancelled tour back (ui/tour/helpButton.js).
+
+   Bottom left: the tab strip owns the top edge and slides away on scroll, and the
+   bottom right is the Watch tab's "+ New watcher" FAB. Like that FAB it clears the
+   2.5rem #bottom-bars strip and sits below --layer-bottom-bars, so a notice that
+   grows the strip covers this rather than the other way round.
+
+   visibility, not display: the button reserves its corner whether or not the page
+   has a tour, so nothing shifts when you change tabs. */
+.tour-help-fab {
+  position: fixed;
+  left: var(--space-4);
+  bottom: calc(2.5rem + var(--space-3));
+  z-index: var(--layer-sticky-header);
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised, var(--bg));
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0.25rem 0.9rem rgb(0 0 0 / 45%);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.tour-help-fab--available {
+  visibility: visible;
+  opacity: 0.75;
+}
+
+.tour-help-fab--available:hover,
+.tour-help-fab--available:focus-visible {
+  opacity: 1;
+  color: var(--color-info);
+  border-color: var(--color-info);
+}
+
+.tour-help-menu {
+  min-width: 15rem;
+  max-width: min(22rem, calc(100vw - 24px));
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised, var(--bg));
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 55%);
+}
+
+.tour-help-menu__header {
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.tour-help-menu__item,
+.tour-help-menu__restart {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tour-help-menu__item:hover,
+.tour-help-menu__item:focus-visible,
+.tour-help-menu__restart:hover,
+.tour-help-menu__restart:focus-visible {
+  background: var(--pico-primary-background, rgba(255, 255, 255, 0.07));
+}
+
+.tour-help-menu__name {
+  font-weight: 600;
+}
+
+.tour-help-menu__sub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tour-help-menu__restart {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  padding-top: 0;
+  padding-left: calc(var(--space-2) * 2);
 }

@@ -16,15 +16,25 @@
  * created — which is what makes this a walkthrough rather than a slideshow. Next
  * still works on such a step, relabelled "Skip this step", because a user who
  * already understands does not need to be made to do it.
+ *
+ * A step whose subject may simply not exist — the per-row controls on a label the
+ * user declined to create — sets `requireTarget`, and the engine passes over it
+ * rather than talking about a control that is not on screen.
  */
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
-import { events } from '/app-static/js/shared/events/index.js';
+import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { createCoachMark } from './coachMark.js';
 import { markTourCompleted, markTourDismissed, readTourState, setNeverShowTours } from './state.js';
 
 /** How long a step waits for its anchor after navigating before going on without one. */
 const TARGET_TIMEOUT_MS = 4000;
+/**
+ * The same wait for a `requireTarget` step. Shorter because absence is an expected
+ * answer there, not a failure — but not instant: the step still has to outlast its
+ * pane's async mount when a resume lands straight on it.
+ */
+const OPTIONAL_TARGET_TIMEOUT_MS = 1500;
 const TARGET_POLL_MS = 50;
 
 /**
@@ -35,6 +45,7 @@ const TARGET_POLL_MS = 50;
  * @property {string} title
  * @property {string} body
  * @property {{event: string}} [advanceOn] - an EventTypes value that completes the step
+ * @property {boolean} [requireTarget] - skip the step entirely when its anchor is absent
  */
 
 /**
@@ -43,6 +54,7 @@ const TARGET_POLL_MS = 50;
  * @property {string} title
  * @property {TourStep[]} steps
  * @property {() => Promise<boolean>} [eligible] - whether to auto-start on this workspace
+ * @property {string[]} [pages] - main tab ids the help button offers this tour on; all of them when absent
  */
 
 /** @param {string} id */
@@ -57,19 +69,21 @@ function _visible(node) {
 /**
  * Resolve an anchor, waiting for it to appear and be laid out.
  * @param {?string} id
+ * @param {number} [timeoutMs]
+ * @param {boolean} [warnOnMiss] - false for a `requireTarget` step, where absence is an answer
  * @returns {Promise<?Element>}
  */
-function _waitForAnchor(id) {
+function _waitForAnchor(id, timeoutMs = TARGET_TIMEOUT_MS, warnOnMiss = true) {
   if (!id) return Promise.resolve(null);
   const found = tourAnchor(id);
   if (_visible(found)) return Promise.resolve(found);
   return new Promise(resolve => {
-    const deadline = Date.now() + TARGET_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     const poll = () => {
       const node = tourAnchor(id);
       if (_visible(node)) return resolve(node);
       if (Date.now() > deadline) {
-        Logger.warn(`tour anchor "${id}" not found; continuing without a spotlight`);
+        if (warnOnMiss) Logger.warn(`tour anchor "${id}" not found; continuing without a spotlight`);
         return resolve(null);
       }
       setTimeout(poll, TARGET_POLL_MS);
@@ -128,6 +142,7 @@ export function startTour(tour, { startAt = 0 } = {}) {
     _teardownStep();
     coach.hide();
     if (_active === handle) _active = null;
+    events.publish(EventTypes.TOUR_STATE_CHANGED, { running: false, tourId: tour.id });
   }
 
   function _render(step) {
@@ -149,7 +164,11 @@ export function startTour(tour, { startAt = 0 } = {}) {
     });
   }
 
-  async function _show(i) {
+  /**
+   * @param {number} i
+   * @param {1|-1} [dir] - which way to keep going if step `i` turns out to be absent
+   */
+  async function _show(i, dir = 1) {
     const step = tour.steps[i];
     if (!step) return;
     const mySeq = ++seq;
@@ -162,8 +181,18 @@ export function startTour(tour, { startAt = 0 } = {}) {
       else document.querySelector(`.main-tab-button[data-tab="${mainTab}"]`)?.click();
     }
 
-    target = await _waitForAnchor(step.target);
+    target = await _waitForAnchor(
+      step.target,
+      step.requireTarget ? OPTIONAL_TARGET_TIMEOUT_MS : TARGET_TIMEOUT_MS,
+      !step.requireTarget,
+    );
     if (stopped || mySeq !== seq) return;
+    if (step.requireTarget && !target) {
+      const onward = i + dir;
+      if (onward < 0 || onward >= tour.steps.length) { next(); return; }
+      void _show(onward, dir);
+      return;
+    }
     target?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
     _render(step);
 
@@ -201,11 +230,18 @@ export function startTour(tour, { startAt = 0 } = {}) {
     }
   }
 
+  // stop() announces the tour ended, but the state write that decides where a resume
+  // would land lands after it. Announce again once it has, or the help button reads
+  // the pre-write state and offers the wrong step.
+  function _announceSettled() {
+    events.publish(EventTypes.TOUR_STATE_CHANGED, { running: false, tourId: tour.id });
+  }
+
   function next() {
     if (stopped) return;
     if (index >= tour.steps.length - 1) {
       stop();
-      void markTourCompleted(tour.id);
+      void markTourCompleted(tour.id).then(_announceSettled, _announceSettled);
       return;
     }
     void _show(index + 1);
@@ -213,17 +249,21 @@ export function startTour(tour, { startAt = 0 } = {}) {
 
   function back() {
     if (stopped || index <= 0) return;
-    void _show(index - 1);
+    void _show(index - 1, -1);
   }
 
   function skip() {
     if (stopped) return;
+    // Read the index before stop() so a resume lands on the step the user walked
+    // away from rather than the start.
+    const abandonedAt = index;
     stop();
-    void markTourDismissed(tour.id);
+    void markTourDismissed(tour.id, abandonedAt).then(_announceSettled, _announceSettled);
   }
 
   const handle = { stop, next, back, currentIndex: () => index };
   _active = handle;
+  events.publish(EventTypes.TOUR_STATE_CHANGED, { running: true, tourId: tour.id });
   void _show(Math.max(0, Math.min(startAt, tour.steps.length - 1)));
   return handle;
 }

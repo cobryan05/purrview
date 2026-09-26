@@ -86,6 +86,8 @@ export function createCoachMark() {
 
   /** @type {?CoachMarkStep} */
   let current = null;
+  /** @type {?Element} */
+  let marked = null;
   /** @type {?ResizeObserver} */
   let observer = null;
   let raf = 0;
@@ -175,8 +177,22 @@ export function createCoachMark() {
   nextBtn.addEventListener('click', () => current?.onNext());
   optOutBox.addEventListener('change', () => current?.onNeverShow(optOutBox.checked));
 
+  /**
+   * Flag the spotlit element so CSS can reveal a control that is only visible on
+   * hover — the label tree's action cluster is opacity:0 until its row is hovered,
+   * and a spotlight around an invisible button points at nothing.
+   * @param {?Element} node
+   */
+  function mark(node) {
+    if (marked === node) return;
+    marked?.removeAttribute('data-tour-spotlight');
+    marked = node ?? null;
+    marked?.setAttribute('data-tour-spotlight', '');
+  }
+
   function show(step) {
     current = step;
+    mark(step.target);
     if (!spotlight.isConnected) document.body.append(spotlight, card);
     progress.textContent = `${step.index + 1} of ${step.count}`;
     title.textContent = step.title;
@@ -214,6 +230,7 @@ export function createCoachMark() {
 
   function hide() {
     current = null;
+    mark(null);
     cancelAnimationFrame(raf);
     observer?.disconnect();
     observer = null;

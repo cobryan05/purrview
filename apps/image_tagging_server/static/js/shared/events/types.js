@@ -212,4 +212,10 @@ export const EventTypes = Object.freeze({
    * }
    */
   ACTIVE_TRAINING_CONFIG_CHANGED: "training-config:active:changed",
+  /**
+   * Fired when a guided tour starts and when it ends, however it ended
+   * (finished, skipped, or replaced by another tour).
+   * Payload: { running: boolean, tourId: string }
+   */
+  TOUR_STATE_CHANGED: "tour:state:changed",
 });
