@@ -38,6 +38,28 @@ def _red_png_bytes() -> bytes:
     return buffer.tobytes()
 
 
+class _FakeMsg:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+
+def _bare_mqtt_provider(loop):
+    """An MqttImageProvider with no broker: `MqttClient` connects in its constructor."""
+    import asyncio
+
+    from apps.helpers.imageProviders.mqttImageProvider import MqttImageProvider
+
+    provider = MqttImageProvider.__new__(MqttImageProvider)
+    provider._topic = "cam/frames"
+    provider._frameQueue = asyncio.Queue(maxsize=MqttImageProvider.QUEUE_SIZE)
+    provider._dropped_frames = 0
+    provider._last_frame_at = None
+    provider._cadence_s = None
+    provider._cadence_buckets = []
+    provider._loop = loop
+    return provider
+
+
 class TestFfmpegProviderChannelOrder:
     def test_requests_bgr_from_ffmpeg(self):
         """The pixel format asked of ffmpeg *is* the channel order of every frame.
@@ -99,27 +121,36 @@ class TestMqttProviderChannelOrder:
     async def test_reverses_pils_rgb_into_bgr(self):
         """PIL decodes to RGB; the provider's `[..., ::-1]` is what makes it BGR.
 
-        Named `frame_rgb` in the source, which reads like the opposite of what it does —
-        hence a test pinning the behaviour rather than the name.
+        Driven through `_pushFrame`, the only place the conversion happens, so a decode
+        that stops producing three RGB channels is caught here rather than downstream.
         """
-        from apps.helpers.imageProviders.mqttImageProvider import MqttImageProvider
-
-        provider = MqttImageProvider.__new__(MqttImageProvider)
         import asyncio
 
-        provider._frameQueue = asyncio.Queue()
-        provider._loop = asyncio.get_running_loop()
+        from apps.helpers.imageProviders.mqttImageProvider import MqttImageProvider
 
-        from PIL import Image
+        provider = _bare_mqtt_provider(asyncio.get_running_loop())
+        provider._pushFrame(_FakeMsg(_red_png_bytes()))
+        frame, _raw = await asyncio.wait_for(provider._frameQueue.get(), timeout=5)
 
-        decoded = np.array(Image.open(io.BytesIO(_red_png_bytes())))
-        # Sanity: PIL really does hand back RGB, so the reversal below is load-bearing.
-        assert tuple(decoded[0, 0]) == (255, 0, 0)
-        await provider._frameQueue.put(decoded)
+        assert tuple(frame[0, 0]) == RED_BGR
 
-        provided = await provider.getNextImage()
+    async def test_a_greyscale_payload_is_not_mirrored(self):
+        """A publisher may send single-channel JPEGs, and `[..., ::-1]` on a 2-D array
+        reverses *columns* — a horizontally flipped frame, with nothing downstream able
+        to tell. The convert to RGB before the reversal is what prevents it."""
+        import asyncio
 
-        assert tuple(provided.image[0, 0]) == RED_BGR
+        provider = _bare_mqtt_provider(asyncio.get_running_loop())
+        # Left half black, right half white: a mirror is the only failure that shows.
+        grey = np.zeros((8, 8), dtype=np.uint8)
+        grey[:, 4:] = 255
+        ok, buffer = cv2.imencode(".png", grey)
+        assert ok
+        provider._pushFrame(_FakeMsg(buffer.tobytes()))
+        frame, _raw = await asyncio.wait_for(provider._frameQueue.get(), timeout=5)
+
+        assert frame.shape == (8, 8, 3), "a greyscale payload must be expanded, not left 2-D"
+        assert frame[0, 0].max() == 0 and frame[0, 7].min() == 255, "frame came back mirrored"
 
 
 class TestSnapshotActionChannelOrder:

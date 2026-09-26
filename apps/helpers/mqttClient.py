@@ -61,6 +61,18 @@ class MqttClient:
     def disconnect(self):
         self._mqtt.disconnect()
 
+    def is_connected(self) -> bool:
+        """Whether the broker session is currently up.
+
+        For a subscriber this is the only evidence of liveness that does not depend on
+        the publisher choosing to publish: a topic carrying motion events may be silent
+        for days and be perfectly healthy, so silence cannot be read as failure while
+        this is True. paho maintains it from CONNACK and the keepalive PINGREQ cycle
+        (`KEEPALIVE_TIME`), so a broker that dies without a clean disconnect is noticed
+        within roughly 1.5 keepalives rather than never.
+        """
+        return self._mqtt.is_connected()
+
     def publish(self, topic: str, value: str, retain: bool = False, absoluteTopic=False):
         if absoluteTopic:
             publish_topic = topic

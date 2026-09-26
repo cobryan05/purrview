@@ -2000,9 +2000,11 @@ class StreamWatcherTask(Task):
         except Exception:
             logger.debug("Could not unpack frame for the ring on %s", pipeline.source_uuid, exc_info=True)
             return
-        # `is_live` only exists on RingMqttImageProvider; every other provider is a
-        # continuous source with no idle tier, so `getattr` defaults to "not idle" and
-        # the sticky lead-in cache (see FrameRing._sticky_recent) simply never engages.
+        # Only a provider that can go quiet for longer than the ring holds defines
+        # `is_live` — the Ring bridge, which answers per tier, and the MQTT topic source,
+        # which never has a continuous tier at all. For a genuinely continuous source the
+        # `getattr` default of "not idle" is what keeps the sticky lead-in cache (see
+        # FrameRing._sticky_recent) from splicing stills into clips that never needed them.
         idle = not getattr(pipeline.provider, "is_live", True)
         ring.push(now + self._wallclock_offset, jpeg, idle=idle)
 
