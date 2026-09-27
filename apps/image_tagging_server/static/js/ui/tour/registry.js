@@ -583,6 +583,18 @@ export const ANNOTATE = {
         + 'before you draw and every new box gets it; pick one with a box selected to change it.',
     },
     {
+      id: 'contextMenu',
+      target: 'annotate.canvasStage',
+      navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-canvas'],
+      requireTarget: true,
+      title: 'Right-click a box for everything else',
+      body: 'Right-clicking a box is where the rest of it lives: change its label, edit its tags, '
+        + 'mark it Verified, Unverified or a Rejection, copy it, delete it, or search the whole '
+        + 'workspace for boxes that look like it. With several boxes selected the menu acts on all '
+        + 'of them at once. Right-clicking empty canvas is a different gesture — it toggles '
+        + 'between Select and BBox, so you can keep drawing without going back to the toolbar.',
+    },
+    {
       id: 'inference',
       target: 'annotate.sidebar.inference',
       navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-inference'],
@@ -599,6 +611,18 @@ export const ANNOTATE = {
         + 'save — so a wrong box is one Undo away from never having happened. You will almost '
         + 'certainly stop using this button: S saves, [ and ] step between images, and annotating '
         + 'a folder is much faster with a hand on the keyboard. Settings lists the rest.',
+    },
+    {
+      id: 'sameCanvasElsewhere',
+      target: 'annotate.canvasStage',
+      navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-canvas'],
+      requireTarget: true,
+      title: 'This canvas turns up in modals too',
+      body: 'Once there is real data, most of the drawing you do will not happen on this tab: '
+        + 'Review opens the same canvas in a modal on double-click, and so does an event when you '
+        + 'annotate a frame of its clip. It is the same editor with the same tools, the same '
+        + 'right-click menu and the same hotkeys, so everything above still applies — this tab is '
+        + 'where you go to browse the folder and work through images one at a time.',
     },
     {
       id: 'review',
@@ -686,9 +710,11 @@ export const REVIEW = {
       id: 'openEditor',
       target: 'review.grid',
       title: 'Double-click to fix it properly',
-      body: 'Opens the image on a full canvas, in a modal, with the drawing tools and the same '
+      body: 'A single click on a card ticks it for a bulk action; a double-click opens the image '
+        + 'on a full canvas in a modal, with the drawing tools, the right-click menu and the same '
         + 'keyboard shortcuts as the Annotate tab — so a box that is simply in the wrong place '
-        + 'gets dragged rather than rejected. [ and ] move through the grid without closing it.',
+        + 'gets dragged rather than rejected. This is where most of the real annotating happens '
+        + 'once there is data to work through. [ and ] move through the grid without closing it.',
     },
     {
       id: 'contextMenu',
@@ -697,7 +723,9 @@ export const REVIEW = {
       body: 'Most judgements need no editor at all. Right-click a box to mark it Verified, '
         + 'Unverified or a Rejection, change its label, edit its tags, or search the whole '
         + 'workspace for boxes that look like it. On a whole image you also get present / '
-        + 'absent, which is how you record that a label is genuinely not in a picture.',
+        + 'absent, which is how you record that a label is genuinely not in a picture. '
+        + 'Right-clicking one of several ticked cards acts on the whole selection, so the menu '
+        + 'doubles as the bulk tool. The same menu is on the canvas inside the editor.',
     },
     {
       id: 'bulkApply',
@@ -781,6 +809,29 @@ export const WATCH = {
         + 'triggered. This is the history you go back through when you want to know what happened.',
     },
     {
+      id: 'openEvent',
+      target: 'nvr.eventGrid',
+      navigate: ['tab-nvr', 'tab-nvr-events'],
+      requireTarget: true,
+      title: 'Open one to see, fix and harvest it',
+      body: 'A single click opens an event on its clip — the Review grid next door takes a '
+        + 'double-click, because there a click ticks the card instead. Inside you get what the '
+        + 'watcher decided and why, its detection boxes drawn over the video as it plays, a '
+        + 'correction for a label it got wrong, and any frame of it saved into the annotation '
+        + 'queue as training data. Shift- or ctrl-click a card to tick it for a bulk action '
+        + 'without opening anything.',
+    },
+    {
+      id: 'eventTour',
+      target: 'nvr.eventGrid',
+      navigate: ['tab-nvr', 'tab-nvr-events'],
+      requireTarget: true,
+      title: 'That modal has its own tour',
+      body: 'More than this step can hold, so it carries its own ? beside Close. A tour cannot '
+        + 'open a modal for you: open an event, press that ?, and it walks you through the clip, '
+        + 'the overlays, the corrections and the frame capture.',
+    },
+    {
       id: 'addWatcher',
       target: 'nvr.addWatcher',
       navigate: ['tab-nvr', 'tab-nvr-live'],
@@ -790,6 +841,102 @@ export const WATCH = {
         + 'how to track what moves through them, which events are worth noticing, and what to do '
         + 'when one happens — then runs as a unit you start and stop. This takes you to its editor '
         + 'under Configure; once saved, you start it from here or from Jobs.',
+    },
+  ],
+};
+
+/**
+ * @type {import('./engine.js').Tour}
+ *
+ * The one tour that belongs to a modal rather than a page: `pages` is empty, so the
+ * page ? never lists it, and it is started from the ? in the event modal's own header.
+ * The engine can navigate between tabs but cannot open a modal, so no page tour
+ * branches into this one either — they point at the ? instead.
+ */
+export const EVENT_DETAIL = {
+  id: 'event-detail',
+  title: 'Inside an event',
+  pages: [],
+  steps: [
+    {
+      id: 'media',
+      target: 'eventDetail.media',
+      title: 'The clip, and the moment it fired',
+      body: 'The recording of the event, including the seconds before the watcher decided '
+        + 'anything — the mark on the timeline is where it triggered, so you can see what led '
+        + 'up to it. ‹ Previous and Next › walk the events behind this modal without closing '
+        + 'it, and [ and ] do the same from the keyboard.',
+    },
+    {
+      id: 'mediaTabs',
+      target: 'eventDetail.mediaTabs',
+      requireTarget: true,
+      title: 'Clip or timelapse',
+      body: 'An event that ran for hours has a timelapse as well as a clip. The clip is the '
+        + 'literal record and the timelapse is a summary of it — a second of timelapse covers '
+        + 'much more than a second of real time, which is why frames are captured from the '
+        + 'clip when there is one.',
+    },
+    {
+      id: 'overlays',
+      target: 'eventDetail.overlays',
+      requireTarget: true,
+      title: 'See what the watcher saw',
+      body: 'Draws the boxes the detector had at each frame, over the video as it plays. This '
+        + 'is how you tell a genuine detection from a tracker that latched onto a shadow — and '
+        + 'the boxes are drawn above the video, never burnt into it, so a frame you save is '
+        + 'still a clean picture.',
+    },
+    {
+      id: 'frameTools',
+      target: 'eventDetail.frameTools',
+      requireTarget: true,
+      title: 'Turn a frame into training data',
+      body: 'Pause anywhere and this saves that frame into the annotation queue, pre-seeded '
+        + 'with the boxes the watcher had at that instant — so correcting one is a drag rather '
+        + 'than a redraw. Annotate Image saves it and opens it on a canvas straight away; '
+        + 'closing that canvas brings you back here, at the same moment of the clip. This is '
+        + 'the loop that turns "the camera got it wrong" into the example that fixes it.',
+    },
+    {
+      id: 'details',
+      target: 'eventDetail.details',
+      title: 'What the watcher decided',
+      body: 'Which camera, which rule matched, what was acting and what it acted on, how long '
+        + 'it ran and how confident the detector ever got. An event that ended because the '
+        + 'watcher stopped, or because it hit its length cap, says so here rather than leaving '
+        + 'you to infer it from the duration.',
+    },
+    {
+      id: 'blips',
+      target: 'eventDetail.blips',
+      requireTarget: true,
+      title: 'Where the tracking went wrong',
+      body: 'The analyser\'s own findings for this clip: where the identity flipped from one '
+        + 'label to another, where the track dropped out, where two animals merged into one. '
+        + 'Each one seeks the clip to the moment it happened. Confirming that a flip was a '
+        + 'real change rather than a mistake carries the correction straight into the dialog '
+        + 'below, so you do not pick the label twice.',
+    },
+    {
+      id: 'relabel',
+      target: 'eventDetail.relabel',
+      requireTarget: true,
+      title: 'Correct the label across the whole event',
+      body: '"Wrong label…" is for the event the watcher got wrong: say which label should '
+        + 'have been which, and it harvests frames from across the clip with the corrected '
+        + 'boxes, saved unverified for review. It can fix the event\'s own row at the same '
+        + 'time, so the headline and the grouping stop being wrong too. Frames are only ever '
+        + 'taken from moments the recording actually contains — a clip shorter than its event '
+        + 'yields fewer frames rather than eight copies of its last picture.',
+    },
+    {
+      id: 'keep',
+      target: 'eventDetail.pin',
+      title: 'Pin what you want kept',
+      body: 'Events are pruned as the store fills, and a pin is a promise this one will not be '
+        + 'removed — by the cleanup or by hand. Pin the events you are keeping as evidence or '
+        + 'as a test case before you go anywhere near a bulk delete.',
     },
   ],
 };
@@ -920,6 +1067,7 @@ export const TOURS = Object.freeze([
   ANNOTATE,
   REVIEW,
   WATCH,
+  EVENT_DETAIL,
   RUNS,
   SETTINGS,
   CONFIG_OVERVIEW,

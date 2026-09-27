@@ -180,6 +180,7 @@ export async function renderEvents({ target = 'nvr-events-box' } = {}) {
   summary.dataset.testid = 'event-search-summary';
   const grid = el('div', 'event-search__grid');
   grid.dataset.testid = 'event-search-grid';
+  grid.dataset.tour = 'nvr.eventGrid';
   const pager = el('div', 'event-search__pager');
 
   let offset = 0;

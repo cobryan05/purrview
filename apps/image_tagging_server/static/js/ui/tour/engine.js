@@ -160,15 +160,31 @@ function _waitForAnchor(id, timeoutMs = TARGET_TIMEOUT_MS, warnOnMiss = true) {
 }
 
 let _active = null;
+/** Id of the tour `_active` is running, for callers that only care about their own. */
+let _activeId = null;
 
 /** Whether a tour is on screen. */
 export function isTourRunning() {
   return _active != null;
 }
 
+/** The id of the running tour, or null. */
+export function runningTourId() {
+  return _activeId;
+}
+
 /** Stop whatever tour is running, recording nothing about it. */
 export function stopTour() {
   _active?.stop();
+}
+
+/**
+ * Stop the running tour the way the user's own Skip does: the step is remembered, so
+ * the next start picks up there. For a surface that can be taken away underneath a
+ * tour — a modal being closed — where forgetting the place would restart the walk.
+ */
+export function pauseTour() {
+  _active?.pause();
 }
 
 /**
@@ -212,7 +228,10 @@ export function startTour(tour, { startAt = 0, stack = [] } = {}) {
     stopped = true;
     _teardownStep();
     coach.hide();
-    if (_active === handle) _active = null;
+    if (_active === handle) {
+      _active = null;
+      _activeId = null;
+    }
     events.publish(EventTypes.TOUR_STATE_CHANGED, { running: false, tourId: tour.id });
   }
 
@@ -383,6 +402,7 @@ export function startTour(tour, { startAt = 0, stack = [] } = {}) {
 
   const handle = { stop, next, back, pause, dismiss, currentIndex: () => index };
   _active = handle;
+  _activeId = tour.id;
   events.publish(EventTypes.TOUR_STATE_CHANGED, { running: true, tourId: tour.id });
   void _show(Math.max(0, Math.min(startAt, tour.steps.length - 1)));
   return handle;

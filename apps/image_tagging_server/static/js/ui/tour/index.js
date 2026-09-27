@@ -6,6 +6,8 @@
  *                    tour when the user walks back onto its page.
  *   runTour(id)    — start a tour on demand (the ? button, Settings › Interface),
  *                    regardless of whether it was seen before or tours are off.
+ *   runTourResumed(id) — the same, picking up where the user left off; for the ? inside
+ *                    a modal, whose tour belongs to no page and so is never listed.
  *   toursForPage() — what the ? button offers on the page you are looking at.
  *
  * Only a *paused* tour restarts itself. A tour nobody has seen sits behind the ?
@@ -16,11 +18,11 @@
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { prefs } from '/app-static/js/shared/prefs.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
-import { isEngineNavigating, isTourRunning, startTour, stopTour } from './engine.js';
+import { isEngineNavigating, isTourRunning, pauseTour, runningTourId, startTour, stopTour } from './engine.js';
 import { TOURS, tourById } from './registry.js';
 import { readTourState, tourIsPaused, tourIsUnseen, tourResumeIndex } from './state.js';
 
-export { isTourRunning, stopTour };
+export { isTourRunning, pauseTour, runningTourId, stopTour };
 export { readTourState, resetTourState, setNeverShowTours } from './state.js';
 export { TOURS };
 
@@ -62,6 +64,31 @@ export function runTour(id, { startAt = 0, stack = [] } = {}) {
     return null;
   }
   return startTour(tour, { startAt, stack });
+}
+
+/**
+ * Start a tour where the user left off, for a tour the ? menu never lists.
+ *
+ * A modal's tour has no page to be offered on — it is reached from a ? inside the
+ * modal itself — so nothing computes a resume index for it the way `toursForPage`
+ * does for a page tour. Without this, walking away from such a tour half way
+ * through and opening the modal again would put the user back on step one.
+ *
+ * @param {string} id
+ * @returns {Promise<?ReturnType<typeof startTour>>}
+ */
+export async function runTourResumed(id) {
+  let state;
+  try {
+    state = await readTourState();
+  } catch (err) {
+    Logger.warn('tour state unreadable; starting from the top', err);
+    return runTour(id);
+  }
+  return runTour(id, {
+    startAt: tourResumeIndex(state, id),
+    stack: state.stack.filter(frame => frame.tourId !== id),
+  });
 }
 
 /**

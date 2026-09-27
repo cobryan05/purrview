@@ -56,6 +56,10 @@ import { createBlipsPanel } from './blipsPanel.js';
 import { fetchLabels } from '/app-static/js/shared/api/labels.js';
 import { describeCloseReason, eventHeadline, findRecording, formatDuration, formatEventTime } from './eventCard.js';
 import { parseApiDate } from '/app-static/js/shared/time.js';
+import { pauseTour, runningTourId, runTourResumed } from '/app-static/js/ui/tour/index.js';
+
+/** The tour this modal's ? runs, as registered in ui/tour/registry.js. */
+const EVENT_TOUR_ID = 'event-detail';
 
 /**
  * How a settled review state reads in the sidebar.
@@ -247,6 +251,11 @@ export function openEventDetailModal(
   // otherwise leave a dozen redraw loops running against detached videos.
   const shell = createModalShell({
     onClose: () => {
+      // A tour of this modal cannot outlive it: every step points at an anchor in here,
+      // and the engine would go on framing detached nodes over whatever is behind us.
+      // Paused, not stopped, so reopening an event and pressing ? resumes the walk —
+      // closing the modal to look at the thing a step just described is not abandoning it.
+      if (runningTourId() === EVENT_TOUR_ID) pauseTour();
       dropOverlay();
       _dropFullscreenSyncs();
       // Leaving fullscreen behind a closing modal strands the user on a fullscreen
@@ -296,7 +305,17 @@ export function openEventDetailModal(
   // is a decision reviewers reach for immediately, and scrolling to find it next to
   // "Wrong label…"/"Delete event" was the actual complaint that moved it here.
   const pinBtn = button('Pin', () => void togglePinned(), { testid: 'event-detail-pin-toggle' });
+  pinBtn.dataset.tour = 'eventDetail.pin';
   header.appendChild(pinBtn);
+
+  // The page ? is behind this overlay and only ever offers the page underneath, and the
+  // tour engine can walk between tabs but cannot open a modal — so the tour for what is
+  // in here has to be reachable from in here. Resumed rather than restarted: a walk
+  // abandoned half way through picks up where it stopped.
+  const tourBtn = button('?', () => void runTourResumed(EVENT_TOUR_ID), { testid: 'event-detail-tour' });
+  tourBtn.title = 'Walk me through this view';
+  tourBtn.setAttribute('aria-label', tourBtn.title);
+  header.appendChild(tourBtn);
   header.appendChild(button('Close', () => shell.close(), { testid: 'event-detail-close' }));
   shell.dialog.appendChild(header);
 
@@ -375,9 +394,11 @@ export function openEventDetailModal(
   // ---------------------------------------------------------------- media
 
   const mediaPane = el('div', 'event-detail__media');
+  mediaPane.dataset.tour = 'eventDetail.media';
   body.appendChild(mediaPane);
 
   const sidebar = el('div', 'event-detail__side');
+  sidebar.dataset.tour = 'eventDetail.details';
   body.appendChild(sidebar);
 
   let video = null;
@@ -429,6 +450,7 @@ export function openEventDetailModal(
   // it: the panel owns an in-flight fetch and a selection, and recreating it per event
   // would drop both on the floor mid-load.
   const blipsHost = el('div', 'event-detail__blips');
+  blipsHost.dataset.tour = 'eventDetail.blips';
   const blipsPanel = createBlipsPanel(blipsHost, {
     onSeek: seekVideoTo,
     // Handed over in flight. The claims name labels by uuid, and the panel is drawn
@@ -486,6 +508,7 @@ export function openEventDetailModal(
     if (mediaRows.length < 2) return null;
     const bar = el('div', 'event-detail__media-tabs');
     bar.dataset.testid = 'event-detail-media-tabs';
+    bar.dataset.tour = 'eventDetail.mediaTabs';
     bar.setAttribute('role', 'tablist');
     for (const row of mediaRows) {
       const isTimelapse = row.kind === 'timelapse';
@@ -747,6 +770,7 @@ export function openEventDetailModal(
     renderSidebar();
 
     const label = el('label', 'event-detail__toggle');
+    label.dataset.tour = 'eventDetail.overlays';
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = true;
@@ -845,6 +869,7 @@ export function openEventDetailModal(
    */
   function buildFrameTools() {
     const tools = el('div', 'event-detail__tools');
+    tools.dataset.tour = 'eventDetail.frameTools';
     saveBtn = button('Save For Annotation', () => void saveFrame(), { testid: 'event-detail-save-frame' });
     annotateBtn = button('Annotate Image', () => void saveFrame({ openCanvas: true }), { testid: 'event-detail-annotate-frame' });
     tools.appendChild(saveBtn);
@@ -1457,9 +1482,11 @@ export function openEventDetailModal(
     // Only once the sidecar has loaded — without per-frame boxes there is nothing to
     // relabel, and a button that explains that after you press it is worse than absent.
     if (overlayDoc) {
-      actions.appendChild(button('Wrong label…', () => void relabelEvent(), {
+      const relabelBtn = button('Wrong label…', () => void relabelEvent(), {
         testid: 'event-detail-relabel-event',
-      }));
+      });
+      relabelBtn.dataset.tour = 'eventDetail.relabel';
+      actions.appendChild(relabelBtn);
     }
     const deleteBtn = button('Delete event', () => void removeEvent(), {
       testid: 'event-detail-delete',
