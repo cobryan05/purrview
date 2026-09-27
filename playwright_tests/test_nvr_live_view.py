@@ -20,6 +20,8 @@ import json
 
 from playwright.sync_api import Page, expect
 
+from playwright_tests.waits import wait_until
+
 PROFILE_UUID = "99999999-eeee-0000-0000-000000000001"
 TASK_UUID = "task-uuid-live-1"
 
@@ -552,3 +554,80 @@ class TestSaveFrameForAnnotation:
         expect(page.locator("[data-testid='watch-live-dialog']")).to_be_visible()
         expect(page.locator("[data-testid='watch-live-canvas']")).to_be_visible()
         expect(page.locator("[data-testid='canvas-edit-modal-dialog']")).to_have_count(0)
+
+
+class TestGoLiveHold:
+    """A held-open camera belongs to the source it was requested for.
+
+    "Go live" is a toggle whose hold is renewed on a timer, and the renewal reads
+    `state.sourceUuid` at the moment it fires. Switching cameras without releasing
+    therefore transferred the hold: the camera the user had woken was left escalated
+    and - on a Ring camera - blind to motion until its hold lapsed, while a camera
+    nobody asked about was renewed into a live stream. Neither shows on screen, which
+    is why this asserts on the commands sent rather than on the button.
+    """
+
+    TWO_SOURCES = [
+        {"sourceUuid": "src-1", "sourceName": "Litter cam"},
+        {"sourceUuid": "src-2", "sourceName": "Porch cam"},
+    ]
+
+    def _mock(self, page: Page, commands: list):
+        _mock_nvr(page, preview=_preview(sources=self.TWO_SOURCES, supportsGoLive=True))
+
+        def record(route):
+            commands.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"status": "success"}),
+            )
+
+        page.route(lambda url: url.rstrip("/").endswith("/api/tasks/instances/command"), record)
+
+    @staticmethod
+    def _pairs(commands: list) -> list:
+        return [(c.get("command"), (c.get("params") or {}).get("sourceUuid")) for c in commands]
+
+    def _hold(self, page: Page, commands: list):
+        page.locator("[data-testid='watch-live-go-live']").click()
+        expect(page.locator("[data-testid='watch-live-go-live']")).to_have_text("Stop live")
+        wait_until(
+            page,
+            lambda: ("request_live", "src-1") in self._pairs(commands),
+            lambda: f"go live sent {self._pairs(commands)}",
+        )
+
+    def test_switching_cameras_hands_the_held_one_back(self, page: Page, base_url: str):
+        commands: list = []
+        self._mock(page, commands)
+        _open_live_view(page, base_url)
+        self._hold(page, commands)
+
+        page.locator("[data-testid='watch-live-source']").select_option("src-2")
+
+        # The release names the camera that WAS held, and the toggle goes back to
+        # offering: src-2 was never asked to go live, so nothing may renew it.
+        expect(page.locator("[data-testid='watch-live-go-live']")).to_have_text("Go live")
+        wait_until(
+            page,
+            lambda: ("release_live", "src-1") in self._pairs(commands),
+            lambda: f"switching cameras sent {self._pairs(commands)}",
+        )
+        assert ("request_live", "src-2") not in self._pairs(commands)
+
+    def test_closing_the_view_hands_the_camera_back(self, page: Page, base_url: str):
+        """The clearest signal that nobody is watching. Without it the camera stays
+        escalated for the rest of its hold with the view already gone."""
+        commands: list = []
+        self._mock(page, commands)
+        _open_live_view(page, base_url)
+        self._hold(page, commands)
+
+        page.keyboard.press("Escape")
+        expect(page.locator("[data-testid='watch-live-dialog']")).to_have_count(0)
+        wait_until(
+            page,
+            lambda: ("release_live", "src-1") in self._pairs(commands),
+            lambda: f"closing the view sent {self._pairs(commands)}",
+        )

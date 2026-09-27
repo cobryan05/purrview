@@ -141,6 +141,10 @@ export function openWatcherLiveView({ taskUuid, profileName = '', sourceUuid = n
   sourceSelect.className = 'watch-live-source';
   sourceSelect.dataset.testid = 'watch-live-source';
   sourceSelect.addEventListener('change', () => {
+    // A hold belongs to the source it was requested for. Released before the switch,
+    // or the keepalive would renew the *newly* selected camera — which nobody asked to
+    // go live — and leave the previous one escalated and motion-blind until it lapses.
+    if (state.liveHeld && state.sourceUuid !== (sourceSelect.value || null)) _releaseLive();
     state.sourceUuid = sourceSelect.value || null;
     // A different camera's frame numbering is unrelated to this one's, so the
     // conditional fetch has to start over or the first frame would be skipped.

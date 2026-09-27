@@ -492,8 +492,17 @@ class RingMqttImageProvider(ImageProvider):
         self._we_requested_live = True
 
     async def release_live(self) -> None:
-        """Drop back to the idle tier immediately, putting the camera back to sleep."""
+        """Give up the caller's claim on the live tier.
+
+        Immediate unless ring-mqtt still says motion is running, in which case only the
+        hold is dropped and the tier comes down through the ordinary expiry path in
+        `getNextImage` once motion clears. Tearing it down here would cut an event's
+        recording back to 30–90 s snapshots half way through, which is exactly what the
+        `_motion_active` gate on that path exists to prevent.
+        """
         self._live_until = 0.0
+        if self._motion_active:
+            return
         await self._deescalate()
 
     async def _publish_stream_command(self, command: str) -> None:

@@ -413,6 +413,33 @@ class TestSleepCourtesy:
 
         assert client.published == []
 
+    async def test_does_not_cut_the_live_tier_off_mid_event(self, fakes):
+        """Closing the live view while motion is running must not end the recording.
+
+        The UI releases the camera when the viewer closes it, which can land in the
+        middle of a motion event. Tearing the tier down there drops the rest of the
+        event back to 30-90s cloud snapshots — the failure the `_motion_active` gate on
+        the expiry path exists to prevent. The hold is still dropped, so the tier comes
+        down through that path as soon as motion clears.
+        """
+        provider, client = await _started_provider(live_on_motion=True)
+        client.deliver(f"{BASE}/motion/state", b"ON")
+        await provider.getNextImage()
+        assert provider._live_provider is not None, "expected motion to have escalated"
+        client.published.clear()
+
+        await provider.release_live()
+
+        assert provider._live_provider is not None, "the live tier was cut off mid-event"
+        assert (f"{BASE}/stream/command", "off") not in client.published
+
+        # And it does come down, once ring-mqtt says the event is over.
+        client.deliver(f"{BASE}/motion/state", b"OFF")
+        provider._live_until = 0.0
+        client.deliver(f"{BASE}/snapshot/image", _jpeg_bytes((1, 2, 3)))
+        await provider.getNextImage()
+        assert provider._live_provider is None, "the live tier outlived the event"
+
 
 class TestSnapshotFrames:
     async def test_snapshot_is_bgr_and_keeps_the_original_jpeg(self, fakes):
