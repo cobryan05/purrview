@@ -14,6 +14,9 @@ Run with:
     pytest playwright_tests/test_review_tour.py -p no:asyncio -v
 """
 
+import re
+import time
+
 from playwright.sync_api import Page, expect
 
 from playwright_tests.test_review_workflow_ui import (
@@ -146,22 +149,80 @@ class TestEveryStepReachesAnAnchor:
         assert abs(sb["x"] - bb["x"]) < 16 and abs(sb["y"] - bb["y"]) < 16, (sb, bb)
         assert abs(sb["width"] - bb["width"]) < 32, (sb, bb)
 
-    def test_the_bulk_steps_are_passed_over_when_nothing_is_selected(self, page: Page, base_url: str):
-        """They point at controls that only exist once there is a selection, so a tour run
-        on an untouched screen must skip them rather than spotlight nothing."""
+    def test_the_bulk_step_falls_back_to_the_control_that_summons_the_button(self, page: Page, base_url: str):
+        """ "Apply to Selected" lives in a bar that only exists once something is ticked.
+
+        The step still has to happen on an untouched screen — it is how a reader learns
+        that bar is there at all — so with no selection it spotlights the Select all
+        checkbox instead of being passed over.
+        """
         _open_review_with_data(page, base_url)
         _start_review_tour(page)
+        _advance_until_title(page, "Select many, change them together")
 
-        titles = []
-        next_btn = page.locator("[data-testid='tour-next']")
-        for _ in range(20):
-            titles.append(page.locator("[data-testid='tour-title']").text_content())
-            text = next_btn.inner_text().strip()
-            if text == "Done" or text.startswith("Back to "):
-                break
-            before = _progress(page).text_content()
-            next_btn.click()
-            expect(_progress(page)).not_to_have_text(before, timeout=_STEP_TIMEOUT_MS)
+        expect(page.locator("[data-tour='review.bulkApply']")).to_be_hidden()
+        fallback = page.locator("[data-tour='review.select']")
+        expect(fallback).to_be_visible()
+        spot = page.locator("[data-testid='tour-spotlight']")
+        expect(spot).to_be_visible()
+        page.wait_for_timeout(600)
+        fb, sb = fallback.bounding_box(), spot.bounding_box()
+        assert abs(sb["x"] - fb["x"]) < 16 and abs(sb["y"] - fb["y"]) < 16, (sb, fb)
 
-        assert "Select many, change them together" not in titles, titles
-        assert "Filters decide what you are looking at" in titles, titles
+    def test_passing_over_an_unavailable_step_does_not_stall(self, page: Page, base_url: str):
+        """A step whose control is simply not there must be decided, not waited out.
+
+        The optional-anchor timeout exists to outlast a pane that is still mounting; when
+        the step does not navigate and nothing is settling, the pane is already painted
+        and the rest of that wait is dead time with the card unresponsive. Bounded well
+        below the 1.5s a single timed-out anchor costs on its own, so the assertion fails
+        if the wait comes back.
+
+        In the Images view "Apply to All" is hidden — asserted, not assumed, because the
+        press only has something to pass over while that holds.
+        """
+        _open_review_with_data(page, base_url)
+        page.locator("[data-tour='review.viewToggle'] [data-view-key='images']").click()
+        page.wait_for_selector("[data-tour='review.viewToggle'] [data-view-key='images'].active")
+        _start_review_tour(page)
+        _advance_until_title(page, "Select many, change them together")
+        expect(page.locator("[data-tour='review.bulkApplyAll']")).to_be_hidden()
+
+        started = time.monotonic()
+        before = _progress(page).text_content()
+        page.locator("[data-testid='tour-next']").click()
+        expect(page.locator("[data-testid='tour-title']")).to_have_text(
+            "Let a model pre-fill the whole queue", timeout=_STEP_TIMEOUT_MS
+        )
+        elapsed = time.monotonic() - started
+        assert _progress(page).text_content() != before
+        assert elapsed < 1.0, f"passing over an absent anchor took {elapsed:.2f}s"
+
+
+class TestTheCopyNamesTheUsersOwnKeys:
+    def test_a_rebound_key_is_what_the_step_says(self, page: Page, base_url: str):
+        """`[` and `]` are the defaults, not facts. A step that prints them is wrong for
+        anyone who has rebound the action — which the Hotkeys screen exists to let them
+        do — so the copy carries a token the engine resolves against the real binding."""
+        # Answered as "never stored", so the app falls back to the localStorage mirror
+        # seeded below. The PUT is caught too: the merge of new defaults persists the map
+        # on load, and this must not reach the real workspace's settings.
+        page.route(
+            re.compile(r"/api/settings/hotkey_bindings$"),
+            lambda r: (
+                r.fulfill(status=200, content_type="application/json", body='{"status":"success"}')
+                if r.request.method == "PUT"
+                else r.fulfill(status=404, content_type="application/json", body='{"detail":"not found"}')
+            ),
+        )
+        page.add_init_script(
+            "try { localStorage.setItem('ww_hotkey_bindings',"
+            " JSON.stringify({'n': 'action:prevImage', 'm': 'action:nextImage'})); } catch (_) {}"
+        )
+        _open_review_with_data(page, base_url)
+        _start_review_tour(page)
+        _advance_until_title(page, "Double-click to fix it properly")
+
+        body = page.locator("[data-testid='tour-body']").text_content()
+        assert "N and M move through the grid" in body, body
+        assert "[ and ]" not in body, body

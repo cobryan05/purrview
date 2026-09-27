@@ -322,6 +322,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   selectAllCb.type = 'checkbox';
   selectAllLabel.appendChild(selectAllCb);
   selectAllLabel.appendChild(document.createTextNode('Select all'));
+  selectAllLabel.dataset.tour = 'review.select';
 
   // Apply to Selected button (checked items on current page)
   const bulkBtn = document.createElement('button');

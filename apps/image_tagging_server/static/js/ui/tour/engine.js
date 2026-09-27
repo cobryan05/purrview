@@ -31,6 +31,7 @@
  * go back up one level.
  */
 import { navigateTabs } from '/app-static/js/app/utils/tabs.js';
+import { combosForAction, comboLabel } from '/app-static/js/app/image-tagging/hotkeyBindings.js';
 import { events, EventTypes } from '/app-static/js/shared/events/index.js';
 import { Logger } from '/app-static/js/ui/utils/logging.js';
 import { createCoachMark } from './coachMark.js';
@@ -47,11 +48,21 @@ import {
 /** How long a step waits for its anchor after navigating before going on without one. */
 const TARGET_TIMEOUT_MS = 4000;
 /**
- * The same wait for a `requireTarget` step. Shorter because absence is an expected
- * answer there, not a failure — but not instant: the step still has to outlast its
- * pane's async mount when a resume lands straight on it.
+ * The same wait for a `requireTarget` step whose pane may still be mounting — after a
+ * navigation, or on a resume that lands straight on it. Absence is an expected answer
+ * there, not a failure, so this is far shorter than the timeout above.
  */
 const OPTIONAL_TARGET_TIMEOUT_MS = 1500;
+/**
+ * The wait for an optional anchor once the screen has settled: the step does not
+ * navigate and the step before it still had its own anchor on screen, so the pane is
+ * painted and the control is either there now or not coming.
+ *
+ * Long enough to outlast a render scheduled on the next frame, short enough that
+ * passing over two such steps in a row is not a visible freeze — Review has two
+ * adjacent steps whose controls only exist once a card is ticked.
+ */
+const SETTLED_TARGET_TIMEOUT_MS = 120;
 const TARGET_POLL_MS = 50;
 
 /**
@@ -64,7 +75,9 @@ const TARGET_POLL_MS = 50;
 /**
  * @typedef {Object} TourStep
  * @property {string} id - unique within the tour
- * @property {?string} target - a `data-tour` anchor id; null for a step with no spotlight
+ * @property {?string|string[]} target - a `data-tour` anchor id, or several tried in
+ *   order so a step can fall back to a control that is always on screen; null for a
+ *   step with no spotlight
  * @property {string[]} [navigate] - a tab path to land on first: the main tab id,
  *   then one id per nested tier (Annotate needs three)
  * @property {string} title
@@ -134,23 +147,62 @@ export function tourAnchor(id) {
 }
 
 /**
- * Resolve an anchor, waiting for it to appear and be laid out.
- * @param {?string} id
+ * The first of a step's anchors that is on screen, or null.
+ *
+ * @param {?string|string[]} ids
+ * @returns {?Element}
+ */
+export function bestAnchor(ids) {
+  for (const id of (Array.isArray(ids) ? ids : [ids]).filter(Boolean)) {
+    const node = tourAnchor(id);
+    if (_visible(node)) return node;
+  }
+  return null;
+}
+
+/**
+ * `{key:action:nextImage}` in a step's body → the key that action is bound to now.
+ *
+ * Copy that prints `[` is documentation until someone rebinds it and wrong afterwards,
+ * which is why the event modal's Prev/Next tooltips read the user's own bindings too.
+ * Resolved per render, so a rebind shows up in the next step that names the key. An
+ * action with no key at all says so rather than naming a default it no longer has.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function resolveKeyTokens(text) {
+  return text.replace(/\{key:([\w:]+)\}/g, (_, action) => {
+    const combo = combosForAction(action)[0];
+    return combo ? comboLabel(combo) : 'unbound';
+  });
+}
+
+/**
+ * Resolve a step's anchor, waiting for it to appear and be laid out.
+ *
+ * `ids` may name alternatives, tried in order: the control the step is really about
+ * first, then something always on screen that explains why it is missing. That is what
+ * keeps "Apply to Selected" — which does not exist until a card is ticked — from being
+ * a step the reader never sees.
+ *
+ * @param {?string|string[]} ids
  * @param {number} [timeoutMs]
  * @param {boolean} [warnOnMiss] - false for a `requireTarget` step, where absence is an answer
  * @returns {Promise<?Element>}
  */
-function _waitForAnchor(id, timeoutMs = TARGET_TIMEOUT_MS, warnOnMiss = true) {
-  if (!id) return Promise.resolve(null);
-  const found = tourAnchor(id);
-  if (_visible(found)) return Promise.resolve(found);
+function _waitForAnchor(ids, timeoutMs = TARGET_TIMEOUT_MS, warnOnMiss = true) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  if (!list.length) return Promise.resolve(null);
+  const found = bestAnchor(list);
+  if (found) return Promise.resolve(found);
   return new Promise(resolve => {
     const deadline = Date.now() + timeoutMs;
     const poll = () => {
-      const node = tourAnchor(id);
-      if (_visible(node)) return resolve(node);
+      const node = bestAnchor(list);
+      if (node) return resolve(node);
       if (Date.now() > deadline) {
-        if (warnOnMiss) Logger.warn(`tour anchor "${id}" not found; continuing without a spotlight`);
+        if (warnOnMiss) Logger.warn(`tour anchor "${list.join('/')}" not found; continuing without a spotlight`);
         return resolve(null);
       }
       setTimeout(poll, TARGET_POLL_MS);
@@ -239,7 +291,7 @@ export function startTour(tour, { startAt = 0, stack = [] } = {}) {
     coach.show({
       target,
       title: step.title,
-      body: step.body,
+      body: resolveKeyTokens(step.body),
       index,
       count: tour.steps.length,
       tourTitle: tour.title,
@@ -279,8 +331,11 @@ export function startTour(tour, { startAt = 0, stack = [] } = {}) {
   /**
    * @param {number} i
    * @param {1|-1} [dir] - which way to keep going if step `i` turns out to be absent
+   * @param {boolean} [settled] - whether the screen is known to be painted, evidenced by
+   *   the step being left still having its own anchor on it. Passed along when a step is
+   *   skipped: by then `target` is null and the evidence would be lost for the step after.
    */
-  async function _show(i, dir = 1) {
+  async function _show(i, dir = 1, settled = _visible(target)) {
     const step = tour.steps[i];
     if (!step) return;
     const mySeq = ++seq;
@@ -295,16 +350,23 @@ export function startTour(tour, { startAt = 0, stack = [] } = {}) {
       else document.querySelector(`.main-tab-button[data-tab="${mainTab}"]`)?.click();
     }
 
+    // An optional step waits out the full timeout only while the screen may still be
+    // painting: it navigates itself, or nothing has established that the screen settled.
+    // Once the pane is painted, a control that is not there now is not coming, and
+    // waiting for it is a freeze rather than a check.
+    const optionalWait = (step.navigate || !settled)
+      ? OPTIONAL_TARGET_TIMEOUT_MS
+      : SETTLED_TARGET_TIMEOUT_MS;
     target = await _waitForAnchor(
       step.target,
-      step.requireTarget ? OPTIONAL_TARGET_TIMEOUT_MS : TARGET_TIMEOUT_MS,
+      step.requireTarget ? optionalWait : TARGET_TIMEOUT_MS,
       !step.requireTarget,
     );
     if (stopped || mySeq !== seq) return;
     if (step.requireTarget && !target) {
       const onward = i + dir;
       if (onward < 0 || onward >= tour.steps.length) { next(); return; }
-      void _show(onward, dir);
+      void _show(onward, dir, settled);
       return;
     }
     target?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
@@ -333,7 +395,7 @@ export function startTour(tour, { startAt = 0, stack = [] } = {}) {
           pending = 0;
           if (stopped || mySeq !== seq) return;
           if (_visible(target)) return;
-          const fresh = tourAnchor(step.target);
+          const fresh = bestAnchor(step.target);
           if (fresh && fresh !== target) {
             target = fresh;
             _render(step);

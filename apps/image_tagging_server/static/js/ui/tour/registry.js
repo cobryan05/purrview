@@ -609,8 +609,9 @@ export const ANNOTATE = {
       title: 'Save writes the boxes back',
       body: 'Annotations live beside the image in a sidecar file, and nothing is written until you '
         + 'save — so a wrong box is one Undo away from never having happened. You will almost '
-        + 'certainly stop using this button: S saves, [ and ] step between images, and annotating '
-        + 'a folder is much faster with a hand on the keyboard. Settings lists the rest.',
+        + 'certainly stop using this button: save is {key:action:save}, {key:action:prevImage} and '
+        + '{key:action:nextImage} step between images, and annotating a folder is much faster with '
+        + 'a hand on the keyboard. Settings lists the rest.',
     },
     {
       id: 'sameCanvasElsewhere',
@@ -714,7 +715,8 @@ export const REVIEW = {
         + 'on a full canvas in a modal, with the drawing tools, the right-click menu and the same '
         + 'keyboard shortcuts as the Annotate tab — so a box that is simply in the wrong place '
         + 'gets dragged rather than rejected. This is where most of the real annotating happens '
-        + 'once there is data to work through. [ and ] move through the grid without closing it.',
+        + 'once there is data to work through. {key:action:prevImage} and {key:action:nextImage} '
+        + 'move through the grid without closing it.',
     },
     {
       id: 'contextMenu',
@@ -729,11 +731,14 @@ export const REVIEW = {
     },
     {
       id: 'bulkApply',
-      target: 'review.bulkApply',
-      requireTarget: true,
+      // The real control first, the checkbox that summons it second: "Apply to Selected"
+      // lives in a bar that only appears with a selection, and a step about acting on
+      // many boxes is worth more with a spotlight on the way in than passed over.
+      target: ['review.bulkApply', 'review.select'],
       title: 'Select many, change them together',
-      body: 'Tick cards — shift-click takes a range — and apply one label or tag change to '
-        + 'every one at once. Before it commits you are shown the first three and last three '
+      body: 'Tick cards — shift-click takes a range, and Select all takes the page — and an '
+        + 'action bar appears along the bottom. From there one label or tag change applies to '
+        + 'every card at once. Before it commits you are shown the first three and last three '
         + 'it will touch, so you can see the range is consistent end to end rather than '
         + 'trusting the count. On whole images the actions include present and absent, which '
         + 'is what you want straight after adding a label: mark it absent across everything '
@@ -865,7 +870,7 @@ export const EVENT_DETAIL = {
       body: 'The recording of the event, including the seconds before the watcher decided '
         + 'anything — the mark on the timeline is where it triggered, so you can see what led '
         + 'up to it. ‹ Previous and Next › walk the events behind this modal without closing '
-        + 'it, and [ and ] do the same from the keyboard.',
+        + 'it, and {key:action:prevImage} / {key:action:nextImage} do the same from the keyboard.',
     },
     {
       id: 'mediaTabs',
