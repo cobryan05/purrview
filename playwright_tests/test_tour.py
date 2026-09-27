@@ -670,6 +670,28 @@ class TestTheOneTimeHintExplainsTheHighlightedButton:
         page.locator("[data-testid='tour-help-hint-dismiss']").click()
         expect(hint).to_have_count(0)
 
+    def test_it_offers_to_start_the_broadest_unseen_tour(self, page: Page, base_url: str):
+        """On a configured workspace the overview never auto-starts, so this callout is
+        the only walkthrough anyone is ever offered. It has to open the lap of the app,
+        not the one screen they happen to be standing on: Configuration Overview is the
+        narrower unseen tour here, and starting that instead would explain a corner to
+        someone who has not been shown the tabs."""
+        _route_tour_state(page, _stored(completed=["overview", "watch"], fabHintSeen=False))
+        _boot(page, base_url)
+        page.wait_for_timeout(600)
+        # Nothing unseen on the landing page, so the callout has not fired yet.
+        expect(page.locator("[data-testid='tour-help-hint']")).to_have_count(0)
+
+        # Configuration's own screen tour is unseen, so arriving here fires the callout.
+        page.locator(".main-tab-button[data-tab='tab-configuration']").click()
+
+        start = page.locator("[data-testid='tour-help-hint-start']")
+        expect(start).to_be_visible()
+        start.click()
+
+        expect(page.locator("[data-testid='tour-card']")).to_be_visible(timeout=_STEP_TIMEOUT_MS)
+        expect(_progress(page)).to_have_text("Configure · 1 of 7")
+
     def test_a_workspace_that_has_seen_it_is_not_told_again(self, page: Page, base_url: str):
         _route_tour_state(page, _stored(completed=["overview"], fabHintSeen=True))
         _boot(page, base_url)

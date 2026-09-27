@@ -9433,14 +9433,20 @@ progress.progress-indeterminate:indeterminate {
   border-color: var(--color-info);
 }
 
-.tour-help-menu {
-  min-width: 15rem;
-  max-width: min(22rem, calc(100vw - 24px));
+/* openAnchoredPopup positions but never paints, so every flyout from the ? owns its
+   own surface — without one it renders as bare text over the page beneath it. */
+.tour-help-menu,
+.tour-help-hint {
   padding: var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--surface-raised, var(--bg));
   box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 55%);
+}
+
+.tour-help-menu {
+  min-width: 15rem;
+  max-width: min(22rem, calc(100vw - 24px));
 }
 
 .tour-help-menu__header {
@@ -9556,10 +9562,10 @@ progress.progress-indeterminate:indeterminate {
   box-shadow: 0 0 0 2px var(--bg);
 }
 
-/* One-time callout explaining the highlighted ? (ui/tour/helpButton.js). */
+/* One-time callout explaining the highlighted ? (ui/tour/helpButton.js).
+   Surface comes from the shared rule beside .tour-help-menu. */
 .tour-help-hint {
   max-width: min(20rem, calc(100vw - 32px));
-  padding: var(--space-2);
 }
 
 .tour-help-hint__title {
@@ -9567,13 +9573,22 @@ progress.progress-indeterminate:indeterminate {
   margin-bottom: 0.25rem;
 }
 
+/* Body copy, not a caption: this is the only place the ? is ever explained, so it
+   reads at the body size rather than the muted --text-xs used for menu subtitles. */
 .tour-help-hint__body {
   margin: 0 0 var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  color: var(--text);
 }
 
-.tour-help-hint .panel-btn {
-  width: 100%;
+.tour-help-hint__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.tour-help-hint__actions .panel-btn {
+  flex: 1 1 auto;
   margin: 0;
 }

@@ -49,13 +49,29 @@ function _anyUnseen() {
 let hintShown = false;
 
 /**
+ * The tour the callout offers to start: the broadest unseen one.
+ *
+ * `offers` is sorted narrowest-first, so the last entry is the widest lap of the app
+ * — the right first walkthrough. A screen tour opened ahead of it would explain one
+ * corner to someone who has not been shown the four tabs.
+ *
+ * @returns {?import('./index.js').TourOffer}
+ */
+function _initialOffer() {
+  return [...offers].reverse().find(offer => offer.unseen) ?? null;
+}
+
+/**
  * The one-time "this page has a tour" callout.
  *
  * The dot on the ? is easy to miss, and a user who never notices it never learns
  * that the deeper per-screen tours exist at all. So the first time a page turns up
- * with an unseen tour, say so once — and only once per workspace. It is a callout
- * rather than an auto-started tour on purpose: the point is to make the button
- * discoverable, not to seize a page the user opened to do something else.
+ * with an unseen tour, say so once — and only once per workspace.
+ *
+ * It offers to start rather than starting: `OVERVIEW.eligible()` auto-starts only on
+ * an empty workspace, so on a configured install this callout is the one moment a
+ * walkthrough is ever put in front of someone. Taking the offer costs a click, which
+ * is what keeps it from seizing a page the user opened to do something else.
  */
 async function _maybeShowHint() {
   if (hintShown || popup || !button) return;
@@ -84,15 +100,34 @@ async function _maybeShowHint() {
   const body = document.createElement('p');
   body.className = 'tour-help-hint__body';
   body.textContent = 'Whenever this ? is highlighted, the page you are on has a walkthrough you '
-    + 'have not seen — including separate, more detailed ones for individual screens. '
-    + 'Open it whenever you like; it will not start on its own.';
+    + 'have not seen — including separate, more detailed ones for individual screens.';
+
+  const actions = document.createElement('div');
+  actions.className = 'tour-help-hint__actions';
+
+  const initial = _initialOffer();
+  if (initial) {
+    const start = document.createElement('button');
+    start.type = 'button';
+    start.className = 'panel-btn';
+    start.dataset.testid = 'tour-help-hint-start';
+    start.textContent = `Start "${initial.tour.title}"`;
+    start.addEventListener('click', () => {
+      _closePopup();
+      runTour(initial.tour.id, { startAt: initial.startAt, stack: initial.stack });
+    });
+    actions.appendChild(start);
+  }
+
   const dismiss = document.createElement('button');
   dismiss.type = 'button';
-  dismiss.className = 'panel-btn';
+  dismiss.className = initial ? 'panel-btn secondary' : 'panel-btn';
   dismiss.dataset.testid = 'tour-help-hint-dismiss';
-  dismiss.textContent = 'Got it';
+  dismiss.textContent = initial ? 'Not now' : 'Got it';
   dismiss.addEventListener('click', () => _closePopup());
-  card.append(title, body, dismiss);
+  actions.appendChild(dismiss);
+
+  card.append(title, body, actions);
 
   popup = openAnchoredPopup(button, card);
 }
