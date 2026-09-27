@@ -141,9 +141,20 @@ function _specificity(tour) {
 export function currentTourPage() {
   const main = document.querySelector('.main-tab-button.active')?.dataset.tab ?? '';
   if (!main) return { main: '', sub: '' };
-  const sub = document.getElementById(main)
-    ?.querySelector('.workspace-tab-button.active')?.dataset.tab ?? '';
-  return { main, sub };
+  const pane = document.getElementById(main);
+  // Section tier first. Annotate splits into Editor and Review *above* the workspace
+  // tier, and Review is the whole screen a tour would be about — reading only the
+  // workspace tier answers "Canvas" for a user standing on Review, so its tour could
+  // never be offered. Configuration's rail is a workspace tier, hence both.
+  const section = pane?.querySelector('.section-tab-button.active')?.dataset.tab ?? '';
+  // Scoped to the active section's own pane, never to the whole tab. Editor keeps its
+  // Canvas/Files buttons mounted and still marked active while Review is on screen, so
+  // an unscoped query answers "Canvas" for a user standing on Review.
+  const scope = section ? document.getElementById(section) : pane;
+  const workspace = scope?.querySelector('.workspace-tab-button.active')?.dataset.tab ?? '';
+  // The narrower tier wins where there is one: Editor's Canvas is more specific than
+  // "Editor". Review has no tier below it and reports itself.
+  return { main, sub: workspace || section };
 }
 
 /**

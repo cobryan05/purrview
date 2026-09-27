@@ -211,6 +211,22 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const tagsPromise = fetchTags().catch(() => new Map());
   const labels = await labelsPromise;
 
+  // Refreshed in place, never reassigned. This Map is handed by reference to the bulk
+  // apply modals, the canvas modal, run-model and verify-model, so a fresh Map would
+  // leave every one of them closed over the old one — a label created after this panel
+  // mounted was then missing from all of them until the page was reloaded, which is
+  // exactly the case of adding a label and wanting to mark it absent on existing images.
+  const _unsubLabels = events.subscribe(EventTypes.LABELS_UPDATED, async () => {
+    const fresh = await fetchLabels().catch(() => null);
+    // `fetchLabels` hands back the label cache's own Map, and every publisher of
+    // LABELS_UPDATED clears that cache first — so `fresh` is normally a new object built
+    // from a real refetch. When it is not, it is this very Map, and clearing it before
+    // copying out of it would empty the label list outright rather than refresh it.
+    if (!fresh || fresh === labels) return;
+    labels.clear();
+    for (const [uuid, label] of fresh) labels.set(uuid, label);
+  });
+
   // ── Toolbar ───────────────────────────────────────────────────────
   // Built as logical groups (search/filter · view mode · selection · pagination ·
   // status) separated by thin rules, so adding/removing a control doesn't
@@ -241,6 +257,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const filterToggleBtn = document.createElement('button');
   filterToggleBtn.className = 'review-toolbar__btn review-filter-chip-bar__add';
   filterToggleBtn.dataset.testid = 'review-filter-toggle';
+  filterToggleBtn.dataset.tour = 'review.filters';
   filterToggleBtn.textContent = '+ Add filter';
   filterToggleBtn.title = 'Tags, labels, source, date, filename, confidence and verification filters';
   if (fetchImages) filterToggleBtn.hidden = true;
@@ -265,6 +282,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // ── View filter toggle (All / Images / Bboxes) ───────────────────
   const viewToggle = document.createElement('div');
   viewToggle.className = 'review-view-toggle';
+  viewToggle.dataset.tour = 'review.viewToggle';
   const viewBtns = [
     { key: 'all', label: 'All' },
     { key: 'images', label: 'Images' },
@@ -309,6 +327,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const bulkBtn = document.createElement('button');
   bulkBtn.className = 'review-toolbar__btn';
   bulkBtn.dataset.testid = 'review-bulk-apply';
+  bulkBtn.dataset.tour = 'review.bulkApply';
   bulkBtn.textContent = 'Apply to Selected (0)';
   bulkBtn.disabled = true;
 
@@ -331,6 +350,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   bulkAllBtn.className = 'review-toolbar__btn';
   bulkAllBtn.textContent = 'Apply to All';
   bulkAllBtn.dataset.testid = 'review-bulk-apply-all';
+  bulkAllBtn.dataset.tour = 'review.bulkApplyAll';
   bulkAllBtn.disabled = true;
 
   // Apply to All Matching Images — filter-mode only sibling of bulkAllBtn.
@@ -355,6 +375,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const runModelBtn = document.createElement('button');
   runModelBtn.className = 'review-toolbar__btn';
   runModelBtn.dataset.testid = 'review-run-model-on-results';
+  runModelBtn.dataset.tour = 'review.runModel';
   runModelBtn.textContent = 'Run Model on Results…';
   runModelBtn.addEventListener('click', async () => {
     // Scope resolution (counting the filter/selection before the dialog can
@@ -390,6 +411,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const verifyModelBtn = document.createElement('button');
   verifyModelBtn.className = 'review-toolbar__btn';
   verifyModelBtn.dataset.testid = 'review-verify-model';
+  verifyModelBtn.dataset.tour = 'review.verifyModel';
   verifyModelBtn.textContent = 'Verify Model…';
   verifyModelBtn.addEventListener('click', async () => {
     const label = verifyModelBtn.textContent;
@@ -425,6 +447,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const savedPreviewsBtn = document.createElement('button');
   savedPreviewsBtn.className = 'review-toolbar__btn';
   savedPreviewsBtn.dataset.testid = 'review-saved-previews';
+  savedPreviewsBtn.dataset.tour = 'review.savedPreviews';
   savedPreviewsBtn.textContent = 'Saved Previews';
   savedPreviewsBtn.addEventListener('click', async () => {
     const { openSavedPreviewsModal } = await import('/app-static/js/app/review/previewPanel.js');
@@ -586,6 +609,9 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   // `grid` aliases the live container holding cards/rows — selection, stale-marking,
   // group-highlight, overlay refresh, bulk apply and nav-context queries all go through it.
   const grid = entryView.layout;
+  // The tour points at the container, never at a card: cards are replaced on every
+  // render and page change, and an anchor on one would be gone by the next step.
+  grid.dataset.tour = 'review.grid';
 
   // Card-grid controller — OWNS the selection state (selected / selectionKind /
   // lastClickedIndex / deletedUuids / staleUuids) and the click/shift-range/
@@ -681,6 +707,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
   const filterChipBar = document.createElement('div');
   filterChipBar.className = 'review-filter-chip-bar';
   filterChipBar.dataset.testid = 'review-filter-chip-bar';
+  filterChipBar.dataset.tour = 'review.filterChips';
   filterChipBarWrap.appendChild(filterChipBar);
 
   // ── Sticky top wrapper ────────────────────────────────────────────
@@ -816,6 +843,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     viewsSelect.className = 'filter-views-select';
     viewsSelect.title = 'Apply a saved View';
     viewsSelect.dataset.testid = 'review-views-select';
+    viewsSelect.dataset.tour = 'review.views';
 
     // Fetching Views must never block the rest of toolbar setup below (Unique
     // First, Open in Datasets Tab) — an unhandled rejection here previously
@@ -897,6 +925,8 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
     const uniqueFirstBtn = document.createElement('button');
     uniqueFirstBtn.className = 'review-toolbar__btn';
     uniqueFirstBtn.textContent = '★ Most Unique First';
+    uniqueFirstBtn.dataset.testid = 'review-unique-first';
+    uniqueFirstBtn.dataset.tour = 'review.uniqueFirst';
     uniqueFirstBtn.title = 'Open the most visually distinct images in a review panel (farthest-point sampling). '
       + 'Scoped to the current filters, or to unverified images when no filter is active.';
     // With no filter active the server keeps its own unverified-only scope; once
@@ -3030,6 +3060,7 @@ export async function createReviewPanel(container, { fetchImages = null, dataset
       _unsubImageSaved();
       _unsubImageDeleted();
       _unsubBboxChanged();
+      _unsubLabels();
       filterPanel?.destroy();
       _thumbLoader.reset();
       hoverPreview.destroy();

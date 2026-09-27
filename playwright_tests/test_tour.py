@@ -549,7 +549,7 @@ class TestStepsReachTheirAnchors:
         page.locator("[data-testid='tour-help-fab']").click()
         page.locator("[data-testid='tour-help-run-annotate']").click()
 
-        expect(page.locator("[data-testid='tour-title']")).to_have_text("Files is the image browser")
+        expect(page.locator("[data-testid='tour-title']")).to_have_text("Files browses the image folder")
         expect(page.locator("#tab-files")).to_have_class(re.compile(r"\bactive\b"))
         expect(page.locator("[data-testid='tour-spotlight']")).to_be_visible()
 

@@ -542,10 +542,11 @@ export const ANNOTATE = {
       id: 'files',
       target: 'annotate.files',
       navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-files'],
-      title: 'Files is the image browser',
-      body: 'Every image the workspace knows about is here, grouped by source. Frames a watcher '
-        + 'saved for a closer look land here too, which is where most training data comes from '
-        + 'once something is actually running.',
+      title: 'Files browses the image folder',
+      body: 'A folder tree, not a list: this is the image directory on the server, so what you '
+        + 'see here is what is on disk. Click through the directories to find an image, or bring '
+        + 'your own in from this computer. Frames a watcher saved for a closer look land here '
+        + 'too, which is where most training data comes from once something is running.',
     },
     {
       id: 'import',
@@ -578,25 +579,172 @@ export const ANNOTATE = {
       navigate: ['tab-image-tagging', 'tab-annotate-workspace', 'tab-inference'],
       title: 'Let a model do the first pass',
       body: 'Run a model over the image and it fills in boxes for you. Correcting its mistakes is '
-        + 'far faster than drawing from scratch, and the corrections are exactly the examples the '
-        + 'next round of training needs most.',
+        + 'far faster than drawing from scratch.',
     },
     {
       id: 'save',
       target: 'annotate.toolbar.save',
       requireTarget: true,
       title: 'Save writes the boxes back',
-      body: 'Annotations live on the image, alongside it in a sidecar file. Nothing is written '
-        + 'until you save, so a wrong box is one Undo away from never having happened.',
+      body: 'Annotations live beside the image in a sidecar file, and nothing is written until you '
+        + 'save — so a wrong box is one Undo away from never having happened. You will almost '
+        + 'certainly stop using this button: S saves, [ and ] step between images, and annotating '
+        + 'a folder is much faster with a hand on the keyboard. Settings lists the rest.',
     },
     {
       id: 'review',
       target: 'annotate.review',
       navigate: ['tab-image-tagging', 'tab-review'],
       title: 'Review is annotation in bulk',
-      body: 'A grid of every box matching a filter, verified or rejected a screen at a time. '
-        + 'Training draws on verified boxes, so this is the step that turns a pile of guesses '
-        + 'into a dataset.',
+      body: 'A grid of every box matching a filter, judged a screen at a time. Training draws '
+        + 'on verified boxes, so this is the step that turns a pile of guesses into a dataset — '
+        + 'and it has far more in it than one step can say.',
+      branches: [{ label: DIVE_IN_SCREEN, tour: 'review' }],
+    },
+  ],
+};
+
+/**
+ * @type {import('./engine.js').Tour}
+ *
+ * The longest tour in here, and deliberately so. Review is where a pile of guesses
+ * becomes a dataset, and almost none of it is discoverable: the verification marks are
+ * on a right-click, the editor is on a double-click, and half the toolbar operates on
+ * the whole filter rather than on what is on screen — which is the difference between
+ * relabelling twelve boxes and relabelling nine thousand.
+ */
+export const REVIEW = {
+  id: 'review',
+  title: 'Review',
+  pages: ['tab-image-tagging:tab-review'],
+  steps: [
+    {
+      id: 'intro',
+      target: 'review.grid',
+      navigate: ['tab-image-tagging', 'tab-review'],
+      title: 'Review is annotation in bulk',
+      body: 'A grid of everything matching a filter, judged a screen at a time instead of one '
+        + 'image at a time. Training draws on boxes you have verified, so this is the screen '
+        + 'that turns a pile of model guesses into a dataset worth training on.',
+    },
+    {
+      id: 'viewToggle',
+      target: 'review.viewToggle',
+      title: 'Whole images, or individual boxes',
+      body: 'Images shows one card per picture. Bboxes shows one card per box, cropped to it — '
+        + 'which is the view for judging labels quickly, because you see the thing itself '
+        + 'rather than hunting for it in the frame. All interleaves both.',
+    },
+    {
+      id: 'filters',
+      target: 'review.filters',
+      title: 'Filters decide what you are looking at',
+      body: 'Labels, tags, dates, filename — and Box status, which is the one you will live in. '
+        + 'Verified is what you have already checked, Unverified is what a model proposed and '
+        + 'nobody has confirmed, and No boxes is everything still untouched. Those three are '
+        + 'your done pile, your review queue and your not-started pile. Filters also decide '
+        + 'what every button further along acts on.',
+    },
+    {
+      id: 'filterNegation',
+      target: 'review.filters',
+      title: 'Filters can be turned inside out',
+      body: 'Every row in the label, tag and source pickers has a ≠ toggle, so "images that do '
+        + 'NOT contain a cat" is a filter rather than something you eyeball. Dates and '
+        + 'filenames negate too. This is how you find what a model is missing — everything it '
+        + 'never put a box on — and how you audit a tag you believe you applied everywhere. '
+        + 'The chips below say which way round each one is set.',
+    },
+    {
+      id: 'filterChips',
+      target: 'review.filterChips',
+      requireTarget: true,
+      title: 'Active filters stay visible',
+      body: 'Each filter you add becomes a chip here, so a grid that looks emptier than it '
+        + 'should is explained by something you can see rather than something you forgot. '
+        + 'Drop one by its ×, or clear the lot.',
+    },
+    {
+      id: 'views',
+      target: 'review.views',
+      requireTarget: true,
+      title: 'Save a filter you will want again',
+      body: 'A filter combination worth rebuilding is worth naming. Save it as a View and it '
+        + 'comes back from this dropdown — "cat boxes still unverified" is a View, not '
+        + 'something to reassemble every session.',
+    },
+    {
+      id: 'openEditor',
+      target: 'review.grid',
+      title: 'Double-click to fix it properly',
+      body: 'Opens the image on a full canvas, in a modal, with the drawing tools and the same '
+        + 'keyboard shortcuts as the Annotate tab — so a box that is simply in the wrong place '
+        + 'gets dragged rather than rejected. [ and ] move through the grid without closing it.',
+    },
+    {
+      id: 'contextMenu',
+      target: 'review.grid',
+      title: 'Right-click is the fast path',
+      body: 'Most judgements need no editor at all. Right-click a box to mark it Verified, '
+        + 'Unverified or a Rejection, change its label, edit its tags, or search the whole '
+        + 'workspace for boxes that look like it. On a whole image you also get present / '
+        + 'absent, which is how you record that a label is genuinely not in a picture.',
+    },
+    {
+      id: 'bulkApply',
+      target: 'review.bulkApply',
+      requireTarget: true,
+      title: 'Select many, change them together',
+      body: 'Tick cards — shift-click takes a range — and apply one label or tag change to '
+        + 'every one at once. Before it commits you are shown the first three and last three '
+        + 'it will touch, so you can see the range is consistent end to end rather than '
+        + 'trusting the count. On whole images the actions include present and absent, which '
+        + 'is what you want straight after adding a label: mark it absent across everything '
+        + 'you already have, so the model learns where it is not as well as where it is.',
+    },
+    {
+      id: 'bulkApplyAll',
+      target: 'review.bulkApplyAll',
+      requireTarget: true,
+      title: 'Or change everything the filter matches',
+      body: 'Not just this page — every result behind the current filter, however many pages '
+        + 'that is. The count in the button is the real total. This is the one button here '
+        + 'that can rewrite thousands of boxes on one click, so read the preview it shows you.',
+    },
+    {
+      id: 'runModel',
+      target: 'review.runModel',
+      title: 'Let a model pre-fill the whole queue',
+      body: 'Runs a model across everything the filter matches and holds the results as '
+        + 'proposals rather than writing them. You then walk the proposals and keep the good '
+        + 'ones — far faster than drawing from scratch on every image.',
+    },
+    {
+      id: 'savedPreviews',
+      target: 'review.savedPreviews',
+      title: 'A big triage does not have to finish today',
+      body: 'Those proposals are saved, so a run over ten thousand images can be picked up '
+        + 'tomorrow instead of abandoned. The count on the button is how many runs are waiting '
+        + 'for you.',
+    },
+    {
+      id: 'verifyModel',
+      target: 'review.verifyModel',
+      title: 'Ask how good a model actually is',
+      body: 'Scores a model — or two, side by side — against boxes you have already verified, '
+        + 'and reports how often it agrees with you. It writes nothing. This is how you find '
+        + 'out whether the last training round helped, rather than guessing from how the '
+        + 'overlays look.',
+    },
+    {
+      id: 'uniqueFirst',
+      target: 'review.uniqueFirst',
+      requireTarget: true,
+      title: 'Annotate the most different images first',
+      body: 'Frames from a camera are mostly near-duplicates, and labelling fifty views of the '
+        + 'same empty hallway teaches a model almost nothing. This orders the queue so each '
+        + 'image looks as unlike the ones before it as possible — the fastest way to spend an '
+        + 'hour of annotating well.',
     },
   ],
 };
@@ -629,8 +777,10 @@ export const WATCH = {
       navigate: ['tab-nvr', 'tab-nvr-live'],
       requireTarget: true,
       title: 'Add a watcher',
-      body: 'A watcher is a watch rule that is running. This takes you to the rule editor under '
-        + 'Configure, and once a rule is saved you start it from here or from Jobs.',
+      body: 'A watcher is the thing that actually watches. It gathers up the cameras to look at, '
+        + 'how to track what moves through them, which events are worth noticing, and what to do '
+        + 'when one happens — then runs as a unit you start and stop. This takes you to its editor '
+        + 'under Configure; once saved, you start it from here or from Jobs.',
     },
   ],
 };
@@ -759,6 +909,7 @@ export const TOURS = Object.freeze([
   OVERVIEW,
   CONFIGURATION,
   ANNOTATE,
+  REVIEW,
   WATCH,
   RUNS,
   SETTINGS,
