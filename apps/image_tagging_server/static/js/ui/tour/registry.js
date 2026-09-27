@@ -217,10 +217,12 @@ export const WATCH_RULES = {
       target: 'watchRules.addAction',
       requireTarget: true,
       title: 'Finally: what to do about it',
-      body: 'Actions are the point of the whole app: record a clip, flip a Home Assistant '
-        + 'sensor, save the frame for annotation, call a webhook. Each can be scoped to '
-        + 'particular rules and sources, so one watcher can record everything while notifying '
-        + 'you about only one thing.',
+      body: 'Actions are the point of the whole app: record a clip, save a snapshot or a '
+        + 'timelapse, collect the frame for annotation, publish to MQTT. Each can be scoped to '
+        + 'particular rules and sources, so one watcher can record everything while announcing '
+        + 'only one thing. Home Assistant needs no action of its own — a rule publishes its own '
+        + 'entities over MQTT discovery, which is a switch on the rule rather than something you '
+        + 'wire up here.',
     },
   ],
 };
@@ -320,16 +322,23 @@ export const TRAINING = {
       id: 'readiness',
       target: 'config.training',
       title: 'Readiness tells you whether it is worth starting',
-      body: 'The panel counts how many of the dataset\'s images have every target label explicitly '
-        + 'verified, against how many are still unreviewed. Training on unverified boxes teaches '
-        + 'the model your mistakes, so this number is the one to watch.',
+      body: 'An image trains only once every label in the shape is accounted for — either a '
+        + 'verified box on it, or an explicit "not in this picture". Nothing else goes in: an '
+        + 'unverified box is not trained on badly, it is not trained on at all, which is why the '
+        + 'ready count can sit at zero beside thousands of images. Confirming absence is real '
+        + 'work here, not bookkeeping, because those images are the negatives — and the panel '
+        + 'splits ready into positives and background so a set that is almost all empty frames '
+        + 'cannot read as more signal than it holds.',
     },
     {
       id: 'run',
       target: 'config.training',
       title: 'Starting a run',
       body: 'A saved config is started from Jobs, where its progress and the resulting model turn '
-        + 'up. The model then needs a class map under Labels & Tags before anything can use it.',
+        + 'up. A model trained here is ready to use immediately — it was trained against your '
+        + 'own labels, so it records which ones its classes are and needs no mapping. The class '
+        + 'map on Labels & Tags is for models you bring in from elsewhere, whose class names mean '
+        + 'nothing here until you say what they correspond to.',
     },
   ],
 };
