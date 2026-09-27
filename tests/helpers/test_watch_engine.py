@@ -1299,6 +1299,98 @@ class TestOneEventPerSubject:
         assert len(self._phases(emitted, EventPhase.START)) == 1
         assert len(self._phases(emitted, EventPhase.END)) == 1
 
+    def test_rule_granularity_never_holds_two_events_at_once(self):
+        """One event "while the predicate holds for anyone" means exactly one, always.
+
+        Observed live on 2026-09-27: three overlapping `Maple Present` events on one
+        camera, a rule that migrated to `rule` granularity. A detector dropout replaced
+        the track id in the same frame the cat reappeared a little further off, so no
+        rule could place the new cluster on the open event and a second one was minted —
+        under a setting whose whole definition is that there is only ever one.
+        """
+        spec = self._present([CAT_A], event_granularity=GRANULARITY_RULE)
+        machine, emitted = self._drive_machine(
+            spec,
+            [
+                (0.0, [_track(track_id=368, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),
+                (2.0, [_track(track_id=368, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),  # START
+                # New id, elsewhere, with no empty frame in between — the event is still
+                # ACTIVE at the instant the replacement asks for a home.
+                (3.0, [_track(track_id=411, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)]),
+                (5.0, [_track(track_id=411, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)]),
+            ],
+        )
+
+        assert len(self._phases(emitted, EventPhase.START)) == 1
+        assert self._phases(emitted, EventPhase.END) == []
+        assert len(machine._instances) == 1
+
+    def test_a_capped_rule_event_stays_capped_when_the_track_id_changes(self):
+        """The cap latch must survive a dropout, or the cap becomes the metronome again.
+
+        Adoption deliberately refuses SPENT instances — one animal's cap must not swallow
+        the next animal's event — so under `rule` granularity nothing else would hand the
+        replacement track to the latch, and the capped event would reopen at once under a
+        new id. That is what keeps every cluster on the single instance there.
+        """
+        spec = self._present(
+            [CAT_A], event_granularity=GRANULARITY_RULE, min_duration_s=1.0, rearm_delay_s=5.0, max_duration_s=10.0
+        )
+        _machine, emitted = self._drive_machine(
+            spec,
+            [
+                (0.0, [_track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),
+                (2.0, [_track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),  # START
+                (12.0, [_track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),  # capped
+                # Same cat, new id, well clear of the old box — the latch must still hold.
+                (14.0, [_track(track_id=77, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)]),
+                (20.0, [_track(track_id=77, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)]),
+            ],
+        )
+
+        assert len(self._phases(emitted, EventPhase.START)) == 1
+        assert [e.close_reason for e in self._phases(emitted, EventPhase.END)] == [EventCloseReason.CAP]
+
+    def test_a_track_replaced_in_one_frame_does_not_open_a_second_event(self):
+        """The same handoff under `subject` granularity, which is the default.
+
+        Adoption keyed on CLOSING alone missed this: the instance does not learn its
+        subject is gone until after the frame's clusters have been placed, so on the
+        transition frame it is still ACTIVE and refuses to take the replacement.
+        """
+        spec = self._present([CAT_A], min_duration_s=1.0, rearm_delay_s=10.0)
+        machine, emitted = self._drive_machine(
+            spec,
+            [
+                (0.0, [_track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),
+                (2.0, [_track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)]),  # START
+                (3.0, [_track(track_id=99, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)]),
+                (5.0, [_track(track_id=99, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)]),
+            ],
+        )
+
+        assert len(self._phases(emitted, EventPhase.START)) == 1
+        assert self._phases(emitted, EventPhase.END) == []
+        # Both ids belong to the one event, which is what the clip's track list reports.
+        (open_instance,) = machine.open_instances
+        assert open_instance.track_ids == {1, 99}
+
+    def test_two_subjects_present_together_still_open_two_events(self):
+        """The guard on the fix: a cluster may only be handed to an instance whose own
+        tracks are absent from this frame. A second cat arriving beside a first, whose
+        track is still right there, is a second event and must stay one."""
+        spec = self._present([CAT_A], min_duration_s=1.0, rearm_delay_s=10.0)
+        first = _track(track_id=1, bbox=(0, 0, 20, 20), label=CAT_A, conf=0.9)
+        second = _track(track_id=2, bbox=(400, 400, 420, 420), label=CAT_A, conf=0.9)
+        _machine, emitted = self._drive_machine(
+            spec,
+            [(0.0, [first]), (2.0, [first]), (3.0, [first, second]), (5.0, [first, second])],
+        )
+
+        starts = self._phases(emitted, EventPhase.START)
+        assert len(starts) == 2
+        assert len({s.instance_id for s in starts}) == 2
+
     # ── flicker, which the tracker's vote and min_duration already cover ─────
 
     def test_a_brief_relabel_does_not_open_an_event_for_the_borrowed_label(self):

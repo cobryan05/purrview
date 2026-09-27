@@ -830,12 +830,17 @@ class RuleMachine:
         1. **A shared track id.** Unambiguous: the same track is the same object.
         2. **Overlap with the instance's last boxes.** Covers the ordinary case of a body
            carried by successive track ids.
-        3. **Adoption.** An instance whose last member has gone but whose rearm window is
-           still running takes the next compatible cluster wherever it appears. This is
-           what the rearm window is *for* — an obstruction that hides the subject and
-           hands it back somewhere else must extend the open event, not start a second
-           one — and rules 1 and 2 both miss it, because the returning object shares
-           neither ids nor position.
+        3. **Adoption.** An open event none of whose own tracks appear in this frame takes
+           the next compatible cluster wherever it appears. This is what the rearm window
+           is *for* — an obstruction that hides the subject and hands it back somewhere
+           else must extend the open event, not start a second one — and rules 1 and 2
+           both miss it, because the returning object shares neither ids nor position.
+
+           The test is "its tracks are absent from this frame", not "it is CLOSING". An
+           instance does not learn its subject is gone until after this frame's clusters
+           have been placed, so on the very frame a dropout replaces one track id with
+           another it is still ACTIVE — and keying on CLOSING let exactly that mint a
+           second event, observed live as three overlapping `Maple Present` cards.
         4. **Nothing** — a genuinely new object, unless the machine is at its cap, in
            which case it joins its nearest neighbour rather than being dropped.
 
@@ -843,17 +848,27 @@ class RuleMachine:
         so two objects can never collapse into one event by both matching it.
         """
         available = list(self._instances.values())
+        present = {track_id for cluster in clusters for track_id in cluster.track_ids}
         pairs: List[Tuple[MatchCluster, Optional[_EventInstance]]] = []
         for cluster in clusters:
-            match = self._claim(cluster, available)
+            match = self._claim(cluster, available, present)
             if match is not None:
                 available.remove(match)
             pairs.append((cluster, match))
         return pairs
 
-    def _claim(self, cluster: MatchCluster, available: List[_EventInstance]) -> Optional[_EventInstance]:
-        if not cluster.track_ids:
-            # Trackless (motion): one object is all this rule can ever distinguish.
+    def _claim(
+        self,
+        cluster: MatchCluster,
+        available: List[_EventInstance],
+        present: Set[int],
+    ) -> Optional[_EventInstance]:
+        if not cluster.track_ids or self.spec.event_granularity != GRANULARITY_SUBJECT:
+            # One cluster per frame by construction — a trackless `motion` rule has no
+            # object to distinguish, and `rule` granularity collapses every match into
+            # one — so the machine holds exactly one instance and every cluster is it.
+            # Including a SPENT one: the cap latch must keep the seat, or capping an event
+            # would immediately open its replacement.
             return available[0] if available else None
 
         for instance in available:
@@ -872,11 +887,17 @@ class RuleMachine:
         # absorb a different one, or one animal's cap would swallow the next animal's
         # event entirely.
         live = [i for i in available if not i.spent]
-        adoptable = [i for i in live if i.state is RuleState.CLOSING and self._compatible(cluster, i)]
+        adoptable = [
+            i
+            for i in live
+            if i.state in (RuleState.ACTIVE, RuleState.CLOSING)
+            and not (i.track_ids & present)
+            and self._compatible(cluster, i)
+        ]
         if adoptable:
-            # Oldest first: the event that has been waiting longest has the strongest
-            # claim on the next thing to appear.
-            return min(adoptable, key=lambda i: i.false_since if i.false_since is not None else 0.0)
+            # Longest-waiting first, and an instance that lost its subject this very frame
+            # (still ACTIVE, so no `false_since` yet) has waited least of all.
+            return min(adoptable, key=lambda i: i.false_since if i.false_since is not None else float("inf"))
 
         if len(self._instances) >= MAX_EVENT_INSTANCES and live:
             return max(live, key=lambda i: _best_iou(cluster.boxes, i.boxes) if i.boxes else 0.0)
